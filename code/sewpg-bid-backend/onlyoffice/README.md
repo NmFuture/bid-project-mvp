@@ -37,9 +37,9 @@
 
 当前项目里真正的正式目录是：
 
-- 前端：`/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend`
-- 后端骨架：`/Users/wlb/Agent/bid-project/code/backend`
-- 项目文档：`/Users/wlb/Agent/bid-project/doc`
+- 前端：`../../sewpg-bid-frontend`
+- 后端：`..`
+- 项目文档：`../../../doc`
 
 ## 哪些能直接用到当前项目
 
@@ -103,8 +103,8 @@ uvicorn onlyoffice_demo_backend:app --host 0.0.0.0 --port 8000
 后续如果继续做正式接入，不要再往这个目录里塞前端副本。  
 应该直接改：
 
-- `/Users/wlb/Agent/bid-project/code/backend`
-- `/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend`
+- `../app`
+- `../../sewpg-bid-frontend`
 
 这个目录只保留为：
 

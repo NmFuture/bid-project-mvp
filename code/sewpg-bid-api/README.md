@@ -11,7 +11,7 @@
 
 当前正式口径以这些文件为准：
 
-- `/Users/wlb/Agent/bid-project/doc/06-MVP接口文档.md`
-- `/Users/wlb/Agent/bid-project/doc/07-FastAPI承接与前端改造.md`
+- `../../doc/06-MVP接口文档.md`
+- `../../doc/07-FastAPI承接与前端改造.md`
 
 后续如果把契约正式收进 `code`，建议优先落到这里，而不是继续散落在前端目录或项目根目录。

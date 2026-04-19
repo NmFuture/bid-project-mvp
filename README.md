@@ -17,7 +17,7 @@
 - 真实执行阶段：`S0 / S1 / S2 / S3 / S7 / S9 / S10`
 - 承接 / mock-backed 阶段：`S4 / S5 / S6 / S8`
 
-2026-04-20 已在本机通过 `docker compose` 完成一次真实验收项目 `PRJ-0010`：
+当前仓库已经按 `docker compose` 做过一轮真实主链路验收：
 
 - `S1` 上传并解析成功
 - `S2` 目录生成成功
@@ -64,19 +64,24 @@
 
 ## 快速启动
 
-### 1. 准备配置
+### 0. 前置条件
+
+- 已安装 Docker
+- 已安装 Docker Compose Plugin
+
+### 1. 克隆并准备配置
 
 ```bash
-cd /Users/wlb/Agent/bid-project/code
+git clone https://github.com/NmFuture/bid-project-mvp.git
+cd bid-project-mvp/code
 cp .env.example .env
 ```
 
-然后按你的环境修改 `code/.env`。
+然后按你的环境修改当前目录下的 `.env`。
 
 ### 2. 启动
 
 ```bash
-cd /Users/wlb/Agent/bid-project/code
 docker compose up -d --build
 ```
 
@@ -93,15 +98,19 @@ docker compose logs -f onlyoffice
 
 浏览器访问：
 
-- [http://127.0.0.1/](http://127.0.0.1/)
+- `http://localhost`
+
+如果你修改了 `WEB_PORT`，就访问对应端口，例如 `http://localhost:8080`。
 
 ## 健康检查
 
 启动后建议先检查这几个地址：
 
-- [http://127.0.0.1/api/healthz](http://127.0.0.1/api/healthz)
-- [http://127.0.0.1/ds/healthcheck](http://127.0.0.1/ds/healthcheck)
-- [http://127.0.0.1:4096/global/health](http://127.0.0.1:4096/global/health)
+- `http://localhost/api/healthz`
+- `http://localhost/ds/healthcheck`
+- `http://localhost:4096/global/health`
+
+如果你修改了 `WEB_PORT` 或 `OPENCODE_HOST_PORT`，请把地址里的端口一起替换。
 
 ## 怎么切换大模型 URL / key / modelId
 

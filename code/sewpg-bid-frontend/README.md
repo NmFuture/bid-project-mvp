@@ -54,7 +54,7 @@
 - 业务交互（按钮/表单/流程控制）
 
 ## 3.2 后端职责（当前为 FastAPI 入口）
-- 提供统一 FastAPI 联调入口（`http://127.0.0.1:8000`）
+- 提供统一 FastAPI 联调入口（默认 `http://localhost:8000`）
 - 提供业务 API 契约
 - 维护项目流程状态与阶段门禁
 - 维护素材库、审计、设置、认证会话
@@ -111,8 +111,13 @@ npm run api:fastapi
 方式 B：手动启动正式后端
 ```bash
 cd ../sewpg-bid-backend
-ONLYOFFICE_BACKEND_BASE_URL=http://host.docker.internal:8000 ./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --reload-dir app
+ONLYOFFICE_BACKEND_BASE_URL=http://<backend-reachable-host>:8000 ./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --reload-dir app
 ```
+
+说明：
+- `ONLYOFFICE_BACKEND_BASE_URL` 必须是 OnlyOffice 容器能访问到的后端地址
+- macOS / Windows 常见写法是 `http://host.docker.internal:8000`
+- Linux 常见写法是宿主机内网 IP 或可解析域名
 
 ## 5.4 启动前端（默认 5173）
 ```bash
@@ -121,8 +126,8 @@ npm run dev
 
 常用地址：
 - 前端开发：`http://localhost:5173/projects`
-- 前端预览：`http://127.0.0.1:4173/projects`（`npm run preview`）
-- FastAPI 入口：`http://127.0.0.1:8000`
+- 前端预览：`http://localhost:4173/projects`（`npm run preview`）
+- FastAPI 入口：`http://localhost:8000`
 - API 基址（前端侧）：`/api`
 
 ## 6. 质量门禁命令
@@ -141,7 +146,7 @@ npm run check
 | `VITE_APP_ENV` | 环境标识 | `development` |
 | `VITE_DEV_PORT` | 前端端口 | `5173` |
 | `VITE_API_BASE_URL` | API 基路径/域名 | `/api` |
-| `VITE_API_PROXY_TARGET` | 本地代理目标 | `http://127.0.0.1:8000` |
+| `VITE_API_PROXY_TARGET` | 本地代理目标 | `http://localhost:8000` |
 | `VITE_API_TIMEOUT_MS` | 单次请求超时 | `12000` |
 | `VITE_API_RETRY_COUNT` | GET 重试次数 | `1` |
 | `VITE_API_ENABLE_TRACE` | 是否透传 traceId | `true` |
