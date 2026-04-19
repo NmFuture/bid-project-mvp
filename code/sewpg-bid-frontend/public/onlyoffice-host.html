@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OnlyOffice Host</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #ffffff;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      #status {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #5f6368;
+        font-size: 14px;
+        background: linear-gradient(180deg, #f8f9fa 0%, #ffffff 100%);
+      }
+
+      #editor {
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status">正在初始化 OnlyOffice...</div>
+    <div id="editor"></div>
+
+    <script>
+      const HOST_SOURCE = 'onlyoffice-host'
+
+      const postToParent = (payload) => {
+        if (!window.parent || window.parent === window) return
+        window.parent.postMessage({ source: HOST_SOURCE, ...payload }, window.location.origin)
+      }
+
+      const setStatus = (message) => {
+        const el = document.getElementById('status')
+        if (el) el.textContent = message
+      }
+
+      const hideStatus = () => {
+        const el = document.getElementById('status')
+        if (el) el.remove()
+      }
+
+      const normalizeErrorDetail = (event) => {
+        if (!event) return ''
+        if (typeof event === 'string') return event
+        return (
+          event?.data?.errorDescription ||
+          event?.data?.message ||
+          (event?.data?.errorCode ? `错误码 ${event.data.errorCode}` : '') ||
+          event?.message ||
+          ''
+        )
+      }
+
+      const parsePayload = () => {
+        const raw = window.location.hash.replace(/^#/, '')
+        if (!raw) throw new Error('OnlyOffice host 未收到初始化参数。')
+        return JSON.parse(decodeURIComponent(raw))
+      }
+
+      const loadScript = (src) =>
+        new Promise((resolve, reject) => {
+          const existing = document.querySelector(`script[data-onlyoffice-host="1"][src="${src}"]`)
+          if (existing) {
+            existing.addEventListener('load', () => resolve(window.DocsAPI), { once: true })
+            existing.addEventListener('error', () => reject(new Error('OnlyOffice 脚本加载失败')), {
+              once: true,
+            })
+            return
+          }
+
+          const script = document.createElement('script')
+          script.src = src
+          script.async = true
+          script.dataset.onlyofficeHost = '1'
+          script.onload = () => resolve(window.DocsAPI)
+          script.onerror = () => reject(new Error('OnlyOffice 脚本加载失败'))
+          document.body.appendChild(script)
+        })
+
+      let editor = null
+
+      const boot = async () => {
+        let requestId = ''
+
+        try {
+          const payload = parsePayload()
+          requestId = payload?.requestId || ''
+          const documentServerUrl = String(payload?.documentServerUrl || '').replace(/\/+$/, '')
+          const config = payload?.config || null
+
+          if (!documentServerUrl) throw new Error('缺少 OnlyOffice 服务地址。')
+          if (!config) throw new Error('缺少 OnlyOffice 编辑器配置。')
+
+          setStatus('正在加载 OnlyOffice 脚本...')
+          await loadScript(`${documentServerUrl}/web-apps/apps/api/documents/api.js`)
+          if (!window.DocsAPI) throw new Error('OnlyOffice 脚本已加载，但 DocsAPI 未就绪。')
+
+          setStatus('正在初始化文档...')
+          config.events = {
+            ...(config.events || {}),
+            onAppReady: () => {
+              hideStatus()
+              postToParent({ requestId, type: 'ready' })
+            },
+            onDocumentReady: () => {
+              hideStatus()
+              postToParent({ requestId, type: 'document-ready' })
+            },
+            onError: (event) => {
+              const detail = normalizeErrorDetail(event) || 'OnlyOffice 运行异常，请检查文档服务状态。'
+              setStatus(detail)
+              postToParent({ requestId, type: 'error', message: detail })
+            },
+          }
+
+          editor = new window.DocsAPI.DocEditor('editor', config)
+        } catch (error) {
+          const message = normalizeErrorDetail(error) || 'OnlyOffice 初始化失败。'
+          setStatus(message)
+          postToParent({ requestId, type: 'error', message })
+        }
+      }
+
+      window.addEventListener('beforeunload', () => {
+        if (editor && typeof editor.destroyEditor === 'function') {
+          editor.destroyEditor()
+        }
+      })
+
+      boot()
+    </script>
+  </body>
+</html>

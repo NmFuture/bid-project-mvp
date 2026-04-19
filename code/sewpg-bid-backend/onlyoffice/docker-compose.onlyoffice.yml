@@ -1,0 +1,16 @@
+services:
+  onlyoffice:
+    image: onlyoffice/documentserver:latest
+    container_name: onlyoffice_docserver
+    ports:
+      - "8080:80"
+    environment:
+      - JWT_ENABLED=false
+      - JWT_SECRET=adca6c6b417b4a95a80343b54293d0a68a6679ee395c44b59a759d83deffa11f
+      - ALLOW_PRIVATE_IP_ADDRESS=true
+    volumes:
+      - ./logs:/var/log/onlyoffice
+      - ./data:/var/www/onlyoffice/Data
+      - ./lib:/var/lib/onlyoffice
+      - ./db:/var/lib/postgresql
+    restart: always

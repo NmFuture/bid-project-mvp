@@ -1,0 +1,42 @@
+name: Frontend Quality Gate
+
+on:
+  push:
+    paths:
+      - '**.js'
+      - '**.jsx'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'vite.config.js'
+      - '.github/workflows/frontend-quality.yml'
+  pull_request:
+    paths:
+      - '**.js'
+      - '**.jsx'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'vite.config.js'
+      - '.github/workflows/frontend-quality.yml'
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install mock server dependencies
+        run: npm ci --prefix mock-server
+
+      - name: Lint + build + smoke
+        run: npm run ci:smoke

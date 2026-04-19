@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+import itertools
+import platform
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+from urllib.parse import quote
+
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.core.config import settings
+from app.services.store import store
+
+
+class OnlyOfficeDocumentTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        base = Path(self.temp_dir.name)
+        self.original_onlyoffice_backend_base_url = settings.onlyoffice_backend_base_url
+        settings.sqlite_path = base / "sqlite" / "app.db"
+        settings.uploads_dir = base / "uploads"
+        settings.documents_dir = base / "documents"
+        settings.onlyoffice_backend_base_url = ""
+        settings.ensure_dirs()
+
+        store._projects = {}
+        store._counter = itertools.count(1)
+        self.client = TestClient(app, base_url="http://127.0.0.1:8000")
+
+    def tearDown(self) -> None:
+        self.client.close()
+        settings.onlyoffice_backend_base_url = self.original_onlyoffice_backend_base_url
+        self.temp_dir.cleanup()
+
+    def create_project(self) -> str:
+        response = self.client.post(
+            "/api/projects",
+            json={
+                "name": "OnlyOffice 联调项目",
+                "customerName": "测试业主",
+            },
+        )
+        response.raise_for_status()
+        return response.json()["id"]
+
+    def create_project_with_review_document(self) -> str:
+        project_id = self.create_project()
+        store.save_generated_outline(
+            project_id=project_id,
+            nodes=[
+                {
+                    "id": "OL-1",
+                    "title": "第1章 标前概述",
+                    "children": [
+                        {"id": "OL-1-1", "title": "技术评分标准索引表", "children": []},
+                        {"id": "OL-1-2", "title": "投标方案优势说明", "children": []},
+                    ],
+                },
+                {
+                    "id": "OL-2",
+                    "title": "第2章 技术标准",
+                    "children": [
+                        {"id": "OL-2-1", "title": "性能保证", "children": []},
+                    ],
+                },
+            ],
+            generated_at="2026-04-20T00:00:00Z",
+            summary="目录已生成。",
+        )
+        store.confirm_outline(project_id)
+        detection = store.run_gap_detection(project_id)
+        for item in detection["items"]:
+            store.update_gap_item(project_id, item["id"], {"status": "skipped", "reason": "MVP阶段跳过"})
+        store.submit_gap_review(project_id)
+        store.prepare_review_document(project_id)
+        return project_id
+
+    def test_document_file_is_real_docx(self) -> None:
+        project_id = self.create_project()
+
+        response = self.client.get(f"/api/projects/{project_id}/document/file")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            response.headers["content-type"].startswith(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+        )
+        self.assertEqual(response.content[:2], b"PK")
+
+    def test_document_session_uses_docker_reachable_urls_for_local_dev(self) -> None:
+        project_id = self.create_project()
+
+        with patch("app.api.utils.detect_lan_ip", return_value="192.168.31.148"):
+            response = self.client.get(f"/api/projects/{project_id}/document")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        expected_host = "host.docker.internal:8000" if platform.system() == "Darwin" else "192.168.31.148:8000"
+        self.assertIn(expected_host, payload["onlyoffice"]["fileUrl"])
+        self.assertIn(expected_host, payload["onlyoffice"]["callbackUrl"])
+
+    def test_explicit_onlyoffice_backend_base_url_is_used_for_document_and_review_routes(self) -> None:
+        project_id = self.create_project_with_review_document()
+        settings.onlyoffice_backend_base_url = "http://fastapi:8000"
+
+        document_response = self.client.get(f"/api/projects/{project_id}/document")
+        review_response = self.client.get(f"/api/projects/{project_id}/review-items/document")
+
+        self.assertEqual(document_response.status_code, 200)
+        self.assertEqual(review_response.status_code, 200)
+
+        document_payload = document_response.json()
+        review_payload = review_response.json()
+        self.assertEqual(
+            document_payload["onlyoffice"]["fileUrl"],
+            f"http://fastapi:8000/api/projects/{project_id}/document/file/{quote(document_payload['fileName'])}",
+        )
+        self.assertEqual(
+            document_payload["onlyoffice"]["callbackUrl"],
+            f"http://fastapi:8000/api/projects/{project_id}/document/callback",
+        )
+        self.assertEqual(
+            review_payload["onlyoffice"]["fileUrl"],
+            f"http://fastapi:8000/api/projects/{project_id}/review-items/document/file/{quote(review_payload['fileName'])}",
+        )
+        self.assertEqual(
+            review_payload["onlyoffice"]["callbackUrl"],
+            f"http://fastapi:8000/api/projects/{project_id}/review-items/document/callback",
+        )
+
+    def test_file_routes_accept_filename_suffix_alias(self) -> None:
+        project_id = self.create_project_with_review_document()
+
+        review_response = self.client.get(f"/api/projects/{project_id}/review-items/document")
+        document_response = self.client.get(f"/api/projects/{project_id}/document")
+
+        self.assertEqual(review_response.status_code, 200)
+        self.assertEqual(document_response.status_code, 200)
+
+        review_file_url = review_response.json()["fileUrl"]
+        document_file_url = document_response.json()["fileUrl"]
+
+        review_file = self.client.get(review_file_url.replace("http://127.0.0.1:8000", ""))
+        document_file = self.client.get(document_file_url.replace("http://127.0.0.1:8000", ""))
+
+        self.assertEqual(review_file.status_code, 200)
+        self.assertEqual(document_file.status_code, 200)
+        self.assertEqual(review_file.content[:2], b"PK")
+        self.assertEqual(document_file.content[:2], b"PK")
+
+    def test_route_payload_uses_store_managed_document_keys(self) -> None:
+        project_id = self.create_project_with_review_document()
+
+        store.force_save_document(project_id)
+        store.force_save_review_document(project_id)
+
+        document_response = self.client.get(f"/api/projects/{project_id}/document")
+        review_response = self.client.get(f"/api/projects/{project_id}/review-items/document")
+
+        self.assertEqual(document_response.status_code, 200)
+        self.assertEqual(review_response.status_code, 200)
+        self.assertEqual(
+            document_response.json()["onlyoffice"]["documentKey"],
+            store.get_document_state(project_id)["onlyoffice"]["documentKey"],
+        )
+        self.assertEqual(
+            review_response.json()["onlyoffice"]["documentKey"],
+            store.get_review_document_state(project_id)["documentKey"],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

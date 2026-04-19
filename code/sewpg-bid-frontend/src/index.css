@@ -1,0 +1,228 @@
+@import "tailwindcss";
+
+/* ============================================
+   SEWPG 投标智能体 Design System
+   色彩来自 Stitch HTML 设计稿
+   ============================================ */
+
+@theme {
+  /* Primary Colors */
+  --color-primary: #003e6f;
+  --color-primary-container: #005596;
+  --color-primary-fixed: #d3e4ff;
+  --color-primary-fixed-dim: #a2c9ff;
+  --color-on-primary: #ffffff;
+  --color-on-primary-container: #a4caff;
+  --color-on-primary-fixed: #001c38;
+  --color-on-primary-fixed-variant: #004881;
+  --color-inverse-primary: #a2c9ff;
+
+  /* Secondary Colors */
+  --color-secondary: #256d01;
+  --color-secondary-container: #a7f782;
+  --color-secondary-fixed: #a7f782;
+  --color-secondary-fixed-dim: #8cda69;
+  --color-on-secondary: #ffffff;
+  --color-on-secondary-container: #2b7309;
+  --color-on-secondary-fixed: #062100;
+  --color-on-secondary-fixed-variant: #195200;
+
+  /* Tertiary / Warning */
+  --color-tertiary: #642d00;
+  --color-tertiary-container: #873f01;
+  --color-tertiary-fixed: #ffdbc8;
+  --color-tertiary-fixed-dim: #ffb68a;
+  --color-on-tertiary: #ffffff;
+  --color-on-tertiary-container: #ffb88c;
+  --color-on-tertiary-fixed: #321300;
+  --color-on-tertiary-fixed-variant: #743500;
+
+  /* Error */
+  --color-error: #ba1a1a;
+  --color-error-container: #ffdad6;
+  --color-on-error: #ffffff;
+  --color-on-error-container: #93000a;
+
+  /* Surface / Background */
+  --color-surface: #f8f9ff;
+  --color-surface-bright: #f8f9ff;
+  --color-surface-dim: #d9dae0;
+  --color-surface-container: #ededf4;
+  --color-surface-container-high: #e7e8ee;
+  --color-surface-container-highest: #e1e2e8;
+  --color-surface-container-low: #f2f3f9;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-variant: #e1e2e8;
+  --color-surface-tint: #1b60a2;
+  --color-background: #f8f9ff;
+
+  /* Text */
+  --color-on-surface: #191c20;
+  --color-on-surface-variant: #414750;
+  --color-on-background: #191c20;
+  --color-outline: #727781;
+  --color-outline-variant: #c1c7d2;
+
+  /* Inverse */
+  --color-inverse-surface: #2e3035;
+  --color-inverse-on-surface: #eff0f6;
+
+  /* AI Accent */
+  --color-ai-accent: #7C3AED;
+  --color-ai-accent-light: #EDE9FE;
+
+  /* Font Families */
+  --font-headline: 'Manrope', sans-serif;
+  --font-body: 'Inter', sans-serif;
+  --font-label: 'Inter', sans-serif;
+}
+
+/* ============ Base Styles ============ */
+
+body {
+  font-family: var(--font-body);
+  background-color: var(--color-surface);
+  color: var(--color-on-surface);
+  letter-spacing: 0.02em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6, .font-headline {
+  font-family: var(--font-headline);
+}
+
+/* ============ Custom Scrollbar ============ */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-outline-variant);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-outline);
+}
+
+/* ============ Animations ============ */
+
+@keyframes pulse-blue {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 62, 111, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(0, 62, 111, 0); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(100%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-pulse-blue {
+  animation: pulse-blue 2s ease-in-out infinite;
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, #e1e2e8 25%, #ededf4 50%, #e1e2e8 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s ease-out;
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out;
+}
+
+/* ============ AI Marker ============ */
+
+.ai-marker {
+  position: relative;
+  padding-left: 12px;
+}
+
+.ai-marker::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--color-ai-accent);
+  border-radius: 2px;
+}
+
+/* ============ Dialog Overlay ============ */
+
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dialog-content {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 24px 48px -12px rgba(0, 62, 111, 0.2);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+/* ============ Toast ============ */
+
+.toast {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  z-index: 200;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.15);
+  animation: slide-in-right 0.3s ease-out;
+}
+
+.toast-success {
+  background: white;
+  border-left: 4px solid var(--color-secondary);
+  color: var(--color-on-surface);
+}
+
+.toast-error {
+  background: white;
+  border-left: 4px solid var(--color-error);
+  color: var(--color-on-surface);
+}
