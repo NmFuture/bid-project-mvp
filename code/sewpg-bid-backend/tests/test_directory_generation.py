@@ -254,7 +254,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertGreaterEqual(payload["output"]["chapterCount"], 3)
         self.assertEqual(payload["opencodeOutput"]["status"], "failed")
         self.assertTrue(any(event["level"] == "warning" for event in payload["events"]))
-        self.assertEqual(payload["opencodeOutput"]["parts"], [])
+        self.assertTrue(any("opencode 返回的 JSON 无法解析" in str(part.get("text", "")) for part in payload["opencodeOutput"]["parts"]))
 
     def test_background_job_updates_running_state_then_completes(self) -> None:
         from app.api.routes.directory import _handle_directory_progress, _run_directory_generation_job

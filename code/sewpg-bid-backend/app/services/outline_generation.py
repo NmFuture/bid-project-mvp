@@ -13,6 +13,7 @@ WORD_NAMESPACE = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}
 MAX_TENDER_TEXT_CHARS = 1200
 MAX_TENDER_HINTS = 12
 MAX_TEMPLATE_HINTS = 12
+MAX_FALLBACK_ERROR_PREVIEW_CHARS = 200
 
 HEADING_PATTERNS = [
     re.compile(r"^第[一二三四五六七八九十百千0-9]+章[\s　].+"),
@@ -82,13 +83,24 @@ def generate_outline_for_project_with_progress(
     except RuntimeError as exc:
         used_fallback = True
         fallback_error = str(exc)
+        fallback_error_text = _shorten_for_event(fallback_error)
         nodes = _build_outline_fallback_nodes(
             project_name=str(project.get("name") or project_id),
             tender_hints=tender_hints,
             template_hints=template_hints,
         )
-        summary = "opencode 响应异常，已根据模板与招标章节线索生成回退目录。"
-        opencode_output = build_directory_opencode_output(status="failed")
+        summary = (
+            f"opencode 响应异常（{fallback_error_text}），已根据模板与招标章节线索生成回退目录。"
+        )
+        opencode_output = build_directory_opencode_output(
+            status="failed",
+            parts=[
+                {
+                    "type": "text",
+                    "text": f"opencode 响应异常：{fallback_error}",
+                }
+            ],
+        )
     if progress_callback:
         progress_callback(
             "normalizing_result",
@@ -108,12 +120,27 @@ def generate_outline_for_project_with_progress(
     if used_fallback:
         payload = store.update_directory_generation_state(
             project_id,
-            event_message=f"opencode 响应异常（{fallback_error}），已切换为本地回退目录。",
+            event_message=f"opencode 响应异常（{_shorten_for_event(fallback_error)}），已切换为本地回退目录。",
             event_level="warning",
             event_step="fallback",
-            opencode_output={"status": "failed"},
+            opencode_output={
+                "status": "failed",
+                "parts": [
+                    {
+                        "type": "text",
+                        "text": f"回退原因：{_shorten_for_event(fallback_error, limit=340)}",
+                    }
+                ],
+            },
         )
     return payload
+
+
+def _shorten_for_event(message: str, limit: int = MAX_FALLBACK_ERROR_PREVIEW_CHARS) -> str:
+    text = str(message or "").strip().replace("\n", " ")
+    if len(text) <= limit:
+        return text or "未知错误"
+    return f"{text[: limit - 3]}..."
 
 
 def _collect_template_hints(template_file_records: list[dict[str, Any]]) -> list[str]:

@@ -236,6 +236,24 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 - `ONLYOFFICE_INTERNAL_URL`
 - `ONLYOFFICE_BACKEND_BASE_URL`
 
+这里要特别注意：
+
+> `ONLYOFFICE_BACKEND_BASE_URL` 必须是“浏览器 + OnlyOffice 容器”都能访问到的共享地址。
+
+不要把它简单理解成 `fastapi` 的容器内网地址。
+
+推荐口径：
+
+- 单机本地 compose：可以留空，由 FastAPI 自动优先探测当前机器局域网 IP
+- 多机 / 服务器部署：显式填写服务器域名或 IP，例如 `https://bid-mvp.example.com`
+
+不推荐：
+
+- `http://fastapi:8000`
+  - 浏览器通常访问不到
+- `http://127.0.0.1`
+  - OnlyOffice 容器通常访问不到
+
 这里最重要的一点是：
 
 > **部署使用者需要能自己改 `opencode` 的 `baseUrl / apiKey`，而不是去改代码。**

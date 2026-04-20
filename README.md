@@ -196,7 +196,7 @@ compose 会把这个目录挂进 `opencode` 容器。
 | `GOOGLE_API_KEY` | Google key |
 | `OPENCODE_AUTH_HOST_DIR` | 宿主机 `auth.json` 挂载目录 |
 | `ONLYOFFICE_INTERNAL_URL` | FastAPI 访问 OnlyOffice 的内部地址 |
-| `ONLYOFFICE_BACKEND_BASE_URL` | OnlyOffice 回调 FastAPI 时使用的后端地址 |
+| `ONLYOFFICE_BACKEND_BASE_URL` | 浏览器与 OnlyOffice 容器都能访问的共享 Web 地址，用于文档下载和回调 |
 | `ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS` | 允许 OnlyOffice 访问内网地址 |
 
 ## 推荐验收步骤
@@ -218,6 +218,27 @@ compose 会把这个目录挂进 `opencode` 容器。
 - `S2` 默认先真实调用 `opencode`
 - 如果 `opencode` 在 `OPENCODE_TIMEOUT_SEC` 内没有返回可用 JSON，系统会自动生成一版“可继续审核的回退目录”
 - `S7` 仍然优先走真实 `opencode` 初稿生成
+
+## OnlyOffice 地址说明
+
+`ONLYOFFICE_BACKEND_BASE_URL` 不是简单的“FastAPI 内部地址”。
+
+它必须同时满足两件事：
+
+- 浏览器能访问
+- `onlyoffice` 容器也能访问
+
+推荐口径：
+
+- 单机本地 compose：可以留空，FastAPI 会优先自动探测当前机器的局域网 IP
+- 多机 / 服务器部署：显式填写可访问域名或服务器 IP，例如 `https://bid-mvp.example.com` 或 `http://192.168.31.148`
+
+不推荐直接写：
+
+- `http://fastapi:8000`
+  - 这个地址通常只对 Docker 内部容器可达，浏览器不可达
+- `http://127.0.0.1`
+  - 这个地址通常只对宿主机浏览器可达，`onlyoffice` 容器不可达
 
 ## 已知边界
 

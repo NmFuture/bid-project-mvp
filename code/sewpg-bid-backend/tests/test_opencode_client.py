@@ -29,3 +29,24 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(parsed["summary"], "目录生成完成")
         self.assertEqual(parsed["nodes"][0]["title"], "项目概况")
 
+    def test_extract_outline_json_promotes_repair_failure(self) -> None:
+        client = OpencodeClient()
+        response = {
+            "parts": [
+                {
+                    "type": "text",
+                    "text": "{invalid json}",
+                }
+            ]
+        }
+
+        with patch.object(
+            client,
+            "_repair_json_payload",
+            side_effect=RuntimeError("修复失败"),
+        ) as repair:
+            with self.assertRaises(RuntimeError) as context:
+                client._extract_outline_json(response)
+
+        repair.assert_called_once()
+        self.assertIn("opencode JSON 解析失败", str(context.exception))

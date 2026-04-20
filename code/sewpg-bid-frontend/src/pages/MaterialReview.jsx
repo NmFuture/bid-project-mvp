@@ -3,7 +3,6 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { reviewAPI, stagesAPI } from '../api'
 import { PageError, PageLoading } from '../components/states/PageState'
 import DataCard from '../components/shared/DataCard'
-import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 
@@ -45,7 +44,6 @@ export default function MaterialReview({ showToast }) {
   const [confirming, setConfirming] = useState(false)
   const [forceSavingDoc, setForceSavingDoc] = useState(false)
   const [savingFallback, setSavingFallback] = useState(false)
-  const [onlyofficeError, setOnlyofficeError] = useState('')
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -80,8 +78,6 @@ export default function MaterialReview({ showToast }) {
   }, [loadData])
 
   const items = useMemo(() => data?.items || [], [data])
-  const hasOnlyOfficeSession = Boolean(reviewDoc?.onlyoffice?.fileUrl && reviewDoc?.onlyoffice?.callbackUrl)
-  const useFallbackPreview = !hasOnlyOfficeSession || Boolean(onlyofficeError)
   const summary = data?.summary || {
     total: items.length,
     resolvedCount: 0,
@@ -125,7 +121,8 @@ export default function MaterialReview({ showToast }) {
     try {
       const response = await reviewAPI.forceSaveDocument(id)
       setReviewDoc(response?.payload || reviewDoc)
-      showToast?.(response?.message || '已触发保存回写')
+      setFallbackContent(response?.payload?.fallback?.content || fallbackContent)
+      showToast?.(response?.message || 'S6 预览文档已重新生成')
     } catch (e) {
       showToast?.(e?.message || '保存回写失败，请稍后重试', 'error')
     } finally {
@@ -323,31 +320,10 @@ export default function MaterialReview({ showToast }) {
         ) : (
           <div className="p-4 flex flex-col gap-3">
             <div className="text-xs text-on-surface-variant">
-              {useFallbackPreview
-                ? hasOnlyOfficeSession
-                  ? 'OnlyOffice 预览初始化失败，已切换为文本预览兜底模式。'
-                  : '当前未拿到可用的 OnlyOffice 会话，已切换为文本预览兜底模式。'
-                : 'S6 审核备料文档预览已接入 OnlyOffice（同 S9 预留挂载接口）。'}
-            </div>
-            {onlyofficeError && (
-              <div className="rounded-lg border border-error/30 bg-error-container/20 px-3 py-2 text-xs text-error">
-                {onlyofficeError}
-              </div>
-            )}
-
-            <div className={useFallbackPreview ? 'hidden' : 'block'}>
-              <div className="h-[60vh] rounded-lg border border-surface-container-high overflow-hidden bg-surface-container-low">
-                <OnlyOfficeEmbed
-                  session={reviewDoc?.onlyoffice}
-                  mode="view"
-                  className="w-full h-full border-0 bg-white"
-                  onReady={() => setOnlyofficeError('')}
-                  onError={(message) => setOnlyofficeError(message)}
-                />
-              </div>
+              S6 当前提供稳定的文本预览与保存回写。OnlyOffice 在线编辑收敛到 S9 人机共创阶段，避免审核阶段出现预览异常影响流程。
             </div>
 
-            <div className={useFallbackPreview ? 'flex flex-col gap-3' : 'hidden'}>
+            <div className="flex flex-col gap-3">
               <textarea
                 value={fallbackContent}
                 onChange={(event) => setFallbackContent(event.target.value)}

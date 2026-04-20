@@ -27,9 +27,14 @@ class OpencodeClient:
                 response.raise_for_status()
                 return response.json()
         except httpx.TimeoutException as exc:
-            raise RuntimeError("opencode 创建 session 超时。") from exc
+            raise RuntimeError(
+                f"opencode 创建 session 超时（{self.base_url}/session）。"
+            ) from exc
         except httpx.HTTPError as exc:
-            raise RuntimeError(f"opencode 创建 session 失败：{exc}") from exc
+            raise RuntimeError(f"opencode 创建 session 失败：{self._short_http_error(exc)}") from exc
+
+        except ValueError as exc:  # pragma: no cover
+            raise RuntimeError("opencode 创建 session 返回了非 JSON 响应。") from exc
 
     def send_prompt(self, session_id: str, prompt_text: str) -> dict[str, Any]:
         payload = {
@@ -53,11 +58,17 @@ class OpencodeClient:
                 response.raise_for_status()
                 if not response.text.strip():
                     raise RuntimeError("opencode 返回了空响应。")
-                return response.json()
+                try:
+                    return response.json()
+                except ValueError as exc:
+                    raw = self._shorten_text(response.text, limit=420)
+                    raise RuntimeError(f"opencode 返回了非 JSON 响应：{raw}") from exc
         except httpx.TimeoutException as exc:
-            raise RuntimeError("opencode 生成超时，请缩短输入或稍后重试。") from exc
+            raise RuntimeError(
+                "opencode 生成超时，请缩短输入或稍后重试。"
+            ) from exc
         except httpx.HTTPError as exc:
-            raise RuntimeError(f"opencode 生成失败：{exc}") from exc
+            raise RuntimeError(f"opencode 生成失败：{self._short_http_error(exc)}") from exc
 
     def generate_outline(self, prompt_text: str) -> dict[str, Any]:
         result = self.generate_outline_with_trace(prompt_text)
@@ -159,9 +170,16 @@ class OpencodeClient:
             raise RuntimeError(empty_message)
         try:
             return self._parse_json_payload(content)
-        except RuntimeError:
-            repaired = self._repair_json_payload(content, repair_kind)
-            return self._parse_json_payload(repaired)
+        except RuntimeError as exc:
+            try:
+                repaired = self._repair_json_payload(content, repair_kind)
+                return self._parse_json_payload(repaired)
+            except RuntimeError as repair_error:
+                snippet = self._shorten_text(content, limit=420)
+                raise RuntimeError(
+                    f"opencode JSON 解析失败：{repair_error}；原始片段：{snippet}。"
+                ) from repair_error
+
 
     @staticmethod
     def _parse_json_payload(content: str) -> dict[str, Any]:
@@ -182,6 +200,18 @@ class OpencodeClient:
                 return json.loads(cleaned[start : end + 1])
             except json.JSONDecodeError as exc:  # pragma: no cover
                 raise RuntimeError("opencode 返回的 JSON 无法解析。") from exc
+
+    @staticmethod
+    def _short_http_error(exc: Exception) -> str:
+        detail = str(exc).replace("\n", " ").strip()
+        return detail or "服务调用异常。"
+
+    @staticmethod
+    def _shorten_text(value: str, limit: int = 420) -> str:
+        text = str(value).strip().replace("\n", " ")
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit - 3]}..."
 
     def _repair_json_payload(self, raw_content: str, repair_kind: str) -> str:
         schema_hint = (

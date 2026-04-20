@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
@@ -9,6 +11,84 @@ from app.services.parsing import parse_tender_documents
 from app.services.store import store
 
 router = APIRouter()
+
+_CHUNK_SIZE = 1024 * 1024
+
+
+def _safe_display_name(filename: str | None, index: int) -> str:
+    name = Path(filename or f"file-{index}").name.strip().replace("\x00", "")
+    name = name.replace("/", "_").replace("\\", "_")
+    if not name or name in {".", ".."}:
+        name = f"file-{index}"
+
+    suffix = Path(name).suffix
+    stem = Path(name).stem or f"file-{index}"
+    if len(name) > 180:
+        stem = stem[:120]
+        suffix = suffix[:20]
+        name = f"{stem}{suffix}"
+    return name
+
+
+def _validate_upload_name(filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+    if suffix not in settings.allowed_upload_extensions:
+        allowed = ", ".join(settings.allowed_upload_extensions)
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件类型：{suffix or '无扩展名'}。当前仅允许：{allowed}",
+        )
+    return suffix
+
+
+async def _save_one_upload(
+    target_dir: Path,
+    folder: str,
+    index: int,
+    upload: UploadFile,
+) -> dict[str, Any]:
+    display_name = _safe_display_name(upload.filename, index)
+    _validate_upload_name(display_name)
+    stored_name = f"{folder}-{index}-{uuid4().hex}{Path(display_name).suffix}"
+    path = target_dir / stored_name
+    temp_path = target_dir / f".{stored_name}.part"
+
+    size = 0
+    try:
+        with temp_path.open("wb") as handle:
+            while True:
+                chunk = await upload.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > settings.max_upload_file_size_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            f"文件 {display_name} 超过大小限制 "
+                            f"{store.format_size(settings.max_upload_file_size_bytes)}。"
+                        ),
+                    )
+                handle.write(chunk)
+        if size <= 0:
+            raise HTTPException(status_code=400, detail=f"文件 {display_name} 为空。")
+        temp_path.replace(path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+        raise
+    finally:
+        await upload.close()
+
+    return {
+        "id": f"{folder[:3].upper()}-{index}",
+        "name": display_name,
+        "stored_name": stored_name,
+        "size_bytes": size,
+        "size_label": store.format_size(size),
+        "content_type": upload.content_type or "",
+        "path": str(path),
+    }
 
 
 async def save_uploads(project_id: str, folder: str, files: list[UploadFile]) -> list[dict[str, Any]]:
@@ -25,21 +105,13 @@ async def save_uploads_with_offset(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     saved: list[dict[str, Any]] = []
-    for index, upload in enumerate(files, start=start_index):
-        raw = await upload.read()
-        filename = upload.filename or f"file-{index}"
-        path = target_dir / filename
-        path.write_bytes(raw)
-        saved.append(
-            {
-                "id": f"{folder[:3].upper()}-{index}",
-                "name": filename,
-                "size_bytes": len(raw),
-                "size_label": store.format_size(len(raw)),
-                "content_type": upload.content_type or "",
-                "path": str(path),
-            }
-        )
+    try:
+        for index, upload in enumerate(files, start=start_index):
+            saved.append(await _save_one_upload(target_dir, folder, index, upload))
+    except HTTPException:
+        for item in saved:
+            Path(str(item.get("path", ""))).unlink(missing_ok=True)
+        raise
     return saved
 
 
