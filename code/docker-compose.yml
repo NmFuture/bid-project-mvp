@@ -33,8 +33,14 @@ services:
       OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-opencode}
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-big-pickle}
       OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-60}
+      MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-524288000}
+      ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.docx}
       ONLYOFFICE_INTERNAL_URL: ${ONLYOFFICE_INTERNAL_URL:-http://onlyoffice}
       ONLYOFFICE_BACKEND_BASE_URL: ${ONLYOFFICE_BACKEND_BASE_URL:-http://fastapi:8000}
+      ONLYOFFICE_CALLBACK_TOKEN: ${ONLYOFFICE_CALLBACK_TOKEN:-}
+      ONLYOFFICE_CALLBACK_ALLOWED_HOSTS: ${ONLYOFFICE_CALLBACK_ALLOWED_HOSTS:-onlyoffice,127.0.0.1,localhost}
+      ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS: ${ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS:-onlyoffice,127.0.0.1,localhost}
+      ONLYOFFICE_DOWNLOAD_MAX_BYTES: ${ONLYOFFICE_DOWNLOAD_MAX_BYTES:-524288000}
     expose:
       - "8000"
     depends_on:
@@ -65,7 +71,7 @@ services:
     command: >
       sh -lc "mkdir -p /root/.local/share/opencode &&
       if [ -f /bootstrap/opencode-host/auth.json ]; then cp /bootstrap/opencode-host/auth.json /root/.local/share/opencode/auth.json; fi &&
-      npm install -g opencode-ai@latest &&
+      npm install -g opencode-ai@${OPENCODE_NPM_VERSION:-1.14.18} &&
       opencode serve --hostname 0.0.0.0 --port 4096 --cors http://localhost --cors http://127.0.0.1"
     expose:
       - "4096"
@@ -91,11 +97,15 @@ services:
     restart: unless-stopped
 
   onlyoffice:
-    image: onlyoffice/documentserver:latest
+    image: ${ONLYOFFICE_IMAGE:-onlyoffice/documentserver:9.3.1.2}
+    platform: ${ONLYOFFICE_PLATFORM:-linux/amd64}
     container_name: sewpg_bid_onlyoffice
     environment:
-      JWT_ENABLED: "false"
-      ALLOW_PRIVATE_IP_ADDRESS: ${ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS:-true}
+      JWT_ENABLED: "${ONLYOFFICE_JWT_ENABLED:-false}"
+      JWT_SECRET: "${ONLYOFFICE_JWT_SECRET:-}"
+      JWT_HEADER: "${ONLYOFFICE_JWT_HEADER:-Authorization}"
+      JWT_IN_BODY: "${ONLYOFFICE_JWT_IN_BODY:-false}"
+      ALLOW_PRIVATE_IP_ADDRESS: "${ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS:-true}"
     expose:
       - "80"
     volumes:

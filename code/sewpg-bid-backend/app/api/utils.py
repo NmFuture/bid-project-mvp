@@ -108,11 +108,11 @@ def onlyoffice_backend_base_url(request: Request) -> str:
     if host in {"127.0.0.1", "localhost"}:
         default_port = 80 if scheme == "http" else 443
         port_suffix = f":{port}" if port and port != default_port else ""
-        if platform.system() == "Darwin":
-            return f"{scheme}://host.docker.internal{port_suffix}"
         lan_ip = detect_lan_ip()
         if lan_ip:
             return f"{scheme}://{lan_ip}{port_suffix}"
+        if platform.system() == "Darwin":
+            return f"{scheme}://host.docker.internal{port_suffix}"
 
     return str(request.base_url).rstrip("/")
 

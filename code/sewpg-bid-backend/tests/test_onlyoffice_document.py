@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.core.config import settings
+from app.services.onlyoffice_documents import build_editor_session_key, document_path
 from app.services.store import store
 
 
@@ -20,10 +21,14 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         base = Path(self.temp_dir.name)
         self.original_onlyoffice_backend_base_url = settings.onlyoffice_backend_base_url
+        self.original_onlyoffice_callback_token = settings.onlyoffice_callback_token
+        self.original_onlyoffice_download_allowed_hosts = settings.onlyoffice_download_allowed_hosts
         settings.sqlite_path = base / "sqlite" / "app.db"
         settings.uploads_dir = base / "uploads"
         settings.documents_dir = base / "documents"
         settings.onlyoffice_backend_base_url = ""
+        settings.onlyoffice_callback_token = ""
+        settings.onlyoffice_download_allowed_hosts = ("127.0.0.1", "localhost", "onlyoffice")
         settings.ensure_dirs()
 
         store._projects = {}
@@ -33,6 +38,8 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.client.close()
         settings.onlyoffice_backend_base_url = self.original_onlyoffice_backend_base_url
+        settings.onlyoffice_callback_token = self.original_onlyoffice_callback_token
+        settings.onlyoffice_download_allowed_hosts = self.original_onlyoffice_download_allowed_hosts
         self.temp_dir.cleanup()
 
     def create_project(self) -> str:
@@ -99,9 +106,23 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        expected_host = "host.docker.internal:8000" if platform.system() == "Darwin" else "192.168.31.148:8000"
+        expected_host = "192.168.31.148:8000"
         self.assertIn(expected_host, payload["onlyoffice"]["fileUrl"])
         self.assertIn(expected_host, payload["onlyoffice"]["callbackUrl"])
+
+    def test_document_session_falls_back_to_host_docker_internal_when_lan_ip_unavailable_on_darwin(self) -> None:
+        if platform.system() != "Darwin":
+            self.skipTest("Darwin-only fallback behavior")
+
+        project_id = self.create_project()
+
+        with patch("app.api.utils.detect_lan_ip", return_value=""):
+            response = self.client.get(f"/api/projects/{project_id}/document")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("host.docker.internal:8000", payload["onlyoffice"]["fileUrl"])
+        self.assertIn("host.docker.internal:8000", payload["onlyoffice"]["callbackUrl"])
 
     def test_explicit_onlyoffice_backend_base_url_is_used_for_document_and_review_routes(self) -> None:
         project_id = self.create_project_with_review_document()
@@ -132,6 +153,42 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
             f"http://fastapi:8000/api/projects/{project_id}/review-items/document/callback",
         )
 
+    def test_document_callback_rejects_invalid_token(self) -> None:
+        project_id = self.create_project()
+        settings.onlyoffice_callback_token = "secret-token"
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/document/callback",
+            params={"oo_callback_token": "wrong"},
+            json={"status": 6, "url": "http://127.0.0.1:8000/api/projects/foo/document/file/x.docx"},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("callback token", response.text)
+
+    def test_review_callback_rejects_invalid_token(self) -> None:
+        project_id = self.create_project_with_review_document()
+        settings.onlyoffice_callback_token = "secret-token"
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/review-items/document/callback",
+            params={"oo_callback_token": "bad"},
+            json={"status": 6, "url": "http://127.0.0.1:8000/api/projects/foo/document/file/x.docx"},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("callback token", response.text)
+
+    def test_document_callback_rejects_disallowed_download_host(self) -> None:
+        project_id = self.create_project()
+        settings.onlyoffice_callback_token = "secret-token"
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/document/callback",
+            params={"oo_callback_token": "secret-token"},
+            json={"status": 6, "url": "https://attacker.example.com/malware.docx"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("白名单", response.text)
+
     def test_file_routes_accept_filename_suffix_alias(self) -> None:
         project_id = self.create_project_with_review_document()
 
@@ -152,7 +209,28 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         self.assertEqual(review_file.content[:2], b"PK")
         self.assertEqual(document_file.content[:2], b"PK")
 
-    def test_route_payload_uses_store_managed_document_keys(self) -> None:
+    def test_force_save_route_refreshes_document_session_key(self) -> None:
+        project_id = self.create_project()
+
+        initial_response = self.client.get(f"/api/projects/{project_id}/document")
+        self.assertEqual(initial_response.status_code, 200)
+        initial_key = initial_response.json()["onlyoffice"]["documentKey"]
+
+        refresh_response = self.client.post(f"/api/projects/{project_id}/document/force-save")
+        self.assertEqual(refresh_response.status_code, 200)
+        refreshed_key = refresh_response.json()["payload"]["onlyoffice"]["documentKey"]
+
+        self.assertNotEqual(initial_key, refreshed_key)
+        self.assertEqual(
+            refreshed_key,
+            build_editor_session_key(document_path(project_id), refresh_response.json()["payload"]["version"]),
+        )
+
+        latest_response = self.client.get(f"/api/projects/{project_id}/document")
+        self.assertEqual(latest_response.status_code, 200)
+        self.assertEqual(latest_response.json()["onlyoffice"]["documentKey"], refreshed_key)
+
+    def test_route_payload_uses_real_document_file_keys(self) -> None:
         project_id = self.create_project_with_review_document()
 
         store.force_save_document(project_id)
@@ -165,11 +243,14 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         self.assertEqual(review_response.status_code, 200)
         self.assertEqual(
             document_response.json()["onlyoffice"]["documentKey"],
-            store.get_document_state(project_id)["onlyoffice"]["documentKey"],
+            build_editor_session_key(document_path(project_id), document_response.json()["version"]),
         )
         self.assertEqual(
             review_response.json()["onlyoffice"]["documentKey"],
-            store.get_review_document_state(project_id)["documentKey"],
+            build_editor_session_key(
+                settings.documents_dir / f"{project_id}-review.docx",
+                review_response.json()["version"],
+            ),
         )
 
 

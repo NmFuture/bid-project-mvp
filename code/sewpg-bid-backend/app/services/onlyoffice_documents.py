@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+import os
+import time
 from pathlib import Path
 
 import httpx
@@ -17,8 +18,20 @@ def document_path(project_id: str) -> Path:
 
 def build_document_key(path: Path) -> str:
     stat = path.stat()
-    modified_at = datetime.fromtimestamp(stat.st_mtime).strftime("%Y%m%d%H%M%S")
-    return f"{path.stem}-{modified_at}-{stat.st_size}"
+    return f"{path.stem}-{stat.st_mtime_ns}-{stat.st_size}"
+
+
+def build_editor_session_key(path: Path, version: int | str | None = None) -> str:
+    base_key = build_document_key(path)
+    if version in (None, ""):
+        return base_key
+    return f"{base_key}-v{version}"
+
+
+def refresh_document_session(path: Path) -> None:
+    current = path.stat().st_mtime_ns
+    refreshed = max(time.time_ns(), current + 1)
+    os.utime(path, ns=(refreshed, refreshed))
 
 
 def ensure_document(project_id: str, title: str, content: str) -> Path:
@@ -55,8 +68,36 @@ def write_document(path: Path, title: str, content: str) -> None:
     doc.save(path)
 
 
-async def download_document_from_onlyoffice(download_url: str, target_path: Path) -> None:
-    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True, trust_env=False) as client:
-        response = await client.get(download_url)
-        response.raise_for_status()
-    target_path.write_bytes(response.content)
+async def download_document_from_onlyoffice(
+    download_url: str,
+    target_path: Path,
+    *,
+    max_bytes: int | None = None,
+) -> None:
+    """Download the OnlyOffice-saved document with bounded size and no redirects."""
+
+    byte_limit = max_bytes or settings.onlyoffice_download_max_bytes
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target_path.with_suffix(f"{target_path.suffix}.download")
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0, follow_redirects=False, trust_env=False) as client:
+            async with client.stream("GET", download_url) as response:
+                if 300 <= response.status_code < 400:
+                    raise RuntimeError("OnlyOffice document download redirect is not allowed.")
+                response.raise_for_status()
+
+                written = 0
+                with temp_path.open("wb") as handle:
+                    async for chunk in response.aiter_bytes():
+                        if not chunk:
+                            continue
+                        written += len(chunk)
+                        if written > byte_limit:
+                            raise RuntimeError("OnlyOffice document download exceeds the configured size limit.")
+                        handle.write(chunk)
+
+        temp_path.replace(target_path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise

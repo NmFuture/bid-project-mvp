@@ -93,6 +93,68 @@
           document.body.appendChild(script)
         })
 
+      const buildProbeErrorMessage = (documentUrl, detail) => {
+        if (detail && detail !== 'Failed to fetch') return detail
+        return `浏览器无法访问 OnlyOffice 文档地址：${documentUrl}。请将 ONLYOFFICE_BACKEND_BASE_URL 配置为当前机器的局域网 IP 或可被浏览器与 OnlyOffice 容器同时访问的域名。`
+      }
+
+      const normalizeProbeUrl = (documentUrl) => {
+        if (!documentUrl) return ''
+
+        try {
+          const parsed = new URL(documentUrl, window.location.origin)
+          if (parsed.pathname.startsWith('/api/')) {
+            return `${window.location.origin}${parsed.pathname}${parsed.search}${parsed.hash}`
+          }
+          return parsed.toString()
+        } catch {
+          return documentUrl
+        }
+      }
+
+      const withTimeout = (promise, timeoutMs = 8000) =>
+        Promise.race([
+          promise,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('文档地址检测超时，请检查网络与 OnlyOffice 容器连通性。')), timeoutMs),
+          ),
+        ])
+
+      const probeDocumentUrl = async (requestId, documentUrl) => {
+        const normalizedUrl = normalizeProbeUrl(documentUrl)
+
+        if (!normalizedUrl) {
+          throw new Error('OnlyOffice 文档地址为空。')
+        }
+
+        try {
+          const response = await withTimeout(
+            fetch(normalizedUrl, {
+              method: 'GET',
+              mode: 'no-cors',
+              credentials: 'omit',
+            }),
+          )
+          postToParent({
+            requestId,
+            type: 'probe',
+            url: normalizedUrl,
+            status: response.status,
+            ok: response.ok,
+            responseType: response.type,
+          })
+        } catch (error) {
+          const message = buildProbeErrorMessage(normalizedUrl, normalizeErrorDetail(error))
+          postToParent({
+            requestId,
+            type: 'probe-error',
+            url: normalizedUrl,
+            message,
+          })
+          throw new Error(message)
+        }
+      }
+
       let editor = null
 
       const boot = async () => {
@@ -103,9 +165,14 @@
           requestId = payload?.requestId || ''
           const documentServerUrl = String(payload?.documentServerUrl || '').replace(/\/+$/, '')
           const config = payload?.config || null
+          const probeUrl = payload?.probeDocumentUrl || config?.document?.url
 
           if (!documentServerUrl) throw new Error('缺少 OnlyOffice 服务地址。')
           if (!config) throw new Error('缺少 OnlyOffice 编辑器配置。')
+          if (!probeUrl) throw new Error('缺少文档检测 URL。')
+
+          setStatus('正在检测文档地址...')
+          await probeDocumentUrl(requestId, probeUrl)
 
           setStatus('正在加载 OnlyOffice 脚本...')
           await loadScript(`${documentServerUrl}/web-apps/apps/api/documents/api.js`)

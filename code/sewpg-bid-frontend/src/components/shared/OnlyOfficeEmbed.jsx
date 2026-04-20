@@ -16,10 +16,14 @@ export default function OnlyOfficeEmbed({
   const requestId = useId().replaceAll(':', '')
 
   const iframeSrc = useMemo(() => {
+    const fileUrl = session?.fileUrl || session?.browserFileUrl
+    const probeUrl = session?.browserFileUrl || session?.fileUrl
     const config = ONLYOFFICE_CONFIG.getEditorConfig({
       documentKey: session?.documentKey,
       title: session?.title,
-      fileUrl: session?.browserFileUrl || session?.fileUrl,
+      // OnlyOffice Document Server resolves document URLs server-side,
+      // so prefer the container-reachable internal URL here.
+      fileUrl,
       callbackUrl: session?.callbackUrl,
       userId: session?.user?.id,
       userName: session?.user?.name,
@@ -38,6 +42,7 @@ export default function OnlyOfficeEmbed({
       requestId,
       documentServerUrl: ONLYOFFICE_CONFIG.documentServerUrl,
       config,
+      probeDocumentUrl: probeUrl,
     }
     return `${buildHostPath()}#${encodeURIComponent(JSON.stringify(payload))}`
   }, [mode, requestId, session])

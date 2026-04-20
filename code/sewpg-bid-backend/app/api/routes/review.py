@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
+import httpx
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from app.api.utils import absolute_url, now_message, onlyoffice_backend_base_url
+from app.core.config import settings
 from app.services.onlyoffice_documents import (
     WORD_MEDIA_TYPE,
+    build_editor_session_key,
     download_document_from_onlyoffice,
     write_document,
 )
@@ -19,9 +22,46 @@ router = APIRouter()
 
 
 def _review_document_path(project_id: str) -> Path:
-    from app.core.config import settings
-
     return settings.documents_dir / f"{project_id}-review.docx"
+
+
+def _allowed_host(host: str | None, allowed_hosts: tuple[str, ...]) -> bool:
+    if not host:
+        return False
+    normalized = host.lower()
+    allowed = {item.lower() for item in allowed_hosts}
+    return "*" in allowed or normalized in allowed
+
+
+def _add_callback_token(url: str) -> str:
+    token = settings.onlyoffice_callback_token
+    if not token:
+        return url
+    parsed = urlparse(url)
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    query.append(("oo_callback_token", token))
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+def _validate_callback_token(request: Request) -> None:
+    expected = settings.onlyoffice_callback_token
+    if not expected:
+        return
+    supplied = request.query_params.get("oo_callback_token", "")
+    if supplied != expected:
+        raise HTTPException(status_code=403, detail="OnlyOffice callback token 无效。")
+
+
+def _validate_download_url(download_url: str) -> str:
+    parsed = urlparse(download_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(status_code=400, detail="OnlyOffice 回写 URL 协议不被允许。")
+    if parsed.username or parsed.password:
+        raise HTTPException(status_code=400, detail="OnlyOffice 回写 URL 不允许包含认证信息。")
+    if not _allowed_host(parsed.hostname, settings.onlyoffice_download_allowed_hosts):
+        allowed = ", ".join(settings.onlyoffice_download_allowed_hosts)
+        raise HTTPException(status_code=400, detail=f"OnlyOffice 回写 URL 主机不在白名单内：{allowed}")
+    return download_url
 
 
 def _ensure_review_document_file(project_id: str) -> tuple[dict[str, Any], Path]:
@@ -40,10 +80,14 @@ def _build_review_document_payload(project_id: str, request: Request) -> dict[st
 
     quoted_name = quote(state["fileName"])
     browser_file_url = absolute_url(request, f"/api/projects/{project_id}/review-items/document/file/{quoted_name}")
-    browser_callback_url = absolute_url(request, f"/api/projects/{project_id}/review-items/document/callback")
+    browser_callback_url = _add_callback_token(
+        absolute_url(request, f"/api/projects/{project_id}/review-items/document/callback")
+    )
     onlyoffice_base = onlyoffice_backend_base_url(request)
     onlyoffice_file_url = f"{onlyoffice_base}/api/projects/{project_id}/review-items/document/file/{quoted_name}"
-    onlyoffice_callback_url = f"{onlyoffice_base}/api/projects/{project_id}/review-items/document/callback"
+    onlyoffice_callback_url = _add_callback_token(
+        f"{onlyoffice_base}/api/projects/{project_id}/review-items/document/callback"
+    )
 
     return {
         "status": "ready",
@@ -57,7 +101,7 @@ def _build_review_document_payload(project_id: str, request: Request) -> dict[st
         "lastSavedAt": state.get("lastSavedAt") or "",
         "version": state.get("version") or 1,
         "onlyoffice": {
-            "documentKey": state["documentKey"],
+            "documentKey": build_editor_session_key(path, state.get("version") or 1),
             "title": state["fileName"],
             "fileUrl": onlyoffice_file_url,
             "callbackUrl": onlyoffice_callback_url,
@@ -120,13 +164,27 @@ async def force_save_review_document(project_id: str, request: Request) -> dict[
 @router.post("/api/projects/{project_id}/review-items/document/callback")
 async def review_document_callback(
     project_id: str,
+    request: Request,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> JSONResponse:
+    _validate_callback_token(request)
+
     status = int(data.get("status") or 0)
-    if status in {2, 6} and data.get("url"):
-        target_path = _review_document_path(project_id)
-        await download_document_from_onlyoffice(str(data["url"]), target_path)
-        store.force_save_review_document(project_id)
+    if status not in {2, 6} or not data.get("url"):
+        return JSONResponse({"error": 0})
+
+    download_url = _validate_download_url(str(data["url"]))
+    target_path = _review_document_path(project_id)
+    try:
+        await download_document_from_onlyoffice(
+            download_url,
+            target_path,
+            max_bytes=settings.onlyoffice_download_max_bytes,
+        )
+    except (httpx.HTTPError, RuntimeError) as exc:
+        return JSONResponse(status_code=502, content={"error": 1, "message": str(exc)})
+
+    store.force_save_review_document(project_id)
     return JSONResponse({"error": 0})
 
 
