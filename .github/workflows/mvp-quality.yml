@@ -3,12 +3,16 @@ name: MVP Quality Gate
 on:
   push:
     paths:
+      - "README.md"
+      - "doc/**"
       - "code/sewpg-bid-frontend/**"
       - "code/sewpg-bid-backend/**"
       - "code/docker-compose.yml"
       - ".github/workflows/mvp-quality.yml"
   pull_request:
     paths:
+      - "README.md"
+      - "doc/**"
       - "code/sewpg-bid-frontend/**"
       - "code/sewpg-bid-backend/**"
       - "code/docker-compose.yml"
