@@ -19,6 +19,11 @@
 - Docker Compose 组成
 - 客户内网使用方式
 
+## 协作约定
+
+- [GIT_WORKFLOW.md](/Users/wlb/Agent/bid-project/doc/GIT_WORKFLOW.md)
+  - 当前仓库多人协作的分支、PR、review、合并约定
+
 ## 背景资料
 
 下面几份保留作为背景和设计参考，不直接作为当前开发实现基线：
