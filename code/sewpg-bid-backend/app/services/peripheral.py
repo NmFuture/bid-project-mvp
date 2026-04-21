@@ -422,12 +422,13 @@ class PeripheralStore:
 
     def raw_permissions(self, role: str = "member") -> dict[str, Any]:
         normalized = "admin" if role == "admin" else "member"
+        editable_actions = {"upload": True, "rename": True, "move": True, "delete": True}
         return {
             "role": normalized,
             "rules": [
-                {"pathPrefix": "标准模板", "actions": {"upload": normalized == "admin", "rename": normalized == "admin", "move": normalized == "admin", "delete": normalized == "admin"}},
-                {"pathPrefix": "客户定制/*/通用材料", "actions": {"upload": normalized == "admin", "rename": normalized == "admin", "move": normalized == "admin", "delete": normalized == "admin"}},
-                {"pathPrefix": "项目定制", "actions": {"upload": True, "rename": True, "move": True, "delete": True}},
+                {"pathPrefix": "标准模板", "actions": editable_actions},
+                {"pathPrefix": "客户定制/*/通用材料", "actions": editable_actions},
+                {"pathPrefix": "项目定制", "actions": editable_actions},
             ],
         }
 

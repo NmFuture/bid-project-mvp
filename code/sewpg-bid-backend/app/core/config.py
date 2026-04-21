@@ -60,6 +60,15 @@ class Settings:
     onlyoffice_download_allowed_hosts: tuple[str, ...]
     onlyoffice_download_max_bytes: int
 
+    # PostgreSQL
+    database_url: str
+
+    # MinIO
+    minio_endpoint: str
+    minio_access_key: str
+    minio_secret_key: str
+    minio_buckets: dict[str, str]
+
     def ensure_dirs(self) -> None:
         self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -89,7 +98,7 @@ settings = Settings(
         ),
     ),
     allowed_upload_extensions=_upload_extensions(),
-    max_upload_file_size_bytes=_int_env("MAX_UPLOAD_FILE_SIZE_BYTES", 500 * 1024 * 1024),
+    max_upload_file_size_bytes=_int_env("MAX_UPLOAD_FILE_SIZE_BYTES", 1024 * 1024 * 1024),
     onlyoffice_callback_token=os.getenv("ONLYOFFICE_CALLBACK_TOKEN", "").strip(),
     onlyoffice_callback_allowed_hosts=_csv_env(
         "ONLYOFFICE_CALLBACK_ALLOWED_HOSTS",
@@ -99,5 +108,17 @@ settings = Settings(
         "ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS",
         ("onlyoffice", "127.0.0.1", "localhost"),
     ),
-    onlyoffice_download_max_bytes=_int_env("ONLYOFFICE_DOWNLOAD_MAX_BYTES", 500 * 1024 * 1024),
+    onlyoffice_download_max_bytes=_int_env("ONLYOFFICE_DOWNLOAD_MAX_BYTES", 1024 * 1024 * 1024),
+    database_url=os.getenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://biduser:bidpass@localhost:5432/bidplatform",
+    ),
+    minio_endpoint=os.getenv("MINIO_ENDPOINT", "http://localhost:9000"),
+    minio_access_key=os.getenv("MINIO_ROOT_USER", "minioadmin"),
+    minio_secret_key=os.getenv("MINIO_ROOT_PASSWORD", "minioadmin"),
+    minio_buckets={
+        "materials": os.getenv("MINIO_BUCKET_MATERIALS", "bid-materials"),
+        "documents": os.getenv("MINIO_BUCKET_DOCUMENTS", "bid-documents"),
+        "templates": os.getenv("MINIO_BUCKET_TEMPLATES", "bid-templates"),
+    },
 )

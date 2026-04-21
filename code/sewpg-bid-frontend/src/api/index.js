@@ -306,7 +306,10 @@ export const exportAPI = {
 // ===== Materials =====
 export const materialsAPI = {
   raw: {
-    permissions: () => request('/materials/raw/permissions'),
+    permissions: (params = {}) => {
+      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      return request(`/materials/raw/permissions${qs ? `?${qs}` : ''}`)
+    },
     tree: (params = {}) => {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
       return request(`/materials/raw/tree${qs ? `?${qs}` : ''}`)
@@ -315,7 +318,8 @@ export const materialsAPI = {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
       return request(`/materials/raw/files${qs ? `?${qs}` : ''}`)
     },
-    upload: (data) => request('/materials/raw/upload', { method: 'POST', body: data }),
+    upload: (data) =>
+      request('/materials/raw/upload', { method: 'POST', body: data, timeoutMs: 15 * 60 * 1000 }),
     bootstrapFolders: (data) =>
       request('/materials/raw/folders/bootstrap', { method: 'POST', body: data }),
     createFolder: (data) =>

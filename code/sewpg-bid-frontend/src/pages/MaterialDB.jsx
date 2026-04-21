@@ -1,14 +1,33 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { materialsAPI } from '../api'
 import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
 
-const MAX_FILE_SIZE = 500 * 1024 * 1024
-const MAX_BATCH_FILES = 5
+const MAX_FILE_SIZE = 1024 * 1024 * 1024
 const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.zip,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
+const UPLOAD_KIND_STORAGE_KEY = 'materials.raw.upload.kind'
 const ALLOWED_EXTENSIONS = new Set([
   'pdf', 'doc', 'docx', 'xls', 'xlsx', 'zip',
   'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
 ])
+
+const readStoredUploadKind = () => {
+  if (typeof window === 'undefined') return 'files'
+  try {
+    const value = window.localStorage.getItem(UPLOAD_KIND_STORAGE_KEY)
+    return value === 'folder' ? 'folder' : 'files'
+  } catch {
+    return 'files'
+  }
+}
+
+const persistUploadKind = (value) => {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(UPLOAD_KIND_STORAGE_KEY, value === 'folder' ? 'folder' : 'files')
+  } catch {
+    // ignore storage failures
+  }
+}
 
 const safeMessage = (error, fallback) => error?.payload?.detail || error?.message || fallback
 
@@ -72,14 +91,18 @@ const buildDefaultCollapsedMap = (nodes = [], level = 0, map = {}) => {
   return map
 }
 
-const firstFolderPath = (nodes = []) => flattenTreePaths(nodes)[0] || ''
-
 const parentPath = (path) => {
   const normalized = String(path || '').replace(/^\/+|\/+$/g, '')
   if (!normalized) return ''
   const parts = normalized.split('/')
   if (parts.length <= 1) return ''
   return parts.slice(0, -1).join('/')
+}
+
+const pickDefaultFolder = (nodes = []) => {
+  const paths = flattenTreePaths(nodes)
+  if (!paths.length) return ''
+  return paths[0] || ''
 }
 
 const statusColor = (status) => {
@@ -127,8 +150,8 @@ function TreeNode({
           ) : (
             <span className="w-4" />
           )}
-          <span className={`material-symbols-outlined text-sm ${hasChildren ? 'text-primary' : 'text-outline'}`}>
-            {hasChildren ? 'folder' : 'description'}
+          <span className="material-symbols-outlined text-sm text-primary">
+            folder
           </span>
           <span className="truncate">{node.name}</span>
         </span>
@@ -155,10 +178,10 @@ function TreeNode({
 }
 
 export default function MaterialDB({ showToast = () => {} }) {
+  const uploadPickerRef = useRef(null)
   const [tree, setTree] = useState([])
   const [collapsedMap, setCollapsedMap] = useState({})
   const [treeScale, setTreeScale] = useState(100)
-  const [permissions, setPermissions] = useState({ role: 'member' })
   const [filesPayload, setFilesPayload] = useState({ items: [], total: 0, page: 1, pageSize: 20 })
   const [parseStatus, setParseStatus] = useState(null)
   const [selectedFolderPath, setSelectedFolderPath] = useState('')
@@ -175,6 +198,7 @@ export default function MaterialDB({ showToast = () => {} }) {
   const [error, setError] = useState('')
 
   const [showUploadModal, setShowUploadModal] = useState(false)
+  const [uploadKind, setUploadKind] = useState(() => readStoredUploadKind())
   const [uploadMode, setUploadMode] = useState('path')
   const [uploadPath, setUploadPath] = useState('')
   const [uploadProjectId, setUploadProjectId] = useState('')
@@ -185,10 +209,7 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   const [conflictContext, setConflictContext] = useState(null)
 
-  const isAdmin = permissions?.role === 'admin'
-  const currentFolderAdminOnly = selectedFolderPath.startsWith('标准模板')
-    || selectedFolderPath.includes('/通用材料')
-  const canManageCurrentFolder = isAdmin || !currentFolderAdminOnly
+  const canManageCurrentFolder = Boolean(selectedFolderPath)
   const canCreateFolder = Boolean(selectedFolderPath) && canManageCurrentFolder
   const canDeleteFolder = Boolean(selectedFolderPath && selectedFolderPath.includes('/')) && canManageCurrentFolder
 
@@ -201,14 +222,9 @@ export default function MaterialDB({ showToast = () => {} }) {
     else setLoading(true)
     setError('')
     try {
-      const [treeResponse, permissionResponse] = await Promise.all([
-        materialsAPI.raw.tree(),
-        materialsAPI.raw.permissions(),
-      ])
-
+      const treeResponse = await materialsAPI.raw.tree()
       const normalizedTree = normalizeTreeNodes(treeResponse?.tree || treeResponse?.items || treeResponse?.nodes || [])
       setTree(normalizedTree)
-      setPermissions(permissionResponse || { role: 'member' })
       setCollapsedMap((prev) => {
         const validPathSet = new Set(flattenTreePaths(normalizedTree))
         const next = Object.fromEntries(
@@ -218,8 +234,11 @@ export default function MaterialDB({ showToast = () => {} }) {
         return buildDefaultCollapsedMap(normalizedTree)
       })
 
-      const effectiveFolder = selectedFolderPath || firstFolderPath(normalizedTree)
-      if (!selectedFolderPath && effectiveFolder) {
+      const validPaths = new Set(flattenTreePaths(normalizedTree))
+      const effectiveFolder = validPaths.has(selectedFolderPath)
+        ? selectedFolderPath
+        : pickDefaultFolder(normalizedTree)
+      if (selectedFolderPath !== effectiveFolder) {
         setSelectedFolderPath(effectiveFolder)
       }
 
@@ -259,6 +278,10 @@ export default function MaterialDB({ showToast = () => {} }) {
     return () => clearTimeout(timer)
   }, [loadLibrary])
 
+  useEffect(() => {
+    persistUploadKind(uploadKind)
+  }, [uploadKind])
+
   const setCollapseForAll = (collapsed) => {
     const paths = collectCollapsiblePaths(tree)
     const map = {}
@@ -279,6 +302,7 @@ export default function MaterialDB({ showToast = () => {} }) {
   const openUploadModal = (options = {}) => {
     const mode = options.mode || 'path'
     setShowUploadModal(true)
+    setUploadKind(options.kind || 'files')
     setUploadMode(mode)
     setUploadPath(options.targetPath || selectedFolderPath)
     setUploadProjectId(options.projectId || filters.projectId.trim())
@@ -291,18 +315,17 @@ export default function MaterialDB({ showToast = () => {} }) {
     setShowUploadModal(false)
     setUploadFiles([])
     setUploadError('')
+    if (uploadPickerRef.current) {
+      uploadPickerRef.current.value = ''
+    }
   }
 
   const onUploadFilesChanged = (event) => {
     const files = Array.from(event.target.files || [])
     if (!files.length) return
-    if (files.length > MAX_BATCH_FILES) {
-      setUploadError(`单次最多上传 ${MAX_BATCH_FILES} 个文件。`)
-      return
-    }
     for (const file of files) {
       if (Number(file.size || 0) > MAX_FILE_SIZE) {
-        setUploadError(`文件 ${file.name} 超过 500MB 上限。`)
+        setUploadError(`文件 ${file.name} 超过 1024MB 上限。`)
         return
       }
       if (!ALLOWED_EXTENSIONS.has(extOf(file.name))) {
@@ -311,7 +334,25 @@ export default function MaterialDB({ showToast = () => {} }) {
       }
     }
     setUploadError('')
-    setUploadFiles(files)
+    setUploadFiles((prev) => {
+      const next = [...prev]
+      const signatures = new Set(
+        prev.map((file) => `${file.webkitRelativePath || file.name}::${file.size}::${file.lastModified}`)
+      )
+      files.forEach((file) => {
+        const signature = `${file.webkitRelativePath || file.name}::${file.size}::${file.lastModified}`
+        if (!signatures.has(signature)) {
+          signatures.add(signature)
+          next.push(file)
+        }
+      })
+      return next
+    })
+    event.target.value = ''
+  }
+
+  const openUploadPicker = () => {
+    uploadPickerRef.current?.click()
   }
 
   const performUpload = async (onConflict) => {
@@ -320,26 +361,31 @@ export default function MaterialDB({ showToast = () => {} }) {
       return
     }
 
-    const payload = {
-      targetPath: uploadMode === 'path' ? uploadPath.trim() : '',
-      projectId: uploadMode === 'project' ? uploadProjectId.trim() : '',
-      bidType: uploadBidType,
-      onConflict: onConflict || undefined,
-      files: uploadFiles.map((file) => ({
-        name: file.name,
-        size: Number(file.size || 0),
-        type: file.type || '',
-      })),
-    }
-
-    if (!payload.targetPath && !payload.projectId) {
-      setUploadError('请填写目标目录或项目 ID。')
-      return
-    }
-
     setUploading(true)
     setUploadError('')
+
+    const payload = new FormData()
     try {
+      const targetPath = uploadMode === 'path' ? uploadPath.trim() : ''
+      const projectId = uploadMode === 'project' ? uploadProjectId.trim() : ''
+
+      if (!targetPath && !projectId) {
+        setUploadError('请填写目标目录或项目 ID。')
+        setUploading(false)
+        return
+      }
+
+      payload.append('targetPath', targetPath)
+      payload.append('projectId', projectId)
+      payload.append('bidType', uploadBidType)
+      if (onConflict) {
+        payload.append('onConflict', onConflict)
+      }
+      uploadFiles.forEach((file) => {
+        payload.append('files', file, file.name)
+        payload.append('relativePaths', file.webkitRelativePath || '')
+      })
+
       const result = await materialsAPI.raw.upload(payload)
       showToast(result?.message || `上传成功：${uploadFiles.length} 个文件`)
       setConflictContext(null)
@@ -347,7 +393,7 @@ export default function MaterialDB({ showToast = () => {} }) {
       await loadLibrary({ silent: true })
     } catch (e) {
       if (e?.status === 409 && e?.code === 'MATERIAL_CONFLICT') {
-        setConflictContext({ type: 'upload', payload, detail: e?.payload?.conflict || null })
+        setConflictContext({ type: 'upload', payload: null, detail: e?.payload?.conflict || null })
       } else {
         setUploadError(safeMessage(e, '上传失败，请稍后重试。'))
       }
@@ -358,7 +404,7 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   const handleCreateFolder = async () => {
     if (!canCreateFolder) {
-      showToast('当前目录不支持新建文件夹。', 'error')
+      showToast('请先选择一个目标目录。', 'error')
       return
     }
     const folderName = window.prompt('请输入新建文件夹名称')
@@ -379,7 +425,7 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   const handleDeleteFolder = async () => {
     if (!canDeleteFolder) {
-      showToast('当前目录不支持删除。', 'error')
+      showToast('当前目录暂不支持删除。', 'error')
       return
     }
     const ok = window.confirm(`确认删除文件夹：${selectedFolderPath} ？`)
@@ -396,7 +442,7 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   const handleRename = async (item) => {
     if (!canManageCurrentFolder) {
-      showToast('当前目录仅管理员可操作。', 'error')
+      showToast('请先选择一个目标目录。', 'error')
       return
     }
     const nextName = window.prompt('请输入新文件名', item.name || '')
@@ -427,7 +473,7 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   const handleMove = async (item) => {
     if (!canManageCurrentFolder) {
-      showToast('当前目录仅管理员可操作。', 'error')
+      showToast('请先选择一个目标目录。', 'error')
       return
     }
     const targetPath = window.prompt('请输入目标目录路径', item.folderPath || selectedFolderPath)
@@ -437,7 +483,7 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   const handleDelete = async (item) => {
     if (!canManageCurrentFolder) {
-      showToast('当前目录仅管理员可操作。', 'error')
+      showToast('请先选择一个目标目录。', 'error')
       return
     }
     if (!window.confirm(`确认删除文件：${item.name}？`)) return
@@ -509,7 +555,7 @@ export default function MaterialDB({ showToast = () => {} }) {
         <div>
           <h1 className="text-3xl font-headline font-bold text-primary">原始材料库</h1>
           <p className="text-sm text-on-surface-variant mt-1">
-            目录结构：标准模板 / 客户定制 / 项目定制。支持目录折叠、缩放、新建/删除文件夹及目录内上传。
+            目录结构：标准模板 / 客户定制 / 项目定制。所有登录用户均可编辑目录内文件并上传补充材料。
           </p>
           {(refreshing || error) && (
             <p className={`text-xs mt-1 ${error ? 'text-error' : 'text-outline'}`}>
@@ -529,7 +575,7 @@ export default function MaterialDB({ showToast = () => {} }) {
             onClick={() => openUploadModal({ mode: 'path' })}
             disabled={!canManageCurrentFolder}
             className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title={canManageCurrentFolder ? '' : '当前目录仅管理员可上传'}
+            title={canManageCurrentFolder ? '' : '请先在左侧选择一个目录'}
           >
             上传文件
           </button>
@@ -652,7 +698,7 @@ export default function MaterialDB({ showToast = () => {} }) {
             </div>
             <div className="mt-3 text-xs text-outline flex flex-wrap justify-between gap-2">
               <span>当前目录：{selectedFolderPath || '-'}</span>
-              <span>权限：{isAdmin ? '管理员' : '普通成员'} {canManageCurrentFolder ? '' : '（当前目录只读）'}</span>
+              <span>权限：所有登录用户可编辑</span>
             </div>
           </div>
 
@@ -663,7 +709,9 @@ export default function MaterialDB({ showToast = () => {} }) {
                   title="当前目录暂无文件"
                   description="可上传文件、调整筛选，或在目录树中新建文件夹。"
                   actionText="立即上传"
-                  onAction={() => openUploadModal({ mode: 'path' })}
+                  onAction={() => {
+                    openUploadModal({ mode: 'path' })
+                  }}
                 />
               </div>
             ) : (
@@ -793,22 +841,87 @@ export default function MaterialDB({ showToast = () => {} }) {
                 </label>
               )}
 
-              <label className="text-sm text-on-surface-variant block">
-                <span className="block mb-1">选择文件</span>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label className="text-sm text-on-surface-variant">
+                  <span className="block mb-1">上传内容</span>
+                  <select
+                    value={uploadKind}
+                    onChange={(e) => {
+                      setUploadKind(e.target.value)
+                      setUploadFiles([])
+                      setUploadError('')
+                    }}
+                    className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
+                  >
+                    <option value="files">文件</option>
+                    <option value="folder">文件夹</option>
+                  </select>
+                </label>
+              </div>
+
+              <input
+                ref={uploadPickerRef}
+                type="file"
+                multiple
+                accept={FILE_ACCEPT}
+                onChange={onUploadFilesChanged}
+                {...(uploadKind === 'folder' ? { webkitdirectory: '', directory: '' } : {})}
+                className="hidden"
+              />
+
+              <div className="space-y-2">
+                <div className="text-sm text-on-surface-variant">
+                  {uploadKind === 'folder' ? '选择文件夹' : '选择文件'}
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={openUploadPicker}
+                    className="px-4 py-2 text-sm rounded-lg bg-surface-container-high text-on-surface hover:bg-surface-dim"
+                  >
+                    {uploadFiles.length
+                      ? uploadKind === 'folder' ? '继续添加文件夹' : '继续添加文件'
+                      : uploadKind === 'folder' ? '选择文件夹' : '选择文件'}
+                  </button>
+                  {!!uploadFiles.length && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUploadFiles([])
+                        setUploadError('')
+                        if (uploadPickerRef.current) {
+                          uploadPickerRef.current.value = ''
+                        }
+                      }}
+                      className="px-4 py-2 text-sm rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim"
+                    >
+                      清空已选
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="text-xs text-outline">
+                {uploadKind === 'folder'
+                  ? '浏览器原生一次通常只能选择一个文件夹，但你可以连续点击“继续添加文件夹”，同一次上传会合并这些目录。'
+                  : '支持一次选择多个文件。'}
+              </div>
+
+              <div className="text-sm text-on-surface-variant block">
+                <span className="block mb-1">当前选择</span>
                 <input
-                  type="file"
-                  multiple
-                  accept={FILE_ACCEPT}
-                  onChange={onUploadFilesChanged}
+                  type="text"
+                  readOnly
+                  value={uploadFiles.length ? `已选择 ${uploadFiles.length} 个项目` : '未选择任何文件'}
                   className="w-full h-10 px-3 py-2 rounded-lg bg-surface-container-highest border-none text-sm"
                 />
-              </label>
+              </div>
 
               {!!uploadFiles.length && (
                 <div className="rounded-lg bg-surface-container-low p-3 text-xs text-on-surface-variant">
                   {uploadFiles.map((item) => (
                     <div key={`${item.name}-${item.size}`} className="flex items-center justify-between py-1">
-                      <span className="truncate mr-2">{item.name}</span>
+                      <span className="truncate mr-2">{item.webkitRelativePath || item.name}</span>
                       <span>{toSizeLabel(item.size)}</span>
                     </div>
                   ))}
@@ -816,7 +929,7 @@ export default function MaterialDB({ showToast = () => {} }) {
               )}
 
               <p className="text-xs text-outline">
-                白名单：doc/docx/xls/xlsx/pdf/zip/png/jpg/jpeg/webp/bmp/tif/tiff；单文件 500MB；单次最多 5 个。
+                白名单：doc/docx/xls/xlsx/pdf/zip/png/jpg/jpeg/webp/bmp/tif/tiff；单文件 1024MB；支持一次选择多个文件，或选择整个文件夹并保留目录结构。
               </p>
 
               {uploadError && (
