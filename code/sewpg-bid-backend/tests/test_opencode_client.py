@@ -49,4 +49,4 @@ class OpencodeClientTests(unittest.TestCase):
                 client._extract_outline_json(response)
 
         repair.assert_called_once()
-        self.assertIn("opencode JSON 解析失败", str(context.exception))
+        self.assertIn("futurecode JSON 解析失败", str(context.exception))

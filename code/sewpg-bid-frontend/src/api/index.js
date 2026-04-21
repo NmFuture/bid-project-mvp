@@ -18,6 +18,26 @@ const joinUrl = (base, path) => {
   return `${base || ''}${path}`
 }
 
+const createEventStream = (path, handlers = {}) => {
+  const source = new EventSource(joinUrl(ENV.API_BASE_URL, path))
+  const onState = handlers.onState
+  const onError = handlers.onError
+
+  source.onmessage = (event) => {
+    if (!onState) return
+    try {
+      onState(JSON.parse(event.data))
+    } catch (error) {
+      onError?.(error)
+    }
+  }
+  source.onerror = (error) => {
+    onError?.(error)
+  }
+
+  return source
+}
+
 const createTraceId = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()
@@ -229,6 +249,8 @@ export const directoryAPI = {
       timeoutMs: 5 * 60 * 1000,
       retryCount: 0,
     }),
+  stream: (projectId, handlers = {}) =>
+    createEventStream(`/projects/${projectId}/directory-generation/stream`, handlers),
 }
 
 // ===== S3 Outline =====

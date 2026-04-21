@@ -181,7 +181,11 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         captured: dict[str, str] = {}
 
-        def fake_generate_outline(prompt: str, session_ready_callback=None) -> dict[str, object]:
+        def fake_generate_outline(
+            prompt: str,
+            session_ready_callback=None,
+            stream_callback=None,
+        ) -> dict[str, object]:
             captured["prompt"] = prompt
             if session_ready_callback:
                 session_ready_callback(
@@ -189,6 +193,17 @@ class DirectoryGenerationTests(unittest.TestCase):
                         "sessionId": "ses-template",
                         "providerId": "opencode",
                         "modelId": "big-pickle",
+                    }
+                )
+            if stream_callback:
+                stream_callback(
+                    {
+                        "status": "streaming",
+                        "sessionId": "ses-template",
+                        "providerId": "opencode",
+                        "modelId": "big-pickle",
+                        "receivedAt": "2026-04-20T00:00:00Z",
+                        "parts": [{"type": "reasoning", "text": "优先沿用模板章节。"}],
                     }
                 )
             return {
@@ -256,6 +271,45 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertTrue(any(event["level"] == "warning" for event in payload["events"]))
         self.assertTrue(any("opencode 返回的 JSON 无法解析" in str(part.get("text", "")) for part in payload["opencodeOutput"]["parts"]))
 
+    def test_opencode_delta_updates_streaming_parts_before_completion(self) -> None:
+        from app.api.routes.directory import _handle_directory_progress
+
+        project_id = self._prepare_project_with_parse_result()
+        store.start_directory_generation(project_id)
+
+        _handle_directory_progress(
+            project_id,
+            "calling_opencode",
+            {
+                "sessionId": "ses-streaming",
+                "providerId": "opencode",
+                "modelId": "big-pickle",
+            },
+        )
+        _handle_directory_progress(
+            project_id,
+            "opencode_delta",
+            {
+                "status": "streaming",
+                "sessionId": "ses-streaming",
+                "providerId": "opencode",
+                "modelId": "big-pickle",
+                "receivedAt": "2026-04-21T00:00:00Z",
+                "parts": [
+                    {"type": "step-start", "text": ""},
+                    {"type": "reasoning", "text": "先整理目录骨架。"},
+                ],
+            },
+        )
+
+        state = store.get_directory_state(project_id)
+        self.assertEqual(state["status"], "running")
+        self.assertEqual(state["opencodeOutput"]["status"], "streaming")
+        self.assertEqual(state["opencodeOutput"]["sessionId"], "ses-streaming")
+        self.assertEqual(state["opencodeOutput"]["parts"][1]["type"], "reasoning")
+        self.assertEqual(state["events"][-1]["step"], "opencode_streaming")
+        self.assertIn("原始片段", state["events"][-1]["message"])
+
     def test_background_job_updates_running_state_then_completes(self) -> None:
         from app.api.routes.directory import _handle_directory_progress, _run_directory_generation_job
 
@@ -319,6 +373,22 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertEqual(completed_state["events"][-1]["level"], "success")
         self.assertEqual(completed_state["opencodeOutput"]["status"], "received")
         self.assertEqual(completed_state["opencodeOutput"]["parts"][1]["type"], "text")
+
+    def test_directory_generation_stream_returns_event_stream_payload(self) -> None:
+        project_id = self._prepare_project_with_parse_result()
+        store.complete_directory_generation(project_id, {})
+
+        with self.client.stream(
+            "GET",
+            f"/api/projects/{project_id}/directory-generation/stream",
+        ) as response:
+            chunks = response.iter_text()
+            first_chunk = next(chunks)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"].split(";")[0], "text/event-stream")
+        self.assertIn('"status": "completed"', first_chunk)
+        self.assertIn('"summary": "目录生成完成。"', first_chunk)
 
 
 if __name__ == "__main__":

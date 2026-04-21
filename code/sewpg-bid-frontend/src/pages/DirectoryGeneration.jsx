@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { directoryAPI, stagesAPI } from '../api'
 import { PageLoading, PageError } from '../components/states/PageState'
 import PageHeader from '../components/shared/PageHeader'
 import DataCard from '../components/shared/DataCard'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
+import { brandFutureCode, brandFutureCodeOrFallback } from '../utils/branding'
 
 const formatDateTime = (value) => {
   if (!value) return '未生成'
@@ -42,12 +43,12 @@ const formatOpencodePartText = (part) => {
   }
   if (part?.type === 'text') {
     try {
-      return JSON.stringify(JSON.parse(rawText), null, 2)
+      return brandFutureCode(JSON.stringify(JSON.parse(rawText), null, 2))
     } catch {
-      return rawText
+      return brandFutureCode(rawText)
     }
   }
-  return rawText
+  return brandFutureCode(rawText)
 }
 
 export default function DirectoryGeneration({ showToast }) {
@@ -58,6 +59,16 @@ export default function DirectoryGeneration({ showToast }) {
   const [error, setError] = useState('')
   const [generating, setGenerating] = useState(false)
   const [advancing, setAdvancing] = useState(false)
+  const [usePollingFallback, setUsePollingFallback] = useState(false)
+  const eventSourceRef = useRef(null)
+  const opencodeConsoleRef = useRef(null)
+
+  const closeEventStream = useCallback(() => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close()
+      eventSourceRef.current = null
+    }
+  }, [])
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
     if (!silent) {
@@ -91,22 +102,79 @@ export default function DirectoryGeneration({ showToast }) {
   const opencodeOutput = data?.opencodeOutput || {}
   const opencodeParts = Array.isArray(opencodeOutput?.parts) ? opencodeOutput.parts : []
   const opencodeStatus = opencodeOutput?.status || 'idle'
+  const opencodeConsoleSignature = opencodeParts
+    .map((part) => `${part?.type || 'part'}:${String(part?.text || '')}`)
+    .join('||')
 
   useEffect(() => {
-    if (!isRunning) return undefined
+    if (!isRunning) {
+      closeEventStream()
+      setUsePollingFallback(false)
+      return undefined
+    }
 
+    if (typeof window === 'undefined' || typeof window.EventSource !== 'function') {
+      setUsePollingFallback(true)
+      return undefined
+    }
+
+    setUsePollingFallback(false)
+    let closed = false
+    const source = directoryAPI.stream(id, {
+      onState: (payload) => {
+        if (closed) return
+        setData(payload)
+        if (payload?.status && payload.status !== 'running') {
+          closed = true
+          source.close()
+          if (eventSourceRef.current === source) {
+            eventSourceRef.current = null
+          }
+          setUsePollingFallback(false)
+        }
+      },
+      onError: () => {
+        if (closed) return
+        closed = true
+        source.close()
+        if (eventSourceRef.current === source) {
+          eventSourceRef.current = null
+        }
+        setUsePollingFallback(true)
+      },
+    })
+    eventSourceRef.current = source
+
+    return () => {
+      closed = true
+      if (eventSourceRef.current === source) {
+        eventSourceRef.current = null
+      }
+      source.close()
+    }
+  }, [closeEventStream, id, isRunning])
+
+  useEffect(() => {
+    if (!isRunning || !usePollingFallback) return undefined
     const timer = window.setInterval(() => {
       loadData({ silent: true })
     }, 1000)
 
     return () => window.clearInterval(timer)
-  }, [isRunning, loadData])
+  }, [isRunning, loadData, usePollingFallback])
+
+  useEffect(() => {
+    const element = opencodeConsoleRef.current
+    if (!element) return
+    element.scrollTop = element.scrollHeight
+  }, [opencodeConsoleSignature, opencodeStatus, latestEvent?.at])
 
   const handleGenerateDirectory = async () => {
     if (generating || isRunning) return
     setGenerating(true)
     try {
       const response = await directoryAPI.run(id)
+      setUsePollingFallback(false)
       setData(response)
       showToast?.(response?.message || '已开始生成目录，请稍候。')
     } catch (e) {
@@ -157,15 +225,10 @@ export default function DirectoryGeneration({ showToast }) {
     failed: 'bg-error/15 text-error',
   }
 
-  const eventLevelClassMap = {
-    info: 'bg-primary/15 text-primary border-primary/20',
-    success: 'bg-secondary-container text-on-secondary-container border-secondary/20',
-    error: 'bg-error/10 text-error border-error/20',
-  }
-
   const opencodeStatusLabelMap = {
     idle: '未开始',
     waiting: '等待返回',
+    streaming: '流式输出中',
     received: '已返回',
     failed: '调用失败',
   }
@@ -177,82 +240,153 @@ export default function DirectoryGeneration({ showToast }) {
     'step-finish': 'Step Finish',
   }
 
-  const opencodePartClassMap = {
-    reasoning: 'border-amber-200 bg-amber-50 text-amber-950',
-    text: 'border-primary/20 bg-primary/5 text-on-surface',
-    'step-start': 'border-surface-container-high bg-surface-container-low text-on-surface-variant',
-    'step-finish': 'border-surface-container-high bg-surface-container-low text-on-surface-variant',
+  const opencodePartToneMap = {
+    reasoning: {
+      dot: 'bg-amber-500',
+      label: 'text-amber-700',
+      body: 'text-amber-950',
+    },
+    text: {
+      dot: 'bg-emerald-500',
+      label: 'text-emerald-700',
+      body: 'text-slate-800',
+    },
+    'step-start': {
+      dot: 'bg-sky-500',
+      label: 'text-sky-700',
+      body: 'text-sky-900',
+    },
+    'step-finish': {
+      dot: 'bg-fuchsia-500',
+      label: 'text-fuchsia-700',
+      body: 'text-fuchsia-900',
+    },
   }
 
   const renderOpencodeOutputCard = () => (
-    <div className="rounded-lg border border-surface-container-high bg-surface-container-low p-4">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <div>
-          <h3 className="text-sm font-semibold text-on-surface">opencode 输出</h3>
-          <p className="text-xs text-on-surface-variant mt-1">
-            这里直接显示 opencode 返回的原始片段；如果还没返回，会明确提示当前在等待。
-          </p>
+    <div className="rounded-xl border border-[#d7e0ea] bg-[#f8fbff] shadow-[0_20px_60px_rgba(148,163,184,0.18)] overflow-hidden">
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-[#d7e0ea] bg-white/95">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="h-2.5 w-2.5 rounded-full bg-rose-400/90" />
+            <span className="h-2.5 w-2.5 rounded-full bg-amber-300/90" />
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/90" />
+          </div>
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-slate-900">futurecode Live Output</h3>
+            <p className="text-xs text-slate-500 mt-1">
+              持续显示 futurecode 返回内容和原始片段。
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className={`text-[11px] px-2 py-1 rounded-full border ${eventLevelClassMap[opencodeStatus === 'failed' ? 'error' : opencodeStatus === 'received' ? 'success' : 'info']}`}>
+          <span className={`text-[11px] px-2 py-1 rounded-full border ${
+            opencodeStatus === 'failed'
+              ? 'border-rose-300 bg-rose-50 text-rose-700'
+              : opencodeStatus === 'received'
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                : 'border-sky-300 bg-sky-50 text-sky-700'
+          }`}>
             {opencodeStatusLabelMap[opencodeStatus] || '未开始'}
           </span>
           {isRunning && latestEvent ? (
-            <span className="text-xs text-outline whitespace-nowrap">
+            <span className="text-xs text-slate-500 whitespace-nowrap">
               已停留 {formatElapsedSince(latestEvent.at)}
             </span>
           ) : null}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
-        <div className="rounded-lg bg-surface-container-lowest px-3 py-2">
-          <div className="text-[11px] text-outline mb-1">Provider</div>
-          <div className="text-sm text-on-surface break-all">{opencodeOutput?.providerId || '-'}</div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 px-4 py-3 border-b border-[#d7e0ea] bg-[#f1f6fb]">
+        <div className="rounded-lg bg-white border border-[#d7e0ea] px-3 py-2">
+          <div className="text-[11px] text-slate-500 mb-1">Provider</div>
+          <div className="text-sm text-slate-900 break-all">{brandFutureCodeOrFallback(opencodeOutput?.providerId)}</div>
         </div>
-        <div className="rounded-lg bg-surface-container-lowest px-3 py-2">
-          <div className="text-[11px] text-outline mb-1">Model</div>
-          <div className="text-sm text-on-surface break-all">{opencodeOutput?.modelId || '-'}</div>
+        <div className="rounded-lg bg-white border border-[#d7e0ea] px-3 py-2">
+          <div className="text-[11px] text-slate-500 mb-1">Model</div>
+          <div className="text-sm text-slate-900 break-all">{opencodeOutput?.modelId || '-'}</div>
         </div>
-        <div className="rounded-lg bg-surface-container-lowest px-3 py-2">
-          <div className="text-[11px] text-outline mb-1">Session</div>
-          <div className="text-sm text-on-surface break-all">{opencodeOutput?.sessionId || '-'}</div>
+        <div className="rounded-lg bg-white border border-[#d7e0ea] px-3 py-2">
+          <div className="text-[11px] text-slate-500 mb-1">Session</div>
+          <div className="text-sm text-slate-900 break-all">{opencodeOutput?.sessionId || '-'}</div>
         </div>
       </div>
 
-      {opencodeStatus === 'waiting' && !opencodeParts.length ? (
-        <div className="rounded-lg border border-dashed border-primary/20 bg-primary/5 px-3 py-4 text-sm text-on-surface">
-          <div className="font-medium">会话已创建，正在等待 opencode 返回原始片段。</div>
-          <div className="mt-2 text-on-surface-variant">
-            {latestEvent?.message || '当前还没有收到 reasoning/text 片段，请稍候。'}
+      <div
+        ref={opencodeConsoleRef}
+        className="max-h-[460px] overflow-y-auto px-4 py-4 font-mono text-xs leading-6 bg-[linear-gradient(180deg,#ffffff_0%,#f8fbff_100%)]"
+      >
+        {opencodeStatus === 'waiting' && !opencodeParts.length ? (
+          <div className="text-slate-700">
+            <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-sky-700">
+              <span className="h-1.5 w-1.5 rounded-full bg-sky-500" />
+              <span>system</span>
+              <span className="text-slate-400">{latestEvent?.at ? formatEventTime(latestEvent.at) : '--:--:--'}</span>
+            </div>
+            <pre className="whitespace-pre-wrap break-words text-slate-700">
+              {brandFutureCode(latestEvent?.message) || '会话已创建，正在等待 futurecode 返回原始片段。'}
+            </pre>
           </div>
-        </div>
-      ) : !opencodeParts.length ? (
-        <div className="rounded-lg border border-dashed border-surface-container-high px-3 py-4 text-sm text-on-surface-variant">
-          暂无 opencode 原始输出。
-        </div>
-      ) : (
-        <div className="flex flex-col gap-3 max-h-[360px] overflow-y-auto pr-1">
+        ) : opencodeStatus === 'streaming' && !opencodeParts.length ? (
+          <div className="text-slate-700">
+            <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-sky-700">
+              <span className="h-1.5 w-1.5 rounded-full bg-sky-500" />
+              <span>system</span>
+              <span className="text-slate-400">{latestEvent?.at ? formatEventTime(latestEvent.at) : '--:--:--'}</span>
+            </div>
+            <pre className="whitespace-pre-wrap break-words text-slate-700">
+              futurecode 已进入流式阶段，正在等待首个可展示片段。
+            </pre>
+          </div>
+        ) : !opencodeParts.length ? (
+          <div className="text-slate-700">
+            <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-slate-500">
+              <span className="h-1.5 w-1.5 rounded-full bg-slate-500" />
+              <span>system</span>
+            </div>
+            <pre className="whitespace-pre-wrap break-words text-slate-500">
+              暂无 futurecode 原始输出。
+            </pre>
+          </div>
+        ) : (
+          <div className="space-y-5">
           {opencodeParts.map((part, index) => (
             <div
               key={`${part.type || 'part'}-${index}`}
-              className={`rounded-lg border p-3 ${opencodePartClassMap[part.type] || opencodePartClassMap.text}`}
+              className="last:pb-0"
             >
-              <div className="flex items-center justify-between gap-3 mb-2">
-                <span className="text-xs font-semibold uppercase tracking-wide">
+              <div className={`mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] ${
+                opencodePartToneMap[part.type]?.label || 'text-slate-400'
+              }`}>
+                <span className={`h-1.5 w-1.5 rounded-full ${opencodePartToneMap[part.type]?.dot || 'bg-slate-500'}`} />
+                <span className="font-semibold">
                   {opencodePartLabelMap[part.type] || part.type || 'Part'}
                 </span>
-                <span className="text-[11px] opacity-70">
+                <span className="text-slate-400">
                   {opencodeOutput?.receivedAt ? formatEventTime(opencodeOutput.receivedAt) : '--:--:--'}
                 </span>
               </div>
-              <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed font-mono">
+              <pre className={`whitespace-pre-wrap break-words ${
+                opencodePartToneMap[part.type]?.body || 'text-slate-100'
+              }`}>
                 {formatOpencodePartText(part)}
               </pre>
             </div>
           ))}
-        </div>
-      )}
+          </div>
+        )}
+
+        {isRunning ? (
+          <div className="mt-5 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-emerald-700">
+            <span className="inline-block w-2 animate-pulse">▍</span>
+            <span>
+              {opencodeStatus === 'waiting'
+                ? '等待 futurecode 返回更多内容'
+                : 'futurecode 持续输出中'}
+            </span>
+          </div>
+        ) : null}
+      </div>
     </div>
   )
 
@@ -306,7 +440,7 @@ export default function DirectoryGeneration({ showToast }) {
           <div className="flex items-center justify-between gap-4 mb-4">
             <div>
               <h2 className="text-lg font-headline font-bold text-on-surface">目录生成状态</h2>
-              <p className="text-sm text-on-surface-variant mt-1">{data?.summary || '等待生成目录。'}</p>
+              <p className="text-sm text-on-surface-variant mt-1">{brandFutureCode(data?.summary) || '等待生成目录。'}</p>
             </div>
             <span className={`text-xs font-semibold px-3 py-1 rounded-full ${
               isCompleted
@@ -330,16 +464,17 @@ export default function DirectoryGeneration({ showToast }) {
         </div>
 
         {isRunning ? (
-          <div className="px-6 py-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="px-6 py-6 flex flex-col gap-6">
             <div className="rounded-lg border border-surface-container-high bg-surface-container-low p-4">
               <h3 className="text-sm font-semibold text-on-surface mb-3">当前执行状态</h3>
               <div className="flex flex-col gap-3 text-sm">
                 <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-3 text-on-surface">
-                  {data?.summary || '正在调用目录生成任务，请稍候。'}
+                  {brandFutureCode(data?.summary) || '正在调用目录生成任务，请稍候。'}
                 </div>
                 <div className="text-on-surface-variant">
-                  页面会自动刷新进度，不需要手动反复点击。
-                  {latestEvent ? ` 如果长时间停留在“${latestEvent.message}”，通常说明当前步骤还没返回。` : ''}
+                  页面会实时接收流式进度，不需要手动反复点击。
+                  {latestEvent ? ` 如果长时间停留在“${brandFutureCode(latestEvent.message)}”，通常说明当前步骤还没返回。` : ''}
+                  {usePollingFallback ? ' 当前流式连接不可用，已自动切回轮询补偿。' : ''}
                 </div>
                 <div className="flex flex-col gap-2 pt-1">
                   <h4 className="text-sm font-semibold text-on-surface">处理任务</h4>
@@ -377,7 +512,7 @@ export default function DirectoryGeneration({ showToast }) {
             </h4>
             <p className="text-sm text-on-surface-variant max-w-xl leading-relaxed">
               {isFailed
-                ? (data?.summary || '本次目录生成没有成功，你可以直接重新触发。')
+                ? (brandFutureCode(data?.summary) || '本次目录生成没有成功，你可以直接重新触发。')
                 : '点击“生成目录”后，将调用后端目录生成接口，返回 `docx` 目录结果并展示给前端。'}
             </p>
             <button
@@ -389,7 +524,7 @@ export default function DirectoryGeneration({ showToast }) {
             </button>
           </div>
         ) : (
-          <div className="px-6 py-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="px-6 py-6 flex flex-col gap-6">
             <div className="rounded-lg border border-surface-container-high bg-surface-container-low p-4">
               <h3 className="text-sm font-semibold text-on-surface mb-3">目录生成结果（docx）</h3>
               <div className="flex flex-col gap-2 text-sm">
