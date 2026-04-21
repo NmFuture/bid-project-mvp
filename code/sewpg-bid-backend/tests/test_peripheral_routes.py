@@ -62,16 +62,17 @@ class PeripheralRoutesTests(unittest.TestCase):
 
         upload = self.client.post(
             "/api/materials/raw/upload",
-            json={
-                "targetPath": folder_path,
-                "files": [
-                    {
-                        "name": "评分表.docx",
-                        "size": 2048,
-                        "type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    }
-                ],
-            },
+            data={"targetPath": folder_path, "bidType": "技术标"},
+            files=[
+                (
+                    "files",
+                    (
+                        "评分表.docx",
+                        b"fake-docx-content",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
         )
         self.assertEqual(upload.status_code, 200)
         uploaded_item = upload.json()["items"][0]
@@ -81,6 +82,44 @@ class PeripheralRoutesTests(unittest.TestCase):
         self.assertEqual(files.status_code, 200)
         self.assertEqual(files.json()["total"], 1)
         self.assertEqual(files.json()["items"][0]["name"], "评分表.docx")
+
+        file_id = files.json()["items"][0]["id"]
+
+        renamed = self.client.patch(f"/api/materials/raw/{file_id}", json={"name": "评分表-重命名.docx"})
+        self.assertEqual(renamed.status_code, 200)
+        self.assertEqual(renamed.json()["item"]["name"], "评分表-重命名.docx")
+
+        download = self.client.get(f"/api/materials/raw/{file_id}/download")
+        self.assertEqual(download.status_code, 200)
+        self.assertIn("downloadUrl", download.json())
+
+    def test_raw_material_library_supports_folder_upload(self) -> None:
+        create_folder = self.client.post(
+            "/api/materials/raw/folders",
+            json={"parentPath": "标准模板/技术标", "folderName": "目录上传测试"},
+        )
+        self.assertEqual(create_folder.status_code, 200)
+        folder_path = create_folder.json()["folderPath"]
+
+        upload = self.client.post(
+            "/api/materials/raw/upload",
+            data={"targetPath": folder_path, "bidType": "技术标"},
+            files=[
+                (
+                    "files",
+                    (
+                        "评分表.docx",
+                        b"nested-content",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                ),
+                ("relativePaths", (None, "投标资料/附件/评分表.docx")),
+            ],
+        )
+        self.assertEqual(upload.status_code, 200)
+        uploaded_item = upload.json()["items"][0]
+        self.assertEqual(uploaded_item["folderPath"], f"{folder_path}/投标资料/附件")
+        self.assertEqual(uploaded_item["name"], "评分表.docx")
 
     def test_structured_and_wiki_material_routes_return_frontend_ready_payloads(self) -> None:
         structured = self.client.get("/api/materials/structured")

@@ -24,7 +24,7 @@ services:
     container_name: sewpg_bid_fastapi
     environment:
       APP_ENV: production
-      DATABASE_URL: sqlite:////data/sqlite/app.db
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://biduser:bidpass@postgres:5432/bidplatform}
       SQLITE_PATH: /data/sqlite/app.db
       UPLOADS_DIR: /data/uploads
       DOCUMENTS_DIR: /data/documents
@@ -33,18 +33,28 @@ services:
       OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-opencode}
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-big-pickle}
       OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-60}
-      MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-524288000}
+      MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-1073741824}
       ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.docx}
       ONLYOFFICE_INTERNAL_URL: ${ONLYOFFICE_INTERNAL_URL:-http://onlyoffice}
       ONLYOFFICE_BACKEND_BASE_URL: ${ONLYOFFICE_BACKEND_BASE_URL:-http://fastapi:8000}
       ONLYOFFICE_CALLBACK_TOKEN: ${ONLYOFFICE_CALLBACK_TOKEN:-}
       ONLYOFFICE_CALLBACK_ALLOWED_HOSTS: ${ONLYOFFICE_CALLBACK_ALLOWED_HOSTS:-onlyoffice,127.0.0.1,localhost}
       ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS: ${ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS:-onlyoffice,127.0.0.1,localhost}
-      ONLYOFFICE_DOWNLOAD_MAX_BYTES: ${ONLYOFFICE_DOWNLOAD_MAX_BYTES:-524288000}
+      ONLYOFFICE_DOWNLOAD_MAX_BYTES: ${ONLYOFFICE_DOWNLOAD_MAX_BYTES:-1073741824}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET_MATERIALS: ${MINIO_BUCKET_MATERIALS:-bid-materials}
+      MINIO_BUCKET_DOCUMENTS: ${MINIO_BUCKET_DOCUMENTS:-bid-documents}
+      MINIO_BUCKET_TEMPLATES: ${MINIO_BUCKET_TEMPLATES:-bid-templates}
     expose:
       - "8000"
     depends_on:
       onlyoffice:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      minio:
         condition: service_started
     volumes:
       - sqlite_data:/data/sqlite
@@ -115,6 +125,45 @@ services:
       - onlyoffice_db:/var/lib/postgresql
     restart: unless-stopped
 
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: sewpg_bid_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-biduser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bidpass}
+      POSTGRES_DB: ${POSTGRES_DB:-bidplatform}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-biduser} -d ${POSTGRES_DB:-bidplatform}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: sewpg_bid_minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
 volumes:
   sqlite_data:
   uploads:
@@ -126,3 +175,5 @@ volumes:
   onlyoffice_data:
   onlyoffice_lib:
   onlyoffice_db:
+  postgres_data:
+  minio_data:

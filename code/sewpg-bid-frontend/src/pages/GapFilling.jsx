@@ -4,7 +4,7 @@ import { gapsAPI, reviewAPI, stagesAPI } from '../api'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import { PageLoading, PageError } from '../components/states/PageState'
 
-const MAX_FILE_SIZE = 500 * 1024 * 1024
+const MAX_FILE_SIZE = 1024 * 1024 * 1024
 const MAX_BATCH_FILES = 5
 const ALLOWED_EXTENSIONS = new Set([
   'pdf', 'doc', 'docx', 'xls', 'xlsx', 'zip',
@@ -128,7 +128,7 @@ export default function GapFilling({ showToast }) {
 
     for (const file of files) {
       if (Number(file.size || 0) > MAX_FILE_SIZE) {
-        showToast(`文件 ${file.name} 超过 500MB 上限`, 'error')
+        showToast(`文件 ${file.name} 超过 1024MB 上限`, 'error')
         return
       }
       if (!ALLOWED_EXTENSIONS.has(extOf(file.name))) {
@@ -357,7 +357,7 @@ export default function GapFilling({ showToast }) {
               <div>
                 <div className="flex justify-between items-center mb-3">
                   <h3 className="text-sm font-semibold text-on-surface">文件提交</h3>
-                  <span className="text-xs text-outline">单次最多 5 个，单文件 500MB</span>
+                  <span className="text-xs text-outline">单次最多 5 个，单文件 1024MB</span>
                 </div>
                 <div
                   className="border-2 border-dashed border-outline-variant rounded-xl p-10 flex flex-col items-center gap-3 hover:border-primary transition-colors cursor-pointer"

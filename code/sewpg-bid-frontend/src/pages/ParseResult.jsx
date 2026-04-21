@@ -6,7 +6,7 @@ import PageHeader from '../components/shared/PageHeader'
 import DataCard from '../components/shared/DataCard'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 
-const MAX_FILE_SIZE = 500 * 1024 * 1024
+const MAX_FILE_SIZE = 1024 * 1024 * 1024
 const MAX_BATCH_FILES = 5
 const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.zip,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
 const ALLOWED_EXTENSIONS = new Set([
@@ -61,7 +61,7 @@ const validatePickedFiles = (picked = []) => {
 
   for (const file of picked) {
     if (Number(file.size || 0) > MAX_FILE_SIZE) {
-      return `文件 ${file.name} 超过 500MB 上限。`
+      return `文件 ${file.name} 超过 1024MB 上限。`
     }
     const ext = extensionOf(file.name)
     if (!ALLOWED_EXTENSIONS.has(ext)) {
