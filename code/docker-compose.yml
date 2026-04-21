@@ -32,7 +32,7 @@ services:
       OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://opencode:4096}
       OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-opencode}
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-big-pickle}
-      OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-60}
+      OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-600}
       MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-524288000}
       ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.docx}
       ONLYOFFICE_INTERNAL_URL: ${ONLYOFFICE_INTERNAL_URL:-http://onlyoffice}
@@ -44,6 +44,8 @@ services:
     expose:
       - "8000"
     depends_on:
+      opencode:
+        condition: service_healthy
       onlyoffice:
         condition: service_started
     volumes:
