@@ -5,6 +5,7 @@ import { PageError, PageLoading } from '../components/states/PageState'
 import DataCard from '../components/shared/DataCard'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
+import { brandFutureCode, brandFutureCodeOrFallback } from '../utils/branding'
 
 const formatDateTime = (value) => {
   if (!value) return '未完成'
@@ -42,12 +43,12 @@ const formatOpencodePartText = (part) => {
   }
   if (part?.type === 'text') {
     try {
-      return JSON.stringify(JSON.parse(rawText), null, 2)
+      return brandFutureCode(JSON.stringify(JSON.parse(rawText), null, 2))
     } catch {
-      return rawText
+      return brandFutureCode(rawText)
     }
   }
-  return rawText
+  return brandFutureCode(rawText)
 }
 
 export default function GenerateProgress({ showToast }) {
@@ -195,7 +196,7 @@ export default function GenerateProgress({ showToast }) {
     <div className="rounded-lg border border-surface-container-high bg-surface-container-low p-4">
       <div className="flex items-center justify-between gap-3 mb-3">
         <div>
-          <h3 className="text-sm font-semibold text-on-surface">opencode 输出</h3>
+          <h3 className="text-sm font-semibold text-on-surface">futurecode 输出</h3>
           <p className="text-xs text-on-surface-variant mt-1">
             这里直接显示 S7 初稿生成返回的原始片段；如果还没返回，会明确提示当前正在等待。
           </p>
@@ -215,7 +216,7 @@ export default function GenerateProgress({ showToast }) {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
         <div className="rounded-lg bg-surface-container-lowest px-3 py-2">
           <div className="text-[11px] text-outline mb-1">Provider</div>
-          <div className="text-sm text-on-surface break-all">{opencodeOutput?.providerId || '-'}</div>
+          <div className="text-sm text-on-surface break-all">{brandFutureCodeOrFallback(opencodeOutput?.providerId)}</div>
         </div>
         <div className="rounded-lg bg-surface-container-lowest px-3 py-2">
           <div className="text-[11px] text-outline mb-1">Model</div>
@@ -229,14 +230,14 @@ export default function GenerateProgress({ showToast }) {
 
       {opencodeStatus === 'waiting' && !opencodeParts.length ? (
         <div className="rounded-lg border border-dashed border-primary/20 bg-primary/5 px-3 py-4 text-sm text-on-surface">
-          <div className="font-medium">会话已创建，正在等待 opencode 返回章节草稿。</div>
+          <div className="font-medium">会话已创建，正在等待 futurecode 返回章节草稿。</div>
           <div className="mt-2 text-on-surface-variant">
-            {latestEvent?.message || '当前还没有收到 reasoning/text 片段，请稍候。'}
+            {brandFutureCode(latestEvent?.message) || '当前还没有收到 reasoning/text 片段，请稍候。'}
           </div>
         </div>
       ) : !opencodeParts.length ? (
         <div className="rounded-lg border border-dashed border-surface-container-high px-3 py-4 text-sm text-on-surface-variant">
-          暂无 opencode 原始输出。
+          暂无 futurecode 原始输出。
         </div>
       ) : (
         <div className="flex flex-col gap-3 max-h-[360px] overflow-y-auto pr-1">
@@ -269,7 +270,7 @@ export default function GenerateProgress({ showToast }) {
 
       <PageHeader
         title="S7 填充"
-        description="当前版本会异步触发 S7 初稿生成，并持续显示执行进度、任务状态和 opencode 原始输出；完成后即可进入 S8。"
+        description="当前版本会异步触发 S7 初稿生成，并持续显示执行进度、任务状态和 futurecode 原始输出；完成后即可进入 S8。"
         leftExtra={(
           <button
             onClick={() => window.history.back()}
@@ -314,7 +315,7 @@ export default function GenerateProgress({ showToast }) {
             <div>
               <h2 className="text-lg font-headline font-bold text-on-surface">填充执行状态</h2>
               <p className="text-sm text-on-surface-variant mt-1">
-                {data?.summary || '尚未触发填充。'}
+                {brandFutureCode(data?.summary) || '尚未触发填充。'}
               </p>
             </div>
             <span className={`text-xs font-semibold px-3 py-1 rounded-full ${statusClassMap[status] || statusClassMap.idle}`}>
@@ -331,7 +332,7 @@ export default function GenerateProgress({ showToast }) {
             </div>
             <div className="mt-2 flex items-center justify-between text-xs text-outline">
               <span>{progress}%</span>
-              <span>{latestEvent?.message || '等待执行事件...'}</span>
+              <span>{brandFutureCode(latestEvent?.message) || '等待执行事件...'}</span>
             </div>
           </div>
         </div>
@@ -343,7 +344,7 @@ export default function GenerateProgress({ showToast }) {
             </div>
             <h4 className="text-lg font-headline font-bold text-on-surface mb-2">S7 尚未触发</h4>
             <p className="text-sm text-on-surface-variant max-w-xl leading-relaxed">
-              点击“触发填充”后会异步调用后端初稿生成链路，并持续显示当前步骤、执行过程和 opencode 原始输出。
+              点击“触发填充”后会异步调用后端初稿生成链路，并持续显示当前步骤、执行过程和 futurecode 原始输出。
             </p>
             <button
               onClick={handleRunFill}
@@ -395,10 +396,10 @@ export default function GenerateProgress({ showToast }) {
                         className={`rounded-lg border px-3 py-3 ${eventLevelClassMap[event.level] || eventLevelClassMap.info}`}
                       >
                         <div className="flex items-center justify-between gap-3">
-                          <span className="text-xs font-semibold uppercase tracking-wide">{event.step || 'general'}</span>
+                          <span className="text-xs font-semibold uppercase tracking-wide">{brandFutureCode(event.step) || 'general'}</span>
                           <span className="text-[11px] opacity-75">{formatEventTime(event.at)}</span>
                         </div>
-                        <div className="mt-2 text-sm leading-relaxed">{event.message || '-'}</div>
+                        <div className="mt-2 text-sm leading-relaxed">{brandFutureCode(event.message) || '-'}</div>
                       </div>
                     ))}
                   </div>

@@ -28,7 +28,7 @@ def _handle_fill_progress(project_id: str, stage: str, details: dict[str, Any] |
         store.update_fill_generation_state(
             project_id,
             percentage=30,
-            summary=f"已整理初稿输入（一级章节 {section_count} 个，模板线索 {template_hint_count} 条），准备调用 opencode。",
+            summary=f"已整理初稿输入（一级章节 {section_count} 个，模板线索 {template_hint_count} 条），准备调用 futurecode。",
             tasks=_fill_tasks("done", "running", "pending"),
             event_message=f"已完成输入准备：一级章节 {section_count} 个，模板线索 {template_hint_count} 条。",
             event_step="inputs_ready",
@@ -42,9 +42,9 @@ def _handle_fill_progress(project_id: str, stage: str, details: dict[str, Any] |
         store.update_fill_generation_state(
             project_id,
             percentage=60,
-            summary="正在调用 opencode 生成初稿，请稍候。",
+            summary="正在调用 futurecode 生成初稿，请稍候。",
             tasks=_fill_tasks("done", "running", "pending"),
-            event_message="已进入 opencode 初稿生成阶段，正在等待模型返回章节内容。",
+            event_message="已进入 futurecode 初稿生成阶段，正在等待模型返回章节内容。",
             event_step="opencode_waiting",
             opencode_output={
                 "status": "waiting",
@@ -62,9 +62,9 @@ def _handle_fill_progress(project_id: str, stage: str, details: dict[str, Any] |
         store.update_fill_generation_state(
             project_id,
             percentage=85,
-            summary=f"opencode 已返回章节内容，正在写入 {section_count} 个一级章节到 Word 初稿。",
+            summary=f"futurecode 已返回章节内容，正在写入 {section_count} 个一级章节到 Word 初稿。",
             tasks=_fill_tasks("done", "done", "running"),
-            event_message=f"opencode 已返回章节内容，正在写入 {section_count} 个一级章节到 Word 初稿。",
+            event_message=f"futurecode 已返回章节内容，正在写入 {section_count} 个一级章节到 Word 初稿。",
             event_step="assembling",
         )
 
