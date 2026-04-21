@@ -249,7 +249,7 @@ class PeripheralStore:
             },
             {
                 "id": "svc-opencode",
-                "name": "opencode 服务",
+                "name": "futurecode 服务",
                 "status": "online",
                 "uptime": "99.5%",
                 "latency": "138ms",
