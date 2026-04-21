@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import threading
+import time
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.services.outline_generation import generate_outline_for_project_with_progress
 from app.services.store import store
@@ -28,7 +31,7 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         store.update_directory_generation_state(
             project_id,
             percentage=30,
-            summary=f"已提取章节线索（招标 {tender_hint_count} 条，模板 {template_hint_count} 条），准备调用 opencode。",
+            summary=f"已提取章节线索（招标 {tender_hint_count} 条，模板 {template_hint_count} 条），准备调用 futurecode。",
             tasks=_directory_tasks("done", "running", "pending"),
             event_message=f"已完成章节线索提取：招标 {tender_hint_count} 条，模板 {template_hint_count} 条。",
             event_step="hint_ready",
@@ -42,9 +45,9 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         store.update_directory_generation_state(
             project_id,
             percentage=60,
-            summary="正在调用 opencode 生成目录，请稍候。",
+            summary="正在调用 futurecode 生成目录，请稍候。",
             tasks=_directory_tasks("done", "running", "pending"),
-            event_message="已进入 opencode 生成阶段，正在等待模型返回目录结果。",
+            event_message="已进入 futurecode 生成阶段，正在等待模型返回目录结果。",
             event_step="opencode_waiting",
             opencode_output={
                 "status": "waiting",
@@ -57,14 +60,45 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         )
         return
 
+    if stage == "opencode_delta":
+        parts = list(meta.get("parts") or [])
+        current = store.get_directory_state(project_id)
+        previous_parts = list((current.get("opencodeOutput") or {}).get("parts") or [])
+        summary: str | None = None
+        event_message: str | None = None
+
+        if parts and not previous_parts:
+            summary = "futurecode 已开始流式返回目录片段。"
+            event_message = "futurecode 已开始返回原始片段。"
+        elif len(parts) > len(previous_parts):
+            summary = "futurecode 正在流式输出目录内容，请稍候。"
+
+        store.update_directory_generation_state(
+            project_id,
+            percentage=70 if parts else None,
+            summary=summary,
+            tasks=_directory_tasks("done", "running", "pending"),
+            event_message=event_message,
+            event_step="opencode_streaming",
+            opencode_output={
+                "status": str(meta.get("status") or ("streaming" if parts else "waiting")),
+                "sessionId": str(meta.get("sessionId") or ""),
+                "providerId": str(meta.get("providerId") or ""),
+                "modelId": str(meta.get("modelId") or ""),
+                "receivedAt": str(meta.get("receivedAt") or ""),
+                "parts": parts,
+            },
+        )
+        return
+
     if stage == "normalizing_result":
         chapter_count = int(meta.get("chapterCount") or 0)
         store.update_directory_generation_state(
             project_id,
             percentage=85,
-            summary=f"opencode 已返回目录结果，正在整理 {chapter_count} 个章节节点。",
+            summary=f"futurecode 已返回目录结果，正在整理 {chapter_count} 个章节节点。",
             tasks=_directory_tasks("done", "done", "running"),
-            event_message=f"opencode 已返回结果，正在整理 {chapter_count} 个章节节点。",
+            event_message=f"futurecode 已返回结果，正在整理 {chapter_count} 个章节节点。",
             event_step="normalizing",
         )
 
@@ -109,6 +143,43 @@ def _schedule_directory_generation_job(project_id: str, data: dict[str, Any]) ->
 @router.get("/api/projects/{project_id}/directory-generation")
 async def get_directory_generation(project_id: str) -> dict[str, Any]:
     return store.get_directory_state(project_id)
+
+
+@router.get("/api/projects/{project_id}/directory-generation/stream")
+async def stream_directory_generation(project_id: str, request: Request) -> StreamingResponse:
+    store.get_directory_state(project_id)
+
+    async def event_stream():
+        last_payload: str | None = None
+        last_keepalive_at = time.monotonic()
+
+        while True:
+            if await request.is_disconnected():
+                break
+
+            payload = store.get_directory_state(project_id)
+            serialized = json.dumps(payload, ensure_ascii=False)
+            if serialized != last_payload:
+                yield f"data: {serialized}\n\n"
+                last_payload = serialized
+                last_keepalive_at = time.monotonic()
+                if payload.get("status") in {"completed", "failed"}:
+                    break
+            elif time.monotonic() - last_keepalive_at >= 15:
+                yield ": keepalive\n\n"
+                last_keepalive_at = time.monotonic()
+
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/api/projects/{project_id}/directory-generation/run")

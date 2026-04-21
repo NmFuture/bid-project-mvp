@@ -76,6 +76,11 @@ def generate_outline_for_project_with_progress(
                 if progress_callback
                 else None
             ),
+            stream_callback=(
+                (lambda details: progress_callback("opencode_delta", details))
+                if progress_callback
+                else None
+            ),
         )
         nodes = _normalize_nodes(result["nodes"])
         summary = str(result.get("summary") or "目录生成完成。")
@@ -90,14 +95,14 @@ def generate_outline_for_project_with_progress(
             template_hints=template_hints,
         )
         summary = (
-            f"opencode 响应异常（{fallback_error_text}），已根据模板与招标章节线索生成回退目录。"
+            f"futurecode 响应异常（{fallback_error_text}），已根据模板与招标章节线索生成回退目录。"
         )
         opencode_output = build_directory_opencode_output(
             status="failed",
             parts=[
                 {
                     "type": "text",
-                    "text": f"opencode 响应异常：{fallback_error}",
+                    "text": f"futurecode 响应异常：{fallback_error}",
                 }
             ],
         )
@@ -120,7 +125,7 @@ def generate_outline_for_project_with_progress(
     if used_fallback:
         payload = store.update_directory_generation_state(
             project_id,
-            event_message=f"opencode 响应异常（{_shorten_for_event(fallback_error)}），已切换为本地回退目录。",
+            event_message=f"futurecode 响应异常（{_shorten_for_event(fallback_error)}），已切换为本地回退目录。",
             event_level="warning",
             event_step="fallback",
             opencode_output={

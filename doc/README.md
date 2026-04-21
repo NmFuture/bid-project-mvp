@@ -19,10 +19,10 @@
 - Docker Compose 组成
 - 客户内网使用方式
 
-## 协作约定
+## 当前协作与推进口径
 
-- [GIT_WORKFLOW.md](/Users/wlb/Agent/bid-project/doc/GIT_WORKFLOW.md)
-  - 当前仓库多人协作的分支、PR、review、合并约定
+- [09-二阶段分工与第一周里程碑.md](/Users/wlb/Agent/bid-project/doc/09-二阶段分工与第一周里程碑.md)
+  - 当前 5 人团队的负责人、目标、边界与交付物
 
 ## 背景资料
 
