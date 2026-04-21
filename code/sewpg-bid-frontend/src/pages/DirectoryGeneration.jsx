@@ -59,8 +59,10 @@ export default function DirectoryGeneration({ showToast }) {
   const [error, setError] = useState('')
   const [generating, setGenerating] = useState(false)
   const [advancing, setAdvancing] = useState(false)
-  const [usePollingFallback, setUsePollingFallback] = useState(false)
+  const [streamFailed, setStreamFailed] = useState(false)
   const eventSourceRef = useRef(null)
+  const eventSourceSupported =
+    typeof window !== 'undefined' && typeof window.EventSource === 'function'
   const opencodeConsoleRef = useRef(null)
 
   const closeEventStream = useCallback(() => {
@@ -109,28 +111,25 @@ export default function DirectoryGeneration({ showToast }) {
   useEffect(() => {
     if (!isRunning) {
       closeEventStream()
-      setUsePollingFallback(false)
       return undefined
     }
 
-    if (typeof window === 'undefined' || typeof window.EventSource !== 'function') {
-      setUsePollingFallback(true)
+    if (!eventSourceSupported) {
       return undefined
     }
 
-    setUsePollingFallback(false)
     let closed = false
     const source = directoryAPI.stream(id, {
       onState: (payload) => {
         if (closed) return
         setData(payload)
+        setStreamFailed(false)
         if (payload?.status && payload.status !== 'running') {
           closed = true
           source.close()
           if (eventSourceRef.current === source) {
             eventSourceRef.current = null
           }
-          setUsePollingFallback(false)
         }
       },
       onError: () => {
@@ -140,7 +139,7 @@ export default function DirectoryGeneration({ showToast }) {
         if (eventSourceRef.current === source) {
           eventSourceRef.current = null
         }
-        setUsePollingFallback(true)
+        setStreamFailed(true)
       },
     })
     eventSourceRef.current = source
@@ -152,7 +151,9 @@ export default function DirectoryGeneration({ showToast }) {
       }
       source.close()
     }
-  }, [closeEventStream, id, isRunning])
+  }, [closeEventStream, eventSourceSupported, id, isRunning])
+
+  const usePollingFallback = isRunning && (!eventSourceSupported || streamFailed)
 
   useEffect(() => {
     if (!isRunning || !usePollingFallback) return undefined
@@ -174,7 +175,7 @@ export default function DirectoryGeneration({ showToast }) {
     setGenerating(true)
     try {
       const response = await directoryAPI.run(id)
-      setUsePollingFallback(false)
+      setStreamFailed(false)
       setData(response)
       showToast?.(response?.message || '已开始生成目录，请稍候。')
     } catch (e) {
