@@ -11,13 +11,14 @@
 - 不直接向 `main` 推送代码
 - 所有变更通过 PR 合入 `main`
 
-当前仓库已经开启 `main` 保护，规则如下：
+当前 `main` 已开启 Branch Protection，规则如下：
 
-- 禁止直接 push 到 `main`
-- 禁止 force push
+- 合并只能通过 PR，禁止直接 push 到 `main`
+- 禁止 force push，禁止删除 `main`
+- 合并前必须通过 `MVP Quality Gate / frontend`、`MVP Quality Gate / backend` 两个检查
+- 合并前分支需同步到最新 `main`（Require branches to be up to date）
 - 至少需要 `1` 个 approval
-- 必须通过 `frontend`、`backend` 两个检查
-- 管理员同样受保护规则约束
+- 管理员同样受保护规则约束，不能绕过
 
 ## 2. 分支命名
 
@@ -110,6 +111,7 @@ PR 里至少说明：
 - 小步快跑，PR 不要过大
 - 有争议的改动先对齐方案，再开工
 - 如果只是临时试验，不要直接往共享分支堆积
+- PR 的 base 永远写 `main`，不要把 PR 的 base 指向其他人的分支（栈式 PR）；功能之间有依赖时，先等前置 PR 合入 `main`，再 rebase 自己的分支，再提 PR
 
 ## 5. 同步主干
 
@@ -156,6 +158,7 @@ git checkout -b hotfix/s9-editor-blank
 - 一个 PR 同时塞功能、重构、格式化、文档和杂项修复
 - 明知会冲突还长时间不同步 `main`
 - 为了图快，临时关闭 `main` 保护规则
+- 在前置 PR 还没合入 `main` 之前，就把 base 指向它去提栈式 PR
 
 ## 8. 当前仓库的最小共识
 

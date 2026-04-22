@@ -252,3 +252,4 @@ compose 会把这个目录挂进 `opencode` 容器。
 - [MVP 主链路说明](./doc/05-MVP主链路说明.md)
 - [FastAPI 承接与前端改造](./doc/07-FastAPI承接与前端改造.md)
 - [MVP 部署说明](./doc/08-MVP部署说明.md)
+- [内网离线部署说明](./doc/11-内网离线部署说明.md)
