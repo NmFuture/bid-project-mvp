@@ -21,5 +21,6 @@ code/sewpg-bid-backend/onlyoffice/db/
 code/sewpg-bid-backend/onlyoffice/lib/
 code/sewpg-bid-backend/onlyoffice/logs/
 code/sewpg-bid-backend/onlyoffice/data/*.key
+code/offline-dist/
 
 code/测试文档/

@@ -1,5 +1,6 @@
 services:
   web:
+    image: ${WEB_IMAGE:-sewpg-bid/web:${APP_IMAGE_TAG:-latest}}
     build:
       context: ./sewpg-bid-frontend
       dockerfile: Dockerfile
@@ -19,6 +20,7 @@ services:
     restart: unless-stopped
 
   fastapi:
+    image: ${FASTAPI_IMAGE:-sewpg-bid/fastapi:${APP_IMAGE_TAG:-latest}}
     build:
       context: ./sewpg-bid-backend
     container_name: sewpg_bid_fastapi
@@ -62,7 +64,12 @@ services:
     restart: unless-stopped
 
   opencode:
-    image: node:22-bookworm
+    image: ${OPENCODE_IMAGE:-sewpg-bid/opencode:${APP_IMAGE_TAG:-latest}}
+    build:
+      context: ./sewpg-bid-backend/opencode
+      dockerfile: Dockerfile
+      args:
+        OPENCODE_NPM_VERSION: ${OPENCODE_NPM_VERSION:-1.14.18}
     container_name: sewpg_bid_opencode
     working_dir: /workspace
     environment:
@@ -70,11 +77,13 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
-    command: >
-      sh -lc "mkdir -p /root/.local/share/opencode &&
-      if [ -f /bootstrap/opencode-host/auth.json ]; then cp /bootstrap/opencode-host/auth.json /root/.local/share/opencode/auth.json; fi &&
-      npm install -g opencode-ai@${OPENCODE_NPM_VERSION:-1.14.18} &&
-      opencode serve --hostname 0.0.0.0 --port 4096 --cors http://localhost --cors http://127.0.0.1"
+      OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-opencode}
+      OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-big-pickle}
+      INTERNAL_LLM_BASE_URL: ${INTERNAL_LLM_BASE_URL:-}
+      INTERNAL_LLM_API_KEY: ${INTERNAL_LLM_API_KEY:-}
+      INTERNAL_LLM_MODEL_LABEL: ${INTERNAL_LLM_MODEL_LABEL:-Internal LLM Model}
+      INTERNAL_LLM_PROVIDER_NAME: ${INTERNAL_LLM_PROVIDER_NAME:-Internal LLM Gateway}
+      INTERNAL_LLM_HEADERS_JSON: ${INTERNAL_LLM_HEADERS_JSON:-}
     expose:
       - "4096"
     ports:
@@ -92,7 +101,6 @@ services:
       retries: 10
       start_period: 20s
     volumes:
-      - ./sewpg-bid-backend/opencode:/workspace
       - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
       - opencode_data:/root/.local/share/opencode
       - opencode_cache:/root/.cache/opencode

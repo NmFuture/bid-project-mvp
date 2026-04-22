@@ -1,0 +1,16 @@
+services:
+  web:
+    image: ${WEB_IMAGE:-sewpg-bid/web:offline-latest}
+    pull_policy: never
+
+  fastapi:
+    image: ${FASTAPI_IMAGE:-sewpg-bid/fastapi:offline-latest}
+    pull_policy: never
+
+  opencode:
+    image: ${OPENCODE_IMAGE:-sewpg-bid/opencode:offline-latest}
+    pull_policy: never
+
+  onlyoffice:
+    image: ${ONLYOFFICE_IMAGE:-sewpg-bid/onlyoffice:9.3.1.2}
+    pull_policy: never
