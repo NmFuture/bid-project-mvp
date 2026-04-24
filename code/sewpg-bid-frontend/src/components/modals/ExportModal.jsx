@@ -111,7 +111,7 @@ export default function ExportModal({ projectId, onClose, onExport }) {
       <div className="dialog-content w-full max-w-xl animate-fade-in" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-surface-container-high">
           <h2 className="text-xl font-headline font-bold text-on-surface">打包导出标书</h2>
-          <button onClick={onClose} className="text-on-surface-variant hover:text-primary transition-colors">
+          <button onClick={onClose} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
             <span className="material-symbols-outlined">close</span>
           </button>
         </div>

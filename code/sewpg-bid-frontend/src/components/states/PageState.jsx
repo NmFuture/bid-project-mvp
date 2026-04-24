@@ -15,10 +15,17 @@ export function PageEmpty({
   description = '当前筛选条件下没有可展示内容。',
   actionText,
   onAction,
+  showActionIcon = true,
+  containerClassName = '',
+  cardClassName = '',
+  cardStyle,
 }) {
   return (
-    <div className="min-h-[40vh] flex items-center justify-center">
-      <div className="w-full max-w-xl rounded-xl bg-surface-container-lowest border border-surface-container-high p-8 text-center">
+    <div className={`min-h-[40vh] flex items-center justify-center ${containerClassName}`.trim()}>
+      <div
+        className={`w-full max-w-xl rounded-xl bg-surface-container-lowest border border-surface-container-high p-8 text-center ${cardClassName}`.trim()}
+        style={cardStyle}
+      >
         <span className="material-symbols-outlined text-5xl text-outline/50">inbox</span>
         <h3 className="mt-3 text-lg font-semibold text-on-surface">{title}</h3>
         <p className="mt-1 text-sm text-on-surface-variant">{description}</p>
@@ -27,7 +34,7 @@ export function PageEmpty({
             onClick={onAction}
             className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary-container transition-colors"
           >
-            <span className="material-symbols-outlined text-base">refresh</span>
+            {showActionIcon ? <span className="material-symbols-outlined text-base">refresh</span> : null}
             {actionText}
           </button>
         )}

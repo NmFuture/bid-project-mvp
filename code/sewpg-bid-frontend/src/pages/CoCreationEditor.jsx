@@ -6,6 +6,7 @@ import DataCard from '../components/shared/DataCard'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
+import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 
 const formatDateTime = (value) => {
   if (!value) return '未保存'
@@ -100,28 +101,26 @@ export default function CoCreationEditor({ showToast }) {
   if (error) return <PageError title="S9 文档加载失败" description={error} onRetry={loadDocument} />
 
   return (
-    <div className="flex flex-col gap-6 animate-fade-in max-w-6xl mx-auto w-full">
+    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
+      <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
 
       <PageHeader
-        title="S9 人机共创"
-        description="本阶段仅保留文档编辑与保存回写能力。优先通过 OnlyOffice 在线编辑，保存后可在 S10 下载最终版。"
+        actionsClassName="stage-header-actions"
         actions={(
           <>
             <button
               onClick={loadDocument}
-              className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors flex items-center gap-2"
+              className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors"
             >
-              <span className="material-symbols-outlined text-sm">refresh</span>
               刷新
             </button>
             <button
               onClick={handleFinishS9}
               disabled={finishingStage}
-              className="px-4 py-2.5 bg-secondary text-on-secondary text-sm font-medium rounded-lg hover:bg-secondary/90 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-4 py-2.5 bg-secondary text-on-secondary text-sm font-medium rounded-lg hover:bg-secondary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span className="material-symbols-outlined text-sm">arrow_forward</span>
-              {finishingStage ? '提交中...' : '完成 S9 并进入 S10'}
+              {finishingStage ? '进入中...' : '进入下一阶段'}
             </button>
           </>
         )}
@@ -155,7 +154,7 @@ export default function CoCreationEditor({ showToast }) {
             <button
               onClick={handleForceSave}
               disabled={forceSaving}
-              className="px-4 py-2 text-xs font-semibold rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="stage-action-btn px-4 py-2 text-xs font-semibold rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {forceSaving ? '刷新中...' : '刷新文档状态'}
             </button>
@@ -188,7 +187,7 @@ export default function CoCreationEditor({ showToast }) {
               <button
                 onClick={handleSaveFallback}
                 disabled={savingFallback}
-                className="px-4 py-2 text-sm font-semibold rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="stage-action-btn px-4 py-2 text-sm font-semibold rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {savingFallback ? '保存中...' : '保存回写'}
               </button>

@@ -38,9 +38,29 @@ export const ONLYOFFICE_CONFIG = {
   apiScriptUrl: '/web-apps/apps/api/documents/api.js',
 
   // 获取完整的编辑器配置
-  getEditorConfig: ({ documentKey, title, fileUrl, callbackUrl, userId, userName }) => ({
-    document: {
-      fileType: 'docx',
+  getEditorConfig: ({
+    documentKey,
+    title,
+    fileUrl,
+    callbackUrl,
+    userId,
+    userName,
+    fileType = 'docx',
+    documentType,
+  }) => {
+    const normalizedFileType = String(fileType || 'docx').toLowerCase()
+    const resolvedDocumentType = documentType
+      || (normalizedFileType === 'pdf'
+        ? 'pdf'
+        : ['xls', 'xlsx', 'csv'].includes(normalizedFileType)
+          ? 'cell'
+          : ['ppt', 'pptx'].includes(normalizedFileType)
+            ? 'slide'
+            : 'word')
+
+    return {
+      document: {
+        fileType: normalizedFileType,
       key: documentKey,
       title: title || '投标文件.docx',
       url: fileUrl,
@@ -52,7 +72,7 @@ export const ONLYOFFICE_CONFIG = {
         review: true,
       },
     },
-    documentType: 'word',
+      documentType: resolvedDocumentType,
     editorConfig: {
       callbackUrl: callbackUrl,
       lang: 'zh-CN',
@@ -83,7 +103,8 @@ export const ONLYOFFICE_CONFIG = {
     height: '100%',
     width: '100%',
     type: 'desktop',
-  }),
+    }
+  },
 
   // 检查 OnlyOffice 是否可用
   isAvailable: async () => {

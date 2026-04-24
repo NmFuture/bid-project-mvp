@@ -13,7 +13,7 @@ from app.core.config import settings
 
 
 STAGE_NAMES = {
-    1: "S1 解析",
+    1: "S1 模板上传",
     2: "S2 目录生成",
     3: "S3 目录审核",
     4: "S4 缺口识别",
@@ -26,7 +26,7 @@ STAGE_NAMES = {
 }
 
 STAGE_PROGRESS_NAMES = {
-    1: "解析",
+    1: "模板上传",
     2: "目录",
     3: "审核目录",
     4: "缺口识别",
@@ -36,6 +36,12 @@ STAGE_PROGRESS_NAMES = {
     8: "校验",
     9: "共创",
     10: "导出",
+}
+
+REVIEW_DECISION_LABELS = {
+    "pending": "待审核",
+    "participate": "参与投标",
+    "abandon": "不参与",
 }
 
 
@@ -191,6 +197,10 @@ class AppStore:
         return project
 
     def _summary(self, project: dict[str, Any]) -> dict[str, Any]:
+        review_decision = str(project.get("reviewDecision") or "participate")
+        if review_decision not in REVIEW_DECISION_LABELS:
+            review_decision = "pending"
+        stage_label = "审核终止" if review_decision == "abandon" else STAGE_NAMES[project["currentStage"]]
         return {
             "id": project["id"],
             "name": project["name"],
@@ -200,7 +210,10 @@ class AppStore:
             "deadline": project["deadline"],
             "bidType": project["bidType"],
             "currentStage": project["currentStage"],
-            "stageLabel": STAGE_NAMES[project["currentStage"]],
+            "stageLabel": stage_label,
+            "reviewDecision": review_decision,
+            "reviewDecisionLabel": REVIEW_DECISION_LABELS[review_decision],
+            "reviewDecidedAt": project.get("reviewDecidedAt") or "",
             "updatedAt": project["updatedAt"],
         }
 
@@ -211,10 +224,21 @@ class AppStore:
             "templateFiles": copy.deepcopy(project["templateFiles"]),
             "isKeyAccount": project["isKeyAccount"],
             "keyAccountId": project["keyAccountId"],
+            "reviewComment": str(project.get("reviewComment") or ""),
         }
 
-    def list_projects(self, status: str = "", date_range: str = "", page: int = 1, page_size: int = 12) -> dict[str, Any]:
+    def list_projects(
+        self,
+        status: str = "",
+        bid_type: str = "",
+        date_range: str = "",
+        page: int = 1,
+        page_size: int = 12,
+    ) -> dict[str, Any]:
         items = [self._summary(project) for project in self._projects.values()]
+        normalized_bid_type = str(bid_type or "").strip()
+        if normalized_bid_type:
+            items = [item for item in items if str(item.get("bidType") or "").strip() == normalized_bid_type]
         items.sort(key=lambda item: item["updatedAt"], reverse=True)
         start = max(0, (page - 1) * page_size)
         end = start + page_size
@@ -227,6 +251,9 @@ class AppStore:
 
     def create_project(self, data: dict[str, Any]) -> dict[str, Any]:
         project_id = f"PRJ-{next(self._counter):04d}"
+        review_decision = str(data.get("reviewDecision") or "pending").strip().lower()
+        if review_decision not in REVIEW_DECISION_LABELS:
+            review_decision = "pending"
         project = {
             "id": project_id,
             "name": str(data.get("name") or project_id),
@@ -237,6 +264,9 @@ class AppStore:
             "bidType": str(data.get("bidType") or "技术标"),
             "isKeyAccount": bool(data.get("isKeyAccount")),
             "keyAccountId": str(data.get("keyAccountId") or ""),
+            "reviewDecision": review_decision,
+            "reviewDecidedAt": now_iso() if review_decision in {"participate", "abandon"} else "",
+            "reviewComment": str(data.get("reviewComment") or ""),
             "files": [],
             "templateFiles": [],
             "fileRecords": [],
@@ -347,6 +377,14 @@ class AppStore:
         for field in ["name", "customerName", "owner", "manager", "deadline", "bidType"]:
             if field in data:
                 project[field] = data[field]
+        if "reviewDecision" in data:
+            decision = str(data.get("reviewDecision") or "").strip().lower()
+            if decision not in REVIEW_DECISION_LABELS:
+                decision = "pending"
+            project["reviewDecision"] = decision
+            project["reviewDecidedAt"] = now_iso() if decision in {"participate", "abandon"} else ""
+        if "reviewComment" in data:
+            project["reviewComment"] = str(data.get("reviewComment") or "")
         project["updatedAt"] = now_iso()
         self._persist_project(project)
         return self._detail(project)
@@ -467,6 +505,37 @@ class AppStore:
             copy.deepcopy(project.get("fileRecords") or []),
             copy.deepcopy(project.get("templateFileRecords") or []),
         )
+
+    def update_template_files(self, project_id: str, template_files: list[dict[str, Any]]) -> dict[str, Any]:
+        project = self._require(project_id)
+        project["templateFileRecords"] = copy.deepcopy(template_files)
+        project["templateFiles"] = [
+            {
+                "id": item["id"],
+                "name": item["name"],
+                "sizeLabel": item["size_label"],
+            }
+            for item in template_files
+        ]
+        parse_result = project.get("parse_result") or {}
+        if isinstance(parse_result, dict):
+            parse_project = parse_result.get("project") or {}
+            parse_project["id"] = project["id"]
+            parse_project["templateFiles"] = copy.deepcopy(project["templateFiles"])
+            parse_result["project"] = parse_project
+            project["parse_result"] = parse_result
+        project["updatedAt"] = now_iso()
+        self._persist_project(project)
+        return {
+            "project": {
+                "id": project["id"],
+                "templateFiles": copy.deepcopy(project["templateFiles"]),
+                "currentStage": project["currentStage"],
+                "stageLabel": STAGE_NAMES[project["currentStage"]],
+            },
+            "templateFiles": copy.deepcopy(project["templateFiles"]),
+            "updatedAt": project["updatedAt"],
+        }
 
     def complete_directory_generation(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
         project = self._require(project_id)

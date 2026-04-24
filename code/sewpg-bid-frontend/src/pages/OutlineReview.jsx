@@ -5,6 +5,8 @@ import { PageLoading, PageError } from '../components/states/PageState'
 import PageHeader from '../components/shared/PageHeader'
 import DataCard from '../components/shared/DataCard'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
+import StageBreadcrumb from '../components/shared/StageBreadcrumb'
+import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
 
 const cloneNodes = (nodes = []) => JSON.parse(JSON.stringify(nodes))
 
@@ -34,23 +36,19 @@ const findNodeContext = (nodes, targetId, parent = null) => {
   return null
 }
 
-const formatDateTime = (value) => {
-  if (!value) return '未知'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '未知'
-  return date.toLocaleString('zh-CN', { hour12: false })
-}
-
-const countNodes = (items = []) =>
-  (items || []).reduce(
-    (sum, item) => sum + 1 + countNodes(Array.isArray(item.children) ? item.children : []),
-    0,
-  )
+const collectExpandableNodeIds = (items = []) =>
+  (items || []).reduce((result, item) => {
+    const children = Array.isArray(item.children) ? item.children : []
+    if (children.length > 0) {
+      result.push(item.id)
+      result.push(...collectExpandableNodeIds(children))
+    }
+    return result
+  }, [])
 
 export default function OutlineReview({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
-  const [data, setData] = useState(null)
   const [nodes, setNodes] = useState([])
   const [activeNodeId, setActiveNodeId] = useState('')
   const [loading, setLoading] = useState(true)
@@ -59,6 +57,9 @@ export default function OutlineReview({ showToast }) {
   const [rejecting, setRejecting] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState('')
+  const [tenderPreview, setTenderPreview] = useState(null)
+  const [onlyofficeError, setOnlyofficeError] = useState('')
+  const [collapsedNodeIds, setCollapsedNodeIds] = useState(new Set())
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -66,10 +67,12 @@ export default function OutlineReview({ showToast }) {
     try {
       const payload = await outlineAPI.get(id)
       const nextNodes = Array.isArray(payload?.nodes) ? payload.nodes : []
-      setData(payload)
       setNodes(nextNodes)
       setDirty(false)
       setActiveNodeId(nextNodes[0]?.id || '')
+      setCollapsedNodeIds(new Set())
+      setTenderPreview(payload?.tenderPreview || null)
+      setOnlyofficeError('')
     } catch (e) {
       setError(e?.message || '目录数据加载失败')
     } finally {
@@ -95,7 +98,6 @@ export default function OutlineReview({ showToast }) {
     try {
       const payload = await outlineAPI.save(id, { nodes })
       const nextNodes = Array.isArray(payload?.nodes) ? payload.nodes : []
-      setData(payload)
       setNodes(nextNodes)
       setDirty(false)
       if (!nextNodes.find((node) => node.id === activeNodeId)) {
@@ -117,7 +119,6 @@ export default function OutlineReview({ showToast }) {
     try {
       const payload = await outlineAPI.regenerate(id)
       const nextNodes = Array.isArray(payload?.nodes) ? payload.nodes : []
-      setData(payload)
       setNodes(nextNodes)
       setDirty(false)
       setActiveNodeId(nextNodes[0]?.id || '')
@@ -139,7 +140,6 @@ export default function OutlineReview({ showToast }) {
     try {
       if (dirty) {
         const saved = await outlineAPI.save(id, { nodes })
-        setData(saved)
         setNodes(Array.isArray(saved?.nodes) ? saved.nodes : [])
         setDirty(false)
       }
@@ -234,31 +234,67 @@ export default function OutlineReview({ showToast }) {
     })
   }
 
+  const handleToggleNodeCollapse = (targetId) => {
+    setCollapsedNodeIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(targetId)) {
+        next.delete(targetId)
+      } else {
+        next.add(targetId)
+      }
+      return next
+    })
+  }
+
+  const handleToggleAllCollapse = () => {
+    const expandableIds = collectExpandableNodeIds(nodes)
+    if (!expandableIds.length) return
+    setCollapsedNodeIds((prev) => (
+      prev.size ? new Set() : new Set(expandableIds)
+    ))
+  }
+
   const renderRows = (items, depth = 0, prefix = '') => (
-    <div className="space-y-2">
+    <div>
       {(items || []).map((node, index) => {
         const seq = prefix ? `${prefix}.${index + 1}` : `${index + 1}`
         const isActive = activeNodeId === node.id
         const siblings = items || []
         const canMoveUp = index > 0
         const canMoveDown = index < siblings.length - 1
+        const hasChildren = Array.isArray(node.children) && node.children.length > 0
+        const isCollapsed = collapsedNodeIds.has(node.id)
 
         return (
-          <div key={node.id} className="space-y-2">
+          <div key={node.id}>
             <div
               onClick={() => setActiveNodeId(node.id)}
-              className={`flex items-center gap-2 rounded-lg border px-3 py-2 transition-colors ${
-                isActive
-                  ? 'border-primary bg-primary/10'
-                  : 'border-surface-container-high bg-surface-container-lowest'
+              className={`flex items-center gap-1 px-2 py-1.5 transition-colors border-b border-surface-container-high ${
+                isActive ? 'bg-primary/5' : 'bg-white'
               }`}
               style={{ marginLeft: `${depth * 20}px` }}
             >
-              <span className="w-12 shrink-0 text-xs font-semibold text-outline">{seq}</span>
+              {hasChildren ? (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    handleToggleNodeCollapse(node.id)
+                  }}
+                  className="h-6 w-6 shrink-0 flex items-center justify-center text-outline hover:text-primary transition-colors"
+                  title={isCollapsed ? '展开' : '收起'}
+                >
+                  <span className="material-symbols-outlined text-[16px]">
+                    {isCollapsed ? 'chevron_right' : 'expand_more'}
+                  </span>
+                </button>
+              ) : (
+                <span className="w-6 shrink-0" />
+              )}
+              <span className="w-9 shrink-0 text-xs font-semibold text-outline">{seq}</span>
               <input
                 value={node.title || ''}
                 onChange={(e) => handleTitleChange(node.id, e.target.value)}
-                className="flex-1 h-9 px-3 rounded-md bg-surface-container-highest text-sm text-on-surface focus:ring-2 focus:ring-primary/30"
+                className="flex-1 !min-h-0 h-8 px-1.5 border-0 bg-transparent text-sm text-on-surface focus:ring-0 focus:outline-none"
                 placeholder="输入章节标题"
               />
               <button
@@ -266,7 +302,7 @@ export default function OutlineReview({ showToast }) {
                   e.stopPropagation()
                   handleAddChild(node.id)
                 }}
-                className="h-8 px-2 text-xs font-medium rounded-md bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors"
+                className="h-7 px-2 text-xs font-medium text-on-surface-variant hover:text-primary transition-colors"
                 title="新增子节点"
               >
                 +子项
@@ -276,7 +312,7 @@ export default function OutlineReview({ showToast }) {
                   e.stopPropagation()
                   handleAddSibling(node.id)
                 }}
-                className="h-8 px-2 text-xs font-medium rounded-md bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors"
+                className="h-7 px-2 text-xs font-medium text-on-surface-variant hover:text-primary transition-colors"
                 title="新增同级节点"
               >
                 +同级
@@ -287,10 +323,13 @@ export default function OutlineReview({ showToast }) {
                   handleMove(node.id, 'up')
                 }}
                 disabled={!canMoveUp}
-                className="h-8 w-8 rounded-md bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center"
+                className="h-7 w-7 text-outline hover:text-primary transition-colors disabled:opacity-35 disabled:cursor-not-allowed flex items-center justify-center"
                 title="上移"
               >
-                <span className="material-symbols-outlined text-sm">arrow_upward</span>
+                <svg viewBox="0 0 20 20" className="w-4 h-4" aria-hidden="true" fill="none">
+                  <path d="M10 16V5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  <path d="M6.5 8.5L10 5L13.5 8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
               </button>
               <button
                 onClick={(e) => {
@@ -298,24 +337,32 @@ export default function OutlineReview({ showToast }) {
                   handleMove(node.id, 'down')
                 }}
                 disabled={!canMoveDown}
-                className="h-8 w-8 rounded-md bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center"
+                className="h-7 w-7 text-outline hover:text-primary transition-colors disabled:opacity-35 disabled:cursor-not-allowed flex items-center justify-center"
                 title="下移"
               >
-                <span className="material-symbols-outlined text-sm">arrow_downward</span>
+                <svg viewBox="0 0 20 20" className="w-4 h-4" aria-hidden="true" fill="none">
+                  <path d="M10 4V15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  <path d="M6.5 11.5L10 15L13.5 11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
               </button>
               <button
                 onClick={(e) => {
                   e.stopPropagation()
                   handleDelete(node.id)
                 }}
-                className="h-8 w-8 rounded-md bg-error-container/20 text-error hover:bg-error-container/40 transition-colors flex items-center justify-center"
+                className="h-7 w-7 text-error hover:text-error transition-colors flex items-center justify-center"
                 title="删除节点"
               >
-                <span className="material-symbols-outlined text-sm">delete</span>
+                <svg viewBox="0 0 20 20" className="w-4 h-4" aria-hidden="true" fill="none">
+                  <path d="M5.5 6.5H14.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                  <path d="M7 6.5V15.5H13V6.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M8 4.8H12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                  <path d="M8.8 8.8V13.2M11.2 8.8V13.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                </svg>
               </button>
             </div>
 
-            {Array.isArray(node.children) && node.children.length > 0
+            {hasChildren && !isCollapsed
               ? renderRows(node.children, depth + 1, seq)
               : null}
           </div>
@@ -336,95 +383,119 @@ export default function OutlineReview({ showToast }) {
     )
   }
 
+  const hasOnlyOfficeSession = Boolean(tenderPreview?.onlyoffice?.fileUrl && tenderPreview?.onlyoffice?.callbackUrl)
+  const activeTenderFileName = tenderPreview?.activeFile?.name || '未选择文件'
+
   return (
-    <div className="flex flex-col gap-6 animate-fade-in max-w-6xl mx-auto w-full">
+    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
+      <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
 
       <PageHeader
-        title="S3 目录审核"
-        description="直接在目录文档中编辑：支持新增、删除、调整顺序。"
-        leftExtra={(
-          <button
-            onClick={() => window.history.back()}
-            className="text-primary hover:bg-surface-container-low rounded-full w-10 h-10 flex items-center justify-center transition-colors"
-          >
-            <span className="material-symbols-outlined">arrow_back</span>
-          </button>
-        )}
+        actionsClassName="stage-header-actions"
         actions={(
           <>
             <button
               onClick={loadData}
-              className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors flex items-center gap-2"
+              className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors"
             >
-              <span className="material-symbols-outlined text-sm">refresh</span>
               刷新
             </button>
             <button
               onClick={handleReject}
               disabled={rejecting}
-              className="px-4 py-2.5 text-sm font-medium text-error bg-error-container/30 hover:bg-error-container/50 rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-4 py-2.5 text-sm font-medium text-error bg-error-container/30 hover:bg-error-container/50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span className="material-symbols-outlined text-sm">refresh</span>
               {rejecting ? '处理中...' : '驳回重生成'}
             </button>
             <button
               onClick={handleSave}
               disabled={saving}
-              className="px-4 py-2.5 text-sm font-medium text-on-primary bg-primary hover:bg-primary-container rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-4 py-2.5 text-sm font-medium text-on-primary bg-primary hover:bg-primary-container rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span className="material-symbols-outlined text-sm">save</span>
               {saving ? '保存中...' : dirty ? '保存目录*' : '保存目录'}
             </button>
             <button
               onClick={handleConfirm}
               disabled={confirming}
-              className="px-4 py-2.5 text-sm font-medium text-on-secondary bg-secondary hover:bg-secondary/90 rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-4 py-2.5 text-sm font-medium text-on-secondary bg-secondary hover:bg-secondary/90 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span className="material-symbols-outlined text-sm">check</span>
-              {confirming ? '确认中...' : '确认并进入 S4'}
+              {confirming ? '进入中...' : '进入下一阶段'}
             </button>
           </>
         )}
       />
 
-      <DataCard className="!p-0 overflow-hidden min-h-[520px]">
-        <div className="px-6 py-4 border-b border-surface-container-high bg-surface-container-low flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold text-on-surface">目录文档（可直接编辑）</h3>
-            <p className="text-xs text-on-surface-variant mt-1">
-              来源文件：{data?.source?.directoryFileName || '未命名目录.docx'} · 生成时间：{formatDateTime(data?.source?.generatedAt)}
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-outline">
-              节点数：{countNodes(nodes)}
-            </span>
-            <button
-              onClick={handleAddRoot}
-              className="px-3 py-1.5 rounded-lg bg-primary text-on-primary text-xs font-semibold hover:bg-primary-container transition-colors flex items-center gap-1"
-            >
-              <span className="material-symbols-outlined text-sm">add</span>
-              新增一级章节
-            </button>
-          </div>
-        </div>
-
-        <div className="p-6">
-          {nodes.length ? (
-            renderRows(nodes)
-          ) : (
-            <div className="h-[320px] rounded-lg border border-dashed border-surface-container-high flex flex-col items-center justify-center text-center">
-              <span className="material-symbols-outlined text-4xl text-outline mb-3">account_tree</span>
-              <p className="text-sm text-on-surface-variant">当前目录为空，请新增章节后继续审核。</p>
-              <button
-                onClick={handleAddRoot}
-                className="mt-4 px-4 py-2 text-sm font-medium bg-primary text-on-primary rounded-lg hover:bg-primary-container transition-colors"
-              >
-                新增一级章节
-              </button>
+      <DataCard className="!p-0 overflow-hidden min-h-[560px]">
+        <div className="grid grid-cols-1 xl:grid-cols-2 min-h-[560px]">
+          <section className="flex flex-col border-r border-surface-container-high">
+            <div className="px-6 py-4 border-b border-surface-container-high bg-surface-container-low flex flex-wrap items-center justify-between gap-3">
+              <h3 className="text-base font-semibold text-on-surface">目录文档</h3>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleToggleAllCollapse}
+                  disabled={!collectExpandableNodeIds(nodes).length}
+                  className="stage-action-btn px-3 py-1.5 rounded-lg bg-surface-container-high text-on-surface-variant text-xs font-semibold hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {collapsedNodeIds.size ? '展开全部' : '收起全部'}
+                </button>
+                <button
+                  onClick={handleAddRoot}
+                  className="stage-action-btn px-3 py-1.5 rounded-lg bg-primary text-on-primary text-xs font-semibold hover:bg-primary-container transition-colors"
+                >
+                  新增一级章节
+                </button>
+              </div>
             </div>
-          )}
+
+            <div className="p-6 flex-1 overflow-y-auto">
+              {nodes.length ? (
+                renderRows(nodes)
+              ) : (
+                <div className="h-[320px] rounded-lg border border-dashed border-surface-container-high flex flex-col items-center justify-center text-center">
+                  <span className="material-symbols-outlined text-4xl text-outline mb-3">account_tree</span>
+                  <p className="text-sm text-on-surface-variant">当前目录为空，请新增章节后继续审核。</p>
+                  <button
+                    onClick={handleAddRoot}
+                    className="mt-4 px-4 py-2 text-sm font-medium bg-primary text-on-primary rounded-lg hover:bg-primary-container transition-colors"
+                  >
+                    新增一级章节
+                  </button>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="flex flex-col bg-white">
+            <div className="px-6 py-4 border-b border-surface-container-high bg-surface-container-low">
+              <h3 className="text-base font-semibold text-on-surface">招标文件（OnlyOffice）</h3>
+              <p className="text-xs text-outline mt-1 truncate" title={activeTenderFileName}>
+                当前文件：{activeTenderFileName}
+              </p>
+            </div>
+            <div className="p-4 flex-1 min-h-0">
+              {onlyofficeError && (
+                <div className="mb-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-xs text-error">
+                  {onlyofficeError}
+                </div>
+              )}
+              {hasOnlyOfficeSession && !onlyofficeError ? (
+                <OnlyOfficeEmbed
+                  session={tenderPreview?.onlyoffice}
+                  mode="view"
+                  className="w-full h-full min-h-[460px] border border-surface-container-high bg-white"
+                  onReady={() => setOnlyofficeError('')}
+                  onError={(message) => setOnlyofficeError(message || 'OnlyOffice 文档加载失败')}
+                />
+              ) : (
+                <div className="h-full min-h-[460px] border border-dashed border-surface-container-high flex items-center justify-center text-center px-6">
+                  <p className="text-sm text-on-surface-variant">
+                    {tenderPreview?.message || '暂无可预览的招标文件。'}
+                  </p>
+                </div>
+              )}
+            </div>
+          </section>
         </div>
       </DataCard>
     </div>

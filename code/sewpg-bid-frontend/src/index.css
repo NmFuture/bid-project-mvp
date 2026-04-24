@@ -15,89 +15,285 @@
 
 @theme {
   /* Primary Colors */
-  --color-primary: #003e6f;
-  --color-primary-container: #005596;
-  --color-primary-fixed: #d3e4ff;
-  --color-primary-fixed-dim: #a2c9ff;
+  --color-primary: #0068b7;
+  --color-primary-container: #69c0ff;
+  --color-primary-fixed: #e8f4ff;
+  --color-primary-fixed-dim: #bee3ff;
   --color-on-primary: #ffffff;
-  --color-on-primary-container: #a4caff;
-  --color-on-primary-fixed: #001c38;
-  --color-on-primary-fixed-variant: #004881;
-  --color-inverse-primary: #a2c9ff;
+  --color-on-primary-container: #004d87;
+  --color-on-primary-fixed: #003c69;
+  --color-on-primary-fixed-variant: #005995;
+  --color-inverse-primary: #69c0ff;
 
   /* Secondary Colors */
-  --color-secondary: #256d01;
-  --color-secondary-container: #a7f782;
-  --color-secondary-fixed: #a7f782;
-  --color-secondary-fixed-dim: #8cda69;
+  --color-secondary: #14a83b;
+  --color-secondary-container: #e6f8ec;
+  --color-secondary-fixed: #e6f8ec;
+  --color-secondary-fixed-dim: #c2efd0;
   --color-on-secondary: #ffffff;
-  --color-on-secondary-container: #2b7309;
-  --color-on-secondary-fixed: #062100;
-  --color-on-secondary-fixed-variant: #195200;
+  --color-on-secondary-container: #0f6f2a;
+  --color-on-secondary-fixed: #0d5a23;
+  --color-on-secondary-fixed-variant: #128530;
 
   /* Tertiary / Warning */
-  --color-tertiary: #642d00;
-  --color-tertiary-container: #873f01;
-  --color-tertiary-fixed: #ffdbc8;
-  --color-tertiary-fixed-dim: #ffb68a;
+  --color-tertiary: #18b7d9;
+  --color-tertiary-container: #e2f8fd;
+  --color-tertiary-fixed: #e2f8fd;
+  --color-tertiary-fixed-dim: #b7ecf7;
   --color-on-tertiary: #ffffff;
-  --color-on-tertiary-container: #ffb88c;
-  --color-on-tertiary-fixed: #321300;
-  --color-on-tertiary-fixed-variant: #743500;
+  --color-on-tertiary-container: #0a6d80;
+  --color-on-tertiary-fixed: #08596a;
+  --color-on-tertiary-fixed-variant: #0e87a1;
 
   /* Error */
-  --color-error: #ba1a1a;
-  --color-error-container: #ffdad6;
+  --color-error: #c54040;
+  --color-error-container: #fde7e7;
   --color-on-error: #ffffff;
-  --color-on-error-container: #93000a;
+  --color-on-error-container: #8c2222;
 
   /* Surface / Background */
-  --color-surface: #f8f9ff;
-  --color-surface-bright: #f8f9ff;
-  --color-surface-dim: #d9dae0;
-  --color-surface-container: #ededf4;
-  --color-surface-container-high: #e7e8ee;
-  --color-surface-container-highest: #e1e2e8;
-  --color-surface-container-low: #f2f3f9;
+  --color-surface: #ffffff;
+  --color-surface-bright: #f7f9fb;
+  --color-surface-dim: #d9e0e8;
+  --color-surface-container: #e9eff5;
+  --color-surface-container-high: #e1e8f0;
+  --color-surface-container-highest: #d5dee8;
+  --color-surface-container-low: #f1f5f9;
   --color-surface-container-lowest: #ffffff;
-  --color-surface-variant: #e1e2e8;
-  --color-surface-tint: #1b60a2;
-  --color-background: #f8f9ff;
+  --color-surface-variant: #d9e1ea;
+  --color-surface-tint: #0068b7;
+  --color-background: #ffffff;
 
   /* Text */
-  --color-on-surface: #191c20;
-  --color-on-surface-variant: #414750;
-  --color-on-background: #191c20;
-  --color-outline: #727781;
-  --color-outline-variant: #c1c7d2;
+  --color-on-surface: #2a4258;
+  --color-on-surface-variant: #60758a;
+  --color-on-background: #2a4258;
+  --color-outline: #95a7ba;
+  --color-outline-variant: #c4d0dc;
 
   /* Inverse */
-  --color-inverse-surface: #2e3035;
-  --color-inverse-on-surface: #eff0f6;
+  --color-inverse-surface: #123450;
+  --color-inverse-on-surface: #eef6ff;
 
   /* AI Accent */
-  --color-ai-accent: #7C3AED;
-  --color-ai-accent-light: #EDE9FE;
+  --color-ai-accent: #18b7d9;
+  --color-ai-accent-light: #e3f8fd;
 
   /* Font Families */
-  --font-headline: 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  --font-body: 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  --font-label: 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-headline: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  --font-body: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  --font-label: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+
+  /* Typography Scale (企业规范：18 / 16 / 14 / 12) */
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.5;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.6;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.6;
+  --text-lg: 1rem;
+  --text-lg--line-height: 1.5;
+  --text-xl: 1.125rem;
+  --text-xl--line-height: 1.45;
+  --text-2xl: 1.125rem;
+  --text-2xl--line-height: 1.45;
+  --text-3xl: 1.125rem;
+  --text-3xl--line-height: 1.45;
+  --text-4xl: 1.125rem;
+  --text-4xl--line-height: 1.45;
 }
 
 /* ============ Base Styles ============ */
 
 body {
   font-family: var(--font-body);
+  font-size: 14px;
   background-color: var(--color-surface);
   color: var(--color-on-surface);
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+html,
+body,
+#root {
+  background-color: #ffffff !important;
+}
+
 h1, h2, h3, h4, h5, h6, .font-headline {
   font-family: var(--font-headline);
+}
+
+@layer utilities {
+  /* 规范映射：中黑体≈600，中粗体≈500，常规体≈400 */
+  .font-extrabold,
+  .font-bold,
+  .font-semibold {
+    font-weight: 600;
+  }
+
+  .font-medium {
+    font-weight: 500;
+  }
+
+  /* 收口任意字号到企业标准 */
+  .text-\[10px\],
+  .text-\[11px\] {
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .text-\[14px\] {
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  .text-\[16px\] {
+    font-size: 16px;
+    line-height: 1.5;
+  }
+}
+
+@layer base {
+  /* 控件统一：按钮无边框 */
+  button {
+    border: none;
+  }
+
+  /* 控件统一：输入框/下拉/文本域高度与边框 */
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea {
+    min-height: 38px;
+    border: 1px solid #b6cde3;
+  }
+
+  input:not([type='checkbox']):not([type='radio']):focus,
+  select:focus,
+  textarea:focus {
+    border-color: #0068b7;
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(105, 192, 255, 0.28);
+  }
+
+  /* 表格统一：行高与表头视觉 */
+  table {
+    border-collapse: collapse;
+  }
+
+  table thead th {
+    height: 40px;
+    background: #F7F7F7;
+    color: #60758a;
+    font-weight: 500;
+    border-bottom: 1px solid #d4dde7;
+  }
+
+  table tbody td {
+    height: 40px;
+    color: #1f3d56;
+    border-bottom: 1px solid #e5edf5;
+  }
+
+  table tbody tr:nth-child(even) td {
+    background: #F7F7F7;
+  }
+
+  table tbody tr:hover td {
+    background: #F7F7F7;
+  }
+
+  /* 扁平化：去渐变，阴影保持极弱 */
+  main [class*="bg-gradient"],
+  .dialog-overlay [class*="bg-gradient"] {
+    background-image: none !important;
+  }
+
+  main [class*="shadow"],
+  .dialog-overlay [class*="shadow"] {
+    box-shadow: 0 1px 2px rgba(17, 34, 51, 0.06) !important;
+  }
+}
+
+.project-table-frame {
+  border-radius: 8px !important;
+  overflow: hidden;
+}
+
+.dialog-overlay .wizard-modal-surface {
+  background: #ffffff !important;
+  box-shadow: 0 6px 18px rgba(16, 39, 60, 0.12) !important;
+}
+
+.project-list-page,
+.dialog-content {
+  background: #ffffff !important;
+}
+
+.dialog-overlay .step-circle {
+  border-radius: 9999px !important;
+}
+
+.stage-node-circle {
+  border-radius: 9999px !important;
+}
+
+.stage-progress-shell {
+  box-shadow: none !important;
+}
+
+.stage-breadcrumb-link {
+  border: none !important;
+  background: transparent !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  color: #60758a !important;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.stage-breadcrumb-link:hover {
+  color: #0067b6 !important;
+}
+
+.stage-header-actions > button,
+.stage-header-actions > a {
+  height: 30px;
+  padding: 0 14px !important;
+}
+
+.stage-header-actions > button .material-symbols-outlined,
+.stage-header-actions > a .material-symbols-outlined {
+  display: none !important;
+}
+
+.stage-action-btn {
+  height: 30px;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+.stage-action-btn .material-symbols-outlined {
+  display: none !important;
+}
+
+.stage-page button[class*="py-2.5"],
+.stage-page a[class*="py-2.5"] {
+  height: 30px;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+.project-list-page button,
+.stage-page button,
+.dialog-overlay button {
+  border: none !important;
+}
+
+.project-list-page button:not(.close-plain),
+.dialog-overlay .wizard-modal-surface button:not(.close-plain) {
+  min-height: 30px;
 }
 
 .material-symbols-outlined {
@@ -168,9 +364,8 @@ h1, h2, h3, h4, h5, h6, .font-headline {
 }
 
 .animate-shimmer {
-  background: linear-gradient(90deg, #e1e2e8 25%, #ededf4 50%, #e1e2e8 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.5s ease-in-out infinite;
+  background: #e4e9ef;
+  animation: pulse-blue 1.5s ease-in-out infinite;
 }
 
 .animate-fade-in {
@@ -208,8 +403,8 @@ h1, h2, h3, h4, h5, h6, .font-headline {
 .dialog-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(0);
   z-index: 100;
   display: flex;
   align-items: center;
@@ -219,9 +414,27 @@ h1, h2, h3, h4, h5, h6, .font-headline {
 .dialog-content {
   background: white;
   border-radius: 12px;
-  box-shadow: 0 24px 48px -12px rgba(0, 62, 111, 0.2);
+  box-shadow: 0 12px 28px -16px rgba(0, 62, 111, 0.2);
   max-height: 90vh;
   overflow-y: auto;
+}
+
+.close-plain {
+  border: none !important;
+  background: transparent !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  width: auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  line-height: 1 !important;
+  color: var(--color-outline);
+}
+
+.close-plain:hover {
+  color: var(--color-primary);
+  background: transparent !important;
 }
 
 /* ============ Toast ============ */
