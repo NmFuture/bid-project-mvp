@@ -16,6 +16,7 @@ import FinalExport from './pages/FinalExport'
 import MaterialDB from './pages/MaterialDB'
 import MaterialWiki from './pages/MaterialWiki'
 import AuditLog from './pages/AuditLog'
+import TenderReview from './pages/TenderReview'
 import Settings from './pages/Settings'
 import Login from './pages/Login'
 import Toast from './components/shared/Toast'
@@ -115,6 +116,7 @@ export default function App() {
       <AppShell currentUser={session?.user} onLogout={handleLogout}>
         <Routes>
           <Route path="/" element={<Navigate to="/projects" replace />} />
+          <Route path="/review" element={<TenderReview showToast={showToast} />} />
           <Route path="/projects" element={<ProjectList showToast={showToast} />} />
           <Route path="/projects/:id" element={<ProjectEntryRedirect />} />
           <Route path="/projects/:id/parse" element={<ParseResult showToast={showToast} />} />

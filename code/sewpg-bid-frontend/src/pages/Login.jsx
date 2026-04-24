@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { authAPI } from '../api'
+import enterpriseLogo from '../assets/logo-removebg.png'
 
 export default function Login({ onLogin }) {
   const [email, setEmail] = useState('admin@sewpg.com')
@@ -28,11 +29,13 @@ export default function Login({ onLogin }) {
     <div className="min-h-screen bg-gradient-to-br from-primary via-primary-container to-primary flex items-center justify-center p-6">
       <div className="w-full max-w-md bg-white rounded-2xl shadow-[0_24px_48px_-12px_rgba(0,62,111,0.3)] p-8 animate-fade-in">
         <div className="text-center mb-8">
-          <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-primary to-primary-container flex items-center justify-center text-on-primary shadow-lg shadow-primary/30">
-            <span className="material-symbols-outlined text-3xl">wind_power</span>
-          </div>
-          <h1 className="text-2xl font-headline font-extrabold text-primary">上海电气风电</h1>
-          <p className="text-sm text-on-surface-variant mt-1">投标智能体管理系统</p>
+          <img
+            src={enterpriseLogo}
+            alt="上海电气"
+            className="h-20 w-auto mx-auto mb-4 object-contain"
+          />
+          <h1 className="text-2xl font-headline font-extrabold text-primary">投标智能体管理系统</h1>
+          <p className="text-sm text-on-surface-variant mt-1">上海电气风电集团股份有限公司</p>
         </div>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-5">

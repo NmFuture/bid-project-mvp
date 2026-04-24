@@ -7,7 +7,6 @@ import { getStageRoute, getStrictStageLockReason } from '../../utils/stageFlow'
 export default function ProjectStageProgress({
   projectId,
   showToast,
-  title = '项目进度概览',
   onStageTenClick,
 }) {
   const navigate = useNavigate()
@@ -68,22 +67,16 @@ export default function ProjectStageProgress({
 
   if (loading) {
     return (
-      <section className="bg-surface-container-lowest p-6 rounded-xl shadow-[0_8px_24px_-12px_rgba(0,62,111,0.08)]">
-        <div className="text-sm font-semibold text-on-surface-variant mb-4 font-headline tracking-wide uppercase">
-          {title}
-        </div>
-        <div className="animate-shimmer w-full h-10 rounded-lg"></div>
+      <section className="bg-white px-0 py-2">
+        <div className="animate-shimmer w-full h-10"></div>
       </section>
     )
   }
 
   if (error) {
     return (
-      <section className="bg-surface-container-lowest p-6 rounded-xl shadow-[0_8px_24px_-12px_rgba(0,62,111,0.08)]">
-        <div className="text-sm font-semibold text-on-surface-variant mb-3 font-headline tracking-wide uppercase">
-          {title}
-        </div>
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-error-container/20 border border-error/20 px-4 py-3">
+      <section className="bg-white px-0 py-2">
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-error-container/20 border border-error/20 px-4 py-3">
           <div className="text-sm text-error">阶段进度加载失败：{error}</div>
           <button
             onClick={loadStages}
@@ -99,7 +92,6 @@ export default function ProjectStageProgress({
   return (
     <StageProgress
       stages={stages}
-      title={title}
       getStageLockReason={getStageLockReason}
       onStageClick={handleStageClick}
     />

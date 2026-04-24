@@ -3,8 +3,10 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { reviewAPI, stagesAPI } from '../api'
 import { PageError, PageLoading } from '../components/states/PageState'
 import DataCard from '../components/shared/DataCard'
+import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
+import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 
 const statusConfig = {
   resolved: {
@@ -42,7 +44,7 @@ export default function MaterialReview({ showToast }) {
   const [error, setError] = useState('')
   const [docError, setDocError] = useState('')
   const [confirming, setConfirming] = useState(false)
-  const [forceSavingDoc, setForceSavingDoc] = useState(false)
+  const [onlyofficeError, setOnlyofficeError] = useState('')
   const [savingFallback, setSavingFallback] = useState(false)
 
   const loadData = useCallback(async () => {
@@ -57,11 +59,13 @@ export default function MaterialReview({ showToast }) {
       if (reviewDocPayload?.__error) {
         setReviewDoc(null)
         setFallbackContent('')
+        setOnlyofficeError('')
         setDocError(reviewDocPayload.__error?.message || 'S6 解析文档暂未就绪')
       } else {
         setReviewDoc(reviewDocPayload)
         setFallbackContent(reviewDocPayload?.fallback?.content || '')
         setDocError('')
+        setOnlyofficeError('')
       }
     } catch (e) {
       setError(e?.message || 'S6 审核清单加载失败')
@@ -115,21 +119,6 @@ export default function MaterialReview({ showToast }) {
     }
   }
 
-  const handleForceSaveDoc = async () => {
-    if (!reviewDoc) return
-    setForceSavingDoc(true)
-    try {
-      const response = await reviewAPI.forceSaveDocument(id)
-      setReviewDoc(response?.payload || reviewDoc)
-      setFallbackContent(response?.payload?.fallback?.content || fallbackContent)
-      showToast?.(response?.message || 'S6 预览文档已重新生成')
-    } catch (e) {
-      showToast?.(e?.message || '保存回写失败，请稍后重试', 'error')
-    } finally {
-      setForceSavingDoc(false)
-    }
-  }
-
   const handleSaveFallback = async () => {
     const content = fallbackContent.trim()
     if (!content) {
@@ -149,6 +138,9 @@ export default function MaterialReview({ showToast }) {
     }
   }
 
+  const hasOnlyOfficeSession = Boolean(reviewDoc?.onlyoffice?.fileUrl && reviewDoc?.onlyoffice?.callbackUrl)
+  const useFallbackPreview = !hasOnlyOfficeSession || Boolean(onlyofficeError)
+
   if (loading) return <PageLoading title="正在加载 S6 审核清单..." />
 
   if (error) {
@@ -162,37 +154,27 @@ export default function MaterialReview({ showToast }) {
   }
 
   return (
-    <div className="flex flex-col gap-6 animate-fade-in max-w-6xl mx-auto w-full">
+    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
+      <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
 
       <PageHeader
-        title="S6 审核备料"
-        description="仅展示缺失素材、补录情况与未补录原因。进入 S6 时会自动触发后端解析，并在下方预览解析 Word。"
-        leftExtra={(
-          <button
-            onClick={() => window.history.back()}
-            className="text-primary hover:bg-surface-container-low rounded-full w-10 h-10 flex items-center justify-center transition-colors"
-          >
-            <span className="material-symbols-outlined">arrow_back</span>
-          </button>
-        )}
+        actionsClassName="stage-header-actions"
         actions={(
           <>
             <button
               onClick={loadData}
-              className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors flex items-center gap-2"
+              className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors"
             >
-              <span className="material-symbols-outlined text-sm">refresh</span>
               刷新
             </button>
             <button
               onClick={handleConfirmAndNext}
               disabled={!canConfirm || confirming}
               title={confirmDisabledReason}
-              className="px-4 py-2.5 bg-secondary text-on-secondary text-sm font-medium rounded-lg hover:bg-secondary/90 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-4 py-2.5 bg-secondary text-on-secondary text-sm font-medium rounded-lg hover:bg-secondary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span className="material-symbols-outlined text-sm">arrow_forward</span>
-              {confirming ? '进入中...' : '审核无误，进入下一阶段（S7）'}
+              {confirming ? '进入中...' : '进入下一阶段'}
             </button>
           </>
         )}
@@ -283,7 +265,7 @@ export default function MaterialReview({ showToast }) {
         <div className="px-6 py-4 border-b border-surface-container-high bg-surface-container-low flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-col gap-1 text-sm">
             <div className="text-on-surface">
-              <span className="text-on-surface-variant">S6 解析文档：</span>
+              <span className="text-on-surface-variant">解析文档预览：</span>
               <span className="font-medium">{reviewDoc?.fileName || '-'}</span>
             </div>
             <div className="text-on-surface">
@@ -295,15 +277,6 @@ export default function MaterialReview({ showToast }) {
             <span className={`px-2.5 py-1 rounded-full font-semibold ${(reviewDoc?.parseStatus || data?.parse?.status) === 'completed' ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
               {(reviewDoc?.parseStatus || data?.parse?.status) === 'completed' ? '解析完成' : '待解析'}
             </span>
-            {reviewDoc && (
-              <button
-                onClick={handleForceSaveDoc}
-                disabled={forceSavingDoc}
-                className="px-3 py-1.5 rounded-lg bg-primary text-on-primary text-xs font-semibold hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {forceSavingDoc ? '保存中...' : '触发保存回写'}
-              </button>
-            )}
           </div>
         </div>
 
@@ -319,11 +292,25 @@ export default function MaterialReview({ showToast }) {
           </div>
         ) : (
           <div className="p-4 flex flex-col gap-3">
-            <div className="text-xs text-on-surface-variant">
-              S6 当前提供稳定的文本预览与保存回写。OnlyOffice 在线编辑收敛到 S9 人机共创阶段，避免审核阶段出现预览异常影响流程。
+            {onlyofficeError && (
+              <div className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+                {onlyofficeError}
+              </div>
+            )}
+
+            <div className={useFallbackPreview ? 'hidden' : 'block'}>
+              <div className="h-[58vh] min-h-[560px] rounded-lg border border-outline-variant bg-surface-container-low overflow-hidden">
+                <OnlyOfficeEmbed
+                  session={reviewDoc?.onlyoffice}
+                  mode="view"
+                  className="w-full h-full border-0 bg-white"
+                  onReady={() => setOnlyofficeError('')}
+                  onError={(message) => setOnlyofficeError(message)}
+                />
+              </div>
             </div>
 
-            <div className="flex flex-col gap-3">
+            <div className={useFallbackPreview ? 'flex flex-col gap-3' : 'hidden'}>
               <textarea
                 value={fallbackContent}
                 onChange={(event) => setFallbackContent(event.target.value)}

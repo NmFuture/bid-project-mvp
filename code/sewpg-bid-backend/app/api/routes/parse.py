@@ -177,3 +177,32 @@ async def upload_and_parse(
         **parse_result,
         "message": "上传成功，已自动完成解析。",
     }
+
+
+@router.post("/api/projects/{project_id}/template-files/upload")
+async def upload_template_files(
+    project_id: str,
+    templateFiles: list[UploadFile] | None = File(default=None),
+) -> dict[str, Any]:
+    existing_tender, existing_template = store.get_parse_inputs(project_id)
+    parse_result = store.get_parse_result(project_id)
+    files = templateFiles or []
+
+    if not existing_tender or parse_result.get("status") != "completed":
+        raise HTTPException(status_code=400, detail="请先在“审核”模块完成招标文件解析并确认参与投标。")
+
+    if not files:
+        raise HTTPException(status_code=400, detail="请至少上传 1 个模板文件。")
+
+    saved_template = await save_uploads_with_offset(
+        project_id,
+        "template",
+        files,
+        start_index=len(existing_template) + 1,
+    )
+    merged_template = [*existing_template, *saved_template]
+    payload = store.update_template_files(project_id, merged_template)
+    return {
+        **payload,
+        "message": "模板文件上传成功。",
+    }

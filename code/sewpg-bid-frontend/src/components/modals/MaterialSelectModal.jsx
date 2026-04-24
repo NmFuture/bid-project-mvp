@@ -45,7 +45,7 @@ export default function MaterialSelectModal({ onClose, onSelected }) {
             <span className="material-symbols-outlined text-primary">inventory_2</span>
             <h2 className="text-lg font-headline font-bold text-on-surface">从素材库选择</h2>
           </div>
-          <button onClick={onClose} className="text-on-surface-variant hover:text-primary transition-colors">
+          <button onClick={onClose} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
             <span className="material-symbols-outlined">close</span>
           </button>
         </div>

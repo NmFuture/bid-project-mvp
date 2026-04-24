@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { parseAPI, projectsAPI, stagesAPI } from '../api'
-import { PageLoading, PageError } from '../components/states/PageState'
-import PageHeader from '../components/shared/PageHeader'
+import { PageError, PageLoading } from '../components/states/PageState'
 import DataCard from '../components/shared/DataCard'
+import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
+import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -13,64 +14,6 @@ const ALLOWED_EXTENSIONS = new Set([
   'pdf', 'doc', 'docx', 'xls', 'xlsx', 'zip',
   'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
 ])
-
-const getFileTypeLabel = (fileName = '') => {
-  const ext = String(fileName).split('.').pop()?.toLowerCase() || ''
-  if (ext === 'pdf') return 'PDF'
-  if (ext === 'docx' || ext === 'doc') return 'DOCX'
-  if (ext === 'xlsx' || ext === 'xls') return 'XLSX'
-  return '文件'
-}
-
-const extensionOf = (name) => {
-  const parts = String(name || '').split('.')
-  if (parts.length < 2) return ''
-  return String(parts.pop() || '').toLowerCase()
-}
-
-const fileSizeLabel = (size) => {
-  const value = Number(size || 0)
-  if (!Number.isFinite(value) || value <= 0) return '0 MB'
-  return `${(value / 1024 / 1024).toFixed(1)} MB`
-}
-
-const numberLabel = (value) => {
-  const number = Number(value || 0)
-  if (!Number.isFinite(number) || number <= 0) return '0'
-  return number.toLocaleString('zh-CN')
-}
-
-const buildFallbackSourceFiles = (fileNames = []) =>
-  fileNames.map((name, index) => ({
-    id: `SRC-${index + 1}`,
-    name,
-    type: getFileTypeLabel(name),
-    pageCount: '-',
-    size: '-',
-  }))
-
-const formatDateTime = (value) => {
-  if (!value) return '未解析'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '未解析'
-  return date.toLocaleString('zh-CN', { hour12: false })
-}
-
-const validatePickedFiles = (picked = []) => {
-  if (picked.length > MAX_BATCH_FILES) return `单次最多上传 ${MAX_BATCH_FILES} 个文件。`
-
-  for (const file of picked) {
-    if (Number(file.size || 0) > MAX_FILE_SIZE) {
-      return `文件 ${file.name} 超过 1024MB 上限。`
-    }
-    const ext = extensionOf(file.name)
-    if (!ALLOWED_EXTENSIONS.has(ext)) {
-      return `文件 ${file.name} 类型不在白名单中。`
-    }
-  }
-
-  return ''
-}
 
 const normalizeUploadedTemplateFiles = (files = []) =>
   (Array.isArray(files) ? files : [])
@@ -89,17 +32,51 @@ const normalizeUploadedTemplateFiles = (files = []) =>
       }
     })
 
+const extensionOf = (name) => {
+  const parts = String(name || '').split('.')
+  if (parts.length < 2) return ''
+  return String(parts.pop() || '').toLowerCase()
+}
+
+const fileSizeLabel = (size) => {
+  const value = Number(size || 0)
+  if (!Number.isFinite(value) || value <= 0) return '0 MB'
+  return `${(value / 1024 / 1024).toFixed(1)} MB`
+}
+
+const formatDateTime = (value) => {
+  if (!value) return '未解析'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '未解析'
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+const validatePickedFiles = (picked = []) => {
+  if (picked.length > MAX_BATCH_FILES) return `单次最多上传 ${MAX_BATCH_FILES} 个文件。`
+  for (const file of picked) {
+    if (Number(file.size || 0) > MAX_FILE_SIZE) return `文件 ${file.name} 超过 500MB 上限。`
+    const ext = extensionOf(file.name)
+    if (!ALLOWED_EXTENSIONS.has(ext)) return `文件 ${file.name} 类型不在白名单中。`
+  }
+  return ''
+}
+
+const REVIEW_DECISION_LABELS = {
+  pending: '待审核',
+  participate: '参与投标',
+  abandon: '不参与',
+}
+
 export default function ParseResult({ showToast }) {
   const navigate = useNavigate()
   const { id } = useParams()
   const [project, setProject] = useState(null)
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const [advancing, setAdvancing] = useState(false)
   const [uploading, setUploading] = useState(false)
-  const [error, setError] = useState('')
   const [uploadError, setUploadError] = useState('')
-  const [tenderFiles, setTenderFiles] = useState([])
   const [templateFiles, setTemplateFiles] = useState([])
 
   const loadData = useCallback(async () => {
@@ -113,7 +90,7 @@ export default function ParseResult({ showToast }) {
       setProject(projectResponse)
       setData(parseResponse)
     } catch (e) {
-      setError(e?.message || '解析结果加载失败')
+      setError(e?.message || 'S1 模板上传信息加载失败')
     } finally {
       setLoading(false)
     }
@@ -126,64 +103,28 @@ export default function ParseResult({ showToast }) {
     return () => clearTimeout(timer)
   }, [loadData])
 
-  const sourceFiles = useMemo(() => {
-    if (Array.isArray(data?.sourceFiles) && data.sourceFiles.length) {
-      return data.sourceFiles
-    }
-    return buildFallbackSourceFiles(project?.files || [])
-  }, [data?.sourceFiles, project?.files])
+  const sourceFiles = Array.isArray(data?.sourceFiles) && data.sourceFiles.length
+    ? data.sourceFiles
+    : (Array.isArray(project?.files) ? project.files.map((name, index) => ({ id: `SRC-${index + 1}`, name })) : [])
 
   const uploadedTemplateFiles = useMemo(
     () => normalizeUploadedTemplateFiles(project?.templateFiles),
     [project?.templateFiles],
   )
 
-  const hasSourceFiles = sourceFiles.length > 0
-  const parsedItems = useMemo(() => data?.items || [], [data?.items])
-  const technicalItems = useMemo(() => {
-    const filtered = parsedItems.filter((item) => item.type === '技术参数')
-    if (filtered.length) return filtered
-    return parsedItems.filter((item) => item.keyEntity || item.keyValue || item.title)
-  }, [parsedItems])
-
-  const technicalRows = useMemo(() => {
-    if (!technicalItems.length) return []
-    return technicalItems.map((item, index) => {
-      const fileName = item.sourceFile || sourceFiles[0]?.name || '-'
-      const fileMeta = sourceFiles.find((file) => file.name === fileName)
-      const technicalParam = item.keyEntity && item.keyValue
-        ? `${item.keyEntity}：${item.keyValue}`
-        : item.keyValue || item.keyEntity || item.title || '-'
-      return {
-        id: item.id || `TP-${index + 1}`,
-        projectName: project?.name || '-',
-        fileName,
-        fileType: fileMeta?.type || getFileTypeLabel(fileName),
-        pageLabel: item.page ? `P.${item.page}` : (fileMeta?.pageCount || '-'),
-        technicalParam,
-      }
-    })
-  }, [technicalItems, sourceFiles, project?.name])
-
-  const fallbackRows = useMemo(() => {
-    if (!sourceFiles.length) return []
-    return sourceFiles.map((file) => ({
-      id: file.id || file.name,
-      projectName: project?.name || '-',
-      fileName: file.name,
-      fileType: file.type || getFileTypeLabel(file.name),
-      pageLabel: file.pageCount || '-',
-      technicalParam: data?.status === 'completed' ? '未提取到技术参数' : '待触发解析',
-    }))
-  }, [sourceFiles, project?.name, data?.status])
-
-  const rows = technicalRows.length ? technicalRows : fallbackRows
+  const reviewDecision = String(project?.reviewDecision || 'participate')
+  const reviewDecisionLabel = REVIEW_DECISION_LABELS[reviewDecision] || REVIEW_DECISION_LABELS.pending
   const isParseCompleted = data?.status === 'completed'
-  const parseSummary = data?.summary || {}
-  const parseWarnings = Array.isArray(parseSummary.warnings) ? parseSummary.warnings : []
-  const canUploadAndParse = uploading || (!tenderFiles.length && !(templateFiles.length && hasSourceFiles))
+  const isReviewApproved = reviewDecision === 'participate' || (isParseCompleted && sourceFiles.length > 0)
+  const isProjectInfoComplete = Boolean(
+    String(project?.name || '').trim()
+    && String(project?.customerName || '').trim()
+    && String(project?.manager || '').trim()
+    && String(project?.deadline || '').trim(),
+  )
+  const canGoNextStage = isReviewApproved && isParseCompleted && isProjectInfoComplete
 
-  const handleFilesPicked = (kind, event) => {
+  const handleFilesPicked = (event) => {
     const picked = Array.from(event.target.files || [])
     event.target.value = ''
     if (!picked.length) return
@@ -193,33 +134,29 @@ export default function ParseResult({ showToast }) {
       setUploadError(validationError)
       return
     }
-
     setUploadError('')
-    if (kind === 'tender') {
-      setTenderFiles(picked)
-      return
-    }
     setTemplateFiles(picked)
   }
 
-  const removePickedFile = (kind, index) => {
-    if (kind === 'tender') {
-      setTenderFiles((prev) => prev.filter((_, i) => i !== index))
-      return
-    }
+  const removePickedFile = (index) => {
     setTemplateFiles((prev) => prev.filter((_, i) => i !== index))
   }
 
-  const handleUploadAndParse = async () => {
-    if (!tenderFiles.length && !hasSourceFiles) {
-      const message = '请先上传招标文件（必选）后再解析。'
-      setUploadError(message)
-      showToast?.(message, 'error')
+  const handleUploadTemplateFiles = async () => {
+    if (!isProjectInfoComplete) {
+      showToast?.('请先返回“审核”模块，重新确认参与并补全项目信息。', 'error')
       return
     }
-
-    if (!tenderFiles.length && !templateFiles.length) {
-      const message = '当前没有新增文件可上传；如需重新解析，请先补充模板文件或重新选择招标文件。'
+    if (!isReviewApproved) {
+      showToast?.('请先在“审核”模块确认“参与投标”。', 'error')
+      return
+    }
+    if (!sourceFiles.length || !isParseCompleted) {
+      showToast?.('请先在“审核”模块完成招标文件解析。', 'error')
+      return
+    }
+    if (!templateFiles.length) {
+      const message = '请先选择模板文件。'
       setUploadError(message)
       showToast?.(message, 'error')
       return
@@ -229,18 +166,13 @@ export default function ParseResult({ showToast }) {
     setUploadError('')
     try {
       const formData = new FormData()
-      tenderFiles.forEach((file) => formData.append('tenderFiles', file))
       templateFiles.forEach((file) => formData.append('templateFiles', file))
-      const response = await parseAPI.uploadAndRun(id, {
-        formData,
-      })
-      setData(response)
-      if (response?.project) setProject(response.project)
-      setTenderFiles([])
+      await parseAPI.uploadTemplates(id, { formData })
       setTemplateFiles([])
-      showToast?.(response?.message || '上传成功，解析已完成。')
+      await loadData()
+      showToast?.('模板文件上传成功。')
     } catch (e) {
-      const message = e?.message || '上传并解析失败'
+      const message = e?.message || '模板文件上传失败'
       setUploadError(message)
       showToast?.(message, 'error')
     } finally {
@@ -249,8 +181,16 @@ export default function ParseResult({ showToast }) {
   }
 
   const handleGoNextStage = async () => {
+    if (!isProjectInfoComplete) {
+      showToast?.('请先返回“审核”模块，重新确认参与并补全项目信息。', 'error')
+      return
+    }
+    if (!isReviewApproved) {
+      showToast?.('当前项目尚未确认参与投标，请先前往“审核”模块处理。', 'error')
+      return
+    }
     if (!isParseCompleted) {
-      showToast?.('请先完成 S1 解析后再进入 S2。', 'error')
+      showToast?.('请先在“审核”模块完成招标文件解析。', 'error')
       return
     }
     setAdvancing(true)
@@ -265,244 +205,136 @@ export default function ParseResult({ showToast }) {
     }
   }
 
-  const renderPickedFiles = (list, kind) => {
-    if (!list.length) return null
-    return (
-      <div className="flex flex-col gap-2">
-        {list.map((file, index) => (
-          <div key={`${file.name}-${index}`} className="flex items-center gap-3 p-3 bg-surface-container-low rounded-lg border border-surface-container-high">
-            <span className="material-symbols-outlined text-primary">description</span>
-            <span className="text-sm text-on-surface flex-1 truncate" title={file.name}>{file.name}</span>
-            <span className="text-xs text-outline">{fileSizeLabel(file.size)}</span>
-            <button
-              onClick={() => removePickedFile(kind, index)}
-              className="text-error hover:bg-error-container/30 rounded-full w-6 h-6 flex items-center justify-center"
-            >
-              <span className="material-symbols-outlined text-sm">close</span>
-            </button>
-          </div>
-        ))}
-      </div>
-    )
-  }
-
-  if (loading) return <PageLoading title="正在加载解析结果..." />
-
-  if (error) {
-    return (
-      <PageError
-        title="解析结果加载失败"
-        description={error}
-        onRetry={loadData}
-      />
-    )
-  }
+  if (loading) return <PageLoading title="正在加载 S1 模板上传信息..." />
+  if (error) return <PageError title="S1 模板上传信息加载失败" description={error} onRetry={loadData} />
 
   return (
-    <div className="flex flex-col gap-6 animate-fade-in max-w-6xl mx-auto w-full">
+    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
+      <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
 
       <PageHeader
         className="mb-2"
-        title="S1 解析结果"
-        description="先上传招标文件（必选）与模板文件（可选），上传成功后自动解析并展示核心字段。"
-        leftExtra={(
-          <button
-            onClick={() => window.history.back()}
-            className="text-primary hover:bg-surface-container-low rounded-full w-10 h-10 flex items-center justify-center transition-colors"
-          >
-            <span className="material-symbols-outlined">arrow_back</span>
-          </button>
-        )}
+        actionsClassName="stage-header-actions"
         actions={(
           <>
             <button
               onClick={loadData}
-              className="px-5 py-2.5 bg-surface-container-high text-on-surface-variant font-medium rounded-lg hover:bg-surface-dim transition-colors text-sm flex items-center gap-2"
+              className="px-5 py-2.5 bg-surface-container-high text-on-surface-variant font-medium rounded-lg hover:bg-surface-dim transition-colors text-sm"
             >
-              <span className="material-symbols-outlined text-lg">refresh</span>
               刷新
             </button>
             <button
               onClick={handleGoNextStage}
-              disabled={!isParseCompleted || advancing}
-              title={!isParseCompleted ? '完成解析后可进入 S2' : ''}
-              className="px-5 py-2.5 bg-secondary text-on-secondary font-medium rounded-lg shadow-sm hover:bg-secondary/90 transition-colors text-sm flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!canGoNextStage || advancing}
+              title={!canGoNextStage ? '完成审核解析后可进入 S2（模板文件可选）' : ''}
+              className="px-5 py-2.5 bg-secondary text-on-secondary font-medium rounded-lg shadow-sm hover:bg-secondary/90 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span className="material-symbols-outlined text-lg">arrow_forward</span>
-              {advancing ? '进入中...' : '进入下一阶段（S2）'}
+              {advancing ? '进入中...' : '进入下一阶段'}
             </button>
           </>
         )}
       />
 
       <DataCard className="!p-6 flex flex-col gap-5">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <h3 className="text-sm font-semibold text-on-surface">S1 文件上传</h3>
-            <p className="text-xs text-outline mt-1">招标文件必选，模板文件可选；上传成功后自动触发后台解析。</p>
-          </div>
+        <div className="flex items-center justify-end gap-4">
           <button
-            onClick={handleUploadAndParse}
-            disabled={canUploadAndParse}
-            className="px-5 py-2.5 bg-gradient-to-r from-primary to-primary-container text-on-primary font-semibold rounded-lg shadow-lg shadow-primary/20 hover:shadow-xl transition-all text-sm flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={handleUploadTemplateFiles}
+            disabled={uploading || !templateFiles.length}
+            className="stage-action-btn px-5 py-2.5 bg-primary text-on-primary font-semibold rounded-lg transition-colors hover:bg-primary/90 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <span className="material-symbols-outlined text-lg" style={{ fontVariationSettings: "'FILL' 1" }}>
-              {uploading ? 'hourglass_top' : 'upload_file'}
-            </span>
-            {uploading ? '上传并解析中...' : '上传并自动解析'}
+            {uploading ? '上传中...' : '上传模板文件'}
           </button>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div className="border border-surface-container-high rounded-lg p-4 flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <h4 className="text-sm font-semibold text-on-surface">招标文件（必选）</h4>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-error-container/30 text-error">必选</span>
-            </div>
-            <button
-              onClick={() => document.getElementById('s1-tender-upload')?.click()}
-              className="h-11 px-4 rounded-md border border-dashed border-outline-variant hover:border-primary hover:bg-primary/5 transition-colors text-sm text-on-surface"
-            >
-              选择招标文件
-            </button>
-            <input
-              id="s1-tender-upload"
-              type="file"
-              className="hidden"
-              accept={FILE_ACCEPT}
-              multiple
-              onChange={(event) => handleFilesPicked('tender', event)}
-            />
-            {renderPickedFiles(tenderFiles, 'tender')}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs">
+          <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+            <p className="font-medium text-on-surface mb-1">审核决策状态</p>
+            <p className="text-on-surface-variant">{reviewDecisionLabel}</p>
           </div>
-
-          <div className="border border-surface-container-high rounded-lg p-4 flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <h4 className="text-sm font-semibold text-on-surface">模板文件（可选）</h4>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-surface-container-high text-on-surface-variant">可选</span>
-            </div>
-            <button
-              onClick={() => document.getElementById('s1-template-upload')?.click()}
-              className="h-11 px-4 rounded-md border border-dashed border-outline-variant hover:border-primary hover:bg-primary/5 transition-colors text-sm text-on-surface"
-            >
-              选择模板文件
-            </button>
-            <input
-              id="s1-template-upload"
-              type="file"
-              className="hidden"
-              accept={FILE_ACCEPT}
-              multiple
-              onChange={(event) => handleFilesPicked('template', event)}
-            />
-            {renderPickedFiles(templateFiles, 'template')}
+          <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+            <p className="font-medium text-on-surface mb-1">招标文件解析状态</p>
+            <p className="text-on-surface-variant">{isParseCompleted ? `已完成（${formatDateTime(data?.parsedAt)}）` : '未完成'}</p>
+          </div>
+          <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+            <p className="font-medium text-on-surface mb-1">已上传招标文件（只读）</p>
+            <p className="text-on-surface-variant">{sourceFiles.length ? sourceFiles.map((item) => item.name).join('，') : '暂无'}</p>
           </div>
         </div>
 
+        {!isReviewApproved && (
+          <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error flex items-center justify-between gap-3">
+            <span>当前项目尚未确认参与投标，请先到“审核”模块完成决策。</span>
+            <button
+              onClick={() => navigate(`/review?projectId=${id}`)}
+              className="h-[30px] px-3 bg-[#0067B6] text-white text-xs font-semibold"
+            >
+              前往审核模块
+            </button>
+          </div>
+        )}
+        {isReviewApproved && !isProjectInfoComplete && (
+          <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error flex items-center justify-between gap-3">
+            <span>当前项目信息未补全，请返回“审核”模块重新确认参与并补全项目信息。</span>
+            <button
+              onClick={() => navigate(`/review?projectId=${id}`)}
+              className="h-[30px] px-3 bg-[#0067B6] text-white text-xs font-semibold"
+            >
+              前往审核模块
+            </button>
+          </div>
+        )}
+
+        <div className="border border-surface-container-high rounded-md p-4 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-semibold text-on-surface">模板文件（可选）</h4>
+            <span className="text-xs px-2 py-0.5 rounded-md bg-surface-container-high text-on-surface-variant">可选</span>
+          </div>
+          <div className="rounded-md border border-dashed border-[#8eb8de] bg-[#f2f8fd] p-3 flex justify-center">
+            <button
+              onClick={() => document.getElementById('s1-template-upload')?.click()}
+              className="stage-action-btn h-10 min-w-[220px] px-5 bg-[#0067B6] text-white text-sm font-semibold hover:bg-[#0b74c8] transition-colors flex items-center justify-center gap-2"
+            >
+              <span className="material-symbols-outlined text-[18px]">upload_file</span>
+              点击选择模版文件
+            </button>
+          </div>
+          <input
+            id="s1-template-upload"
+            type="file"
+            className="hidden"
+            accept={FILE_ACCEPT}
+            multiple
+            onChange={handleFilesPicked}
+          />
+          {templateFiles.length > 0 && (
+            <div className="flex flex-col gap-2">
+              {templateFiles.map((file, index) => (
+                <div key={`${file.name}-${index}`} className="flex items-center gap-3 p-3 bg-surface-container-low rounded-md border border-surface-container-high">
+                  <span className="text-sm text-on-surface flex-1 truncate" title={file.name}>{file.name}</span>
+                  <span className="text-xs text-outline">{fileSizeLabel(file.size)}</span>
+                  <button
+                    onClick={() => removePickedFile(index)}
+                    className="text-error hover:bg-error-container/30 w-6 h-6 flex items-center justify-center"
+                  >
+                    <span className="material-symbols-outlined text-sm">close</span>
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {uploadError && (
-          <div className="rounded-lg border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
+          <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
             {uploadError}
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs text-outline">
-          <div className="rounded-md bg-surface-container-low p-3">
-            <p className="font-medium text-on-surface mb-1">已上传招标文件（当前项目）</p>
-            <p>{sourceFiles.length ? sourceFiles.map((file) => file.name).join('，') : '暂无'}</p>
-          </div>
-          <div className="rounded-md bg-surface-container-low p-3">
-            <p className="font-medium text-on-surface mb-1">已上传模板文件（当前项目）</p>
-            <p>{uploadedTemplateFiles.length ? uploadedTemplateFiles.map((file) => file.name).join('，') : '暂无'}</p>
-          </div>
+        <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high text-xs text-outline">
+          <p className="font-medium text-on-surface mb-1">已上传模板文件（当前项目）</p>
+          <p>{uploadedTemplateFiles.length ? uploadedTemplateFiles.map((file) => file.name).join('，') : '暂无'}</p>
         </div>
-      </DataCard>
-
-      <DataCard className="!p-0 overflow-hidden min-h-[420px]">
-        <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-on-surface">解析输出（精简）</h3>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-outline">解析时间：{formatDateTime(data?.parsedAt)}</span>
-            <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${isParseCompleted ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
-              {isParseCompleted ? '解析完成' : '待解析'}
-            </span>
-          </div>
-        </div>
-
-        {isParseCompleted && (
-          <div className="px-6 py-5 border-b border-surface-container-high bg-surface-container-low/40 flex flex-col gap-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div className="rounded-lg bg-surface-container-low p-4 border border-surface-container-high">
-                <div className="text-xs text-outline mb-1">解析文件数</div>
-                <div className="text-lg font-semibold text-on-surface">{numberLabel(parseSummary.fileCount)}</div>
-              </div>
-              <div className="rounded-lg bg-surface-container-low p-4 border border-surface-container-high">
-                <div className="text-xs text-outline mb-1">提取字段数</div>
-                <div className="text-lg font-semibold text-on-surface">{numberLabel(parseSummary.extractedCount)}</div>
-              </div>
-              <div className="rounded-lg bg-surface-container-low p-4 border border-surface-container-high">
-                <div className="text-xs text-outline mb-1">文本总长度</div>
-                <div className="text-lg font-semibold text-on-surface">{numberLabel(parseSummary.textLength)}</div>
-              </div>
-            </div>
-
-            {parseWarnings.length > 0 && (
-              <div className="rounded-lg border border-error/20 bg-error-container/15 px-4 py-3">
-                <div className="text-sm font-semibold text-on-surface mb-2">解析警告</div>
-                <div className="flex flex-col gap-1">
-                  {parseWarnings.map((warning, index) => (
-                    <div key={`${warning}-${index}`} className="text-sm text-on-surface-variant">
-                      {warning}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {!hasSourceFiles ? (
-          <div className="p-6">
-            <div className="rounded-lg border border-error/20 bg-error-container/15 px-4 py-3 text-sm text-on-surface-variant">
-              当前项目还未上传招标文件。请先在上方上传招标文件（必选），系统会自动触发解析。
-            </div>
-          </div>
-        ) : !isParseCompleted ? (
-          <div className="h-[260px] px-6 py-8 flex flex-col items-center justify-center text-center">
-            <div className="w-14 h-14 rounded-full bg-surface-container-high flex items-center justify-center mb-4">
-              <span className="material-symbols-outlined text-primary text-3xl">hourglass_top</span>
-            </div>
-            <h4 className="text-lg font-headline font-bold text-on-surface mb-2">等待解析完成</h4>
-            <p className="text-sm text-on-surface-variant max-w-xl leading-relaxed">
-              已检测到 {sourceFiles.length} 份招标文件。请点击上方“上传并自动解析”开始处理。
-            </p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-surface-container-low border-b border-surface-container-high">
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">招标文件项目名称</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">文件名称</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">文件类型</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">页数</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">技术参数</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => (
-                  <tr key={row.id} className="border-b border-surface-container-high hover:bg-surface-container-low/60">
-                    <td className="px-6 py-3 text-on-surface font-medium whitespace-nowrap">{row.projectName}</td>
-                    <td className="px-6 py-3 text-on-surface min-w-[240px]">{row.fileName}</td>
-                    <td className="px-6 py-3 text-on-surface-variant whitespace-nowrap">{row.fileType}</td>
-                    <td className="px-6 py-3 text-on-surface-variant whitespace-nowrap">{row.pageLabel}</td>
-                    <td className="px-6 py-3 text-primary font-medium min-w-[260px]">{row.technicalParam}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
       </DataCard>
     </div>
   )
