@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
+import enterpriseLogo from '../../assets/logo-removebg.png'
 
 const NAV_ITEMS = [
+  { path: '/review', icon: 'fact_check', label: '审核', match: '/review' },
   { path: '/projects', icon: 'folder_open', label: '项目', match: '/projects' },
   { path: '/materials/structured', icon: 'database', label: '素材库', match: '/materials' },
   { path: '/audit', icon: 'history_edu', label: '审计', match: '/audit' },
@@ -18,19 +20,26 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
   const isActive = (match) => location.pathname.startsWith(match)
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-screen flex flex-col overflow-hidden">
       {/* ===== Header ===== */}
-      <header className="fixed top-0 w-full z-50 bg-[#f8f9ff]/80 backdrop-blur-xl shadow-[0_24px_48px_-12px_rgba(0,62,111,0.06)] flex justify-between items-center px-8 h-16">
-        <div className="flex items-center">
-          <div className="text-lg font-extrabold tracking-tight text-primary font-headline">
-            上海电气风电投标智能体
-          </div>
+      <header className="fixed top-0 w-full z-50 h-12 bg-[#05202E] text-white border-b border-[#154e7a] flex items-center justify-between gap-2 px-3 md:px-5">
+        <div className="flex items-center gap-3 min-w-0">
+          <img
+            src={enterpriseLogo}
+            alt="上海电气"
+            className="h-7 w-auto object-contain shrink-0"
+          />
+          <span className="text-[18px] font-semibold tracking-tight text-white font-headline leading-none truncate">
+            投标智能体平台
+          </span>
         </div>
-        <div className="flex items-center gap-4">
+
+        <div className="flex items-center gap-2">
+          <span className="hidden md:inline text-xs text-[#d6ebff]">欢迎您，{userName}</span>
           {/* User Avatar */}
           <div className="relative">
             <button
-              className="w-10 h-10 rounded-full overflow-hidden border border-outline-variant/30 cursor-pointer bg-primary-container flex items-center justify-center text-on-primary font-bold text-sm"
+              className="w-8 h-8 rounded-full overflow-hidden border border-[#8fb8d8] cursor-pointer bg-[#20679f] flex items-center justify-center text-white font-semibold text-sm"
               onClick={() => setShowUserMenu(!showUserMenu)}
             >
               {userAvatar}
@@ -66,52 +75,42 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
       </header>
 
       {/* ===== Sidebar + Main ===== */}
-      <div className="flex flex-1 pt-16">
+      <div className="flex flex-1 pt-12 min-h-0">
         {/* Sidebar */}
-        <aside className="hidden md:flex flex-col bg-surface-container-low fixed left-0 top-16 h-[calc(100vh-4rem)] w-64 z-40 pt-8 pb-8 transition-all">
-          <div className="px-8 mb-8">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-primary to-primary-container flex items-center justify-center text-on-primary font-headline font-bold text-xl shadow-lg shadow-primary/20">
-                <span className="material-symbols-outlined">wind_power</span>
-              </div>
-              <div className="flex flex-col">
-                <span className="text-primary font-headline font-extrabold tracking-tight text-lg leading-tight">上海电气</span>
-                <span className="text-on-surface-variant text-xs tracking-wider opacity-80">风电投标系统</span>
-              </div>
-            </div>
-          </div>
-
+        <aside className="hidden md:flex flex-col bg-[#0067B6] fixed left-0 top-12 h-[calc(100vh-4.75rem)] w-[74px] z-40 pt-0 pb-0 border-r border-[#0f77c4]">
           {/* Nav Items */}
-          <nav className="flex-1 overflow-y-auto flex flex-col gap-2 font-headline font-medium text-sm">
+          <nav className="flex-1 overflow-y-auto flex flex-col gap-0 px-0 font-headline text-xs">
             {NAV_ITEMS.map((item) => (
               <NavLink
                 key={item.path}
                 to={item.path}
-                className={`flex items-center gap-4 px-8 py-4 transition-all duration-300 ease-out hover:translate-x-1 group ${
+                className={`w-full flex flex-col items-center justify-center gap-1 px-0 py-3 border-y border-transparent transition-colors ${
                   isActive(item.match)
-                    ? 'bg-white text-primary rounded-l-full ml-4 shadow-sm border-r-4 border-secondary font-bold px-6'
-                    : 'text-on-surface/70 hover:text-primary'
+                    ? 'bg-[#4C95CD] text-white border-[#62a2d4]'
+                    : 'text-white/90 hover:text-white hover:bg-[#237ac0]'
                 }`}
               >
                 <span
-                  className={`material-symbols-outlined text-xl transition-transform group-hover:scale-110 ${
-                    isActive(item.match) ? 'text-primary' : ''
-                  }`}
+                  className="material-symbols-outlined text-[19px]"
                   style={{ fontVariationSettings: isActive(item.match) ? "'FILL' 1" : "'FILL' 0" }}
                 >
                   {item.icon}
                 </span>
-                <span className="tracking-wide">{item.label}</span>
+                <span className="tracking-wide leading-none font-semibold">{item.label}</span>
               </NavLink>
             ))}
           </nav>
         </aside>
 
         {/* Main Content */}
-        <main className="flex-1 md:ml-64 overflow-y-auto p-6 md:p-8 lg:p-12 relative bg-surface min-h-[calc(100vh-4rem)]">
+        <main className="flex-1 md:ml-[74px] overflow-y-auto px-7 py-4 md:px-10 md:py-5 lg:px-12 lg:py-6 xl:px-14 relative bg-white min-h-0">
           {children}
         </main>
       </div>
+
+      <footer className="md:ml-[74px] h-7 border-t border-outline-variant/45 bg-surface text-outline text-xs flex items-center justify-center">
+        © 上海电气风电集团股份有限公司版权所有
+      </footer>
 
       {/* Click outside to close menus */}
       {showUserMenu && (

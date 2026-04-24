@@ -75,7 +75,7 @@ export default function AuditDetailModal({ auditId, onClose }) {
             <h2 className="text-xl font-headline font-bold text-on-surface">审计详情</h2>
             <p className="text-xs text-outline mt-1">日志 ID：{auditId}</p>
           </div>
-          <button onClick={onClose} className="text-on-surface-variant hover:text-primary transition-colors">
+          <button onClick={onClose} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
             <span className="material-symbols-outlined">close</span>
           </button>
         </div>

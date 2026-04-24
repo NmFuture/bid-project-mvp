@@ -5,6 +5,7 @@ import { PageLoading, PageError } from '../components/states/PageState'
 import PageHeader from '../components/shared/PageHeader'
 import DataCard from '../components/shared/DataCard'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
+import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 import { brandFutureCode, brandFutureCodeOrFallback } from '../utils/branding'
 
 const formatDateTime = (value) => {
@@ -205,13 +206,6 @@ export default function DirectoryGeneration({ showToast }) {
   if (loading) return <PageLoading title="正在加载 S2 目录生成状态..." />
   if (error) return <PageError title="目录生成状态加载失败" description={error} onRetry={loadData} />
 
-  const statusTextMap = {
-    idle: '未生成',
-    running: '生成中',
-    completed: '已生成',
-    failed: '生成失败',
-  }
-
   const taskStatusLabelMap = {
     pending: '待处理',
     running: '进行中',
@@ -219,11 +213,11 @@ export default function DirectoryGeneration({ showToast }) {
     failed: '失败',
   }
 
-  const taskStatusClassMap = {
-    pending: 'bg-surface-container-high text-on-surface-variant',
-    running: 'bg-primary/15 text-primary',
-    done: 'bg-secondary-container text-on-secondary-container',
-    failed: 'bg-error/15 text-error',
+  const taskStatusTextClassMap = {
+    pending: 'text-on-surface-variant',
+    running: 'text-primary',
+    done: 'text-secondary',
+    failed: 'text-error',
   }
 
   const opencodeStatusLabelMap = {
@@ -265,8 +259,8 @@ export default function DirectoryGeneration({ showToast }) {
   }
 
   const renderOpencodeOutputCard = () => (
-    <div className="rounded-xl border border-[#d7e0ea] bg-[#f8fbff] shadow-[0_20px_60px_rgba(148,163,184,0.18)] overflow-hidden">
-      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-[#d7e0ea] bg-white/95">
+    <div className="rounded-lg border border-surface-container-high bg-white overflow-hidden">
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-surface-container-high bg-white">
         <div className="flex items-center gap-3 min-w-0">
           <div className="flex items-center gap-1.5 shrink-0">
             <span className="h-2.5 w-2.5 rounded-full bg-rose-400/90" />
@@ -298,16 +292,16 @@ export default function DirectoryGeneration({ showToast }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 px-4 py-3 border-b border-[#d7e0ea] bg-[#f1f6fb]">
-        <div className="rounded-lg bg-white border border-[#d7e0ea] px-3 py-2">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 px-4 py-3 border-b border-surface-container-high bg-white">
+        <div className="rounded-md bg-[#f8fafc] border border-surface-container-high px-3 py-2">
           <div className="text-[11px] text-slate-500 mb-1">Provider</div>
           <div className="text-sm text-slate-900 break-all">{brandFutureCodeOrFallback(opencodeOutput?.providerId)}</div>
         </div>
-        <div className="rounded-lg bg-white border border-[#d7e0ea] px-3 py-2">
+        <div className="rounded-md bg-[#f8fafc] border border-surface-container-high px-3 py-2">
           <div className="text-[11px] text-slate-500 mb-1">Model</div>
           <div className="text-sm text-slate-900 break-all">{opencodeOutput?.modelId || '-'}</div>
         </div>
-        <div className="rounded-lg bg-white border border-[#d7e0ea] px-3 py-2">
+        <div className="rounded-md bg-[#f8fafc] border border-surface-container-high px-3 py-2">
           <div className="text-[11px] text-slate-500 mb-1">Session</div>
           <div className="text-sm text-slate-900 break-all">{opencodeOutput?.sessionId || '-'}</div>
         </div>
@@ -315,7 +309,7 @@ export default function DirectoryGeneration({ showToast }) {
 
       <div
         ref={opencodeConsoleRef}
-        className="max-h-[460px] overflow-y-auto px-4 py-4 font-mono text-xs leading-6 bg-[linear-gradient(180deg,#ffffff_0%,#f8fbff_100%)]"
+        className="max-h-[460px] overflow-y-auto px-4 py-4 font-mono text-xs leading-6 bg-white"
       >
         {opencodeStatus === 'waiting' && !opencodeParts.length ? (
           <div className="text-slate-700">
@@ -391,178 +385,180 @@ export default function DirectoryGeneration({ showToast }) {
     </div>
   )
 
+  const taskItems = Array.isArray(data?.tasks) ? data.tasks : []
+
+  const renderTasksCard = (className = '') => (
+    <div className={`rounded-lg border border-surface-container-high bg-white p-4 ${className}`.trim()}>
+      <h4 className="text-sm font-semibold text-on-surface">处理任务</h4>
+      <div className="mt-3">
+        {taskItems.length ? taskItems.map((task, index) => (
+          <div
+            key={task.id}
+            className={`flex items-center justify-between gap-3 py-2.5 ${index < taskItems.length - 1 ? 'border-b border-surface-container-high' : ''}`}
+          >
+            <div className="flex items-center gap-2 text-sm text-on-surface min-w-0">
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                task.status === 'done'
+                  ? 'bg-secondary'
+                  : task.status === 'failed'
+                    ? 'bg-error'
+                    : task.status === 'running'
+                      ? 'bg-primary'
+                      : 'bg-outline'
+              }`} />
+              <span className="truncate">{task.label}</span>
+            </div>
+            <span className={`text-xs font-medium ${taskStatusTextClassMap[task.status] || taskStatusTextClassMap.pending}`}>
+              {taskStatusLabelMap[task.status] || '待处理'}
+            </span>
+          </div>
+        )) : (
+          <div className="text-sm text-on-surface-variant py-3">
+            暂无任务明细
+          </div>
+        )}
+      </div>
+    </div>
+  )
+
+  const renderResultCard = (className = '') => {
+    const rows = [
+      { label: '文件名', value: data?.output?.fileName || '-' },
+      { label: '章节数', value: data?.output?.chapterCount || '-' },
+      { label: '生成时间', value: formatDateTime(data?.generatedAt) },
+    ]
+
+    return (
+      <div className={`rounded-lg border border-surface-container-high bg-white p-4 ${className}`.trim()}>
+        <h3 className="text-sm font-semibold text-on-surface mb-3">目录生成结果</h3>
+        <div>
+          {rows.map((row, index) => (
+            <div
+              key={row.label}
+              className={`flex items-center justify-between gap-4 py-3 ${index < rows.length - 1 ? 'border-b border-surface-container-high' : ''}`}
+            >
+              <div className="flex items-center gap-2 text-sm text-on-surface-variant">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#19c3d8]" />
+                <span>{row.label}</span>
+              </div>
+              <span className="text-sm text-on-surface font-medium text-right">{row.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className="flex flex-col gap-6 animate-fade-in max-w-6xl mx-auto w-full">
+    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
+      <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
 
       <PageHeader
-        title="S2 目录生成"
-        description="点击生成目录后调用后端接口，返回 docx 目录结果；完成后可进入 S3。"
-        leftExtra={(
-          <button
-            onClick={() => window.history.back()}
-            className="text-primary hover:bg-surface-container-low rounded-full w-10 h-10 flex items-center justify-center transition-colors"
-          >
-            <span className="material-symbols-outlined">arrow_back</span>
-          </button>
-        )}
+        actionsClassName="stage-header-actions"
         actions={(
           <>
             <button
               onClick={loadData}
-              className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors flex items-center gap-2"
+              className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors"
             >
-              <span className="material-symbols-outlined text-sm">refresh</span>
               刷新
             </button>
             <button
               onClick={handleGenerateDirectory}
               disabled={generating || isRunning}
-              className="px-4 py-2.5 bg-primary text-on-primary text-sm font-medium rounded-lg hover:bg-primary-container transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-4 py-2.5 bg-primary text-on-primary text-sm font-medium rounded-lg hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span className="material-symbols-outlined text-sm">auto_awesome</span>
               {generating || isRunning ? '生成中...' : isCompleted ? '重新生成目录' : '生成目录'}
             </button>
             <button
               onClick={handleGoOutline}
               disabled={!isCompleted || advancing}
               title={!isCompleted ? '目录生成完成后可进入 S3' : ''}
-              className="px-4 py-2.5 bg-secondary text-on-secondary text-sm font-medium rounded-lg hover:bg-secondary/90 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-4 py-2.5 bg-secondary text-on-secondary text-sm font-medium rounded-lg hover:bg-secondary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span className="material-symbols-outlined text-sm">arrow_forward</span>
-              {advancing ? '进入中...' : '进入下一阶段（S3）'}
+              {advancing ? '进入中...' : '进入下一阶段'}
             </button>
           </>
         )}
       />
 
-      <DataCard className="!p-0 overflow-hidden min-h-[420px]">
-        <div className="px-6 py-5 border-b border-surface-container-high bg-surface-container-low">
-          <div className="flex items-center justify-between gap-4 mb-4">
-            <div>
+      <DataCard className="!p-0 !bg-white !border-0 !shadow-none overflow-visible min-h-[360px]">
+        <div className="px-0 py-1 bg-white">
+          <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+            <div className="flex items-center gap-3 shrink-0">
               <h2 className="text-lg font-headline font-bold text-on-surface">目录生成状态</h2>
-              <p className="text-sm text-on-surface-variant mt-1">{brandFutureCode(data?.summary) || '等待生成目录。'}</p>
             </div>
-            <span className={`text-xs font-semibold px-3 py-1 rounded-full ${
-              isCompleted
-                ? 'bg-secondary-container text-on-secondary-container'
-                : isRunning
-                  ? 'bg-primary/15 text-primary'
-                  : isFailed
-                    ? 'bg-error/15 text-error'
-                    : 'bg-surface-container-high text-on-surface-variant'
-            }`}>
-              {statusTextMap[status] || '未生成'}
-            </span>
+            <div className="flex-1 flex items-center gap-3 min-w-0">
+              <div className="w-full h-2.5 bg-[#e8eef2] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-primary transition-all duration-700"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              <span className="text-xs text-outline whitespace-nowrap">当前完成度：{progress}%</span>
+            </div>
           </div>
-          <div className="w-full h-2.5 bg-surface-container-high rounded-full overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-primary to-secondary rounded-full transition-all duration-700"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-          <div className="mt-2 text-xs text-outline">当前完成度：{progress}%</div>
         </div>
 
         {isRunning ? (
-          <div className="px-6 py-6 flex flex-col gap-6">
-            <div className="rounded-lg border border-surface-container-high bg-surface-container-low p-4">
-              <h3 className="text-sm font-semibold text-on-surface mb-3">当前执行状态</h3>
-              <div className="flex flex-col gap-3 text-sm">
-                <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-3 text-on-surface">
-                  {brandFutureCode(data?.summary) || '正在调用目录生成任务，请稍候。'}
-                </div>
-                <div className="text-on-surface-variant">
-                  页面会实时接收流式进度，不需要手动反复点击。
-                  {latestEvent ? ` 如果长时间停留在“${brandFutureCode(latestEvent.message)}”，通常说明当前步骤还没返回。` : ''}
-                  {usePollingFallback ? ' 当前流式连接不可用，已自动切回轮询补偿。' : ''}
-                </div>
-                <div className="flex flex-col gap-2 pt-1">
-                  <h4 className="text-sm font-semibold text-on-surface">处理任务</h4>
-                  {(data?.tasks || []).map((task) => (
-                    <div key={task.id} className="flex items-center justify-between p-3 rounded-lg bg-surface-container-lowest">
-                      <div className="flex items-center gap-2 text-sm text-on-surface">
-                        <span className={`material-symbols-outlined text-sm ${
-                          task.status === 'running' ? 'text-primary animate-pulse' : 'text-primary'
-                        }`}
-                        >
-                          {task.status === 'done' ? 'check_circle' : task.status === 'failed' ? 'error' : task.status === 'running' ? 'progress_activity' : 'schedule'}
-                        </span>
-                        {task.label}
-                      </div>
-                      <span className={`text-xs font-medium px-2 py-1 rounded-full ${taskStatusClassMap[task.status] || taskStatusClassMap.pending}`}>
-                        {taskStatusLabelMap[task.status] || '待处理'}
-                      </span>
-                    </div>
-                  ))}
+          <div className="pt-12 pb-1 flex flex-col gap-10">
+            <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+              <div className="xl:col-span-7 rounded-lg border border-surface-container-high bg-white p-4">
+                <h3 className="text-sm font-semibold text-on-surface mb-3">当前执行状态</h3>
+                <div className="flex flex-col gap-3 text-sm">
+                  <div className="rounded-md border border-primary/20 bg-primary/5 px-3 py-3 text-on-surface">
+                    {brandFutureCode(latestEvent?.message) || '正在调用目录生成任务，请稍候。'}
+                  </div>
+                  <div className="text-on-surface-variant">
+                    页面会实时接收流式进度，不需要手动反复点击。
+                    {latestEvent ? ` 如果长时间停留在“${brandFutureCode(latestEvent.message)}”，通常说明当前步骤还没返回。` : ''}
+                    {usePollingFallback ? ' 当前流式连接不可用，已自动切回轮询补偿。' : ''}
+                  </div>
                 </div>
               </div>
+              <div className="xl:col-span-5">
+                {renderTasksCard()}
+              </div>
             </div>
-
-            {renderOpencodeOutputCard()}
+            <div>
+              {renderOpencodeOutputCard()}
+            </div>
           </div>
         ) : !isCompleted ? (
-          <div className="h-[300px] px-6 py-8 flex flex-col items-center justify-center text-center">
-            <div className="w-14 h-14 rounded-full bg-surface-container-high flex items-center justify-center mb-4">
-              <span className={`material-symbols-outlined text-3xl ${isFailed ? 'text-error' : 'text-primary'}`}>
-                {isFailed ? 'error' : 'rule_folder'}
-              </span>
-            </div>
-            <h4 className="text-lg font-headline font-bold text-on-surface mb-2">
-              {isFailed ? 'S2 目录生成失败' : 'S2 未生成目录'}
-            </h4>
-            <p className="text-sm text-on-surface-variant max-w-xl leading-relaxed">
-              {isFailed
-                ? (brandFutureCode(data?.summary) || '本次目录生成没有成功，你可以直接重新触发。')
-                : '点击“生成目录”后，将调用后端目录生成接口，返回 `docx` 目录结果并展示给前端。'}
-            </p>
-            <button
-              onClick={handleGenerateDirectory}
-              disabled={generating}
-              className="mt-6 px-5 py-2.5 bg-primary text-on-primary text-sm font-semibold rounded-lg hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {generating ? '生成中...' : isFailed ? '重新生成目录' : '生成目录'}
-            </button>
-          </div>
-        ) : (
-          <div className="px-6 py-6 flex flex-col gap-6">
-            <div className="rounded-lg border border-surface-container-high bg-surface-container-low p-4">
-              <h3 className="text-sm font-semibold text-on-surface mb-3">目录生成结果（docx）</h3>
-              <div className="flex flex-col gap-2 text-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-on-surface-variant">文件名</span>
-                  <span className="text-on-surface font-medium">{data?.output?.fileName || '-'}</span>
+          <div className="pt-12 pb-1 grid grid-cols-1 xl:grid-cols-12 gap-6 items-stretch">
+            <div className="xl:col-span-7">
+              <div className="rounded-lg border border-surface-container-high bg-white p-5 min-h-[228px] h-full flex flex-col">
+                <h4 className="text-sm font-semibold text-on-surface">目录列表</h4>
+                <div className="flex-1 flex items-center justify-center">
+                  <button
+                    onClick={handleGenerateDirectory}
+                    disabled={generating}
+                    className="stage-action-btn h-10 px-5 bg-primary text-on-primary text-sm font-semibold rounded-lg hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {generating ? '生成中...' : isFailed ? '重新生成目录' : '生成目录'}
+                  </button>
                 </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-on-surface-variant">文件类型</span>
-                  <span className="text-on-surface font-medium uppercase">{data?.output?.fileType || 'docx'}</span>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-on-surface-variant">章节数</span>
-                  <span className="text-on-surface font-medium">{data?.output?.chapterCount || '-'}</span>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-on-surface-variant">生成时间</span>
-                  <span className="text-on-surface font-medium">{formatDateTime(data?.generatedAt)}</span>
-                </div>
-              </div>
-              <div className="mt-4 pt-4 border-t border-surface-container-high flex flex-col gap-2">
-                <h4 className="text-sm font-semibold text-on-surface">处理任务</h4>
-                {(data?.tasks || []).map((task) => (
-                  <div key={task.id} className="flex items-center justify-between p-3 rounded-lg bg-surface-container-lowest">
-                    <div className="flex items-center gap-2 text-sm text-on-surface">
-                      <span className="material-symbols-outlined text-sm text-primary">checklist</span>
-                      {task.label}
-                    </div>
-                    <span className={`text-xs font-medium px-2 py-1 rounded-full ${taskStatusClassMap[task.status] || taskStatusClassMap.pending}`}>
-                      {taskStatusLabelMap[task.status] || '待处理'}
-                    </span>
-                  </div>
-                ))}
               </div>
             </div>
 
-            {renderOpencodeOutputCard()}
+            <div className="xl:col-span-5 h-full">
+              {renderTasksCard('h-full min-h-[228px]')}
+            </div>
+          </div>
+        ) : (
+          <div className="pt-12 pb-1 flex flex-col gap-10">
+            <div className="flex flex-col xl:flex-row xl:items-stretch xl:justify-between gap-8">
+              <div className="xl:w-[47%] flex">
+                {renderResultCard('w-full h-full')}
+              </div>
+              <div className="xl:w-[47%] flex">
+                {renderTasksCard('w-full h-full')}
+              </div>
+            </div>
+            <div>
+              {renderOpencodeOutputCard()}
+            </div>
           </div>
         )}
       </DataCard>

@@ -505,12 +505,9 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   return (
     <div className="flex flex-col gap-6 animate-fade-in">
-      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
         <div>
           <h1 className="text-3xl font-headline font-bold text-primary">原始材料库</h1>
-          <p className="text-sm text-on-surface-variant mt-1">
-            目录结构：标准模板 / 客户定制 / 项目定制。支持目录折叠、缩放、新建/删除文件夹及目录内上传。
-          </p>
           {(refreshing || error) && (
             <p className={`text-xs mt-1 ${error ? 'text-error' : 'text-outline'}`}>
               {error || '正在刷新...'}
@@ -664,6 +661,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                   description="可上传文件、调整筛选，或在目录树中新建文件夹。"
                   actionText="立即上传"
                   onAction={() => openUploadModal({ mode: 'path' })}
+                  showActionIcon={false}
                 />
               </div>
             ) : (
@@ -740,7 +738,7 @@ export default function MaterialDB({ showToast = () => {} }) {
           <div className="w-full max-w-2xl bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-2xl">
             <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between">
               <h2 className="text-lg font-headline font-bold text-on-surface">上传原始素材</h2>
-              <button onClick={closeUploadModal} className="w-8 h-8 rounded-full hover:bg-surface-container-high">
+              <button onClick={closeUploadModal} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
                 <span className="material-symbols-outlined">close</span>
               </button>
             </div>

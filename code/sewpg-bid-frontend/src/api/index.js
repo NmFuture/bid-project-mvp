@@ -236,6 +236,13 @@ export const parseAPI = {
       timeoutMs: 5 * 60 * 1000,
       retryCount: 0,
     }),
+  uploadTemplates: (projectId, data) =>
+    request(`/projects/${projectId}/template-files/upload`, {
+      method: 'POST',
+      body: data?.formData || data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
   updateItem: (projectId, rid, data) =>
     request(`/projects/${projectId}/parse-results/${rid}`, { method: 'PUT', body: data }),
 }

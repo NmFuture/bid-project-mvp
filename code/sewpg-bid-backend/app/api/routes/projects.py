@@ -12,12 +12,14 @@ router = APIRouter()
 @router.get("/api/projects")
 async def list_projects(
     status: str = "",
+    bidType: str = "",
     dateRange: str = "",
     page: int = 1,
     pageSize: int = 12,
 ) -> dict[str, Any]:
     return store.list_projects(
         status=status,
+        bid_type=bidType,
         date_range=dateRange,
         page=page,
         page_size=pageSize,
@@ -52,7 +54,7 @@ async def project_cockpit(project_id: str) -> dict[str, Any]:
         "summary": "当前按 MVP 主链路推进，关键集成点是解析、目录、初稿、OnlyOffice。",
         "deadline": project.get("deadline") or "",
         "tasks": [
-            {"id": "task-1", "label": "完成 S1 解析", "status": "done" if project["currentStage"] > 1 else "pending"},
+            {"id": "task-1", "label": "完成 S1 模板上传", "status": "done" if project["currentStage"] > 1 else "pending"},
             {"id": "task-2", "label": "完成 S2 目录生成", "status": "done" if project["currentStage"] > 2 else "pending"},
             {"id": "task-3", "label": "完成 S7 初稿生成", "status": "done" if project["currentStage"] > 7 else "pending"},
         ],
@@ -80,4 +82,3 @@ async def update_stage(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     return store.update_stage(project_id, stage, data)
-

@@ -27,6 +27,11 @@ export default function ProjectEntryRedirect() {
     setError('')
     try {
       const project = await projectsAPI.get(id)
+      const reviewDecision = String(project?.reviewDecision || 'participate')
+      if (reviewDecision !== 'participate') {
+        navigate(`/review?projectId=${id}`, { replace: true })
+        return
+      }
       const stage = resolveStage(project?.currentStage)
       const route = getStageRoute(id, stage) || `/projects/${id}/parse`
       navigate(route, { replace: true })

@@ -27,6 +27,8 @@ export default function OnlyOfficeEmbed({
       callbackUrl: session?.callbackUrl,
       userId: session?.user?.id,
       userName: session?.user?.name,
+      fileType: session?.fileType,
+      documentType: session?.documentType,
     })
 
     if (mode === 'view') {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { coverageAPI, stagesAPI } from '../api'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
+import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 
 const statusDotClass = {
   full: 'bg-secondary',
@@ -9,8 +10,23 @@ const statusDotClass = {
   none: 'bg-error',
 }
 
-const renderTreeNode = (node, depth = 0) => {
+const collectParentNodeIds = (nodes = []) => {
+  const ids = []
+  const walk = (items) => {
+    items.forEach((item) => {
+      if (Array.isArray(item.children) && item.children.length > 0) {
+        ids.push(item.id)
+        walk(item.children)
+      }
+    })
+  }
+  walk(nodes)
+  return ids
+}
+
+const renderTreeNode = (node, collapsedNodeIds, onToggleNodeCollapse, depth = 0) => {
   const hasChildren = Array.isArray(node.children) && node.children.length > 0
+  const isCollapsed = hasChildren && collapsedNodeIds.has(node.id)
   const leftPadding = 12 + depth * 20
   const coverageColor = node.coverage >= 90 ? 'text-secondary' : node.coverage >= 70 ? 'text-tertiary' : 'text-error'
 
@@ -21,13 +37,19 @@ const renderTreeNode = (node, depth = 0) => {
           className="flex items-center justify-between rounded-lg bg-surface-container-low px-3 py-2"
           style={{ paddingLeft: `${leftPadding}px` }}
         >
-          <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-sm text-outline">folder</span>
+          <button
+            type="button"
+            onClick={() => onToggleNodeCollapse(node.id)}
+            className="flex items-center gap-1.5 min-w-0"
+          >
+            <span className="material-symbols-outlined text-sm text-outline">
+              {isCollapsed ? 'chevron_right' : 'expand_more'}
+            </span>
             <span className="text-sm font-semibold text-on-surface">{node.title}</span>
-          </div>
+          </button>
           <span className={`text-sm font-bold ${coverageColor}`}>{node.coverage}%</span>
         </div>
-        {node.children.map((child) => renderTreeNode(child, depth + 1))}
+        {!isCollapsed ? node.children.map((child) => renderTreeNode(child, collapsedNodeIds, onToggleNodeCollapse, depth + 1)) : null}
       </div>
     )
   }
@@ -51,6 +73,7 @@ export default function CoverageHeatmap({ showToast }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [advancing, setAdvancing] = useState(false)
+  const [collapsedNodeIds, setCollapsedNodeIds] = useState(() => new Set())
 
   const fetchCoverage = useCallback(async () => {
     setLoading(true)
@@ -74,7 +97,31 @@ export default function CoverageHeatmap({ showToast }) {
 
   const partialItems = useMemo(() => data?.partialItems || [], [data?.partialItems])
   const noCoverItems = useMemo(() => data?.noCoverItems || [], [data?.noCoverItems])
+  const incompleteItems = useMemo(() => [...partialItems, ...noCoverItems], [partialItems, noCoverItems])
   const treeNodes = useMemo(() => data?.tree || [], [data?.tree])
+  const parentNodeIds = useMemo(() => collectParentNodeIds(treeNodes), [treeNodes])
+  const allCollapsed = parentNodeIds.length > 0 && parentNodeIds.every((nodeId) => collapsedNodeIds.has(nodeId))
+
+  const handleToggleNodeCollapse = (nodeId) => {
+    setCollapsedNodeIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(nodeId)) next.delete(nodeId)
+      else next.add(nodeId)
+      return next
+    })
+  }
+
+  const handleToggleAllNodes = () => {
+    setCollapsedNodeIds((prev) => {
+      const next = new Set(prev)
+      if (allCollapsed) {
+        parentNodeIds.forEach((nodeId) => next.delete(nodeId))
+      } else {
+        parentNodeIds.forEach((nodeId) => next.add(nodeId))
+      }
+      return next
+    })
+  }
 
   const handleGoEditor = async () => {
     setAdvancing(true)
@@ -107,46 +154,36 @@ export default function CoverageHeatmap({ showToast }) {
   }
 
   return (
-    <div className="flex flex-col gap-6 animate-fade-in">
+    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
+      <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
 
-      <div className="bg-gradient-to-r from-surface-container-low to-surface-container-lowest rounded-xl p-6 shadow-[0_8px_24px_-12px_rgba(0,62,111,0.06)] flex flex-wrap items-center gap-8">
-        <div className="flex items-center gap-4">
-          <div className="w-20 h-20 rounded-full border-4 border-secondary flex items-center justify-center">
-            <span className="text-2xl font-headline font-bold text-secondary">{data?.percentage}%</span>
-          </div>
-          <div>
-            <div className="text-lg font-headline font-bold text-on-surface">全局要求覆盖率</div>
-            <div className="text-sm text-on-surface-variant">目录响应树与问题清单已同步</div>
-          </div>
-        </div>
-
-        <div className="ml-auto flex items-center gap-3 rounded-lg bg-error-container/20 px-4 py-2">
-          <span className="material-symbols-outlined text-error text-lg">error</span>
-          <div className="text-sm">
-            <span className="font-bold text-error">{data?.noCover ?? 0}</span>
-            <span className="text-on-surface-variant ml-1">项未覆盖</span>
-          </div>
-        </div>
-
+      <div className="flex justify-end">
         <button
           onClick={handleGoEditor}
           disabled={advancing}
-          className="px-4 py-2 bg-secondary text-on-secondary text-sm font-medium rounded-lg hover:bg-secondary/90 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="stage-action-btn px-4 py-2 bg-secondary text-on-secondary text-sm font-medium rounded-lg hover:bg-secondary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <span className="material-symbols-outlined text-sm">arrow_forward</span>
-          {advancing ? '进入中...' : '进入 S9 人机共创'}
+          {advancing ? '进入中...' : '进入下一阶段'}
         </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[520px]">
         <div className="lg:col-span-5 bg-surface-container-lowest rounded-xl shadow-[0_8px_24px_-12px_rgba(0,62,111,0.06)] flex flex-col">
-          <div className="px-6 py-4 border-b border-surface-container-high flex items-center gap-2">
-            <span className="material-symbols-outlined text-primary">account_tree</span>
+          <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold text-on-surface">需求响应评分树（按目录章节同步）</h3>
+            {parentNodeIds.length ? (
+              <button
+                type="button"
+                onClick={handleToggleAllNodes}
+                className="text-xs text-primary hover:text-primary/80 transition-colors"
+              >
+                {allCollapsed ? '展开全部' : '收起全部'}
+              </button>
+            ) : null}
           </div>
           <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2">
-            {treeNodes.length ? treeNodes.map((node) => renderTreeNode(node)) : (
+            {treeNodes.length ? treeNodes.map((node) => renderTreeNode(node, collapsedNodeIds, handleToggleNodeCollapse)) : (
               <div className="text-sm text-outline px-2 py-3">暂无目录评分数据</div>
             )}
           </div>
@@ -155,37 +192,16 @@ export default function CoverageHeatmap({ showToast }) {
         <div className="lg:col-span-7 bg-surface-container-lowest rounded-xl shadow-[0_8px_24px_-12px_rgba(0,62,111,0.06)] flex flex-col">
           <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between">
             <h3 className="text-sm font-semibold text-on-surface">问题清单</h3>
-            <span className="text-xs text-outline">部分覆盖 {partialItems.length} 项 · 未覆盖 {noCoverItems.length} 项</span>
           </div>
 
-          <div className="p-6 grid grid-cols-1 xl:grid-cols-2 gap-6">
-            <section className="rounded-lg border border-tertiary/25 bg-tertiary-fixed/10">
-              <div className="px-4 py-3 border-b border-tertiary/25 flex items-center gap-2">
-                <span className="material-symbols-outlined text-tertiary text-sm">warning</span>
-                <h4 className="text-sm font-semibold text-on-surface">部分覆盖（{partialItems.length}）</h4>
-              </div>
-              <div className="p-3 flex flex-col gap-2 max-h-[380px] overflow-y-auto">
-                {partialItems.length ? partialItems.map((item) => (
-                  <div key={item.id} className="rounded-lg bg-surface-container-low px-3 py-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-sm font-medium text-on-surface">{item.title}</div>
-                      <span className="text-xs text-outline whitespace-nowrap">{item.id}</span>
-                    </div>
-                    <div className="text-xs text-on-surface-variant mt-1">{item.nodeTitle || '-'}</div>
-                  </div>
-                )) : (
-                  <div className="text-sm text-outline p-2">暂无部分覆盖项</div>
-                )}
-              </div>
-            </section>
-
+          <div className="p-6">
             <section className="rounded-lg border border-error/25 bg-error-container/10">
               <div className="px-4 py-3 border-b border-error/25 flex items-center gap-2">
                 <span className="material-symbols-outlined text-error text-sm">error</span>
-                <h4 className="text-sm font-semibold text-on-surface">未覆盖（{noCoverItems.length}）</h4>
+                <h4 className="text-sm font-semibold text-on-surface">未完整覆盖项（{incompleteItems.length}）</h4>
               </div>
               <div className="p-3 flex flex-col gap-2 max-h-[380px] overflow-y-auto">
-                {noCoverItems.length ? noCoverItems.map((item) => (
+                {incompleteItems.length ? incompleteItems.map((item) => (
                   <div key={item.id} className="rounded-lg bg-surface-container-low px-3 py-2">
                     <div className="flex items-center justify-between gap-3">
                       <div className="text-sm font-medium text-on-surface">{item.title}</div>
@@ -194,7 +210,7 @@ export default function CoverageHeatmap({ showToast }) {
                     <div className="text-xs text-on-surface-variant mt-1">{item.nodeTitle || '-'}</div>
                   </div>
                 )) : (
-                  <div className="text-sm text-outline p-2">暂无未覆盖项</div>
+                  <div className="text-sm text-outline p-2">暂无未完整覆盖项</div>
                 )}
               </div>
             </section>

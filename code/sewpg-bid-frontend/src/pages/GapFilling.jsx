@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { gapsAPI, reviewAPI, stagesAPI } from '../api'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
+import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 import { PageLoading, PageError } from '../components/states/PageState'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
@@ -59,7 +60,8 @@ export default function GapFilling({ showToast }) {
         ...gapsPayload,
         submissions: submissionsPayload?.items || [],
       })
-      setSelectedGapId((prev) => (list.some((item) => item.id === prev) ? prev : list[0]?.id || ''))
+      const visibleList = list.slice(0, 3)
+      setSelectedGapId((prev) => (visibleList.some((item) => item.id === prev) ? prev : visibleList[0]?.id || ''))
     } catch (e) {
       setError(e?.message || 'S5 备料清单加载失败')
     } finally {
@@ -75,12 +77,13 @@ export default function GapFilling({ showToast }) {
   }, [loadData])
 
   const items = useMemo(() => data?.items || [], [data])
+  const displayedItems = useMemo(() => items.slice(0, 3), [items])
   const submissions = useMemo(() => data?.submissions || [], [data])
 
   const selectedGap = useMemo(() => {
-    if (!items.length) return null
-    return items.find((item) => item.id === selectedGapId) || items[0]
-  }, [items, selectedGapId])
+    if (!displayedItems.length) return null
+    return displayedItems.find((item) => item.id === selectedGapId) || displayedItems[0]
+  }, [displayedItems, selectedGapId])
 
   const selectedGapSubmissions = useMemo(() => {
     if (!selectedGap) return []
@@ -90,9 +93,9 @@ export default function GapFilling({ showToast }) {
   }, [selectedGap, submissions])
 
   const latestSubmission = selectedGapSubmissions[0] || null
-  const pendingCount = items.filter((item) => !['resolved', 'skipped'].includes(item.status)).length
-  const submitEnabled = items.length > 0 && pendingCount === 0
-  const submitDisabledReason = !items.length
+  const pendingCount = displayedItems.filter((item) => !['resolved', 'skipped'].includes(item.status)).length
+  const submitEnabled = displayedItems.length > 0 && pendingCount === 0
+  const submitDisabledReason = !displayedItems.length
     ? '暂无可提交项'
     : pendingCount > 0
       ? `仍有 ${pendingCount} 项未处理，无法提交审核`
@@ -282,50 +285,45 @@ export default function GapFilling({ showToast }) {
   }
 
   return (
-    <div className="flex flex-col gap-6 animate-fade-in">
+    <div className="stage-page flex flex-col gap-6 animate-fade-in">
+      <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
 
-      <div className="flex items-center gap-4">
-        <button onClick={() => window.history.back()} className="text-primary hover:bg-surface-container-low rounded-full w-10 h-10 flex items-center justify-center transition-colors">
-          <span className="material-symbols-outlined">arrow_back</span>
-        </button>
-        <div>
-          <h1 className="text-2xl font-headline font-bold text-primary">S5 备料补交</h1>
-          <p className="text-sm text-on-surface-variant">仅保留缺失素材清单与文件提交模块，并生成补料回执。</p>
-        </div>
-        <span className="ml-2 px-3 py-1 bg-error-container text-on-error-container text-sm font-bold rounded-full">{items.length} 项缺失</span>
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div />
         <button
           onClick={handleSubmitReview}
           disabled={!submitEnabled || submittingReview}
           title={submitDisabledReason}
-          className="ml-auto px-4 py-2.5 bg-primary text-on-primary text-sm font-semibold rounded-lg hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="stage-action-btn px-4 py-2.5 bg-secondary text-on-secondary text-sm font-semibold rounded-lg hover:bg-secondary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {submittingReview ? '提交中...' : '提交至 S6 审核'}
+          {submittingReview ? '进入中...' : '进入下一阶段'}
         </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 min-h-[600px]">
         <div className="bg-surface-container-lowest rounded-xl shadow-[0_8px_24px_-12px_rgba(0,62,111,0.06)] flex flex-col">
-          <div className="px-6 py-4 border-b border-surface-container-high">
+          <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold text-on-surface">缺失素材列表</h3>
+            <span className="px-3 py-1 bg-error-container text-on-error-container text-sm font-bold rounded-full">{displayedItems.length} 项缺失</span>
           </div>
-          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
-            {!items.length && (
+          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2.5 max-h-[460px] lg:max-h-[calc(100vh-320px)]">
+            {!displayedItems.length && (
               <div className="p-8 text-center text-on-surface-variant text-sm">当前暂无缺口项</div>
             )}
-            {items.map((gap) => {
+            {displayedItems.map((gap) => {
               const st = statusConfig[gap.status] || statusConfig.pending
               return (
-                <div key={gap.id} onClick={() => setSelectedGapId(gap.id)} className={`p-4 rounded-lg cursor-pointer transition-all border-l-4 ${
+                <div key={gap.id} onClick={() => setSelectedGapId(gap.id)} className={`px-3 py-2.5 rounded-lg cursor-pointer transition-all border-l-4 ${
                   selectedGap?.id === gap.id ? 'bg-primary/5 border-primary' : 'bg-surface-container-low border-transparent hover:bg-surface-container'
                 }`}>
-                  <div className="flex items-start gap-3">
+                  <div className="flex items-start gap-2.5">
                     <span className={`material-symbols-outlined ${st.color}`} style={{ fontVariationSettings: "'FILL' 1" }}>{st.icon}</span>
                     <div className="flex-1">
-                      <div className="text-xs text-outline mb-1">{gap.section}</div>
+                      <div className="text-xs text-outline mb-0.5">{gap.section}</div>
                       <h4 className="text-sm font-semibold text-on-surface">{gap.title}</h4>
-                      {gap.desc && <p className="text-xs text-on-surface-variant mt-1">{gap.desc}</p>}
-                      <div className="mt-2 flex items-center gap-2">
+                      {gap.desc && <p className="text-xs text-on-surface-variant mt-0.5">{gap.desc}</p>}
+                      <div className="mt-1.5 flex items-center gap-2">
                         <span className={`inline-flex items-center gap-1 text-xs font-medium ${st.color}`}>
                           <span className="w-1.5 h-1.5 rounded-full bg-current"></span>
                           {st.label}
@@ -397,11 +395,10 @@ export default function GapFilling({ showToast }) {
               </div>
 
               <div className="flex justify-end gap-3 mt-auto">
-                <button onClick={openSkipDialog} disabled={savingGap} className="px-5 py-2.5 text-sm font-medium text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                <button onClick={openSkipDialog} disabled={savingGap} className="stage-action-btn px-5 py-2.5 text-sm font-medium bg-surface-container-high text-on-surface hover:bg-surface-dim rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                   记录未补录原因
                 </button>
-                <button onClick={handleResolve} disabled={savingGap || !latestSubmission} className="px-5 py-2.5 bg-primary text-on-primary text-sm font-semibold rounded-lg hover:bg-primary-container transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
-                  <span className="material-symbols-outlined text-sm">check</span>
+                <button onClick={handleResolve} disabled={savingGap || !latestSubmission} className="stage-action-btn px-5 py-2.5 bg-primary text-on-primary text-sm font-semibold rounded-lg hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                   {savingGap ? '保存中...' : '确认补录'}
                 </button>
               </div>
@@ -417,7 +414,7 @@ export default function GapFilling({ showToast }) {
           <div className="dialog-content w-full max-w-lg animate-fade-in" onClick={(e) => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between">
               <h3 className="text-lg font-headline font-bold text-on-surface">未补录原因</h3>
-              <button onClick={() => setShowSkipModal(false)} className="text-on-surface-variant hover:text-primary transition-colors">
+              <button onClick={() => setShowSkipModal(false)} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
                 <span className="material-symbols-outlined">close</span>
               </button>
             </div>
