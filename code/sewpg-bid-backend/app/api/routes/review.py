@@ -14,16 +14,15 @@ from app.services.onlyoffice_documents import (
     WORD_MEDIA_TYPE,
     build_editor_session_key,
     download_document_from_onlyoffice,
+    ensure_review_document,
+    review_document_object_key,
+    review_document_path,
+    sync_document_to_minio,
     write_document,
 )
 from app.services.store import store
 
 router = APIRouter()
-
-
-def _review_document_path(project_id: str) -> Path:
-    return settings.documents_dir / f"{project_id}-review.docx"
-
 
 def _allowed_host(host: str | None, allowed_hosts: tuple[str, ...]) -> bool:
     if not host:
@@ -66,10 +65,9 @@ def _validate_download_url(download_url: str) -> str:
 
 def _ensure_review_document_file(project_id: str) -> tuple[dict[str, Any], Path]:
     state = store.get_review_document_state(project_id)
-    path = _review_document_path(project_id)
+    path = review_document_path(project_id)
     if state.get("parseStatus") == "completed":
-        if not path.exists():
-            write_document(path, state["fileName"], state.get("content") or "")
+        path = ensure_review_document(project_id, state["fileName"], state.get("content") or "")
     return state, path
 
 
@@ -150,14 +148,18 @@ async def save_review_document(
     if not content:
         raise HTTPException(status_code=400, detail="保存内容不能为空。")
     state = store.save_review_document_content(project_id, content)
-    write_document(_review_document_path(project_id), state["fileName"], content)
+    path = ensure_review_document(project_id, state["fileName"], content)
+    write_document(path, state["fileName"], content)
+    sync_document_to_minio(path, review_document_object_key(project_id))
     return now_message("S6 预览文档已保存并回写。", _build_review_document_payload(project_id, request))
 
 
 @router.post("/api/projects/{project_id}/review-items/document/force-save")
 async def force_save_review_document(project_id: str, request: Request) -> dict[str, Any]:
     state = store.force_save_review_document(project_id)
-    write_document(_review_document_path(project_id), state["fileName"], state.get("content") or "")
+    path = ensure_review_document(project_id, state["fileName"], state.get("content") or "")
+    write_document(path, state["fileName"], state.get("content") or "")
+    sync_document_to_minio(path, review_document_object_key(project_id))
     return now_message("S6 文档已触发保存回写。", _build_review_document_payload(project_id, request))
 
 
@@ -174,13 +176,14 @@ async def review_document_callback(
         return JSONResponse({"error": 0})
 
     download_url = _validate_download_url(str(data["url"]))
-    target_path = _review_document_path(project_id)
+    target_path = review_document_path(project_id)
     try:
         await download_document_from_onlyoffice(
             download_url,
             target_path,
             max_bytes=settings.onlyoffice_download_max_bytes,
         )
+        sync_document_to_minio(target_path, review_document_object_key(project_id))
     except (httpx.HTTPError, RuntimeError) as exc:
         return JSONResponse(status_code=502, content={"error": 1, "message": str(exc)})
 

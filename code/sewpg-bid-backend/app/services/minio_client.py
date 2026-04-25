@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 from datetime import timedelta
 from io import BytesIO
+from pathlib import Path
 from typing import Any, BinaryIO
 
 from minio import Minio
+from minio.commonconfig import CopySource
 from minio.error import S3Error
 
 from app.core.config import settings
@@ -79,6 +82,24 @@ class MinioClient:
         logger.info("Uploaded stream to MinIO: %s/%s (%d bytes)", bucket, key, length)
         return key
 
+    def upload_file(
+        self,
+        bucket: str,
+        key: str,
+        path: Path,
+        content_type: str | None = None,
+    ) -> str:
+        file_path = Path(path)
+        guessed_type = content_type or mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        with file_path.open("rb") as handle:
+            return self.put_object_stream(
+                bucket,
+                key,
+                handle,
+                file_path.stat().st_size,
+                content_type=guessed_type,
+            )
+
     def get_object(self, bucket: str, key: str) -> bytes:
         resp = self.client.get_object(bucket, key)
         try:
@@ -90,12 +111,39 @@ class MinioClient:
     def get_object_response(self, bucket: str, key: str):
         return self.client.get_object(bucket, key)
 
+    def download_file(self, bucket: str, key: str, target_path: Path) -> Path:
+        resp = self.client.get_object(bucket, key)
+        target = Path(target_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = target.with_suffix(f"{target.suffix}.download")
+        try:
+            with temp_path.open("wb") as handle:
+                for chunk in resp.stream(64 * 1024):
+                    if chunk:
+                        handle.write(chunk)
+            temp_path.replace(target)
+            return target
+        finally:
+            resp.close()
+            resp.release_conn()
+
+    def copy_object(self, bucket: str, source_key: str, target_key: str) -> str:
+        self.ensure_bucket(bucket)
+        self.client.copy_object(bucket, target_key, CopySource(bucket, source_key))
+        logger.info("Copied MinIO object: %s/%s -> %s/%s", bucket, source_key, bucket, target_key)
+        return target_key
+
     def get_presigned_url(self, bucket: str, key: str, expires: int = 3600) -> str:
         ttl = expires if isinstance(expires, timedelta) else timedelta(seconds=int(expires))
         return self.client.presigned_get_object(bucket, key, expires=ttl)
 
     def remove_object(self, bucket: str, key: str) -> None:
-        self.client.remove_object(bucket, key)
+        try:
+            self.client.remove_object(bucket, key)
+        except S3Error as exc:
+            if getattr(exc, "code", "") == "NoSuchKey":
+                return
+            raise
 
     def object_exists(self, bucket: str, key: str) -> bool:
         try:

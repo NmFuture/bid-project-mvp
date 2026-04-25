@@ -348,7 +348,7 @@ export const materialsAPI = {
       return request(`/materials/raw/files${qs ? `?${qs}` : ''}`)
     },
     upload: (data) =>
-      request('/materials/raw/upload', { method: 'POST', body: data, timeoutMs: 15 * 60 * 1000 }),
+      request('/materials/raw/upload', { method: 'POST', body: data, timeoutMs: 30 * 60 * 1000 }),
     bootstrapFolders: (data) =>
       request('/materials/raw/folders/bootstrap', { method: 'POST', body: data }),
     createFolder: (data) =>
@@ -387,6 +387,8 @@ export const materialsAPI = {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
       return request(`/materials/wiki${qs ? `?${qs}` : ''}`)
     },
+    bootstrap: (data = {}) =>
+      request('/materials/wiki/bootstrap', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     create: (data) => request('/materials/wiki', { method: 'POST', body: data }),
     update: (id, data) => request(`/materials/wiki/${id}`, { method: 'PUT', body: data }),
     move: (id, data) => request(`/materials/wiki/${id}/move`, { method: 'POST', body: data }),

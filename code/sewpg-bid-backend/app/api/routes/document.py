@@ -13,9 +13,11 @@ from app.core.config import settings
 from app.services.onlyoffice_documents import (
     WORD_MEDIA_TYPE,
     build_editor_session_key,
+    document_object_key,
     download_document_from_onlyoffice,
     ensure_document,
     refresh_document_session,
+    sync_document_to_minio,
     write_document,
 )
 from app.services.store import store
@@ -118,6 +120,7 @@ async def save_document_content(
         payload["fileName"],
         content,
     )
+    sync_document_to_minio(ensure_document(project_id, payload["fileName"], content), document_object_key(project_id))
     response_payload = build_document_payload(project_id, request)
     return now_message("文档已保存并回写。", response_payload)
 
@@ -131,6 +134,7 @@ async def force_save_document(project_id: str, request: Request) -> dict[str, An
         state["fallback"]["content"],
     )
     refresh_document_session(doc_path)
+    sync_document_to_minio(doc_path, document_object_key(project_id))
     payload = build_document_payload(project_id, request)
     return now_message("已刷新文档状态。", payload)
 
@@ -161,6 +165,7 @@ async def onlyoffice_callback(
             target_path,
             max_bytes=settings.onlyoffice_download_max_bytes,
         )
+        sync_document_to_minio(target_path, document_object_key(project_id))
     except (httpx.HTTPError, RuntimeError) as exc:
         return JSONResponse(status_code=502, content={"error": 1, "message": str(exc)})
 

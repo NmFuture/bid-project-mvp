@@ -190,11 +190,12 @@ export default function Settings({ showToast = () => {} }) {
     if (!file) return
     setDotxUploading(true)
     try {
-      const result = await settingsAPI.dotxTemplates.upload({
-        fileName: file.name,
-        fileSize: file.size,
-        version: excelUploadVersion || '2026.04',
-      })
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('fileName', file.name)
+      formData.append('fileSize', String(file.size))
+      formData.append('version', excelUploadVersion || '2026.04')
+      const result = await settingsAPI.dotxTemplates.upload(formData)
       setDotxTemplates(result.items || [])
       showToast('dotx 模板上传成功')
     } catch (e) {
@@ -227,11 +228,14 @@ export default function Settings({ showToast = () => {} }) {
     }
     setExcelUploading(true)
     try {
-      const result = await settingsAPI.excelTemplates.upload({
-        tableKey: excelUploadTableKey,
-        fileName: file.name,
-        version: excelUploadVersion.trim() || undefined,
-      })
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('tableKey', excelUploadTableKey)
+      formData.append('fileName', file.name)
+      if (excelUploadVersion.trim()) {
+        formData.append('version', excelUploadVersion.trim())
+      }
+      const result = await settingsAPI.excelTemplates.upload(formData)
       setExcelTemplates(result.items || [])
       showToast('Excel 模板版本上传成功')
     } catch (e) {

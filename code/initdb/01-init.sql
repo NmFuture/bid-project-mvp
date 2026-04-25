@@ -126,6 +126,18 @@ CREATE TABLE wiki_docs (
     updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE wiki_attachments (
+    id          BIGSERIAL PRIMARY KEY,
+    doc_id      BIGINT NOT NULL REFERENCES wiki_docs(id) ON DELETE CASCADE,
+    file_name   VARCHAR(255) NOT NULL,
+    size_bytes  BIGINT DEFAULT 0,
+    mime_type   VARCHAR(100),
+    minio_key   VARCHAR(500),
+    minio_bucket VARCHAR(100) DEFAULT 'bid-materials',
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    created_by  VARCHAR(100)
+);
+
 CREATE TABLE wiki_paragraphs (
     id          BIGSERIAL PRIMARY KEY,
     doc_id      BIGINT NOT NULL REFERENCES wiki_docs(id) ON DELETE CASCADE,
@@ -135,6 +147,26 @@ CREATE TABLE wiki_paragraphs (
 
 CREATE INDEX idx_wiki_paragraphs_embedding ON wiki_paragraphs
     USING hnsw (embedding vector_cosine_ops);
+
+-- ============================================================
+-- 3.1 Template Assets (.dotx / Excel)
+-- ============================================================
+
+CREATE TABLE template_assets (
+    id          BIGSERIAL PRIMARY KEY,
+    asset_type  VARCHAR(20) NOT NULL,
+    table_key   VARCHAR(80),
+    file_name   VARCHAR(255) NOT NULL,
+    version     VARCHAR(40) NOT NULL,
+    minio_key   VARCHAR(500),
+    minio_bucket VARCHAR(100) DEFAULT 'bid-templates',
+    size_bytes  BIGINT DEFAULT 0,
+    mime_type   VARCHAR(100),
+    is_active   BOOLEAN DEFAULT FALSE,
+    uploaded_by VARCHAR(100),
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
 
 -- ============================================================
 -- 4. Audit Log (审计日志)

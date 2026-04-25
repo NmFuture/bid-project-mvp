@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from typing import Any
 from urllib.parse import quote
 
@@ -8,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from app.services.material_store import material_store
 from app.services.minio_client import minio_client
+from app.services.wiki_generation import generate_platform_wiki
 
 router = APIRouter()
 
@@ -201,6 +203,14 @@ async def wiki_list(nodeId: str = "") -> dict[str, Any]:
     return await material_store.wiki_list(nodeId)
 
 
+@router.post("/api/materials/wiki/bootstrap")
+async def wiki_bootstrap(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await generate_platform_wiki(
+        reference_path=str(data.get("referencePath") or ""),
+        mode=str(data.get("mode") or "create"),
+    )
+
+
 @router.post("/api/materials/wiki")
 async def wiki_create(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     return await material_store.wiki_create(
@@ -225,14 +235,60 @@ async def wiki_move(node_id: str, data: dict[str, Any] = Body(default_factory=di
 
 
 @router.post("/api/materials/wiki/{node_id}/attachments")
-async def wiki_upload_attachment(node_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+async def wiki_upload_attachment(node_id: str, request: Request) -> dict[str, Any]:
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        upload = form.get("file")
+        return await material_store.wiki_upload_attachment(
+            node_id=node_id,
+            file_name=str(getattr(upload, "filename", "") or form.get("fileName") or ""),
+            file_size=form.get("fileSize"),
+            upload=upload,
+            mime_type=str(getattr(upload, "content_type", "") or ""),
+        )
+
+    data = await request.json()
+    raw_bytes = data.get("data")
+    decoded = None
+    if raw_bytes is not None:
+        raw_text = str(raw_bytes)
+        if raw_text.startswith("data:"):
+            raw_text = raw_text.split(",", 1)[-1]
+        decoded = base64.b64decode(raw_text)
     return await material_store.wiki_upload_attachment(
         node_id=node_id,
         file_name=str(data.get("fileName") or ""),
         file_size=data.get("fileSize"),
+        data=decoded,
+        mime_type=str(data.get("mimeType") or ""),
     )
 
 
 @router.post("/api/materials/wiki/{node_id}/refresh-summary")
 async def wiki_refresh_summary(node_id: str) -> dict[str, Any]:
     return await material_store.wiki_refresh_summary(node_id)
+
+
+@router.get("/api/materials/wiki/attachments/{attachment_id}/content")
+async def wiki_download_attachment_content(attachment_id: str) -> StreamingResponse:
+    payload = await material_store.wiki_download_attachment_content(attachment_id)
+    response = minio_client.get_object_response(payload["bucket"], payload["key"])
+
+    def iterate_chunks():
+        try:
+            for chunk in response.stream(64 * 1024):
+                yield chunk
+        finally:
+            response.close()
+            response.release_conn()
+
+    encoded_name = quote(str(payload["fileName"] or "attachment.bin"))
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}",
+    }
+    return StreamingResponse(
+        iterate_chunks(),
+        media_type=str(payload["mimeType"] or "application/octet-stream"),
+        headers=headers,
+    )

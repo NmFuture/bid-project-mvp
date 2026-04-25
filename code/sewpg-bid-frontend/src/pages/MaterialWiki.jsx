@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
 import { materialsAPI } from '../api'
+import MaterialsViewSwitch from '../components/shared/MaterialsViewSwitch'
 import MarkdownLite from '../components/shared/MarkdownLite'
 import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
 
@@ -26,8 +27,9 @@ const normalizeNode = (node) => {
     tags: Array.isArray(node.tags) ? node.tags : [],
     applicableTypes: Array.isArray(node.applicableTypes) ? node.applicableTypes : [],
     attachments: Array.isArray(node.attachments) ? node.attachments : [],
-    path: Array.isArray(node.path) ? node.path : [],
-    pathText: String(node.pathText || ''),
+    path: String(node.path || ''),
+    pathText: String(node.pathText || node.path || ''),
+    updatedAt: String(node.updatedAt || ''),
   }
 }
 
@@ -217,10 +219,11 @@ export default function MaterialWiki({ showToast = () => {} }) {
 
     setUploadingAttachment(true)
     try {
-      const payload = await materialsAPI.wiki.uploadAttachment(selectedNodeId, {
-        fileName: file.name,
-        fileSize: file.size,
-      })
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('fileName', file.name)
+      formData.append('fileSize', String(file.size))
+      const payload = await materialsAPI.wiki.uploadAttachment(selectedNodeId, formData)
       applyPayload(payload)
       showToast('附件上传成功')
     } catch (e) {
@@ -361,40 +364,92 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-8rem)] animate-fade-in -m-6 md:-m-8 lg:-m-12">
-      <div className="flex flex-1 overflow-hidden">
-        <div className="w-80 bg-surface-container-lowest border-r border-surface-container-high flex flex-col shrink-0">
-          <div className="px-4 py-3 border-b border-surface-container-high">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-on-surface">目录树</h3>
-              <div className="flex items-center gap-1">
+    <div className="flex flex-col gap-6 animate-fade-in">
+      <MaterialsViewSwitch
+        active="wiki"
+        title="素材 Wiki"
+        subtitle={selectedNode?.pathText || selectedNode?.title || '平台级 Wiki 与项目级 Wiki 内容维护'}
+        actions={(
+          <div className="flex flex-wrap gap-3">
+            <button
+              onClick={handleRefreshSummary}
+              disabled={!selectedNodeId || refreshingSummary}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {refreshingSummary ? '生成中...' : '刷新摘要'}
+            </button>
+            <button
+              onClick={() => uploadInputRef.current?.click()}
+              disabled={!selectedNodeId || uploadingAttachment}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {uploadingAttachment ? '上传中...' : '上传附件'}
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={!isDirty || saving}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {saving ? '保存中...' : '保存'}
+            </button>
+          </div>
+        )}
+        meta={(
+          <div className="flex w-full flex-wrap gap-2 text-xs xl:justify-end">
+            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+              标签 {draft.tags.length}
+            </span>
+            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+              适用类型 {draft.applicableTypes.length}
+            </span>
+            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+              附件 {attachments.length}
+            </span>
+            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+              更新 {selectedNode?.updatedAt ? selectedNode.updatedAt.replace('T', ' ').slice(0, 19) : '-'}
+            </span>
+          </div>
+        )}
+      />
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+        <div className="xl:col-span-3 bg-surface-container-lowest rounded-xl border border-surface-container-high flex flex-col min-h-[720px] max-h-[720px] overflow-hidden">
+          <div className="px-4 py-4 border-b border-surface-container-high space-y-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-on-surface">目录树</h3>
+                <p className="mt-1 text-xs text-outline leading-5 break-words">
+                  拖拽节点可调整树结构。拖到目录默认入子级，按 `Alt` 可改为同级前置。
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2 shrink-0">
                 <button
                   onClick={() => handleCreateNode(false)}
                   disabled={creatingNode}
-                  className="text-primary hover:bg-primary/10 rounded p-1 disabled:opacity-50"
-                  title="新建节点"
+                  className="inline-flex items-center justify-center rounded-lg border border-surface-container-high bg-white px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/10 disabled:opacity-50"
                 >
-                  <span className="material-symbols-outlined text-sm">note_add</span>
+                  新建节点
                 </button>
                 <button
                   onClick={() => handleCreateNode(true)}
                   disabled={creatingNode}
-                  className="text-primary hover:bg-primary/10 rounded p-1 disabled:opacity-50"
-                  title="新建目录"
+                  className="inline-flex items-center justify-center rounded-lg border border-surface-container-high bg-white px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/10 disabled:opacity-50"
                 >
-                  <span className="material-symbols-outlined text-sm">create_new_folder</span>
+                  新建目录
                 </button>
               </div>
             </div>
-            <p className="text-xs text-outline mt-2">拖拽节点可调整树结构；拖到目录默认入子级，按 `Alt` 可改为同级前置。</p>
-            {(refreshing || movingNode) && <p className="text-xs text-outline mt-1">正在同步最新树结构...</p>}
+            {(refreshing || movingNode) && (
+              <p className="text-xs text-outline rounded-lg bg-surface-container-high px-3 py-2">
+                正在同步最新树结构...
+              </p>
+            )}
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-1">{renderTree(tree)}</div>
         </div>
 
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-surface-container-high bg-white space-y-3">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <div className="xl:col-span-9 flex flex-col gap-4 min-w-0">
+          <div className="bg-surface-container-lowest rounded-xl border border-surface-container-high p-4 space-y-3">
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
               <label className="text-xs text-on-surface-variant">
                 节点标题
                 <input
@@ -405,13 +460,13 @@ export default function MaterialWiki({ showToast = () => {} }) {
               </label>
               <div className="text-xs text-on-surface-variant">
                 节点路径
-                <div className="mt-1 px-3 py-2 rounded-lg border border-surface-container-high text-sm text-on-surface bg-surface-container-low">
+                <div className="mt-1 px-3 py-2 rounded-lg border border-surface-container-high text-sm text-on-surface bg-surface-container-low break-all">
                   {selectedNode?.pathText || '根目录'}
                 </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
               <div className="text-xs text-on-surface-variant">
                 标签
                 <div className="mt-1 flex flex-wrap gap-2">
@@ -444,116 +499,102 @@ export default function MaterialWiki({ showToast = () => {} }) {
               </div>
             </div>
 
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-1">
+            <div className="flex flex-wrap items-center gap-1">
                 <button onClick={() => insertAroundSelection('**', '**')} className="p-2 hover:bg-surface-container-high rounded font-bold text-on-surface">B</button>
                 <button onClick={() => insertAroundSelection('*', '*')} className="p-2 hover:bg-surface-container-high rounded italic text-on-surface">I</button>
                 <button onClick={() => insertAroundSelection('\n## ', '')} className="p-2 hover:bg-surface-container-high rounded text-on-surface">H2</button>
                 <button onClick={() => insertAroundSelection('\n- ', '')} className="p-2 hover:bg-surface-container-high rounded">
                   <span className="material-symbols-outlined text-lg text-outline">format_list_bulleted</span>
                 </button>
+            </div>
+          </div>
+
+          <div className="bg-surface-container-lowest rounded-xl border border-surface-container-high overflow-hidden">
+            <div className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr),20rem] min-h-[520px]">
+              <div className="grid grid-cols-1 xl:grid-cols-2 min-h-[520px]">
+                <div className="p-4 overflow-y-auto border-r-0 xl:border-r border-b xl:border-b-0 border-surface-container-high bg-surface-container-low min-h-[320px]">
+                <textarea
+                  ref={editorRef}
+                  value={draft.markdownContent}
+                  onChange={(event) => setDraft((prev) => ({ ...prev, markdownContent: event.target.value }))}
+                  className="w-full min-h-full h-full resize-none rounded-lg border border-surface-container-high bg-white p-4 text-sm text-on-surface font-mono leading-relaxed"
+                />
               </div>
-              <button
-                onClick={handleSave}
-                disabled={!isDirty || saving}
-                className="px-4 py-2 bg-primary text-on-primary text-sm font-medium rounded-lg flex items-center gap-2 hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <span className="material-symbols-outlined text-sm">save</span>
-                {saving ? '保存中...' : '保存'}
-              </button>
-            </div>
-          </div>
-
-          <div className="flex-1 grid grid-cols-1 xl:grid-cols-2 overflow-hidden">
-            <div className="p-4 overflow-y-auto border-r border-surface-container-high bg-surface-container-low">
-              <textarea
-                ref={editorRef}
-                value={draft.markdownContent}
-                onChange={(event) => setDraft((prev) => ({ ...prev, markdownContent: event.target.value }))}
-                className="w-full min-h-full h-full resize-none rounded-lg border border-surface-container-high bg-white p-4 text-sm text-on-surface font-mono leading-relaxed"
-              />
-            </div>
-            <div className="p-6 overflow-y-auto bg-white">
-              <h1 className="text-xl font-headline font-bold text-on-surface mb-4">
-                {draft.title || '未命名节点'}
-              </h1>
-              <MarkdownLite content={draft.markdownContent} />
-            </div>
-          </div>
-        </div>
-
-        <div className="w-80 bg-surface-container-lowest border-l border-surface-container-high flex flex-col shrink-0 overflow-y-auto">
-          <div className="p-4 border-b border-surface-container-high">
-            <div className="p-4 bg-ai-accent-light rounded-xl">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-ai-accent text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>auto_awesome</span>
-                  <h4 className="text-sm font-semibold text-ai-accent">AI 自动摘要</h4>
-                </div>
-                <button
-                  onClick={handleRefreshSummary}
-                  disabled={refreshingSummary}
-                  className="text-primary flex items-center gap-1 hover:underline disabled:opacity-50 text-xs"
-                >
-                  <span className="material-symbols-outlined text-sm">refresh</span>
-                  {refreshingSummary ? '生成中' : '刷新'}
-                </button>
+              <div className="p-6 overflow-y-auto bg-white min-w-0">
+                <h1 className="text-xl font-headline font-bold text-on-surface mb-4 break-words">
+                  {draft.title || '未命名节点'}
+                </h1>
+                <MarkdownLite content={draft.markdownContent} />
               </div>
-              <p className="text-xs text-on-surface-variant leading-relaxed whitespace-pre-wrap">
-                {selectedNode?.aiSummary || '暂无摘要'}
-              </p>
-            </div>
-          </div>
+              </div>
 
-          <div className="p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h4 className="text-sm font-semibold text-on-surface flex items-center gap-2">
-                <span className="material-symbols-outlined text-sm">attach_file</span>
-                附件列表
-                <span className="text-xs bg-surface-container-high rounded-full px-2 py-0.5">{attachments.length}</span>
-              </h4>
-            </div>
-            <div className="flex flex-col gap-2">
-              {attachments.map((att) => (
-                <a
-                  key={att.id}
-                  href={att.downloadUrl || '#'}
-                  onClick={(event) => {
-                    if (!att.downloadUrl) event.preventDefault()
-                  }}
-                  className="flex items-center gap-3 p-3 bg-surface-container-low rounded-lg hover:bg-surface-container transition-colors"
-                >
-                  <span className="material-symbols-outlined text-error text-lg">
-                    {att.name.toLowerCase().endsWith('.pdf') ? 'picture_as_pdf' : 'description'}
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-on-surface truncate">{att.name}</div>
-                    <div className="text-xs text-outline">{att.size} · {att.time}</div>
+              <div className="bg-surface-container-lowest border-t 2xl:border-t-0 2xl:border-l border-surface-container-high flex flex-col overflow-y-auto">
+                <div className="p-4 border-b border-surface-container-high">
+                  <div className="p-4 bg-ai-accent-light rounded-xl">
+                    <div className="flex items-center justify-between mb-2 gap-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="material-symbols-outlined text-ai-accent text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>auto_awesome</span>
+                        <h4 className="text-sm font-semibold text-ai-accent truncate">AI 自动摘要</h4>
+                      </div>
+                      <button
+                        onClick={handleRefreshSummary}
+                        disabled={refreshingSummary}
+                        className="text-primary flex items-center gap-1 hover:underline disabled:opacity-50 text-xs shrink-0"
+                      >
+                        <span className="material-symbols-outlined text-sm">refresh</span>
+                        {refreshingSummary ? '生成中' : '刷新'}
+                      </button>
+                    </div>
+                    <p className="text-xs text-on-surface-variant leading-relaxed whitespace-pre-wrap break-words">
+                      {selectedNode?.aiSummary || '暂无摘要'}
+                    </p>
                   </div>
-                </a>
-              ))}
-              {!attachments.length && (
-                <div className="text-xs text-outline p-3 bg-surface-container-low rounded-lg">当前节点暂无附件</div>
-              )}
+                </div>
+
+                <div className="p-4 min-h-0">
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-semibold text-on-surface flex items-center gap-2">
+                      <span className="material-symbols-outlined text-sm">attach_file</span>
+                      附件列表
+                      <span className="text-xs bg-surface-container-high rounded-full px-2 py-0.5">{attachments.length}</span>
+                    </h4>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    {attachments.map((att) => (
+                      <a
+                        key={att.id}
+                        href={att.downloadUrl || '#'}
+                        onClick={(event) => {
+                          if (!att.downloadUrl) event.preventDefault()
+                        }}
+                        className="flex items-center gap-3 p-3 bg-surface-container-low rounded-lg hover:bg-surface-container transition-colors"
+                      >
+                        <span className="material-symbols-outlined text-error text-lg">
+                          {att.name.toLowerCase().endsWith('.pdf') ? 'picture_as_pdf' : 'description'}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium text-on-surface truncate">{att.name}</div>
+                          <div className="text-xs text-outline">{att.size} · {att.time}</div>
+                        </div>
+                      </a>
+                    ))}
+                    {!attachments.length && (
+                      <div className="text-xs text-outline p-3 bg-surface-container-low rounded-lg">当前节点暂无附件</div>
+                    )}
+                  </div>
+                  <input
+                    ref={uploadInputRef}
+                    type="file"
+                    className="hidden"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0]
+                      if (file) handleUploadAttachment(file)
+                      event.target.value = ''
+                    }}
+                  />
+                </div>
+              </div>
             </div>
-            <input
-              ref={uploadInputRef}
-              type="file"
-              className="hidden"
-              onChange={(event) => {
-                const file = event.target.files?.[0]
-                if (file) handleUploadAttachment(file)
-                event.target.value = ''
-              }}
-            />
-            <button
-              onClick={() => uploadInputRef.current?.click()}
-              disabled={uploadingAttachment}
-              className="mt-3 w-full py-2 border border-outline-variant rounded-lg text-sm text-on-surface-variant hover:bg-surface-container-low transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span className="material-symbols-outlined text-sm">upload</span>
-              {uploadingAttachment ? '上传中...' : '上传新附件'}
-            </button>
           </div>
         </div>
       </div>

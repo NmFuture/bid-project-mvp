@@ -6,13 +6,25 @@ import re
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Any
+from uuid import uuid4
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.models import async_session
-from app.models.materials import AuditLog, RawFile, RawFolder, StructuredRow, StructuredTable, WikiDoc, WikiNode
+from app.models.materials import (
+    AuditLog,
+    RawFile,
+    RawFileVersion,
+    RawFolder,
+    StructuredRow,
+    StructuredTable,
+    TemplateAsset,
+    WikiAttachment,
+    WikiDoc,
+    WikiNode,
+)
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
 
@@ -44,11 +56,129 @@ def safe_segment(value: str, fallback: str) -> str:
     return text or fallback
 
 
+PLATFORM_WIKI_SECTION_TITLES = {
+    "平台级Wiki说明",
+    "章节骨架",
+    "装配规则",
+    "同义词映射",
+    "通用卡片",
+    "项目级Wiki模板",
+}
+
+
 class MaterialStore:
     """Real material store backed by PostgreSQL + MinIO.
 
     Drop-in replacement for ``PeripheralStore`` raw/structured/wiki methods.
     """
+
+    _runtime_tables_ready = False
+
+    async def _ensure_runtime_tables(self, session: Any) -> None:
+        if self._runtime_tables_ready:
+            return
+
+        await session.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS raw_file_versions (
+                    id BIGSERIAL PRIMARY KEY,
+                    file_id BIGINT NOT NULL REFERENCES raw_files(id) ON DELETE CASCADE,
+                    version INT NOT NULL,
+                    minio_key VARCHAR(500) NOT NULL,
+                    size_bytes BIGINT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    created_by VARCHAR(100)
+                )
+                """
+            )
+        )
+        await session.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS wiki_attachments (
+                    id BIGSERIAL PRIMARY KEY,
+                    doc_id BIGINT NOT NULL REFERENCES wiki_docs(id) ON DELETE CASCADE,
+                    file_name VARCHAR(255) NOT NULL,
+                    size_bytes BIGINT DEFAULT 0,
+                    mime_type VARCHAR(100),
+                    minio_key VARCHAR(500),
+                    minio_bucket VARCHAR(100) DEFAULT 'bid-materials',
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    created_by VARCHAR(100)
+                )
+                """
+            )
+        )
+        await session.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS template_assets (
+                    id BIGSERIAL PRIMARY KEY,
+                    asset_type VARCHAR(20) NOT NULL,
+                    table_key VARCHAR(80),
+                    file_name VARCHAR(255) NOT NULL,
+                    version VARCHAR(40) NOT NULL,
+                    minio_key VARCHAR(500),
+                    minio_bucket VARCHAR(100) DEFAULT 'bid-templates',
+                    size_bytes BIGINT DEFAULT 0,
+                    mime_type VARCHAR(100),
+                    is_active BOOLEAN DEFAULT FALSE,
+                    uploaded_by VARCHAR(100),
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            )
+        )
+        self._runtime_tables_ready = True
+
+    @staticmethod
+    def _raw_object_key(folder_path: str, file_name: str) -> str:
+        return f"raw/{folder_path.strip('/')}/{file_name}"
+
+    @staticmethod
+    def _wiki_attachment_key(node_id: int, file_name: str) -> str:
+        return f"wiki/{node_id}/{uuid4().hex}-{file_name}"
+
+    async def _archive_raw_file_version(self, session: Any, item: RawFile) -> None:
+        await self._ensure_runtime_tables(session)
+        session.add(
+            RawFileVersion(
+                file_id=item.id,
+                version=int(item.version or 1),
+                minio_key=str(item.minio_key or ""),
+                size_bytes=int(item.size_bytes or 0),
+                created_by="当前用户",
+            )
+        )
+        await session.flush()
+
+    async def _purge_raw_file_objects(self, session: Any, item: RawFile) -> None:
+        await self._ensure_runtime_tables(session)
+        version_rows = (
+            await session.execute(select(RawFileVersion).where(RawFileVersion.file_id == item.id))
+        ).scalars().all()
+        keys = {(str(item.minio_bucket or settings.minio_buckets["materials"]), str(item.minio_key or ""))}
+        keys.update(
+            (str(item.minio_bucket or settings.minio_buckets["materials"]), str(version.minio_key or ""))
+            for version in version_rows
+            if version.minio_key
+        )
+        for bucket, key in keys:
+            if key:
+                minio_client.remove_object(bucket, key)
+
+    @staticmethod
+    def _wiki_attachment_to_dict(attachment: WikiAttachment) -> dict[str, Any]:
+        size = int(attachment.size_bytes or 0)
+        return {
+            "id": f"WIKI-ATT-{attachment.id:04d}",
+            "name": attachment.file_name,
+            "size": size_label(size),
+            "time": attachment.created_at.strftime("%Y-%m-%d %H:%M:%S") if attachment.created_at else now_display(),
+            "downloadUrl": f"/api/materials/wiki/attachments/WIKI-ATT-{attachment.id:04d}/content" if attachment.minio_key else "",
+        }
 
     # ------------------------------------------------------------------ #
     # Raw Materials
@@ -283,6 +413,7 @@ class MaterialStore:
             target_path = f"项目定制/{safe_segment(project_id, 'PRJ-UNSET')}/{bid_type or '技术标'}"
 
         async with async_session() as session:
+            await self._ensure_runtime_tables(session)
             result = await session.execute(select(RawFolder).where(RawFolder.path == target_path))
             base_folder = result.scalar_one_or_none()
             if base_folder is None:
@@ -308,7 +439,7 @@ class MaterialStore:
 
                 upload = item.get("upload")
                 mime_type = str(item.get("mimeType") or item.get("type") or getattr(upload, "content_type", "") or "")
-                minio_key = f"raw/{folder.path}/{file_name}"
+                minio_key = self._raw_object_key(folder.path, file_name)
 
                 if upload is not None and hasattr(upload, "file"):
                     file_stream = upload.file
@@ -348,14 +479,15 @@ class MaterialStore:
                         "RAW_FILE_TOO_LARGE",
                     )
 
-                if existing and on_conflict == "overwrite":
+                if existing and on_conflict in {"overwrite", "version"}:
+                    await self._archive_raw_file_version(session, existing)
                     upload_to_minio()
                     existing.size_bytes = size
                     existing.minio_key = minio_key
                     existing.mime_type = mime_type
                     existing.version += 1
                     ext = existing.ext_fields or {}
-                    ext["lastAction"] = "overwrite"
+                    ext["lastAction"] = on_conflict
                     ext["lastOperator"] = "当前用户"
                     existing.ext_fields = ext
                     uploaded_items.append(existing.to_dict())
@@ -394,12 +526,35 @@ class MaterialStore:
 
     async def raw_update_file(self, file_id: str, name: str) -> dict[str, Any]:
         numeric_id = int(file_id.replace("RAW-", ""))
+        next_name = safe_segment(name, "")
+        if not next_name:
+            raise PeripheralError(400, "文件名不能为空。", "RAW_FILE_NAME_REQUIRED")
         async with async_session() as session:
+            await self._ensure_runtime_tables(session)
             result = await session.execute(select(RawFile).where(RawFile.id == numeric_id).options(selectinload(RawFile.folder)))
             item = result.scalar_one_or_none()
             if item is None:
                 raise PeripheralError(404, "文件不存在。", "RAW_FILE_NOT_FOUND")
-            item.name = name
+            if item.folder is None:
+                raise PeripheralError(400, "文件目录信息缺失。", "RAW_FILE_FOLDER_MISSING")
+
+            conflict = await session.execute(
+                select(RawFile).where(
+                    RawFile.folder_id == item.folder_id,
+                    RawFile.name == next_name,
+                    RawFile.id != item.id,
+                )
+            )
+            if conflict.scalar_one_or_none() is not None:
+                raise PeripheralError(409, "目标目录存在同名文件。", "MATERIAL_CONFLICT")
+
+            next_key = self._raw_object_key(item.folder.path, next_name)
+            if next_key != item.minio_key and item.minio_key:
+                minio_client.copy_object(item.minio_bucket, item.minio_key, next_key)
+                minio_client.remove_object(item.minio_bucket, item.minio_key)
+
+            item.name = next_name
+            item.minio_key = next_key
             item.ext_fields = {**(item.ext_fields or {}), "lastAction": "rename"}
             await session.commit()
             refreshed = await session.execute(
@@ -411,11 +566,13 @@ class MaterialStore:
     async def raw_delete_file(self, file_id: str) -> dict[str, Any]:
         numeric_id = int(file_id.replace("RAW-", ""))
         async with async_session() as session:
+            await self._ensure_runtime_tables(session)
             result = await session.execute(select(RawFile).where(RawFile.id == numeric_id).options(selectinload(RawFile.folder)))
             item = result.scalar_one_or_none()
             if item is None:
                 raise PeripheralError(404, "文件不存在。", "RAW_FILE_NOT_FOUND")
             payload = item.to_dict()
+            await self._purge_raw_file_objects(session, item)
             await session.delete(item)
             await session.commit()
             return {"message": "删除成功", "item": payload}
@@ -535,7 +692,8 @@ class MaterialStore:
 
     async def wiki_list(self, node_id: str = "") -> dict[str, Any]:
         async with async_session() as session:
-            nodes_result = await session.execute(select(WikiNode).order_by(WikiNode.sort_order))
+            await self._ensure_runtime_tables(session)
+            nodes_result = await session.execute(select(WikiNode).order_by(WikiNode.sort_order, WikiNode.id))
             all_nodes = nodes_result.scalars().all()
 
             children_by_parent: dict[int, list[WikiNode]] = {}
@@ -566,6 +724,14 @@ class MaterialStore:
                 doc = doc_result.scalar_one_or_none()
                 if doc:
                     selected = doc.to_dict()
+                    attachment_rows = (
+                        await session.execute(
+                            select(WikiAttachment)
+                            .where(WikiAttachment.doc_id == doc.id)
+                            .order_by(desc(WikiAttachment.created_at), desc(WikiAttachment.id))
+                        )
+                    ).scalars().all()
+                    selected["attachments"] = [self._wiki_attachment_to_dict(item) for item in attachment_rows]
 
             return {
                 "tree": tree,
@@ -576,6 +742,7 @@ class MaterialStore:
 
     async def wiki_create(self, parent_id: str, title: str, is_folder: bool) -> dict[str, Any]:
         async with async_session() as session:
+            await self._ensure_runtime_tables(session)
             parent = None
             if parent_id:
                 numeric_parent = int(parent_id.replace("WIKI-", ""))
@@ -606,6 +773,7 @@ class MaterialStore:
     async def wiki_update(self, node_id: str, data: dict[str, Any]) -> dict[str, Any]:
         numeric_id = int(node_id.replace("WIKI-", ""))
         async with async_session() as session:
+            await self._ensure_runtime_tables(session)
             result = await session.execute(
                 select(WikiDoc).where(WikiDoc.node_id == numeric_id).options(selectinload(WikiDoc.node))
             )
@@ -629,6 +797,7 @@ class MaterialStore:
     async def wiki_refresh_summary(self, node_id: str) -> dict[str, Any]:
         numeric_id = int(node_id.replace("WIKI-", ""))
         async with async_session() as session:
+            await self._ensure_runtime_tables(session)
             result = await session.execute(select(WikiDoc).where(WikiDoc.node_id == numeric_id))
             doc = result.scalar_one_or_none()
             if doc is None:
@@ -643,6 +812,7 @@ class MaterialStore:
         numeric_id = int(node_id.replace("WIKI-", ""))
         target_numeric = int(target_id.replace("WIKI-", ""))
         async with async_session() as session:
+            await self._ensure_runtime_tables(session)
             result = await session.execute(select(WikiNode).where(WikiNode.id == numeric_id))
             source = result.scalar_one_or_none()
             if source is None:
@@ -658,8 +828,258 @@ class MaterialStore:
             await session.commit()
             return {"message": "Moved", **await self.wiki_list(node_id)}
 
-    async def wiki_upload_attachment(self, node_id: str, file_name: str, file_size: Any) -> dict[str, Any]:
-        return {"message": "Uploaded", "attachment": {"id": "ATT-0001", "name": file_name, "size": size_label(file_size), "time": now_display()}, **await self.wiki_list(node_id)}
+    async def wiki_upload_attachment(
+        self,
+        node_id: str,
+        file_name: str,
+        file_size: Any,
+        *,
+        upload: Any | None = None,
+        data: bytes | None = None,
+        mime_type: str = "",
+    ) -> dict[str, Any]:
+        numeric_id = int(node_id.replace("WIKI-", ""))
+        clean_name = safe_segment(file_name, "")
+        if not clean_name:
+            raise PeripheralError(400, "附件文件名不能为空。", "WIKI_ATTACHMENT_NAME_REQUIRED")
+
+        async with async_session() as session:
+            await self._ensure_runtime_tables(session)
+            result = await session.execute(select(WikiDoc).where(WikiDoc.node_id == numeric_id))
+            doc = result.scalar_one_or_none()
+            if doc is None:
+                raise PeripheralError(404, "Wiki 节点不存在。", "WIKI_NODE_NOT_FOUND")
+
+            bucket = settings.minio_buckets["materials"]
+            key = self._wiki_attachment_key(numeric_id, clean_name)
+            size = int(file_size or 0)
+            resolved_type = str(mime_type or getattr(upload, "content_type", "") or "application/octet-stream")
+
+            if upload is not None and hasattr(upload, "file"):
+                stream = upload.file
+                stream.seek(0, 2)
+                size = stream.tell()
+                stream.seek(0)
+                minio_client.put_object_stream(bucket, key, stream, size, content_type=resolved_type)
+            elif data is not None:
+                size = len(data)
+                minio_client.put_object(bucket, key, data, content_type=resolved_type)
+
+            attachment = WikiAttachment(
+                doc_id=doc.id,
+                file_name=clean_name,
+                size_bytes=size,
+                mime_type=resolved_type,
+                minio_key=key if upload is not None or data is not None else "",
+                minio_bucket=bucket,
+                created_by="当前用户",
+            )
+            session.add(attachment)
+            await session.commit()
+
+        return {"message": "Uploaded", **await self.wiki_list(node_id)}
+
+    async def wiki_download_attachment_content(self, attachment_id: str) -> dict[str, Any]:
+        numeric_id = int(attachment_id.replace("WIKI-ATT-", ""))
+        async with async_session() as session:
+            await self._ensure_runtime_tables(session)
+            result = await session.execute(select(WikiAttachment).where(WikiAttachment.id == numeric_id))
+            attachment = result.scalar_one_or_none()
+            if attachment is None or not attachment.minio_key:
+                raise PeripheralError(404, "附件不存在。", "WIKI_ATTACHMENT_NOT_FOUND")
+            return {
+                "fileName": attachment.file_name,
+                "bucket": attachment.minio_bucket or settings.minio_buckets["materials"],
+                "key": attachment.minio_key,
+                "mimeType": attachment.mime_type or "application/octet-stream",
+            }
+
+    async def import_generated_wiki_blueprint(
+        self,
+        *,
+        root_title: str,
+        nodes: list[dict[str, Any]],
+        mode: str = "create",
+    ) -> dict[str, Any]:
+        async with async_session() as session:
+            await self._ensure_runtime_tables(session)
+            normalized_mode = mode if mode in {"create", "update", "replace"} else "create"
+            normalized_root_title = safe_segment(root_title, "平台级Wiki（自动生成）")
+
+            async def purge_wiki_root(root: WikiNode) -> None:
+                all_nodes = (await session.execute(select(WikiNode))).scalars().all()
+                nodes_by_id = {int(node.id): node for node in all_nodes}
+                children_by_parent: dict[int, list[WikiNode]] = {}
+                for node in all_nodes:
+                    if node.parent_id is not None:
+                        children_by_parent.setdefault(node.parent_id, []).append(node)
+
+                node_ids: set[int] = set()
+                node_depths: dict[int, int] = {}
+
+                def collect(node: WikiNode, depth: int = 0) -> None:
+                    node_ids.add(int(node.id))
+                    node_depths[int(node.id)] = depth
+                    for child in children_by_parent.get(node.id, []):
+                        collect(child, depth + 1)
+
+                collect(root)
+                if node_ids:
+                    attachments = (
+                        await session.execute(
+                            select(WikiAttachment)
+                            .join(WikiDoc, WikiAttachment.doc_id == WikiDoc.id)
+                            .where(WikiDoc.node_id.in_(node_ids))
+                        )
+                    ).scalars().all()
+                    for attachment in attachments:
+                        if attachment.minio_key:
+                            minio_client.remove_object(
+                                attachment.minio_bucket or settings.minio_buckets["materials"],
+                                attachment.minio_key,
+                            )
+                for node_id in sorted(node_ids - {int(root.id)}, key=lambda item: node_depths.get(item, 0), reverse=True):
+                    node = nodes_by_id.get(node_id)
+                    if node is not None:
+                        await session.delete(node)
+                await session.delete(root)
+                await session.flush()
+
+            async def purge_orphaned_platform_sections() -> None:
+                orphaned_roots = (
+                    await session.execute(
+                        select(WikiNode).where(
+                            WikiNode.parent_id.is_(None),
+                            WikiNode.title.in_(PLATFORM_WIKI_SECTION_TITLES),
+                        )
+                    )
+                ).scalars().all()
+                for orphaned_root in orphaned_roots:
+                    await purge_wiki_root(orphaned_root)
+
+            async def create_node(
+                spec: dict[str, Any],
+                parent: WikiNode | None,
+                *,
+                default_tier: str = "standard",
+                sort_order: int = 0,
+            ) -> WikiNode:
+                title = safe_segment(str(spec.get("title") or "未命名节点"), "未命名节点")
+                path = f"{parent.path if parent else ''}/{title}".lstrip("/")
+                node = WikiNode(
+                    parent_id=parent.id if parent else None,
+                    title=title,
+                    tier=parent.tier if parent else default_tier,
+                    path=path,
+                    bid_types=list(spec.get("applicableTypes") or ["通用"]),
+                    sort_order=sort_order,
+                )
+                session.add(node)
+                await session.flush()
+                doc = WikiDoc(
+                    node_id=node.id,
+                    markdown_content=str(spec.get("markdownContent") or f"# {title}\n"),
+                    ai_summary="自动生成的 Wiki 初稿节点。",
+                    tags=list(spec.get("tags") or []),
+                )
+                session.add(doc)
+                await session.flush()
+                for index, child in enumerate(spec.get("children") or []):
+                    if isinstance(child, dict):
+                        await create_node(child, node, default_tier=default_tier, sort_order=index)
+                return node
+
+            async def upsert_node(spec: dict[str, Any], parent: WikiNode, *, sort_order: int = 0) -> WikiNode:
+                title = safe_segment(str(spec.get("title") or "未命名节点"), "未命名节点")
+                result = await session.execute(
+                    select(WikiNode).where(WikiNode.parent_id == parent.id, WikiNode.title == title)
+                )
+                node = result.scalar_one_or_none()
+                if node is None:
+                    node = await create_node(spec, parent, sort_order=sort_order)
+                else:
+                    node.path = f"{parent.path}/{title}".lstrip("/")
+                    node.bid_types = list(spec.get("applicableTypes") or node.bid_types or ["通用"])
+                    node.sort_order = sort_order
+                    doc_result = await session.execute(select(WikiDoc).where(WikiDoc.node_id == node.id))
+                    doc = doc_result.scalar_one_or_none()
+                    if doc is None:
+                        session.add(
+                            WikiDoc(
+                                node_id=node.id,
+                                markdown_content=str(spec.get("markdownContent") or f"# {title}\n"),
+                                ai_summary="自动生成的 Wiki 初稿节点。",
+                                tags=list(spec.get("tags") or []),
+                            )
+                        )
+                    else:
+                        doc.markdown_content = str(spec.get("markdownContent") or doc.markdown_content or f"# {title}\n")
+                        doc.ai_summary = doc.ai_summary or "自动生成的 Wiki 初稿节点。"
+                        doc.tags = list(spec.get("tags") or doc.tags or [])
+                    await session.flush()
+                    for child_index, child in enumerate(spec.get("children") or []):
+                        if isinstance(child, dict):
+                            await upsert_node(child, node, sort_order=child_index)
+                return node
+
+            root_spec = {
+                "title": normalized_root_title,
+                "markdownContent": f"# {normalized_root_title}\n\n这是系统自动生成的平台级 Wiki 根节点。",
+                "tags": ["通用材料"],
+                "applicableTypes": ["通用"],
+                "children": nodes,
+            }
+
+            existing_roots = (
+                await session.execute(
+                    select(WikiNode)
+                    .where(WikiNode.parent_id.is_(None), WikiNode.title == normalized_root_title)
+                    .order_by(desc(WikiNode.created_at), desc(WikiNode.id))
+                )
+            ).scalars().all()
+
+            if normalized_mode == "replace":
+                for root in existing_roots:
+                    await purge_wiki_root(root)
+                await purge_orphaned_platform_sections()
+                root_node = await create_node(root_spec, None)
+                message = "平台级 Wiki 已重新生成并覆盖。"
+            elif existing_roots:
+                root_node = existing_roots[0]
+                for duplicate_root in existing_roots[1:]:
+                    await purge_wiki_root(duplicate_root)
+                await purge_orphaned_platform_sections()
+                if normalized_mode == "update":
+                    root_node.title = normalized_root_title
+                    root_node.path = normalized_root_title
+                    root_node.bid_types = ["通用"]
+                    doc_result = await session.execute(select(WikiDoc).where(WikiDoc.node_id == root_node.id))
+                    root_doc = doc_result.scalar_one_or_none()
+                    if root_doc is None:
+                        session.add(
+                            WikiDoc(
+                                node_id=root_node.id,
+                                markdown_content=root_spec["markdownContent"],
+                                ai_summary="自动生成的 Wiki 初稿节点。",
+                                tags=["通用材料"],
+                            )
+                        )
+                    else:
+                        root_doc.markdown_content = root_spec["markdownContent"]
+                        root_doc.tags = ["通用材料"]
+                    for index, child in enumerate(nodes):
+                        if isinstance(child, dict):
+                            await upsert_node(child, root_node, sort_order=index)
+                    message = "平台级 Wiki 已更新，并已清理重复根节点。"
+                else:
+                    message = "平台级 Wiki 已存在，已保留现有版本并清理重复根节点。"
+            else:
+                root_node = await create_node(root_spec, None)
+                message = "平台级 Wiki 创建成功。"
+
+            await session.commit()
+
+        return {"message": message, "mode": normalized_mode, **await self.wiki_list(f"WIKI-{root_node.id:04d}")}
 
     # ------------------------------------------------------------------ #
     # Structured stubs (MVP compatible)
@@ -723,6 +1143,7 @@ class MaterialStore:
     async def raw_move_file(self, file_id: str, target_path: str, on_conflict: str = "") -> dict[str, Any]:
         numeric_id = int(file_id.replace("RAW-", ""))
         async with async_session() as session:
+            await self._ensure_runtime_tables(session)
             item_result = await session.execute(
                 select(RawFile).where(RawFile.id == numeric_id).options(selectinload(RawFile.folder))
             )
@@ -761,6 +1182,7 @@ class MaterialStore:
                 )
 
             if existing is not None and on_conflict == "overwrite":
+                await self._purge_raw_file_objects(session, existing)
                 await session.delete(existing)
             elif existing is not None and on_conflict == "version":
                 version = int(existing.version or 1) + 1
@@ -772,7 +1194,13 @@ class MaterialStore:
             else:
                 item.ext_fields = {**(item.ext_fields or {}), "lastAction": "move", "lastOperator": "当前用户"}
 
+            next_key = self._raw_object_key(destination.path, item.name)
+            if item.minio_key and next_key != item.minio_key:
+                minio_client.copy_object(item.minio_bucket, item.minio_key, next_key)
+                minio_client.remove_object(item.minio_bucket, item.minio_key)
+
             item.folder_id = destination.id
+            item.minio_key = next_key
             await session.commit()
 
         async with async_session() as verify_session:

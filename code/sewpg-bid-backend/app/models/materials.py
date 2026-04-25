@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, VARCHAR
 from sqlalchemy.orm import backref, relationship
 
@@ -60,6 +60,7 @@ class RawFile(Base):
     updated_by = Column(VARCHAR(100))
 
     folder = relationship("RawFolder", back_populates="files")
+    versions = relationship("RawFileVersion", back_populates="file", cascade="all, delete-orphan")
 
     def to_dict(self) -> dict[str, Any]:
         size = self.size_bytes or 0
@@ -88,6 +89,20 @@ class RawFile(Base):
             "lastOperator": self.ext_fields.get("lastOperator") if self.ext_fields else "",
             "updatedAt": self.updated_at.isoformat() if self.updated_at else "",
         }
+
+
+class RawFileVersion(Base):
+    __tablename__ = "raw_file_versions"
+
+    id = Column(BigInteger, primary_key=True)
+    file_id = Column(BigInteger, ForeignKey("raw_files.id", ondelete="CASCADE"), nullable=False)
+    version = Column(Integer, nullable=False)
+    minio_key = Column(VARCHAR(500), nullable=False)
+    size_bytes = Column(BigInteger)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_by = Column(VARCHAR(100))
+
+    file = relationship("RawFile", back_populates="versions")
 
 
 class StructuredTable(Base):
@@ -178,6 +193,7 @@ class WikiDoc(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     node = relationship("WikiNode", back_populates="doc")
+    attachments = relationship("WikiAttachment", back_populates="doc", cascade="all, delete-orphan")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -187,8 +203,45 @@ class WikiDoc(Base):
             "aiSummary": self.ai_summary or "",
             "tags": self.tags or [],
             "applicableTypes": self.node.bid_types if self.node else ["通用"],
+            "path": self.node.path if self.node else "",
+            "pathText": self.node.path if self.node else "",
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else "",
             "attachments": [],
         }
+
+
+class WikiAttachment(Base):
+    __tablename__ = "wiki_attachments"
+
+    id = Column(BigInteger, primary_key=True)
+    doc_id = Column(BigInteger, ForeignKey("wiki_docs.id", ondelete="CASCADE"), nullable=False)
+    file_name = Column(VARCHAR(255), nullable=False)
+    size_bytes = Column(BigInteger, default=0)
+    mime_type = Column(VARCHAR(100))
+    minio_key = Column(VARCHAR(500))
+    minio_bucket = Column(VARCHAR(100), default="bid-materials")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_by = Column(VARCHAR(100))
+
+    doc = relationship("WikiDoc", back_populates="attachments")
+
+
+class TemplateAsset(Base):
+    __tablename__ = "template_assets"
+
+    id = Column(BigInteger, primary_key=True)
+    asset_type = Column(VARCHAR(20), nullable=False)
+    table_key = Column(VARCHAR(80))
+    file_name = Column(VARCHAR(255), nullable=False)
+    version = Column(VARCHAR(40), nullable=False)
+    minio_key = Column(VARCHAR(500))
+    minio_bucket = Column(VARCHAR(100), default="bid-templates")
+    size_bytes = Column(BigInteger, default=0)
+    mime_type = Column(VARCHAR(100))
+    is_active = Column(Boolean, default=False)
+    uploaded_by = Column(VARCHAR(100))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class AuditLog(Base):

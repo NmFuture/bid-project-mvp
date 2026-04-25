@@ -1,10 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { materialsAPI } from '../api'
+import MaterialsViewSwitch from '../components/shared/MaterialsViewSwitch'
 import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
 const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.zip,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
 const UPLOAD_KIND_STORAGE_KEY = 'materials.raw.upload.kind'
+const WIKI_BOOTSTRAP_MODES = [
+  {
+    value: 'create',
+    title: '首次创建',
+    description: '如果平台级 Wiki 已存在，则只保留现有版本并清理重复根节点。',
+  },
+  {
+    value: 'update',
+    title: '更新现有平台 Wiki',
+    description: '在现有平台级 Wiki 上补齐和更新系统生成的标准节点。',
+  },
+  {
+    value: 'replace',
+    title: '重新生成并覆盖',
+    description: '删除现有平台级 Wiki 根树后重新生成一份新结构。',
+  },
+]
 const ALLOWED_EXTENSIONS = new Set([
   'pdf', 'doc', 'docx', 'xls', 'xlsx', 'zip',
   'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
@@ -178,6 +197,7 @@ function TreeNode({
 }
 
 export default function MaterialDB({ showToast = () => {} }) {
+  const navigate = useNavigate()
   const uploadPickerRef = useRef(null)
   const [tree, setTree] = useState([])
   const [collapsedMap, setCollapsedMap] = useState({})
@@ -206,6 +226,9 @@ export default function MaterialDB({ showToast = () => {} }) {
   const [uploadFiles, setUploadFiles] = useState([])
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
+  const [creatingWiki, setCreatingWiki] = useState(false)
+  const [showWikiBootstrapModal, setShowWikiBootstrapModal] = useState(false)
+  const [wikiBootstrapMode, setWikiBootstrapMode] = useState('create')
 
   const [conflictContext, setConflictContext] = useState(null)
 
@@ -509,6 +532,25 @@ export default function MaterialDB({ showToast = () => {} }) {
     }
   }
 
+  const handleCreateWiki = () => {
+    setWikiBootstrapMode('create')
+    setShowWikiBootstrapModal(true)
+  }
+
+  const submitCreateWiki = async () => {
+    setCreatingWiki(true)
+    try {
+      const payload = await materialsAPI.wiki.bootstrap({ mode: wikiBootstrapMode })
+      showToast(payload?.generation?.summary || payload?.message || '平台级 Wiki 已创建')
+      setShowWikiBootstrapModal(false)
+      navigate('/materials/wiki')
+    } catch (e) {
+      showToast(safeMessage(e, '平台级 Wiki 创建失败'), 'error')
+    } finally {
+      setCreatingWiki(false)
+    }
+  }
+
   const resolveConflict = async (action) => {
     if (!conflictContext?.payload) return
     if (conflictContext.type === 'upload') {
@@ -551,33 +593,49 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   return (
     <div className="flex flex-col gap-6 animate-fade-in">
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-        <div>
-          <h1 className="text-3xl font-headline font-bold text-primary">原始材料库</h1>
-          {(refreshing || error) && (
-            <p className={`text-xs mt-1 ${error ? 'text-error' : 'text-outline'}`}>
-              {error || '正在刷新...'}
-            </p>
-          )}
-        </div>
-
-        <div className="flex gap-3">
-          <button
-            onClick={() => loadLibrary({ silent: true })}
-            className="px-4 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors"
-          >
-            刷新
-          </button>
-          <button
-            onClick={() => openUploadModal({ mode: 'path' })}
-            disabled={!canManageCurrentFolder}
-            className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title={canManageCurrentFolder ? '' : '请先在左侧选择一个目录'}
-          >
-            上传文件
-          </button>
-        </div>
-      </div>
+      <MaterialsViewSwitch
+        active="structured"
+        title="原始材料库"
+        subtitle={refreshing || error ? (error || '正在刷新...') : '管理原始材料目录、上传文件与创建平台级 Wiki。'}
+        actions={(
+          <div className="flex flex-wrap gap-3">
+            <button
+              onClick={handleCreateWiki}
+              disabled={creatingWiki}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-secondary-container text-on-secondary-container hover:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {creatingWiki ? '创建中...' : '创建Wiki'}
+            </button>
+            <button
+              onClick={() => loadLibrary({ silent: true })}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors"
+            >
+              刷新
+            </button>
+            <button
+              onClick={() => openUploadModal({ mode: 'path' })}
+              disabled={!canManageCurrentFolder}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title={canManageCurrentFolder ? '' : '请先在左侧选择一个目录'}
+            >
+              上传文件
+            </button>
+          </div>
+        )}
+        meta={(
+          <div className="flex flex-wrap gap-2 text-xs">
+            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+              当前目录 {selectedFolderPath || '-'}
+            </span>
+            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+              文件 {totalCount}
+            </span>
+            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+              权限 可编辑
+            </span>
+          </div>
+        )}
+      />
 
       {parseStatus && (
         <div className="rounded-xl border border-surface-container-high p-4 flex flex-wrap items-center justify-between gap-2">
@@ -693,10 +751,6 @@ export default function MaterialDB({ showToast = () => {} }) {
                 ))}
               </select>
             </div>
-            <div className="mt-3 text-xs text-outline flex flex-wrap justify-between gap-2">
-              <span>当前目录：{selectedFolderPath || '-'}</span>
-              <span>权限：所有登录用户可编辑</span>
-            </div>
           </div>
 
           <div className="bg-surface-container-lowest rounded-xl border border-surface-container-high overflow-hidden">
@@ -778,6 +832,72 @@ export default function MaterialDB({ showToast = () => {} }) {
           </div>
         </div>
       </div>
+
+      {showWikiBootstrapModal && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="w-full max-w-xl bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-2xl">
+            <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between">
+              <h2 className="text-lg font-headline font-bold text-on-surface">创建平台级 Wiki</h2>
+              <button
+                onClick={() => setShowWikiBootstrapModal(false)}
+                disabled={creatingWiki}
+                className="close-plain text-on-surface-variant hover:text-primary transition-colors disabled:opacity-50"
+                aria-label="关闭"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-1 gap-3">
+                {WIKI_BOOTSTRAP_MODES.map((option) => {
+                  const selected = wikiBootstrapMode === option.value
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setWikiBootstrapMode(option.value)}
+                      className={`text-left rounded-lg border p-4 transition-colors ${
+                        selected
+                          ? 'border-primary bg-primary/10 text-on-surface'
+                          : 'border-surface-container-high bg-surface-container-highest hover:bg-surface-container-high'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-semibold text-sm">{option.title}</span>
+                        <span className="material-symbols-outlined text-base text-primary">
+                          {selected ? 'radio_button_checked' : 'radio_button_unchecked'}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-xs text-on-surface-variant leading-5">{option.description}</p>
+                    </button>
+                  )
+                })}
+              </div>
+              <div className="rounded-lg bg-surface-container-highest p-3 text-xs text-on-surface-variant leading-5">
+                平台级 Wiki 存在后，默认只保留一棵根树；重复的自动生成根节点会在执行时清理。
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-surface-container-high flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowWikiBootstrapModal(false)}
+                disabled={creatingWiki}
+                className="px-4 py-2 rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={submitCreateWiki}
+                disabled={creatingWiki}
+                className="px-4 py-2 rounded-lg bg-primary text-on-primary hover:bg-primary-container disabled:opacity-50"
+              >
+                {creatingWiki ? '处理中...' : '开始处理'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showUploadModal && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">

@@ -8,12 +8,25 @@ import httpx
 from docx import Document
 
 from app.core.config import settings
+from app.services.minio_client import minio_client
 
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 def document_path(project_id: str) -> Path:
     return settings.documents_dir / f"{project_id}.docx"
+
+
+def review_document_path(project_id: str) -> Path:
+    return settings.documents_dir / f"{project_id}-review.docx"
+
+
+def document_object_key(project_id: str) -> str:
+    return f"documents/{project_id}/draft.docx"
+
+
+def review_document_object_key(project_id: str) -> str:
+    return f"documents/{project_id}/review.docx"
 
 
 def build_document_key(path: Path) -> str:
@@ -37,7 +50,32 @@ def refresh_document_session(path: Path) -> None:
 def ensure_document(project_id: str, title: str, content: str) -> Path:
     path = document_path(project_id)
     if not path.exists():
-        write_document(path, title, content)
+        bucket = settings.minio_buckets["documents"]
+        key = document_object_key(project_id)
+        try:
+            if key and minio_client.object_exists(bucket, key):
+                minio_client.download_file(bucket, key, path)
+            else:
+                write_document(path, title, content)
+                minio_client.upload_file(bucket, key, path, WORD_MEDIA_TYPE)
+        except Exception:
+            write_document(path, title, content)
+    return path
+
+
+def ensure_review_document(project_id: str, title: str, content: str) -> Path:
+    path = review_document_path(project_id)
+    if not path.exists():
+        bucket = settings.minio_buckets["documents"]
+        key = review_document_object_key(project_id)
+        try:
+            if key and minio_client.object_exists(bucket, key):
+                minio_client.download_file(bucket, key, path)
+            else:
+                write_document(path, title, content)
+                minio_client.upload_file(bucket, key, path, WORD_MEDIA_TYPE)
+        except Exception:
+            write_document(path, title, content)
     return path
 
 
@@ -66,6 +104,13 @@ def write_document(path: Path, title: str, content: str) -> None:
         doc.add_paragraph(line)
 
     doc.save(path)
+
+
+def sync_document_to_minio(path: Path, key: str) -> str:
+    try:
+        return minio_client.upload_file(settings.minio_buckets["documents"], key, path, WORD_MEDIA_TYPE)
+    except Exception:
+        return key
 
 
 async def download_document_from_onlyoffice(

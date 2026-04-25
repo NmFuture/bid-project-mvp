@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body
+import base64
+from typing import Any
+
+from fastapi import APIRouter, Body, Request
 
 from app.services.peripheral import peripheral_store
+from app.services.template_store import template_store
 
 router = APIRouter()
 
@@ -42,42 +46,83 @@ async def settings_gateway_test(data: dict[str, Any] = Body(default_factory=dict
     )
 
 
+def _decode_request_bytes(raw: Any) -> bytes | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        return raw
+    text = str(raw)
+    if text.startswith("data:"):
+        text = text.split(",", 1)[-1]
+    return base64.b64decode(text)
+
+
 @router.get("/api/settings/dotx-templates")
 async def settings_dotx_list() -> dict[str, Any]:
-    return peripheral_store.settings_dotx_list()
+    return await template_store.dotx_list()
 
 
 @router.post("/api/settings/dotx-templates")
-async def settings_dotx_upload(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return peripheral_store.settings_dotx_upload(
+async def settings_dotx_upload(request: Request) -> dict[str, Any]:
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        upload = form.get("file")
+        return await template_store.dotx_upload(
+            file_name=str(getattr(upload, "filename", "") or form.get("fileName") or ""),
+            file_size=form.get("fileSize"),
+            version=str(form.get("version") or "2026.04"),
+            upload=upload,
+            mime_type=str(getattr(upload, "content_type", "") or ""),
+        )
+
+    data = await request.json()
+    return await template_store.dotx_upload(
         file_name=str(data.get("fileName") or ""),
         file_size=data.get("fileSize"),
         version=str(data.get("version") or "2026.04"),
+        data=_decode_request_bytes(data.get("data")),
+        mime_type=str(data.get("mimeType") or ""),
     )
 
 
 @router.post("/api/settings/dotx-templates/{template_id}/activate")
 async def settings_dotx_activate(template_id: str) -> dict[str, Any]:
-    return peripheral_store.settings_dotx_activate(template_id)
+    return await template_store.dotx_activate(template_id)
 
 
 @router.get("/api/settings/excel-templates")
 async def settings_excel_list() -> dict[str, Any]:
-    return peripheral_store.settings_excel_list()
+    return await template_store.excel_list()
 
 
 @router.post("/api/settings/excel-templates")
-async def settings_excel_upload(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return peripheral_store.settings_excel_upload(
+async def settings_excel_upload(request: Request) -> dict[str, Any]:
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        upload = form.get("file")
+        return await template_store.excel_upload(
+            table_key=str(form.get("tableKey") or ""),
+            file_name=str(getattr(upload, "filename", "") or form.get("fileName") or ""),
+            version=str(form.get("version") or "2026.04"),
+            upload=upload,
+            mime_type=str(getattr(upload, "content_type", "") or ""),
+        )
+
+    data = await request.json()
+    return await template_store.excel_upload(
         table_key=str(data.get("tableKey") or ""),
         file_name=str(data.get("fileName") or ""),
         version=str(data.get("version") or "2026.04"),
+        data=_decode_request_bytes(data.get("data")),
+        mime_type=str(data.get("mimeType") or ""),
     )
 
 
 @router.post("/api/settings/excel-templates/{template_id}/activate")
 async def settings_excel_activate(template_id: str) -> dict[str, Any]:
-    return peripheral_store.settings_excel_activate(template_id)
+    return await template_store.excel_activate(template_id)
 
 
 @router.get("/api/settings/backups")
