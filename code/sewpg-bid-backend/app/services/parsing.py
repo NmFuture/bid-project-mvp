@@ -90,6 +90,8 @@ def parse_tender_documents(project_id: str, tender_files: list[dict[str, Any]]) 
 
         if extension == ".docx":
             text = extract_docx_text(file_path)
+        elif extension == ".md":
+            text = file_path.read_text(encoding="utf-8", errors="replace")
         elif extension == ".pdf":
             text, pdf_meta = extract_pdf_text(file_path)
             page_count = pdf_meta["pageCount"]

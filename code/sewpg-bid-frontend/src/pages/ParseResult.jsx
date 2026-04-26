@@ -9,9 +9,9 @@ import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
 const MAX_BATCH_FILES = 5
-const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.zip,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
+const FILE_ACCEPT = '.pdf,.doc,.docx,.md,.xls,.xlsx,.zip,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
 const ALLOWED_EXTENSIONS = new Set([
-  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'zip',
+  'pdf', 'doc', 'docx', 'md', 'xls', 'xlsx', 'zip',
   'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
 ])
 

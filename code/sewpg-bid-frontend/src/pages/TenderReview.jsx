@@ -8,9 +8,9 @@ import ProjectWizardModal from '../components/modals/ProjectWizardModal'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
 const MAX_BATCH_FILES = 5
-const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.zip,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
+const FILE_ACCEPT = '.pdf,.doc,.docx,.md,.xls,.xlsx,.zip,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
 const ALLOWED_EXTENSIONS = new Set([
-  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'zip',
+  'pdf', 'doc', 'docx', 'md', 'xls', 'xlsx', 'zip',
   'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
 ])
 
@@ -36,6 +36,7 @@ const getFileTypeLabel = (fileName = '') => {
   const ext = extensionOf(fileName)
   if (ext === 'pdf') return 'PDF'
   if (ext === 'docx' || ext === 'doc') return 'DOCX'
+  if (ext === 'md') return 'MD'
   if (ext === 'xlsx' || ext === 'xls') return 'XLSX'
   return '文件'
 }

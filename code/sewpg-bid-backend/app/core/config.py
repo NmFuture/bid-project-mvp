@@ -27,7 +27,7 @@ def _int_env(name: str, default: int) -> int:
 
 
 def _upload_extensions() -> tuple[str, ...]:
-    raw = _csv_env("ALLOWED_UPLOAD_EXTENSIONS", (".pdf", ".docx"))
+    raw = _csv_env("ALLOWED_UPLOAD_EXTENSIONS", (".pdf", ".docx", ".md"))
     normalized: list[str] = []
     for item in raw:
         ext = item.lower().strip()
@@ -36,7 +36,7 @@ def _upload_extensions() -> tuple[str, ...]:
         if not ext.startswith("."):
             ext = f".{ext}"
         normalized.append(ext)
-    return tuple(dict.fromkeys(normalized)) or (".pdf", ".docx")
+    return tuple(dict.fromkeys(normalized)) or (".pdf", ".docx", ".md")
 
 
 @dataclass

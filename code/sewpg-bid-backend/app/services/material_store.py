@@ -898,6 +898,7 @@ class MaterialStore:
         self,
         *,
         root_title: str,
+        root_markdown_content: str = "",
         nodes: list[dict[str, Any]],
         mode: str = "create",
     ) -> dict[str, Any]:
@@ -1024,7 +1025,8 @@ class MaterialStore:
 
             root_spec = {
                 "title": normalized_root_title,
-                "markdownContent": f"# {normalized_root_title}\n\n这是系统自动生成的平台级 Wiki 根节点。",
+                "markdownContent": root_markdown_content
+                or f"# {normalized_root_title}\n\n这是系统自动生成的平台级 Wiki 根节点。",
                 "tags": ["通用材料"],
                 "applicableTypes": ["通用"],
                 "children": nodes,

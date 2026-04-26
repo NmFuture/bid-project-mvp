@@ -190,6 +190,17 @@ class AppStore:
             return "0 MB"
         return f"{size_bytes / 1024 / 1024:.1f} MB"
 
+    @staticmethod
+    def _source_file_type(file_name: str) -> str:
+        lowered = str(file_name or "").lower()
+        if lowered.endswith(".pdf"):
+            return "PDF"
+        if lowered.endswith(".md"):
+            return "MD"
+        if lowered.endswith((".doc", ".docx")):
+            return "DOCX"
+        return "文件"
+
     def _require(self, project_id: str) -> dict[str, Any]:
         project = self._projects.get(project_id)
         if not project:
@@ -455,7 +466,7 @@ class AppStore:
             {
                 "id": item["id"].replace("TEN", "SRC"),
                 "name": item["name"],
-                "type": "PDF" if item["name"].lower().endswith(".pdf") else "DOCX",
+                "type": self._source_file_type(item["name"]),
                 "pageCount": 12,
                 "size": item["size_label"],
             }

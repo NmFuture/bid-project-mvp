@@ -75,6 +75,26 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertGreater(payload["summary"]["textLength"], 10)
         self.assertIn("上海电气风电项目招标文件", payload["summary"]["textPreview"])
 
+    def test_upload_and_parse_markdown_extracts_text_and_preview(self) -> None:
+        project_id = self.create_project()
+        file_bytes = "# Markdown 招标说明\n\n本项目允许使用 Markdown 素材文件。".encode("utf-8")
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    ("招标说明.md", file_bytes, "text/markdown"),
+                )
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["sourceFiles"][0]["type"], "MD")
+        self.assertIn("Markdown 招标说明", payload["summary"]["textPreview"])
+
     def test_upload_and_parse_persists_text_to_disk_artifact(self) -> None:
         project_id = self.create_project()
         file_bytes = build_docx_bytes(

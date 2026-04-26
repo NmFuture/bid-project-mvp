@@ -8,7 +8,7 @@ import { PageLoading, PageError } from '../components/states/PageState'
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
 const MAX_BATCH_FILES = 5
 const ALLOWED_EXTENSIONS = new Set([
-  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'zip',
+  'pdf', 'doc', 'docx', 'md', 'xls', 'xlsx', 'zip',
   'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
 ])
 
@@ -363,7 +363,7 @@ export default function GapFilling({ showToast }) {
                 >
                   <span className="material-symbols-outlined text-4xl text-outline/50">cloud_upload</span>
                   <p className="text-sm text-on-surface-variant">点击上传缺失素材（生成补料回执）</p>
-                  <p className="text-xs text-outline">支持 doc/docx/xls/xlsx/pdf/zip/png/jpg/jpeg/webp/bmp/tif/tiff</p>
+                  <p className="text-xs text-outline">支持 doc/docx/md/xls/xlsx/pdf/zip/png/jpg/jpeg/webp/bmp/tif/tiff</p>
                 </div>
                 <input
                   ref={fileInputRef}

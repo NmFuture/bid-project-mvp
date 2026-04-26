@@ -5,7 +5,7 @@ import MaterialsViewSwitch from '../components/shared/MaterialsViewSwitch'
 import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
-const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.zip,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
+const FILE_ACCEPT = '.pdf,.doc,.docx,.md,.xls,.xlsx,.zip,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
 const UPLOAD_KIND_STORAGE_KEY = 'materials.raw.upload.kind'
 const WIKI_BOOTSTRAP_MODES = [
   {
@@ -25,7 +25,7 @@ const WIKI_BOOTSTRAP_MODES = [
   },
 ]
 const ALLOWED_EXTENSIONS = new Set([
-  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'zip',
+  'pdf', 'doc', 'docx', 'md', 'xls', 'xlsx', 'zip',
   'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
 ])
 
@@ -1045,7 +1045,7 @@ export default function MaterialDB({ showToast = () => {} }) {
               )}
 
               <p className="text-xs text-outline">
-                白名单：doc/docx/xls/xlsx/pdf/zip/png/jpg/jpeg/webp/bmp/tif/tiff；单文件 1024MB；支持一次选择多个文件，或选择整个文件夹并保留目录结构。
+                白名单：doc/docx/md/xls/xlsx/pdf/zip/png/jpg/jpeg/webp/bmp/tif/tiff；单文件 1024MB；支持一次选择多个文件，或选择整个文件夹并保留目录结构。
               </p>
 
               {uploadError && (
