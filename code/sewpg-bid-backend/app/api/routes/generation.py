@@ -7,6 +7,7 @@ from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import JSONResponse
 
 from app.services.draft_generation import generate_draft_for_project_with_progress
+from app.services.job_queue import enqueue_generation_job, is_generation_locked
 from app.services.store import store
 
 router = APIRouter()
@@ -97,6 +98,10 @@ def _run_fill_generation_job(project_id: str, data: dict[str, Any]) -> None:
 
 
 def _schedule_fill_generation_job(project_id: str, data: dict[str, Any]) -> None:
+    queue_result = enqueue_generation_job("fill_generation", project_id, data)
+    if queue_result.queued or queue_result.locked:
+        return
+
     worker = threading.Thread(
         target=_run_fill_generation_job,
         args=(project_id, data),
@@ -117,7 +122,7 @@ async def run_fill_generation(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> JSONResponse:
     current = store.get_fill_state(project_id)
-    if current.get("status") == "running":
+    if current.get("status") == "running" or is_generation_locked("fill_generation", project_id):
         return JSONResponse(
             status_code=202,
             content={**current, "message": "初稿生成任务正在执行中，请稍候。"},

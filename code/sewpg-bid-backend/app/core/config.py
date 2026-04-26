@@ -69,6 +69,12 @@ class Settings:
     minio_secret_key: str
     minio_buckets: dict[str, str]
 
+    # Redis / background jobs
+    redis_url: str
+    redis_job_lock_ttl_sec: int
+    redis_job_result_ttl_sec: int
+    redis_worker_poll_timeout_sec: int
+
     def ensure_dirs(self) -> None:
         self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -121,4 +127,8 @@ settings = Settings(
         "documents": os.getenv("MINIO_BUCKET_DOCUMENTS", "bid-documents"),
         "templates": os.getenv("MINIO_BUCKET_TEMPLATES", "bid-templates"),
     },
+    redis_url=os.getenv("REDIS_URL", "").strip(),
+    redis_job_lock_ttl_sec=_int_env("REDIS_JOB_LOCK_TTL_SEC", 2 * 60 * 60),
+    redis_job_result_ttl_sec=_int_env("REDIS_JOB_RESULT_TTL_SEC", 24 * 60 * 60),
+    redis_worker_poll_timeout_sec=_int_env("REDIS_WORKER_POLL_TIMEOUT_SEC", 5),
 )

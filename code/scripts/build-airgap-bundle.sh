@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUNDLE_DIR="${1:-${REPO_ROOT}/offline-dist}"
 TAG="${2:-offline-$(date +%Y%m%d%H%M)}"
 ONLYOFFICE_SOURCE_IMAGE="${ONLYOFFICE_SOURCE_IMAGE:-onlyoffice/documentserver:9.3.1.2}"
+REDIS_SOURCE_IMAGE="${REDIS_SOURCE_IMAGE:-redis:7-alpine}"
 
 mkdir -p "${BUNDLE_DIR}/images"
 
@@ -14,6 +15,7 @@ export WEB_IMAGE="sewpg-bid/web:${TAG}"
 export FASTAPI_IMAGE="sewpg-bid/fastapi:${TAG}"
 export OPENCODE_IMAGE="sewpg-bid/opencode:${TAG}"
 export ONLYOFFICE_IMAGE="sewpg-bid/onlyoffice:9.3.1.2"
+export REDIS_IMAGE="${REDIS_SOURCE_IMAGE}"
 
 IMAGE_TAR="${BUNDLE_DIR}/images/sewpg-bid-images-${TAG}.tar"
 MANIFEST_PATH="${BUNDLE_DIR}/bundle-manifest.json"
@@ -31,6 +33,13 @@ fi
 echo "==> Retagging OnlyOffice image..."
 docker tag "${ONLYOFFICE_SOURCE_IMAGE}" "${ONLYOFFICE_IMAGE}"
 
+if docker image inspect "${REDIS_SOURCE_IMAGE}" >/dev/null 2>&1; then
+  echo "==> Reusing local Redis image..."
+else
+  echo "==> Pulling Redis image..."
+  docker pull "${REDIS_SOURCE_IMAGE}"
+fi
+
 rm -f "${IMAGE_TAR}"
 
 echo "==> Exporting image bundle..."
@@ -38,7 +47,8 @@ docker save -o "${IMAGE_TAR}" \
   "${WEB_IMAGE}" \
   "${FASTAPI_IMAGE}" \
   "${OPENCODE_IMAGE}" \
-  "${ONLYOFFICE_IMAGE}"
+  "${ONLYOFFICE_IMAGE}" \
+  "${REDIS_IMAGE}"
 
 cp "${REPO_ROOT}/docker-compose.yml" "${BUNDLE_DIR}/docker-compose.yml"
 cp "${REPO_ROOT}/docker-compose.airgap.yml" "${BUNDLE_DIR}/docker-compose.airgap.yml"
@@ -54,7 +64,8 @@ cat > "${MANIFEST_PATH}" <<EOF
     "${WEB_IMAGE}",
     "${FASTAPI_IMAGE}",
     "${OPENCODE_IMAGE}",
-    "${ONLYOFFICE_IMAGE}"
+    "${ONLYOFFICE_IMAGE}",
+    "${REDIS_IMAGE}"
   ],
   "composeFiles": [
     "docker-compose.yml",

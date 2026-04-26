@@ -162,6 +162,17 @@ class AppStore:
             for row in rows
         }
 
+    def _load_project(self, project_id: str) -> dict[str, Any] | None:
+        self._ensure_db()
+        with closing(self._connect()) as connection:
+            row = connection.execute("SELECT id, payload FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if row is None:
+            self._projects.pop(project_id, None)
+            return None
+        project = json.loads(str(row["payload"]))
+        self._projects[project_id] = project
+        return project
+
     def _persist_project(self, project: dict[str, Any]) -> None:
         self._ensure_db()
         payload = json.dumps(project, ensure_ascii=False)
@@ -202,7 +213,7 @@ class AppStore:
         return "文件"
 
     def _require(self, project_id: str) -> dict[str, Any]:
-        project = self._projects.get(project_id)
+        project = self._load_project(project_id) or self._projects.get(project_id)
         if not project:
             raise KeyError(project_id)
         return project
@@ -246,6 +257,7 @@ class AppStore:
         page: int = 1,
         page_size: int = 12,
     ) -> dict[str, Any]:
+        self._load_projects()
         items = [self._summary(project) for project in self._projects.values()]
         normalized_bid_type = str(bid_type or "").strip()
         if normalized_bid_type:

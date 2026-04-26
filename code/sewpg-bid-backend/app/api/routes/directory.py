@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.services.job_queue import enqueue_generation_job, is_generation_locked
 from app.services.outline_generation import generate_outline_for_project_with_progress
 from app.services.store import store
 
@@ -131,6 +132,10 @@ def _run_directory_generation_job(project_id: str, data: dict[str, Any]) -> None
 
 
 def _schedule_directory_generation_job(project_id: str, data: dict[str, Any]) -> None:
+    queue_result = enqueue_generation_job("directory_generation", project_id, data)
+    if queue_result.queued or queue_result.locked:
+        return
+
     worker = threading.Thread(
         target=_run_directory_generation_job,
         args=(project_id, data),
@@ -188,7 +193,7 @@ async def run_directory_generation(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> JSONResponse:
     current = store.get_directory_state(project_id)
-    if current.get("status") == "running":
+    if current.get("status") == "running" or is_generation_locked("directory_generation", project_id):
         return JSONResponse(
             status_code=202,
             content={**current, "message": "目录生成任务正在执行中，请稍候。"},

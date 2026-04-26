@@ -7,10 +7,18 @@ services:
     image: ${FASTAPI_IMAGE:-sewpg-bid/fastapi:offline-latest}
     pull_policy: never
 
+  worker:
+    image: ${FASTAPI_IMAGE:-sewpg-bid/fastapi:offline-latest}
+    pull_policy: never
+
   opencode:
     image: ${OPENCODE_IMAGE:-sewpg-bid/opencode:offline-latest}
     pull_policy: never
 
   onlyoffice:
     image: ${ONLYOFFICE_IMAGE:-sewpg-bid/onlyoffice:9.3.1.2}
+    pull_policy: never
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
     pull_policy: never

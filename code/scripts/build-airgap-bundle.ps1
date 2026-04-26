@@ -1,7 +1,8 @@
 param(
     [string]$BundleDir = "",
     [string]$Tag = "",
-    [string]$OnlyOfficeSourceImage = "onlyoffice/documentserver:9.3.1.2"
+    [string]$OnlyOfficeSourceImage = "onlyoffice/documentserver:9.3.1.2",
+    [string]$RedisSourceImage = "redis:7-alpine"
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,6 +35,7 @@ $webImage = "sewpg-bid/web:$Tag"
 $fastapiImage = "sewpg-bid/fastapi:$Tag"
 $opencodeImage = "sewpg-bid/opencode:$Tag"
 $onlyofficeImage = "sewpg-bid/onlyoffice:9.3.1.2"
+$redisImage = $RedisSourceImage
 $imageTar = Join-Path $imagesDir "sewpg-bid-images-$Tag.tar"
 $manifestPath = Join-Path $BundleDir "bundle-manifest.json"
 $composeFile = Join-Path $repoRoot "docker-compose.yml"
@@ -45,6 +47,7 @@ $env:WEB_IMAGE = $webImage
 $env:FASTAPI_IMAGE = $fastapiImage
 $env:OPENCODE_IMAGE = $opencodeImage
 $env:ONLYOFFICE_IMAGE = $onlyofficeImage
+$env:REDIS_IMAGE = $redisImage
 
 Write-Host "==> Building application images..."
 Invoke-Checked -Command @("docker", "compose", "-f", $composeFile, "build", "web", "fastapi", "opencode")
@@ -60,6 +63,14 @@ if ($LASTEXITCODE -eq 0) {
 Write-Host "==> Retagging OnlyOffice image..."
 Invoke-Checked -Command @("docker", "tag", $OnlyOfficeSourceImage, $onlyofficeImage)
 
+& docker image inspect $RedisSourceImage *> $null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "==> Reusing local Redis image..."
+} else {
+    Write-Host "==> Pulling Redis image..."
+    Invoke-Checked -Command @("docker", "pull", $RedisSourceImage)
+}
+
 if (Test-Path $imageTar) {
     Remove-Item $imageTar -Force
 }
@@ -73,7 +84,8 @@ Invoke-Checked -Command @(
     $webImage,
     $fastapiImage,
     $opencodeImage,
-    $onlyofficeImage
+    $onlyofficeImage,
+    $redisImage
 )
 
 Copy-Item (Join-Path $repoRoot "docker-compose.yml") $BundleDir -Force
@@ -85,7 +97,7 @@ Copy-Item (Join-Path $repoRoot "scripts\up-airgap.sh") $BundleDir -Force
 $manifest = @{
     createdAt = (Get-Date).ToString("s")
     bundleFile = (Split-Path -Leaf $imageTar)
-    images = @($webImage, $fastapiImage, $opencodeImage, $onlyofficeImage)
+    images = @($webImage, $fastapiImage, $opencodeImage, $onlyofficeImage, $redisImage)
     composeFiles = @("docker-compose.yml", "docker-compose.airgap.yml")
     envTemplate = ".env.airgap.example"
 }
