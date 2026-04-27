@@ -118,7 +118,7 @@ class OpencodeClient:
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        session = self.create_session("S7 初稿生成")
+        session = self.create_session("S7 正文拼装")
         session_id = str(session.get("id") or "")
         if session_ready_callback:
             session_ready_callback(
@@ -134,6 +134,33 @@ class OpencodeClient:
             stream_callback=stream_callback,
         )
         parsed = self._extract_sections_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
+    def run_bid_tech_assembler_with_trace(
+        self,
+        prompt_text: str,
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        session = self.create_session("S7 技术标正文拼装")
+        session_id = str(session.get("id") or "")
+        if session_ready_callback:
+            session_ready_callback(
+                {
+                    "sessionId": session_id,
+                    "providerId": self.provider_id,
+                    "modelId": self.model_id,
+                }
+            )
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback,
+        )
+        parsed = self._extract_assembly_json(response)
         return {
             **parsed,
             "opencodeOutput": self._build_output_trace(session_id, response),
@@ -196,11 +223,11 @@ class OpencodeClient:
     def _extract_sections_json(self, response: dict[str, Any]) -> dict[str, Any]:
         parsed = self._extract_json_response(
             response,
-            empty_message="futurecode 未返回初稿内容。",
+            empty_message="futurecode 未返回正文内容。",
             repair_kind="sections",
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("sections"), list):
-            raise RuntimeError("futurecode 返回的初稿 JSON 结构不正确。")
+            raise RuntimeError("futurecode 返回的正文 JSON 结构不正确。")
         return parsed
 
     def _extract_wiki_blueprint_json(self, response: dict[str, Any]) -> dict[str, Any]:
@@ -211,6 +238,16 @@ class OpencodeClient:
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("nodes"), list):
             raise RuntimeError("futurecode 返回的 Wiki 蓝图 JSON 结构不正确。")
+        return parsed
+
+    def _extract_assembly_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = self._extract_json_response(
+            response,
+            empty_message="futurecode 未返回正文拼装结果。",
+            repair_kind="assembly",
+        )
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("outputFile"), str):
+            raise RuntimeError("futurecode 返回的正文拼装 JSON 结构不正确。")
         return parsed
 
     def _extract_json_response(
@@ -401,6 +438,15 @@ class OpencodeClient:
                 '{"summary":"一句简短总结","rootTitle":"技术标Wiki（自动生成）",'
                 '"nodes":[{"title":"节点标题","markdownContent":"# 节点标题\\n\\n正文",'
                 '"tags":["技术标","素材库"],"applicableTypes":["技术标"],"children":[]}]}'
+            )
+        elif repair_kind == "assembly":
+            schema_hint = (
+                '{"schema_version":"bid-tech-assembly-v1","outputFile":'
+                '"/data/parsed/PRJ-0001/s7_assembly_workdir/投标文件-正文.docx",'
+                '"assemblyReport":"/data/parsed/PRJ-0001/s7_assembly_workdir/assembly_report.md",'
+                '"needsReview":"/data/parsed/PRJ-0001/s7_assembly_workdir/needs_review.md",'
+                '"planFile":"/data/parsed/PRJ-0001/s7_assembly_workdir/assembly_plan.json",'
+                '"summary":{"total":1,"byStatus":{"MATCHED":1},"usedPathCount":1}}'
             )
         else:
             schema_hint = (

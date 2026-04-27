@@ -114,9 +114,9 @@ def build_directory_opencode_output(
 
 def default_fill_tasks() -> list[dict[str, Any]]:
     return [
-        {"id": "task-1", "label": "准备解析文本与目录", "status": "pending"},
-        {"id": "task-2", "label": "调用初稿生成 skill", "status": "pending"},
-        {"id": "task-3", "label": "写入 Word 初稿", "status": "pending"},
+        {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "pending"},
+        {"id": "task-2", "label": "调用技术标正文拼装 skill", "status": "pending"},
+        {"id": "task-3", "label": "写入 Word 正文", "status": "pending"},
     ]
 
 
@@ -426,14 +426,14 @@ class AppStore:
             "document_state": {
                 "status": "ready",
                 "documentId": f"DOC-{project_id}",
-                "sourceFileName": f"{str(data.get('name') or project_id)}_初稿.docx",
-                "fileName": f"{str(data.get('name') or project_id)}_初稿.docx",
+                "sourceFileName": f"{str(data.get('name') or project_id)}_正文.docx",
+                "fileName": f"{str(data.get('name') or project_id)}_正文.docx",
                 "fileType": "docx",
                 "version": 1,
                 "lastSavedAt": "",
                 "onlyoffice": {
                     "documentKey": f"{project_id}-v1",
-                    "title": f"{str(data.get('name') or project_id)}_初稿.docx",
+                    "title": f"{str(data.get('name') or project_id)}_正文.docx",
                     "user": {"id": "user-1", "name": "当前用户"},
                 },
                 "fallback": {
@@ -1032,8 +1032,11 @@ class AppStore:
             raise ValueError("请先完成 S4 缺口识别后再提交审核。")
 
         pending = [item for item in gap_state["items"] if item["status"] not in {"resolved", "skipped"}]
-        if pending:
-            raise ValueError(f"仍有 {len(pending)} 项缺口未处理，无法提交审核。")
+        for item in pending:
+            item["status"] = "skipped"
+            item["skipReason"] = item.get("skipReason") or "MVP 阶段跳过 S5 备料，后续在素材库正式化后补齐。"
+            item["resolvedSource"] = ""
+            item["resolvedAt"] = ""
 
         gap_state["submittedForReview"] = True
         gap_state["reviewConfirmed"] = False
@@ -1041,7 +1044,7 @@ class AppStore:
         project["updatedAt"] = now_iso()
         self._persist_project(project)
         return {
-            "message": "备料已提交审核。",
+            "message": "S5 已跳过未处理缺口并提交审核。",
             "payload": self.get_gap_filling(project_id),
         }
 
@@ -1150,20 +1153,20 @@ class AppStore:
             "filledAt": "",
             "runDurationSec": 0,
             "runDuration": "",
-            "summary": "已开始生成初稿，正在准备解析文本、目录与审核结果。",
+            "summary": "已开始拼装技术标正文，正在准备 S2 目录、Wiki 与素材库。",
             "output": None,
             "sections": [],
             "opencodeOutput": build_directory_opencode_output(),
             "events": [
                 build_directory_event(
-                    "已开始初稿生成任务，正在准备解析文本、目录与审核结果。",
+                    "已开始技术标正文拼装任务，正在准备 S2 目录、Wiki 与素材库。",
                     step="bootstrap",
                 ),
             ],
             "tasks": [
-                {"id": "task-1", "label": "准备解析文本与目录", "status": "running"},
-                {"id": "task-2", "label": "调用初稿生成 skill", "status": "pending"},
-                {"id": "task-3", "label": "写入 Word 初稿", "status": "pending"},
+                {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "running"},
+                {"id": "task-2", "label": "调用技术标正文拼装 skill", "status": "pending"},
+                {"id": "task-3", "label": "写入 Word 正文", "status": "pending"},
             ],
         }
         project["fill_state"] = payload
@@ -1271,9 +1274,9 @@ class AppStore:
             "filledAt": filled_at,
             "runDurationSec": 79,
             "runDuration": "1分19秒",
-            "summary": "初稿生成完成。",
+            "summary": "技术标正文拼装完成。",
             "output": {
-                "fileName": f"{project['name']}_初稿.docx",
+                "fileName": f"{project['name']}_正文.docx",
                 "fileType": "docx",
                 "size": "2.8 MB",
                 "fileUrl": f"/api/projects/{project_id}/document/file",
@@ -1281,18 +1284,18 @@ class AppStore:
             "sections": sections,
             "opencodeOutput": build_directory_opencode_output(),
             "events": [
-                build_directory_event("初稿生成完成。", level="success", step="done", at=filled_at),
+                build_directory_event("技术标正文拼装完成。", level="success", step="done", at=filled_at),
             ],
             "tasks": [
-                {"id": "task-1", "label": "准备解析文本与目录", "status": "done"},
-                {"id": "task-2", "label": "调用初稿生成 skill", "status": "done"},
-                {"id": "task-3", "label": "写入 Word 初稿", "status": "done"},
+                {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "done"},
+                {"id": "task-2", "label": "调用技术标正文拼装 skill", "status": "done"},
+                {"id": "task-3", "label": "写入 Word 正文", "status": "done"},
             ],
         }
-        project["document_state"]["sourceFileName"] = f"{project['name']}_初稿.docx"
-        project["document_state"]["fileName"] = f"{project['name']}_初稿.docx"
+        project["document_state"]["sourceFileName"] = f"{project['name']}_正文.docx"
+        project["document_state"]["fileName"] = f"{project['name']}_正文.docx"
         project["document_state"]["fallback"]["content"] = (
-            f"# {project['name']}\n\n## 项目概况\n本稿为 MVP 占位初稿。\n\n## 企业业绩\n【此处待补充真实业绩信息】"
+            f"# {project['name']}\n\n## 项目概况\n本稿为 MVP 占位正文。\n\n## 企业业绩\n【此处待补充真实业绩信息】"
         )
         project["updatedAt"] = filled_at
         self._persist_project(project)
@@ -1309,9 +1312,12 @@ class AppStore:
         run_duration_sec: int,
         file_size_bytes: int,
         opencode_output: dict[str, Any] | None = None,
+        file_name: str | None = None,
+        coverage: dict[str, Any] | None = None,
+        assembly: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         project = self._require(project_id)
-        file_name = f"{project['name']}_初稿.docx"
+        file_name = file_name or f"{project['name']}_正文.docx"
         current_state = copy.deepcopy(project.get("fill_state") or {})
         current_events = list(copy.deepcopy(current_state.get("events") or []))
         current_output = build_directory_opencode_output()
@@ -1321,7 +1327,7 @@ class AppStore:
         current_output["parts"] = copy.deepcopy(current_output.get("parts") or [])[-20:]
         current_events.append(
             build_directory_event(
-                f"初稿生成完成，已输出 {len(sections)} 个一级章节。",
+                f"技术标正文拼装完成，已输出 {len(sections)} 个目录章节。",
                 level="success",
                 step="done",
                 at=filled_at,
@@ -1341,12 +1347,14 @@ class AppStore:
                 "fileUrl": f"/api/projects/{project_id}/document/file",
             },
             "sections": copy.deepcopy(sections),
+            "coverage": copy.deepcopy(coverage or {}),
+            "assembly": copy.deepcopy(assembly or {}),
             "opencodeOutput": current_output,
             "events": current_events[-20:],
             "tasks": [
-                {"id": "task-1", "label": "准备解析文本与目录", "status": "done"},
-                {"id": "task-2", "label": "调用初稿生成 skill", "status": "done"},
-                {"id": "task-3", "label": "写入 Word 初稿", "status": "done"},
+                {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "done"},
+                {"id": "task-2", "label": "调用技术标正文拼装 skill", "status": "done"},
+                {"id": "task-3", "label": "写入 Word 正文", "status": "done"},
             ],
         }
 
@@ -1370,6 +1378,10 @@ class AppStore:
 
     def get_coverage(self, project_id: str) -> dict[str, Any]:
         project = self._require(project_id)
+        assembly_coverage = (project.get("fill_state") or {}).get("coverage")
+        if isinstance(assembly_coverage, dict) and assembly_coverage:
+            return copy.deepcopy(assembly_coverage)
+
         outline_nodes = list((project.get("outline_state") or {}).get("nodes") or [])
         if not outline_nodes:
             return {

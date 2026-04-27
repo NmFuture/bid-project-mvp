@@ -134,6 +134,25 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(confirm_response.status_code, 200)
         self.assertEqual(confirm_response.json()["reviewStatus"], "confirmed")
 
+    def test_s5_mock_submit_review_auto_skips_pending_items(self) -> None:
+        project_id = self._create_project_with_confirmed_outline()
+
+        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        self.assertEqual(detection_response.status_code, 200)
+
+        submit_review_response = self.client.post(f"/api/projects/{project_id}/gaps/submit-review")
+        self.assertEqual(submit_review_response.status_code, 200)
+        submit_payload = submit_review_response.json()["payload"]
+        self.assertTrue(submit_payload["submittedForReview"])
+        self.assertGreater(len(submit_payload["items"]), 0)
+        self.assertTrue(all(item["status"] == "skipped" for item in submit_payload["items"]))
+
+        prepare_response = self.client.post(f"/api/projects/{project_id}/review-items/prepare")
+        self.assertEqual(prepare_response.status_code, 200)
+        review_items_response = self.client.get(f"/api/projects/{project_id}/review-items")
+        self.assertEqual(review_items_response.status_code, 200)
+        self.assertEqual(review_items_response.json()["summary"]["pendingCount"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -75,9 +75,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
             summary="目录已生成。",
         )
         store.confirm_outline(project_id)
-        detection = store.run_gap_detection(project_id)
-        for item in detection["items"]:
-            store.update_gap_item(project_id, item["id"], {"status": "skipped", "reason": "MVP阶段跳过"})
+        store.run_gap_detection(project_id)
         store.submit_gap_review(project_id)
         store.prepare_review_document(project_id)
         return project_id

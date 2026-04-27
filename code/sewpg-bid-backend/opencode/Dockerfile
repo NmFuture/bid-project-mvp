@@ -19,6 +19,8 @@ RUN apt-get update \
       "pandas>=2.2.0" \
       "openpyxl>=3.1.0" \
       "lxml>=5.2.0" \
+      "docxcompose>=1.4.0" \
+      "PyYAML>=6.0.0" \
     && npm cache clean --force
 
 COPY opencode.json /workspace/opencode.json
@@ -28,7 +30,24 @@ COPY docker-entrypoint.sh /usr/local/bin/opencode-entrypoint
 
 RUN chmod +x /usr/local/bin/opencode-entrypoint \
     && mkdir -p /root/.local/share/opencode /workspace/.opencode/skills \
-    && cp -R /workspace/skill/. /workspace/.opencode/skills/
+    && cp -R /workspace/skill/. /workspace/.opencode/skills/ \
+    && printf '%s\n' \
+      '#!/bin/sh' \
+      'if [ "$#" -ne 1 ]; then' \
+      '  echo "usage: s2toc <manifest>" >&2' \
+      '  exit 64' \
+      'fi' \
+      'exec python3 /workspace/.opencode/skills/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py --manifest "$1" --response summary' \
+      > /usr/local/bin/s2toc \
+    && printf '%s\n' \
+      '#!/bin/sh' \
+      'if [ "$#" -ne 1 ]; then' \
+      '  echo "usage: s7assemble <manifest>" >&2' \
+      '  exit 64' \
+      'fi' \
+      'exec python3 /workspace/.opencode/skills/bid-tech-assembler/scripts/run_from_manifest.py --manifest "$1" --response summary' \
+      > /usr/local/bin/s7assemble \
+    && chmod +x /usr/local/bin/s2toc /usr/local/bin/s7assemble
 
 EXPOSE 4096
 

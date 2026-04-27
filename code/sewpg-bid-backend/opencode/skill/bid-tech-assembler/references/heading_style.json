@@ -1,0 +1,156 @@
+{
+  "comment": "从 投标文件格式要求.md 派生；create_tech_master.py 和 finalize.py 共用",
+  "page": {
+    "top_cm": 2.54,
+    "bottom_cm": 2.54,
+    "left_cm": 3.18,
+    "right_cm": 3.18,
+    "header_top_cm": 1.0,
+    "footer_bottom_cm": 0.6,
+    "orientation": "portrait"
+  },
+  "heading": {
+    "1": {
+      "zh_font": "等线 Light",
+      "en_font": "Times New Roman",
+      "size_pt": 15,
+      "size_name": "小三",
+      "bold": true,
+      "align": "center",
+      "space_before_pt": 6,
+      "space_after_pt": 6,
+      "line_spacing": 1.75,
+      "first_line_indent_chars": 0,
+      "left_indent_cm": 0
+    },
+    "2": {
+      "zh_font": "等线 Light",
+      "en_font": "Times New Roman",
+      "size_pt": 14,
+      "size_name": "四号",
+      "bold": true,
+      "align": "left",
+      "space_before_pt": 6,
+      "space_after_pt": 6,
+      "line_spacing": 1.75,
+      "first_line_indent_chars": 0,
+      "left_indent_cm": 0
+    },
+    "3": {
+      "zh_font": "等线",
+      "en_font": "Times New Roman",
+      "size_pt": 12,
+      "size_name": "小四",
+      "bold": true,
+      "align": "left",
+      "space_before_pt": 6,
+      "space_after_pt": 6,
+      "line_spacing": 1.75,
+      "first_line_indent_chars": 0,
+      "left_indent_cm": 0
+    },
+    "4": {
+      "zh_font": "等线 Light",
+      "en_font": "Times New Roman",
+      "size_pt": 12,
+      "size_name": "小四",
+      "bold": true,
+      "align": "both",
+      "space_before_pt": 6,
+      "space_after_pt": 6,
+      "line_spacing": 1.75,
+      "first_line_indent_chars": 0,
+      "left_indent_cm": 0
+    },
+    "5": {
+      "zh_font": "等线",
+      "en_font": "Times New Roman",
+      "size_pt": 12,
+      "size_name": "小四",
+      "bold": true,
+      "align": "left",
+      "space_before_pt": 6,
+      "space_after_pt": 6,
+      "line_spacing": 1.75,
+      "first_line_indent_chars": 0,
+      "left_indent_cm": 0
+    },
+    "6": {
+      "zh_font": "等线 Light",
+      "en_font": "Times New Roman",
+      "size_pt": 12,
+      "size_name": "小四",
+      "bold": true,
+      "align": "both",
+      "space_before_pt": 6,
+      "space_after_pt": 6,
+      "line_spacing": 1.33,
+      "first_line_indent_chars": 0,
+      "left_indent_cm": 0.55
+    }
+  },
+  "body": {
+    "zh_font": "等线",
+    "en_font": "Times New Roman",
+    "size_pt": 12,
+    "size_name": "小四",
+    "bold": false,
+    "align": "both",
+    "space_before_pt": 0,
+    "space_after_pt": 0,
+    "line_spacing": 1.5,
+    "first_line_indent_chars": 2
+  },
+  "table_cell": {
+    "zh_font": "宋体",
+    "en_font": "宋体",
+    "size_pt": 10.5,
+    "size_name": "五号",
+    "bold": false,
+    "align": "center",
+    "line_spacing": 1.0,
+    "table_align": "center"
+  },
+  "caption": {
+    "zh_font": "等线",
+    "en_font": "等线",
+    "size_pt": 12,
+    "size_name": "小四",
+    "bold": false,
+    "align": "center",
+    "line_spacing": 1.5
+  },
+  "header": {
+    "zh_font": "宋体",
+    "en_font": "宋体",
+    "size_pt": 7.5,
+    "size_name": "六号",
+    "bold": false,
+    "align": "right",
+    "line_spacing": 1.5,
+    "text_template": "{project_name}投标文件-技术部分",
+    "logo": {
+      "height_cm": 0.96,
+      "width_cm": 2.84,
+      "align": "left"
+    }
+  },
+  "page_number": {
+    "zh_font": "Times New Roman",
+    "en_font": "Times New Roman",
+    "size_pt": 12,
+    "size_name": "小四",
+    "bold": false,
+    "align": "center"
+  },
+  "numbering": {
+    "comment": "多级列表编号格式；L1 '第X章'，L2+ 阿拉伯数字点分",
+    "levels": [
+      {"ilvl": 0, "fmt": "chineseCounting", "text": "第%1章", "suff": "space"},
+      {"ilvl": 1, "fmt": "decimal", "text": "%2.%3", "suff": "space"},
+      {"ilvl": 2, "fmt": "decimal", "text": "%2.%3.%4", "suff": "space"},
+      {"ilvl": 3, "fmt": "decimal", "text": "%2.%3.%4.%5", "suff": "space"},
+      {"ilvl": 4, "fmt": "decimal", "text": "%2.%3.%4.%5.%6", "suff": "space"}
+    ]
+  }
+}

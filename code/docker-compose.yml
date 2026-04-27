@@ -34,7 +34,7 @@ services:
       OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://opencode:4096}
       OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-opencode}
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-big-pickle}
-      OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-600}
+      OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-1800}
       BID_INTERNAL_API_BASE_URL: ${BID_INTERNAL_API_BASE_URL:-http://fastapi:8000}
       MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-524288000}
       ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.doc,.docx,.md,.xls,.xlsx,.xlsm}
@@ -95,7 +95,7 @@ services:
       OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://opencode:4096}
       OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-opencode}
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-big-pickle}
-      OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-600}
+      OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-1800}
       BID_INTERNAL_API_BASE_URL: ${BID_INTERNAL_API_BASE_URL:-http://fastapi:8000}
       MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-524288000}
       ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.doc,.docx,.md,.xls,.xlsx,.xlsm}
@@ -186,9 +186,17 @@ services:
       JWT_HEADER: "${ONLYOFFICE_JWT_HEADER:-Authorization}"
       JWT_IN_BODY: "${ONLYOFFICE_JWT_IN_BODY:-false}"
       ALLOW_PRIVATE_IP_ADDRESS: "${ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS:-true}"
+      ONLYOFFICE_MAX_DOWNLOAD_BYTES: ${ONLYOFFICE_MAX_DOWNLOAD_BYTES:-524288000}
+      ONLYOFFICE_TEMPFILE_UPLOAD_LIMIT_BYTES: ${ONLYOFFICE_TEMPFILE_UPLOAD_LIMIT_BYTES:-524288000}
+      ONLYOFFICE_IMAGE_SIZE_LIMIT_BYTES: ${ONLYOFFICE_IMAGE_SIZE_LIMIT_BYTES:-52428800}
+      ONLYOFFICE_DOWNLOAD_TIMEOUT: ${ONLYOFFICE_DOWNLOAD_TIMEOUT:-10m}
+      ONLYOFFICE_NGINX_CLIENT_MAX_BODY_SIZE: ${ONLYOFFICE_NGINX_CLIENT_MAX_BODY_SIZE:-512m}
+    entrypoint:
+      - /usr/local/bin/sewpg-onlyoffice-entrypoint
     expose:
       - "80"
     volumes:
+      - ./sewpg-bid-backend/onlyoffice/docker-entrypoint.sh:/usr/local/bin/sewpg-onlyoffice-entrypoint:ro
       - onlyoffice_logs:/var/log/onlyoffice
       - onlyoffice_data:/var/www/onlyoffice/Data
       - onlyoffice_lib:/var/lib/onlyoffice

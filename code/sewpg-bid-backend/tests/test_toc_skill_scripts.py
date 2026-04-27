@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 
 SCRIPT_DIR = (
@@ -14,6 +19,13 @@ SCRIPT_DIR = (
     / "opencode"
     / "skill"
     / "bid-toc-wiki-driven-v2"
+    / "scripts"
+)
+ASSEMBLER_SCRIPT_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "opencode"
+    / "skill"
+    / "bid-tech-assembler"
     / "scripts"
 )
 
@@ -26,7 +38,154 @@ def load_script(name: str):
     return module
 
 
+def load_assembler_script(name: str):
+    spec = importlib.util.spec_from_file_location(name, ASSEMBLER_SCRIPT_DIR / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
 class TocSkillScriptTests(unittest.TestCase):
+    def test_bid_assembler_parse_toc_accepts_current_s2_json(self) -> None:
+        parse_toc = load_assembler_script("parse_toc")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            toc_path = Path(tmp) / "投标文件-总目录.json"
+            toc_path.write_text(
+                """{
+  "schema_version": "bid-toc-json-v1",
+  "document_title": "测试项目投标文件总目录",
+  "items": [
+    {"order": 1, "level": 1, "number": "1", "title": "项目概况", "annotation": "保留"},
+    {"order": 2, "level": 2, "number": "1.1", "title": "项目背景", "annotation": "适配"},
+    {"order": 3, "level": 1, "number": "附表", "title": "", "annotation": "保留"}
+  ]
+}""",
+                encoding="utf-8",
+            )
+
+            entries = parse_toc.parse_toc_json(toc_path)
+
+        self.assertEqual(entries[0]["chapter_no_flat"], "1")
+        self.assertEqual(entries[0]["title"], "项目概况")
+        self.assertEqual(entries[1]["tag"], "适配")
+        self.assertEqual(entries[2]["title"], "附表")
+
+    def test_bid_assembler_inject_prefix_collapses_heading_level_gaps(self) -> None:
+        numbering_fixer = load_assembler_script("numbering_fixer")
+
+        doc = Document()
+        doc.add_paragraph("上海电气优势简介", style="Heading 2")
+        doc.add_paragraph("基本情况", style="Heading 3")
+        doc.add_paragraph("集团概况", style="Heading 4")
+        doc.add_paragraph("载荷仿真分析能力", style="Heading 1")
+        doc.add_paragraph("测试验证技术", style="Heading 6")
+
+        stats = numbering_fixer.inject_prefix_to_headings(
+            doc,
+            "1.9",
+            toc_title="上海电气优势简介",
+            skip_first_if_match=True,
+        )
+        headings = [para.text.strip().replace("  ", " ") for para in doc.paragraphs if para.text.strip()]
+
+        self.assertTrue(stats["skipped_first"])
+        self.assertEqual(
+            headings,
+            [
+                "1.9.1 基本情况",
+                "1.9.1.1 集团概况",
+                "1.9.2 载荷仿真分析能力",
+                "1.9.2.1 测试验证技术",
+            ],
+        )
+        self.assertFalse(any(".0." in item or item.endswith(".0") for item in headings))
+
+    def test_bid_assembler_strips_heading_style_numbering(self) -> None:
+        numbering_fixer = load_assembler_script("numbering_fixer")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            docx_path = Path(tmp) / "numbered-heading.docx"
+            doc = Document()
+            heading_style = doc.styles["Heading 2"]
+            p_pr = heading_style.element.get_or_add_pPr()
+            num_pr = OxmlElement("w:numPr")
+            ilvl = OxmlElement("w:ilvl")
+            ilvl.set(qn("w:val"), "1")
+            num_id = OxmlElement("w:numId")
+            num_id.set(qn("w:val"), "1")
+            num_pr.append(ilvl)
+            num_pr.append(num_id)
+            p_pr.append(num_pr)
+            doc.add_paragraph("1.7 投标方案优势说明", style="Heading 2")
+
+            self.assertEqual(numbering_fixer.strip_numPr_from_heading_styles(doc), 1)
+            doc.save(docx_path)
+
+            with zipfile.ZipFile(docx_path) as zf:
+                styles_xml = zf.read("word/styles.xml").decode("utf-8")
+
+        match = re.search(r'(<w:style[^>]+w:styleId="Heading2"[^>]*>.*?</w:style>)', styles_xml)
+        self.assertIsNotNone(match)
+        self.assertNotIn("<w:numPr>", match.group(1))
+
+    def test_bid_assembler_merges_oversize_material_instead_of_placeholder(self) -> None:
+        merger = load_assembler_script("merger")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            source = root / "lib" / "投标机型业绩情况.docx"
+            out = root / "out.docx"
+            prep = root / "prep"
+
+            master = Document()
+            master.add_paragraph("")
+            master.save(template)
+
+            source.parent.mkdir(parents=True)
+            doc = Document()
+            doc.add_paragraph("投标机型业绩情况", style="Heading 1")
+            doc.add_paragraph("这里是业绩正文")
+            doc.save(source)
+
+            plan = [
+                {
+                    "status": "MATCHED",
+                    "level": 2,
+                    "title": "投标机型业绩情况",
+                    "chapter_no": "1.8",
+                    "chapter_no_flat": "1.8",
+                    "paths": [source.name],
+                }
+            ]
+            original_stat = Path.stat
+
+            class FakeStat:
+                def __init__(self, wrapped):
+                    self._wrapped = wrapped
+                    self.st_size = 234 * 1024 * 1024
+
+                def __getattr__(self, name):
+                    return getattr(self._wrapped, name)
+
+            def fake_stat(path, *args, **kwargs):
+                value = original_stat(path, *args, **kwargs)
+                if Path(path).resolve() == source.resolve():
+                    return FakeStat(value)
+                return value
+
+            with patch.object(Path, "stat", fake_stat):
+                stats = merger.merge(template, plan, source.parent, {}, prep, out)
+
+            result = Document(str(out))
+            text = "\n".join(para.text for para in result.paragraphs)
+
+        self.assertEqual(stats["merged_materials"], 1)
+        self.assertNotIn("大素材跳过", text)
+        self.assertIn("这里是业绩正文", text)
+
     def test_extract_template_prefers_toc_and_deduplicates_body_headings(self) -> None:
         extract_template = load_script("extract_template")
 

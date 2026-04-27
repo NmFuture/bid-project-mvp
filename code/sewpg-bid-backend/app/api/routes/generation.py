@@ -15,38 +15,60 @@ router = APIRouter()
 
 def _fill_tasks(step1: str, step2: str, step3: str) -> list[dict[str, Any]]:
     return [
-        {"id": "task-1", "label": "准备解析文本与目录", "status": step1},
-        {"id": "task-2", "label": "调用初稿生成 skill", "status": step2},
-        {"id": "task-3", "label": "写入 Word 初稿", "status": step3},
+        {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": step1},
+        {"id": "task-2", "label": "调用技术标正文拼装 skill", "status": step2},
+        {"id": "task-3", "label": "写入 Word 正文", "status": step3},
     ]
 
 
 def _handle_fill_progress(project_id: str, stage: str, details: dict[str, Any] | None = None) -> None:
     meta = details or {}
     if stage == "inputs_ready":
-        section_count = int(meta.get("sectionCount") or 0)
-        template_hint_count = int(meta.get("templateHintCount") or 0)
+        wiki_card_count = int(meta.get("wikiCardCount") or 0)
+        exported_material_count = int(meta.get("exportedMaterialCount") or 0)
+        synthesized_material_card_count = int(meta.get("synthesizedMaterialCardCount") or 0)
         store.update_fill_generation_state(
             project_id,
             percentage=30,
-            summary=f"已整理初稿输入（一级章节 {section_count} 个，模板线索 {template_hint_count} 条），准备调用 futurecode。",
+            summary=f"已整理 S2 目录、Wiki 与素材库（Wiki 卡片 {wiki_card_count} 张，可拼装素材 {exported_material_count} 份），准备调用正文拼装 skill。",
             tasks=_fill_tasks("done", "running", "pending"),
-            event_message=f"已完成输入准备：一级章节 {section_count} 个，模板线索 {template_hint_count} 条。",
+            event_message=f"已完成输入准备：Wiki 卡片 {wiki_card_count} 张（其中素材库补卡 {synthesized_material_card_count} 张），可拼装素材 {exported_material_count} 份。",
             event_step="inputs_ready",
         )
         return
 
-    if stage == "calling_opencode":
+    if stage == "calling_assembler":
+        manifest_path = str(meta.get("manifestPath") or "")
+        work_dir = str(meta.get("workDir") or "")
+        store.update_fill_generation_state(
+            project_id,
+            percentage=60,
+            summary="正在调用 bid-tech-assembler 拼装技术标正文，请稍候。",
+            tasks=_fill_tasks("done", "running", "pending"),
+            event_message="已进入技术标正文拼装阶段，正在按 S2 目录 JSON 匹配素材并合并 Word。",
+            event_step="assembly_waiting",
+            opencode_output={
+                "status": "waiting",
+                "sessionId": manifest_path,
+                "providerId": "local-skill",
+                "modelId": "bid-tech-assembler",
+                "receivedAt": "",
+                "parts": [{"type": "text", "text": f"workDir={work_dir}\nmanifest={manifest_path}"}],
+            },
+        )
+        return
+
+    if stage == "assembler_session_ready":
         session_id = str(meta.get("sessionId") or "")
         provider_id = str(meta.get("providerId") or "")
         model_id = str(meta.get("modelId") or "")
         store.update_fill_generation_state(
             project_id,
-            percentage=60,
-            summary="正在调用 futurecode 生成初稿，请稍候。",
+            percentage=62,
+            summary="正在调用 futurecode 执行 bid-tech-assembler，请稍候。",
             tasks=_fill_tasks("done", "running", "pending"),
-            event_message="已进入 futurecode 初稿生成阶段，正在等待模型返回章节内容。",
-            event_step="opencode_waiting",
+            event_message="futurecode session 已建立，正在等待技术标正文拼装结果。",
+            event_step="assembler_session_ready",
             opencode_output={
                 "status": "waiting",
                 "sessionId": session_id,
@@ -58,14 +80,46 @@ def _handle_fill_progress(project_id: str, stage: str, details: dict[str, Any] |
         )
         return
 
+    if stage == "assembler_delta":
+        parts = list(meta.get("parts") or [])
+        current = store.get_fill_state(project_id)
+        previous_parts = list((current.get("opencodeOutput") or {}).get("parts") or [])
+        summary: str | None = None
+        event_message: str | None = None
+        if parts and not previous_parts:
+            summary = "futurecode 已开始返回正文拼装片段。"
+            event_message = "futurecode 已开始返回 S7 原始片段。"
+        elif len(parts) > len(previous_parts):
+            summary = "futurecode 正在执行正文拼装，请稍候。"
+
+        store.update_fill_generation_state(
+            project_id,
+            percentage=70 if parts else None,
+            summary=summary,
+            tasks=_fill_tasks("done", "running", "pending"),
+            event_message=event_message,
+            event_step="assembler_streaming",
+            opencode_output={
+                "status": str(meta.get("status") or ("streaming" if parts else "waiting")),
+                "sessionId": str(meta.get("sessionId") or ""),
+                "providerId": str(meta.get("providerId") or ""),
+                "modelId": str(meta.get("modelId") or ""),
+                "receivedAt": str(meta.get("receivedAt") or ""),
+                "parts": parts,
+            },
+        )
+        return
+
     if stage == "assembling_result":
         section_count = int(meta.get("sectionCount") or 0)
+        used_material_count = int(meta.get("usedMaterialCount") or 0)
+        unassembled_material_count = int(meta.get("unassembledMaterialCount") or 0)
         store.update_fill_generation_state(
             project_id,
             percentage=85,
-            summary=f"futurecode 已返回章节内容，正在写入 {section_count} 个一级章节到 Word 初稿。",
+            summary=f"正文拼装完成，已匹配 {used_material_count} 份素材，未拼素材 {unassembled_material_count} 份，正在写入 Word。",
             tasks=_fill_tasks("done", "done", "running"),
-            event_message=f"futurecode 已返回章节内容，正在写入 {section_count} 个一级章节到 Word 初稿。",
+            event_message=f"正文拼装结果已返回，正在写入 {section_count} 个目录章节到 Word 正文。",
             event_step="assembling",
         )
 
@@ -94,7 +148,7 @@ def _run_fill_generation_job(project_id: str, data: dict[str, Any]) -> None:
         tasks = _fill_tasks("done", "failed", "pending")
         if int(current.get("percentage") or 0) >= 85:
             tasks = _fill_tasks("done", "done", "failed")
-        store.fail_fill_generation(project_id, f"初稿生成异常：{exc}", tasks=tasks)
+        store.fail_fill_generation(project_id, f"正文拼装异常：{exc}", tasks=tasks)
 
 
 def _schedule_fill_generation_job(project_id: str, data: dict[str, Any]) -> None:
@@ -125,7 +179,7 @@ async def run_fill_generation(
     if current.get("status") == "running" or is_generation_locked("fill_generation", project_id):
         return JSONResponse(
             status_code=202,
-            content={**current, "message": "初稿生成任务正在执行中，请稍候。"},
+            content={**current, "message": "正文拼装任务正在执行中，请稍候。"},
         )
 
     try:
@@ -138,5 +192,5 @@ async def run_fill_generation(
     _schedule_fill_generation_job(project_id, data)
     return JSONResponse(
         status_code=202,
-        content={**payload, "message": "已开始生成初稿，请稍候。"},
+        content={**payload, "message": "已开始拼装正文，请稍候。"},
     )

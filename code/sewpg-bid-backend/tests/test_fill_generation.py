@@ -33,7 +33,7 @@ class FillGenerationTests(unittest.TestCase):
         response = self.client.post(
             "/api/projects",
             json={
-                "name": "S7初稿生成项目",
+                "name": "S7正文拼装项目",
                 "customerName": "测试业主",
             },
         )
@@ -119,19 +119,6 @@ class FillGenerationTests(unittest.TestCase):
         )
         store.confirm_outline(project_id)
         store.run_gap_detection(project_id)
-        gap_items = store.get_gap_filling(project_id)["items"]
-        for index, item in enumerate(gap_items, start=1):
-            store.submit_gap_material(
-                project_id,
-                {
-                    "missingId": item["id"],
-                    "files": [{"name": f"{item['id']}.docx", "size": 1024}],
-                },
-            )
-            if index % 2:
-                store.update_gap_item(project_id, item["id"], {"action": "resolve", "source": {"name": f"{item['id']}.docx"}})
-            else:
-                store.patch_missing_material(project_id, item["id"], {"status": "skipped", "reason": "MVP阶段跳过"})
         store.submit_gap_review(project_id)
         store.prepare_review_document(project_id)
         store.confirm_review(project_id)
@@ -161,7 +148,7 @@ class FillGenerationTests(unittest.TestCase):
         _handle_fill_progress(
             project_id,
             "inputs_ready",
-            {"sectionCount": 3, "templateHintCount": 0},
+            {"wikiCardCount": 3, "exportedMaterialCount": 2},
         )
         running_state = store.get_fill_state(project_id)
         self.assertEqual(running_state["status"], "running")
@@ -169,56 +156,84 @@ class FillGenerationTests(unittest.TestCase):
         self.assertEqual(running_state["tasks"][1]["status"], "running")
         self.assertEqual(running_state["events"][-1]["step"], "inputs_ready")
 
-        def fake_generate(prompt, session_ready_callback=None):
-            if session_ready_callback:
-                session_ready_callback(
+        def fake_assemble(fake_project_id, data, progress_callback=None):
+            from app.services.onlyoffice_documents import document_path, write_document
+
+            if progress_callback:
+                progress_callback(
+                    "calling_assembler",
                     {
-                        "sessionId": "ses-fill",
-                        "providerId": "opencode",
-                        "modelId": "big-pickle",
-                    }
+                        "manifestPath": "/tmp/s7_assembly_input.json",
+                        "workDir": "/tmp/s7_assembly_workdir",
+                    },
                 )
-            return {
-                "summary": "初稿生成完成。",
-                "sections": [
+                progress_callback(
+                    "assembling_result",
+                    {
+                        "sectionCount": 3,
+                        "usedMaterialCount": 2,
+                        "unassembledMaterialCount": 1,
+                    },
+                )
+            sections = [
                     {
                         "nodeId": "OL-1",
                         "title": "项目概况",
                         "generationMode": "generated",
-                        "content": "## 项目背景\n本项目位于测试区域，建设目标明确。",
+                        "content": "已拼装：项目背景",
                         "riskFlags": [],
                     },
                     {
                         "nodeId": "OL-2",
                         "title": "技术方案",
                         "generationMode": "generated_with_placeholder",
-                        "content": "## 总体方案\n采用标准化方案。\n\n## 关键参数响应\n【待补充：关键参数实测值】",
+                        "content": "已拼装：总体方案\n【待填写：关键参数实测值】",
                         "riskFlags": ["FACT_REQUIRED"],
                     },
                     {
                         "nodeId": "OL-3",
                         "title": "实施与保障",
                         "generationMode": "generated",
-                        "content": "## 实施组织\n项目经理负责统筹。\n\n## 风险控制\n建立专项风险台账。",
+                        "content": "已拼装：实施组织",
                         "riskFlags": [],
                     },
-                ],
-                "opencodeOutput": {
+                ]
+            content = "# S7正文拼装项目 正文\n\n## 项目概况\n项目背景\n\n## 关键参数响应\n【待填写：关键参数实测值】"
+            target = document_path(fake_project_id)
+            write_document(target, "S7正文拼装项目_正文.docx", content)
+            return store.save_fill_generation_result(
+                project_id=fake_project_id,
+                summary="技术标正文拼装完成。",
+                sections=sections,
+                content=content,
+                filled_at=now_iso(),
+                run_duration_sec=3,
+                file_size_bytes=target.stat().st_size,
+                file_name="S7正文拼装项目_正文.docx",
+                opencode_output={
                     "status": "received",
-                    "sessionId": "ses-fill",
-                    "providerId": "opencode",
-                    "modelId": "big-pickle",
+                    "sessionId": "/tmp/s7_assembly_input.json",
+                    "providerId": "local-skill",
+                    "modelId": "bid-tech-assembler",
                     "receivedAt": "2026-04-20T00:00:00Z",
                     "parts": [
-                        {"type": "reasoning", "text": "先按章节生成初稿。"},
-                        {"type": "text", "text": "{\"summary\":\"初稿生成完成。\"}"},
+                        {"type": "text", "text": "{\"summary\":\"技术标正文拼装完成。\"}"},
                     ],
                 },
-            }
+                coverage={
+                    "percentage": 67,
+                    "fullCover": 2,
+                    "partialCover": 0,
+                    "noCover": 1,
+                    "tree": [],
+                    "partialItems": [],
+                    "noCoverItems": [{"id": "RAW-0003", "title": "未拼素材", "nodeTitle": "素材未出现在 S2 目录 JSON 或拼装计划中"}],
+                },
+            )
 
         with patch(
-            "app.services.draft_generation.OpencodeClient.generate_draft_sections_with_trace",
-            side_effect=fake_generate,
+            "app.services.draft_generation.assemble_tech_bid_for_project_with_progress",
+            side_effect=fake_assemble,
         ):
             _run_fill_generation_job(project_id, {})
 
@@ -228,7 +243,7 @@ class FillGenerationTests(unittest.TestCase):
         self.assertEqual(payload["output"]["fileType"], "docx")
         self.assertEqual(len(payload["sections"]), 3)
         self.assertEqual(payload["opencodeOutput"]["status"], "received")
-        self.assertEqual(payload["opencodeOutput"]["parts"][0]["type"], "reasoning")
+        self.assertEqual(payload["opencodeOutput"]["parts"][0]["type"], "text")
 
         document_response = self.client.get(f"/api/projects/{project_id}/document/file")
         self.assertEqual(document_response.status_code, 200)
@@ -239,7 +254,7 @@ class FillGenerationTests(unittest.TestCase):
         full_text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
         self.assertIn("项目概况", full_text)
         self.assertIn("关键参数响应", full_text)
-        self.assertIn("【待补充：关键参数实测值】", full_text)
+        self.assertIn("【待填写：关键参数实测值】", full_text)
 
     def test_get_coverage_returns_tree_after_fill_generation(self) -> None:
         from app.api.routes.generation import _run_fill_generation_job
@@ -247,43 +262,43 @@ class FillGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_for_s7()
         store.start_fill_generation(project_id)
 
-        with patch(
-            "app.services.draft_generation.OpencodeClient.generate_draft_sections_with_trace",
-            return_value={
-                "summary": "初稿生成完成。",
-                "sections": [
-                    {
-                        "nodeId": "OL-1",
-                        "title": "项目概况",
-                        "generationMode": "generated",
-                        "content": "项目背景说明。",
-                        "riskFlags": [],
-                    },
-                    {
-                        "nodeId": "OL-2",
-                        "title": "技术方案",
-                        "generationMode": "placeholder",
-                        "content": "【待补充：技术方案细节】",
-                        "riskFlags": ["FACT_REQUIRED"],
-                    },
-                    {
-                        "nodeId": "OL-3",
-                        "title": "实施与保障",
-                        "generationMode": "generated_with_placeholder",
-                        "content": "实施组织说明。\n【待补充：风险清单】",
-                        "riskFlags": ["FACT_REQUIRED"],
-                    },
-                ],
-                "opencodeOutput": {
-                    "status": "received",
-                    "sessionId": "ses-coverage",
-                    "providerId": "opencode",
-                    "modelId": "big-pickle",
-                    "receivedAt": "2026-04-20T00:00:00Z",
-                    "parts": [],
+        def fake_assemble(fake_project_id, data, progress_callback=None):
+            from app.services.onlyoffice_documents import document_path, write_document
+
+            target = document_path(fake_project_id)
+            write_document(target, "S7正文拼装项目_正文.docx", "# 正文\n\n已拼装。")
+            return store.save_fill_generation_result(
+                project_id=fake_project_id,
+                summary="技术标正文拼装完成。",
+                sections=[],
+                content="# 正文\n\n已拼装。",
+                filled_at=now_iso(),
+                run_duration_sec=2,
+                file_size_bytes=target.stat().st_size,
+                file_name="S7正文拼装项目_正文.docx",
+                coverage={
+                    "percentage": 50,
+                    "fullCover": 1,
+                    "partialCover": 1,
+                    "noCover": 1,
+                    "tree": [
+                        {
+                            "id": "通用/风资源",
+                            "title": "通用/风资源",
+                            "coverage": 50,
+                            "status": "partial",
+                            "children": [
+                                {"id": "RAW-0001", "title": "已拼素材", "coverage": 100, "status": "full", "children": []},
+                                {"id": "RAW-0002", "title": "未拼素材", "coverage": 0, "status": "none", "children": []},
+                            ],
+                        }
+                    ],
+                    "partialItems": [{"id": "TOC-2", "title": "目录未匹配", "nodeTitle": "目录项未匹配素材"}],
+                    "noCoverItems": [{"id": "RAW-0002", "title": "未拼素材", "nodeTitle": "素材未出现在 S2 目录 JSON 或拼装计划中"}],
                 },
-            },
-        ):
+            )
+
+        with patch("app.services.draft_generation.assemble_tech_bid_for_project_with_progress", side_effect=fake_assemble):
             _run_fill_generation_job(project_id, {})
 
         coverage_response = self.client.get(f"/api/projects/{project_id}/coverage")
