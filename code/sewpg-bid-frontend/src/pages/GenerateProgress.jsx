@@ -65,7 +65,7 @@ const localizeExecutionStep = (step) => {
     write: '写入文档',
     write_doc: '写入文档',
     generate: '生成内容',
-    generate_draft: '生成初稿',
+    generate_draft: '生成正文',
     save: '保存结果',
     done: '完成',
     failed: '失败',
@@ -132,7 +132,7 @@ export default function GenerateProgress({ showToast }) {
     try {
       const payload = await generateAPI.run(id)
       setData(payload)
-      showToast?.(payload?.message || '已开始生成初稿，请稍候。')
+      showToast?.(payload?.message || '已开始拼装正文，请稍候。')
     } catch (e) {
       showToast?.(e?.message || '触发填充失败，请稍后重试', 'error')
     } finally {
@@ -243,9 +243,9 @@ export default function GenerateProgress({ showToast }) {
     <div className="rounded-lg border border-surface-container-high bg-surface-container-low p-4">
       <div className="flex items-center justify-between gap-3 mb-3">
         <div>
-          <h3 className="text-sm font-semibold text-on-surface">futurecode 输出</h3>
+          <h3 className="text-sm font-semibold text-on-surface">拼装输出</h3>
           <p className="text-xs text-on-surface-variant mt-1">
-            这里直接显示 S7 初稿生成返回的原始片段；如果还没返回，会明确提示当前正在等待。
+            这里直接显示 S7 技术标正文拼装链路返回的原始片段；如果还没返回，会明确提示当前正在等待。
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -277,14 +277,14 @@ export default function GenerateProgress({ showToast }) {
 
       {opencodeStatus === 'waiting' && !opencodeParts.length ? (
         <div className="rounded-lg border border-dashed border-primary/20 bg-primary/5 px-3 py-4 text-sm text-on-surface">
-          <div className="font-medium">会话已创建，正在等待 futurecode 返回章节草稿。</div>
+          <div className="font-medium">拼装任务已创建，正在等待技术标正文组装结果。</div>
           <div className="mt-2 text-on-surface-variant">
             {brandFutureCode(latestEvent?.message) || '当前还没有收到 reasoning/text 片段，请稍候。'}
           </div>
         </div>
       ) : !opencodeParts.length ? (
         <div className="rounded-lg border border-dashed border-surface-container-high px-3 py-4 text-sm text-on-surface-variant">
-          暂无 futurecode 原始输出。
+          暂无拼装原始输出。
         </div>
       ) : (
         <div className="flex flex-col gap-3 max-h-[360px] overflow-y-auto pr-1">
@@ -370,7 +370,7 @@ export default function GenerateProgress({ showToast }) {
             </div>
             <h4 className="text-lg font-headline font-bold text-on-surface mb-2">S7 尚未触发</h4>
             <p className="text-sm text-on-surface-variant max-w-xl leading-relaxed">
-              点击“触发填充”后会异步调用后端初稿生成链路，并持续显示当前步骤、执行过程和 futurecode 原始输出。
+              点击“触发填充”后会异步调用后端正文拼装链路，并持续显示当前步骤、执行过程和拼装原始输出。
             </p>
             <button
               onClick={handleRunFill}
@@ -429,7 +429,7 @@ export default function GenerateProgress({ showToast }) {
                 <h3 className="text-sm font-semibold text-on-surface mb-3">章节结果概览</h3>
                 {!Array.isArray(data?.sections) || data.sections.length === 0 ? (
                   <div className="rounded-lg border border-dashed border-surface-container-high px-3 py-4 text-sm text-on-surface-variant">
-                    初稿尚未输出章节结果。
+                    正文尚未输出章节结果。
                   </div>
                 ) : (
                   <div
@@ -500,7 +500,7 @@ export default function GenerateProgress({ showToast }) {
                   <h3 className="text-sm font-semibold text-on-surface mb-3">运行信息</h3>
                   <div>
                     {[
-                      { label: '执行结果', value: '填充成功' },
+                      { label: '执行结果', value: '拼装成功' },
                       { label: '运行时长', value: data?.runDuration || `${data?.runDurationSec || 0} 秒` },
                       { label: '完成时间', value: formatDateTime(data?.filledAt) },
                     ].map((row, index, rows) => (

@@ -27,7 +27,7 @@ docker compose
 - [x] 2. 搭 FastAPI 骨架
   - 建立 `sewpg-bid-backend/app`
   - 承接当前前端会先调用的基础接口
-  - 跑通 S0 / S1 / S2 / S3 / S7 / S9 / S10 的骨架返回
+  - 跑通 S0 / S1 / S2 / S3 / S7 / S8 / S9 / S10 的骨架返回
 
 - [x] 3. 接入 OnlyOffice
   - 本机 Docker 部署 OnlyOffice Document Server
@@ -39,8 +39,7 @@ docker compose
   - Docker 部署 `opencode serve`
   - S2 接目录生成 skill
   - S2 采用“投标模板目录优先，招标要求修正”的生成策略
-  - S7 接初稿生成能力
-  - 当前状态：Docker 中的 `opencode` 已部署并 smoke test 通过；S2 / S7 均已接入真实生成
+  - 当前状态：Docker 中的 `opencode` 已部署并 smoke test 通过；S2 已接入真实目录生成
 
 - [x] 4.5 打通 S4 / S5 / S6 mock 流程
   - FastAPI 持久化承接 `gaps-detection / gaps / materials/submissions / review-items`
@@ -48,9 +47,15 @@ docker compose
   - S5 支持补料、标记已补录/跳过、提交审核
   - S6 支持生成审核预览文档并返回 OnlyOffice 会话
 
-- [x] 4.8 打通 S8 mock 承接
+- [x] 4.8 打通 S7 技术标正文拼装
+  - 后端引入 `bid-tech-assembler`
+  - S7 按 S2 目录 JSON、S2 Wiki 卡片和素材库清洗后 Word 拼装正文
+  - 生成 `assembly_plan.json / assembly_report.md / needs_review.md`
+  - 输出 Word 写入项目文档路径，继续供 S9/S10 使用
+
+- [x] 4.9 打通 S8 素材拼装覆盖校验
   - FastAPI 新增 `GET /api/projects/{id}/coverage`
-  - S8 基于 S7 章节 `generationMode` 生成覆盖树、部分覆盖项、未覆盖项
+  - S8 基于 S7 `assembly_plan.json` 和素材卡片生成覆盖树、未匹配目录项、未拼装素材清单
   - 保证 `S7 -> S8 -> S9 -> S10` 可以继续走通
 
 - [ ] 5. 收成最终 Docker Compose

@@ -19,9 +19,7 @@ MAX_TENDER_HINTS = 12
 MAX_TEMPLATE_HINTS = 12
 MAX_FALLBACK_ERROR_PREVIEW_CHARS = 200
 TOC_SKILL_NAME = "bid-toc-wiki-driven-v2"
-TOC_SKILL_RUNNER_PATH = (
-    "/workspace/.opencode/skills/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py"
-)
+TOC_SKILL_COMMAND = "s2toc"
 
 HEADING_PATTERNS = [
     re.compile(r"^第[一二三四五六七八九十百千0-9]+章[\s　].+"),
@@ -109,6 +107,7 @@ def generate_outline_for_project_with_progress(
                 "skill": TOC_SKILL_NAME,
                 "workDir": skill_workspace["workDir"],
                 "manifestPath": skill_workspace["manifestPath"],
+                "canonicalManifestPath": skill_workspace["canonicalManifestPath"],
                 "tocJsonPath": str(toc_result.get("outputFile") or skill_workspace["outputFile"]),
             }
         )
@@ -221,6 +220,7 @@ def _prepare_toc_skill_workspace(
     wiki_dir = work_dir / "wiki"
     output_file = work_dir / "投标文件-总目录.json"
     manifest_path = work_dir / "s2_input.json"
+    manifest_alias_path = project_dir / "s2.json"
     manifest = {
         "projectId": project_id,
         "projectCode": str(project.get("projectCode") or project_id),
@@ -241,10 +241,13 @@ def _prepare_toc_skill_workspace(
         "wikiDir": str(wiki_dir),
         "outputFile": str(output_file),
     }
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2)
+    manifest_path.write_text(manifest_text, encoding="utf-8")
+    manifest_alias_path.write_text(manifest_text, encoding="utf-8")
     return {
         **manifest,
-        "manifestPath": str(manifest_path),
+        "manifestPath": str(manifest_alias_path),
+        "canonicalManifestPath": str(manifest_path),
         "tenderFileCount": len(tender_paths),
         "templateFileCount": 1 if template_path else 0,
         "hasAttachFile": bool(attach_path),
@@ -415,18 +418,19 @@ Use the {TOC_SKILL_NAME} skill.
 是否尽量包含关键评分点：{include_key_points_text}
 工作目录：{skill_workspace["workDir"]}
 manifest：{skill_workspace["manifestPath"]}
+manifest 备份：{skill_workspace["canonicalManifestPath"]}
 后端 API：{skill_workspace["apiBaseUrl"]}
 输出文件：{skill_workspace["outputFile"]}
 项目身份：{project_identity_text}
 
 请先按投标模板目录起基础目录，再对照招标要求删改、补改，并结合 {skill_workspace["bidType"]} Wiki 素材库给出新增/删除/适配建议。读取 Wiki 时必须按项目身份过滤：通用素材可读；客户素材需 customer_id/同义词命中；项目素材需 project_id/project_code 命中。
 
-请执行下面命令。命令会把完整目录 JSON 写入 outputFile，并只在 stdout 打印小型摘要 JSON：
+请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 600000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径。命令会把完整目录 JSON 写入 outputFile，并只在 stdout 打印小型摘要 JSON：
 
-python3 {TOC_SKILL_RUNNER_PATH} --manifest {skill_workspace["manifestPath"]} --response summary
+{TOC_SKILL_COMMAND} {skill_workspace["manifestPath"]}
 
 只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
-不要再使用 Read/Glob 打开完整 outputFile；完整目录 JSON 由后端根据 outputFile 自行读取。
+不要再使用 Read/Glob/Cat 打开完整 outputFile；完整目录 JSON 由后端根据 outputFile 自行读取。
 返回格式必须是：
 {{
   "schema_version": "bid-toc-json-v1",
@@ -512,12 +516,10 @@ def _nodes_from_toc_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         while stack and stack[-1][0] >= level:
             stack.pop()
 
-        counters = counters[: level - 1]
+        counters = counters[:level]
         if len(counters) < level:
             counters.extend([0] * (level - len(counters)))
         counters[level - 1] += 1
-        for index in range(level, len(counters)):
-            counters[index] = 0
         node_id = "OL-" + "-".join(str(part) for part in counters[:level] if part)
 
         title = _toc_item_title(item, fallback_order)

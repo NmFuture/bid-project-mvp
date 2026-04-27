@@ -44,15 +44,15 @@
 
 2. `fastapi`
 - 业务后端
-- 负责项目、阶段、文件、解析、目录生成、初稿生成、OnlyOffice 对接、下载
+- 负责项目、阶段、文件、解析、目录生成、正文拼装、素材覆盖校验、OnlyOffice 对接、下载
 
 3. `worker`
 - Redis 队列消费者
-- 负责目录生成、初稿生成、素材清洗等后台任务
+- 负责目录生成、正文拼装、素材清洗等后台任务
 
 4. `opencode`
 - 运行 `opencode serve`
-- 供 FastAPI 调用目录生成和初稿生成能力
+- 供 FastAPI 调用目录生成能力；同时镜像内保留 S7 所需 skill 资产与 Python 依赖
 
 5. `onlyoffice`
 - 运行 OnlyOffice Document Server
@@ -123,7 +123,8 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 - `S1`：解析招标文件
 - `S2`：调用 `opencode` 生成目录
 - `S3`：审核目录
-- `S7`：调用 `opencode` 生成初稿
+- `S7`：调用 `bid-tech-assembler`，按 S2 目录 JSON 和素材库拼装正文
+- `S8`：根据拼装计划校验未拼上的素材和未匹配目录项
 - `S9`：OnlyOffice 共创编辑
 - `S10`：下载最新版 Word
 
@@ -132,7 +133,6 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 - `S4`
 - `S5`
 - `S6`
-- `S8`
 
 这意味着：
 
@@ -162,9 +162,9 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 ## 7. 当前需要记住的边界
 
 - 正式版产品语义不变：`S5` 补料，`S7` 拼接
-- 当前 MVP 为了最小改动，先借现有 `S7` 页面做初稿生成
+- 当前 MVP 已把 `S7` 调整为正文拼装，仍保留原 `fill-generation` 接口名以兼容前端
 - 当前 MVP 已接入 PostgreSQL、MinIO、Redis
-- 当前 MVP 不做 OCR、完整审核流、覆盖热力图、SSO
+- 当前 MVP 不做 OCR、完整审核流、评分点级覆盖审计、SSO
 
 ## 8. 一个前提提醒
 
@@ -201,8 +201,10 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 - 2026-04-20 已经在本机用 compose 重新验过一次：
   - `PRJ-0010` 从 `S1` 跑到 `S10`
   - `S9` OnlyOffice 不再空白
-  - `S7` 已改成异步进度展示，并能真实完成初稿生成
   - `S10` 最终文档下载返回 `200`
+- 2026-04-27 已将 S7 更新为 `bid-tech-assembler` 正文拼装链路：
+  - `S7` 按 S2 目录 JSON、Wiki 卡片和素材库清洗后 Word 拼装正文
+  - `S8` 展示 S7 拼装计划对应的素材覆盖情况
 
 ## 10. 实际怎么部署
 
@@ -219,7 +221,7 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 - `worker`
   - 只负责后台任务消费
 - `opencode`
-  - 只负责目录生成、初稿生成
+  - 负责目录生成，并承载 S7 本地 skill 资产
 - `onlyoffice`
   - 只负责在线文档编辑
 - `postgres`
@@ -293,14 +295,14 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 - 如果保留 compose 自带的 `opencode`，`OPENCODE_BASE_URL` 保持 `http://opencode:4096`
 - 如果切到外部 `opencode` 网关，只需要改 `OPENCODE_BASE_URL`
 - `OPENCODE_PROVIDER_ID / OPENCODE_MODEL_ID` 负责决定 FastAPI 调用哪个 provider/model
-- `OPENCODE_TIMEOUT_SEC` 默认建议先用 `60` 秒，超时后系统会回退到可继续审核的目录，避免页面长时间卡死
+- `OPENCODE_TIMEOUT_SEC` 默认建议先用 `600` 秒，超时后系统会回退到可继续审核的目录，避免页面长时间卡死
 - `OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY` 负责让 `opencode` 真正访问外部模型
 
 补充：
 
-- `S2` 默认先真实调用 `opencode`
+- `S2` 默认先真实调用 `opencode`，由 opencode 执行镜像内短命令 `s2toc /data/parsed/<projectId>/s2.json`，再转调目录生成 skill
 - 如果 `opencode` 在超时内没有返回可解析 JSON，系统会自动生成一版回退目录，保证后续 `S3-S10` 可继续联调
-- `S7` 仍以真实 `opencode` 初稿生成为主
+- `S7` 以本地 `bid-tech-assembler` skill 拼装正文为主；这一步依赖 S2 目录 JSON、Wiki 卡片和素材库清洗后的 Word 文件
 
 ### 10.4 启动方式
 
@@ -331,7 +333,8 @@ docker compose logs -f opencode
    - 新建项目
    - S1 解析
    - S2 目录生成
-   - S7 初稿生成
+   - S7 正文拼装
+   - S8 素材拼装覆盖校验
    - S9 打开编辑器
    - S10 下载
 

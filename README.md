@@ -10,12 +10,12 @@
 
 当前已验证的主链路是：
 
-`审核（上传招标文件并解析） -> 项目模块 S1 模板上传（可选） -> S2 目录生成 -> S3 目录审核 -> S4/S5/S6 承接 -> S7 初稿生成 -> S8 校验 -> S9 OnlyOffice 共创 -> S10 下载`
+`审核（上传招标文件并解析） -> 项目模块 S1 模板上传（可选） -> S2 目录生成 -> S3 目录审核 -> S4/S5/S6 承接 -> S7 技术标正文拼装 -> S8 素材拼装校验 -> S9 OnlyOffice 共创 -> S10 下载`
 
 其中：
 
-- 真实执行阶段：`S0 / S1 / S2 / S3 / S7 / S9 / S10`
-- 承接 / mock-backed 阶段：`S4 / S5 / S6 / S8`
+- 真实执行阶段：`S0 / S1 / S2 / S3 / S7 / S8 / S9 / S10`
+- 承接 / mock-backed 阶段：`S4 / S5 / S6`
 
 当前仓库已经按 `docker compose` 做过一轮真实主链路验收：
 
@@ -23,7 +23,8 @@
 - `S2` 目录生成成功
 - `S3` 目录审核页面支持左侧目录编辑 + 右侧招标文件 OnlyOffice 预览
 - `S6` 文档预览可用
-- `S7` 初稿生成成功
+- `S7` 已按 S2 目录 JSON 调用 `bid-tech-assembler` 拼装技术标正文
+- `S8` 已基于拼装计划校验素材库中未拼上的材料
 - `S9` OnlyOffice 不再白屏
 - `S10` 最终文档下载接口返回 `200`
 
@@ -45,9 +46,9 @@
 - `fastapi`
   - 唯一业务后端
 - `worker`
-  - Redis 队列消费者，负责目录生成、初稿生成、素材清洗等后台任务
+  - Redis 队列消费者，负责目录生成、正文拼装、素材清洗等后台任务
 - `opencode`
-  - 目录生成 / 初稿生成
+  - 目录生成，以及存放可被后端调用的本地 skill 资产
 - `onlyoffice`
   - 在线文档预览和编辑
 - `postgres`
@@ -73,7 +74,7 @@
   - 审核模块解析产物，例如 `combined.txt`
 
 `parsed` 很重要。
-如果它不持久化，`fastapi` 容器重建后，`S2 / S7` 会因为找不到解析结果而断链。
+如果它不持久化，`fastapi` 容器重建后，`S2 / S7` 会因为找不到解析结果、目录 JSON、Wiki 或拼装工作目录而断链。
 
 ## 快速启动
 
@@ -208,7 +209,7 @@ compose 会把这个目录挂进 `opencode` 容器。
 | `OPENCODE_BASE_URL` | FastAPI 调用的 opencode 地址 |
 | `OPENCODE_PROVIDER_ID` | 调用 opencode 时的 provider |
 | `OPENCODE_MODEL_ID` | 调用 opencode 时的模型 ID |
-| `OPENCODE_TIMEOUT_SEC` | FastAPI 调用 opencode 的超时，默认建议 `60` 秒，超时会触发回退目录 |
+| `OPENCODE_TIMEOUT_SEC` | FastAPI 调用 opencode 的超时，默认建议 `600` 秒，超时会触发回退目录 |
 | `OPENAI_API_KEY` | OpenAI / OpenAI-compatible 模型 key |
 | `ANTHROPIC_API_KEY` | Anthropic key |
 | `GOOGLE_API_KEY` | Google key |
@@ -230,17 +231,18 @@ compose 会把这个目录挂进 `opencode` 容器。
 7. `S2` 点击“生成目录”
 8. `S3` 校核目录，并确认右侧 OnlyOffice 招标文件预览可用
 9. `S4/S5/S6` 继续走承接流程
-10. `S7` 点击“触发填充”，观察进度、任务、事件和 opencode 输出
-11. `S9` 确认 OnlyOffice 编辑器正常显示
-12. `S10` 下载最终版 Word
+10. `S7` 点击“触发正文拼装”，观察进度、任务、事件和拼装输出
+11. `S8` 查看素材拼装覆盖树，确认未拼上的素材和未匹配目录项
+12. `S9` 确认 OnlyOffice 编辑器正常显示
+13. `S10` 下载最终版 Word
 
 补充说明：
 
 - 审核模块若选择“不参与该项目”，项目会在流程中终止，并从项目总览移除
 - 审核模块若选择“参与该项目”，会先要求补全项目信息，再进入项目模块
-- `S2` 默认先真实调用 `opencode`
+- `S2` 默认先真实调用 `opencode`，由 opencode 执行镜像内短命令 `s2toc /data/parsed/<projectId>/s2.json`，再转调目录生成 skill
 - 如果 `opencode` 在 `OPENCODE_TIMEOUT_SEC` 内没有返回可用 JSON，系统会自动生成一版“可继续审核的回退目录”
-- `S7` 仍然优先走真实 `opencode` 初稿生成
+- `S7` 不再走自由初稿生成，而是使用 S2 目录 JSON、S2 Wiki 卡片和素材库清洗后 Word，通过 `bid-tech-assembler` 拼装正文
 
 ## OnlyOffice 地址说明
 
@@ -265,10 +267,11 @@ compose 会把这个目录挂进 `opencode` 容器。
 
 ## 已知边界
 
-- `S4 / S5 / S6 / S8` 仍然是承接态，不是正式业务实现
+- `S4 / S5 / S6` 仍然是承接态，不是正式业务实现
+- `S8` 当前校验的是 S7 拼装计划与素材库的覆盖关系，还不是完整评分点覆盖审计
 - 当前默认已经接入 PostgreSQL、MinIO、Redis
 - 当前默认没有接入 SSO、OCR
-- `opencode` 能否真实生成，取决于你配置的 provider / model / key 是否可用
+- `S2` 目录能否真实生成，取决于 `opencode` 的 provider / model / key 是否可用；`S7` 正文拼装还取决于 S2 JSON、Wiki 卡片和素材库清洗后 Word 是否齐备
 
 ## GitHub 协作提交（必须走分支 + PR 审核）
 

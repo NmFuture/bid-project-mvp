@@ -8,10 +8,10 @@
 ## 1. 当前 MVP 口径
 
 - 前端展示流保留 `S0-S10`
-- 当前真实实现：`S0 / S1 / S2 / S3 / S7 / S9 / S10`
-- 当前 mock：`S4 / S5 / S6 / S8`
-- 当前 `S7` 页面承担“初稿生成”，这是 MVP 借现有页面做最小改动，不代表正式版最终 `S7` 语义
-- `S2` 和 `S7` 后续都要接 `opencode skill`
+- 当前真实实现：`S0 / S1 / S2 / S3 / S7 / S8 / S9 / S10`
+- 当前 mock / 承接：`S4 / S5 / S6`
+- 当前 `S7` 页面承担“技术标正文拼装”，接口名仍沿用 `fill-generation`
+- `S2` 接 `opencode` 目录 skill，`S7` 接本地 `bid-tech-assembler` 拼装 skill
 - `S9` 走 `OnlyOffice`
 - `S1` 上传必须是真文件上传：`multipart/form-data`，不能只传文件名或文件元数据
 
@@ -381,9 +381,9 @@
 
 ---
 
-## 6. S7 初稿生成
+## 6. S7 技术标正文拼装
 
-## 6.1 获取生成状态
+## 6.1 获取拼装状态
 
 ### `GET /api/projects/{id}/fill-generation`
 
@@ -395,12 +395,12 @@
   "filledAt": "",
   "runDurationSec": 0,
   "runDuration": "",
-  "summary": "尚未触发填充，请点击“触发填充”后继续。",
+  "summary": "尚未触发正文拼装，请点击“触发正文拼装”后继续。",
   "output": null
 }
 ```
 
-## 6.2 触发生成
+## 6.2 触发正文拼装
 
 ### `POST /api/projects/{id}/fill-generation/run`
 
@@ -421,9 +421,9 @@
   "filledAt": "2026-04-19T11:00:00.000Z",
   "runDurationSec": 79,
   "runDuration": "1分19秒",
-  "summary": "初稿生成完成。",
+  "summary": "技术标正文拼装完成。",
   "output": {
-    "fileName": "甘肃华能100MW风电项目_初稿.docx",
+    "fileName": "甘肃华能100MW风电项目_正文.docx",
     "fileType": "docx",
     "size": "2.8 MB",
     "fileUrl": "/files/DOC-001.docx"
@@ -446,13 +446,26 @@
       ]
     }
   ],
-  "message": "填充完成"
+  "coverage": {
+    "percentage": 80,
+    "fullCover": 4,
+    "partialCover": 1,
+    "noCover": 1
+  },
+  "assembly": {
+    "skill": "bid-tech-assembler",
+    "manifestPath": "/data/parsed/PRJ-001/s7_assembly_workdir/s7_assembly_input.json",
+    "assemblyReport": "/data/parsed/PRJ-001/s7_assembly_workdir/assembly_report.md",
+    "needsReview": "/data/parsed/PRJ-001/s7_assembly_workdir/needs_review.md"
+  },
+  "message": "正文拼装完成"
 }
 ```
 
 说明：
 
-- 当前 MVP 不写 `wiki+db`
+- 当前 S7 会读取 S2 目录 JSON、S2 Wiki 卡片和素材库清洗后 Word。
+- 输出 Word 会写入项目文档路径，S9/S10 继续读取该文件。
 - 当前只允许：
   - `generated`
   - `placeholder`
@@ -472,16 +485,16 @@
 {
   "status": "ready",
   "documentId": "DOC-001",
-  "sourceFileName": "甘肃华能100MW风电项目_初稿.docx",
+  "sourceFileName": "甘肃华能100MW风电项目_正文.docx",
   "sourceFileUrl": "http://127.0.0.1:8000/files/DOC-001.docx",
-  "fileName": "甘肃华能100MW风电项目_初稿.docx",
+  "fileName": "甘肃华能100MW风电项目_正文.docx",
   "fileType": "docx",
   "fileUrl": "http://127.0.0.1:8000/files/DOC-001.docx",
   "lastSavedAt": "2026-04-19T11:10:00.000Z",
   "version": 1,
   "onlyoffice": {
     "documentKey": "PRJ-001-v1",
-    "title": "甘肃华能100MW风电项目_初稿.docx",
+    "title": "甘肃华能100MW风电项目_正文.docx",
     "fileUrl": "http://127.0.0.1:8000/files/DOC-001.docx",
     "callbackUrl": "http://127.0.0.1:8000/api/projects/PRJ-001/document/callback",
     "user": {
@@ -520,7 +533,7 @@
   "payload": {
     "status": "ready",
     "documentId": "DOC-001",
-    "fileName": "甘肃华能100MW风电项目_初稿.docx",
+    "fileName": "甘肃华能100MW风电项目_正文.docx",
     "lastSavedAt": "2026-04-19T11:20:00.000Z",
     "version": 2,
     "onlyoffice": {
@@ -648,5 +661,5 @@
 
 1. FastAPI 统一承接所有 `/api`，前端不再直接连 mock-server。
 2. `S1` 必须上传真实文件，不是只传文件名或文件元数据。
-3. `S2` 和 `S7` 先把接口和返回结构定稳，再逐步接 `opencode skill`。
+3. `S2` 负责生成目录 JSON，`S7` 负责按该 JSON 从素材库拼装正文，`S8` 负责暴露未拼上的素材和目录项。
 4. `S9` 先按当前前端的 `onlyoffice` 字段结构实现，不再走旧的 `editorSession` 口径。

@@ -255,7 +255,7 @@ class PeripheralStore:
                 "status": "online",
                 "uptime": "99.5%",
                 "latency": "138ms",
-                "detail": "目录生成与初稿生成接口可用。",
+                "detail": "目录生成与正文拼装接口可用。",
             },
             {
                 "id": "svc-onlyoffice",

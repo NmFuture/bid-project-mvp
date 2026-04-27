@@ -8,13 +8,18 @@ import httpx
 import os
 import pytest
 from uuid import uuid4
+from sqlalchemy import delete, select
 
 from app.core.config import settings
 from app.main import app
+from app.models import async_session
+from app.models.materials import RawFile, RawFolder, WikiNode
+from app.services.minio_client import minio_client
 from app.services.peripheral import peripheral_store
 from app.services.store import store
 
 
+@unittest.skipUnless(os.getenv("BID_RUN_INTEGRATION") == "1", "requires PostgreSQL, MinIO, and Redis")
 @pytest.mark.integration
 @pytest.mark.skipif(os.getenv("BID_RUN_INTEGRATION") != "1", reason="requires PostgreSQL, MinIO, and Redis")
 class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
@@ -36,7 +41,30 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         await self.client.aclose()
+        await self._cleanup_material_test_data()
         self.temp_dir.cleanup()
+
+    async def _cleanup_material_test_data(self) -> None:
+        async with async_session() as session:
+            result = await session.execute(
+                select(RawFile)
+                .join(RawFolder)
+                .where(RawFolder.path.like(f"%{self.run_id}%"))
+            )
+            for item in result.scalars().all():
+                if item.minio_key:
+                    minio_client.remove_object(item.minio_bucket or settings.minio_buckets["materials"], item.minio_key)
+                ext = item.ext_fields or {}
+                cleaned_key = str(ext.get("cleanedMinioKey") or "")
+                if cleaned_key:
+                    minio_client.remove_object(
+                        str(ext.get("cleanedMinioBucket") or settings.minio_buckets["materials"]),
+                        cleaned_key,
+                    )
+
+            await session.execute(delete(WikiNode).where(WikiNode.path.like(f"%{self.run_id}%")))
+            await session.execute(delete(RawFolder).where(RawFolder.path.like(f"%{self.run_id}%")))
+            await session.commit()
 
     async def create_project(self) -> str:
         response = await self.client.post(
@@ -143,24 +171,24 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
 
         created = await self.client.post(
             "/api/materials/wiki",
-            json={"title": "风资源说明", "isFolder": False},
+            json={"title": f"风资源说明-{self.run_id}", "isFolder": False},
         )
         self.assertEqual(created.status_code, 200)
         selected_node = created.json()["selectedNode"]
-        self.assertEqual(selected_node["title"], "风资源说明")
+        self.assertEqual(selected_node["title"], f"风资源说明-{self.run_id}")
 
         node_id = selected_node["id"]
         updated = await self.client.put(
             f"/api/materials/wiki/{node_id}",
             json={
-                "title": "风资源说明-更新",
+                "title": f"风资源说明-更新-{self.run_id}",
                 "markdownContent": "# 风资源说明\n\n需要补充测风塔数据。",
                 "tags": ["风资源", "技术标"],
                 "applicableTypes": ["技术标"],
             },
         )
         self.assertEqual(updated.status_code, 200)
-        self.assertEqual(updated.json()["selectedNode"]["title"], "风资源说明-更新")
+        self.assertEqual(updated.json()["selectedNode"]["title"], f"风资源说明-更新-{self.run_id}")
 
         refreshed = await self.client.post(f"/api/materials/wiki/{node_id}/refresh-summary")
         self.assertEqual(refreshed.status_code, 200)

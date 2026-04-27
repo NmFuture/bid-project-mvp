@@ -31,8 +31,8 @@
 
 ## 1.3 现状说明
 - 当前默认联调链路：前端 -> 正式 FastAPI（8000）
-- 主链路真实阶段：`S0 / S1 / S2 / S3 / S7 / S9 / S10`
-- 过渡 mock 阶段：`S4 / S5 / S6 / S8`
+- 主链路真实阶段：`S0 / S1 / S2 / S3 / S7 / S8 / S9 / S10`
+- 过渡 mock / 承接阶段：`S4 / S5 / S6`
 - 外围模块由正式 FastAPI 承接，但其中部分数据仍属于轻量 fixture/mock 语义
 - 不再支持 `__scenario / __delay / x-mock-*` 这类历史 mock 场景注入参数
 
@@ -394,29 +394,32 @@ Query 参数：
 
 ---
 
-## 10. S7 填充模块
+## 10. S7 正文拼装模块
 
-## 10.1 查询填充状态
+## 10.1 查询拼装状态
 - **GET** `/projects/:id/fill-generation`
 
-## 10.2 触发填充
+## 10.2 触发正文拼装
 - **POST** `/projects/:id/fill-generation/run`
 - 返回：
   - `status`
   - `runDuration/runDurationSec`
   - `filledAt`
   - `output.fileName/fileType/size`
+  - `coverage`
+  - `assembly`
 
 ---
 
-## 11. S8 覆盖校验模块
+## 11. S8 素材拼装覆盖校验模块
 
 ## 11.1 覆盖数据
 - **GET** `/projects/:id/coverage`
 - 返回：
   - `percentage/fullCover/partialCover/noCover`
-  - `tree`（目录响应评分树）
-  - `partialItems/noCoverItems`
+  - `tree`（按素材 `scope/category` 分组的拼装覆盖树）
+  - `partialItems`（未匹配目录项）
+  - `noCoverItems`（未拼装素材）
 
 ---
 

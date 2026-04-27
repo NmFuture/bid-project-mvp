@@ -27,7 +27,7 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
 
 ### 后端 manifest 调用（bid-project 默认）
 
-在 `bid-project` 中，S2 后端会预先准备工作目录和 `s2_input.json`。收到这类任务时优先走 manifest，不要再 AskUserQuestion。
+在 `bid-project` 中，S2 后端会预先准备工作目录、`s2_toc_workdir/s2_input.json` 和短路径别名 `/data/parsed/<projectId>/s2.json`。收到这类任务时优先走 manifest，不要再 AskUserQuestion。
 
 manifest 字段：
 
@@ -53,13 +53,23 @@ manifest 字段：
 }
 ```
 
-标准命令：
+Docker/opencode 后端标准命令：
+
+```bash
+s2toc /data/parsed/<projectId>/s2.json
+```
+
+`s2toc` 是后端镜像内的短命令包装器，会转调本 skill 的 manifest 脚本。后端 prompt 给出的 `s2toc ...` 是唯一需要复制执行的命令；不要把它改写成长 Python 路径。
+
+本地调试 fallback 命令：
 
 ```bash
 python3 /workspace/.opencode/skills/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py \
   --manifest /data/parsed/<projectId>/s2_toc_workdir/s2_input.json \
   --response summary
 ```
+
+后端 manifest 模式下必须直接调用一次 Bash 工具执行 `s2toc /data/parsed/<projectId>/s2.json`，Bash 工具 timeout 设置为 600000 毫秒或更高。不要先检查工作目录，不要先执行 `pwd` / `ls` / `cat` / `Read` / `Glob`，不要拆成多条命令。命令 stdout 已经是后端需要的小型 JSON 摘要。
 
 `run_from_manifest.py` 会：
 

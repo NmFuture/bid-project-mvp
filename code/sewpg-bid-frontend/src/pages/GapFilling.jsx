@@ -95,14 +95,6 @@ export default function GapFilling({ showToast }) {
   }, [selectedGap, submissions])
 
   const latestSubmission = selectedGapSubmissions[0] || null
-  const pendingCount = displayedItems.filter((item) => !['resolved', 'skipped'].includes(item.status)).length
-  const submitEnabled = displayedItems.length > 0 && pendingCount === 0
-  const submitDisabledReason = !displayedItems.length
-    ? '暂无可提交项'
-    : pendingCount > 0
-      ? `仍有 ${pendingCount} 项未处理，无法提交审核`
-      : ''
-
   const updateGapInState = (gapId, patch) => {
     setData((prev) => ({
       ...prev,
@@ -255,17 +247,12 @@ export default function GapFilling({ showToast }) {
   }
 
   const handleSubmitReview = async () => {
-    if (!submitEnabled) {
-      showToast(submitDisabledReason, 'error')
-      return
-    }
-
     setSubmittingReview(true)
     try {
       await gapsAPI.submitReview(id)
       const prepareResponse = await reviewAPI.prepareParse(id)
       await stagesAPI.update(id, 5, { status: 'completed' })
-      showToast(prepareResponse?.message || 'S5 已提交审核并触发 S6 解析，已进入 S6')
+      showToast(prepareResponse?.message || '已跳过 S5 并进入 S6')
       navigate(projectRoute(id, '/gaps/review', workspaceSlug))
     } catch (e) {
       showToast(e?.message || '提交审核失败，请稍后重试', 'error')
@@ -295,11 +282,10 @@ export default function GapFilling({ showToast }) {
         <div />
         <button
           onClick={handleSubmitReview}
-          disabled={!submitEnabled || submittingReview}
-          title={submitDisabledReason}
+          disabled={submittingReview}
           className="stage-action-btn px-4 py-2.5 bg-secondary text-on-secondary text-sm font-semibold rounded-lg hover:bg-secondary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {submittingReview ? '进入中...' : '进入下一阶段'}
+          {submittingReview ? '进入中...' : '跳过 S5，进入下一阶段'}
         </button>
       </div>
 

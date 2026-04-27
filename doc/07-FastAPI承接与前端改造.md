@@ -27,7 +27,8 @@ Web 前端 -> FastAPI(/api)
 - `S1`：解析招标文件
 - `S2`：目录生成
 - `S3`：目录审核
-- `S7`：初稿生成
+- `S7`：技术标正文拼装
+- `S8`：素材拼装覆盖校验
 - `S9`：OnlyOffice 共创
 - `S10`：下载最新版 Word
 
@@ -39,7 +40,8 @@ Web 前端 -> FastAPI(/api)
 对应关键调用关系：
 
 - `S2`：FastAPI -> `opencode` 目录生成 skill
-- `S7`：FastAPI -> `opencode` 初稿生成能力
+- `S7`：FastAPI / worker -> 本地 `bid-tech-assembler` skill
+- `S8`：FastAPI -> S7 `assembly_plan.json` 与素材卡片覆盖计算
 - `S9`：FastAPI -> OnlyOffice config / callback / save
 
 ## 3. 哪些能力先 mock
@@ -49,9 +51,7 @@ Web 前端 -> FastAPI(/api)
 - `S4`
 - `S5`
 - `S6`
-- `S8`
 - cockpit
-- materials
 - audit
 - settings
 
@@ -79,7 +79,8 @@ backend/
       project_service.py
       parser_service.py
       outline_service.py
-      draft_service.py
+      draft_generation.py
+      tech_assembly.py
       opencode_client.py
       docx_service.py
       onlyoffice_service.py
@@ -93,7 +94,8 @@ backend/
 - `project_service`：项目列表、项目创建、阶段状态
 - `parser_service`：解析 `docx/pdf`
 - `outline_service`：调用目录生成 skill
-- `draft_service`：调用初稿生成能力
+- `draft_generation`：兼容旧接口名，转发到技术标正文拼装服务
+- `tech_assembly`：准备 S2 JSON、Wiki、素材库导出并调用 `bid-tech-assembler`
 - `docx_service`：把章节内容写成 `.docx`
 - `onlyoffice_service`：文档 config、save、callback
 - `mock_extra.py`：统一承接非 MVP mock 接口
@@ -176,7 +178,8 @@ FastAPI 优先兼容当前 React 前端已经写好的接口，例如：
 | `POST /api/projects/{id}/directory-generation/run` | `generate_outline` |
 | `PUT /api/projects/{id}/outline` | `save_reviewed_outline` |
 | `POST /api/projects/{id}/outline/confirm` | `confirm_outline` |
-| `POST /api/projects/{id}/fill-generation/run` | `generate_draft` |
+| `POST /api/projects/{id}/fill-generation/run` | `assemble_tech_bid` |
+| `GET /api/projects/{id}/coverage` | `get_assembly_material_coverage` |
 | `GET /api/projects/{id}/document` | `build_onlyoffice_config` |
 | `POST /api/projects/{id}/document/callback` | `save_latest_docx` |
 | `GET /api/projects/{id}/final-document` | `download_latest_docx` |
@@ -188,8 +191,8 @@ FastAPI 优先兼容当前 React 前端已经写好的接口，例如：
 1. 搭 FastAPI 骨架
 2. 接 `PostgreSQL + 本地文件目录`
 3. 先打通 `S0/S1/S2/S3`
-4. 再打通 `S7/S9/S10`
-5. 再补 `S4/S5/S6/S8` 的 mock 接口
+4. 再打通 `S7/S8/S9/S10`
+5. 再补 `S4/S5/S6` 的 mock / 承接接口
 6. 最后只改 `ProjectWizardModal.jsx` 和少量提示文案
 
 ## 8. 一句话总结

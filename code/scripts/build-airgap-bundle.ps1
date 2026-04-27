@@ -91,6 +91,9 @@ Invoke-Checked -Command @(
 Copy-Item (Join-Path $repoRoot "docker-compose.yml") $BundleDir -Force
 Copy-Item (Join-Path $repoRoot "docker-compose.airgap.yml") $BundleDir -Force
 Copy-Item (Join-Path $repoRoot ".env.airgap.example") $BundleDir -Force
+$onlyofficeConfigDir = Join-Path $BundleDir "sewpg-bid-backend\onlyoffice"
+New-Item -ItemType Directory -Force -Path $onlyofficeConfigDir | Out-Null
+Copy-Item (Join-Path $repoRoot "sewpg-bid-backend\onlyoffice\docker-entrypoint.sh") $onlyofficeConfigDir -Force
 Copy-Item (Join-Path $repoRoot "scripts\load-airgap-images.sh") $BundleDir -Force
 Copy-Item (Join-Path $repoRoot "scripts\up-airgap.sh") $BundleDir -Force
 

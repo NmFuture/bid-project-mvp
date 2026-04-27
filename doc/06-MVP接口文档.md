@@ -7,8 +7,8 @@
 
 当前 MVP 保留前端完整展示流 `S0-S10`，但只把关键阶段做成真实能力：
 
-- 真实阶段：`S0`、`S1`、`S2`、`S3`、`S7`、`S9`、`S10`
-- Mock 阶段：`S4`、`S5`、`S6`、`S8`
+- 真实阶段：`S0`、`S1`、`S2`、`S3`、`S7`、`S8`、`S9`、`S10`
+- Mock / 承接阶段：`S4`、`S5`、`S6`
 
 补充说明：
 
@@ -18,7 +18,8 @@
 关键边界：
 
 - `S2`：调用 `opencode` 的目录生成 skill
-- `S7`：调用 `opencode` 的初稿生成能力
+- `S7`：调用本地 `bid-tech-assembler` skill，按 S2 目录 JSON 和素材库拼装正文
+- `S8`：读取 S7 拼装计划，校验未拼上的素材和未匹配目录项
 - `S9`：由 FastAPI 对接 OnlyOffice
 - `S10`：下载最终 Word
 
@@ -26,7 +27,8 @@
 
 - 前端只调用 FastAPI，不直接调用 `opencode`
 - FastAPI 是唯一 `/api` 后端，同时承担真实执行和 mock 返回
-- `S2` 与 `S7` 都由 FastAPI 内部调用 `opencode serve`
+- `S2` 由 FastAPI 内部调用 `opencode serve`
+- `S7` 由 FastAPI/worker 调用 `opencode/skill/bid-tech-assembler` 下的本地 Python 拼装脚本
 - 项目列表和项目状态需要持久化，MVP 统一使用 `PostgreSQL + 本地文件目录`
 - 当前前端展示流保留 `S0-S10`，接口优先兼容现有 React 前端
 
@@ -89,7 +91,7 @@
 说明：
 
 - 主链路阶段由后端状态驱动
-- `S4/S5/S6/S8` 虽然是 mock，但仍需要这个接口配合前端流转
+- `S4/S5/S6` 虽然是 mock / 承接，但仍需要这个接口配合前端流转；`S8` 已接到 S7 拼装覆盖结果
 
 ## 3.2 S1 解析
 
@@ -146,25 +148,39 @@
 - 用途：确认目录，进入后续流程
 - 是否真实：真实
 
-## 3.5 S7 初稿生成
+## 3.5 S7 技术标正文拼装
 
 ### `GET /api/projects/{id}/fill-generation`
 
-- 用途：获取初稿生成状态
+- 用途：获取正文拼装状态
 - 是否真实：真实
 
 ### `POST /api/projects/{id}/fill-generation/run`
 
-- 用途：触发初稿生成
+- 用途：触发正文拼装
 - 是否真实：真实
 
 说明：
 
-- 当前前端页面名称还是 `S7`
-- FastAPI 内部调用 `opencode` 初稿生成能力
-- 这是当前 MVP 的最小改动实现，不代表正式版最终 `S7` 语义
+- 当前仍兼容前端原有 `fill-generation` 接口名。
+- 后端会读取 S2 目录 JSON、S2 Wiki 卡片和素材库清洗后 Word，调用 `bid-tech-assembler` 生成正文 docx。
+- S7 输出会写入项目文档路径，供 S9 OnlyOffice 和 S10 下载继续使用。
 
-## 3.6 S9 共创编辑
+## 3.6 S8 素材拼装覆盖校验
+
+### `GET /api/projects/{id}/coverage`
+
+- 用途：查看 S7 拼装后素材覆盖情况
+- 是否真实：真实
+
+说明：
+
+- `fullCover` 表示已被拼装计划使用的素材数量。
+- `noCover` 表示素材库中可用但未出现在 S2 目录 JSON 或拼装计划中的素材数量。
+- `partialItems` 表示 S2 目录项中未匹配素材或需要人工确认的项。
+- 当前 S8 是素材拼装覆盖校验，不等同于正式评分点覆盖审计。
+
+## 3.7 S9 共创编辑
 
 ### `GET /api/projects/{id}/document`
 
@@ -186,7 +202,7 @@
 - 用途：接收 OnlyOffice 回调
 - 是否真实：真实
 
-## 3.7 S10 导出
+## 3.8 S10 导出
 
 ### `GET /api/projects/{id}/final-document`
 
@@ -212,7 +228,6 @@
 - `/api/projects/{id}/gaps-detection*`
 - `/api/projects/{id}/gaps*`
 - `/api/projects/{id}/review-items*`
-- `/api/projects/{id}/coverage`
 - `/api/materials/raw/*`
 - `/api/materials/structured/*`
 - `/api/materials/wiki/*`

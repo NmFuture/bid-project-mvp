@@ -60,7 +60,7 @@ code/
 职责：
 
 - FastAPI 业务入口
-- 项目、阶段、文件、解析、目录生成、初稿生成
+- 项目、阶段、文件、解析、目录生成、正文拼装
 - 对接 `opencode serve`
 - 对接 OnlyOffice 文档会话和回调
 - 为非 MVP 阶段返回 mock 数据
@@ -108,7 +108,8 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 - `S1`：解析招标文件
 - `S2`：调用 `opencode skill` 生成目录
 - `S3`：审核目录
-- `S7`：调用 `opencode` 生成初稿
+- `S7`：调用 `bid-tech-assembler`，按 S2 目录 JSON 和素材库拼装正文
+- `S8`：基于拼装计划校验未拼上的素材和未匹配目录项
 - `S9`：OnlyOffice 共创编辑
 - `S10`：下载最新版 Word
 
@@ -117,7 +118,6 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 - `S4`
 - `S5`
 - `S6`
-- `S8`
 
 原则：
 
@@ -130,11 +130,11 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 - `S5`：补料入库
 - `S7`：从素材库拼接成稿
 
-当前 MVP 为了最小改动，先借用现有 `S7` 页面承接“生成初稿”。
+当前 MVP 已经把 `S7` 调整为正文拼装，接口名仍沿用 `/fill-generation` 以兼容现有前端。
 
 所以必须记住：
 
-> **当前 MVP 的 S7 是实现借位，不代表正式版最终语义。**
+> **当前 MVP 的 S7 已回到正式产品语义：按目录从素材库拼接成稿。**
 
 ## 5. 前后端边界
 
@@ -154,8 +154,8 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 ### 5.3 后端做什么
 
 - FastAPI 统一承接所有 `/api`
-- 调 `opencode serve`
-- 生成 docx
+- 调 `opencode serve` 生成目录
+- 调本地 `bid-tech-assembler` skill 生成正文 docx
 - 管项目状态
 - 提供 OnlyOffice `config/meta/download/callback`
 - 为非 MVP 阶段返回 mock 数据
@@ -236,9 +236,10 @@ frontend -> FastAPI -> opencode/skill -> docx -> OnlyOffice -> callback -> downl
 
 1. 把 `docker-compose.yml` 和真实目录对齐
 2. 确定 `sewpg-bid-backend/app` 是唯一正式后端入口
-3. 把 `S0/S1/S2/S3/S7/S9/S10` 接成真链路
-4. 把 `S4/S5/S6/S8` 改成 FastAPI mock
-5. 最后继续收口文档与部署说明，保持“正式 FastAPI 单入口”口径一致
+3. 把 `S0/S1/S2/S3/S7/S8/S9/S10` 接成真链路
+4. 把 `S8` 接到 S7 拼装计划和素材覆盖结果
+5. 把 `S4/S5/S6` 改成 FastAPI mock / 承接
+6. 最后继续收口文档与部署说明，保持“正式 FastAPI 单入口”口径一致
 
 ## 10. 一句话总结
 

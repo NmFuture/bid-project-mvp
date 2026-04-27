@@ -53,6 +53,10 @@ docker save -o "${IMAGE_TAR}" \
 cp "${REPO_ROOT}/docker-compose.yml" "${BUNDLE_DIR}/docker-compose.yml"
 cp "${REPO_ROOT}/docker-compose.airgap.yml" "${BUNDLE_DIR}/docker-compose.airgap.yml"
 cp "${REPO_ROOT}/.env.airgap.example" "${BUNDLE_DIR}/.env.airgap.example"
+mkdir -p "${BUNDLE_DIR}/sewpg-bid-backend/onlyoffice"
+cp "${REPO_ROOT}/sewpg-bid-backend/onlyoffice/docker-entrypoint.sh" \
+  "${BUNDLE_DIR}/sewpg-bid-backend/onlyoffice/docker-entrypoint.sh"
+chmod +x "${BUNDLE_DIR}/sewpg-bid-backend/onlyoffice/docker-entrypoint.sh"
 cp "${REPO_ROOT}/scripts/load-airgap-images.sh" "${BUNDLE_DIR}/load-airgap-images.sh"
 cp "${REPO_ROOT}/scripts/up-airgap.sh" "${BUNDLE_DIR}/up-airgap.sh"
 

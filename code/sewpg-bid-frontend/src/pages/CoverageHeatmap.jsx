@@ -173,7 +173,7 @@ export default function CoverageHeatmap({ showToast }) {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[520px]">
         <div className="lg:col-span-5 bg-surface-container-lowest rounded-xl shadow-[0_8px_24px_-12px_rgba(0,62,111,0.06)] flex flex-col">
           <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold text-on-surface">需求响应评分树（按目录章节同步）</h3>
+            <h3 className="text-sm font-semibold text-on-surface">素材拼装覆盖树（按 S2 目录 JSON 校验）</h3>
             {parentNodeIds.length ? (
               <button
                 type="button"
@@ -200,7 +200,7 @@ export default function CoverageHeatmap({ showToast }) {
             <section className="rounded-lg border border-error/25 bg-error-container/10">
               <div className="px-4 py-3 border-b border-error/25 flex items-center gap-2">
                 <span className="material-symbols-outlined text-error text-sm">error</span>
-                <h4 className="text-sm font-semibold text-on-surface">未完整覆盖项（{incompleteItems.length}）</h4>
+                <h4 className="text-sm font-semibold text-on-surface">未拼装 / 未匹配项（{incompleteItems.length}）</h4>
               </div>
               <div className="p-3 flex flex-col gap-2 max-h-[380px] overflow-y-auto">
                 {incompleteItems.length ? incompleteItems.map((item) => (

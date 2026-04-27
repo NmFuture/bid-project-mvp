@@ -566,7 +566,7 @@ Path 参数：
 
 错误码：`GAP_REVIEW_NOT_SUBMITTED`、`REVIEW_ITEMS_NOT_READY`
 
-## 5.7 S7 填充
+## 5.7 S7 正文拼装
 
 ### 5.7.1 `GET /projects/:id/fill-generation`
 ### 5.7.2 `POST /projects/:id/fill-generation/run`
@@ -583,12 +583,14 @@ Path 参数：
 | `output.fileUrl` | `string` | 否 | 下载地址 |
 | `summary` | `string` | 是 | 摘要 |
 | `source` | `object` | 是 | 来源 |
+| `coverage` | `object` | 否 | S8 素材拼装覆盖摘要 |
+| `assembly` | `object` | 否 | S7 拼装工作目录、manifest、报告路径 |
 
-`run` 额外返回 `message`。
+`run` 额外返回 `message`。当前接口名仍为 `fill-generation`，实际语义是按 S2 目录 JSON、Wiki 卡片和素材库清洗后 Word 拼装技术标正文。
 
 错误码：`REVIEW_NOT_CONFIRMED`
 
-## 5.8 S8 覆盖校验
+## 5.8 S8 素材拼装覆盖校验
 
 ### 5.8.1 `GET /projects/:id/coverage`
 响应：
@@ -598,9 +600,9 @@ Path 参数：
 | `fullCover` | `number` | 是 | 完全覆盖数 |
 | `partialCover` | `number` | 是 | 部分覆盖数 |
 | `noCover` | `number` | 是 | 未覆盖数 |
-| `tree` | `CoverageNode[]` | 是 | 目录评分树 |
-| `partialItems` | `CoverageIssue[]` | 是 | 部分覆盖清单 |
-| `noCoverItems` | `CoverageIssue[]` | 是 | 未覆盖清单 |
+| `tree` | `CoverageNode[]` | 是 | 按素材 `scope/category` 分组的拼装覆盖树 |
+| `partialItems` | `CoverageIssue[]` | 是 | 未匹配目录项或需人工确认项 |
+| `noCoverItems` | `CoverageIssue[]` | 是 | 素材库中未拼装的素材清单 |
 
 `CoverageNode`：
 - 父节点：`id/title/coverage/children[]`

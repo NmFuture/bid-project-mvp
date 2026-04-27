@@ -146,7 +146,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             "app.services.outline_generation.OpencodeClient.generate_outline_with_trace",
             return_value={
                 "schema_version": "bid-toc-json-v1",
-                "summary": {"total_items": 3, "annotation_counts": {"保留": 2, "适配": 1}},
+                "summary": {"total_items": 4, "annotation_counts": {"保留": 3, "适配": 1}},
                 "items": [
                     {
                         "order": 1,
@@ -170,6 +170,15 @@ class DirectoryGenerationTests(unittest.TestCase):
                     },
                     {
                         "order": 3,
+                        "number": "1.2",
+                        "title": "项目范围",
+                        "level": 2,
+                        "annotation": "保留",
+                        "source": "template",
+                        "reason": "",
+                    },
+                    {
+                        "order": 4,
                         "number": "第二章",
                         "title": "技术方案",
                         "level": 1,
@@ -190,13 +199,16 @@ class DirectoryGenerationTests(unittest.TestCase):
         ):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
-        self.assertEqual(payload["summary"], "目录生成完成，共 3 条目录项（保留2，适配1）。")
+        self.assertEqual(payload["summary"], "目录生成完成，共 4 条目录项（保留3，适配1）。")
         self.assertEqual(payload["output"]["chapterCount"], 2)
         self.assertEqual(payload["opencodeOutput"]["skill"], "bid-toc-wiki-driven-v2")
         outline = store.get_outline_state(project_id)
         self.assertEqual(outline["nodes"][0]["title"], "第一章 项目概况")
         self.assertEqual(outline["nodes"][0]["children"][0]["title"], "项目背景")
         self.assertEqual(outline["nodes"][0]["children"][0]["annotation"], "适配")
+        self.assertEqual(outline["nodes"][0]["children"][0]["id"], "OL-1-1")
+        self.assertEqual(outline["nodes"][0]["children"][1]["id"], "OL-1-2")
+        self.assertEqual(outline["nodes"][1]["id"], "OL-2")
         self.assertEqual(outline["nodes"][0]["children"][0]["sourceRefs"][0]["type"], "wiki")
         self.assertEqual(outline["nodes"][0]["children"][0]["materialRefs"][0]["id"], "RAW-1")
 
@@ -341,6 +353,11 @@ class DirectoryGenerationTests(unittest.TestCase):
         prompt = captured["prompt"]
         self.assertIn("先按投标模板目录起基础目录", prompt)
         self.assertIn("再对照招标要求删改、补改", prompt)
+        self.assertIn("Bash 工具 timeout 必须设置为 600000", prompt)
+        self.assertIn("不要先检查工作目录", prompt)
+        self.assertIn("s2toc", prompt)
+        self.assertIn("/s2.json", prompt)
+        self.assertIn("不要改写命令或路径", prompt)
         self.assertIn("第1章 标前概述", prompt)
         self.assertIn("1.1 技术评分标准索引表", prompt)
         self.assertIn("第一章 项目概况", prompt)

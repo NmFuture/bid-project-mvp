@@ -1260,3 +1260,61 @@ bid_workspace
 - `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-04-27 15:56:04 post-commit c93abb0
+
+提交摘要：fix(ci): restore backend quality gate
+
+变更文件：
+
+- `.github/workflows/mvp-quality.yml`
+- `code/sewpg-bid-backend/app/services/material_store.py`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-04-27 22:01:10 post-commit 6d4e9df
+
+提交摘要：fix(s7): assemble large bid materials via skill
+
+变更文件：
+
+- `code/.env.airgap.example`
+- `code/.env.example`
+- `code/docker-compose.yml`
+- `code/sewpg-bid-backend/app/api/routes/generation.py`
+- `code/sewpg-bid-backend/app/core/config.py`
+- `code/sewpg-bid-backend/app/services/draft_generation.py`
+- `code/sewpg-bid-backend/app/services/opencode_client.py`
+- `code/sewpg-bid-backend/app/services/store.py`
+- `code/sewpg-bid-backend/app/services/tech_assembly.py`
+- `code/sewpg-bid-backend/onlyoffice/docker-entrypoint.sh`
+- `code/sewpg-bid-backend/opencode/Dockerfile`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/references/heading_style.json`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/references/style_spec.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/_merger_core.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/_postprocessor_reference.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/build_assembly.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/cleaner.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/finalize.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/fix_invalid_headings.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/init_params.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/merger.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/merger_v1.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/numbering_fixer.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/officecli_adapter.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/parse_toc.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/preprocess.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/verify.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/tools/clean_master_numbering.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/tools/create_tech_master.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/tools/docx_xml.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/tools/render_docx.py`
+- `code/sewpg-bid-backend/requirements.txt`
+- `code/sewpg-bid-backend/tests/test_fill_generation.py`
+- `code/sewpg-bid-backend/tests/test_gap_review_flow.py`
+- `code/sewpg-bid-backend/tests/test_onlyoffice_document.py`
+- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
