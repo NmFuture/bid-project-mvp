@@ -1269,9 +1269,12 @@ class MaterialStore:
                 return normalized_bid_type in bid_types and opposite_bid_type not in bid_types
 
             visible_node_ids: set[int] = set()
+            visible_node_order: list[int] = []
 
             def collect_visible(node: WikiNode) -> None:
-                visible_node_ids.add(int(node.id))
+                node_id_int = int(node.id)
+                visible_node_ids.add(node_id_int)
+                visible_node_order.append(node_id_int)
                 for child in children_by_parent.get(node.id, []):
                     collect_visible(child)
 
@@ -1292,11 +1295,14 @@ class MaterialStore:
             tree = [build_node(r) for r in roots]
 
             selected = None
-            selected_node_id = node_id
-            if not selected_node_id and roots:
-                selected_node_id = f"WIKI-{roots[0].id:04d}"
-            if selected_node_id:
-                numeric_id = int(selected_node_id.replace("WIKI-", ""))
+            selected_node_ids: list[int] = []
+            if node_id:
+                selected_node_ids.append(int(node_id.replace("WIKI-", "")))
+            selected_node_ids.extend(item for item in visible_node_order if item not in selected_node_ids)
+
+            for numeric_id in selected_node_ids:
+                if normalized_bid_type and numeric_id not in visible_node_ids:
+                    continue
                 if not normalized_bid_type or numeric_id in visible_node_ids:
                     doc_result = await session.execute(
                         select(WikiDoc).where(WikiDoc.node_id == numeric_id).options(selectinload(WikiDoc.node))
@@ -1312,6 +1318,7 @@ class MaterialStore:
                             )
                         ).scalars().all()
                         selected["attachments"] = [self._wiki_attachment_to_dict(item) for item in attachment_rows]
+                        break
 
             return {
                 "tree": tree,
