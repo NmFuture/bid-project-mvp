@@ -65,18 +65,20 @@ class PeripheralStore:
     def reset(self) -> None:
         self._id_counter = itertools.count(1)
         self._raw_base_paths = {
-            "标准模板/技术标",
-            "标准模板/商务标",
-            "客户定制/华能集团/通用材料",
-            "客户定制/大唐集团/通用材料",
-            "项目定制/PRJ-0001/技术标",
-            "项目定制/PRJ-0001/商务标",
+            "通用素材/技术标",
+            "通用素材/商务标",
+            "客户素材/华能集团/技术标",
+            "客户素材/华能集团/商务标",
+            "客户素材/大唐集团/技术标",
+            "客户素材/大唐集团/商务标",
+            "项目素材/PRJ-0001/技术标",
+            "项目素材/PRJ-0001/商务标",
         }
         self._raw_custom_folders: set[str] = set()
         self._raw_files = [
             self._make_raw_file(
                 name="技术标模板.docx",
-                folder_path="标准模板/技术标",
+                folder_path="通用素材/技术标",
                 size=156_000,
                 bid_type="技术标",
                 project_id="",
@@ -87,9 +89,9 @@ class PeripheralStore:
             ),
             self._make_raw_file(
                 name="风机参数表.xlsx",
-                folder_path="客户定制/华能集团/通用材料",
+                folder_path="客户素材/华能集团/技术标",
                 size=86_000,
-                bid_type="通用",
+                bid_type="技术标",
                 project_id="",
                 customer_name="华能集团",
                 version=2,
@@ -98,7 +100,7 @@ class PeripheralStore:
             ),
             self._make_raw_file(
                 name="测风塔原始数据.zip",
-                folder_path="项目定制/PRJ-0001/技术标",
+                folder_path="项目素材/PRJ-0001/技术标",
                 size=8_600_000,
                 bid_type="技术标",
                 project_id="PRJ-0001",
@@ -138,7 +140,7 @@ class PeripheralStore:
         self._structured_import_history: list[dict[str, Any]] = []
         self._structured_latest_receipt: dict[str, Any] | None = None
 
-        self._wiki_tag_options = ["风资源", "技术标", "商务标", "通用材料"]
+        self._wiki_tag_options = ["技术标", "商务标", "通用素材", "客户素材", "项目素材", "日志"]
         self._wiki_type_options = ["技术标", "商务标", "通用"]
         self._wiki_tree = [
             {
@@ -426,9 +428,9 @@ class PeripheralStore:
         return {
             "role": normalized,
             "rules": [
-                {"pathPrefix": "标准模板", "actions": editable_actions},
-                {"pathPrefix": "客户定制/*/通用材料", "actions": editable_actions},
-                {"pathPrefix": "项目定制", "actions": editable_actions},
+                {"pathPrefix": "通用素材", "actions": editable_actions},
+                {"pathPrefix": "客户素材", "actions": editable_actions},
+                {"pathPrefix": "项目素材", "actions": editable_actions},
             ],
         }
 
@@ -472,7 +474,7 @@ class PeripheralStore:
         clean_id = safe_segment(project_id, "")
         if not clean_id:
             raise PeripheralError(400, "projectId 不能为空。", "PROJECT_ID_REQUIRED")
-        root_path = f"项目定制/{clean_id}/{bid_type or '技术标'}"
+        root_path = f"项目素材/{clean_id}/{bid_type or '技术标'}"
         self._raw_custom_folders.add(root_path)
         return {
             "message": "项目目录骨架初始化完成。",
@@ -561,7 +563,7 @@ class PeripheralStore:
         if not target_path:
             if not project_id:
                 raise PeripheralError(400, "请提供目标目录或项目 ID。", "RAW_TARGET_PATH_REQUIRED")
-            target_path = f"项目定制/{safe_segment(project_id, 'PRJ-UNSET')}/{bid_type or '技术标'}"
+            target_path = f"项目素材/{safe_segment(project_id, 'PRJ-UNSET')}/{bid_type or '技术标'}"
         folder_path = self._ensure_folder(target_path)
 
         uploaded_items: list[dict[str, Any]] = []

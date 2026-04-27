@@ -55,7 +55,7 @@ class PeripheralRoutesTests(unittest.TestCase):
 
         create_folder = self.client.post(
             "/api/materials/raw/folders",
-            json={"parentPath": "项目定制/PRJ-TEST/技术标", "folderName": "补充资料"},
+            json={"parentPath": "项目素材/PRJ-TEST/技术标", "folderName": "补充资料"},
         )
         self.assertEqual(create_folder.status_code, 200)
         folder_path = create_folder.json()["folderPath"]
@@ -96,7 +96,7 @@ class PeripheralRoutesTests(unittest.TestCase):
     def test_raw_material_library_supports_folder_upload(self) -> None:
         create_folder = self.client.post(
             "/api/materials/raw/folders",
-            json={"parentPath": "标准模板/技术标", "folderName": "目录上传测试"},
+            json={"parentPath": "通用素材/技术标", "folderName": "目录上传测试"},
         )
         self.assertEqual(create_folder.status_code, 200)
         folder_path = create_folder.json()["folderPath"]

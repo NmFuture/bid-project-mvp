@@ -10,6 +10,16 @@ from sqlalchemy.orm import backref, relationship
 from app.models import Base
 
 
+def _size_label(size: int) -> str:
+    if size <= 0:
+        return ""
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / 1024 / 1024:.2f} MB"
+
+
 class RawFolder(Base):
     __tablename__ = "raw_folders"
 
@@ -64,6 +74,7 @@ class RawFile(Base):
 
     def to_dict(self) -> dict[str, Any]:
         size = self.size_bytes or 0
+        ext = self.ext_fields or {}
         if size < 1024:
             size_label = f"{size} B"
         elif size < 1024 * 1024:
@@ -81,12 +92,33 @@ class RawFile(Base):
             "type": suffix,
             "size": size,
             "sizeLabel": size_label,
-            "bidType": self.ext_fields.get("bidType") if self.ext_fields else "",
-            "projectId": self.ext_fields.get("projectId") if self.ext_fields else "",
-            "customerName": self.ext_fields.get("customerName") if self.ext_fields else "",
+            "bidType": ext.get("bidType") or "",
+            "projectId": ext.get("projectId") or "",
+            "projectCode": ext.get("projectCode") or "",
+            "projectName": ext.get("projectName") or "",
+            "customerName": ext.get("customerName") or "",
+            "customerId": ext.get("customerId") or "",
+            "customerCanonicalName": ext.get("customerCanonicalName") or "",
+            "customerAliases": ext.get("customerAliases") or [],
+            "identityScope": ext.get("identityScope") or "",
+            "identityDisplay": ext.get("identityDisplay") or "",
+            "materialTier": ext.get("materialTier") or (self.folder.tier if self.folder else ""),
+            "materialTierLabel": ext.get("materialTierLabel") or "",
             "version": self.version,
-            "lastAction": self.ext_fields.get("lastAction") if self.ext_fields else "upload",
-            "lastOperator": self.ext_fields.get("lastOperator") if self.ext_fields else "",
+            "lastAction": ext.get("lastAction") or "upload",
+            "lastOperator": ext.get("lastOperator") or "",
+            "sourceRelativePath": ext.get("sourceRelativePath") or self.name,
+            "sourceRootFolder": ext.get("sourceRootFolder") or "",
+            "cleanStatus": ext.get("cleanStatus") or "pending",
+            "cleanMessage": ext.get("cleanMessage") or "",
+            "cleanResultStatus": ext.get("cleanResultStatus") or "",
+            "cleanUpdatedAt": ext.get("cleanUpdatedAt") or "",
+            "cleanedFileName": ext.get("cleanedFileName") or "",
+            "cleanedSize": ext.get("cleanedSize") or 0,
+            "cleanedSizeLabel": _size_label(int(ext.get("cleanedSize") or 0)),
+            "cleanedAt": ext.get("cleanedAt") or "",
+            "hasCleanedWord": bool(ext.get("cleanedMinioKey")),
+            "cleanedDownloadUrl": f"/api/materials/raw/RAW-{self.id:04d}/cleaned/content" if ext.get("cleanedMinioKey") else "",
             "updatedAt": self.updated_at.isoformat() if self.updated_at else "",
         }
 

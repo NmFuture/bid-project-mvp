@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.config import settings
+from app.services.identity import build_project_identity
 
 
 STAGE_NAMES = {
@@ -158,7 +159,7 @@ class AppStore:
         with closing(self._connect()) as connection:
             rows = connection.execute("SELECT id, payload FROM projects").fetchall()
         self._projects = {
-            str(row["id"]): json.loads(str(row["payload"]))
+            str(row["id"]): self._normalize_project_identity(json.loads(str(row["payload"])))
             for row in rows
         }
 
@@ -169,7 +170,7 @@ class AppStore:
         if row is None:
             self._projects.pop(project_id, None)
             return None
-        project = json.loads(str(row["payload"]))
+        project = self._normalize_project_identity(json.loads(str(row["payload"])))
         self._projects[project_id] = project
         return project
 
@@ -196,6 +197,22 @@ class AppStore:
             connection.commit()
 
     @staticmethod
+    def _normalize_project_identity(project: dict[str, Any]) -> dict[str, Any]:
+        project_id = str(project.get("id") or "")
+        project["projectCode"] = str(project.get("projectCode") or project_id)
+        identity = build_project_identity(project)
+        project["identity"] = identity
+        project["customerId"] = identity.get("customerId") or ""
+        project["customerCanonicalName"] = identity.get("customerCanonicalName") or ""
+        project["materialCustomerId"] = identity.get("customerId") or ""
+        project["materialCustomerName"] = identity.get("customerCanonicalName") or ""
+        project["materialProjectId"] = identity.get("projectId") or ""
+        project["materialProjectCode"] = identity.get("projectCode") or ""
+        project["materialProjectName"] = identity.get("projectName") or ""
+        project["materialProjectMode"] = identity.get("materialProjectMode") or project.get("materialProjectMode") or ""
+        return project
+
+    @staticmethod
     def format_size(size_bytes: int) -> str:
         if size_bytes <= 0:
             return "0 MB"
@@ -219,14 +236,26 @@ class AppStore:
         return project
 
     def _summary(self, project: dict[str, Any]) -> dict[str, Any]:
+        project = self._normalize_project_identity(project)
+        identity = project.get("identity") or {}
         review_decision = str(project.get("reviewDecision") or "participate")
         if review_decision not in REVIEW_DECISION_LABELS:
             review_decision = "pending"
         stage_label = "审核终止" if review_decision == "abandon" else STAGE_NAMES[project["currentStage"]]
         return {
             "id": project["id"],
+            "projectCode": project.get("projectCode") or project["id"],
             "name": project["name"],
             "customerName": project["customerName"],
+            "customerId": identity.get("customerId") or "",
+            "customerCanonicalName": identity.get("customerCanonicalName") or "",
+            "customerAliases": copy.deepcopy(identity.get("customerAliases") or []),
+            "materialCustomerId": project.get("materialCustomerId") or identity.get("customerId") or "",
+            "materialCustomerName": project.get("materialCustomerName") or identity.get("customerCanonicalName") or "",
+            "materialProjectId": project.get("materialProjectId") or identity.get("projectId") or "",
+            "materialProjectCode": project.get("materialProjectCode") or identity.get("projectCode") or "",
+            "materialProjectName": project.get("materialProjectName") or identity.get("projectName") or "",
+            "materialProjectMode": project.get("materialProjectMode") or identity.get("materialProjectMode") or "",
             "owner": project["owner"],
             "manager": project["manager"],
             "deadline": project["deadline"],
@@ -237,6 +266,7 @@ class AppStore:
             "reviewDecisionLabel": REVIEW_DECISION_LABELS[review_decision],
             "reviewDecidedAt": project.get("reviewDecidedAt") or "",
             "updatedAt": project["updatedAt"],
+            "identity": copy.deepcopy(identity),
         }
 
     def _detail(self, project: dict[str, Any]) -> dict[str, Any]:
@@ -279,8 +309,17 @@ class AppStore:
             review_decision = "pending"
         project = {
             "id": project_id,
+            "projectCode": str(data.get("projectCode") or project_id),
             "name": str(data.get("name") or project_id),
             "customerName": str(data.get("customerName") or ""),
+            "customerId": str(data.get("customerId") or ""),
+            "customerCanonicalName": str(data.get("customerCanonicalName") or ""),
+            "materialCustomerId": str(data.get("materialCustomerId") or data.get("customerId") or ""),
+            "materialCustomerName": str(data.get("materialCustomerName") or data.get("customerCanonicalName") or data.get("customerName") or ""),
+            "materialProjectMode": str(data.get("materialProjectMode") or ""),
+            "materialProjectId": str(data.get("materialProjectId") or ""),
+            "materialProjectCode": str(data.get("materialProjectCode") or ""),
+            "materialProjectName": str(data.get("materialProjectName") or data.get("name") or ""),
             "owner": str(data.get("owner") or data.get("customerName") or ""),
             "manager": str(data.get("manager") or ""),
             "deadline": str(data.get("deadline") or ""),
@@ -388,6 +427,7 @@ class AppStore:
                 "documentKey": f"{project_id}-s6-v1",
             },
         }
+        self._normalize_project_identity(project)
         self._projects[project_id] = project
         self._persist_project(project)
         return self._detail(project)
@@ -397,9 +437,25 @@ class AppStore:
 
     def update_project(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
         project = self._require(project_id)
-        for field in ["name", "customerName", "owner", "manager", "deadline", "bidType"]:
+        for field in [
+            "name",
+            "projectCode",
+            "customerName",
+            "customerId",
+            "customerCanonicalName",
+            "materialCustomerId",
+            "materialCustomerName",
+            "materialProjectMode",
+            "materialProjectId",
+            "materialProjectCode",
+            "materialProjectName",
+            "owner",
+            "manager",
+            "deadline",
+            "bidType",
+        ]:
             if field in data:
-                project[field] = data[field]
+                project[field] = str(data[field] or "") if field == "projectCode" else data[field]
         if "reviewDecision" in data:
             decision = str(data.get("reviewDecision") or "").strip().lower()
             if decision not in REVIEW_DECISION_LABELS:
@@ -408,6 +464,7 @@ class AppStore:
             project["reviewDecidedAt"] = now_iso() if decision in {"participate", "abandon"} else ""
         if "reviewComment" in data:
             project["reviewComment"] = str(data.get("reviewComment") or "")
+        self._normalize_project_identity(project)
         project["updatedAt"] = now_iso()
         self._persist_project(project)
         return self._detail(project)
@@ -862,7 +919,7 @@ class AppStore:
                 "missingId": missing_id,
                 "fileId": f"raw-{project_id}-{len(gap_state['submissions']) + index}",
                 "fileName": file_name,
-                "storedPath": f"项目定制/{project_id}/{str(data.get('bidType') or item.get('bidType') or '技术标')}",
+                "storedPath": f"项目素材/{project_id}/{str(data.get('bidType') or item.get('bidType') or '技术标')}",
                 "action": "upload",
                 "operator": str(data.get('operator') or "当前用户"),
                 "submittedAt": timestamp,

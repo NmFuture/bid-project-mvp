@@ -64,9 +64,18 @@ async def project_cockpit(project_id: str) -> dict[str, Any]:
 @router.get("/api/projects/{project_id}/materials-path")
 async def project_materials_path(project_id: str) -> dict[str, Any]:
     project = store.get_project(project_id)
+    identity = project.get("identity") or {}
+    material_project_code = str(identity.get("projectCode") or project.get("projectCode") or project["id"])
+    material_project_id = str(identity.get("projectId") or project["id"])
     return {
         "projectId": project["id"],
-        "path": f"项目定制/{project['id']}/{project['bidType']}",
+        "bidProjectId": project["id"],
+        "bidProjectCode": project.get("projectCode") or project["id"],
+        "materialProjectId": material_project_id,
+        "materialProjectCode": material_project_code,
+        "projectCode": material_project_code,
+        "identity": identity,
+        "path": f"项目素材/{material_project_id}/{project['bidType']}",
     }
 
 

@@ -16,8 +16,8 @@ CREATE TABLE raw_folders (
     path        TEXT NOT NULL,
     tier        VARCHAR(20) NOT NULL CHECK (tier IN ('standard', 'customer', 'project')),
     bid_type    VARCHAR(20),                    -- 技术标 / 商务标 / 通用
-    customer_name VARCHAR(200),                 -- 客户定制层用
-    project_id  VARCHAR(50),                    -- 项目定制层用
+    customer_name VARCHAR(200),                 -- 客户素材层用
+    project_id  VARCHAR(50),                    -- 项目素材层用
     sort_order  INT DEFAULT 0,
     created_at  TIMESTAMPTZ DEFAULT NOW(),
     updated_at  TIMESTAMPTZ DEFAULT NOW()
@@ -196,17 +196,19 @@ CREATE INDEX idx_audit_module_target ON audit_log (module_id, target);
 -- Raw folders seed
 INSERT INTO raw_folders (id, parent_id, name, path, tier, bid_type, customer_name, project_id, sort_order)
 VALUES
-    (1, NULL, '标准模板', '标准模板', 'standard', NULL, NULL, NULL, 1),
-    (2, 1, '技术标', '标准模板/技术标', 'standard', '技术标', '平台标准', NULL, 1),
-    (3, 1, '商务标', '标准模板/商务标', 'standard', '商务标', '平台标准', NULL, 2),
-    (4, NULL, '客户定制', '客户定制', 'customer', NULL, NULL, NULL, 2),
-    (5, 4, '华能集团', '客户定制/华能集团', 'customer', NULL, '华能集团', NULL, 1),
-    (6, 5, '通用材料', '客户定制/华能集团/通用材料', 'customer', '通用', '华能集团', NULL, 1),
-    (7, 4, '大唐集团', '客户定制/大唐集团', 'customer', NULL, '大唐集团', NULL, 2),
-    (8, 7, '通用材料', '客户定制/大唐集团/通用材料', 'customer', '通用', '大唐集团', NULL, 1),
-    (9, NULL, '项目定制', '项目定制', 'project', NULL, NULL, NULL, 3);
+    (1, NULL, '通用素材', '通用素材', 'standard', NULL, NULL, NULL, 1),
+    (2, 1, '技术标', '通用素材/技术标', 'standard', '技术标', '平台标准', NULL, 1),
+    (3, 1, '商务标', '通用素材/商务标', 'standard', '商务标', '平台标准', NULL, 2),
+    (4, NULL, '客户素材', '客户素材', 'customer', NULL, NULL, NULL, 2),
+    (5, 4, '华能集团', '客户素材/华能集团', 'customer', NULL, '华能集团', NULL, 1),
+    (6, 5, '技术标', '客户素材/华能集团/技术标', 'customer', '技术标', '华能集团', NULL, 1),
+    (7, 4, '大唐集团', '客户素材/大唐集团', 'customer', NULL, '大唐集团', NULL, 2),
+    (8, 7, '技术标', '客户素材/大唐集团/技术标', 'customer', '技术标', '大唐集团', NULL, 1),
+    (9, NULL, '项目素材', '项目素材', 'project', NULL, NULL, NULL, 3),
+    (10, 5, '商务标', '客户素材/华能集团/商务标', 'customer', '商务标', '华能集团', NULL, 2),
+    (11, 7, '商务标', '客户素材/大唐集团/商务标', 'customer', '商务标', '大唐集团', NULL, 2);
 
-SELECT setval('raw_folders_id_seq', 9);
+SELECT setval('raw_folders_id_seq', 11);
 
 -- Structured tables seed
 INSERT INTO structured_tables (id, table_key, table_label, schema_def)

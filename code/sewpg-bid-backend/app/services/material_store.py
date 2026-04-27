@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import base64
 import copy
+import logging
 import re
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import desc, func, select, text
+from sqlalchemy import desc, func, or_, select, text
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
@@ -27,6 +28,16 @@ from app.models.materials import (
 )
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
+from app.services.identity import (
+    CUSTOMER_REGISTRY,
+    canonical_customer,
+    classify_material_path,
+    customer_matches,
+    material_identity,
+    project_matches,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def now_display() -> str:
@@ -64,6 +75,46 @@ PLATFORM_WIKI_SECTION_TITLES = {
     "通用卡片",
     "项目级Wiki模板",
 }
+
+MATERIAL_TIER_VALUES = {"standard", "customer", "project"}
+MATERIAL_TIER_LABELS = {
+    "standard": "通用素材",
+    "customer": "客户素材",
+    "project": "项目素材",
+}
+CLEANABLE_MATERIAL_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm", ".docx", ".doc"}
+RAW_MATERIAL_ROOTS = (
+    {"name": "通用素材", "tier": "standard", "sort_order": 1},
+    {"name": "客户素材", "tier": "customer", "sort_order": 2},
+    {"name": "项目素材", "tier": "project", "sort_order": 3},
+)
+RAW_MATERIAL_ROOT_TIERS = {str(item["name"]): str(item["tier"]) for item in RAW_MATERIAL_ROOTS}
+
+
+def normalize_material_tier(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if text in MATERIAL_TIER_VALUES:
+        return text
+    aliases = {
+        "通用": "standard",
+        "通用素材": "standard",
+        "标准": "standard",
+        "标准模板": "standard",
+        "客户": "customer",
+        "客户素材": "customer",
+        "客户定制": "customer",
+        "项目": "project",
+        "项目素材": "project",
+        "项目定制": "project",
+    }
+    return aliases.get(text, "")
+
+
+def clean_status_for_new_file(file_name: str) -> tuple[str, str]:
+    suffix = PurePosixPath(str(file_name or "")).suffix.lower()
+    if suffix in CLEANABLE_MATERIAL_SUFFIXES:
+        return "pending", "等待清洗转换为 Word。"
+    return "failed", "当前格式暂不支持自动清洗转换。"
 
 
 class MaterialStore:
@@ -141,6 +192,60 @@ class MaterialStore:
     def _wiki_attachment_key(node_id: int, file_name: str) -> str:
         return f"wiki/{node_id}/{uuid4().hex}-{file_name}"
 
+    @staticmethod
+    def _cleaned_object_key(file_id: int, file_name: str) -> str:
+        stem = PurePosixPath(safe_segment(PurePosixPath(file_name).stem, f"RAW-{file_id:04d}")).stem
+        return f"cleaned/RAW-{file_id:04d}/{uuid4().hex}-{stem}.docx"
+
+    @staticmethod
+    def _infer_material_tier_from_folder(folder: RawFolder | None) -> str:
+        if folder is None:
+            return "project"
+        tier = normalize_material_tier(str(folder.tier or ""))
+        if tier:
+            return tier
+        path = str(folder.path or "")
+        if path.startswith(("通用素材", "标准模板")):
+            return "standard"
+        if path.startswith(("客户素材", "客户定制")):
+            return "customer"
+        return "project"
+
+    @staticmethod
+    def _remove_cleaned_object_from_ext(ext: dict[str, Any]) -> None:
+        bucket = str(ext.get("cleanedMinioBucket") or settings.minio_buckets["materials"])
+        key = str(ext.get("cleanedMinioKey") or "")
+        if not key:
+            return
+        try:
+            minio_client.remove_object(bucket, key)
+        except Exception as exc:  # pragma: no cover - MinIO cleanup must not block DB mutations
+            logger.warning("Failed to remove cleaned material object %s/%s: %s", bucket, key, exc)
+
+    @staticmethod
+    def _enqueue_cleaning_job(file_id: int) -> dict[str, Any]:
+        from app.services.job_queue import enqueue_generation_job
+
+        raw_id = f"RAW-{file_id:04d}"
+        try:
+            result = enqueue_generation_job("material_cleaning", raw_id, {"fileId": raw_id})
+        except Exception as exc:  # pragma: no cover - queue outages should not fail uploads
+            logger.warning("Failed to enqueue material cleaning job for %s: %s", raw_id, exc)
+            return {"queued": False, "unavailable": True, "message": str(exc)}
+        return {
+            "queued": result.queued,
+            "jobId": result.job_id,
+            "locked": result.locked,
+            "unavailable": result.unavailable,
+        }
+
+    @staticmethod
+    def _bid_type_for_wiki_root(root_title: str) -> str:
+        title = str(root_title or "")
+        if title.startswith("商务标"):
+            return "商务标"
+        return "技术标"
+
     async def _archive_raw_file_version(self, session: Any, item: RawFile) -> None:
         await self._ensure_runtime_tables(session)
         session.add(
@@ -160,6 +265,10 @@ class MaterialStore:
             await session.execute(select(RawFileVersion).where(RawFileVersion.file_id == item.id))
         ).scalars().all()
         keys = {(str(item.minio_bucket or settings.minio_buckets["materials"]), str(item.minio_key or ""))}
+        ext = item.ext_fields or {}
+        cleaned_key = str(ext.get("cleanedMinioKey") or "")
+        if cleaned_key:
+            keys.add((str(ext.get("cleanedMinioBucket") or settings.minio_buckets["materials"]), cleaned_key))
         keys.update(
             (str(item.minio_bucket or settings.minio_buckets["materials"]), str(version.minio_key or ""))
             for version in version_rows
@@ -190,15 +299,18 @@ class MaterialStore:
         return {
             "role": normalized,
             "rules": [
-                {"pathPrefix": "标准模板", "actions": editable_actions},
-                {"pathPrefix": "客户定制/*/通用材料", "actions": editable_actions},
-                {"pathPrefix": "项目定制", "actions": editable_actions},
+                {"pathPrefix": "通用素材", "label": "通用素材", "actions": editable_actions},
+                {"pathPrefix": "客户素材", "label": "客户素材", "actions": editable_actions},
+                {"pathPrefix": "项目素材", "label": "项目素材", "actions": editable_actions},
             ],
         }
 
     async def raw_tree(self) -> dict[str, Any]:
         async with async_session() as session:
-            folders_result = await session.execute(select(RawFolder).order_by(RawFolder.sort_order))
+            root_folders = await self._ensure_raw_material_roots(session)
+            await session.commit()
+
+            folders_result = await session.execute(select(RawFolder).order_by(RawFolder.sort_order, RawFolder.id))
             all_folders = folders_result.scalars().all()
 
             files_result = await session.execute(select(RawFile))
@@ -213,20 +325,159 @@ class MaterialStore:
                 if f.parent_id is not None:
                     children_by_parent.setdefault(f.parent_id, []).append(f)
 
+            def subtree_file_count(folder: RawFolder) -> int:
+                child_folders = children_by_parent.get(folder.id, [])
+                return len(files_by_folder.get(folder.id, [])) + sum(subtree_file_count(child) for child in child_folders)
+
             def build_node(folder: RawFolder) -> dict[str, Any]:
                 child_folders = children_by_parent.get(folder.id, [])
-                file_count = len(files_by_folder.get(folder.id, []))
-                child_count = sum(len(files_by_folder.get(c.id, [])) for c in child_folders)
                 return {
                     "id": folder.path,
                     "name": folder.name,
                     "path": folder.path,
-                    "fileCount": file_count + child_count,
+                    "fileCount": subtree_file_count(folder),
                     "children": [build_node(c) for c in child_folders],
                 }
 
-            roots = [f for f in all_folders if f.parent_id is None]
+            folders_by_path = {str(folder.path or ""): folder for folder in all_folders}
+            roots = [folders_by_path.get(str(root.path or "")) or root for root in root_folders]
             return {"tree": [build_node(r) for r in roots], "updatedAt": now_display()}
+
+    async def identity_options(self, bid_type: str = "") -> dict[str, Any]:
+        normalized_bid_type = bid_type if bid_type in {"技术标", "商务标"} else ""
+
+        def sort_key(item: dict[str, Any]) -> str:
+            return str(item.get("name") or item.get("projectName") or item.get("customerCanonicalName") or "")
+
+        customers: dict[str, dict[str, Any]] = {}
+        projects: dict[str, dict[str, Any]] = {}
+
+        def add_customer(
+            *,
+            customer_id: str = "",
+            name: str = "",
+            aliases: list[str] | None = None,
+            source: str = "material",
+        ) -> None:
+            candidate = canonical_customer(name)
+            clean_id = str(customer_id or candidate.get("customerId") or "").strip()
+            clean_name = str(name or candidate.get("customerCanonicalName") or clean_id).strip()
+            if not clean_id and not clean_name:
+                return
+            clean_id = clean_id or str(candidate.get("customerId") or "")
+            existing = customers.get(clean_id) or {}
+            merged_aliases = []
+            for alias in [
+                *(existing.get("aliases") or []),
+                *(aliases or []),
+                *(candidate.get("customerAliases") or []),
+                clean_name,
+            ]:
+                text = str(alias or "").strip()
+                if text and text not in merged_aliases:
+                    merged_aliases.append(text)
+            customers[clean_id] = {
+                "id": clean_id,
+                "customerId": clean_id,
+                "name": clean_name or existing.get("name") or clean_id,
+                "customerCanonicalName": clean_name or existing.get("customerCanonicalName") or clean_id,
+                "aliases": merged_aliases,
+                "source": source if not existing.get("source") else existing["source"],
+            }
+
+        def add_project(
+            *,
+            project_id: str = "",
+            project_code: str = "",
+            project_name: str = "",
+            customer_id: str = "",
+            customer_name: str = "",
+            item_bid_type: str = "",
+            source: str = "material",
+        ) -> None:
+            clean_project_id = str(project_id or "").strip()
+            if not clean_project_id:
+                return
+            clean_project_code = str(project_code or clean_project_id).strip()
+            clean_project_name = str(project_name or clean_project_code or clean_project_id).strip()
+            if normalized_bid_type and item_bid_type and item_bid_type not in {normalized_bid_type, "通用"}:
+                return
+            customer = canonical_customer(customer_name)
+            clean_customer_id = str(customer_id or customer.get("customerId") or "").strip()
+            clean_customer_name = str(customer_name or customer.get("customerCanonicalName") or "").strip()
+            if clean_customer_id or clean_customer_name:
+                add_customer(
+                    customer_id=clean_customer_id,
+                    name=clean_customer_name,
+                    aliases=list(customer.get("customerAliases") or []),
+                    source=source,
+                )
+            existing = projects.get(clean_project_id) or {}
+            projects[clean_project_id] = {
+                "id": clean_project_id,
+                "projectId": clean_project_id,
+                "projectCode": clean_project_code or existing.get("projectCode") or clean_project_id,
+                "name": clean_project_name or existing.get("name") or clean_project_id,
+                "projectName": clean_project_name or existing.get("projectName") or clean_project_id,
+                "customerId": clean_customer_id or existing.get("customerId") or "",
+                "customerName": clean_customer_name or existing.get("customerName") or "",
+                "customerCanonicalName": clean_customer_name or existing.get("customerCanonicalName") or "",
+                "bidType": item_bid_type or existing.get("bidType") or "",
+                "source": source if not existing.get("source") else existing["source"],
+            }
+
+        for item in CUSTOMER_REGISTRY:
+            if item["customerId"] == "CUST-SEWPG":
+                continue
+            add_customer(
+                customer_id=str(item["customerId"]),
+                name=str(item["customerCanonicalName"]),
+                aliases=list(item["customerAliases"]),
+                source="registry",
+            )
+
+        async with async_session() as session:
+            await self._ensure_runtime_tables(session)
+            await self._ensure_raw_material_roots(session)
+            await session.commit()
+            folders = (await session.execute(select(RawFolder))).scalars().all()
+            files = (await session.execute(select(RawFile))).scalars().all()
+
+            for folder in folders:
+                location = classify_material_path(folder.path, str(folder.bid_type or normalized_bid_type or "技术标"))
+                folder_tier = normalize_material_tier(str(folder.tier or location.get("materialTier") or ""))
+                if folder_tier == "customer":
+                    add_customer(name=str(folder.customer_name or location.get("customerName") or ""))
+                elif folder_tier == "project":
+                    add_project(
+                        project_id=str(folder.project_id or location.get("projectId") or ""),
+                        item_bid_type=str(folder.bid_type or location.get("bidType") or ""),
+                    )
+
+            for raw_file in files:
+                ext = raw_file.ext_fields or {}
+                item_tier = normalize_material_tier(str(ext.get("materialTier") or ""))
+                item_bid_type = str(ext.get("bidType") or "")
+                if item_tier == "customer":
+                    add_customer(
+                        customer_id=str(ext.get("customerId") or ""),
+                        name=str(ext.get("customerCanonicalName") or ext.get("customerName") or ""),
+                        aliases=list(ext.get("customerAliases") or []),
+                    )
+                elif item_tier == "project":
+                    add_project(
+                        project_id=str(ext.get("projectId") or ""),
+                        project_code=str(ext.get("projectCode") or ""),
+                        project_name=str(ext.get("projectName") or ""),
+                        customer_id=str(ext.get("customerId") or ""),
+                        customer_name=str(ext.get("customerCanonicalName") or ext.get("customerName") or ""),
+                        item_bid_type=item_bid_type,
+                    )
+
+        return {
+            "customers": sorted(customers.values(), key=sort_key),
+            "projects": sorted(projects.values(), key=sort_key),
+        }
 
     async def raw_files(
         self,
@@ -235,14 +486,22 @@ class MaterialStore:
         project_id: str = "",
         customer_name: str = "",
         bid_type: str = "",
+        material_tier: str = "",
+        clean_status: str = "",
         keyword: str = "",
         page: int = 1,
         page_size: int = 20,
     ) -> dict[str, Any]:
         async with async_session() as session:
             stmt = select(RawFile).options(selectinload(RawFile.folder))
-            if folder_path:
-                stmt = stmt.join(RawFolder).where(RawFolder.path == folder_path)
+            normalized_folder_path = str(folder_path or "").strip().strip("/")
+            if normalized_folder_path:
+                stmt = stmt.join(RawFolder).where(
+                    or_(
+                        RawFolder.path == normalized_folder_path,
+                        RawFolder.path.like(f"{normalized_folder_path}/%"),
+                    )
+                )
             if keyword:
                 stmt = stmt.where(RawFile.name.ilike(f"%{keyword}%"))
             stmt = stmt.order_by(desc(RawFile.updated_at))
@@ -253,12 +512,23 @@ class MaterialStore:
             filtered = []
             for item in items:
                 ext = item.ext_fields or {}
-                if project_id and ext.get("projectId") != project_id:
+                if project_id and not project_matches(project_id, ext):
                     continue
-                if customer_name and customer_name not in str(ext.get("customerName") or ""):
+                if customer_name and not customer_matches(customer_name, ext):
                     continue
-                if bid_type and ext.get("bidType") != bid_type:
+                item_bid_type = str(ext.get("bidType") or "")
+                if bid_type in {"技术标", "商务标"} and item_bid_type not in {bid_type, "通用"}:
                     continue
+                if bid_type and bid_type not in {"技术标", "商务标"} and item_bid_type != bid_type:
+                    continue
+                normalized_tier = normalize_material_tier(material_tier)
+                item_tier = str(ext.get("materialTier") or (item.folder.tier if item.folder else ""))
+                if normalized_tier and item_tier != normalized_tier:
+                    continue
+                normalized_clean_status = str(clean_status or "").strip()
+                if normalized_clean_status and normalized_clean_status != "all":
+                    if str(ext.get("cleanStatus") or "") != normalized_clean_status:
+                        continue
                 filtered.append(item)
 
             total = len(filtered)
@@ -275,7 +545,7 @@ class MaterialStore:
         clean_id = safe_segment(project_id, "")
         if not clean_id:
             raise PeripheralError(400, "projectId 不能为空。", "PROJECT_ID_REQUIRED")
-        root_path = f"项目定制/{clean_id}/{bid_type or '技术标'}"
+        root_path = f"项目素材/{clean_id}/{bid_type or '技术标'}"
 
         async with async_session() as session:
             # Check if exists
@@ -284,13 +554,102 @@ class MaterialStore:
                 return {"message": "项目目录骨架已存在。", "payload": {"projectId": clean_id, "path": root_path}}
 
             # Find or create parent chain
-            project_root = f"项目定制/{clean_id}"
-            parent = await self._ensure_folder_path(session, "项目定制", None, "project", None, None, 0)
+            parent = await self._ensure_folder_path(session, "项目素材", None, "project", None, None, 0)
             project_folder = await self._ensure_folder_path(session, clean_id, parent.id, "project", None, clean_id, 0)
             await self._ensure_folder_path(session, bid_type or "技术标", project_folder.id, "project", bid_type, clean_id, 0)
             await session.commit()
 
         return {"message": "项目目录骨架初始化完成。", "payload": {"projectId": clean_id, "path": root_path}}
+
+    async def _ensure_material_target_folder(
+        self,
+        session: Any,
+        *,
+        material_tier: str,
+        bid_type: str,
+        customer_name: str = "",
+        project_id: str = "",
+    ) -> RawFolder:
+        tier = normalize_material_tier(material_tier) or "project"
+        normalized_bid_type = bid_type if bid_type in {"技术标", "商务标", "通用"} else "技术标"
+
+        if tier == "standard":
+            root = await self._ensure_folder_path(session, "通用素材", None, "standard", None, None, 1)
+            return await self._ensure_folder_path(
+                session,
+                normalized_bid_type,
+                root.id,
+                "standard",
+                normalized_bid_type,
+                None,
+                1 if normalized_bid_type == "技术标" else 2,
+                customer_name="平台标准",
+            )
+
+        if tier == "customer":
+            clean_customer = safe_segment(customer_name, "")
+            if not clean_customer:
+                raise PeripheralError(400, "客户素材必须填写客户名称。", "CUSTOMER_NAME_REQUIRED")
+            root = await self._ensure_folder_path(session, "客户素材", None, "customer", None, None, 2)
+            customer = await self._ensure_folder_path(
+                session,
+                clean_customer,
+                root.id,
+                "customer",
+                None,
+                None,
+                0,
+                customer_name=clean_customer,
+            )
+            return await self._ensure_folder_path(
+                session,
+                normalized_bid_type,
+                customer.id,
+                "customer",
+                normalized_bid_type,
+                None,
+                0,
+                customer_name=clean_customer,
+            )
+
+        clean_project_id = safe_segment(project_id, "")
+        if not clean_project_id:
+            raise PeripheralError(400, "项目素材必须填写项目 ID。", "PROJECT_ID_REQUIRED")
+        root = await self._ensure_folder_path(session, "项目素材", None, "project", None, None, 3)
+        project = await self._ensure_folder_path(
+            session,
+            clean_project_id,
+            root.id,
+            "project",
+            None,
+            clean_project_id,
+            0,
+        )
+        return await self._ensure_folder_path(
+            session,
+            normalized_bid_type,
+            project.id,
+            "project",
+            normalized_bid_type,
+            clean_project_id,
+            0,
+        )
+
+    async def _ensure_raw_material_roots(self, session: Any) -> list[RawFolder]:
+        roots: list[RawFolder] = []
+        for spec in RAW_MATERIAL_ROOTS:
+            roots.append(
+                await self._ensure_folder_path(
+                    session,
+                    str(spec["name"]),
+                    None,
+                    str(spec["tier"]),
+                    None,
+                    None,
+                    int(spec["sort_order"]),
+                )
+            )
+        return roots
 
     async def _ensure_folder_path(
         self,
@@ -301,6 +660,7 @@ class MaterialStore:
         bid_type: str | None,
         project_id: str | None,
         sort_order: int,
+        customer_name: str | None = None,
     ) -> RawFolder:
         path = f"{parent_id and (await session.get(RawFolder, parent_id)).path or ''}/{name}".lstrip("/")
         result = await session.execute(select(RawFolder).where(RawFolder.path == path))
@@ -313,6 +673,7 @@ class MaterialStore:
             path=path,
             tier=tier,
             bid_type=bid_type,
+            customer_name=customer_name,
             project_id=project_id,
             sort_order=sort_order,
         )
@@ -343,6 +704,7 @@ class MaterialStore:
                 current.bid_type,
                 current.project_id,
                 current.sort_order or 0,
+                customer_name=current.customer_name,
             )
         return current
 
@@ -400,30 +762,88 @@ class MaterialStore:
         *,
         target_path: str = "",
         project_id: str = "",
+        project_code: str = "",
+        project_name: str = "",
         bid_type: str = "技术标",
+        material_tier: str = "",
+        customer_id: str = "",
+        customer_name: str = "",
         on_conflict: str = "",
         files: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         file_inputs = list(files or [])
         if not file_inputs:
             raise PeripheralError(400, "请至少上传一个文件。", "RAW_UPLOAD_FILES_REQUIRED")
-        if not target_path:
-            if not project_id:
-                raise PeripheralError(400, "请提供目标目录或项目 ID。", "RAW_TARGET_PATH_REQUIRED")
-            target_path = f"项目定制/{safe_segment(project_id, 'PRJ-UNSET')}/{bid_type or '技术标'}"
+        normalized_bid_type = bid_type if bid_type in {"技术标", "商务标", "通用"} else "技术标"
+        normalized_tier = normalize_material_tier(material_tier)
+        auto_target = not bool(target_path)
 
         async with async_session() as session:
             await self._ensure_runtime_tables(session)
-            result = await session.execute(select(RawFolder).where(RawFolder.path == target_path))
-            base_folder = result.scalar_one_or_none()
-            if base_folder is None:
-                raise PeripheralError(404, "目标目录不存在。", "RAW_FOLDER_NOT_FOUND")
+            if auto_target:
+                normalized_tier = normalized_tier or ("project" if project_id else "standard")
+                base_folder = await self._ensure_material_target_folder(
+                    session,
+                    material_tier=normalized_tier,
+                    bid_type=normalized_bid_type,
+                    customer_name=customer_name,
+                    project_id=project_id,
+                )
+                target_path = base_folder.path
+            else:
+                target_path = str(target_path or "").strip().strip("/")
+                target_parts = [part for part in target_path.split("/") if part]
+                inferred_target_tier = RAW_MATERIAL_ROOT_TIERS.get(target_path)
+                inferred_customer_name = customer_name
+                inferred_project_id = project_id
+                if inferred_target_tier and len(target_parts) == 1:
+                    result = await session.execute(select(RawFolder).where(RawFolder.path == target_path))
+                    base_folder = result.scalar_one_or_none()
+                    if base_folder is None:
+                        base_folder = await self._ensure_folder_path(
+                            session,
+                            target_path,
+                            None,
+                            inferred_target_tier,
+                            None,
+                            None,
+                            0,
+                        )
+                    normalized_tier = normalized_tier or inferred_target_tier
+                    target_path = base_folder.path
+                else:
+                    if not inferred_target_tier and len(target_parts) == 2 and target_parts[0] == "客户素材":
+                        inferred_target_tier = "customer"
+                        inferred_customer_name = inferred_customer_name or target_parts[1]
+                    if not inferred_target_tier and len(target_parts) == 2 and target_parts[0] == "项目素材":
+                        inferred_target_tier = "project"
+                        inferred_project_id = inferred_project_id or target_parts[1]
+
+                    if inferred_target_tier:
+                        normalized_tier = normalized_tier or inferred_target_tier
+                        base_folder = await self._ensure_material_target_folder(
+                            session,
+                            material_tier=normalized_tier,
+                            bid_type=normalized_bid_type,
+                            customer_name=inferred_customer_name,
+                            project_id=inferred_project_id,
+                        )
+                        target_path = base_folder.path
+                    else:
+                        result = await session.execute(select(RawFolder).where(RawFolder.path == target_path))
+                        base_folder = result.scalar_one_or_none()
+                        if base_folder is None:
+                            raise PeripheralError(404, "目标目录不存在。", "RAW_FOLDER_NOT_FOUND")
+                        normalized_tier = normalized_tier or self._infer_material_tier_from_folder(base_folder)
 
             uploaded_items: list[dict[str, Any]] = []
+            clean_job_targets: list[int] = []
             for item in file_inputs:
                 relative_path = str(item.get("relativePath") or "").replace("\\", "/").strip("/")
                 relative_parts = [part for part in relative_path.split("/") if part]
                 relative_dir = "/".join(relative_parts[:-1]) if len(relative_parts) > 1 else ""
+                source_relative_path = "/".join(relative_parts) if relative_parts else ""
+                source_root_folder = relative_parts[0] if len(relative_parts) > 1 else ""
 
                 file_name = safe_segment(relative_parts[-1] if relative_parts else item.get("name") or "", "")
                 if not file_name:
@@ -440,6 +860,52 @@ class MaterialStore:
                 upload = item.get("upload")
                 mime_type = str(item.get("mimeType") or item.get("type") or getattr(upload, "content_type", "") or "")
                 minio_key = self._raw_object_key(folder.path, file_name)
+                location = classify_material_path(folder.path, normalized_bid_type)
+                folder_tier = (
+                    normalize_material_tier(location.get("materialTier"))
+                    or normalize_material_tier(normalized_tier)
+                    or self._infer_material_tier_from_folder(folder)
+                )
+                item_bid_type = str(location.get("bidType") or normalized_bid_type)
+                clean_status, clean_message = clean_status_for_new_file(file_name)
+                item_customer_name = (
+                    customer_name
+                    or str(location.get("customerName") or "")
+                    or folder.customer_name
+                    or ("平台标准" if folder_tier == "standard" else "")
+                )
+                item_project_id = project_id or str(location.get("projectId") or "") or folder.project_id or ""
+                item_project_code = project_code or item_project_id
+                item_project_name = project_name
+                identity = material_identity(
+                    material_tier=folder_tier,
+                    bid_type=item_bid_type,
+                    customer_name=item_customer_name,
+                    project_id=item_project_id,
+                    project_code=item_project_code,
+                    project_name=item_project_name,
+                )
+                if customer_id and folder_tier in {"customer", "project"}:
+                    identity["customerId"] = customer_id
+                common_ext = {
+                    "bidType": item_bid_type,
+                    "projectId": item_project_id,
+                    "projectCode": item_project_code,
+                    "projectName": item_project_name,
+                    "customerId": customer_id or identity.get("customerId") or "",
+                    "customerName": item_customer_name,
+                    "materialTier": folder_tier,
+                    "materialTierLabel": MATERIAL_TIER_LABELS.get(folder_tier, ""),
+                    **identity,
+                    "sourceMinioBucket": settings.minio_buckets["materials"],
+                    "sourceMinioKey": minio_key,
+                    "sourceFileName": file_name,
+                    "sourceRelativePath": source_relative_path or file_name,
+                    "sourceRootFolder": source_root_folder,
+                    "cleanStatus": clean_status,
+                    "cleanMessage": clean_message,
+                    "cleanUpdatedAt": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                }
 
                 if upload is not None and hasattr(upload, "file"):
                     file_stream = upload.file
@@ -481,16 +947,20 @@ class MaterialStore:
 
                 if existing and on_conflict in {"overwrite", "version"}:
                     await self._archive_raw_file_version(session, existing)
+                    self._remove_cleaned_object_from_ext(existing.ext_fields or {})
                     upload_to_minio()
                     existing.size_bytes = size
                     existing.minio_key = minio_key
                     existing.mime_type = mime_type
                     existing.version += 1
                     ext = existing.ext_fields or {}
+                    ext.update(common_ext)
                     ext["lastAction"] = on_conflict
                     ext["lastOperator"] = "当前用户"
                     existing.ext_fields = ext
                     uploaded_items.append(existing.to_dict())
+                    if clean_status == "pending":
+                        clean_job_targets.append(int(existing.id))
                     continue
 
                 if existing and not on_conflict:
@@ -510,9 +980,7 @@ class MaterialStore:
                     minio_key=minio_key,
                     minio_bucket=settings.minio_buckets["materials"],
                     ext_fields={
-                        "bidType": bid_type or "技术标",
-                        "projectId": project_id,
-                        "customerName": "测试业主" if project_id else "通用",
+                        **common_ext,
                         "lastAction": "upload",
                         "lastOperator": "当前用户",
                     },
@@ -520,9 +988,16 @@ class MaterialStore:
                 session.add(record)
                 await session.flush()
                 uploaded_items.append(record.to_dict())
+                if clean_status == "pending":
+                    clean_job_targets.append(int(record.id))
 
             await session.commit()
-            return {"message": f"上传完成，共处理 {len(uploaded_items)} 个文件。", "items": uploaded_items}
+            clean_jobs = [self._enqueue_cleaning_job(file_id) for file_id in clean_job_targets]
+            return {
+                "message": f"上传完成，共处理 {len(uploaded_items)} 个文件，已触发 {len(clean_job_targets)} 个清洗任务。",
+                "items": uploaded_items,
+                "cleaning": {"queued": sum(1 for job in clean_jobs if job.get("queued")), "jobs": clean_jobs},
+            }
 
     async def raw_update_file(self, file_id: str, name: str) -> dict[str, Any]:
         numeric_id = int(file_id.replace("RAW-", ""))
@@ -555,7 +1030,12 @@ class MaterialStore:
 
             item.name = next_name
             item.minio_key = next_key
-            item.ext_fields = {**(item.ext_fields or {}), "lastAction": "rename"}
+            item.ext_fields = {
+                **(item.ext_fields or {}),
+                "sourceMinioKey": next_key,
+                "sourceFileName": next_name,
+                "lastAction": "rename",
+            }
             await session.commit()
             refreshed = await session.execute(
                 select(RawFile).where(RawFile.id == numeric_id).options(selectinload(RawFile.folder))
@@ -604,6 +1084,80 @@ class MaterialStore:
                 "bucket": item.minio_bucket,
                 "key": item.minio_key,
                 "mimeType": item.mime_type or "application/octet-stream",
+            }
+
+    async def raw_retry_clean_file(self, file_id: str) -> dict[str, Any]:
+        numeric_id = int(file_id.replace("RAW-", ""))
+        async with async_session() as session:
+            result = await session.execute(
+                select(RawFile).where(RawFile.id == numeric_id).options(selectinload(RawFile.folder))
+            )
+            item = result.scalar_one_or_none()
+            if item is None:
+                raise PeripheralError(404, "文件不存在。", "RAW_FILE_NOT_FOUND")
+            clean_status, clean_message = clean_status_for_new_file(item.name)
+            if clean_status != "pending":
+                raise PeripheralError(400, clean_message, "RAW_FILE_NOT_CLEANABLE")
+            ext = dict(item.ext_fields or {})
+            self._remove_cleaned_object_from_ext(ext)
+            ext.update(
+                {
+                    "cleanStatus": "pending",
+                    "cleanMessage": clean_message,
+                    "cleanError": "",
+                    "cleanLogTail": "",
+                    "cleanResultStatus": "",
+                    "cleanedMinioKey": "",
+                    "cleanedMinioBucket": "",
+                    "cleanedFileName": "",
+                    "cleanedSize": 0,
+                    "cleanedAt": "",
+                    "cleanUpdatedAt": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                }
+            )
+            item.ext_fields = ext
+            await session.flush()
+            await session.refresh(item, attribute_names=["updated_at"])
+            item_payload = item.to_dict()
+            await session.commit()
+
+        job = self._enqueue_cleaning_job(numeric_id)
+        return {"message": "已重新触发素材清洗。", "item": item_payload, "cleaning": job}
+
+    async def raw_download_cleaned_file(self, file_id: str) -> dict[str, Any]:
+        numeric_id = int(file_id.replace("RAW-", ""))
+        async with async_session() as session:
+            result = await session.execute(select(RawFile).where(RawFile.id == numeric_id))
+            item = result.scalar_one_or_none()
+            if item is None:
+                raise PeripheralError(404, "文件不存在。", "RAW_FILE_NOT_FOUND")
+            ext = item.ext_fields or {}
+            if not ext.get("cleanedMinioKey"):
+                raise PeripheralError(404, "清洗后的 Word 文件尚未生成。", "RAW_CLEANED_FILE_NOT_FOUND")
+            return {
+                "fileId": f"RAW-{item.id:04d}",
+                "fileName": ext.get("cleanedFileName") or f"{PurePosixPath(item.name).stem}.docx",
+                "downloadUrl": f"/api/materials/raw/{file_id}/cleaned/content",
+                "message": "已生成清洗后 Word 下载地址",
+            }
+
+    async def raw_download_cleaned_content(self, file_id: str) -> dict[str, Any]:
+        numeric_id = int(file_id.replace("RAW-", ""))
+        async with async_session() as session:
+            result = await session.execute(select(RawFile).where(RawFile.id == numeric_id))
+            item = result.scalar_one_or_none()
+            if item is None:
+                raise PeripheralError(404, "文件不存在。", "RAW_FILE_NOT_FOUND")
+            ext = item.ext_fields or {}
+            key = str(ext.get("cleanedMinioKey") or "")
+            if not key:
+                raise PeripheralError(404, "清洗后的 Word 文件尚未生成。", "RAW_CLEANED_FILE_NOT_FOUND")
+            return {
+                "fileId": f"RAW-{item.id:04d}",
+                "fileName": ext.get("cleanedFileName") or f"{PurePosixPath(item.name).stem}.docx",
+                "bucket": str(ext.get("cleanedMinioBucket") or settings.minio_buckets["materials"]),
+                "key": key,
+                "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             }
 
     # ------------------------------------------------------------------ #
@@ -690,16 +1244,36 @@ class MaterialStore:
     # Wiki Materials
     # ------------------------------------------------------------------ #
 
-    async def wiki_list(self, node_id: str = "") -> dict[str, Any]:
+    async def wiki_list(self, node_id: str = "", bid_type: str = "") -> dict[str, Any]:
         async with async_session() as session:
             await self._ensure_runtime_tables(session)
             nodes_result = await session.execute(select(WikiNode).order_by(WikiNode.sort_order, WikiNode.id))
             all_nodes = nodes_result.scalars().all()
+            normalized_bid_type = bid_type if bid_type in {"技术标", "商务标"} else ""
+            opposite_bid_type = "商务标" if normalized_bid_type == "技术标" else "技术标"
 
             children_by_parent: dict[int, list[WikiNode]] = {}
             for n in all_nodes:
                 if n.parent_id is not None:
                     children_by_parent.setdefault(n.parent_id, []).append(n)
+
+            def root_matches_bid_type(node: WikiNode) -> bool:
+                if not normalized_bid_type:
+                    return True
+                title = str(node.title or "")
+                if title.startswith(f"{normalized_bid_type}Wiki"):
+                    return True
+                if title.startswith(f"{opposite_bid_type}Wiki") or title == "平台级Wiki（自动生成）":
+                    return False
+                bid_types = {str(item) for item in (node.bid_types or [])}
+                return normalized_bid_type in bid_types and opposite_bid_type not in bid_types
+
+            visible_node_ids: set[int] = set()
+
+            def collect_visible(node: WikiNode) -> None:
+                visible_node_ids.add(int(node.id))
+                for child in children_by_parent.get(node.id, []):
+                    collect_visible(child)
 
             def build_node(node: WikiNode) -> dict[str, Any]:
                 child_nodes = children_by_parent.get(node.id, [])
@@ -712,35 +1286,41 @@ class MaterialStore:
                     "children": [build_node(c) for c in child_nodes],
                 }
 
-            roots = [n for n in all_nodes if n.parent_id is None]
+            roots = [n for n in all_nodes if n.parent_id is None and root_matches_bid_type(n)]
+            for root in roots:
+                collect_visible(root)
             tree = [build_node(r) for r in roots]
 
             selected = None
-            if node_id:
-                numeric_id = int(node_id.replace("WIKI-", ""))
-                doc_result = await session.execute(
-                    select(WikiDoc).where(WikiDoc.node_id == numeric_id).options(selectinload(WikiDoc.node))
-                )
-                doc = doc_result.scalar_one_or_none()
-                if doc:
-                    selected = doc.to_dict()
-                    attachment_rows = (
-                        await session.execute(
-                            select(WikiAttachment)
-                            .where(WikiAttachment.doc_id == doc.id)
-                            .order_by(desc(WikiAttachment.created_at), desc(WikiAttachment.id))
-                        )
-                    ).scalars().all()
-                    selected["attachments"] = [self._wiki_attachment_to_dict(item) for item in attachment_rows]
+            selected_node_id = node_id
+            if not selected_node_id and roots:
+                selected_node_id = f"WIKI-{roots[0].id:04d}"
+            if selected_node_id:
+                numeric_id = int(selected_node_id.replace("WIKI-", ""))
+                if not normalized_bid_type or numeric_id in visible_node_ids:
+                    doc_result = await session.execute(
+                        select(WikiDoc).where(WikiDoc.node_id == numeric_id).options(selectinload(WikiDoc.node))
+                    )
+                    doc = doc_result.scalar_one_or_none()
+                    if doc:
+                        selected = doc.to_dict()
+                        attachment_rows = (
+                            await session.execute(
+                                select(WikiAttachment)
+                                .where(WikiAttachment.doc_id == doc.id)
+                                .order_by(desc(WikiAttachment.created_at), desc(WikiAttachment.id))
+                            )
+                        ).scalars().all()
+                        selected["attachments"] = [self._wiki_attachment_to_dict(item) for item in attachment_rows]
 
             return {
                 "tree": tree,
                 "selectedNode": selected,
-                "tagOptions": ["风资源", "技术标", "商务标", "通用材料"],
-                "applicableTypeOptions": ["技术标", "商务标", "通用"],
+                "tagOptions": ["技术标", "商务标", "通用素材", "客户素材", "项目素材", "日志"],
+                "applicableTypeOptions": ["技术标", "商务标"],
             }
 
-    async def wiki_create(self, parent_id: str, title: str, is_folder: bool) -> dict[str, Any]:
+    async def wiki_create(self, parent_id: str, title: str, is_folder: bool, bid_type: str = "") -> dict[str, Any]:
         async with async_session() as session:
             await self._ensure_runtime_tables(session)
             parent = None
@@ -755,7 +1335,7 @@ class MaterialStore:
                 title=title.strip() or ("新建目录" if is_folder else "新建节点"),
                 tier=parent.tier if parent else "standard",
                 path=path,
-                bid_types=parent.bid_types if parent else ["通用"],
+                bid_types=parent.bid_types if parent else ([bid_type] if bid_type in {"技术标", "商务标"} else ["通用"]),
             )
             session.add(node)
             await session.flush()
@@ -768,7 +1348,7 @@ class MaterialStore:
             session.add(doc)
             await session.commit()
 
-            return {"message": "Created", **await self.wiki_list(f"WIKI-{node.id:04d}")}
+            return {"message": "Created", **await self.wiki_list(f"WIKI-{node.id:04d}", bid_type)}
 
     async def wiki_update(self, node_id: str, data: dict[str, Any]) -> dict[str, Any]:
         numeric_id = int(node_id.replace("WIKI-", ""))
@@ -792,9 +1372,9 @@ class MaterialStore:
                 doc.node.bid_types = list(data["applicableTypes"])
 
             await session.commit()
-            return {"message": "Updated", **await self.wiki_list(node_id)}
+            return {"message": "Updated", **await self.wiki_list(node_id, str(data.get("bidType") or ""))}
 
-    async def wiki_refresh_summary(self, node_id: str) -> dict[str, Any]:
+    async def wiki_refresh_summary(self, node_id: str, bid_type: str = "") -> dict[str, Any]:
         numeric_id = int(node_id.replace("WIKI-", ""))
         async with async_session() as session:
             await self._ensure_runtime_tables(session)
@@ -806,9 +1386,9 @@ class MaterialStore:
             summary = re.sub(r"\s+", " ", text.replace("#", "")).strip()[:80] or "暂无摘要。"
             doc.ai_summary = summary
             await session.commit()
-            return {"summary": summary, **await self.wiki_list(node_id)}
+            return {"summary": summary, **await self.wiki_list(node_id, bid_type)}
 
-    async def wiki_move(self, node_id: str, target_id: str, mode: str) -> dict[str, Any]:
+    async def wiki_move(self, node_id: str, target_id: str, mode: str, bid_type: str = "") -> dict[str, Any]:
         numeric_id = int(node_id.replace("WIKI-", ""))
         target_numeric = int(target_id.replace("WIKI-", ""))
         async with async_session() as session:
@@ -826,7 +1406,7 @@ class MaterialStore:
             source.parent_id = target.id if mode == "inside" else target.parent_id
             source.path = f"{target.path if mode == 'inside' else (target.parent.path if target.parent else '')}/{source.title}".lstrip("/")
             await session.commit()
-            return {"message": "Moved", **await self.wiki_list(node_id)}
+            return {"message": "Moved", **await self.wiki_list(node_id, bid_type)}
 
     async def wiki_upload_attachment(
         self,
@@ -837,6 +1417,7 @@ class MaterialStore:
         upload: Any | None = None,
         data: bytes | None = None,
         mime_type: str = "",
+        bid_type: str = "",
     ) -> dict[str, Any]:
         numeric_id = int(node_id.replace("WIKI-", ""))
         clean_name = safe_segment(file_name, "")
@@ -877,7 +1458,7 @@ class MaterialStore:
             session.add(attachment)
             await session.commit()
 
-        return {"message": "Uploaded", **await self.wiki_list(node_id)}
+        return {"message": "Uploaded", **await self.wiki_list(node_id, bid_type)}
 
     async def wiki_download_attachment_content(self, attachment_id: str) -> dict[str, Any]:
         numeric_id = int(attachment_id.replace("WIKI-ATT-", ""))
@@ -1026,9 +1607,9 @@ class MaterialStore:
             root_spec = {
                 "title": normalized_root_title,
                 "markdownContent": root_markdown_content
-                or f"# {normalized_root_title}\n\n这是系统自动生成的平台级 Wiki 根节点。",
-                "tags": ["通用材料"],
-                "applicableTypes": ["通用"],
+                or f"# {normalized_root_title}\n\n这是系统自动生成的分标类 Wiki 根节点。",
+                "tags": [self._bid_type_for_wiki_root(normalized_root_title), "素材库"],
+                "applicableTypes": [self._bid_type_for_wiki_root(normalized_root_title)],
                 "children": nodes,
             }
 
@@ -1045,7 +1626,7 @@ class MaterialStore:
                     await purge_wiki_root(root)
                 await purge_orphaned_platform_sections()
                 root_node = await create_node(root_spec, None)
-                message = "平台级 Wiki 已重新生成并覆盖。"
+                message = f"{self._bid_type_for_wiki_root(normalized_root_title)} Wiki 已重新生成并覆盖。"
             elif existing_roots:
                 root_node = existing_roots[0]
                 for duplicate_root in existing_roots[1:]:
@@ -1054,7 +1635,7 @@ class MaterialStore:
                 if normalized_mode == "update":
                     root_node.title = normalized_root_title
                     root_node.path = normalized_root_title
-                    root_node.bid_types = ["通用"]
+                    root_node.bid_types = list(root_spec["applicableTypes"])
                     doc_result = await session.execute(select(WikiDoc).where(WikiDoc.node_id == root_node.id))
                     root_doc = doc_result.scalar_one_or_none()
                     if root_doc is None:
@@ -1063,21 +1644,21 @@ class MaterialStore:
                                 node_id=root_node.id,
                                 markdown_content=root_spec["markdownContent"],
                                 ai_summary="自动生成的 Wiki 初稿节点。",
-                                tags=["通用材料"],
+                                tags=list(root_spec["tags"]),
                             )
                         )
                     else:
                         root_doc.markdown_content = root_spec["markdownContent"]
-                        root_doc.tags = ["通用材料"]
+                        root_doc.tags = list(root_spec["tags"])
                     for index, child in enumerate(nodes):
                         if isinstance(child, dict):
                             await upsert_node(child, root_node, sort_order=index)
-                    message = "平台级 Wiki 已更新，并已清理重复根节点。"
+                    message = f"{self._bid_type_for_wiki_root(normalized_root_title)} Wiki 已更新，并已清理重复根节点。"
                 else:
-                    message = "平台级 Wiki 已存在，已保留现有版本并清理重复根节点。"
+                    message = f"{self._bid_type_for_wiki_root(normalized_root_title)} Wiki 已存在，已保留现有版本并清理重复根节点。"
             else:
                 root_node = await create_node(root_spec, None)
-                message = "平台级 Wiki 创建成功。"
+                message = f"{self._bid_type_for_wiki_root(normalized_root_title)} Wiki 创建成功。"
 
             await session.commit()
 
@@ -1203,6 +1784,17 @@ class MaterialStore:
 
             item.folder_id = destination.id
             item.minio_key = next_key
+            tier = self._infer_material_tier_from_folder(destination)
+            item.ext_fields = {
+                **(item.ext_fields or {}),
+                "sourceMinioKey": next_key,
+                "sourceFileName": item.name,
+                "materialTier": tier,
+                "materialTierLabel": MATERIAL_TIER_LABELS.get(tier, ""),
+                "projectId": destination.project_id or (item.ext_fields or {}).get("projectId") or "",
+                "customerName": destination.customer_name or (item.ext_fields or {}).get("customerName") or "",
+                "bidType": destination.bid_type or (item.ext_fields or {}).get("bidType") or "",
+            }
             await session.commit()
 
         async with async_session() as verify_session:

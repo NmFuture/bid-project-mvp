@@ -4,6 +4,8 @@ from typing import Any
 
 from fastapi import APIRouter, Body
 
+from app.services.identity import CUSTOMER_REGISTRY
+
 router = APIRouter()
 
 
@@ -50,8 +52,15 @@ async def auth_logout() -> dict[str, str]:
 async def key_accounts() -> dict[str, Any]:
     return {
         "items": [
-            {"id": "KA-HN", "name": "华能集团"},
-            {"id": "KA-DT", "name": "大唐集团"},
-            {"id": "KA-CG", "name": "国家能源集团"},
+            {
+                "id": item["customerId"],
+                "keyAccountId": f"KA-{item['customerId'].replace('CUST-', '')}",
+                "customerId": item["customerId"],
+                "name": item["customerCanonicalName"],
+                "customerCanonicalName": item["customerCanonicalName"],
+                "aliases": item["customerAliases"],
+            }
+            for item in CUSTOMER_REGISTRY
+            if item["customerId"] != "CUST-SEWPG"
         ]
     }
