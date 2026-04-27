@@ -1222,3 +1222,41 @@ bid_workspace
 - `"code/sewpg-bid-frontend/docs/11-API\345\255\227\346\256\265\347\272\247\345\245\221\347\272\246\346\230\216\347\273\206.md"`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-04-27 15:33:31 post-commit 560eeff
+
+提交摘要：refactor(storage): migrate project state to postgres
+
+变更文件：
+
+- `.github/workflows/mvp-quality.yml`
+- `README.md`
+- `code/.env.airgap.example`
+- `code/.env.example`
+- `code/AGENT.md`
+- `code/docker-compose.yml`
+- `code/initdb/01-init.sql`
+- `code/sewpg-bid-backend/app/api/routes/system.py`
+- `code/sewpg-bid-backend/app/core/config.py`
+- `code/sewpg-bid-backend/app/models/__init__.py`
+- `code/sewpg-bid-backend/app/services/material_store.py`
+- `code/sewpg-bid-backend/app/services/store.py`
+- `code/sewpg-bid-backend/pytest.ini`
+- `code/sewpg-bid-backend/requirements.txt`
+- `code/sewpg-bid-backend/tests/conftest.py`
+- `code/sewpg-bid-backend/tests/test_auth_routes.py`
+- `code/sewpg-bid-backend/tests/test_directory_generation.py`
+- `code/sewpg-bid-backend/tests/test_fill_generation.py`
+- `code/sewpg-bid-backend/tests/test_gap_review_flow.py`
+- `code/sewpg-bid-backend/tests/test_onlyoffice_document.py`
+- `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
+- `code/sewpg-bid-backend/tests/test_peripheral_routes.py`
+- `code/sewpg-bid-backend/tests/test_store_persistence.py`
+- `code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx`
+- `code/sewpg-bid-frontend/src/pages/MaterialDB.jsx`
+- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
+- `"doc/07-FastAPI\346\211\277\346\216\245\344\270\216\345\211\215\347\253\257\346\224\271\351\200\240.md"`
+- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
+- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

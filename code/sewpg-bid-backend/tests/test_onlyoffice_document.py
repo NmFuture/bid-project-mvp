@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import itertools
 import platform
 import tempfile
 import unittest
@@ -23,7 +22,6 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         self.original_onlyoffice_backend_base_url = settings.onlyoffice_backend_base_url
         self.original_onlyoffice_callback_token = settings.onlyoffice_callback_token
         self.original_onlyoffice_download_allowed_hosts = settings.onlyoffice_download_allowed_hosts
-        settings.sqlite_path = base / "sqlite" / "app.db"
         settings.uploads_dir = base / "uploads"
         settings.documents_dir = base / "documents"
         settings.onlyoffice_backend_base_url = ""
@@ -31,8 +29,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         settings.onlyoffice_download_allowed_hosts = ("127.0.0.1", "localhost", "onlyoffice")
         settings.ensure_dirs()
 
-        store._projects = {}
-        store._counter = itertools.count(1)
+        store.reset_for_tests()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
 
     def tearDown(self) -> None:

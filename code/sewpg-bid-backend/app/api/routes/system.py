@@ -15,7 +15,7 @@ async def healthz() -> dict[str, Any]:
         "status": "ok",
         "service": "fastapi",
         "mode": "skeleton",
-        "sqlite_path": str(settings.sqlite_path),
+        "project_store_backend": settings.project_store_backend,
         "uploads_dir": str(settings.uploads_dir),
         "documents_dir": str(settings.documents_dir),
         "opencode_base_url": settings.opencode_base_url,
@@ -32,12 +32,12 @@ async def api_healthz() -> dict[str, Any]:
         "paths": {
             "uploads_dir": str(settings.uploads_dir),
             "documents_dir": str(settings.documents_dir),
-            "sqlite_path": str(settings.sqlite_path),
+            "parsed_dir": str(settings.parsed_dir),
         },
+        "project_store_backend": settings.project_store_backend,
     }
 
 
 @router.get("/api/root", name="root")
 async def root() -> dict[str, str]:
     return {"status": "ok"}
-

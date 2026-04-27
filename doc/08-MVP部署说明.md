@@ -34,7 +34,7 @@
 
 当前建议的核心组成是：
 
-### 3.1 4 个服务容器
+### 3.1 8 个服务容器
 
 1. `web`
 - 负责对外提供 Web 入口
@@ -46,25 +46,45 @@
 - 业务后端
 - 负责项目、阶段、文件、解析、目录生成、初稿生成、OnlyOffice 对接、下载
 
-3. `opencode`
+3. `worker`
+- Redis 队列消费者
+- 负责目录生成、初稿生成、素材清洗等后台任务
+
+4. `opencode`
 - 运行 `opencode serve`
 - 供 FastAPI 调用目录生成和初稿生成能力
 
-4. `onlyoffice`
+5. `onlyoffice`
 - 运行 OnlyOffice Document Server
 - 提供在线文档编辑能力
 
+6. `postgres`
+- 项目主链路状态数据库
+- 素材库、Wiki、结构化素材的元数据数据库
+
+7. `redis`
+- 后台任务队列、任务锁和结果缓存
+
+8. `minio`
+- 上传文件、素材文件、清洗后 Word、Wiki 附件等对象存储
+
 ### 3.2 持久化数据
 
-当前 MVP 不需要单独起数据库容器，先用：
+当前 MVP 默认使用：
 
-- `SQLite`
+- `PostgreSQL`
+- `MinIO`
+- `Redis`
 - 本地文件目录 / Docker volume
 
 最少建议保留这些持久化卷：
 
-- `sqlite_data`
-  - 存项目、阶段、目录、文档记录
+- `postgres_data`
+  - 存项目、阶段、目录、文档记录、素材库元数据、Wiki 正文
+- `redis_data`
+  - 存 Redis AOF 队列数据
+- `minio_data`
+  - 存素材原文件、清洗后 Word、Wiki 附件、生成文档对象
 - `uploads`
   - 存用户上传的招标文件
 - `documents`
@@ -74,7 +94,7 @@
 
 一句话：
 
-> **当前 MVP 是 4 个服务容器 + 4 个关键数据卷，不是“4 个容器 + 1 个数据容器”。**
+> **当前 MVP 是多服务容器 + 明确的数据卷：PostgreSQL 管状态和元数据，MinIO 管文件本体，Redis 管后台任务。**
 
 ## 4. 用户怎么使用
 
@@ -126,7 +146,9 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 浏览器
   -> web
   -> fastapi
-     -> sqlite / uploads / documents
+     -> PostgreSQL / uploads / parsed / documents
+     -> Redis worker
+     -> MinIO
      -> opencode serve
      -> onlyoffice
 ```
@@ -141,7 +163,7 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 
 - 正式版产品语义不变：`S5` 补料，`S7` 拼接
 - 当前 MVP 为了最小改动，先借现有 `S7` 页面做初稿生成
-- 当前 MVP 不上 PostgreSQL、MinIO、Redis
+- 当前 MVP 已接入 PostgreSQL、MinIO、Redis
 - 当前 MVP 不做 OCR、完整审核流、覆盖热力图、SSO
 
 ## 8. 一个前提提醒
@@ -186,7 +208,7 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 
 可以按下面顺序理解和操作。
 
-### 10.1 为什么是 4 个容器
+### 10.1 为什么是多服务容器
 
 不是为了“复杂”，而是为了把职责拆开：
 
@@ -194,10 +216,18 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
   - 只负责浏览器入口、静态前端、反向代理
 - `fastapi`
   - 只负责业务接口和主链路状态
+- `worker`
+  - 只负责后台任务消费
 - `opencode`
   - 只负责目录生成、初稿生成
 - `onlyoffice`
   - 只负责在线文档编辑
+- `postgres`
+  - 只负责业务状态和素材库元数据
+- `minio`
+  - 只负责文件本体
+- `redis`
+  - 只负责任务队列
 
 这样每个服务都能单独替换、排障、重启，但部署时仍然通过一个 `docker compose` 统一拉起。
 
@@ -307,4 +337,4 @@ docker compose logs -f opencode
 
 ## 11. 一句话总结
 
-> **当前 MVP 推荐部署方式就是：一台客户内网服务器，使用 Docker Compose 跑 `web + fastapi + opencode + onlyoffice` 四个服务，再配合 SQLite 和文件卷；客户员工直接通过内网浏览器访问即可。**
+> **当前 MVP 推荐部署方式就是：一台客户内网服务器，使用 Docker Compose 跑 `web + fastapi + worker + opencode + onlyoffice + postgres + redis + minio`，客户员工直接通过内网浏览器访问即可。**

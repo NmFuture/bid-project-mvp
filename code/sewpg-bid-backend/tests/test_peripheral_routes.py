@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import itertools
 import tempfile
 import unittest
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+import httpx
+import os
+import pytest
+from uuid import uuid4
 
 from app.core.config import settings
 from app.main import app
@@ -13,27 +15,31 @@ from app.services.peripheral import peripheral_store
 from app.services.store import store
 
 
-class PeripheralRoutesTests(unittest.TestCase):
-    def setUp(self) -> None:
+@pytest.mark.integration
+@pytest.mark.skipif(os.getenv("BID_RUN_INTEGRATION") != "1", reason="requires PostgreSQL, MinIO, and Redis")
+class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         base = Path(self.temp_dir.name)
-        settings.sqlite_path = base / "sqlite" / "app.db"
         settings.uploads_dir = base / "uploads"
         settings.documents_dir = base / "documents"
         settings.parsed_dir = base / "parsed"
         settings.ensure_dirs()
+        self.run_id = uuid4().hex[:8]
 
-        store._projects = {}
-        store._counter = itertools.count(1)
+        store.reset_for_tests(clear_persistent=True)
         peripheral_store.reset()
-        self.client = TestClient(app, base_url="http://127.0.0.1:8000")
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://127.0.0.1:8000",
+        )
 
-    def tearDown(self) -> None:
-        self.client.close()
+    async def asyncTearDown(self) -> None:
+        await self.client.aclose()
         self.temp_dir.cleanup()
 
-    def create_project(self) -> str:
-        response = self.client.post(
+    async def create_project(self) -> str:
+        response = await self.client.post(
             "/api/projects",
             json={
                 "name": "外围模块联调项目",
@@ -44,23 +50,23 @@ class PeripheralRoutesTests(unittest.TestCase):
         response.raise_for_status()
         return response.json()["id"]
 
-    def test_raw_material_library_supports_list_and_mutation(self) -> None:
-        permissions = self.client.get("/api/materials/raw/permissions")
+    async def test_raw_material_library_supports_list_and_mutation(self) -> None:
+        permissions = await self.client.get("/api/materials/raw/permissions")
         self.assertEqual(permissions.status_code, 200)
         self.assertEqual(permissions.json()["role"], "member")
 
-        tree_response = self.client.get("/api/materials/raw/tree")
+        tree_response = await self.client.get("/api/materials/raw/tree")
         self.assertEqual(tree_response.status_code, 200)
         self.assertGreater(len(tree_response.json()["tree"]), 0)
 
-        create_folder = self.client.post(
+        create_folder = await self.client.post(
             "/api/materials/raw/folders",
-            json={"parentPath": "项目素材/PRJ-TEST/技术标", "folderName": "补充资料"},
+            json={"parentPath": f"项目素材/PRJ-TEST-{self.run_id}/技术标", "folderName": f"补充资料-{self.run_id}"},
         )
         self.assertEqual(create_folder.status_code, 200)
         folder_path = create_folder.json()["folderPath"]
 
-        upload = self.client.post(
+        upload = await self.client.post(
             "/api/materials/raw/upload",
             data={"targetPath": folder_path, "bidType": "技术标"},
             files=[
@@ -78,30 +84,30 @@ class PeripheralRoutesTests(unittest.TestCase):
         uploaded_item = upload.json()["items"][0]
         self.assertEqual(uploaded_item["folderPath"], folder_path)
 
-        files = self.client.get("/api/materials/raw/files", params={"folderPath": folder_path})
+        files = await self.client.get("/api/materials/raw/files", params={"folderPath": folder_path})
         self.assertEqual(files.status_code, 200)
         self.assertEqual(files.json()["total"], 1)
         self.assertEqual(files.json()["items"][0]["name"], "评分表.docx")
 
         file_id = files.json()["items"][0]["id"]
 
-        renamed = self.client.patch(f"/api/materials/raw/{file_id}", json={"name": "评分表-重命名.docx"})
+        renamed = await self.client.patch(f"/api/materials/raw/{file_id}", json={"name": "评分表-重命名.docx"})
         self.assertEqual(renamed.status_code, 200)
         self.assertEqual(renamed.json()["item"]["name"], "评分表-重命名.docx")
 
-        download = self.client.get(f"/api/materials/raw/{file_id}/download")
+        download = await self.client.get(f"/api/materials/raw/{file_id}/download")
         self.assertEqual(download.status_code, 200)
         self.assertIn("downloadUrl", download.json())
 
-    def test_raw_material_library_supports_folder_upload(self) -> None:
-        create_folder = self.client.post(
+    async def test_raw_material_library_supports_folder_upload(self) -> None:
+        create_folder = await self.client.post(
             "/api/materials/raw/folders",
-            json={"parentPath": "通用素材/技术标", "folderName": "目录上传测试"},
+            json={"parentPath": "通用素材/技术标", "folderName": f"目录上传测试-{self.run_id}"},
         )
         self.assertEqual(create_folder.status_code, 200)
         folder_path = create_folder.json()["folderPath"]
 
-        upload = self.client.post(
+        upload = await self.client.post(
             "/api/materials/raw/upload",
             data={"targetPath": folder_path, "bidType": "技术标"},
             files=[
@@ -121,20 +127,21 @@ class PeripheralRoutesTests(unittest.TestCase):
         self.assertEqual(uploaded_item["folderPath"], f"{folder_path}/投标资料/附件")
         self.assertEqual(uploaded_item["name"], "评分表.docx")
 
-    def test_structured_and_wiki_material_routes_return_frontend_ready_payloads(self) -> None:
-        structured = self.client.get("/api/materials/structured")
+    async def test_structured_and_wiki_material_routes_return_frontend_ready_payloads(self) -> None:
+        structured = await self.client.get("/api/materials/structured")
         self.assertEqual(structured.status_code, 200)
         self.assertIn("items", structured.json())
-        self.assertGreater(len(structured.json()["items"]), 0)
+        self.assertIn("tableOptions", structured.json())
+        self.assertGreater(len(structured.json()["tableOptions"]), 0)
 
-        wiki = self.client.get("/api/materials/wiki")
+        wiki = await self.client.get("/api/materials/wiki")
         self.assertEqual(wiki.status_code, 200)
         wiki_payload = wiki.json()
         self.assertIn("tree", wiki_payload)
         self.assertIn("tagOptions", wiki_payload)
         self.assertIsNotNone(wiki_payload["selectedNode"])
 
-        created = self.client.post(
+        created = await self.client.post(
             "/api/materials/wiki",
             json={"title": "风资源说明", "isFolder": False},
         )
@@ -143,7 +150,7 @@ class PeripheralRoutesTests(unittest.TestCase):
         self.assertEqual(selected_node["title"], "风资源说明")
 
         node_id = selected_node["id"]
-        updated = self.client.put(
+        updated = await self.client.put(
             f"/api/materials/wiki/{node_id}",
             json={
                 "title": "风资源说明-更新",
@@ -155,82 +162,82 @@ class PeripheralRoutesTests(unittest.TestCase):
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.json()["selectedNode"]["title"], "风资源说明-更新")
 
-        refreshed = self.client.post(f"/api/materials/wiki/{node_id}/refresh-summary")
+        refreshed = await self.client.post(f"/api/materials/wiki/{node_id}/refresh-summary")
         self.assertEqual(refreshed.status_code, 200)
         self.assertIn("summary", refreshed.json())
 
-    def test_audit_settings_and_export_routes_are_available(self) -> None:
-        project_id = self.create_project()
+    async def test_audit_settings_and_export_routes_are_available(self) -> None:
+        project_id = await self.create_project()
 
-        gateway = self.client.get("/api/settings/llm-gateway")
+        gateway = await self.client.get("/api/settings/llm-gateway")
         self.assertEqual(gateway.status_code, 200)
         self.assertIn("endpoint", gateway.json())
 
-        gateway_test = self.client.post(
+        gateway_test = await self.client.post(
             "/api/settings/llm-gateway/test",
             json={"endpoint": "https://gateway.example.com", "model": "gpt-5.4"},
         )
         self.assertEqual(gateway_test.status_code, 200)
         self.assertTrue(gateway_test.json()["success"])
 
-        dotx_upload = self.client.post(
+        dotx_upload = await self.client.post(
             "/api/settings/dotx-templates",
             json={"fileName": "标准模板.dotx", "fileSize": 1024, "version": "2026.04"},
         )
         self.assertEqual(dotx_upload.status_code, 200)
         dotx_id = dotx_upload.json()["item"]["id"]
 
-        dotx_activate = self.client.post(f"/api/settings/dotx-templates/{dotx_id}/activate")
+        dotx_activate = await self.client.post(f"/api/settings/dotx-templates/{dotx_id}/activate")
         self.assertEqual(dotx_activate.status_code, 200)
 
-        excel_upload = self.client.post(
+        excel_upload = await self.client.post(
             "/api/settings/excel-templates",
             json={"tableKey": "performance_guarantee", "fileName": "性能保证.xlsx", "version": "2026.04"},
         )
         self.assertEqual(excel_upload.status_code, 200)
         excel_id = excel_upload.json()["item"]["id"]
 
-        excel_activate = self.client.post(f"/api/settings/excel-templates/{excel_id}/activate")
+        excel_activate = await self.client.post(f"/api/settings/excel-templates/{excel_id}/activate")
         self.assertEqual(excel_activate.status_code, 200)
 
-        backup_create = self.client.post("/api/settings/backups/create", json={"note": "联调前备份"})
+        backup_create = await self.client.post("/api/settings/backups/create", json={"note": "联调前备份"})
         self.assertEqual(backup_create.status_code, 200)
         backup_id = backup_create.json()["item"]["id"]
 
-        backup_restore = self.client.post(f"/api/settings/backups/{backup_id}/restore")
+        backup_restore = await self.client.post(f"/api/settings/backups/{backup_id}/restore")
         self.assertEqual(backup_restore.status_code, 200)
 
-        health = self.client.get("/api/settings/health")
+        health = await self.client.get("/api/settings/health")
         self.assertEqual(health.status_code, 200)
         self.assertIsInstance(health.json(), list)
 
-        audit_list = self.client.get("/api/audit")
+        audit_list = await self.client.get("/api/audit")
         self.assertEqual(audit_list.status_code, 200)
         audit_payload = audit_list.json()
         self.assertIn("filterOptions", audit_payload)
         self.assertGreater(len(audit_payload["items"]), 0)
 
         audit_id = audit_payload["items"][0]["id"]
-        audit_detail = self.client.get(f"/api/audit/{audit_id}")
+        audit_detail = await self.client.get(f"/api/audit/{audit_id}")
         self.assertEqual(audit_detail.status_code, 200)
         self.assertEqual(audit_detail.json()["id"], audit_id)
 
-        audit_export = self.client.get("/api/audit/export")
+        audit_export = await self.client.get("/api/audit/export")
         self.assertEqual(audit_export.status_code, 200)
         self.assertIn("fileName", audit_export.json())
 
-        export_check = self.client.get(f"/api/projects/{project_id}/export/check")
+        export_check = await self.client.get(f"/api/projects/{project_id}/export/check")
         self.assertEqual(export_check.status_code, 200)
         self.assertIn("suggestedFileName", export_check.json())
 
-        blocked_export = self.client.post(
+        blocked_export = await self.client.post(
             f"/api/projects/{project_id}/export",
             json={"format": "docx", "fileName": "投标文件_PRJ_TEST", "warningConfirmed": False},
         )
         self.assertEqual(blocked_export.status_code, 400)
         self.assertEqual(blocked_export.json()["code"], "EXPORT_WARNING_NOT_CONFIRMED")
 
-        exported = self.client.post(
+        exported = await self.client.post(
             f"/api/projects/{project_id}/export",
             json={"format": "docx", "fileName": "投标文件_PRJ_TEST", "warningConfirmed": True},
         )

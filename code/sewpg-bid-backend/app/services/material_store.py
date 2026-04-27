@@ -4,7 +4,7 @@ import base64
 import copy
 import logging
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
 from uuid import uuid4
@@ -904,7 +904,7 @@ class MaterialStore:
                     "sourceRootFolder": source_root_folder,
                     "cleanStatus": clean_status,
                     "cleanMessage": clean_message,
-                    "cleanUpdatedAt": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                    "cleanUpdatedAt": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
                 }
 
                 if upload is not None and hasattr(upload, "file"):
@@ -1112,7 +1112,7 @@ class MaterialStore:
                     "cleanedFileName": "",
                     "cleanedSize": 0,
                     "cleanedAt": "",
-                    "cleanUpdatedAt": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                    "cleanUpdatedAt": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
                 }
             )
             item.ext_fields = ext

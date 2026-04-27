@@ -172,14 +172,21 @@ docker compose up
 
 - `web`
 - `fastapi`
+- `worker`
 - `opencode`
 - `onlyoffice`
+- `postgres`
+- `redis`
+- `minio`
 
 再配合数据卷：
 
-- `sqlite_data`
+- `postgres_data`
+- `redis_data`
+- `minio_data`
 - `uploads`
 - `documents`
+- `parsed`
 
 ## 7. 当前代码里的已知错位
 

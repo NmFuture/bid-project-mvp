@@ -91,7 +91,10 @@ export default function ProjectWizardModal({
 
   useEffect(() => {
     if (isUpdateMode || !defaultBidType) return
-    setForm((prev) => ({ ...prev, bidType: defaultBidType }))
+    const timer = setTimeout(() => {
+      setForm((prev) => ({ ...prev, bidType: defaultBidType }))
+    }, 0)
+    return () => clearTimeout(timer)
   }, [defaultBidType, isUpdateMode])
 
   useEffect(() => {

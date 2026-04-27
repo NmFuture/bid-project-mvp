@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import itertools
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,14 +17,12 @@ class FillGenerationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         base = Path(self.temp_dir.name)
-        settings.sqlite_path = base / "sqlite" / "app.db"
         settings.uploads_dir = base / "uploads"
         settings.documents_dir = base / "documents"
         settings.parsed_dir = base / "parsed"
         settings.ensure_dirs()
 
-        store._projects = {}
-        store._counter = itertools.count(1)
+        store.reset_for_tests()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
 
     def tearDown(self) -> None:

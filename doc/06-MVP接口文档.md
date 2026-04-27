@@ -27,7 +27,7 @@
 - 前端只调用 FastAPI，不直接调用 `opencode`
 - FastAPI 是唯一 `/api` 后端，同时承担真实执行和 mock 返回
 - `S2` 与 `S7` 都由 FastAPI 内部调用 `opencode serve`
-- 项目列表和项目状态需要持久化，MVP 用 `SQLite + 本地文件目录` 即可
+- 项目列表和项目状态需要持久化，MVP 统一使用 `PostgreSQL + 本地文件目录`
 - 当前前端展示流保留 `S0-S10`，接口优先兼容现有 React 前端
 
 ## 3. 正式接口范围

@@ -4,10 +4,13 @@ import copy
 import itertools
 import json
 import re
-import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime
 from typing import Any
+
+import psycopg
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from app.core.config import settings
 from app.services.identity import build_project_identity
@@ -118,8 +121,9 @@ def default_fill_tasks() -> list[dict[str, Any]]:
 
 
 class AppStore:
-    def __init__(self) -> None:
+    def __init__(self, storage_backend: str | None = None) -> None:
         settings.ensure_dirs()
+        self._storage_backend = (storage_backend or settings.project_store_backend or "postgres").strip().lower()
         self._projects: dict[str, dict[str, Any]] = {}
         self._ensure_db()
         self._load_projects()
@@ -136,18 +140,30 @@ class AppStore:
         max_id = max((self._parse_project_number(project_id) for project_id in self._projects), default=0)
         return max_id + 1
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(settings.sqlite_path)
-        connection.row_factory = sqlite3.Row
-        return connection
+    @staticmethod
+    def _postgres_dsn() -> str:
+        return settings.database_url.replace("postgresql+asyncpg://", "postgresql://", 1).replace(
+            "postgresql+psycopg://",
+            "postgresql://",
+            1,
+        )
+
+    @property
+    def _uses_postgres(self) -> bool:
+        return self._storage_backend == "postgres"
+
+    def _connect(self) -> psycopg.Connection:
+        return psycopg.connect(self._postgres_dsn(), row_factory=dict_row)
 
     def _ensure_db(self) -> None:
+        if not self._uses_postgres:
+            return
         with closing(self._connect()) as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS projects (
-                    id TEXT PRIMARY KEY,
-                    payload TEXT NOT NULL,
+                    id VARCHAR(50) PRIMARY KEY,
+                    payload JSONB NOT NULL,
                     updated_at TEXT NOT NULL
                 )
                 """
@@ -155,46 +171,65 @@ class AppStore:
             connection.commit()
 
     def _load_projects(self) -> None:
+        if not self._uses_postgres:
+            return
         self._ensure_db()
         with closing(self._connect()) as connection:
             rows = connection.execute("SELECT id, payload FROM projects").fetchall()
         self._projects = {
-            str(row["id"]): self._normalize_project_identity(json.loads(str(row["payload"])))
+            str(row["id"]): self._normalize_project_identity(
+                row["payload"] if isinstance(row["payload"], dict) else json.loads(str(row["payload"]))
+            )
             for row in rows
         }
 
     def _load_project(self, project_id: str) -> dict[str, Any] | None:
+        if not self._uses_postgres:
+            return self._projects.get(project_id)
         self._ensure_db()
         with closing(self._connect()) as connection:
-            row = connection.execute("SELECT id, payload FROM projects WHERE id = ?", (project_id,)).fetchone()
+            row = connection.execute("SELECT id, payload FROM projects WHERE id = %s", (project_id,)).fetchone()
         if row is None:
             self._projects.pop(project_id, None)
             return None
-        project = self._normalize_project_identity(json.loads(str(row["payload"])))
+        payload = row["payload"] if isinstance(row["payload"], dict) else json.loads(str(row["payload"]))
+        project = self._normalize_project_identity(payload)
         self._projects[project_id] = project
         return project
 
     def _persist_project(self, project: dict[str, Any]) -> None:
+        if not self._uses_postgres:
+            return
         self._ensure_db()
-        payload = json.dumps(project, ensure_ascii=False)
         with closing(self._connect()) as connection:
             connection.execute(
                 """
                 INSERT INTO projects (id, payload, updated_at)
-                VALUES (?, ?, ?)
+                VALUES (%s, %s, %s)
                 ON CONFLICT(id) DO UPDATE SET
                     payload=excluded.payload,
                     updated_at=excluded.updated_at
                 """,
-                (project["id"], payload, project["updatedAt"]),
+                (project["id"], Jsonb(project), project["updatedAt"]),
             )
             connection.commit()
 
     def _delete_project_record(self, project_id: str) -> None:
+        if not self._uses_postgres:
+            return
         self._ensure_db()
         with closing(self._connect()) as connection:
-            connection.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+            connection.execute("DELETE FROM projects WHERE id = %s", (project_id,))
             connection.commit()
+
+    def reset_for_tests(self, *, clear_persistent: bool = False) -> None:
+        self._projects = {}
+        if clear_persistent and self._uses_postgres:
+            self._ensure_db()
+            with closing(self._connect()) as connection:
+                connection.execute("DELETE FROM projects")
+                connection.commit()
+        self._counter = itertools.count(1)
 
     @staticmethod
     def _normalize_project_identity(project: dict[str, Any]) -> dict[str, Any]:

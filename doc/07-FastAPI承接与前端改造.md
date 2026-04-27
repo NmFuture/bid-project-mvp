@@ -9,7 +9,7 @@
 
 ```text
 Web 前端 -> FastAPI(/api)
-                    -> SQLite + 本地文件
+                    -> PostgreSQL + 本地文件
                     -> opencode serve
                     -> OnlyOffice
                     -> 非 MVP mock 返回
@@ -84,7 +84,7 @@ backend/
       docx_service.py
       onlyoffice_service.py
     storage/
-      sqlite_repo.py
+      postgres_repo.py
       file_repo.py
 ```
 
@@ -186,7 +186,7 @@ FastAPI 优先兼容当前 React 前端已经写好的接口，例如：
 按下面顺序最稳：
 
 1. 搭 FastAPI 骨架
-2. 接 `SQLite + 本地文件目录`
+2. 接 `PostgreSQL + 本地文件目录`
 3. 先打通 `S0/S1/S2/S3`
 4. 再打通 `S7/S9/S10`
 5. 再补 `S4/S5/S6/S8` 的 mock 接口

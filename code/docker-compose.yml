@@ -26,8 +26,8 @@ services:
     container_name: sewpg_bid_fastapi
     environment:
       APP_ENV: production
+      APP_STORE_BACKEND: postgres
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://biduser:bidpass@postgres:5432/bidplatform}
-      SQLITE_PATH: /data/sqlite/app.db
       UPLOADS_DIR: /data/uploads
       DOCUMENTS_DIR: /data/documents
       PARSED_DIR: /data/parsed
@@ -68,7 +68,6 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - sqlite_data:/data/sqlite
       - uploads:/data/uploads
       - documents:/data/documents
       - parsed:/data/parsed
@@ -88,8 +87,8 @@ services:
     command: ["python", "-m", "app.workers.redis_worker"]
     environment:
       APP_ENV: production
+      APP_STORE_BACKEND: postgres
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://biduser:bidpass@postgres:5432/bidplatform}
-      SQLITE_PATH: /data/sqlite/app.db
       UPLOADS_DIR: /data/uploads
       DOCUMENTS_DIR: /data/documents
       PARSED_DIR: /data/parsed
@@ -126,7 +125,6 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - sqlite_data:/data/sqlite
       - uploads:/data/uploads
       - documents:/data/documents
       - parsed:/data/parsed
@@ -253,7 +251,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  sqlite_data:
   uploads:
   documents:
   parsed:

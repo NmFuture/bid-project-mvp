@@ -234,7 +234,19 @@ const listItems = (payload) => {
   return []
 }
 
-const identityKey = (value) => String(value || '').trim().toLowerCase().replace(/[\s　,，、.。:：;；()（）\[\]【】{}<>《》"'`·_\-—/\\|]+/g, '')
+const IDENTITY_IGNORED_CHARS = new Set([
+  ',', '，', '、', '.', '。', ':', '：', ';', '；', '(', ')', '（', '）',
+  '[', ']', '【', '】', '{', '}', '<', '>', '《', '》', '"', "'", '`',
+  '·', '_', '-', '—', '/', '\\', '|',
+])
+
+const identityKey = (value) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .split('')
+    .filter((char) => char !== '\u3000' && !/\s/.test(char) && !IDENTITY_IGNORED_CHARS.has(char))
+    .join('')
 
 const normalizeCustomerOptions = (customersPayload, projectsPayload) => {
   const byKey = new Map()
@@ -527,12 +539,15 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   useEffect(() => {
     if (!lockedBidType) return
-    const next = normalizeBidTypeTab(lockedBidType)
-    setActiveBidType(next)
-    setUploadBidType(next)
-    setSelectedFolderPath('')
-    setParseStatus(null)
-    setFilters((prev) => ({ ...prev, page: 1 }))
+    const timer = setTimeout(() => {
+      const next = normalizeBidTypeTab(lockedBidType)
+      setActiveBidType(next)
+      setUploadBidType(next)
+      setSelectedFolderPath('')
+      setParseStatus(null)
+      setFilters((prev) => ({ ...prev, page: 1 }))
+    }, 0)
+    return () => clearTimeout(timer)
   }, [lockedBidType])
 
   useEffect(() => {
@@ -541,15 +556,21 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   useEffect(() => {
     if (!showUploadModal) return
-    loadUploadIdentityOptions()
+    const timer = setTimeout(() => {
+      loadUploadIdentityOptions()
+    }, 0)
+    return () => clearTimeout(timer)
   }, [showUploadModal, loadUploadIdentityOptions])
 
   useEffect(() => {
     if (!showUploadModal || uploadCustomerId || !uploadCustomerName.trim()) return
     const matchedCustomer = customerOptions.find((option) => customerOptionMatches(option, uploadCustomerName))
     if (!matchedCustomer) return
-    setUploadCustomerId(matchedCustomer.customerId)
-    setUploadCustomerName(matchedCustomer.name)
+    const timer = setTimeout(() => {
+      setUploadCustomerId(matchedCustomer.customerId)
+      setUploadCustomerName(matchedCustomer.name)
+    }, 0)
+    return () => clearTimeout(timer)
   }, [customerOptions, showUploadModal, uploadCustomerId, uploadCustomerName])
 
   const setCollapseForAll = (collapsed) => {

@@ -6,6 +6,18 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- ============================================================
+-- 0. Bid Project Workflow State (项目主链路状态)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS projects (
+    id          VARCHAR(50) PRIMARY KEY,
+    payload     JSONB NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at DESC);
+
+-- ============================================================
 -- 1. Raw Material Library (原始素材库)
 -- ============================================================
 

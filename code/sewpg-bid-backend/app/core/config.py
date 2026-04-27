@@ -42,10 +42,10 @@ def _upload_extensions() -> tuple[str, ...]:
 @dataclass
 class Settings:
     app_env: str
-    sqlite_path: Path
     uploads_dir: Path
     documents_dir: Path
     parsed_dir: Path
+    project_store_backend: str
     opencode_base_url: str
     opencode_provider_id: str
     opencode_model_id: str
@@ -77,7 +77,6 @@ class Settings:
     redis_worker_poll_timeout_sec: int
 
     def ensure_dirs(self) -> None:
-        self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self.documents_dir.mkdir(parents=True, exist_ok=True)
         self.parsed_dir.mkdir(parents=True, exist_ok=True)
@@ -85,10 +84,10 @@ class Settings:
 
 settings = Settings(
     app_env=os.getenv("APP_ENV", "development"),
-    sqlite_path=Path(os.getenv("SQLITE_PATH", str(LOCAL_DATA_DIR / "sqlite" / "app.db"))),
     uploads_dir=Path(os.getenv("UPLOADS_DIR", str(LOCAL_DATA_DIR / "uploads"))),
     documents_dir=Path(os.getenv("DOCUMENTS_DIR", str(LOCAL_DATA_DIR / "documents"))),
     parsed_dir=Path(os.getenv("PARSED_DIR", str(LOCAL_DATA_DIR / "parsed"))),
+    project_store_backend=os.getenv("APP_STORE_BACKEND", "postgres").strip().lower() or "postgres",
     opencode_base_url=os.getenv("OPENCODE_BASE_URL", "http://127.0.0.1:4096"),
     opencode_provider_id=os.getenv("OPENCODE_PROVIDER_ID", "opencode"),
     opencode_model_id=os.getenv("OPENCODE_MODEL_ID", "big-pickle"),

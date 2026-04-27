@@ -38,21 +38,33 @@
 
 ## 部署架构
 
-当前 compose 默认启动 4 个服务：
+当前 compose 默认启动 8 个服务：
 
 - `web`
   - 前端静态页面 + `/api` / `/ds` 反向代理
 - `fastapi`
   - 唯一业务后端
+- `worker`
+  - Redis 队列消费者，负责目录生成、初稿生成、素材清洗等后台任务
 - `opencode`
   - 目录生成 / 初稿生成
 - `onlyoffice`
   - 在线文档预览和编辑
+- `postgres`
+  - 项目主链路状态、素材库元数据、Wiki 正文
+- `redis`
+  - 后台任务队列、任务锁和结果缓存
+- `minio`
+  - 上传文件、素材文件、清洗后 Word、Wiki 附件等对象存储
 
 当前 compose 还会保留这些数据卷：
 
-- `sqlite_data`
-  - 项目状态和流程状态
+- `postgres_data`
+  - 项目状态、流程状态、素材库元数据、Wiki 正文
+- `redis_data`
+  - 后台任务队列持久化
+- `minio_data`
+  - 素材原文件、清洗后 Word、附件和生成文档对象
 - `uploads`
   - 用户上传的招标文件
 - `documents`
@@ -187,6 +199,11 @@ compose 会把这个目录挂进 `opencode` 容器。
 | 变量 | 作用 |
 |---|---|
 | `WEB_PORT` | 浏览器入口端口 |
+| `APP_STORE_BACKEND` | 项目主链路状态存储，部署默认 `postgres` |
+| `DATABASE_URL` | FastAPI / worker 访问 PostgreSQL 的连接串 |
+| `MINIO_ENDPOINT` | FastAPI / worker 访问 MinIO 的地址 |
+| `MINIO_BUCKET_MATERIALS` | 素材库对象 bucket |
+| `REDIS_URL` | FastAPI / worker 使用的 Redis 队列地址 |
 | `OPENCODE_HOST_PORT` | 本机暴露给调试使用的 opencode 端口 |
 | `OPENCODE_BASE_URL` | FastAPI 调用的 opencode 地址 |
 | `OPENCODE_PROVIDER_ID` | 调用 opencode 时的 provider |
@@ -249,8 +266,8 @@ compose 会把这个目录挂进 `opencode` 容器。
 ## 已知边界
 
 - `S4 / S5 / S6 / S8` 仍然是承接态，不是正式业务实现
-- 当前默认数据库是 SQLite，不是 PostgreSQL
-- 当前默认没有接入 SSO、OCR、Redis、MinIO
+- 当前默认已经接入 PostgreSQL、MinIO、Redis
+- 当前默认没有接入 SSO、OCR
 - `opencode` 能否真实生成，取决于你配置的 provider / model / key 是否可用
 
 ## GitHub 协作提交（必须走分支 + PR 审核）
