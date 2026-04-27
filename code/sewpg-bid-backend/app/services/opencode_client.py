@@ -139,6 +139,33 @@ class OpencodeClient:
             "opencodeOutput": self._build_output_trace(session_id, response),
         }
 
+    def generate_wiki_blueprint_with_trace(
+        self,
+        prompt_text: str,
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        session = self.create_session("素材 Wiki 生成")
+        session_id = str(session.get("id") or "")
+        if session_ready_callback:
+            session_ready_callback(
+                {
+                    "sessionId": session_id,
+                    "providerId": self.provider_id,
+                    "modelId": self.model_id,
+                }
+            )
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback,
+        )
+        parsed = self._extract_wiki_blueprint_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
     def list_session_messages(self, session_id: str) -> list[dict[str, Any]]:
         try:
             with httpx.Client(timeout=httpx.Timeout(5.0, connect=5.0)) as client:
@@ -158,7 +185,11 @@ class OpencodeClient:
             empty_message="futurecode 未返回目录内容。",
             repair_kind="outline",
         )
-        if not isinstance(parsed, dict) or not isinstance(parsed.get("nodes"), list):
+        if not isinstance(parsed, dict) or (
+            not isinstance(parsed.get("nodes"), list)
+            and not isinstance(parsed.get("items"), list)
+            and not isinstance(parsed.get("outputFile"), str)
+        ):
             raise RuntimeError("futurecode 返回的目录 JSON 结构不正确。")
         return parsed
 
@@ -170,6 +201,16 @@ class OpencodeClient:
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("sections"), list):
             raise RuntimeError("futurecode 返回的初稿 JSON 结构不正确。")
+        return parsed
+
+    def _extract_wiki_blueprint_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = self._extract_json_response(
+            response,
+            empty_message="futurecode 未返回 Wiki 蓝图内容。",
+            repair_kind="wiki",
+        )
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("nodes"), list):
+            raise RuntimeError("futurecode 返回的 Wiki 蓝图 JSON 结构不正确。")
         return parsed
 
     def _extract_json_response(
@@ -347,11 +388,25 @@ class OpencodeClient:
         return f"{text[:limit - 3]}..."
 
     def _repair_json_payload(self, raw_content: str, repair_kind: str) -> str:
-        schema_hint = (
-            '{"summary":"一句简短总结","nodes":[{"id":"OL-1","title":"一级标题","children":[]}]}'
-            if repair_kind == "outline"
-            else '{"summary":"一句简短总结","sections":[{"nodeId":"OL-1","title":"章节标题","generationMode":"generated","content":"正文","riskFlags":[]}]}'
-        )
+        if repair_kind == "outline":
+            schema_hint = (
+                '{"schema_version":"bid-toc-json-v1","summary":{"total_items":1,'
+                '"annotation_counts":{"保留":1,"适配":0,"新增-招标要求":0,"新增-素材库建议":0,'
+                '"删除建议":0,"素材内置标题":0}},"items":[{"order":1,"number":"第一章",'
+                '"title":"一级标题","level":1,"annotation":"保留","source":"template","reason":""}],'
+                '"outputFile":"/data/parsed/PRJ-0001/s2_toc_workdir/投标文件-总目录.json"}'
+            )
+        elif repair_kind == "wiki":
+            schema_hint = (
+                '{"summary":"一句简短总结","rootTitle":"技术标Wiki（自动生成）",'
+                '"nodes":[{"title":"节点标题","markdownContent":"# 节点标题\\n\\n正文",'
+                '"tags":["技术标","素材库"],"applicableTypes":["技术标"],"children":[]}]}'
+            )
+        else:
+            schema_hint = (
+                '{"summary":"一句简短总结","sections":[{"nodeId":"OL-1","title":"章节标题",'
+                '"generationMode":"generated","content":"正文","riskFlags":[]}]}'
+            )
         repair_prompt = f"""
 请把下面内容整理成严格 JSON。
 

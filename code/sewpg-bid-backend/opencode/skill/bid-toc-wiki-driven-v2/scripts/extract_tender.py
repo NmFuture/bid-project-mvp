@@ -75,6 +75,23 @@ SPECIALS = [
     ("源头管控", "状态监测"),
 ]
 
+CONTEXT_WORDS = [
+    "项目",
+    "场址",
+    "建设地点",
+    "工程地点",
+    "气象",
+    "环境",
+    "技术要求",
+    "供货范围",
+    "评分",
+    "专用",
+    "必须",
+    "应",
+    "要求",
+]
+MAX_EVIDENCE_PER_KEY = 3
+
 
 def read_all_text(docx_path: Path) -> str:
     doc = Document(str(docx_path))
@@ -139,29 +156,99 @@ def extract_project(head_text: str, full_text: str):
     return proj, code
 
 
-def scan_keywords(text: str, keyword_map: dict, threshold: int = 2) -> dict:
-    """返回 {分类: bool}，次数 >= threshold 才算真命中（降噪目录误触）。"""
-    flags = {}
+def iter_lines(text: str) -> list[str]:
+    lines = []
+    for raw in str(text or "").splitlines():
+        line = re.sub(r"\s+", " ", raw).strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def is_regex_keyword(keyword: str) -> bool:
+    return any(mark in keyword for mark in ("*", "?", "+", "\\", "[", "]", "(", ")", "|"))
+
+
+def keyword_hits_line(line: str, keyword: str) -> bool:
+    if is_regex_keyword(keyword):
+        try:
+            return bool(re.search(keyword, line))
+        except re.error:
+            return False
+    return keyword in line
+
+
+def keyword_hit_count(text: str, keyword: str) -> int:
+    if is_regex_keyword(keyword):
+        try:
+            return len(re.findall(keyword, text))
+        except re.error:
+            return 0
+    return text.count(keyword)
+
+
+def context_score(line: str) -> int:
+    return sum(1 for word in CONTEXT_WORDS if word in line)
+
+
+def evidence_for_keywords(lines: list[str], keywords: list[str]) -> list[str]:
+    evidence = []
+    seen = set()
+    for line in lines:
+        if not any(keyword_hits_line(line, kw) for kw in keywords):
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        evidence.append(line[:180])
+    evidence.sort(key=lambda value: context_score(value), reverse=True)
+    return evidence[:MAX_EVIDENCE_PER_KEY]
+
+
+def scan_keyword_details(text: str, keyword_map: dict, threshold: int = 2, contextual: bool = False) -> dict:
+    """返回每类关键词的命中证据。
+
+    contextual=True 时，只有带项目/场址/技术要求等上下文的句子才给高置信度，
+    避免通用模板或目录清单里出现关键词就把所有环境条件都判成 true。
+    """
+    details = {}
+    lines = iter_lines(text)
     for cat, kws in keyword_map.items():
         total = 0
         for kw in kws:
-            if kw.startswith("^") or "*" in kw or "?" in kw or "+" in kw:
-                try:
-                    total += len(re.findall(kw, text))
-                except re.error:
-                    pass
-            else:
-                total += text.count(kw)
-        flags[cat] = total >= threshold
-    return flags
+            total += keyword_hit_count(text, kw)
+        evidence = evidence_for_keywords(lines, kws)
+        contextual_hits = sum(1 for item in evidence if context_score(item) > 0)
+        confidence = 0.0
+        if total:
+            confidence = min(1.0, 0.28 + min(total, 8) * 0.07 + contextual_hits * 0.18)
+        if contextual and total and not contextual_hits:
+            confidence = min(confidence, 0.45)
+        matched = total >= threshold and confidence >= (0.62 if contextual else 0.50)
+        details[cat] = {
+            "matched": matched,
+            "count": total,
+            "confidence": round(confidence, 2),
+            "evidence": evidence,
+        }
+    return details
 
 
 def extract_specials(text: str) -> list:
     out = []
     seen = set()
+    lines = iter_lines(text)
     for kw, hint in SPECIALS:
         if kw in text and kw not in seen:
-            out.append({"keyword": kw, "hint_section": hint})
+            evidence = evidence_for_keywords(lines, [kw])
+            out.append(
+                {
+                    "keyword": kw,
+                    "hint_section": hint,
+                    "confidence": 0.85 if evidence else 0.65,
+                    "evidence": evidence,
+                }
+            )
             seen.add(kw)
     return out
 
@@ -171,13 +258,19 @@ def extract(docx_path: Path) -> dict:
     head = read_head_text(docx_path, 80)
     owner = extract_owner(head, full)
     project, code = extract_project(head, full)
+    site_details = scan_keyword_details(full, SITE_KEYWORDS, threshold=3, contextual=True)
+    model_details = scan_keyword_details(full, MODEL_KEYWORDS, threshold=2)
+    plot_details = scan_keyword_details(full, PLOT_KEYWORDS, threshold=3, contextual=True)
     return {
         "owner": owner,
         "project": project,
         "code": code,
-        "site_flags": scan_keywords(full, SITE_KEYWORDS, threshold=3),
-        "model_flags": scan_keywords(full, MODEL_KEYWORDS, threshold=2),
-        "plot_flags": scan_keywords(full, PLOT_KEYWORDS, threshold=3),
+        "site_flags": {key: value["matched"] for key, value in site_details.items()},
+        "site_evidence": site_details,
+        "model_flags": {key: value["matched"] for key, value in model_details.items()},
+        "model_evidence": model_details,
+        "plot_flags": {key: value["matched"] for key, value in plot_details.items()},
+        "plot_evidence": plot_details,
         "specials": extract_specials(full),
         "source": str(docx_path),
     }

@@ -40,7 +40,7 @@ config = {
         "skill": {
             "*": "allow",
         },
-        "bash": "deny",
+        "bash": "allow",
         "edit": "deny",
     },
 }

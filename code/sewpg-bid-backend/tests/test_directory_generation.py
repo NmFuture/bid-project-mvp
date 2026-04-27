@@ -140,6 +140,115 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertEqual(outline["nodes"][0]["title"], "项目概况")
         self.assertEqual(outline["summary"]["totalNodeCount"], 3)
 
+    def test_generate_outline_accepts_v2_toc_items_and_preserves_metadata(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result()
+
+        with patch(
+            "app.services.outline_generation.OpencodeClient.generate_outline_with_trace",
+            return_value={
+                "schema_version": "bid-toc-json-v1",
+                "summary": {"total_items": 3, "annotation_counts": {"保留": 2, "适配": 1}},
+                "items": [
+                    {
+                        "order": 1,
+                        "number": "第一章",
+                        "title": "项目概况",
+                        "level": 1,
+                        "annotation": "保留",
+                        "source": "template",
+                        "reason": "",
+                    },
+                    {
+                        "order": 2,
+                        "number": "1.1",
+                        "title": "项目背景",
+                        "level": 2,
+                        "annotation": "适配",
+                        "source": "wiki",
+                        "reason": "项目名称替换",
+                        "source_refs": [{"type": "wiki", "path": "技术标Wiki/项目背景"}],
+                        "material_refs": [{"id": "RAW-1", "docx": "项目背景.docx"}],
+                    },
+                    {
+                        "order": 3,
+                        "number": "第二章",
+                        "title": "技术方案",
+                        "level": 1,
+                        "annotation": "保留",
+                        "source": "template",
+                        "reason": "",
+                    },
+                ],
+                "opencodeOutput": {
+                    "status": "received",
+                    "sessionId": "ses-v2",
+                    "providerId": "opencode",
+                    "modelId": "big-pickle",
+                    "receivedAt": "2026-04-20T00:00:00Z",
+                    "parts": [],
+                },
+            },
+        ):
+            payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        self.assertEqual(payload["summary"], "目录生成完成，共 3 条目录项（保留2，适配1）。")
+        self.assertEqual(payload["output"]["chapterCount"], 2)
+        self.assertEqual(payload["opencodeOutput"]["skill"], "bid-toc-wiki-driven-v2")
+        outline = store.get_outline_state(project_id)
+        self.assertEqual(outline["nodes"][0]["title"], "第一章 项目概况")
+        self.assertEqual(outline["nodes"][0]["children"][0]["title"], "项目背景")
+        self.assertEqual(outline["nodes"][0]["children"][0]["annotation"], "适配")
+        self.assertEqual(outline["nodes"][0]["children"][0]["sourceRefs"][0]["type"], "wiki")
+        self.assertEqual(outline["nodes"][0]["children"][0]["materialRefs"][0]["id"], "RAW-1")
+
+    def test_generate_outline_reads_v2_toc_from_output_file_summary(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result()
+        toc_path = settings.parsed_dir / project_id / "s2_toc_workdir" / "投标文件-总目录.json"
+
+        def fake_generate_outline(prompt: str, session_ready_callback=None, stream_callback=None) -> dict[str, object]:
+            toc_path.parent.mkdir(parents=True, exist_ok=True)
+            toc_path.write_text(
+                (
+                    '{"schema_version":"bid-toc-json-v1","summary":{"total_items":2},'
+                    '"items":[{"order":1,"number":"第一章","title":"项目概况","level":1,'
+                    '"annotation":"保留","source":"template","reason":""},'
+                    '{"order":2,"number":"1.1","title":"项目背景","level":2,'
+                    '"annotation":"适配","source":"wiki","reason":""}]}'
+                ),
+                encoding="utf-8",
+            )
+            return {
+                "schema_version": "bid-toc-json-v1",
+                "outputFile": str(toc_path),
+                "summary": {"total_items": 2},
+                "itemCount": 2,
+                "opencodeOutput": {
+                    "status": "received",
+                    "sessionId": "ses-summary",
+                    "providerId": "opencode",
+                    "modelId": "big-pickle",
+                    "receivedAt": "2026-04-20T00:00:00Z",
+                    "parts": [{"type": "text", "text": "{\"outputFile\":\"...\"}"}],
+                },
+            }
+
+        with patch(
+            "app.services.outline_generation.OpencodeClient.generate_outline_with_trace",
+            side_effect=fake_generate_outline,
+        ):
+            payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["output"]["chapterCount"], 1)
+        self.assertEqual(payload["opencodeOutput"]["tocJsonPath"], str(toc_path))
+        outline = store.get_outline_state(project_id)
+        self.assertEqual(outline["nodes"][0]["title"], "第一章 项目概况")
+        self.assertEqual(outline["nodes"][0]["children"][0]["title"], "项目背景")
+
     def test_generate_outline_prefers_template_headings_then_uses_tender_to_adjust(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
 

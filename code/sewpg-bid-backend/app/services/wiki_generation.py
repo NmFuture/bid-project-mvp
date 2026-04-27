@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import zipfile
@@ -14,9 +15,11 @@ from sqlalchemy.orm import selectinload
 
 from app.models import async_session
 from app.models.materials import RawFile
+from app.services.identity import canonical_customer, classify_material_path, material_identity
 from app.services.minio_client import minio_client
 from app.services.material_store import material_store
 from app.services.opencode_client import OpencodeClient
+from app.services.peripheral import PeripheralError
 
 DEFAULT_REFERENCE_WIKI_PATH = Path(
     "/Users/anbocheng/Desktop/20260412_技术标/20260413_技术标_组织优化/素材库-20260413-wlb-clean-wiki/wiki"
@@ -107,6 +110,7 @@ MAX_CARD_EXCERPT_PARAGRAPHS = 10
 MAX_CARD_HEADINGS = 80
 MAX_INDEX_ITEMS = 260
 MAX_SYNC_DOCX_BYTES = 30 * 1024 * 1024
+WIKI_BID_TYPES = {"技术标", "商务标"}
 HEADING_STYLE_RE = re.compile(r"(?:Heading|标题)\s*([1-9])|Heading([1-9])", re.IGNORECASE)
 NUMBERED_HEADING_RE = re.compile(
     r"^(?:(第[一二三四五六七八九十百]+[章节篇])|([一二三四五六七八九十]+[、.．])|((?:\d+[.．、]){1,5}))\s*\S+"
@@ -155,7 +159,7 @@ def _material_scope(folder_path: str, file_name: str, folder_tier: str = "") -> 
     text = f"{folder_path}/{file_name}"
     if "投标资料库-通用" in text or "通用项目信息" in text or folder_tier == "standard":
         return "通用"
-    if "客户定制" in text or folder_tier in {"customer", "project"}:
+    if "客户素材" in text or "项目素材" in text or "客户定制" in text or folder_tier in {"customer", "project"}:
         return "定制"
     if "定制" in text or "招标文件" in text:
         return "定制"
@@ -171,6 +175,19 @@ def _material_bid_type(folder_path: str, file_name: str, folder_bid_type: str = 
     if "技术标" in text or "风资源" in text or "机组" in text or "风机" in text or "技术" in text:
         return "技术标"
     return "通用"
+
+
+def _normalize_wiki_bid_type(value: str = "") -> str:
+    text = str(value or "").strip()
+    return text if text in WIKI_BID_TYPES else "技术标"
+
+
+def _wiki_skill_name(bid_type: str) -> str:
+    return "bid-business-wiki-material-builder" if bid_type == "商务标" else "bid-tech-wiki-material-builder"
+
+
+def _wiki_root_title(bid_type: str) -> str:
+    return f"{bid_type}Wiki（自动生成）"
 
 
 def _heading_level_from_paragraph(para: Any) -> int | None:
@@ -379,18 +396,55 @@ def _keyword_candidates(material: dict[str, Any]) -> list[str]:
 
 
 def _profile_raw_file(item: RawFile) -> dict[str, Any]:
+    ext_fields = item.ext_fields or {}
     folder_path = item.folder.path if item.folder else ""
     folder_tier = str(item.folder.tier or "") if item.folder else ""
     folder_bid_type = str(item.folder.bid_type or "") if item.folder else ""
     file_name = str(item.name or "")
-    ext = Path(file_name).suffix.lower().lstrip(".") or "file"
-    bid_type = _material_bid_type(folder_path, file_name, folder_bid_type)
+    source_ext = Path(file_name).suffix.lower().lstrip(".") or "file"
+    cleaned_minio_key = str(ext_fields.get("cleanedMinioKey") or "")
+    cleaned_bucket = str(ext_fields.get("cleanedMinioBucket") or item.minio_bucket or "")
+    cleaned_file_name = str(ext_fields.get("cleanedFileName") or "")
+    has_cleaned_word = bool(cleaned_minio_key)
+    ext = "docx" if source_ext == "docx" or has_cleaned_word else source_ext
+    path_identity = classify_material_path(folder_path, str(ext_fields.get("bidType") or folder_bid_type or "技术标"))
+    bid_type = str(ext_fields.get("bidType") or path_identity.get("bidType") or _material_bid_type(folder_path, file_name, folder_bid_type))
     scope = _material_scope(folder_path, file_name, folder_tier)
+    material_tier = str(ext_fields.get("materialTier") or path_identity.get("materialTier") or folder_tier or "")
+    if material_tier == "standard":
+        scope = "通用"
+    elif material_tier in {"customer", "project"}:
+        scope = "定制"
     if bid_type == "商务标":
         group = "项目商务数据" if scope == "定制" else _classify_business_group(folder_path, file_name)
     else:
         group = "项目数据" if scope == "定制" else _classify_material_group(folder_path, file_name)
     path = f"{folder_path}/{file_name}".strip("/")
+    identity = material_identity(
+        material_tier=material_tier,
+        bid_type=bid_type,
+        customer_name=str(ext_fields.get("customerName") or path_identity.get("customerName") or ""),
+        project_id=str(ext_fields.get("projectId") or path_identity.get("projectId") or ""),
+        project_code=str(ext_fields.get("projectCode") or ext_fields.get("projectId") or path_identity.get("projectId") or ""),
+        project_name=str(ext_fields.get("projectName") or ""),
+    )
+    identity.update(
+        {
+            key: ext_fields[key]
+            for key in (
+                "identityScope",
+                "materialScope",
+                "customerId",
+                "customerCanonicalName",
+                "customerAliases",
+                "projectId",
+                "projectCode",
+                "projectName",
+                "identityDisplay",
+            )
+            if key in ext_fields and ext_fields[key] not in (None, "")
+        }
+    )
     profile: dict[str, Any] = {
         "id": f"RAW-{int(item.id):04d}",
         "name": file_name,
@@ -398,12 +452,30 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
         "folderPath": folder_path,
         "path": path,
         "ext": ext,
+        "sourceExt": source_ext,
+        "hasCleanedWord": has_cleaned_word,
+        "cleanedFileName": cleaned_file_name,
+        "cleanedMinioBucket": cleaned_bucket,
+        "cleanedMinioKey": cleaned_minio_key,
         "bidType": bid_type,
         "scope": scope,
+        "materialTier": material_tier,
+        "identityScope": identity.get("identityScope") or ("general" if scope == "通用" else "project"),
+        "materialScope": identity.get("materialScope") or ("general" if scope == "通用" else "project"),
+        "identityDisplay": identity.get("identityDisplay") or "",
+        "customerName": str(ext_fields.get("customerName") or path_identity.get("customerName") or ""),
+        "customerId": identity.get("customerId") or "",
+        "customerCanonicalName": identity.get("customerCanonicalName") or "",
+        "customerAliases": identity.get("customerAliases") or [],
+        "projectId": identity.get("projectId") or "",
+        "projectCode": identity.get("projectCode") or "",
+        "projectName": identity.get("projectName") or "",
         "group": group,
         "folderTier": folder_tier,
-        "bucket": item.minio_bucket,
-        "minioKey": item.minio_key,
+        "bucket": cleaned_bucket if has_cleaned_word else item.minio_bucket,
+        "minioKey": cleaned_minio_key if has_cleaned_word else item.minio_key,
+        "sourceBucket": item.minio_bucket,
+        "sourceMinioKey": item.minio_key,
         "sizeBytes": int(item.size_bytes or 0),
         "headings": [],
         "paragraphs": [],
@@ -411,16 +483,17 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
         "tableCount": 0,
         "parseError": "",
     }
+    parse_size = int(ext_fields.get("cleanedSize") or item.size_bytes or 0) if has_cleaned_word else int(item.size_bytes or 0)
     if ext == "docx":
-        if int(item.size_bytes or 0) > MAX_SYNC_DOCX_BYTES:
-            size_mb = int(item.size_bytes or 0) / 1024 / 1024
+        if parse_size > MAX_SYNC_DOCX_BYTES:
+            size_mb = parse_size / 1024 / 1024
             profile["parseError"] = (
                 f"文件 {size_mb:.1f}MB，超过同步解析上限 30MB；"
                 "已生成索引卡片，需由后台深度解析任务补充 Heading 和正文摘录。"
             )
         else:
             try:
-                data = minio_client.get_object(item.minio_bucket, item.minio_key)
+                data = minio_client.get_object(str(profile["bucket"]), str(profile["minioKey"]))
                 profile.update(_extract_docx_profile(data))
             except Exception as exc:  # pragma: no cover - depends on object store state
                 profile["parseError"] = f"MinIO 读取失败：{exc}"
@@ -463,63 +536,111 @@ async def _summarize_material_inventory() -> dict[str, Any]:
     }
 
 
-def _build_wiki_generation_prompt(reference: dict[str, Any], material_inventory: dict[str, Any]) -> str:
+def _filter_inventory_for_bid_type(inventory: dict[str, Any], bid_type: str) -> dict[str, Any]:
+    materials = [
+        item
+        for item in (inventory.get("items") or [])
+        if isinstance(item, dict) and _matches_bid_type(item, bid_type)
+    ]
+    groups: dict[str, list[str]] = {}
+    custom_items: list[str] = []
+    parsed_count = 0
+    for item in materials:
+        groups.setdefault(f"{item.get('bidType')}/{item.get('scope')}/{item.get('group')}", []).append(str(item.get("name") or ""))
+        if item.get("scope") == "定制":
+            custom_items.append(str(item.get("name") or ""))
+        if item.get("ext") == "docx" and not item.get("parseError"):
+            parsed_count += 1
+    return {
+        "total": len(materials),
+        "docxTotal": sum(1 for item in materials if item.get("ext") == "docx"),
+        "parsedDocxTotal": parsed_count,
+        "groups": {key: sorted(value) for key, value in sorted(groups.items())},
+        "items": sorted(materials, key=lambda item: (str(item.get("scope")), str(item.get("group")), str(item.get("name")))),
+        "customItems": sorted(custom_items)[:120],
+        "sourceInventoryTotal": inventory.get("total", 0),
+        "bidType": bid_type,
+    }
+
+
+def _build_wiki_generation_prompt(reference: dict[str, Any], material_inventory: dict[str, Any], bid_type: str) -> str:
+    skill_name = _wiki_skill_name(bid_type)
+    root_title = _wiki_root_title(bid_type)
+    opposite_bid_type = "商务标" if bid_type == "技术标" else "技术标"
+    bid_focus = (
+        "技术方案、机型参数、技术标准、风资源、设备子系统、供货交付、评分点映射"
+        if bid_type == "技术标"
+        else "投标函、授权委托、资质证书、业绩证明、报价、保证金、商务偏差、合同条款响应"
+    )
     payload = json.dumps(
         {
             "referenceWiki": reference,
             "materialInventory": material_inventory,
+            "targetBidType": bid_type,
+            "targetSkill": skill_name,
         },
         ensure_ascii=False,
         indent=2,
     )
     return f"""
-Use the bid-wiki-material-builder skill.
+Use the {skill_name} skill.
 
 目标：
-基于当前原始材料库中的素材文件清单和参考 wiki 摘要，生成一份“平台级 Wiki = 标书装配规则库”的初始化蓝图。
+基于当前 `{bid_type}` 原始素材清单和参考 wiki 摘要，生成一份“{bid_type} Wiki = {bid_type}装配规则库”的初始化蓝图。
 
 业务要求：
-1. 平台级 Wiki 要体现“素材卡片装配系统”，不是知识百科。
+1. 本次只生成 `{bid_type}` Wiki；不要生成 `{opposite_bid_type}` 体系，也不要输出跨标类混合库。
 2. 必须优先使用 materialInventory.items 中的真实文件名和路径生成卡片节点。
-3. 必须把结构拆成两层概念：
-   - 平台级 Wiki：通用卡片、章节骨架、规则、同义词、挂载说明
-   - 项目级 Wiki：只作为模板/约定进行说明，不生成项目实例数据
-4. 结果要适合落入当前系统的 wiki tree，每个节点都可以有 markdown 内容。
-5. 内容要尽量继承参考 wiki 的组织方式，尤其是：
+3. `{bid_type}` Wiki 要体现“素材卡片装配系统”，不是知识百科，也不是文件夹浏览器。
+4. `{bid_type}` 关注范围：{bid_focus}。
+5. 目录生成 skill 和正文拼装 skill 共读同一 `{bid_type}` Wiki，但节点内容中要写清 usage：
+   - directory：供目录生成读取，重点是 skeleton、章节类型、评分点映射和目录规则。
+   - assembly：供投标文件正文拼装读取，重点是卡片、原始 docx 路径、merge 信息和替换字段。
+   - both：两者都可读。
+   同时必须写清 AI 检索身份：
+   - identity_scope=general/customer/project
+   - customer_id/customer_name/customer_aliases
+   - project_id/project_code
+   未命中项目身份的客户素材、项目素材，后续 skill 不得读取。
+6. 结果要适合落入当前系统的 wiki tree，每个节点都可以有 markdown 内容。
+7. 内容要尽量继承参考 wiki 的组织方式，尤其是：
    - index = 卡片目录
    - rules = 装配规则
    - synonyms = 检索映射
    - skeleton_section = 章节归属
-6. 不要生成过深的细枝末节，但“通用卡片/定制卡片”下必须能看到由真实素材文件推导出的卡片。
+8. 不要生成过深的细枝末节，但“通用卡片/定制卡片”下必须能看到由真实素材文件推导出的卡片。
+9. 商务标没有真实素材时，只生成待补料框架和规则提醒，不要虚构商务卡片。
 
 输出要求：
 1. 只输出 JSON，不要解释，不要 Markdown 代码块。
 2. JSON 结构必须为：
 {{
   "summary": "一句简短总结",
-  "rootTitle": "平台级Wiki（自动生成）",
+  "rootTitle": "{root_title}",
   "nodes": [
     {{
       "title": "节点标题",
       "markdownContent": "# 标题\\n\\n正文",
-      "tags": ["通用材料"],
-      "applicableTypes": ["通用"],
+      "tags": ["{bid_type}", "素材库"],
+      "applicableTypes": ["{bid_type}"],
       "children": []
     }}
   ]
 }}
-3. 顶层建议至少包含这些分组：
-   - 平台级Wiki说明
-   - 素材速查索引
-   - 章节骨架
-   - 装配规则
-   - 同义词映射
-   - 通用卡片
-   - 定制卡片
-   - 项目级Wiki模板
-4. “通用卡片”下按素材分类分组输出，每个真实素材文件至少形成一个卡片条目或在索引中出现。
-5. “定制卡片”下按项目数据分组输出。
-6. “项目级Wiki模板”要明确说明 override / append / reference 三种补料方式。
+3. 顶层至少包含这些分组，标题要保持稳定：
+   - 00-Wiki使用说明
+   - 01-{bid_type}素材速查索引
+   - 02-{bid_type}目录骨架 skeleton
+   - 03-{bid_type}装配规则 rules
+   - 04-{bid_type}同义词 synonyms
+   - 05-{bid_type}通用卡片
+   - 06-{bid_type}定制卡片
+   - 07-{bid_type}质量日志
+   - 08-共用规则
+4. “通用卡片/定制卡片”下按素材分类分组输出，每个真实 docx 素材至少形成一个卡片条目或在索引中出现。
+5. “共用规则”要明确字段替换、客户/业主同义词、项目参数映射、override / append / reference 规则。
+6. 每张素材卡片的 Merge 信息必须保留 identity_scope、customer_id、customer_name、project_id、project_code，供 AI 做素材过滤。
+7. 如果 materialInventory.items 为空，只生成 `{bid_type}` 的待补料框架、目录骨架和质量日志提醒，不要虚构素材卡片。
 
 输入摘要：
 {payload}
@@ -547,6 +668,9 @@ def _render_material_card(material: dict[str, Any]) -> str:
     skeleton_section = str(material.get("skeletonSection") or material.get("group") or "未明确")
     material_level_range = str(material.get("materialLevelRange") or "none")
     heading_count = int(material.get("headingCount") or 0)
+    aliases = material.get("customerAliases") or []
+    alias_text = "、".join(str(item) for item in aliases if str(item).strip())
+    identity_scope = str(material.get("identityScope") or "general")
 
     lines = [
         f"# {title}",
@@ -555,7 +679,18 @@ def _render_material_card(material: dict[str, Any]) -> str:
         f"- 原始文件：`{material.get('path')}`",
         f"- 文件编号：`{material.get('id')}`",
         f"- 素材范围：{material.get('scope')} / {material.get('group')}",
-        f"- 文件类型：{material.get('ext')}",
+        f"- 文件类型：{material.get('sourceExt') or material.get('ext')}",
+        f"- 清洗后 Word：{material.get('cleanedFileName') or ('原始文件即 Word' if material.get('ext') == 'docx' else '')}",
+        "",
+        "## AI 检索身份",
+        f"- identity_scope: {identity_scope}",
+        f"- bid_type: {material.get('bidType')}",
+        f"- customer_id: {material.get('customerId') or ''}",
+        f"- customer_name: {material.get('customerCanonicalName') or material.get('customerName') or ''}",
+        f"- customer_aliases: {alias_text}",
+        f"- project_id: {material.get('projectId') or ''}",
+        f"- project_code: {material.get('projectCode') or ''}",
+        f"- identity_display: {material.get('identityDisplay') or ''}",
         "",
         "## 该填进什么章节",
         f"- 主关键词：{'、'.join(str(item) for item in keywords[:6])}",
@@ -591,7 +726,7 @@ def _render_material_card(material: dict[str, Any]) -> str:
             "",
             "## 适用条件",
             f"- 触发条件：目录或评分点命中“{' / '.join(str(item) for item in keywords[:4])}”时优先引用。",
-            "- 项目定制素材优先级高于通用素材；同章节同时命中时采用 override / append / reference 规则裁决。",
+            "- 项目素材优先级高于通用素材；同章节同时命中时采用 override / append / reference 规则裁决。",
             "- 若招标文件要求明确技术响应、计算依据或附件证明，应保留原始 docx 作为证据来源。",
             "",
             "## 关联素材",
@@ -602,6 +737,18 @@ def _render_material_card(material: dict[str, Any]) -> str:
             "",
             "## Merge 信息",
             f"- path: {material.get('path')}",
+            f"- material_id: {material.get('id')}",
+            f"- scope: {material.get('scope')}",
+            f"- category: {material.get('group')}",
+            f"- identity_scope: {identity_scope}",
+            f"- material_scope: {material.get('materialScope') or identity_scope}",
+            f"- bid_type: {material.get('bidType')}",
+            f"- customer_id: {material.get('customerId') or ''}",
+            f"- customer_name: {material.get('customerCanonicalName') or material.get('customerName') or ''}",
+            f"- customer_aliases: {alias_text}",
+            f"- project_id: {material.get('projectId') or ''}",
+            f"- project_code: {material.get('projectCode') or ''}",
+            f"- cleaned_file_name: {material.get('cleanedFileName') or ''}",
             f"- skeleton_section: {skeleton_section}",
             "- skeleton_level: section",
             f"- material_level_range: {material_level_range}",
@@ -682,6 +829,15 @@ def _filtered_docx_materials(materials: list[dict[str, Any]], bid_type: str) -> 
     return [item for item in materials if item.get("ext") == "docx" and _matches_bid_type(item, bid_type)]
 
 
+def _identity_label(material: dict[str, Any]) -> str:
+    scope = str(material.get("identityScope") or "general")
+    if scope == "customer":
+        return f"客户:{material.get('customerCanonicalName') or material.get('customerName') or '未命名客户'}"
+    if scope == "project":
+        return f"项目:{material.get('projectCode') or material.get('projectId') or '未命名项目'}"
+    return "通用"
+
+
 def _render_index_markdown(materials: list[dict[str, Any]], inventory: dict[str, Any], bid_type: str) -> str:
     filtered = _filtered_docx_materials(materials, bid_type)
     lines = [
@@ -691,13 +847,13 @@ def _render_index_markdown(materials: list[dict[str, Any]], inventory: dict[str,
         f"- 本体系 docx 数量：{len(filtered)}",
         f"- 全库成功解析 docx：{inventory.get('parsedDocxTotal', 0)}",
         "",
-        "| 素材 | 范围/分类 | 推荐章节 | Heading | 内容线索 | 原始路径 |",
-        "|---|---|---|---:|---|---|",
+        "| 素材 | AI身份 | 范围/分类 | 推荐章节 | Heading | 内容线索 | 原始路径 |",
+        "|---|---|---|---|---:|---|---|",
     ]
     if not filtered:
         lines.extend(
             [
-                "| 待补料 | - | - | 0 | 当前素材库未检出该标类素材 | - |",
+                "| 待补料 | - | - | - | 0 | 当前素材库未检出该标类素材 | - |",
                 "",
                 "## 待补料建议",
                 "- 上传 docx 后重新执行“创建Wiki”。",
@@ -707,8 +863,9 @@ def _render_index_markdown(materials: list[dict[str, Any]], inventory: dict[str,
         return "\n".join(lines) + "\n"
     for material in filtered:
         lines.append(
-            "| {title} | {scope}/{group} | {section} | {count} | {heading} | `{path}` |".format(
+            "| {title} | {identity} | {scope}/{group} | {section} | {count} | {heading} | `{path}` |".format(
                 title=_escape_table_cell(material.get("title")),
+                identity=_escape_table_cell(_identity_label(material)),
                 scope=_escape_table_cell(material.get("scope")),
                 group=_escape_table_cell(material.get("group")),
                 section=_escape_table_cell(material.get("skeletonSection")),
@@ -728,7 +885,7 @@ def _render_skeleton_markdown(materials: list[dict[str, Any]], bid_type: str) ->
     lines = [
         f"# {bid_type}目录骨架与素材挂载",
         "",
-        "本页是平台 Wiki 的 merge 真源草案。每个章节下面列出可挂载的原始 docx，并标明素材内部 Heading 层级。",
+        "本页是平台 Wiki 的 merge 真源草案。每个章节下面列出可挂载的原始 docx，并标明 AI 身份、素材内部 Heading 层级。",
     ]
     if not by_section and bid_type == "商务标":
         lines.extend(
@@ -751,7 +908,7 @@ def _render_skeleton_markdown(materials: list[dict[str, Any]], bid_type: str) ->
         lines.extend(["", f"## {section}"])
         for material in sorted(section_items, key=lambda item: str(item.get("title") or "")):
             lines.append(
-                f"- merge 素材：`{material.get('path')}`；层级：{material.get('materialLevelRange')}；"
+                f"- merge 素材：`{material.get('path')}`；身份：{_identity_label(material)}；层级：{material.get('materialLevelRange')}；"
                 f"Heading：{material.get('headingCount')}；模式：normal"
             )
     return "\n".join(lines) + "\n"
@@ -767,10 +924,16 @@ def _render_rules_markdown(materials: list[dict[str, Any]], bid_type: str) -> st
         f"# {bid_type}装配规则",
         "",
         "## 全局裁决",
-        "- 项目定制素材命中同一章节时，优先于通用素材；通用素材作为标准底稿。",
+        "- 项目素材命中同一章节时，优先于通用素材；通用素材作为标准底稿。",
         "- 同一章节存在多个素材时，先按招标目录/评分点关键词匹配，再按素材 Heading 命中度排序。",
         "- 计算书、承诺函、表格类素材不改写事实数据，只做引用、摘录或附件挂载。",
         "- 未检测到 Heading 的素材按整篇挂载，并进入 Heading 审计清单。",
+        "",
+        "## AI 身份匹配",
+        "- `identity_scope=general` 的通用素材可被同标类项目读取。",
+        "- `identity_scope=customer` 的客户素材只有在项目 `customer_id` 或客户同义词命中时才能读取。",
+        "- `identity_scope=project` 的项目素材只有在项目 `project_id` 或 `project_code` 命中时才能读取。",
+        "- 身份不命中的素材不得进入目录建议，也不得作为正文拼装证据。",
         "",
         "## 章节素材覆盖面",
     ]
@@ -842,7 +1005,7 @@ def _build_bid_type_system_node(materials: list[dict[str, Any]], inventory: dict
     if bid_type == "商务标" and not custom_children:
         custom_children = _render_framework_card_groups(["项目商务数据", "业主专属承诺", "项目报价附件"], bid_type, "定制")
     return {
-        "title": f"01-{bid_type}体系" if bid_type == "技术标" else f"02-{bid_type}体系",
+        "title": f"01-{bid_type}体系",
         "markdownContent": _render_bid_type_overview(materials, bid_type),
         "tags": [bid_type, "体系"],
         "applicableTypes": [bid_type],
@@ -878,7 +1041,7 @@ def _build_bid_type_system_node(materials: list[dict[str, Any]], inventory: dict
             {
                 "title": f"{bid_type}通用卡片",
                 "markdownContent": f"# {bid_type}通用卡片\n\n沉淀可复用标准素材。正文真源仍是原始 docx，卡片只承载索引、适用条件和 Merge 信息。",
-                "tags": [bid_type, "通用材料"],
+                "tags": [bid_type, "通用素材"],
                 "applicableTypes": ["通用", bid_type],
                 "children": common_children,
             },
@@ -913,17 +1076,30 @@ def _render_shared_fields_markdown() -> str:
 """
 
 
-def _render_shared_customer_synonyms_markdown() -> str:
-    return """# 客户/业主同义词
-
-| 标准名 | 同义词 |
-|---|---|
-| 华能集团 | 华能、中国华能、华能新能源 |
-| 大唐集团 | 大唐、中国大唐、大唐新能源 |
-| 国家能源集团 | 国能、国家能源、国能投 |
-| 招标方 | 业主、客户、甲方、建设单位 |
-| 投标方 | 投标人、乙方、供应商、承包人 |
-"""
+def _render_shared_customer_synonyms_markdown(materials: list[dict[str, Any]] | None = None) -> str:
+    rows: dict[str, set[str]] = {
+        "华能集团": {"华能", "中国华能", "华能新能源"},
+        "大唐集团": {"大唐", "中国大唐", "大唐新能源"},
+        "国家能源集团": {"国能", "国家能源", "国能投"},
+        "招标方": {"业主", "客户", "甲方", "建设单位"},
+        "投标方": {"投标人", "乙方", "供应商", "承包人"},
+    }
+    for material in materials or []:
+        name = str(material.get("customerCanonicalName") or material.get("customerName") or "").strip()
+        if not name or name == "平台标准":
+            continue
+        canonical = canonical_customer(name)
+        standard = str(canonical.get("customerCanonicalName") or name)
+        aliases = rows.setdefault(standard, set())
+        aliases.update(str(item) for item in (canonical.get("customerAliases") or []) if str(item).strip())
+        aliases.update(str(item) for item in (material.get("customerAliases") or []) if str(item).strip())
+        aliases.add(name)
+    lines = ["# 客户/业主同义词", "", "| 标准名 | customer_id | 同义词 |", "|---|---|---|"]
+    for standard, aliases in sorted(rows.items()):
+        customer_id = canonical_customer(standard).get("customerId") or ""
+        cleaned = "、".join(sorted(alias for alias in aliases if alias and alias != standard))
+        lines.append(f"| {standard} | {customer_id} | {cleaned} |")
+    return "\n".join(lines) + "\n"
 
 
 def _render_shared_project_mapping_markdown() -> str:
@@ -933,6 +1109,8 @@ def _render_shared_project_mapping_markdown() -> str:
 
 | 参数类型 | 技术标用途 | 商务标用途 |
 |---|---|---|
+| PROJECT_ID / PROJECT_CODE | 匹配项目素材、回写目录 JSON | 匹配项目商务附件、报价与授权材料 |
+| CUSTOMER_ID / CUSTOMER_NAME | 匹配客户素材和业主专属规则 | 匹配客户资质要求、合同条款和承诺函称谓 |
 | 项目名称/编号 | 封面、方案正文、承诺函 | 投标函、授权、报价文件 |
 | 业主/客户 | 条件触发客户专属素材 | 资格、合同条款、承诺函称谓 |
 | 场址/地块 | 风资源、环境适应性、校核报告 | 交付、合同履约地点 |
@@ -953,7 +1131,7 @@ def _render_shared_merge_rules_markdown() -> str:
 """
 
 
-def _build_shared_rules_node() -> dict[str, Any]:
+def _build_shared_rules_node(materials: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     return {
         "title": "03-共用规则",
         "markdownContent": "# 共用规则\n\n技术标和商务标共用项目参数、客户词典和素材关系裁决，但不共用各自的目录骨架与装配规则。",
@@ -961,14 +1139,14 @@ def _build_shared_rules_node() -> dict[str, Any]:
         "applicableTypes": ["通用", "技术标", "商务标"],
         "children": [
             {"title": "字段替换表", "markdownContent": _render_shared_fields_markdown(), "tags": ["字段替换"], "applicableTypes": ["通用"], "children": []},
-            {"title": "客户/业主同义词", "markdownContent": _render_shared_customer_synonyms_markdown(), "tags": ["同义词"], "applicableTypes": ["通用"], "children": []},
+            {"title": "客户/业主同义词", "markdownContent": _render_shared_customer_synonyms_markdown(materials), "tags": ["同义词"], "applicableTypes": ["通用"], "children": []},
             {"title": "项目参数映射", "markdownContent": _render_shared_project_mapping_markdown(), "tags": ["项目参数"], "applicableTypes": ["通用"], "children": []},
             {"title": "override / append / reference 规则", "markdownContent": _render_shared_merge_rules_markdown(), "tags": ["装配规则"], "applicableTypes": ["通用"], "children": []},
         ],
     }
 
 
-def _build_quality_audit_node(materials: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_quality_log_node(materials: list[dict[str, Any]]) -> dict[str, Any]:
     docx = [item for item in materials if item.get("ext") == "docx"]
     no_heading = [item for item in docx if int(item.get("headingCount") or 0) == 0]
     oversized = [item for item in docx if int(item.get("sizeBytes") or 0) > MAX_SYNC_DOCX_BYTES]
@@ -987,75 +1165,76 @@ def _build_quality_audit_node(materials: list[dict[str, Any]]) -> dict[str, Any]
         return "\n".join(lines) + "\n"
 
     return {
-        "title": "04-质量审计",
+        "title": "04-质量日志",
         "markdownContent": (
-            "# 质量审计\n\n"
+            "# 质量日志\n\n"
             f"- docx 总数：{len(docx)}\n"
             f"- 无 Heading：{len(no_heading)}\n"
             f"- 超大文件待后台解析：{len(oversized)}\n"
             f"- 未明确归位：{len(unassigned)}\n"
             f"- 重名素材：{len(duplicate_titles)}\n"
         ),
-        "tags": ["质量审计"],
+        "tags": ["质量日志"],
         "applicableTypes": ["通用", "技术标", "商务标"],
         "children": [
-            {"title": "缺卡片", "markdownContent": "# 缺卡片\n\n本次生成按 docx 自动建卡，未发现缺卡片。后续应由 check.py 对文件系统版 wiki 继续校验。\n", "tags": ["质量审计"], "applicableTypes": ["通用"], "children": []},
-            {"title": "孤儿卡片", "markdownContent": "# 孤儿卡片\n\n数据库生成链路不会产生孤儿卡片；文件系统版 wiki 需运行 `wiki/scripts/check.py` 校验。\n", "tags": ["质量审计"], "applicableTypes": ["通用"], "children": []},
-            {"title": "Heading异常", "markdownContent": list_markdown("Heading异常", no_heading, lambda item: f"`{item.get('path')}` 未检测到 Word Heading，拼装时按整篇挂载。"), "tags": ["质量审计"], "applicableTypes": ["通用"], "children": []},
-            {"title": "超大文件待后台解析", "markdownContent": list_markdown("超大文件待后台解析", oversized, lambda item: f"`{item.get('path')}` {int(item.get('sizeBytes') or 0)/1024/1024:.1f}MB，需后台深度解析。"), "tags": ["质量审计"], "applicableTypes": ["通用"], "children": []},
-            {"title": "未归位素材", "markdownContent": list_markdown("未归位素材", unassigned, lambda item: f"`{item.get('path')}` 当前归入 `{item.get('skeletonSection')}`，建议人工确认 skeleton_section。"), "tags": ["质量审计"], "applicableTypes": ["通用"], "children": []},
-            {"title": "重名素材", "markdownContent": list_markdown("重名素材", duplicate_titles, lambda title: f"`{title}` 存在多个来源路径，需确认覆盖/叠加关系。"), "tags": ["质量审计"], "applicableTypes": ["通用"], "children": []},
+            {"title": "缺卡片", "markdownContent": "# 缺卡片\n\n本次生成按 docx 自动建卡，未发现缺卡片。后续应由 check.py 对文件系统版 wiki 继续校验。\n", "tags": ["质量日志"], "applicableTypes": ["通用"], "children": []},
+            {"title": "孤儿卡片", "markdownContent": "# 孤儿卡片\n\n数据库生成链路不会产生孤儿卡片；文件系统版 wiki 需运行 `wiki/scripts/check.py` 校验。\n", "tags": ["质量日志"], "applicableTypes": ["通用"], "children": []},
+            {"title": "Heading异常", "markdownContent": list_markdown("Heading异常", no_heading, lambda item: f"`{item.get('path')}` 未检测到 Word Heading，拼装时按整篇挂载。"), "tags": ["质量日志"], "applicableTypes": ["通用"], "children": []},
+            {"title": "超大文件待后台解析", "markdownContent": list_markdown("超大文件待后台解析", oversized, lambda item: f"`{item.get('path')}` {int(item.get('sizeBytes') or 0)/1024/1024:.1f}MB，需后台深度解析。"), "tags": ["质量日志"], "applicableTypes": ["通用"], "children": []},
+            {"title": "未归位素材", "markdownContent": list_markdown("未归位素材", unassigned, lambda item: f"`{item.get('path')}` 当前归入 `{item.get('skeletonSection')}`，建议人工确认 skeleton_section。"), "tags": ["质量日志"], "applicableTypes": ["通用"], "children": []},
+            {"title": "重名素材", "markdownContent": list_markdown("重名素材", duplicate_titles, lambda title: f"`{title}` 存在多个来源路径，需确认覆盖/叠加关系。"), "tags": ["质量日志"], "applicableTypes": ["通用"], "children": []},
         ],
     }
 
 
-def _build_material_wiki_blueprint(reference: dict[str, Any], inventory: dict[str, Any]) -> dict[str, Any]:
+def _build_material_wiki_blueprint(reference: dict[str, Any], inventory: dict[str, Any], bid_type: str = "技术标") -> dict[str, Any]:
+    bid_type = _normalize_wiki_bid_type(bid_type)
     materials = list(inventory.get("items") or [])
     docx_materials = [item for item in materials if item.get("ext") == "docx"]
     parsed = [item for item in docx_materials if not item.get("parseError")]
-    tech_count = len(_filtered_docx_materials(materials, "技术标"))
-    business_count = len(_filtered_docx_materials(materials, "商务标"))
+    bid_count = len(_filtered_docx_materials(materials, bid_type))
+    root_title = _wiki_root_title(bid_type)
+    skill_name = _wiki_skill_name(bid_type)
     root_markdown = (
-        "# 平台级Wiki（自动生成）\n\n"
-        "本 Wiki 由 `bid-wiki-material-builder` 根据原始材料库中的真实 docx 和参考 Wiki 结构生成。"
-        "它不是素材文件夹浏览器，而是面向投标文件拼装的规则库。\n\n"
+        f"# {root_title}\n\n"
+        f"本 Wiki 由 `{skill_name}` 根据 `{bid_type}` 原始材料库中的真实 docx 和参考 Wiki 结构生成。"
+        "它不是素材文件夹浏览器，而是面向投标文件目录生成和正文拼装的规则库。\n\n"
         "## 本次生成范围\n"
         f"- 原始材料总数：{inventory.get('total', 0)}\n"
         f"- docx 素材：{inventory.get('docxTotal', 0)}\n"
         f"- 成功解析 docx：{inventory.get('parsedDocxTotal', 0)}\n"
         f"- 生成卡片：{len(docx_materials)}\n\n"
         "## 标类覆盖\n"
-        f"- 技术标体系：{tech_count} 份 docx\n"
-        f"- 商务标体系：{business_count} 份 docx\n\n"
+        f"- {bid_type}体系：{bid_count} 份 docx\n\n"
         "## 顶层体系\n"
-        "- `01-技术标体系`：技术标专属索引、目录骨架、装配规则、同义词和卡片。\n"
-        "- `02-商务标体系`：商务标专属索引、目录骨架、装配规则、同义词和卡片；缺素材时只生成待补料框架。\n"
-        "- `03-共用规则`：字段替换、客户词典、项目参数和 override / append / reference 裁决。\n"
-        "- `04-质量审计`：Heading、超大文件、未归位和重名素材检查。\n\n"
+        f"- `01-{bid_type}体系`：{bid_type}专属索引、目录骨架、装配规则、同义词和卡片。\n"
+        "- `共用规则`：字段替换、客户词典、项目参数和 override / append / reference 裁决。\n"
+        "- `质量日志`：Heading、超大文件、未归位和重名素材检查。\n\n"
         "## 生产使用约定\n"
-        "- 技术标和商务标不共用 skeleton / rules；必须先按标类分流。\n"
+        f"- `{bid_type}` 使用自己的 skeleton / rules；目录生成和正文拼装先按标类分流。\n"
+        "- Wiki 是给 AI 检索和装配看的规则库，不是人工文件夹；前端只展示结果，AI 必须读取卡片中的身份字段。\n"
+        "- 通用素材总是可读；客户素材按 `customer_id/客户同义词` 命中；项目素材按 `project_id/project_code` 命中。\n"
         "- 卡片不承载 docx 全文，只承载路径、关键词、适用条件、Heading 审计和 Merge 信息。\n"
-        "- 目录生成优先读取对应标类的 skeleton，再按 rules 裁决素材关系。\n"
+        "- 目录生成优先读取 skeleton，再按 rules 裁决素材关系。\n"
     )
     if reference.get("hasReference"):
         root_markdown += f"\n参考 Wiki 摘要已读取：`{reference.get('referenceRoot')}`。\n"
 
     return {
-        "summary": f"已解析 {len(parsed)}/{len(docx_materials)} 份 docx，并按技术标/商务标体系生成平台级 Wiki。",
-        "rootTitle": "平台级Wiki（自动生成）",
+        "summary": f"已解析 {len(parsed)}/{len(docx_materials)} 份 {bid_type} docx，并生成 {bid_type} Wiki。",
+        "rootTitle": root_title,
         "rootMarkdownContent": root_markdown,
         "nodes": [
             {
                 "title": "00-Wiki使用说明",
                 "markdownContent": root_markdown,
-                "tags": ["通用材料", "bid-wiki-material-builder"],
-                "applicableTypes": ["通用"],
+                "tags": [bid_type, "素材库", skill_name],
+                "applicableTypes": [bid_type],
                 "children": [],
             },
-            _build_bid_type_system_node(materials, inventory, "技术标"),
-            _build_bid_type_system_node(materials, inventory, "商务标"),
-            _build_shared_rules_node(),
-            _build_quality_audit_node(materials),
+            _build_bid_type_system_node(materials, inventory, bid_type),
+            _build_shared_rules_node(materials),
+            _build_quality_log_node(materials),
         ],
     }
 
@@ -1132,8 +1311,8 @@ def _fallback_wiki_blueprint(reference: dict[str, Any], material_inventory: dict
         common_children = [
             {
                 "title": section,
-                "markdownContent": f"# {section}\n\n这是平台级通用卡片分组，用于沉淀标准专题卡与章节挂载方式。",
-                "tags": ["通用材料"],
+                "markdownContent": f"# {section}\n\n这是平台级通用素材卡片分组，用于沉淀标准专题卡与章节挂载方式。",
+                "tags": ["通用素材"],
                 "applicableTypes": ["通用"],
                 "children": [],
             }
@@ -1145,8 +1324,8 @@ def _fallback_wiki_blueprint(reference: dict[str, Any], material_inventory: dict
         custom_children = [
             {
                 "title": section,
-                "markdownContent": f"# {section}\n\n项目定制素材卡片分组，等待补料后生成卡片。",
-                "tags": ["项目材料"],
+                "markdownContent": f"# {section}\n\n项目素材卡片分组，等待补料后生成卡片。",
+                "tags": ["项目素材"],
                 "applicableTypes": ["技术标", "商务标"],
                 "children": [],
             }
@@ -1154,13 +1333,13 @@ def _fallback_wiki_blueprint(reference: dict[str, Any], material_inventory: dict
         ]
     custom_sections_text = "\n- ".join(custom_sections)
     return {
-        "summary": "已按 bid-wiki-material-builder 工作流生成平台级 Wiki 起始结构。",
+        "summary": "已按分标类 Wiki 生成工作流生成平台级 Wiki 起始结构。",
         "rootTitle": "平台级Wiki（自动生成）",
         "nodes": [
             {
                 "title": "平台级Wiki说明",
                 "markdownContent": "# 平台级Wiki说明\n\n平台级 Wiki 是标书装配规则库，用于在 S1 前提供专题卡、规则、同义词和骨架映射。",
-                "tags": ["通用材料"],
+                "tags": ["通用素材"],
                 "applicableTypes": ["通用"],
                 "children": [],
             },
@@ -1174,21 +1353,21 @@ def _fallback_wiki_blueprint(reference: dict[str, Any], material_inventory: dict
             {
                 "title": "装配规则",
                 "markdownContent": "# 装配规则\n\n维护必选、条件触发、覆盖、叠加、fallback 等装配逻辑。",
-                "tags": ["通用材料"],
+                "tags": ["通用素材"],
                 "applicableTypes": ["通用"],
                 "children": [],
             },
             {
                 "title": "同义词映射",
                 "markdownContent": "# 同义词映射\n\n维护章节关键词到素材关键词的匹配关系，用于目录匹配和缺口识别。",
-                "tags": ["通用材料"],
+                "tags": ["通用素材"],
                 "applicableTypes": ["通用"],
                 "children": [],
             },
             {
                 "title": "通用卡片",
                 "markdownContent": "# 通用卡片\n\n按专题组织平台级标准卡片，卡片来自原始材料库文件清单。",
-                "tags": ["通用材料"],
+                "tags": ["通用素材"],
                 "applicableTypes": ["通用"],
                 "children": common_children,
             },
@@ -1210,7 +1389,7 @@ def _fallback_wiki_blueprint(reference: dict[str, Any], material_inventory: dict
                     "- reference：只挂证据和附件，不改正文\n\n"
                     f"## 推荐目录\n- {custom_sections_text}"
                 ),
-                "tags": ["通用材料"],
+                "tags": ["通用素材"],
                 "applicableTypes": ["技术标", "商务标", "通用"],
                 "children": [],
             },
@@ -1255,20 +1434,58 @@ def _normalize_blueprint(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def generate_platform_wiki(reference_path: str = "", mode: str = "create") -> dict[str, Any]:
-    reference_root = Path(reference_path).expanduser().resolve() if reference_path else DEFAULT_REFERENCE_WIKI_PATH
-    reference = _summarize_reference_wiki(reference_root)
-    material_inventory = await _summarize_material_inventory()
-    blueprint = _normalize_blueprint(_build_material_wiki_blueprint(reference, material_inventory))
-    opencode_output: dict[str, Any] = {
-        "status": "deterministic",
+def _failed_opencode_output(exc: Exception) -> dict[str, Any]:
+    return {
+        "status": "failed",
         "parts": [
             {
                 "type": "text",
-                "text": "已使用 bid-wiki-material-builder 的后端确定性解析路径，从 MinIO 原始 docx 提取 Heading、正文摘录和 Merge 信息。",
+                "text": f"调用 opencode 生成 Wiki 失败：{exc}",
             }
         ],
     }
+
+
+async def generate_platform_wiki(
+    reference_path: str = "",
+    mode: str = "create",
+    bid_type: str = "技术标",
+    fallback_to_deterministic: bool = False,
+) -> dict[str, Any]:
+    normalized_bid_type = _normalize_wiki_bid_type(bid_type)
+    skill_name = _wiki_skill_name(normalized_bid_type)
+    reference_root = Path(reference_path).expanduser().resolve() if reference_path else DEFAULT_REFERENCE_WIKI_PATH
+    reference = _summarize_reference_wiki(reference_root)
+    full_inventory = await _summarize_material_inventory()
+    material_inventory = _filter_inventory_for_bid_type(full_inventory, normalized_bid_type)
+    prompt = _build_wiki_generation_prompt(reference, material_inventory, normalized_bid_type)
+    generator = "opencode"
+    fallback_used = False
+
+    try:
+        opencode_result = await asyncio.to_thread(
+            OpencodeClient().generate_wiki_blueprint_with_trace,
+            prompt,
+        )
+        blueprint = _normalize_blueprint(opencode_result)
+        blueprint["rootTitle"] = _wiki_root_title(normalized_bid_type)
+        opencode_output: dict[str, Any] = opencode_result.get("opencodeOutput") or {}
+    except Exception as exc:
+        failed_output = _failed_opencode_output(exc)
+        if not fallback_to_deterministic:
+            raise PeripheralError(
+                502,
+                f"创建 {normalized_bid_type} Wiki 调用 opencode 失败：{exc}",
+                "WIKI_OPENCODE_FAILED",
+                {"opencodeOutput": failed_output},
+            ) from exc
+        blueprint = _normalize_blueprint(_build_material_wiki_blueprint(reference, material_inventory, normalized_bid_type))
+        opencode_output = {
+            **failed_output,
+            "fallback": "deterministic",
+        }
+        generator = "deterministic_fallback"
+        fallback_used = True
 
     imported = await material_store.import_generated_wiki_blueprint(
         root_title=blueprint["rootTitle"],
@@ -1279,7 +1496,10 @@ async def generate_platform_wiki(reference_path: str = "", mode: str = "create")
     imported["generation"] = {
         "summary": blueprint["summary"],
         "referencePath": str(reference_root),
-        "skill": "bid-wiki-material-builder",
+        "bidType": normalized_bid_type,
+        "skill": skill_name,
+        "generator": generator,
+        "fallbackUsed": fallback_used,
         "materialInventory": {
             "total": material_inventory.get("total", 0),
             "docxTotal": material_inventory.get("docxTotal", 0),
