@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { coverageAPI, stagesAPI } from '../api'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
+import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const statusDotClass = {
   full: 'bg-secondary',
@@ -69,6 +70,7 @@ const renderTreeNode = (node, collapsedNodeIds, onToggleNodeCollapse, depth = 0)
 export default function CoverageHeatmap({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
+  const workspaceSlug = useWorkspaceSlug()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -128,7 +130,7 @@ export default function CoverageHeatmap({ showToast }) {
     try {
       await stagesAPI.update(id, 8, { status: 'completed' })
       showToast('已进入 S9 人机共创编辑')
-      navigate(`/projects/${id}/editor`)
+      navigate(projectRoute(id, '/editor', workspaceSlug))
     } catch (e) {
       showToast(e?.message || '进入 S9 失败', 'error')
     } finally {

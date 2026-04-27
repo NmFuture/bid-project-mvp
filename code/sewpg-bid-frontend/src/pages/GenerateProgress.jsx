@@ -7,6 +7,7 @@ import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 import { brandFutureCode, brandFutureCodeOrFallback } from '../utils/branding'
+import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const formatDateTime = (value) => {
   if (!value) return '未完成'
@@ -76,6 +77,7 @@ const localizeExecutionStep = (step) => {
 export default function GenerateProgress({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
+  const workspaceSlug = useWorkspaceSlug()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -147,7 +149,7 @@ export default function GenerateProgress({ showToast }) {
     try {
       await stagesAPI.update(id, 7, { status: 'completed' })
       showToast?.('已进入 S8 覆盖校验')
-      navigate(`/projects/${id}/coverage`)
+      navigate(projectRoute(id, '/coverage', workspaceSlug))
     } catch (e) {
       showToast?.(e?.message || '进入下一阶段失败', 'error')
     } finally {

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { projectsAPI } from '../api'
 import { PageLoading, PageError } from '../components/states/PageState'
 import { getStageRoute } from '../utils/stageFlow'
+import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const resolveStage = (value) => {
   const parsed = Number(value)
@@ -13,6 +14,7 @@ const resolveStage = (value) => {
 export default function ProjectEntryRedirect() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const workspaceSlug = useWorkspaceSlug()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -29,17 +31,17 @@ export default function ProjectEntryRedirect() {
       const project = await projectsAPI.get(id)
       const reviewDecision = String(project?.reviewDecision || 'participate')
       if (reviewDecision !== 'participate') {
-        navigate(`/review?projectId=${id}`, { replace: true })
+        navigate(`/parse?projectId=${id}`, { replace: true })
         return
       }
       const stage = resolveStage(project?.currentStage)
-      const route = getStageRoute(id, stage) || `/projects/${id}/parse`
+      const route = getStageRoute(id, stage, workspaceSlug) || projectRoute(id, '/parse', workspaceSlug)
       navigate(route, { replace: true })
     } catch (e) {
       setError(e?.message || '项目加载失败，请稍后重试。')
       setLoading(false)
     }
-  }, [id, navigate])
+  }, [id, navigate, workspaceSlug])
 
   useEffect(() => {
     const timer = setTimeout(() => {

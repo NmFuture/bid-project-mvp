@@ -1,13 +1,19 @@
 import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import enterpriseLogo from '../../assets/logo-removebg.png'
+import { WORKSPACE_TYPES, workspaceFromPathname, workspaceRoute } from '../../utils/workspace'
 
 const NAV_ITEMS = [
-  { path: '/review', icon: 'fact_check', label: '审核', match: '/review' },
-  { path: '/projects', icon: 'folder_open', label: '项目', match: '/projects' },
-  { path: '/materials/structured', icon: 'database', label: '素材库', match: '/materials' },
-  { path: '/audit', icon: 'history_edu', label: '审计', match: '/audit' },
+  { path: '/parse', icon: 'document_scanner', label: '解析', match: '/parse' },
+  { path: '/workspace/tech/projects', icon: 'engineering', label: '技术标', match: '/workspace/tech' },
+  { path: '/workspace/business/projects', icon: 'request_quote', label: '商务标', match: '/workspace/business' },
   { path: '/settings', icon: 'settings', label: '设置', match: '/settings' },
+]
+
+const WORKSPACE_NAV_ITEMS = [
+  { key: 'projects', path: '/projects', icon: 'folder_open', label: '项目' },
+  { key: 'materials', path: '/materials/structured', icon: 'database', label: '素材库' },
+  { key: 'logs', path: '/logs', icon: 'history_edu', label: '日志' },
 ]
 
 export default function AppShell({ children, currentUser = null, onLogout = () => {} }) {
@@ -16,8 +22,20 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
   const userName = String(currentUser?.name || '当前用户')
   const userEmail = String(currentUser?.email || '')
   const userAvatar = String(currentUser?.avatar || userName[0] || '用')
+  const workspaceSlug = workspaceFromPathname(location.pathname)
+  const workspace = workspaceSlug ? WORKSPACE_TYPES[workspaceSlug] : null
 
-  const isActive = (match) => location.pathname.startsWith(match)
+  const isActive = (match) => location.pathname.startsWith(match) || (match === '/parse' && location.pathname.startsWith('/review'))
+  const isWorkspaceNavActive = (item) => {
+    const target = workspaceRoute(workspaceSlug, item.path)
+    if (item.key === 'projects') {
+      return location.pathname === target || /^\/workspace\/[^/]+\/projects(\/|$)/.test(location.pathname)
+    }
+    if (item.key === 'materials') {
+      return /^\/workspace\/[^/]+\/materials(\/|$)/.test(location.pathname)
+    }
+    return location.pathname.startsWith(target)
+  }
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
@@ -104,6 +122,33 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
 
         {/* Main Content */}
         <main className="flex-1 md:ml-[74px] overflow-y-auto px-7 py-4 md:px-10 md:py-5 lg:px-12 lg:py-6 xl:px-14 relative bg-white min-h-0">
+          {workspace && (
+            <div className="mb-4 flex flex-col gap-3 border-b border-[#d7e1ec] pb-3 md:flex-row md:items-center md:justify-between">
+              <div className="flex items-center gap-2 text-sm font-semibold text-[#163b58]">
+                <span className="material-symbols-outlined text-[18px] text-[#0067B6]">{workspace.icon}</span>
+                <span>{workspace.label}工作区</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {WORKSPACE_NAV_ITEMS.map((item) => {
+                  const selected = isWorkspaceNavActive(item)
+                  return (
+                    <NavLink
+                      key={item.key}
+                      to={workspaceRoute(workspaceSlug, item.path)}
+                      className={`inline-flex h-8 items-center gap-1.5 border px-3 text-sm font-medium transition-colors ${
+                        selected
+                          ? 'border-[#0067B6] bg-[#0067B6] text-white'
+                          : 'border-[#c7d4e0] bg-white text-[#36576f] hover:border-[#0067B6] hover:text-[#0067B6]'
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[17px]">{item.icon}</span>
+                      {item.label}
+                    </NavLink>
+                  )
+                })}
+              </div>
+            </div>
+          )}
           {children}
         </main>
       </div>

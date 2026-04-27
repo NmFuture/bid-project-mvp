@@ -6,9 +6,12 @@ import ProjectWizardModal from '../components/modals/ProjectWizardModal'
 import { PageLoading, PageEmpty, PageError } from '../components/states/PageState'
 import FilterBar from '../components/shared/FilterBar'
 import { getStageRoute } from '../utils/stageFlow'
+import { bidTypeFromWorkspace, projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
-export default function ProjectList({ showToast }) {
+export default function ProjectList({ showToast, viewMode = 'projects' }) {
   const navigate = useNavigate()
+  const workspaceSlug = useWorkspaceSlug()
+  const lockedBidType = bidTypeFromWorkspace(workspaceSlug)
   const [projects, setProjects] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -20,6 +23,7 @@ export default function ProjectList({ showToast }) {
   const [showWizard, setShowWizard] = useState(false)
   const [activeMenuId, setActiveMenuId] = useState('')
   const [actionLoadingId, setActionLoadingId] = useState('')
+  const effectiveBidType = lockedBidType || (bidTypeFilter !== 'all' ? bidTypeFilter : '')
 
   const loadProjects = useCallback(async () => {
     setLoading(true)
@@ -27,7 +31,7 @@ export default function ProjectList({ showToast }) {
     try {
       const data = await projectsAPI.list({
         status: statusFilter !== 'all' ? statusFilter : '',
-        bidType: bidTypeFilter !== 'all' ? bidTypeFilter : '',
+        bidType: effectiveBidType,
         dateRange: dateFilter !== 'all' ? dateFilter : '',
         page: currentPage,
         pageSize: pagination.pageSize,
@@ -42,7 +46,7 @@ export default function ProjectList({ showToast }) {
     } finally {
       setLoading(false)
     }
-  }, [bidTypeFilter, currentPage, dateFilter, pagination.pageSize, statusFilter])
+  }, [currentPage, dateFilter, effectiveBidType, pagination.pageSize, statusFilter])
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -53,11 +57,11 @@ export default function ProjectList({ showToast }) {
 
   const getProjectEntryRoute = (project) => {
     const reviewDecision = String(project?.reviewDecision || 'participate')
-    if (reviewDecision !== 'participate') return `/review?projectId=${project?.id || ''}`
+    if (reviewDecision !== 'participate') return `/parse?projectId=${project?.id || ''}`
     const stage = Number(project?.currentStage) || 1
-    const stageRoute = getStageRoute(project?.id, stage)
+    const stageRoute = getStageRoute(project?.id, stage, workspaceSlug)
     if (stageRoute) return stageRoute
-    return `/projects/${project.id}`
+    return projectRoute(project.id, '', workspaceSlug)
   }
 
   const formatDateTime = (value) => {
@@ -105,6 +109,16 @@ export default function ProjectList({ showToast }) {
 
   return (
     <div className="project-list-page flex flex-col gap-4 max-w-none mx-auto animate-fade-in h-full min-h-0 bg-white">
+      {lockedBidType && (
+        <div className="flex flex-col gap-1">
+          <h1 className="text-2xl font-headline font-bold text-primary">
+            {lockedBidType}{viewMode === 'flow' ? '撰写流程' : '项目'}
+          </h1>
+          <p className="text-sm text-on-surface-variant">
+            当前工作区只展示{lockedBidType}项目，素材库、Wiki 和日志也按同一标类隔离。
+          </p>
+        </div>
+      )}
       {/* Filter Bar */}
       <FilterBar
         className="mt-0"
@@ -130,21 +144,23 @@ export default function ProjectList({ showToast }) {
                 <span className="material-symbols-outlined absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[#14A83B]">arrow_drop_down</span>
               </div>
             </div>
-            <div className="relative min-w-[170px]">
-              <select
-                value={bidTypeFilter}
-                onChange={(e) => {
-                  setBidTypeFilter(e.target.value)
-                  setCurrentPage(1)
-                }}
-                className="w-full min-h-0 h-[30px] appearance-none bg-[#e8eef2] border border-[#c3ced8] px-3.5 pr-9 text-[14px] text-on-surface focus:ring-0 transition-all cursor-pointer"
-              >
-                <option value="all">全部类型</option>
-                <option value="技术标">技术标</option>
-                <option value="商务标">商务标</option>
-              </select>
-              <span className="material-symbols-outlined absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[#14A83B]">arrow_drop_down</span>
-            </div>
+            {!lockedBidType && (
+              <div className="relative min-w-[170px]">
+                <select
+                  value={bidTypeFilter}
+                  onChange={(e) => {
+                    setBidTypeFilter(e.target.value)
+                    setCurrentPage(1)
+                  }}
+                  className="w-full min-h-0 h-[30px] appearance-none bg-[#e8eef2] border border-[#c3ced8] px-3.5 pr-9 text-[14px] text-on-surface focus:ring-0 transition-all cursor-pointer"
+                >
+                  <option value="all">全部类型</option>
+                  <option value="技术标">技术标</option>
+                  <option value="商务标">商务标</option>
+                </select>
+                <span className="material-symbols-outlined absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[#14A83B]">arrow_drop_down</span>
+              </div>
+            )}
             <div className="relative min-w-[170px]">
               <select
                 value={dateFilter}
@@ -188,7 +204,7 @@ export default function ProjectList({ showToast }) {
           </div>
         </div>
       )}
-      {bidTypeFilter !== 'all' && (
+      {!lockedBidType && bidTypeFilter !== 'all' && (
         <div className="flex items-center gap-2 flex-wrap">
           <div className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-secondary-container text-on-secondary-container text-xs font-medium border border-secondary/25">
             <span>标书类型: {bidTypeFilter}</span>
@@ -291,6 +307,8 @@ export default function ProjectList({ showToast }) {
       {showWizard && (
         <ProjectWizardModal
           onClose={() => setShowWizard(false)}
+          defaultBidType={lockedBidType || undefined}
+          lockBidType={Boolean(lockedBidType)}
           onCreated={() => {
             setShowWizard(false)
             showToast('项目创建成功！')

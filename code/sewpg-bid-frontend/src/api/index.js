@@ -334,6 +334,10 @@ export const exportAPI = {
 
 // ===== Materials =====
 export const materialsAPI = {
+  identityOptions: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/materials/identity-options${qs ? `?${qs}` : ''}`)
+  },
   raw: {
     permissions: (params = {}) => {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
@@ -361,6 +365,8 @@ export const materialsAPI = {
     moveFile: (data) => request('/materials/raw/move', { method: 'POST', body: data }),
     deleteFile: (id) => request(`/materials/raw/${id}`, { method: 'DELETE' }),
     downloadFile: (id) => request(`/materials/raw/${id}/download`),
+    cleanFile: (id) => request(`/materials/raw/${id}/clean`, { method: 'POST' }),
+    downloadCleanedFile: (id) => request(`/materials/raw/${id}/cleaned/download`),
     parseStatus: (projectId) => request(`/projects/${projectId}/materials/parse-status`),
   },
   structured: {
@@ -394,7 +400,8 @@ export const materialsAPI = {
     move: (id, data) => request(`/materials/wiki/${id}/move`, { method: 'POST', body: data }),
     uploadAttachment: (id, data) =>
       request(`/materials/wiki/${id}/attachments`, { method: 'POST', body: data }),
-    refreshSummary: (id) => request(`/materials/wiki/${id}/refresh-summary`, { method: 'POST' }),
+    refreshSummary: (id, data = {}) =>
+      request(`/materials/wiki/${id}/refresh-summary`, { method: 'POST', body: data }),
   },
 }
 

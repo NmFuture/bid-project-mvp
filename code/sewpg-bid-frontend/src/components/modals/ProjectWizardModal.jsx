@@ -1,23 +1,53 @@
 import { useEffect, useMemo, useState } from 'react'
-import { customersAPI, projectsAPI } from '../../api'
+import { materialsAPI, projectsAPI } from '../../api'
 
 const STEPS = ['基本信息', '确认创建']
 
-const normalizeKeyAccounts = (list = []) =>
+const normalizeCustomers = (list = []) =>
   (Array.isArray(list) ? list : [])
     .map((item) => ({
-      id: String(item?.id || item?.code || item?.name || '').trim(),
-      name: String(item?.name || item?.label || item?.id || '').trim(),
+      id: String(item?.customerId || item?.id || item?.name || '').trim(),
+      customerId: String(item?.customerId || item?.id || '').trim(),
+      name: String(item?.customerCanonicalName || item?.name || item?.label || item?.id || '').trim(),
+      aliases: Array.isArray(item?.aliases) ? item.aliases : [],
     }))
     .filter((item) => item.id && item.name)
 
-const buildInitialForm = (project = null) => ({
+const normalizeMaterialProjects = (list = []) =>
+  (Array.isArray(list) ? list : [])
+    .map((item) => ({
+      id: String(item?.projectId || item?.id || '').trim(),
+      projectId: String(item?.projectId || item?.id || '').trim(),
+      projectCode: String(item?.projectCode || item?.projectId || item?.id || '').trim(),
+      name: String(item?.projectName || item?.name || item?.projectCode || item?.projectId || item?.id || '').trim(),
+      customerId: String(item?.customerId || '').trim(),
+      customerName: String(item?.customerCanonicalName || item?.customerName || '').trim(),
+      bidType: String(item?.bidType || '').trim(),
+    }))
+    .filter((item) => item.id && item.name)
+
+const buildInitialForm = (project = null, defaultBidType = '') => ({
+  projectCode: String(project?.projectCode || ''),
   name: String(project?.name || ''),
   customerName: String(project?.customerName || ''),
+  customerId: String(project?.materialCustomerId || project?.customerId || ''),
+  customerCanonicalName: String(project?.materialCustomerName || project?.customerCanonicalName || project?.customerName || ''),
+  materialProjectName: String(project?.materialProjectName || ''),
   manager: String(project?.manager || ''),
-  bidType: String(project?.bidType || '技术标'),
+  bidType: String(project?.bidType || defaultBidType || '技术标'),
   deadline: String(project?.deadline || ''),
 })
+
+const customerLabel = (item) => `${item.name}${item.customerId ? ` / ${item.customerId}` : ''}`
+
+const materialProjectLabel = (item) => {
+  const parts = [
+    item.projectId,
+    item.projectCode && item.projectCode !== item.projectId ? item.projectCode : '',
+    item.customerName,
+  ].filter(Boolean)
+  return `${item.name}${parts.length ? `（${parts.join(' / ')}）` : ''}`
+}
 
 export default function ProjectWizardModal({
   onClose,
@@ -25,81 +55,137 @@ export default function ProjectWizardModal({
   mode = 'create',
   project = null,
   forceReviewDecision = '',
+  defaultBidType = '',
+  lockBidType = false,
 }) {
   const isUpdateMode = mode === 'update' && Boolean(project?.id)
   const [step, setStep] = useState(0)
-  const [form, setForm] = useState(() => buildInitialForm(project))
+  const [form, setForm] = useState(() => buildInitialForm(project, defaultBidType))
   const [customerMode, setCustomerMode] = useState(
-    project?.isKeyAccount ? 'keyAccount' : 'manual',
+    project?.materialCustomerId || project?.customerId || project?.isKeyAccount ? 'library' : 'ordinary',
   )
-  const [keyAccounts, setKeyAccounts] = useState([])
-  const [selectedKeyAccountId, setSelectedKeyAccountId] = useState(
-    String(project?.keyAccountId || ''),
+  const [materialProjectMode, setMaterialProjectMode] = useState(
+    project?.materialProjectMode || (project?.materialProjectId ? 'library' : 'ordinary'),
   )
-  const [loadingAccounts, setLoadingAccounts] = useState(false)
-  const [accountError, setAccountError] = useState('')
+  const [materialCustomers, setMaterialCustomers] = useState([])
+  const [materialProjects, setMaterialProjects] = useState([])
+  const [selectedMaterialCustomerId, setSelectedMaterialCustomerId] = useState(
+    String(project?.materialCustomerId || project?.customerId || project?.keyAccountId || ''),
+  )
+  const [selectedMaterialProjectId, setSelectedMaterialProjectId] = useState(
+    String(project?.materialProjectId || ''),
+  )
+  const [loadingIdentities, setLoadingIdentities] = useState(false)
+  const [identityError, setIdentityError] = useState('')
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState('')
 
   const updateForm = (key, val) => setForm((prev) => ({ ...prev, [key]: val }))
+  const selectedMaterialCustomer = materialCustomers.find((item) => item.id === selectedMaterialCustomerId)
+  const selectedMaterialProject = materialProjects.find((item) => item.id === selectedMaterialProjectId)
+  const effectiveCustomerId = customerMode === 'library' ? selectedMaterialCustomer?.customerId || selectedMaterialCustomerId : form.customerId
+  const filteredMaterialProjects = materialProjects.filter((item) => {
+    if (!effectiveCustomerId) return true
+    return !item.customerId || item.customerId === effectiveCustomerId
+  })
+
+  useEffect(() => {
+    if (isUpdateMode || !defaultBidType) return
+    setForm((prev) => ({ ...prev, bidType: defaultBidType }))
+  }, [defaultBidType, isUpdateMode])
 
   useEffect(() => {
     let mounted = true
-    const loadAccounts = async () => {
-      setLoadingAccounts(true)
-      setAccountError('')
+    const loadMaterialIdentities = async () => {
+      setLoadingIdentities(true)
+      setIdentityError('')
       try {
-        const payload = await customersAPI.keyAccounts()
+        const payload = await materialsAPI.identityOptions({ bidType: form.bidType })
         if (!mounted) return
-        const list = normalizeKeyAccounts(payload?.items || payload)
-        setKeyAccounts(list)
+        const customers = normalizeCustomers(payload?.customers || [])
+        const projects = normalizeMaterialProjects(payload?.projects || [])
+        setMaterialCustomers(customers)
+        setMaterialProjects(projects)
         if (isUpdateMode) {
-          if (project?.isKeyAccount && list.length > 0) {
-            const selected = list.find((item) => item.id === String(project?.keyAccountId || ''))
-              || list.find((item) => item.name === String(project?.customerName || ''))
-              || list[0]
-            setCustomerMode('keyAccount')
-            setSelectedKeyAccountId(selected.id)
-            setForm((prev) => ({ ...prev, customerName: selected.name }))
+          const selectedCustomer = customers.find((item) => item.id === String(project?.materialCustomerId || project?.customerId || project?.keyAccountId || ''))
+            || customers.find((item) => item.name === String(project?.customerName || ''))
+          if (selectedCustomer) {
+            setCustomerMode('library')
+            setSelectedMaterialCustomerId(selectedCustomer.id)
+            setForm((prev) => ({
+              ...prev,
+              customerId: selectedCustomer.customerId,
+              customerCanonicalName: selectedCustomer.name,
+              customerName: selectedCustomer.name,
+            }))
+          }
+          const selectedProject = projects.find((item) => item.id === String(project?.materialProjectId || ''))
+          if (selectedProject) {
+            setMaterialProjectMode(project?.materialProjectMode || 'library')
+            setSelectedMaterialProjectId(selectedProject.id)
+            setForm((prev) => ({
+              ...prev,
+              materialProjectName: selectedProject.name,
+              projectCode: prev.projectCode || selectedProject.projectCode,
+            }))
           }
           return
         }
-        if (list.length > 0) {
-          setCustomerMode('keyAccount')
-          setSelectedKeyAccountId(list[0].id)
-          setForm((prev) => ({ ...prev, customerName: list[0].name }))
+        if (customers.length > 0) {
+          const defaultCustomer = customers[0]
+          setCustomerMode('library')
+          setSelectedMaterialCustomerId(defaultCustomer.id)
+          setForm((prev) => ({
+            ...prev,
+            customerId: defaultCustomer.customerId,
+            customerCanonicalName: defaultCustomer.name,
+            customerName: defaultCustomer.name,
+          }))
+          const defaultProject = projects.find((item) => !item.customerId || item.customerId === defaultCustomer.customerId)
+          if (defaultProject) {
+            setMaterialProjectMode('library')
+            setSelectedMaterialProjectId(defaultProject.id)
+            setForm((prev) => ({
+              ...prev,
+              materialProjectName: defaultProject.name,
+              projectCode: prev.projectCode || defaultProject.projectCode,
+            }))
+          }
         }
       } catch (e) {
         if (!mounted) return
-        setKeyAccounts([])
-        if (!isUpdateMode) setCustomerMode('manual')
-        setAccountError(e?.message || '重点客户字典加载失败，可手动输入客户名称。')
+        setMaterialCustomers([])
+        setMaterialProjects([])
+        if (!isUpdateMode) setCustomerMode('ordinary')
+        setIdentityError(e?.message || '素材库客户/项目加载失败，可选择普通客户或普通项目。')
       } finally {
-        if (mounted) setLoadingAccounts(false)
+        if (mounted) setLoadingIdentities(false)
       }
     }
-    loadAccounts()
+    loadMaterialIdentities()
     return () => {
       mounted = false
     }
-  }, [isUpdateMode, project?.customerName, project?.isKeyAccount, project?.keyAccountId])
+  }, [form.bidType, isUpdateMode, project?.customerId, project?.customerName, project?.keyAccountId, project?.materialCustomerId, project?.materialProjectId, project?.materialProjectMode])
 
   const canNextStep = useMemo(() => {
     if (step !== 0) return true
     if (!form.name.trim()) return false
     if (!form.customerName.trim()) return false
+    if (customerMode === 'library' && !selectedMaterialCustomerId) return false
+    if (materialProjectMode === 'library' && !selectedMaterialProjectId) return false
     if (!form.manager.trim()) return false
     if (!form.deadline) return false
     return true
-  }, [form, step])
+  }, [customerMode, form, materialProjectMode, selectedMaterialCustomerId, selectedMaterialProjectId, step])
 
   const archivePathPreview = useMemo(() => {
     const customer = form.customerName.trim() || '客户名'
-    if (customerMode === 'keyAccount') {
-      return `客户定制/${customer}/{项目ID}/${form.bidType}`
-    }
-    return `项目定制/{项目ID}/${form.bidType}`
-  }, [customerMode, form.customerName, form.bidType])
+    const projectIdentity = materialProjectMode === 'library'
+      ? selectedMaterialProject?.projectId || selectedMaterialProjectId || '素材库项目ID'
+      : project?.materialProjectId || '系统生成素材项目ID'
+    return `客户素材/${customer}/${form.bidType}；项目素材/${projectIdentity}/${form.bidType}`
+  }, [form.customerName, form.bidType, materialProjectMode, project?.materialProjectId, selectedMaterialProject?.projectId, selectedMaterialProjectId])
 
   const handleCreate = async () => {
     setCreating(true)
@@ -108,8 +194,16 @@ export default function ProjectWizardModal({
       const payload = {
         ...form,
         owner: form.customerName,
-        isKeyAccount: customerMode === 'keyAccount' && Boolean(selectedKeyAccountId),
-        keyAccountId: customerMode === 'keyAccount' ? selectedKeyAccountId : '',
+        isKeyAccount: customerMode === 'library' && Boolean(selectedMaterialCustomerId),
+        keyAccountId: customerMode === 'library' ? selectedMaterialCustomerId : '',
+        customerId: customerMode === 'library' ? selectedMaterialCustomer?.customerId || selectedMaterialCustomerId : '',
+        customerCanonicalName: customerMode === 'library' ? selectedMaterialCustomer?.name || form.customerName : '',
+        materialCustomerId: customerMode === 'library' ? selectedMaterialCustomer?.customerId || selectedMaterialCustomerId : '',
+        materialCustomerName: customerMode === 'library' ? selectedMaterialCustomer?.name || form.customerName : form.customerName,
+        materialProjectMode,
+        materialProjectId: materialProjectMode === 'library' ? selectedMaterialProject?.projectId || selectedMaterialProjectId : '',
+        materialProjectCode: materialProjectMode === 'library' ? selectedMaterialProject?.projectCode || selectedMaterialProjectId : form.projectCode,
+        materialProjectName: materialProjectMode === 'library' ? selectedMaterialProject?.name || selectedMaterialProjectId : (form.materialProjectName || form.name),
       }
       if (forceReviewDecision) payload.reviewDecision = forceReviewDecision
 
@@ -184,9 +278,16 @@ export default function ProjectWizardModal({
                     className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
                     value={form.bidType}
                     onChange={(e) => updateForm('bidType', e.target.value)}
+                    disabled={lockBidType}
                   >
-                    <option>技术标</option>
-                    <option>商务标</option>
+                    {lockBidType ? (
+                      <option>{form.bidType}</option>
+                    ) : (
+                      <>
+                        <option>技术标</option>
+                        <option>商务标</option>
+                      </>
+                    )}
                   </select>
                 </div>
                 <div className="md:col-span-2">
@@ -199,27 +300,41 @@ export default function ProjectWizardModal({
                   />
                 </div>
               </div>
+              <div>
+                <label className="block text-sm font-semibold text-on-surface mb-2">业务项目编号</label>
+                <input
+                  className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                  placeholder="例如：招标编号、项目编号"
+                  value={form.projectCode}
+                  onChange={(e) => updateForm('projectCode', e.target.value)}
+                />
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">客户类型</label>
+                  <label className="block text-sm font-semibold text-on-surface mb-2">客户来源</label>
                   <select
                     className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
                     value={customerMode}
                     onChange={(e) => {
                       const nextMode = e.target.value
                       setCustomerMode(nextMode)
-                      if (nextMode === 'keyAccount') {
-                        const selected = keyAccounts.find((item) => item.id === selectedKeyAccountId) || keyAccounts[0]
+                      if (nextMode === 'library') {
+                        const selected = materialCustomers.find((item) => item.id === selectedMaterialCustomerId) || materialCustomers[0]
                         if (selected) {
-                          setSelectedKeyAccountId(selected.id)
-                          setForm((prev) => ({ ...prev, customerName: selected.name }))
+                          setSelectedMaterialCustomerId(selected.id)
+                          setForm((prev) => ({
+                            ...prev,
+                            customerId: selected.customerId,
+                            customerCanonicalName: selected.name,
+                            customerName: selected.name,
+                          }))
                         }
                       }
                     }}
-                    disabled={loadingAccounts}
+                    disabled={loadingIdentities}
                   >
-                    <option value="keyAccount" disabled={!keyAccounts.length}>重点客户</option>
-                    <option value="manual">普通客户（手动输入）</option>
+                    <option value="library" disabled={!materialCustomers.length}>素材库客户</option>
+                    <option value="ordinary">普通客户</option>
                   </select>
                 </div>
                 <div>
@@ -234,21 +349,30 @@ export default function ProjectWizardModal({
               </div>
               <div>
                 <label className="block text-sm font-semibold text-on-surface mb-2">业主单位（客户） *</label>
-                {customerMode === 'keyAccount' && keyAccounts.length > 0 ? (
+                {customerMode === 'library' && materialCustomers.length > 0 ? (
                   <select
                     className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
-                    value={selectedKeyAccountId}
+                    value={selectedMaterialCustomerId}
                     onChange={(e) => {
                       const nextId = e.target.value
-                      setSelectedKeyAccountId(nextId)
-                      const selected = keyAccounts.find((item) => item.id === nextId)
+                      setSelectedMaterialCustomerId(nextId)
+                      const selected = materialCustomers.find((item) => item.id === nextId)
                       if (selected) {
-                        setForm((prev) => ({ ...prev, customerName: selected.name }))
+                        setForm((prev) => ({
+                          ...prev,
+                          customerId: selected.customerId,
+                          customerCanonicalName: selected.name,
+                          customerName: selected.name,
+                        }))
+                        const currentProject = materialProjects.find((item) => item.id === selectedMaterialProjectId)
+                        if (currentProject?.customerId && currentProject.customerId !== selected.customerId) {
+                          setSelectedMaterialProjectId('')
+                        }
                       }
                     }}
                   >
-                    {keyAccounts.map((item) => (
-                      <option key={item.id} value={item.id}>{item.name}</option>
+                    {materialCustomers.map((item) => (
+                      <option key={item.id} value={item.id}>{customerLabel(item)}</option>
                     ))}
                   </select>
                 ) : (
@@ -256,14 +380,105 @@ export default function ProjectWizardModal({
                     className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
                     placeholder="输入客户名称，例如：华能集团"
                     value={form.customerName}
-                    onChange={(e) => updateForm('customerName', e.target.value)}
+                    onChange={(e) => {
+                      updateForm('customerName', e.target.value)
+                      updateForm('customerId', '')
+                      updateForm('customerCanonicalName', e.target.value)
+                    }}
                   />
                 )}
-                {(accountError || loadingAccounts) && (
-                  <p className={`text-xs mt-2 ${accountError ? 'text-error' : 'text-outline'}`}>
-                    {accountError || '正在加载重点客户字典...'}
+                {(identityError || loadingIdentities) && (
+                  <p className={`text-xs mt-2 ${identityError ? 'text-error' : 'text-outline'}`}>
+                    {identityError || '正在加载素材库客户/项目...'}
                   </p>
                 )}
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-semibold text-on-surface mb-2">素材项目来源</label>
+                  <select
+                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                    value={materialProjectMode}
+                    onChange={(e) => {
+                      const nextMode = e.target.value
+                      setMaterialProjectMode(nextMode)
+                      if (nextMode === 'library') {
+                        const selected = filteredMaterialProjects.find((item) => item.id === selectedMaterialProjectId) || filteredMaterialProjects[0]
+                        if (selected) {
+                          setSelectedMaterialProjectId(selected.id)
+                          setForm((prev) => ({
+                            ...prev,
+                            materialProjectName: selected.name,
+                            projectCode: prev.projectCode || selected.projectCode,
+                          }))
+                          if (selected.customerId) {
+                            const customer = materialCustomers.find((item) => item.customerId === selected.customerId)
+                            if (customer) {
+                              setCustomerMode('library')
+                              setSelectedMaterialCustomerId(customer.id)
+                              setForm((prev) => ({
+                                ...prev,
+                                customerId: customer.customerId,
+                                customerCanonicalName: customer.name,
+                                customerName: customer.name,
+                              }))
+                            }
+                          }
+                        }
+                      }
+                    }}
+                    disabled={loadingIdentities}
+                  >
+                    <option value="library" disabled={!filteredMaterialProjects.length}>素材库项目</option>
+                    <option value="ordinary">普通项目</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-on-surface mb-2">素材库项目 *</label>
+                  {materialProjectMode === 'library' && filteredMaterialProjects.length > 0 ? (
+                    <select
+                      className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                      value={selectedMaterialProjectId}
+                      onChange={(e) => {
+                        const nextId = e.target.value
+                        setSelectedMaterialProjectId(nextId)
+                        const selected = materialProjects.find((item) => item.id === nextId)
+	                        if (selected) {
+	                          setForm((prev) => ({
+	                            ...prev,
+	                            materialProjectName: selected.name,
+	                            projectCode: prev.projectCode || selected.projectCode,
+	                          }))
+	                          if (selected.customerId) {
+	                            const customer = materialCustomers.find((item) => item.customerId === selected.customerId)
+	                            if (customer) {
+	                              setCustomerMode('library')
+	                              setSelectedMaterialCustomerId(customer.id)
+	                              setForm((prev) => ({
+	                                ...prev,
+	                                customerId: customer.customerId,
+	                                customerCanonicalName: customer.name,
+	                                customerName: customer.name,
+	                              }))
+	                            }
+	                          }
+	                        }
+                      }}
+                    >
+                      <option value="">选择素材库项目</option>
+                      {filteredMaterialProjects.map((item) => (
+                        <option key={item.id} value={item.id}>{materialProjectLabel(item)}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                      placeholder="普通项目名称，不填则使用投标项目名称"
+                      value={form.materialProjectName}
+                      onChange={(e) => updateForm('materialProjectName', e.target.value)}
+                    />
+                  )}
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -288,11 +503,15 @@ export default function ProjectWizardModal({
                 </h3>
                 <div className="grid grid-cols-2 gap-4">
                   {[
-                    ['项目名称', form.name || '—'],
-                    ['业主单位', form.customerName || '—'],
-                    ['负责人', form.manager || '—'],
-                    ['标书类型', form.bidType],
-                    ['截止日期', form.deadline || '—'],
+	                    ['项目名称', form.name || '—'],
+	                    ['业务项目编号', form.projectCode || (project?.id || '创建后生成')],
+	                    ['业主单位', form.customerName || '—'],
+	                    ['客户来源', customerMode === 'library' ? '素材库客户' : '普通客户'],
+	                    ['素材库项目', materialProjectMode === 'library' ? selectedMaterialProject?.name || '—' : form.materialProjectName || form.name || '普通项目'],
+	                    ['素材项目ID', materialProjectMode === 'library' ? selectedMaterialProjectId || '—' : project?.materialProjectId || '创建后生成'],
+	                    ['负责人', form.manager || '—'],
+	                    ['标书类型', form.bidType],
+	                    ['截止日期', form.deadline || '—'],
                   ].map(([label, value], i) => (
                     <div key={i} className="flex flex-col gap-1">
                       <span className="text-xs text-outline">{label}</span>

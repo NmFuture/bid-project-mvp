@@ -7,10 +7,12 @@ import PageHeader from '../components/shared/PageHeader'
 import StageProgress from '../components/shared/StageProgress'
 import DataCard from '../components/shared/DataCard'
 import { getStageRoute, getStrictStageLockReason } from '../utils/stageFlow'
+import { projectRoute, useWorkspaceSlug, workspaceRoute } from '../utils/workspace'
 
 export default function ProjectCockpit({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
+  const workspaceSlug = useWorkspaceSlug()
   const [project, setProject] = useState(null)
   const [stages, setStages] = useState([])
   const [cockpit, setCockpit] = useState(null)
@@ -60,8 +62,8 @@ export default function ProjectCockpit({ showToast }) {
       showToast(lockReason, 'error')
       return
     }
-    navigate(`/projects/${id}/editor`)
-  }, [getStageLockReason, id, navigate, showToast])
+    navigate(projectRoute(id, '/editor', workspaceSlug))
+  }, [getStageLockReason, id, navigate, showToast, workspaceSlug])
 
   if (loading) return <PageLoading title="正在加载项目驾驶舱..." />
 
@@ -130,7 +132,7 @@ export default function ProjectCockpit({ showToast }) {
             openExportWithGuard()
             return
           }
-          const route = getStageRoute(id, stage.id)
+          const route = getStageRoute(id, stage.id, workspaceSlug)
           if (route) {
             navigate(route)
             return
@@ -183,7 +185,12 @@ export default function ProjectCockpit({ showToast }) {
                       <span className="text-xs text-secondary font-medium px-3 py-1 bg-secondary-container/30 rounded-full">已完成</span>
                     ) : (
                       <button
-                        onClick={() => navigate(task.actionRoute || `/projects/${id}/gaps`)}
+                        onClick={() => {
+                          const route = task.actionRoute
+                            ? (workspaceSlug ? workspaceRoute(workspaceSlug, task.actionRoute) : task.actionRoute)
+                            : projectRoute(id, '/gaps', workspaceSlug)
+                          navigate(route)
+                        }}
                         className="px-4 py-1.5 bg-primary/10 text-primary hover:bg-primary/20 font-medium rounded-lg transition-colors text-xs flex items-center gap-1 whitespace-nowrap"
                       >
                         {task.actionLabel || '去处理'}

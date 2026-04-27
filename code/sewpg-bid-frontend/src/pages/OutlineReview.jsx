@@ -7,6 +7,7 @@ import DataCard from '../components/shared/DataCard'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
+import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const cloneNodes = (nodes = []) => JSON.parse(JSON.stringify(nodes))
 
@@ -46,9 +47,13 @@ const collectExpandableNodeIds = (items = []) =>
     return result
   }, [])
 
+const countNodes = (items = []) =>
+  (items || []).reduce((total, item) => total + 1 + countNodes(item.children || []), 0)
+
 export default function OutlineReview({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
+  const workspaceSlug = useWorkspaceSlug()
   const [nodes, setNodes] = useState([])
   const [activeNodeId, setActiveNodeId] = useState('')
   const [loading, setLoading] = useState(true)
@@ -70,7 +75,11 @@ export default function OutlineReview({ showToast }) {
       setNodes(nextNodes)
       setDirty(false)
       setActiveNodeId(nextNodes[0]?.id || '')
-      setCollapsedNodeIds(new Set())
+      setCollapsedNodeIds(
+        countNodes(nextNodes) > 180
+          ? new Set(collectExpandableNodeIds(nextNodes))
+          : new Set(),
+      )
       setTenderPreview(payload?.tenderPreview || null)
       setOnlyofficeError('')
     } catch (e) {
@@ -147,7 +156,7 @@ export default function OutlineReview({ showToast }) {
       await outlineAPI.confirm(id)
       await stagesAPI.update(id, 3, { status: 'completed' })
       showToast?.('目录审核已完成，已进入 S4 素材缺口识别')
-      navigate(`/projects/${id}/gaps`)
+      navigate(projectRoute(id, '/gaps', workspaceSlug))
     } catch (e) {
       showToast?.(e?.message || '目录确认失败，请稍后重试', 'error')
     } finally {

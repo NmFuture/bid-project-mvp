@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { auditAPI } from '../api'
 import AuditDetailModal from '../components/modals/AuditDetailModal'
 import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
+import { bidTypeFromWorkspace, useWorkspaceSlug } from '../utils/workspace'
 
 const defaultFilters = {
   user: '',
@@ -56,6 +57,8 @@ const safeMessage = (error, fallback) =>
   error?.payload?.detail || error?.message || fallback
 
 export default function AuditLog({ showToast = () => {} }) {
+  const workspaceSlug = useWorkspaceSlug()
+  const lockedBidType = bidTypeFromWorkspace(workspaceSlug)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
@@ -73,11 +76,14 @@ export default function AuditLog({ showToast = () => {} }) {
     }
     setError('')
     try {
-      const response = await auditAPI.list(filters)
+      const response = await auditAPI.list({
+        ...filters,
+        bidType: lockedBidType,
+      })
       setData(response)
     } catch (e) {
       console.error(e)
-      const message = safeMessage(e, '审计日志加载失败，请稍后重试。')
+      const message = safeMessage(e, '日志加载失败，请稍后重试。')
       setError(message)
       if (options.silent) showToast(message, 'error')
     } finally {
@@ -87,7 +93,7 @@ export default function AuditLog({ showToast = () => {} }) {
         setLoading(false)
       }
     }
-  }, [showToast])
+  }, [lockedBidType, showToast])
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -118,7 +124,10 @@ export default function AuditLog({ showToast = () => {} }) {
   const handleExportCsv = async () => {
     setExporting(true)
     try {
-      const payload = await auditAPI.exportCsv(queryFilters)
+      const payload = await auditAPI.exportCsv({
+        ...queryFilters,
+        bidType: lockedBidType,
+      })
       const exportItems = payload?.items || []
       if (!exportItems.length) {
         showToast('当前筛选条件下无可导出记录', 'error')
@@ -137,13 +146,13 @@ export default function AuditLog({ showToast = () => {} }) {
   }
 
   if (loading && !data) {
-    return <PageLoading title="正在加载审计日志..." description="正在同步最新操作记录。" />
+    return <PageLoading title="正在加载日志..." description="正在同步最新操作记录。" />
   }
 
   if (error && !data) {
     return (
       <PageError
-        title="审计日志加载失败"
+        title="日志加载失败"
         description={error}
         onRetry={() => loadData(queryFilters)}
       />
@@ -154,8 +163,8 @@ export default function AuditLog({ showToast = () => {} }) {
     <div className="flex flex-col gap-6 animate-fade-in">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
         <div>
-          <h1 className="text-3xl font-headline font-bold text-primary">审计日志</h1>
-          <p className="text-sm text-on-surface-variant mt-1">支持筛选、diff 查看与 CSV 导出，满足联调与合规追踪需求。</p>
+          <h1 className="text-3xl font-headline font-bold text-primary">{lockedBidType ? `${lockedBidType}日志` : '日志'}</h1>
+          <p className="text-sm text-on-surface-variant mt-1">支持筛选、diff 查看与 CSV 导出，满足联调追踪需求。</p>
           {(refreshing || error) && (
             <p className={`text-xs mt-1 ${error ? 'text-error' : 'text-outline'}`}>
               {error || '正在刷新数据...'}
@@ -277,8 +286,8 @@ export default function AuditLog({ showToast = () => {} }) {
 
       {!items.length ? (
         <PageEmpty
-          title={hasActiveFilters ? '筛选后暂无日志' : '暂无审计日志'}
-          description={hasActiveFilters ? '请调整筛选条件后重试。' : '当前暂无可展示的审计记录。'}
+          title={hasActiveFilters ? '筛选后暂无日志' : '暂无日志'}
+          description={hasActiveFilters ? '请调整筛选条件后重试。' : '当前暂无可展示的日志记录。'}
           actionText={hasActiveFilters ? '清空筛选' : undefined}
           onAction={hasActiveFilters ? handleResetFilters : undefined}
         />

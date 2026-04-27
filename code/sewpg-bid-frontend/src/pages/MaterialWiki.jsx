@@ -3,6 +3,7 @@ import { materialsAPI } from '../api'
 import MaterialsViewSwitch from '../components/shared/MaterialsViewSwitch'
 import MarkdownLite from '../components/shared/MarkdownLite'
 import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
+import { bidTypeFromWorkspace, useWorkspaceSlug, workspaceRoute } from '../utils/workspace'
 
 const normalizeArray = (value) =>
   Array.isArray(value) ? [...new Set(value)].filter(Boolean).sort() : []
@@ -41,6 +42,9 @@ const normalizeDraft = (node) => ({
 })
 
 export default function MaterialWiki({ showToast = () => {} }) {
+  const workspaceSlug = useWorkspaceSlug()
+  const lockedBidType = bidTypeFromWorkspace(workspaceSlug)
+  const materialsBasePath = workspaceSlug ? workspaceRoute(workspaceSlug, '/materials') : '/materials'
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -73,7 +77,10 @@ export default function MaterialWiki({ showToast = () => {} }) {
     }
 
     try {
-      const response = await materialsAPI.wiki.list(params)
+      const response = await materialsAPI.wiki.list({
+        ...params,
+        bidType: lockedBidType || params.bidType || '',
+      })
       applyPayload(response)
     } catch (e) {
       console.error(e)
@@ -89,7 +96,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
         setLoading(false)
       }
     }
-  }, [applyPayload, showToast])
+  }, [applyPayload, lockedBidType, showToast])
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -153,6 +160,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
         parentId: selectedNodeId,
         title: isFolder ? '新建目录' : '新建节点',
         isFolder,
+        bidType: lockedBidType,
       })
       applyPayload(payload)
       showToast(isFolder ? '目录创建成功' : '节点创建成功')
@@ -179,6 +187,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
         markdownContent: draft.markdownContent,
         tags: draft.tags,
         applicableTypes: draft.applicableTypes,
+        bidType: lockedBidType,
       })
       applyPayload(payload)
       showToast('节点保存成功')
@@ -194,7 +203,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
     if (!selectedNodeId) return
     setRefreshingSummary(true)
     try {
-      const payload = await materialsAPI.wiki.refreshSummary(selectedNodeId)
+      const payload = await materialsAPI.wiki.refreshSummary(selectedNodeId, { bidType: lockedBidType })
       applyPayload(payload)
       showToast('摘要已刷新')
     } catch (e) {
@@ -223,6 +232,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
       formData.append('file', file)
       formData.append('fileName', file.name)
       formData.append('fileSize', String(file.size))
+      if (lockedBidType) formData.append('bidType', lockedBidType)
       const payload = await materialsAPI.wiki.uploadAttachment(selectedNodeId, formData)
       applyPayload(payload)
       showToast('附件上传成功')
@@ -241,6 +251,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
       const payload = await materialsAPI.wiki.move(movingId, {
         targetId: targetNode.id,
         mode,
+        bidType: lockedBidType,
       })
       applyPayload(payload)
       showToast(mode === 'inside' ? '节点已移动为子节点' : '节点顺序已更新')
@@ -367,8 +378,8 @@ export default function MaterialWiki({ showToast = () => {} }) {
     <div className="flex flex-col gap-6 animate-fade-in">
       <MaterialsViewSwitch
         active="wiki"
-        title="素材 Wiki"
-        subtitle={selectedNode?.pathText || selectedNode?.title || '平台级 Wiki 与项目级 Wiki 内容维护'}
+        title={`${lockedBidType || '素材'} Wiki`}
+        subtitle={selectedNode?.pathText || selectedNode?.title || `${lockedBidType || '平台级'} Wiki 内容维护`}
         actions={(
           <div className="flex flex-wrap gap-3">
             <button
@@ -397,6 +408,9 @@ export default function MaterialWiki({ showToast = () => {} }) {
         meta={(
           <div className="flex w-full flex-wrap gap-2 text-xs xl:justify-end">
             <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+              标类 {lockedBidType || '全部'}
+            </span>
+            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
               标签 {draft.tags.length}
             </span>
             <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
@@ -410,6 +424,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
             </span>
           </div>
         )}
+        basePath={materialsBasePath}
       />
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
         <div className="xl:col-span-3 bg-surface-container-lowest rounded-xl border border-surface-container-high flex flex-col min-h-[720px] max-h-[720px] overflow-hidden">

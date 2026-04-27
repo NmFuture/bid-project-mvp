@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { useCallback, useEffect, useState } from 'react'
 import AppShell from './components/layout/AppShell'
 import ProjectList from './pages/ProjectList'
@@ -21,6 +21,7 @@ import Settings from './pages/Settings'
 import Login from './pages/Login'
 import Toast from './components/shared/Toast'
 import { authAPI } from './api'
+import { workspaceFromSlug, workspaceRoute } from './utils/workspace'
 
 const AUTH_STORAGE_KEY = 'sewpg.auth.session'
 
@@ -44,6 +45,13 @@ const persistSession = (session) => {
     return
   }
   window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session))
+}
+
+function WorkspaceRedirect() {
+  const { workspace } = useParams()
+  const resolved = workspaceFromSlug(workspace)
+  if (!resolved) return <Navigate to="/parse" replace />
+  return <Navigate to={workspaceRoute(resolved.slug, '/projects')} replace />
 }
 
 export default function App() {
@@ -115,8 +123,26 @@ export default function App() {
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
       <AppShell currentUser={session?.user} onLogout={handleLogout}>
         <Routes>
-          <Route path="/" element={<Navigate to="/projects" replace />} />
+          <Route path="/" element={<Navigate to="/parse" replace />} />
+          <Route path="/parse" element={<TenderReview showToast={showToast} />} />
           <Route path="/review" element={<TenderReview showToast={showToast} />} />
+          <Route path="/workspace/:workspace" element={<WorkspaceRedirect />} />
+          <Route path="/workspace/:workspace/projects" element={<ProjectList showToast={showToast} />} />
+          <Route path="/workspace/:workspace/flow" element={<WorkspaceRedirect />} />
+          <Route path="/workspace/:workspace/projects/:id" element={<ProjectEntryRedirect />} />
+          <Route path="/workspace/:workspace/projects/:id/parse" element={<ParseResult showToast={showToast} />} />
+          <Route path="/workspace/:workspace/projects/:id/directory" element={<DirectoryGeneration showToast={showToast} />} />
+          <Route path="/workspace/:workspace/projects/:id/outline" element={<OutlineReview showToast={showToast} />} />
+          <Route path="/workspace/:workspace/projects/:id/gaps" element={<GapRecognition showToast={showToast} />} />
+          <Route path="/workspace/:workspace/projects/:id/gaps-fill" element={<GapFilling showToast={showToast} />} />
+          <Route path="/workspace/:workspace/projects/:id/gaps/review" element={<MaterialReview showToast={showToast} />} />
+          <Route path="/workspace/:workspace/projects/:id/generate" element={<GenerateProgress showToast={showToast} />} />
+          <Route path="/workspace/:workspace/projects/:id/coverage" element={<CoverageHeatmap showToast={showToast} />} />
+          <Route path="/workspace/:workspace/projects/:id/editor" element={<CoCreationEditor showToast={showToast} />} />
+          <Route path="/workspace/:workspace/projects/:id/export" element={<FinalExport showToast={showToast} />} />
+          <Route path="/workspace/:workspace/materials/structured" element={<MaterialDB showToast={showToast} />} />
+          <Route path="/workspace/:workspace/materials/wiki" element={<MaterialWiki showToast={showToast} />} />
+          <Route path="/workspace/:workspace/logs" element={<AuditLog showToast={showToast} />} />
           <Route path="/projects" element={<ProjectList showToast={showToast} />} />
           <Route path="/projects/:id" element={<ProjectEntryRedirect />} />
           <Route path="/projects/:id/parse" element={<ParseResult showToast={showToast} />} />

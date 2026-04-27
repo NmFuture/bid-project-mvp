@@ -7,6 +7,7 @@ import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
+import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const formatDateTime = (value) => {
   if (!value) return '未保存'
@@ -18,6 +19,7 @@ const formatDateTime = (value) => {
 export default function CoCreationEditor({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
+  const workspaceSlug = useWorkspaceSlug()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -89,7 +91,7 @@ export default function CoCreationEditor({ showToast }) {
     try {
       await stagesAPI.update(id, 9, { status: 'completed' })
       showToast?.('S9 已完成，已进入 S10')
-      navigate(`/projects/${id}/export`)
+      navigate(projectRoute(id, '/export', workspaceSlug))
     } catch (e) {
       showToast?.(e?.message || 'S9 完成失败，请稍后重试', 'error')
     } finally {

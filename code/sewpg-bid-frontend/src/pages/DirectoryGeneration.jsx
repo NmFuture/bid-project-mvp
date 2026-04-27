@@ -7,6 +7,7 @@ import DataCard from '../components/shared/DataCard'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 import { brandFutureCode, brandFutureCodeOrFallback } from '../utils/branding'
+import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const formatDateTime = (value) => {
   if (!value) return '未生成'
@@ -55,6 +56,7 @@ const formatOpencodePartText = (part) => {
 export default function DirectoryGeneration({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
+  const workspaceSlug = useWorkspaceSlug()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -195,7 +197,7 @@ export default function DirectoryGeneration({ showToast }) {
     try {
       await stagesAPI.update(id, 2, { status: 'completed' })
       showToast?.('已进入 S3 目录审核')
-      navigate(`/projects/${id}/outline`)
+      navigate(projectRoute(id, '/outline', workspaceSlug))
     } catch (e) {
       showToast?.(e?.message || '进入 S3 失败', 'error')
     } finally {

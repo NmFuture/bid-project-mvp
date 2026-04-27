@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { stagesAPI } from '../../api'
 import StageProgress from './StageProgress'
 import { getStageRoute, getStrictStageLockReason } from '../../utils/stageFlow'
+import { useWorkspaceSlug } from '../../utils/workspace'
 
 export default function ProjectStageProgress({
   projectId,
@@ -10,6 +11,7 @@ export default function ProjectStageProgress({
   onStageTenClick,
 }) {
   const navigate = useNavigate()
+  const workspaceSlug = useWorkspaceSlug()
   const [stages, setStages] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -55,14 +57,14 @@ export default function ProjectStageProgress({
         }
       }
 
-      const route = getStageRoute(projectId, stage.id)
+      const route = getStageRoute(projectId, stage.id, workspaceSlug)
       if (!route) {
         showToast?.(`S${stage.id} 页面正在建设中`, 'error')
         return
       }
       navigate(route)
     },
-    [getStageLockReason, navigate, onStageTenClick, projectId, showToast],
+    [getStageLockReason, navigate, onStageTenClick, projectId, showToast, workspaceSlug],
   )
 
   if (loading) {

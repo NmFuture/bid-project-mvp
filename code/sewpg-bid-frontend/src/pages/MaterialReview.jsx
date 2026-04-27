@@ -7,6 +7,7 @@ import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
+import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const statusConfig = {
   resolved: {
@@ -37,6 +38,7 @@ const formatDateTime = (value) => {
 export default function MaterialReview({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
+  const workspaceSlug = useWorkspaceSlug()
   const [data, setData] = useState(null)
   const [reviewDoc, setReviewDoc] = useState(null)
   const [fallbackContent, setFallbackContent] = useState('')
@@ -111,7 +113,7 @@ export default function MaterialReview({ showToast }) {
       }
       await stagesAPI.update(id, 6, { status: 'completed' })
       showToast?.('S6 审核完成，已进入 S7 填充')
-      navigate(`/projects/${id}/generate`)
+      navigate(projectRoute(id, '/generate', workspaceSlug))
     } catch (e) {
       showToast?.(e?.message || 'S6 审核确认失败，请稍后重试', 'error')
     } finally {

@@ -5,6 +5,7 @@ import { PageEmpty, PageError, PageLoading } from '../components/states/PageStat
 import DataCard from '../components/shared/DataCard'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectWizardModal from '../components/modals/ProjectWizardModal'
+import { projectRoute, slugFromBidType } from '../utils/workspace'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -15,7 +16,7 @@ const ALLOWED_EXTENSIONS = new Set([
 ])
 
 const REVIEW_DECISION_LABELS = {
-  pending: '待审核',
+  pending: '待解析',
   participate: '参与投标',
   abandon: '不参与',
 }
@@ -112,7 +113,7 @@ export default function TenderReview({ showToast }) {
         return reviewItems[0]?.id || ''
       })
     } catch (e) {
-      setError(e?.message || '审核项目列表加载失败')
+      setError(e?.message || '解析项目列表加载失败')
     } finally {
       setLoadingProjects(false)
     }
@@ -134,7 +135,7 @@ export default function TenderReview({ showToast }) {
       setProject(projectData)
       setParseData(parseResult)
     } catch (e) {
-      setError(e?.message || '审核详情加载失败')
+      setError(e?.message || '解析详情加载失败')
     } finally {
       setLoadingDetail(false)
     }
@@ -145,7 +146,7 @@ export default function TenderReview({ showToast }) {
     try {
       const now = new Date()
       const pad = (num) => String(num).padStart(2, '0')
-      const name = `待审核项目-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`
+      const name = `待解析项目-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`
       const created = await projectsAPI.create({
         name,
         customerName: '',
@@ -160,11 +161,11 @@ export default function TenderReview({ showToast }) {
       if (toastMessage) {
         showToast?.(toastMessage)
       } else {
-        showToast?.('已新建审核项目，请上传招标文件并解析。')
+        showToast?.('已新建解析项目，请上传招标文件并解析。')
       }
       return created
     } catch (e) {
-      showToast?.(e?.message || '新建审核项目失败', 'error')
+      showToast?.(e?.message || '新建解析项目失败', 'error')
       return null
     } finally {
       setCreatingReview(false)
@@ -256,7 +257,7 @@ export default function TenderReview({ showToast }) {
 
   const handleUploadAndParse = async () => {
     if (!selectedProjectId) {
-      showToast?.('当前没有可审核项目，请先新建审核项目。', 'error')
+      showToast?.('当前没有可解析项目，请先新建解析项目。', 'error')
       return
     }
     if (reviewDecision === 'abandon') {
@@ -283,7 +284,7 @@ export default function TenderReview({ showToast }) {
         item.id === latestProject.id ? { ...item, ...latestProject } : item
       )))
       setTenderFiles([])
-      showToast?.(response?.message || '审核解析完成。')
+      showToast?.(response?.message || '招标文件解析完成。')
     } catch (e) {
       const message = e?.message || '上传并解析失败'
       setUploadError(message)
@@ -314,7 +315,7 @@ export default function TenderReview({ showToast }) {
       setTenderFiles([])
       setUploadError('')
       await createReviewProject({
-        toastMessage: '该项目已设为不参与并移出项目总览，已自动新建审核项目。',
+        toastMessage: '该项目已设为不参与并移出项目总览，已自动新建解析项目。',
       })
     } catch (e) {
       showToast?.(e?.message || '处理不参与流程失败', 'error')
@@ -347,8 +348,8 @@ export default function TenderReview({ showToast }) {
     )
   }
 
-  if (loadingProjects) return <PageLoading title="正在加载审核模块..." />
-  if (error) return <PageError title="审核模块加载失败" description={error} onRetry={loadProjects} />
+  if (loadingProjects) return <PageLoading title="正在加载解析模块..." />
+  if (error) return <PageError title="解析模块加载失败" description={error} onRetry={loadProjects} />
   if (!reviewProjects.length) {
     return (
       <div className="review-page flex flex-col gap-6 animate-fade-in max-w-none">
@@ -365,8 +366,8 @@ export default function TenderReview({ showToast }) {
         />
         <DataCard className="!p-6 flex flex-col gap-4">
           <PageEmpty
-            title="暂无待审核项目"
-            description="你可以在这里先新建审核项目，再上传招标文件进行判断。"
+            title="暂无待解析项目"
+            description="你可以在这里先新建解析项目，再上传招标文件进行判断。"
           />
           <div className="flex justify-center">
             <button
@@ -374,14 +375,14 @@ export default function TenderReview({ showToast }) {
               disabled={creatingReview}
               className="stage-action-btn h-[34px] px-5 bg-[#0067B6] text-white text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {creatingReview ? '新建中...' : '新建审核项目'}
+              {creatingReview ? '新建中...' : '新建解析项目'}
             </button>
           </div>
         </DataCard>
       </div>
     )
   }
-  if (loadingDetail) return <PageLoading title="正在加载项目审核详情..." />
+  if (loadingDetail) return <PageLoading title="正在加载项目解析详情..." />
 
   return (
     <div className="review-page flex flex-col gap-6 animate-fade-in max-w-none">
@@ -394,7 +395,7 @@ export default function TenderReview({ showToast }) {
               disabled={creatingReview}
               className="px-5 py-2.5 bg-[#0067B6] text-white font-medium rounded-lg hover:bg-[#0b74c8] transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {creatingReview ? '新建中...' : '新建审核项目'}
+              {creatingReview ? '新建中...' : '新建解析项目'}
             </button>
             <button
               onClick={() => {
@@ -412,11 +413,11 @@ export default function TenderReview({ showToast }) {
       <DataCard className="!p-6 flex flex-col gap-5">
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
           <div className="xl:col-span-8 rounded-md bg-[#f7f7f7] border border-surface-container-high px-4 py-3">
-            <p className="text-xs text-outline mb-1">当前审核项目</p>
+            <p className="text-xs text-outline mb-1">当前解析项目</p>
             <p className="text-sm font-semibold text-on-surface">{project?.id || '-'} · {project?.name || '未命名项目'}</p>
           </div>
           <div className="xl:col-span-4 rounded-md bg-[#f7f7f7] border border-surface-container-high px-4 py-3 flex items-center justify-between">
-            <span className="text-sm text-on-surface-variant">审核状态</span>
+            <span className="text-sm text-on-surface-variant">解析状态</span>
             <span className={`text-xs px-2.5 py-1 rounded-md font-semibold ${REVIEW_DECISION_BADGE_CLASSES[reviewDecision] || REVIEW_DECISION_BADGE_CLASSES.pending}`}>
               {reviewDecisionLabel}
             </span>
@@ -529,11 +530,11 @@ export default function TenderReview({ showToast }) {
             disabled={Boolean(deciding) || !isParseCompleted}
             className="stage-action-btn h-[34px] px-5 bg-[#0067B6] text-white text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {deciding === 'participate' ? '提交中...' : '参与该项目并进入项目模块'}
+            {deciding === 'participate' ? '提交中...' : '参与该项目并进入工作区'}
           </button>
         </div>
         {reviewDecision === 'abandon' && (
-          <div className="mt-2 text-sm text-error">当前项目已标记为不参与，流程在审核阶段结束。</div>
+          <div className="mt-2 text-sm text-error">当前项目已标记为不参与，流程在解析阶段结束。</div>
         )}
       </div>
 
@@ -553,8 +554,8 @@ export default function TenderReview({ showToast }) {
             setProjects((prev) => prev.map((item) => (
               item.id === updatedProject.id ? { ...item, ...updatedProject } : item
             )))
-            showToast?.('已确认参与投标，正在进入项目模块。')
-            navigate(`/projects/${updatedProject.id}/parse`)
+            showToast?.('已确认参与投标，正在进入对应工作区。')
+            navigate(projectRoute(updatedProject.id, '/parse', slugFromBidType(updatedProject.bidType)))
           }}
         />
       )}

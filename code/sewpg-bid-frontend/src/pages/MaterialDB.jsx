@@ -3,31 +3,82 @@ import { useNavigate } from 'react-router-dom'
 import { materialsAPI } from '../api'
 import MaterialsViewSwitch from '../components/shared/MaterialsViewSwitch'
 import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
+import { bidTypeFromWorkspace, useWorkspaceSlug, workspaceRoute } from '../utils/workspace'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
-const FILE_ACCEPT = '.pdf,.doc,.docx,.md,.xls,.xlsx,.zip,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
+const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm'
 const UPLOAD_KIND_STORAGE_KEY = 'materials.raw.upload.kind'
-const WIKI_BOOTSTRAP_MODES = [
+const MATERIAL_TIER_OPTIONS = [
   {
-    value: 'create',
-    title: '首次创建',
-    description: '如果平台级 Wiki 已存在，则只保留现有版本并清理重复根节点。',
+    value: 'standard',
+    label: '通用素材',
+    description: '大部分标书都会复用的基础资料。',
   },
   {
-    value: 'update',
-    title: '更新现有平台 Wiki',
-    description: '在现有平台级 Wiki 上补齐和更新系统生成的标准节点。',
+    value: 'customer',
+    label: '客户素材',
+    description: '只面向某个客户复用的专属资料。',
   },
   {
-    value: 'replace',
-    title: '重新生成并覆盖',
-    description: '删除现有平台级 Wiki 根树后重新生成一份新结构。',
+    value: 'project',
+    label: '项目素材',
+    description: '只在当前项目使用的补充资料。',
+  },
+]
+const CLEAN_STATUS_OPTIONS = [
+  { value: '', label: '全部状态' },
+  { value: 'cleaned', label: '已清洗' },
+  { value: 'failed', label: '清洗失败' },
+]
+const BID_TYPE_TABS = [
+  {
+    value: '技术标',
+    label: '技术标',
+    icon: 'engineering',
+    rootPath: '通用素材/技术标',
+  },
+  {
+    value: '商务标',
+    label: '商务标',
+    icon: 'request_quote',
+    rootPath: '通用素材/商务标',
   },
 ]
 const ALLOWED_EXTENSIONS = new Set([
-  'pdf', 'doc', 'docx', 'md', 'xls', 'xlsx', 'zip',
-  'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm',
 ])
+const MATERIAL_ROOT_PATHS = ['通用素材', '客户素材', '项目素材']
+const MATERIAL_ROOT_PATH_SET = new Set(MATERIAL_ROOT_PATHS)
+
+const MATERIAL_ROOT_LABELS = {
+  通用素材: '通用素材',
+  客户素材: '客户素材',
+  项目素材: '项目素材',
+  标准模板: '通用素材',
+  客户定制: '客户素材',
+  项目定制: '项目素材',
+}
+
+const normalizeBidTypeTab = (value) => (value === '商务标' ? '商务标' : '技术标')
+
+const bidTypeTabMeta = (value) =>
+  BID_TYPE_TABS.find((item) => item.value === normalizeBidTypeTab(value)) || BID_TYPE_TABS[0]
+
+const materialTierMeta = (value) =>
+  MATERIAL_TIER_OPTIONS.find((item) => item.value === value) || MATERIAL_TIER_OPTIONS[0]
+
+const cleanStatusMeta = (status) => {
+  if (status === 'cleaned') return { label: '已清洗', className: 'bg-secondary-container text-on-secondary-container' }
+  if (status === 'failed') return { label: '清洗失败', className: 'bg-error-container text-on-error-container' }
+  if (status === 'cleaning') return { label: '清洗中', className: 'bg-primary/10 text-primary' }
+  return { label: '待清洗', className: 'bg-surface-container-high text-on-surface-variant' }
+}
+
+const displayFolderName = (name, path) => {
+  const value = String(name || '')
+  const normalizedPath = String(path || '').replace(/^\/+|\/+$/g, '')
+  return MATERIAL_ROOT_LABELS[normalizedPath] || MATERIAL_ROOT_LABELS[value] || value
+}
 
 const readStoredUploadKind = () => {
   if (typeof window === 'undefined') return 'files'
@@ -65,14 +116,39 @@ const extOf = (name) => {
   return String(parts.pop() || '').toLowerCase()
 }
 
+const isMaterialRootPath = (path) => MATERIAL_ROOT_PATH_SET.has(String(path || '').replace(/^\/+|\/+$/g, ''))
+
+const materialTierFromRootPath = (path) => {
+  const normalized = String(path || '').replace(/^\/+|\/+$/g, '')
+  if (normalized === '通用素材') return 'standard'
+  if (normalized === '客户素材') return 'customer'
+  if (normalized === '项目素材') return 'project'
+  return ''
+}
+
 const normalizeTreeNodes = (nodes = []) =>
   (Array.isArray(nodes) ? nodes : []).map((node) => ({
     id: String(node?.id || node?.path || node?.name || `node-${Math.random().toString(36).slice(2, 8)}`),
-    name: String(node?.name || node?.title || node?.path || '未命名目录'),
+    name: displayFolderName(node?.name || node?.title || node?.path || '未命名目录', node?.path || node?.name || ''),
     path: String(node?.path || node?.name || ''),
     fileCount: Number(node?.fileCount || 0),
     children: normalizeTreeNodes(node?.children || []),
   }))
+
+const ensureMaterialRootNodes = (nodes = []) => {
+  const byPath = new Map()
+  ;(Array.isArray(nodes) ? nodes : []).forEach((node) => {
+    const path = String(node?.path || node?.name || '').replace(/^\/+|\/+$/g, '')
+    if (path) byPath.set(path, node)
+  })
+  return MATERIAL_ROOT_PATHS.map((path) => byPath.get(path) || ({
+    id: path,
+    name: path,
+    path,
+    fileCount: 0,
+    children: [],
+  }))
+}
 
 const flattenTreePaths = (nodes = []) => {
   const result = []
@@ -85,6 +161,22 @@ const flattenTreePaths = (nodes = []) => {
   walk(nodes)
   return result
 }
+
+const pathMatchesBidType = (path, bidType) => {
+  const normalized = String(path || '').replace(/^\/+|\/+$/g, '')
+  if (!normalized) return false
+  const parts = normalized.split('/')
+  return parts.includes(bidType)
+}
+
+const filterTreeByBidType = (nodes = [], bidType = '技术标') =>
+  (Array.isArray(nodes) ? nodes : []).flatMap((node) => {
+    const children = filterTreeByBidType(node.children || [], bidType)
+    if (isMaterialRootPath(node.path) || children.length || pathMatchesBidType(node.path, bidType)) {
+      return [{ ...node, children }]
+    }
+    return []
+  })
 
 const collectCollapsiblePaths = (nodes = []) => {
   const result = []
@@ -118,9 +210,14 @@ const parentPath = (path) => {
   return parts.slice(0, -1).join('/')
 }
 
-const pickDefaultFolder = (nodes = []) => {
+const pickDefaultFolder = (nodes = [], bidType = '技术标') => {
   const paths = flattenTreePaths(nodes)
   if (!paths.length) return ''
+  const preferred = bidTypeTabMeta(bidType).rootPath
+  const exact = paths.find((path) => path === preferred)
+  if (exact) return exact
+  const scoped = paths.find((path) => pathMatchesBidType(path, bidType))
+  if (scoped) return scoped
   return paths[0] || ''
 }
 
@@ -129,6 +226,98 @@ const statusColor = (status) => {
   if (status === 'success') return 'bg-secondary-container text-on-secondary-container'
   if (status === 'failed') return 'bg-error-container text-on-error-container'
   return 'bg-surface-container-high text-on-surface-variant'
+}
+
+const listItems = (payload) => {
+  if (Array.isArray(payload)) return payload
+  if (Array.isArray(payload?.items)) return payload.items
+  return []
+}
+
+const identityKey = (value) => String(value || '').trim().toLowerCase().replace(/[\s　,，、.。:：;；()（）\[\]【】{}<>《》"'`·_\-—/\\|]+/g, '')
+
+const normalizeCustomerOptions = (customersPayload, projectsPayload) => {
+  const byKey = new Map()
+  const add = (candidate = {}) => {
+    const customerId = String(candidate.customerId || '').trim()
+    const name = String(candidate.name || candidate.customerCanonicalName || candidate.customerName || '').trim()
+    if (!customerId && !name) return
+    const key = customerId || identityKey(name)
+    if (!key) return
+    const existing = byKey.get(key) || {}
+    byKey.set(key, {
+      customerId: customerId || existing.customerId || '',
+      name: name || existing.name || customerId,
+      customerCanonicalName: String(candidate.customerCanonicalName || existing.customerCanonicalName || name || '').trim(),
+      aliases: Array.from(new Set([
+        ...(existing.aliases || []),
+        ...(Array.isArray(candidate.aliases) ? candidate.aliases : []),
+        ...(Array.isArray(candidate.customerAliases) ? candidate.customerAliases : []),
+      ].filter(Boolean))),
+    })
+  }
+
+  listItems(customersPayload).forEach((item) => add({
+    customerId: item.customerId || item.id,
+    name: item.name || item.customerCanonicalName,
+    customerCanonicalName: item.customerCanonicalName || item.name,
+    aliases: item.aliases || item.customerAliases || [],
+  }))
+
+  listItems(projectsPayload).forEach((project) => {
+    const identity = project.identity || {}
+    add({
+      customerId: project.customerId || identity.customerId,
+      name: project.customerCanonicalName || identity.customerCanonicalName || project.customerName || project.owner,
+      customerCanonicalName: project.customerCanonicalName || identity.customerCanonicalName || project.customerName || project.owner,
+      aliases: project.customerAliases || identity.customerAliases || [],
+    })
+  })
+
+  return Array.from(byKey.values()).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+}
+
+const normalizeProjectOptions = (payload) =>
+  listItems(payload).map((project) => {
+    const identity = project.identity || {}
+    const id = String(project.projectId || project.id || identity.projectId || '').trim()
+    if (!id) return null
+    return {
+      id,
+      projectCode: String(project.projectCode || identity.projectCode || id).trim(),
+      name: String(project.projectName || project.name || identity.projectName || id).trim(),
+      bidType: String(project.bidType || identity.bidType || '').trim(),
+      customerId: String(project.customerId || identity.customerId || '').trim(),
+      customerName: String(project.customerName || identity.customerName || project.owner || '').trim(),
+      customerCanonicalName: String(project.customerCanonicalName || identity.customerCanonicalName || project.customerName || project.owner || '').trim(),
+    }
+  }).filter(Boolean)
+
+const customerOptionMatches = (option, value) => {
+  const key = identityKey(value)
+  if (!key) return false
+  return [
+    option.name,
+    option.customerCanonicalName,
+    ...(option.aliases || []),
+  ].some((candidate) => {
+    const candidateKey = identityKey(candidate)
+    return candidateKey && (candidateKey === key || candidateKey.includes(key) || key.includes(candidateKey))
+  })
+}
+
+const customerLabel = (option) => {
+  const id = option.customerId ? ` / ${option.customerId}` : ''
+  return `${option.name}${id}`
+}
+
+const projectLabel = (option) => {
+  const parts = [
+    option.id,
+    option.projectCode && option.projectCode !== option.id ? option.projectCode : '',
+    option.customerCanonicalName || option.customerName,
+  ].filter(Boolean)
+  return `${option.name}（${parts.join(' / ')}）`
 }
 
 function TreeNode({
@@ -198,6 +387,9 @@ function TreeNode({
 
 export default function MaterialDB({ showToast = () => {} }) {
   const navigate = useNavigate()
+  const workspaceSlug = useWorkspaceSlug()
+  const lockedBidType = bidTypeFromWorkspace(workspaceSlug)
+  const materialsBasePath = workspaceSlug ? workspaceRoute(workspaceSlug, '/materials') : '/materials'
   const uploadPickerRef = useRef(null)
   const [tree, setTree] = useState([])
   const [collapsedMap, setCollapsedMap] = useState({})
@@ -205,11 +397,13 @@ export default function MaterialDB({ showToast = () => {} }) {
   const [filesPayload, setFilesPayload] = useState({ items: [], total: 0, page: 1, pageSize: 20 })
   const [parseStatus, setParseStatus] = useState(null)
   const [selectedFolderPath, setSelectedFolderPath] = useState('')
+  const [activeBidType, setActiveBidType] = useState(() => normalizeBidTypeTab(lockedBidType || '技术标'))
   const [filters, setFilters] = useState({
     keyword: '',
-    bidType: 'all',
     customerName: '',
     projectId: '',
+    materialTier: '',
+    cleanStatus: '',
     page: 1,
     pageSize: 20,
   })
@@ -219,16 +413,22 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [uploadKind, setUploadKind] = useState(() => readStoredUploadKind())
-  const [uploadMode, setUploadMode] = useState('path')
+  const [uploadMode, setUploadMode] = useState('tier')
   const [uploadPath, setUploadPath] = useState('')
+  const [uploadMaterialTier, setUploadMaterialTier] = useState('standard')
+  const [customerOptions, setCustomerOptions] = useState([])
+  const [projectOptions, setProjectOptions] = useState([])
+  const [loadingIdentityOptions, setLoadingIdentityOptions] = useState(false)
+  const [uploadCustomerId, setUploadCustomerId] = useState('')
+  const [uploadCustomerName, setUploadCustomerName] = useState('')
   const [uploadProjectId, setUploadProjectId] = useState('')
+  const [uploadProjectCode, setUploadProjectCode] = useState('')
+  const [uploadProjectName, setUploadProjectName] = useState('')
   const [uploadBidType, setUploadBidType] = useState('技术标')
   const [uploadFiles, setUploadFiles] = useState([])
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
   const [creatingWiki, setCreatingWiki] = useState(false)
-  const [showWikiBootstrapModal, setShowWikiBootstrapModal] = useState(false)
-  const [wikiBootstrapMode, setWikiBootstrapMode] = useState('create')
 
   const [conflictContext, setConflictContext] = useState(null)
 
@@ -238,6 +438,9 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   const fileItems = filesPayload?.items || []
   const totalCount = Number(filesPayload?.total || 0)
+  const activeBidTypeMeta = bidTypeTabMeta(activeBidType)
+  const selectedUploadCustomer = customerOptions.find((option) => option.customerId === uploadCustomerId)
+  const selectedUploadProject = projectOptions.find((option) => option.id === uploadProjectId)
 
   const loadLibrary = useCallback(async (options = {}) => {
     const silent = Boolean(options.silent)
@@ -246,21 +449,24 @@ export default function MaterialDB({ showToast = () => {} }) {
     setError('')
     try {
       const treeResponse = await materialsAPI.raw.tree()
-      const normalizedTree = normalizeTreeNodes(treeResponse?.tree || treeResponse?.items || treeResponse?.nodes || [])
-      setTree(normalizedTree)
+      const normalizedTree = ensureMaterialRootNodes(
+        normalizeTreeNodes(treeResponse?.tree || treeResponse?.items || treeResponse?.nodes || [])
+      )
+      const visibleTree = filterTreeByBidType(normalizedTree, activeBidType)
+      setTree(visibleTree)
       setCollapsedMap((prev) => {
-        const validPathSet = new Set(flattenTreePaths(normalizedTree))
+        const validPathSet = new Set(flattenTreePaths(visibleTree))
         const next = Object.fromEntries(
           Object.entries(prev).filter(([path]) => validPathSet.has(path)),
         )
         if (Object.keys(next).length > 0) return next
-        return buildDefaultCollapsedMap(normalizedTree)
+        return buildDefaultCollapsedMap(visibleTree)
       })
 
-      const validPaths = new Set(flattenTreePaths(normalizedTree))
+      const validPaths = new Set(flattenTreePaths(visibleTree))
       const effectiveFolder = validPaths.has(selectedFolderPath)
         ? selectedFolderPath
-        : pickDefaultFolder(normalizedTree)
+        : pickDefaultFolder(visibleTree, activeBidType)
       if (selectedFolderPath !== effectiveFolder) {
         setSelectedFolderPath(effectiveFolder)
       }
@@ -268,9 +474,11 @@ export default function MaterialDB({ showToast = () => {} }) {
       const payload = await materialsAPI.raw.files({
         folderPath: effectiveFolder,
         keyword: filters.keyword.trim(),
-        bidType: filters.bidType === 'all' ? '' : filters.bidType,
+        bidType: activeBidType,
         customerName: filters.customerName.trim(),
         projectId: filters.projectId.trim(),
+        materialTier: filters.materialTier,
+        cleanStatus: filters.cleanStatus,
         page: filters.page,
         pageSize: filters.pageSize,
       })
@@ -292,7 +500,23 @@ export default function MaterialDB({ showToast = () => {} }) {
       if (silent) setRefreshing(false)
       else setLoading(false)
     }
-  }, [filters, selectedFolderPath])
+  }, [activeBidType, filters, selectedFolderPath])
+
+  const loadUploadIdentityOptions = useCallback(async () => {
+    setLoadingIdentityOptions(true)
+    try {
+      const identityPayload = await materialsAPI.identityOptions({ bidType: activeBidType }) || {}
+      const normalizedProjects = normalizeProjectOptions(identityPayload.projects || [])
+      setProjectOptions(normalizedProjects)
+      setCustomerOptions(normalizeCustomerOptions(identityPayload.customers || [], identityPayload.projects || []))
+    } catch (e) {
+      setCustomerOptions([])
+      setProjectOptions([])
+      setUploadError(safeMessage(e, '客户/项目列表加载失败，请刷新后重试。'))
+    } finally {
+      setLoadingIdentityOptions(false)
+    }
+  }, [activeBidType])
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -302,8 +526,31 @@ export default function MaterialDB({ showToast = () => {} }) {
   }, [loadLibrary])
 
   useEffect(() => {
+    if (!lockedBidType) return
+    const next = normalizeBidTypeTab(lockedBidType)
+    setActiveBidType(next)
+    setUploadBidType(next)
+    setSelectedFolderPath('')
+    setParseStatus(null)
+    setFilters((prev) => ({ ...prev, page: 1 }))
+  }, [lockedBidType])
+
+  useEffect(() => {
     persistUploadKind(uploadKind)
   }, [uploadKind])
+
+  useEffect(() => {
+    if (!showUploadModal) return
+    loadUploadIdentityOptions()
+  }, [showUploadModal, loadUploadIdentityOptions])
+
+  useEffect(() => {
+    if (!showUploadModal || uploadCustomerId || !uploadCustomerName.trim()) return
+    const matchedCustomer = customerOptions.find((option) => customerOptionMatches(option, uploadCustomerName))
+    if (!matchedCustomer) return
+    setUploadCustomerId(matchedCustomer.customerId)
+    setUploadCustomerName(matchedCustomer.name)
+  }, [customerOptions, showUploadModal, uploadCustomerId, uploadCustomerName])
 
   const setCollapseForAll = (collapsed) => {
     const paths = collectCollapsiblePaths(tree)
@@ -323,13 +570,21 @@ export default function MaterialDB({ showToast = () => {} }) {
   }
 
   const openUploadModal = (options = {}) => {
-    const mode = options.mode || 'path'
+    const targetPath = options.targetPath || selectedFolderPath
+    const rootTier = materialTierFromRootPath(targetPath)
+    const mode = rootTier ? 'tier' : (options.mode || 'tier')
+    const nextTier = options.materialTier || rootTier || (filters.projectId.trim() ? 'project' : 'standard')
     setShowUploadModal(true)
     setUploadKind(options.kind || 'files')
     setUploadMode(mode)
-    setUploadPath(options.targetPath || selectedFolderPath)
+    setUploadPath(targetPath)
+    setUploadMaterialTier(nextTier)
+    setUploadCustomerId(options.customerId || '')
+    setUploadCustomerName(options.customerName || filters.customerName.trim())
     setUploadProjectId(options.projectId || filters.projectId.trim())
-    setUploadBidType(filters.bidType === 'all' ? '技术标' : filters.bidType)
+    setUploadProjectCode(options.projectCode || '')
+    setUploadProjectName(options.projectName || '')
+    setUploadBidType(activeBidType)
     setUploadFiles([])
     setUploadError('')
   }
@@ -390,23 +645,58 @@ export default function MaterialDB({ showToast = () => {} }) {
     const payload = new FormData()
     try {
       const targetPath = uploadMode === 'path' ? uploadPath.trim() : ''
-      const projectId = uploadMode === 'project' ? uploadProjectId.trim() : ''
+      const selectedCustomer = customerOptions.find((option) => option.customerId === uploadCustomerId)
+      const selectedProject = projectOptions.find((option) => option.id === uploadProjectId)
+      const projectId = uploadMode === 'tier' && uploadMaterialTier === 'project' ? uploadProjectId.trim() : ''
+      const projectCode = uploadMode === 'tier' && uploadMaterialTier === 'project'
+        ? String(selectedProject?.projectCode || uploadProjectCode || projectId).trim()
+        : ''
+      const projectName = uploadMode === 'tier' && uploadMaterialTier === 'project'
+        ? String(selectedProject?.name || uploadProjectName || '').trim()
+        : ''
+      const customerId = uploadMode === 'tier' && uploadMaterialTier === 'customer'
+        ? String(selectedCustomer?.customerId || uploadCustomerId || '').trim()
+        : uploadMode === 'tier' && uploadMaterialTier === 'project'
+          ? String(selectedProject?.customerId || uploadCustomerId || '').trim()
+          : ''
+      const customerName = uploadMode === 'tier' && uploadMaterialTier === 'customer'
+        ? String(selectedCustomer?.name || uploadCustomerName || '').trim()
+        : uploadMode === 'tier' && uploadMaterialTier === 'project'
+          ? String(selectedProject?.customerCanonicalName || selectedProject?.customerName || uploadCustomerName || '').trim()
+          : ''
+      const materialTier = uploadMode === 'tier' ? uploadMaterialTier : ''
 
-      if (!targetPath && !projectId) {
-        setUploadError('请填写目标目录或项目 ID。')
+      if (uploadMode === 'path' && !targetPath) {
+        setUploadError('请填写目标目录。')
+        setUploading(false)
+        return
+      }
+      if (uploadMode === 'tier' && uploadMaterialTier === 'customer' && !customerId) {
+        setUploadError('请选择客户。')
+        setUploading(false)
+        return
+      }
+      if (uploadMode === 'tier' && uploadMaterialTier === 'project' && !projectId) {
+        setUploadError('请选择项目。')
         setUploading(false)
         return
       }
 
       payload.append('targetPath', targetPath)
       payload.append('projectId', projectId)
+      payload.append('projectCode', projectCode)
+      payload.append('projectName', projectName)
       payload.append('bidType', uploadBidType)
+      payload.append('materialTier', materialTier)
+      payload.append('customerId', customerId)
+      payload.append('customerName', customerName)
       if (onConflict) {
         payload.append('onConflict', onConflict)
       }
       uploadFiles.forEach((file) => {
+        const relativePath = uploadKind === 'folder' ? (file.webkitRelativePath || file.name) : ''
         payload.append('files', file, file.name)
-        payload.append('relativePaths', file.webkitRelativePath || '')
+        payload.append('relativePaths', relativePath)
       })
 
       const result = await materialsAPI.raw.upload(payload)
@@ -532,31 +822,62 @@ export default function MaterialDB({ showToast = () => {} }) {
     }
   }
 
-  const handleCreateWiki = () => {
-    setWikiBootstrapMode('create')
-    setShowWikiBootstrapModal(true)
+  const handleDownloadCleaned = async (item) => {
+    try {
+      const payload = await materialsAPI.raw.downloadCleanedFile(item.id)
+      const url = payload?.downloadUrl || item.cleanedDownloadUrl
+      if (url) {
+        window.open(url, '_blank', 'noopener,noreferrer')
+      }
+      showToast(payload?.message || '已触发 Word 下载')
+    } catch (e) {
+      showToast(safeMessage(e, '清洗后 Word 下载失败'), 'error')
+    }
   }
 
-  const submitCreateWiki = async () => {
+  const handleRetryClean = async (item) => {
+    try {
+      const payload = await materialsAPI.raw.cleanFile(item.id)
+      showToast(payload?.message || '已重新触发清洗')
+      await loadLibrary({ silent: true })
+    } catch (e) {
+      showToast(safeMessage(e, '重新清洗失败'), 'error')
+    }
+  }
+
+  const runWikiBootstrap = async (mode = 'update') => {
+    if (mode === 'replace') {
+      const ok = window.confirm(`确认重建${activeBidType} Wiki？现有自动生成根树会被重新生成。`)
+      if (!ok) return
+    }
     setCreatingWiki(true)
     try {
-      const payload = await materialsAPI.wiki.bootstrap({ mode: wikiBootstrapMode })
-      showToast(payload?.generation?.summary || payload?.message || '平台级 Wiki 已创建')
-      setShowWikiBootstrapModal(false)
-      navigate('/materials/wiki')
+      const payload = await materialsAPI.wiki.bootstrap({ mode, bidType: activeBidType })
+      showToast(payload?.generation?.summary || payload?.message || `${activeBidType} Wiki 已处理`)
+      navigate(`${materialsBasePath}/wiki`)
     } catch (e) {
-      showToast(safeMessage(e, '平台级 Wiki 创建失败'), 'error')
+      showToast(safeMessage(e, `${activeBidType} Wiki 处理失败`), 'error')
     } finally {
       setCreatingWiki(false)
     }
   }
 
+  const handleBidTypeChange = (value) => {
+    if (lockedBidType) return
+    const next = normalizeBidTypeTab(value)
+    if (next === activeBidType) return
+    setActiveBidType(next)
+    setSelectedFolderPath('')
+    setParseStatus(null)
+    setFilters((prev) => ({ ...prev, page: 1 }))
+  }
+
   const resolveConflict = async (action) => {
-    if (!conflictContext?.payload) return
     if (conflictContext.type === 'upload') {
       await performUpload(action)
       return
     }
+    if (!conflictContext?.payload) return
     if (conflictContext.type === 'move') {
       await doMove({ ...conflictContext.payload, onConflict: action })
     }
@@ -596,15 +917,22 @@ export default function MaterialDB({ showToast = () => {} }) {
       <MaterialsViewSwitch
         active="structured"
         title="原始材料库"
-        subtitle={refreshing || error ? (error || '正在刷新...') : '管理原始材料目录、上传文件与创建平台级 Wiki。'}
+        subtitle={refreshing || error ? (error || '正在刷新...') : `管理${activeBidType}素材、上传文件与创建${activeBidType} Wiki。`}
         actions={(
           <div className="flex flex-wrap gap-3">
             <button
-              onClick={handleCreateWiki}
+              onClick={() => runWikiBootstrap('update')}
               disabled={creatingWiki}
               className="px-4 py-2 text-sm font-medium rounded-lg bg-secondary-container text-on-secondary-container hover:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {creatingWiki ? '创建中...' : '创建Wiki'}
+              {creatingWiki ? '处理中...' : `生成/更新${activeBidType}Wiki`}
+            </button>
+            <button
+              onClick={() => runWikiBootstrap('replace')}
+              disabled={creatingWiki}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              重建Wiki
             </button>
             <button
               onClick={() => loadLibrary({ silent: true })}
@@ -613,10 +941,8 @@ export default function MaterialDB({ showToast = () => {} }) {
               刷新
             </button>
             <button
-              onClick={() => openUploadModal({ mode: 'path' })}
-              disabled={!canManageCurrentFolder}
+              onClick={() => openUploadModal({ mode: 'tier' })}
               className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              title={canManageCurrentFolder ? '' : '请先在左侧选择一个目录'}
             >
               上传文件
             </button>
@@ -624,6 +950,9 @@ export default function MaterialDB({ showToast = () => {} }) {
         )}
         meta={(
           <div className="flex flex-wrap gap-2 text-xs">
+            <span className="px-2.5 py-1 rounded-full bg-primary/10 text-primary">
+              {activeBidType}
+            </span>
             <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
               当前目录 {selectedFolderPath || '-'}
             </span>
@@ -635,7 +964,31 @@ export default function MaterialDB({ showToast = () => {} }) {
             </span>
           </div>
         )}
+        basePath={materialsBasePath}
       />
+
+      {!lockedBidType && (
+        <div className="inline-grid grid-cols-2 gap-1 rounded-xl border border-surface-container-high bg-surface-container-lowest p-1 w-full sm:w-fit">
+          {BID_TYPE_TABS.map((tab) => {
+            const selected = tab.value === activeBidType
+            return (
+              <button
+                key={tab.value}
+                type="button"
+                onClick={() => handleBidTypeChange(tab.value)}
+                className={`h-10 px-4 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition-colors ${
+                  selected
+                    ? 'bg-primary text-on-primary'
+                    : 'text-on-surface-variant hover:bg-surface-container-high'
+                }`}
+              >
+                <span className="material-symbols-outlined text-base">{tab.icon}</span>
+                <span>{tab.label}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       {parseStatus && (
         <div className="rounded-xl border border-surface-container-high p-4 flex flex-wrap items-center justify-between gap-2">
@@ -712,23 +1065,13 @@ export default function MaterialDB({ showToast = () => {} }) {
 
         <div className="xl:col-span-9 flex flex-col gap-4">
           <div className="bg-surface-container-lowest rounded-xl border border-surface-container-high p-4">
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
               <input
                 value={filters.keyword}
                 onChange={(e) => updateFilter('keyword', e.target.value)}
                 placeholder="搜索文件名"
                 className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
               />
-              <select
-                value={filters.bidType}
-                onChange={(e) => updateFilter('bidType', e.target.value)}
-                className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-              >
-                <option value="all">全部标书类型</option>
-                <option value="技术标">技术标</option>
-                <option value="商务标">商务标</option>
-                <option value="通用">通用</option>
-              </select>
               <input
                 value={filters.customerName}
                 onChange={(e) => updateFilter('customerName', e.target.value)}
@@ -738,9 +1081,28 @@ export default function MaterialDB({ showToast = () => {} }) {
               <input
                 value={filters.projectId}
                 onChange={(e) => updateFilter('projectId', e.target.value)}
-                placeholder="按项目ID筛选"
+                placeholder="按项目ID/编号筛选"
                 className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
               />
+              <select
+                value={filters.materialTier}
+                onChange={(e) => updateFilter('materialTier', e.target.value)}
+                className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
+              >
+                <option value="">全部层级</option>
+                {MATERIAL_TIER_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <select
+                value={filters.cleanStatus}
+                onChange={(e) => updateFilter('cleanStatus', e.target.value)}
+                className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
+              >
+                {CLEAN_STATUS_OPTIONS.map((option) => (
+                  <option key={option.value || 'all'} value={option.value}>{option.label}</option>
+                ))}
+              </select>
               <select
                 value={filters.pageSize}
                 onChange={(e) => updateFilter('pageSize', Number(e.target.value))}
@@ -773,7 +1135,9 @@ export default function MaterialDB({ showToast = () => {} }) {
                         <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">文件名</th>
                         <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">类型</th>
                         <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">大小</th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">层级/身份</th>
                         <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">标书类型</th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">清洗状态</th>
                         <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">版本</th>
                         <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">更新人/时间</th>
                         <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">操作</th>
@@ -782,13 +1146,43 @@ export default function MaterialDB({ showToast = () => {} }) {
                     <tbody>
                       {fileItems.map((item) => (
                         <tr key={item.id} className="border-b border-surface-container-high/60 hover:bg-surface-container-low">
-                          <td className="px-4 py-3 min-w-[280px]">
-                            <div className="font-medium text-on-surface truncate">{item.name || '-'}</div>
-                            <div className="text-xs text-outline truncate mt-1">{item.folderPath || '-'}</div>
-                          </td>
+	                          <td className="px-4 py-3 min-w-[280px]">
+	                            <div className="font-medium text-on-surface truncate">{item.name || '-'}</div>
+	                            <div className="text-xs text-outline truncate mt-1">{item.folderPath || '-'}</div>
+	                            {item.sourceRelativePath && item.sourceRelativePath !== item.name ? (
+	                              <div className="text-xs text-outline truncate mt-1">{item.sourceRelativePath}</div>
+	                            ) : null}
+	                          </td>
                           <td className="px-4 py-3">{item.ext || item.type || '-'}</td>
                           <td className="px-4 py-3">{item.sizeLabel || toSizeLabel(item.size)}</td>
+                          <td className="px-4 py-3">
+                            <div>{item.materialTierLabel || materialTierMeta(item.materialTier).label}</div>
+                            {item.identityScope && item.identityScope !== 'general' ? (
+                              <div className="text-xs text-outline mt-1">
+                                {item.identityScope === 'customer'
+                                  ? (item.customerCanonicalName || item.customerName || '-')
+                                  : (item.projectCode || item.projectId || '-')}
+                              </div>
+                            ) : null}
+                          </td>
                           <td className="px-4 py-3">{item.bidType || '-'}</td>
+                          <td className="px-4 py-3">
+                            {(() => {
+                              const meta = cleanStatusMeta(item.cleanStatus)
+                              return (
+                                <div className="flex flex-col gap-1">
+                                  <span className={`w-fit px-2 py-1 rounded-full text-xs font-medium ${meta.className}`}>
+                                    {meta.label}
+                                  </span>
+                                  {item.cleanMessage && (
+                                    <span className="text-xs text-outline max-w-[180px] truncate" title={item.cleanMessage}>
+                                      {item.cleanMessage}
+                                    </span>
+                                  )}
+                                </div>
+                              )
+                            })()}
+                          </td>
                           <td className="px-4 py-3">{item.version ? `v${item.version}` : '-'}</td>
                           <td className="px-4 py-3 text-xs text-on-surface-variant">
                             <div>{item.lastOperator || '-'}</div>
@@ -796,7 +1190,19 @@ export default function MaterialDB({ showToast = () => {} }) {
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex flex-wrap gap-2">
-                              <button onClick={() => handleDownload(item)} className="text-primary hover:underline text-xs">下载</button>
+                              <button onClick={() => handleDownload(item)} className="text-primary hover:underline text-xs">源文件</button>
+                              <button
+                                onClick={() => handleDownloadCleaned(item)}
+                                disabled={!item.hasCleanedWord}
+                                className="text-primary hover:underline text-xs disabled:text-outline disabled:no-underline disabled:cursor-not-allowed"
+                              >
+                                Word
+                              </button>
+                              {item.cleanStatus === 'failed' && (
+                                <button onClick={() => handleRetryClean(item)} className="text-on-surface-variant hover:underline text-xs">
+                                  重试清洗
+                                </button>
+                              )}
                               <button onClick={() => handleRename(item)} disabled={!canManageCurrentFolder} className="text-on-surface-variant hover:underline text-xs disabled:opacity-50">重命名</button>
                               <button onClick={() => handleMove(item)} disabled={!canManageCurrentFolder} className="text-on-surface-variant hover:underline text-xs disabled:opacity-50">移动</button>
                               <button onClick={() => handleDelete(item)} disabled={!canManageCurrentFolder} className="text-error hover:underline text-xs disabled:opacity-50">删除</button>
@@ -833,104 +1239,37 @@ export default function MaterialDB({ showToast = () => {} }) {
         </div>
       </div>
 
-      {showWikiBootstrapModal && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-          <div className="w-full max-w-xl bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-2xl">
-            <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between">
-              <h2 className="text-lg font-headline font-bold text-on-surface">创建平台级 Wiki</h2>
-              <button
-                onClick={() => setShowWikiBootstrapModal(false)}
-                disabled={creatingWiki}
-                className="close-plain text-on-surface-variant hover:text-primary transition-colors disabled:opacity-50"
-                aria-label="关闭"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-            <div className="p-6 space-y-4">
-              <div className="grid grid-cols-1 gap-3">
-                {WIKI_BOOTSTRAP_MODES.map((option) => {
-                  const selected = wikiBootstrapMode === option.value
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => setWikiBootstrapMode(option.value)}
-                      className={`text-left rounded-lg border p-4 transition-colors ${
-                        selected
-                          ? 'border-primary bg-primary/10 text-on-surface'
-                          : 'border-surface-container-high bg-surface-container-highest hover:bg-surface-container-high'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="font-semibold text-sm">{option.title}</span>
-                        <span className="material-symbols-outlined text-base text-primary">
-                          {selected ? 'radio_button_checked' : 'radio_button_unchecked'}
-                        </span>
-                      </div>
-                      <p className="mt-2 text-xs text-on-surface-variant leading-5">{option.description}</p>
-                    </button>
-                  )
-                })}
-              </div>
-              <div className="rounded-lg bg-surface-container-highest p-3 text-xs text-on-surface-variant leading-5">
-                平台级 Wiki 存在后，默认只保留一棵根树；重复的自动生成根节点会在执行时清理。
-              </div>
-            </div>
-            <div className="px-6 py-4 border-t border-surface-container-high flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => setShowWikiBootstrapModal(false)}
-                disabled={creatingWiki}
-                className="px-4 py-2 rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                onClick={submitCreateWiki}
-                disabled={creatingWiki}
-                className="px-4 py-2 rounded-lg bg-primary text-on-primary hover:bg-primary-container disabled:opacity-50"
-              >
-                {creatingWiki ? '处理中...' : '开始处理'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {showUploadModal && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-          <div className="w-full max-w-2xl bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-2xl">
-            <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between">
-              <h2 className="text-lg font-headline font-bold text-on-surface">上传原始素材</h2>
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">
+          <div className="w-full max-w-2xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] max-h-[calc(100vh-1.5rem)] sm:max-h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-2xl flex flex-col overflow-hidden">
+            <div className="px-5 sm:px-6 py-4 border-b border-surface-container-high flex items-center justify-between shrink-0">
+              <h2 className="text-lg font-headline font-bold text-on-surface">上传{activeBidType}原始素材</h2>
               <button onClick={closeUploadModal} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
                 <span className="material-symbols-outlined">close</span>
               </button>
             </div>
-            <div className="p-6 space-y-4">
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-5 sm:p-6 space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <label className="text-sm text-on-surface-variant">
-                  <span className="block mb-1">落位模式</span>
+                  <span className="block mb-1">落位方式</span>
                   <select
                     value={uploadMode}
                     onChange={(e) => setUploadMode(e.target.value)}
                     className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
                   >
+                    <option value="tier">按素材层级</option>
                     <option value="path">指定目录路径</option>
-                    <option value="project">按项目自动落位</option>
                   </select>
                 </label>
                 <label className="text-sm text-on-surface-variant">
                   <span className="block mb-1">标书类型</span>
                   <select
                     value={uploadBidType}
-                    onChange={(e) => setUploadBidType(e.target.value)}
+                    onChange={(e) => setUploadBidType(normalizeBidTypeTab(e.target.value))}
                     className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
                   >
                     <option value="技术标">技术标</option>
                     <option value="商务标">商务标</option>
-                    <option value="通用">通用</option>
                   </select>
                 </label>
               </div>
@@ -942,19 +1281,89 @@ export default function MaterialDB({ showToast = () => {} }) {
                     value={uploadPath}
                     onChange={(e) => setUploadPath(e.target.value)}
                     className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                    placeholder="例如：项目定制/PRJ-2026-0001/技术标"
+                    placeholder={`例如：${activeBidTypeMeta.rootPath}`}
                   />
                 </label>
               ) : (
-                <label className="text-sm text-on-surface-variant block">
-                  <span className="block mb-1">项目 ID</span>
-                  <input
-                    value={uploadProjectId}
-                    onChange={(e) => setUploadProjectId(e.target.value)}
-                    className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                    placeholder="例如：PRJ-2026-0001"
-                  />
-                </label>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <label className="text-sm text-on-surface-variant">
+                    <span className="block mb-1">素材层级</span>
+                    <select
+                      value={uploadMaterialTier}
+                      onChange={(e) => {
+                        setUploadMaterialTier(e.target.value)
+                        setUploadError('')
+                      }}
+                      className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
+                    >
+                      {MATERIAL_TIER_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {uploadMaterialTier === 'customer' ? (
+                    <label className="text-sm text-on-surface-variant">
+                      <span className="block mb-1">选择客户</span>
+                      <select
+                        value={uploadCustomerId}
+                        onChange={(e) => {
+                          const customerId = e.target.value
+                          const customer = customerOptions.find((option) => option.customerId === customerId)
+                          setUploadCustomerId(customerId)
+                          setUploadCustomerName(customer?.name || '')
+                          setUploadError('')
+                        }}
+                        disabled={loadingIdentityOptions}
+                        className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
+                      >
+                        <option value="">{loadingIdentityOptions ? '正在加载客户...' : '选择客户'}</option>
+                        {customerOptions.map((option) => (
+                          <option key={option.customerId || option.name} value={option.customerId}>
+                            {customerLabel(option)}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="block mt-1 text-xs text-outline">
+                        {selectedUploadCustomer?.customerId ? `系统ID：${selectedUploadCustomer.customerId}` : '客户ID由系统写入'}
+                      </span>
+                    </label>
+                  ) : uploadMaterialTier === 'project' ? (
+                    <label className="text-sm text-on-surface-variant">
+                      <span className="block mb-1">选择项目</span>
+                      <select
+                        value={uploadProjectId}
+                        onChange={(e) => {
+                          const projectId = e.target.value
+                          const project = projectOptions.find((option) => option.id === projectId)
+                          setUploadProjectId(projectId)
+                          setUploadProjectCode(project?.projectCode || '')
+                          setUploadProjectName(project?.name || '')
+                          setUploadCustomerId(project?.customerId || '')
+                          setUploadCustomerName(project?.customerCanonicalName || project?.customerName || '')
+                          setUploadError('')
+                        }}
+                        disabled={loadingIdentityOptions}
+                        className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
+                      >
+                        <option value="">{loadingIdentityOptions ? '正在加载项目...' : '选择项目'}</option>
+                        {projectOptions.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {projectLabel(option)}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="block mt-1 text-xs text-outline">
+                        {selectedUploadProject
+                          ? `素材项目ID：${selectedUploadProject.id}${selectedUploadProject.projectCode ? `；项目编号：${selectedUploadProject.projectCode}` : ''}`
+                          : '素材项目ID由系统写入'}
+                      </span>
+                    </label>
+                  ) : (
+                    <div className="rounded-lg bg-surface-container-highest px-3 py-2 text-xs text-on-surface-variant leading-5">
+                      {materialTierMeta(uploadMaterialTier).description}
+                    </div>
+                  )}
+                </div>
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1034,9 +1443,9 @@ export default function MaterialDB({ showToast = () => {} }) {
               </div>
 
               {!!uploadFiles.length && (
-                <div className="rounded-lg bg-surface-container-low p-3 text-xs text-on-surface-variant">
+                <div className="rounded-lg bg-surface-container-low p-3 text-xs text-on-surface-variant max-h-48 overflow-y-auto overscroll-contain">
                   {uploadFiles.map((item) => (
-                    <div key={`${item.name}-${item.size}`} className="flex items-center justify-between py-1">
+                    <div key={`${item.webkitRelativePath || item.name}-${item.size}-${item.lastModified}`} className="flex items-center justify-between py-1">
                       <span className="truncate mr-2">{item.webkitRelativePath || item.name}</span>
                       <span>{toSizeLabel(item.size)}</span>
                     </div>
@@ -1045,7 +1454,7 @@ export default function MaterialDB({ showToast = () => {} }) {
               )}
 
               <p className="text-xs text-outline">
-                白名单：doc/docx/md/xls/xlsx/pdf/zip/png/jpg/jpeg/webp/bmp/tif/tiff；单文件 1024MB；支持一次选择多个文件，或选择整个文件夹并保留目录结构。
+                白名单：pdf/doc/docx/xls/xlsx/xlsm；单文件 1024MB。
               </p>
 
               {uploadError && (
@@ -1054,7 +1463,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                 </div>
               )}
             </div>
-            <div className="px-6 py-4 border-t border-surface-container-high flex justify-end gap-3 bg-surface-container-low rounded-b-xl">
+            <div className="px-5 sm:px-6 py-4 border-t border-surface-container-high flex justify-end gap-3 bg-surface-container-low rounded-b-xl shrink-0 shadow-[0_-8px_20px_rgba(0,0,0,0.04)]">
               <button onClick={closeUploadModal} className="px-4 py-2 text-sm text-on-surface-variant hover:bg-surface-container-high rounded-lg">
                 取消
               </button>

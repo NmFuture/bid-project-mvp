@@ -4,6 +4,7 @@ import { gapsAPI, reviewAPI, stagesAPI } from '../api'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 import { PageLoading, PageError } from '../components/states/PageState'
+import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -35,6 +36,7 @@ const detectBidType = (gap) => {
 export default function GapFilling({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
+  const workspaceSlug = useWorkspaceSlug()
   const [data, setData] = useState(null)
   const [selectedGapId, setSelectedGapId] = useState('')
   const [loading, setLoading] = useState(true)
@@ -264,7 +266,7 @@ export default function GapFilling({ showToast }) {
       const prepareResponse = await reviewAPI.prepareParse(id)
       await stagesAPI.update(id, 5, { status: 'completed' })
       showToast(prepareResponse?.message || 'S5 已提交审核并触发 S6 解析，已进入 S6')
-      navigate(`/projects/${id}/gaps/review`)
+      navigate(projectRoute(id, '/gaps/review', workspaceSlug))
     } catch (e) {
       showToast(e?.message || '提交审核失败，请稍后重试', 'error')
     } finally {

@@ -6,6 +6,7 @@ import DataCard from '../components/shared/DataCard'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
+import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -62,7 +63,7 @@ const validatePickedFiles = (picked = []) => {
 }
 
 const REVIEW_DECISION_LABELS = {
-  pending: '待审核',
+  pending: '待解析',
   participate: '参与投标',
   abandon: '不参与',
 }
@@ -70,6 +71,7 @@ const REVIEW_DECISION_LABELS = {
 export default function ParseResult({ showToast }) {
   const navigate = useNavigate()
   const { id } = useParams()
+  const workspaceSlug = useWorkspaceSlug()
   const [project, setProject] = useState(null)
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -144,15 +146,15 @@ export default function ParseResult({ showToast }) {
 
   const handleUploadTemplateFiles = async () => {
     if (!isProjectInfoComplete) {
-      showToast?.('请先返回“审核”模块，重新确认参与并补全项目信息。', 'error')
+      showToast?.('请先返回“解析”模块，重新确认参与并补全项目信息。', 'error')
       return
     }
     if (!isReviewApproved) {
-      showToast?.('请先在“审核”模块确认“参与投标”。', 'error')
+      showToast?.('请先在“解析”模块确认“参与投标”。', 'error')
       return
     }
     if (!sourceFiles.length || !isParseCompleted) {
-      showToast?.('请先在“审核”模块完成招标文件解析。', 'error')
+      showToast?.('请先在“解析”模块完成招标文件解析。', 'error')
       return
     }
     if (!templateFiles.length) {
@@ -182,22 +184,22 @@ export default function ParseResult({ showToast }) {
 
   const handleGoNextStage = async () => {
     if (!isProjectInfoComplete) {
-      showToast?.('请先返回“审核”模块，重新确认参与并补全项目信息。', 'error')
+      showToast?.('请先返回“解析”模块，重新确认参与并补全项目信息。', 'error')
       return
     }
     if (!isReviewApproved) {
-      showToast?.('当前项目尚未确认参与投标，请先前往“审核”模块处理。', 'error')
+      showToast?.('当前项目尚未确认参与投标，请先前往“解析”模块处理。', 'error')
       return
     }
     if (!isParseCompleted) {
-      showToast?.('请先在“审核”模块完成招标文件解析。', 'error')
+      showToast?.('请先在“解析”模块完成招标文件解析。', 'error')
       return
     }
     setAdvancing(true)
     try {
       await stagesAPI.update(id, 1, { status: 'completed' })
       showToast?.('已进入 S2 目录生成')
-      navigate(`/projects/${id}/directory`)
+      navigate(projectRoute(id, '/directory', workspaceSlug))
     } catch (e) {
       showToast?.(e?.message || '进入下一阶段失败', 'error')
     } finally {
@@ -227,7 +229,7 @@ export default function ParseResult({ showToast }) {
             <button
               onClick={handleGoNextStage}
               disabled={!canGoNextStage || advancing}
-              title={!canGoNextStage ? '完成审核解析后可进入 S2（模板文件可选）' : ''}
+              title={!canGoNextStage ? '完成解析后可进入 S2（模板文件可选）' : ''}
               className="px-5 py-2.5 bg-secondary text-on-secondary font-medium rounded-lg shadow-sm hover:bg-secondary/90 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {advancing ? '进入中...' : '进入下一阶段'}
@@ -249,7 +251,7 @@ export default function ParseResult({ showToast }) {
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs">
           <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-            <p className="font-medium text-on-surface mb-1">审核决策状态</p>
+            <p className="font-medium text-on-surface mb-1">解析决策状态</p>
             <p className="text-on-surface-variant">{reviewDecisionLabel}</p>
           </div>
           <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
@@ -264,23 +266,23 @@ export default function ParseResult({ showToast }) {
 
         {!isReviewApproved && (
           <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error flex items-center justify-between gap-3">
-            <span>当前项目尚未确认参与投标，请先到“审核”模块完成决策。</span>
+            <span>当前项目尚未确认参与投标，请先到“解析”模块完成决策。</span>
             <button
-              onClick={() => navigate(`/review?projectId=${id}`)}
+              onClick={() => navigate(`/parse?projectId=${id}`)}
               className="h-[30px] px-3 bg-[#0067B6] text-white text-xs font-semibold"
             >
-              前往审核模块
+              前往解析模块
             </button>
           </div>
         )}
         {isReviewApproved && !isProjectInfoComplete && (
           <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error flex items-center justify-between gap-3">
-            <span>当前项目信息未补全，请返回“审核”模块重新确认参与并补全项目信息。</span>
+            <span>当前项目信息未补全，请返回“解析”模块重新确认参与并补全项目信息。</span>
             <button
-              onClick={() => navigate(`/review?projectId=${id}`)}
+              onClick={() => navigate(`/parse?projectId=${id}`)}
               className="h-[30px] px-3 bg-[#0067B6] text-white text-xs font-semibold"
             >
-              前往审核模块
+              前往解析模块
             </button>
           </div>
         )}

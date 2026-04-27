@@ -44,7 +44,7 @@ export default function AuditDetailModal({ auditId, onClose }) {
         })
         .catch((e) => {
           console.error(e)
-          setError(e?.message || '审计详情加载失败')
+          setError(e?.message || '日志详情加载失败')
         })
         .finally(() => {
           setLoading(false)
@@ -72,7 +72,7 @@ export default function AuditDetailModal({ auditId, onClose }) {
       <div className="dialog-content w-full max-w-5xl animate-fade-in" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-surface-container-high">
           <div>
-            <h2 className="text-xl font-headline font-bold text-on-surface">审计详情</h2>
+            <h2 className="text-xl font-headline font-bold text-on-surface">日志详情</h2>
             <p className="text-xs text-outline mt-1">日志 ID：{auditId}</p>
           </div>
           <button onClick={onClose} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">

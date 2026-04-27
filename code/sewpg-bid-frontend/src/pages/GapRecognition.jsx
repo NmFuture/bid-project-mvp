@@ -6,6 +6,7 @@ import PageHeader from '../components/shared/PageHeader'
 import DataCard from '../components/shared/DataCard'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
+import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const formatDateTime = (value) => {
   if (!value) return '未识别'
@@ -17,6 +18,7 @@ const formatDateTime = (value) => {
 export default function GapRecognition({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
+  const workspaceSlug = useWorkspaceSlug()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -70,7 +72,7 @@ export default function GapRecognition({ showToast }) {
     try {
       await stagesAPI.update(id, 4, { status: 'completed' })
       showToast?.('已进入 S5 备料补交')
-      navigate(`/projects/${id}/gaps-fill`)
+      navigate(projectRoute(id, '/gaps-fill', workspaceSlug))
     } catch (e) {
       showToast?.(e?.message || '进入 S5 失败，请稍后重试', 'error')
     } finally {

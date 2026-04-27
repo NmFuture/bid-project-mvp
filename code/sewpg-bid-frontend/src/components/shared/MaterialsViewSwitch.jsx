@@ -1,8 +1,8 @@
 import { NavLink } from 'react-router-dom'
 
 const ITEMS = [
-  { key: 'structured', label: '原始素材', to: '/materials/structured' },
-  { key: 'wiki', label: 'Wiki', to: '/materials/wiki' },
+  { key: 'structured', label: '原始素材', path: '/structured' },
+  { key: 'wiki', label: 'Wiki', path: '/wiki' },
 ]
 
 export default function MaterialsViewSwitch({
@@ -11,7 +11,9 @@ export default function MaterialsViewSwitch({
   subtitle = '',
   actions = null,
   meta = null,
+  basePath = '/materials',
 }) {
+  const normalizedBasePath = String(basePath || '/materials').replace(/\/+$/, '')
   return (
     <div className="rounded-2xl border border-surface-container-high bg-white">
       <div className="flex flex-col gap-4 px-6 py-5 md:px-8">
@@ -29,7 +31,7 @@ export default function MaterialsViewSwitch({
               return (
                 <NavLink
                   key={item.key}
-                  to={item.to}
+                  to={`${normalizedBasePath}${item.path}`}
                   className={`px-4 py-2 rounded-md transition-colors ${
                     selected
                       ? 'bg-primary text-on-primary font-medium'

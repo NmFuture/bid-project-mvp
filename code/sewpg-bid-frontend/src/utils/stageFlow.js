@@ -1,14 +1,16 @@
+import { projectRoute } from './workspace'
+
 export const STAGE_ROUTE_BUILDERS = {
-  1: (projectId) => `/projects/${projectId}/parse`,
-  2: (projectId) => `/projects/${projectId}/directory`,
-  3: (projectId) => `/projects/${projectId}/outline`,
-  4: (projectId) => `/projects/${projectId}/gaps`,
-  5: (projectId) => `/projects/${projectId}/gaps-fill`,
-  6: (projectId) => `/projects/${projectId}/gaps/review`,
-  7: (projectId) => `/projects/${projectId}/generate`,
-  8: (projectId) => `/projects/${projectId}/coverage`,
-  9: (projectId) => `/projects/${projectId}/editor`,
-  10: (projectId) => `/projects/${projectId}/export`,
+  1: (projectId, workspaceSlug = '') => projectRoute(projectId, '/parse', workspaceSlug),
+  2: (projectId, workspaceSlug = '') => projectRoute(projectId, '/directory', workspaceSlug),
+  3: (projectId, workspaceSlug = '') => projectRoute(projectId, '/outline', workspaceSlug),
+  4: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps', workspaceSlug),
+  5: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps-fill', workspaceSlug),
+  6: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps/review', workspaceSlug),
+  7: (projectId, workspaceSlug = '') => projectRoute(projectId, '/generate', workspaceSlug),
+  8: (projectId, workspaceSlug = '') => projectRoute(projectId, '/coverage', workspaceSlug),
+  9: (projectId, workspaceSlug = '') => projectRoute(projectId, '/editor', workspaceSlug),
+  10: (projectId, workspaceSlug = '') => projectRoute(projectId, '/export', workspaceSlug),
 }
 
 const toStageId = (value) => {
@@ -16,11 +18,11 @@ const toStageId = (value) => {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0
 }
 
-export const getStageRoute = (projectId, stageId) => {
+export const getStageRoute = (projectId, stageId, workspaceSlug = '') => {
   const resolvedStageId = toStageId(stageId)
   const builder = STAGE_ROUTE_BUILDERS[resolvedStageId]
   if (!builder || !projectId) return ''
-  return builder(projectId)
+  return builder(projectId, workspaceSlug)
 }
 
 export const getActiveStageId = (stages = []) => {
