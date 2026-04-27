@@ -50,6 +50,7 @@ class Settings:
     opencode_provider_id: str
     opencode_model_id: str
     opencode_timeout_sec: float
+    bid_internal_api_base_url: str
     onlyoffice_internal_url: str
     onlyoffice_backend_base_url: str
     cors_origins: list[str]
@@ -92,6 +93,7 @@ settings = Settings(
     opencode_provider_id=os.getenv("OPENCODE_PROVIDER_ID", "opencode"),
     opencode_model_id=os.getenv("OPENCODE_MODEL_ID", "big-pickle"),
     opencode_timeout_sec=float(os.getenv("OPENCODE_TIMEOUT_SEC", "600")),
+    bid_internal_api_base_url=os.getenv("BID_INTERNAL_API_BASE_URL", "http://fastapi:8000").rstrip("/"),
     onlyoffice_internal_url=os.getenv("ONLYOFFICE_INTERNAL_URL", "http://127.0.0.1:8080"),
     onlyoffice_backend_base_url=os.getenv("ONLYOFFICE_BACKEND_BASE_URL", "").rstrip("/"),
     cors_origins=_csv_env(

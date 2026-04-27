@@ -43,6 +43,14 @@ def _run_job(job: dict[str, Any]) -> None:
 
             _run_fill_generation_job(project_id, data)
             final_state = store.get_fill_state(project_id)
+        elif job_type == "material_cleaning":
+            from app.services.material_cleaning import clean_material_file_sync
+
+            result = clean_material_file_sync(project_id, data)
+            final_state = {
+                "status": "failed" if result.get("cleanStatus") == "failed" else "success",
+                "summary": result.get("cleanMessage") or "",
+            }
         else:
             raise RuntimeError(f"Unknown job type: {job_type}")
     except Exception as exc:  # pragma: no cover - route job functions handle expected failures

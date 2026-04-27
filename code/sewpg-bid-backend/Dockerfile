@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    FORMAT_CLEANER_ALLOW_SYSTEM_PY=1
 
 WORKDIR /app
 
@@ -9,6 +10,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY opencode/skill ./opencode/skill
 
 EXPOSE 8000
 

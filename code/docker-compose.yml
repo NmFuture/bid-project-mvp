@@ -35,8 +35,9 @@ services:
       OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-opencode}
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-big-pickle}
       OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-600}
+      BID_INTERNAL_API_BASE_URL: ${BID_INTERNAL_API_BASE_URL:-http://fastapi:8000}
       MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-524288000}
-      ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.docx,.md}
+      ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.doc,.docx,.md,.xls,.xlsx,.xlsm}
       ONLYOFFICE_INTERNAL_URL: ${ONLYOFFICE_INTERNAL_URL:-http://onlyoffice}
       ONLYOFFICE_BACKEND_BASE_URL: ${ONLYOFFICE_BACKEND_BASE_URL:-http://fastapi:8000}
       ONLYOFFICE_CALLBACK_TOKEN: ${ONLYOFFICE_CALLBACK_TOKEN:-}
@@ -96,8 +97,9 @@ services:
       OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-opencode}
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-big-pickle}
       OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-600}
+      BID_INTERNAL_API_BASE_URL: ${BID_INTERNAL_API_BASE_URL:-http://fastapi:8000}
       MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-524288000}
-      ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.docx,.md}
+      ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.doc,.docx,.md,.xls,.xlsx,.xlsm}
       ONLYOFFICE_INTERNAL_URL: ${ONLYOFFICE_INTERNAL_URL:-http://onlyoffice}
       ONLYOFFICE_BACKEND_BASE_URL: ${ONLYOFFICE_BACKEND_BASE_URL:-http://fastapi:8000}
       ONLYOFFICE_CALLBACK_TOKEN: ${ONLYOFFICE_CALLBACK_TOKEN:-}
@@ -151,6 +153,7 @@ services:
       INTERNAL_LLM_MODEL_LABEL: ${INTERNAL_LLM_MODEL_LABEL:-Internal LLM Model}
       INTERNAL_LLM_PROVIDER_NAME: ${INTERNAL_LLM_PROVIDER_NAME:-Internal LLM Gateway}
       INTERNAL_LLM_HEADERS_JSON: ${INTERNAL_LLM_HEADERS_JSON:-}
+      BID_BACKEND_BASE_URL: ${BID_BACKEND_BASE_URL:-http://fastapi:8000}
     expose:
       - "4096"
     ports:
@@ -169,6 +172,8 @@ services:
       start_period: 20s
     volumes:
       - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
+      - uploads:/data/uploads:ro
+      - parsed:/data/parsed
       - opencode_data:/root/.local/share/opencode
       - opencode_cache:/root/.cache/opencode
     restart: unless-stopped
