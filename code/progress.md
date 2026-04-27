@@ -1,4 +1,674 @@
-# 联调进展
+# progress.md
+
+## 记录规则
+
+本文件记录标书工作区隔离改造的方案、过程和后续调整。
+
+- 每次改动后追加一条进度记录。
+- 记录内容包括：时间、改动目标、改动文件、验证结果、遗留问题。
+- 已安装 Git `post-commit` hook：提交后会自动向本文件追加提交摘要。
+
+## 进度记录
+
+### 2026-04-27 11:19 上传文件夹弹窗滚动优化
+
+改动目标：
+
+- 上传文件夹时，如果选中文件很多，仍然能看到并点击底部“确认上传”按钮。
+
+改动内容：
+
+- 上传弹窗改为固定最大高度：`max-h-[calc(100vh-2rem)]`。
+- 弹窗采用三段式布局：
+  - 顶部标题固定。
+  - 中间表单内容区域内部滚动。
+  - 底部取消/确认上传按钮固定。
+- 已选文件列表增加独立滚动区域，最大高度约为视口 32%。
+
+验证结果：
+
+- `npm run build` 通过。
+- 已重新 build 并 force recreate `web`。
+- `http://127.0.0.1/` 返回 HTTP 200，`web` 容器已使用新镜像启动。
+
+### 2026-04-27 11:12 素材库递归显示与文件夹上传结构保留
+
+改动目标：
+
+- 解决素材库上传/触发清洗后前端文件列表为空的问题。
+- 上传整个文件夹时保留原始文件夹名和内部层级。
+
+改动内容：
+
+- 后端 `raw_files` 查询从“精确目录”改为“当前目录 + 全部子目录”递归查询。
+  - 选中 `通用素材`、`客户素材`、`项目素材` 母目录时，也能看到子目录中的文件。
+  - 选中客户目录或项目目录时，也能看到对应子树文件。
+- 后端 `raw_upload` 优化指定目录落位：
+  - 上传到 `通用素材` 时自动落到 `通用素材/{标类}`。
+  - 上传到 `客户素材/{客户}` 时自动落到 `客户素材/{客户}/{标类}`。
+  - 上传到 `项目素材/{项目ID}` 时自动落到 `项目素材/{项目ID}/{标类}`。
+- 文件夹上传继续使用浏览器的 `webkitRelativePath`，后端按该相对路径创建目录。
+- 原文件夹结构写入文件元数据：
+  - `sourceRelativePath`
+  - `sourceRootFolder`
+- 前端文件列表增加原始相对路径展示，便于确认文件夹上传结构。
+- 前端在选中三母目录并点击“上传到此目录”时，自动切到“按素材层级”落位，避免文件直接散落到母目录根下。
+
+验证结果：
+
+- `py_compile app/services/material_store.py app/models/materials.py app/api/routes/materials.py` 通过。
+- `npm run build` 通过。
+- `.venv/bin/python -m pytest tests/test_toc_skill_scripts.py tests/test_opencode_client.py` 通过，9 个测试全部通过。
+- 已重新 build 并 force recreate：
+  - `fastapi`
+  - `worker`
+  - `web`
+- API 烟测通过：
+  - 临时上传 `FolderSmoke-xxxx/子目录/probe.txt` 到 `通用素材`。
+  - 实际落位为 `通用素材/技术标/FolderSmoke-xxxx/子目录`。
+  - `/api/materials/raw/files?folderPath=通用素材&bidType=技术标` 能递归查到该文件。
+  - 返回中包含 `sourceRelativePath=FolderSmoke-xxxx/子目录/probe.txt`、`sourceRootFolder=FolderSmoke-xxxx`。
+  - 烟测文件和空目录已删除，数据库无残留。
+
+### 2026-04-27 10:58 素材库目录树固定三母目录
+
+改动目标：
+
+- 素材库目录树顶部固定为三个母目录，方便网页侧测试上传和 Wiki 构建：
+  - `通用素材`
+  - `客户素材`
+  - `项目素材`
+
+改动内容：
+
+- 后端 `raw_tree` 增加固定根兜底：
+  - 空库或根目录缺失时自动补齐三个母目录。
+  - API 返回时只按固定顺序输出这三个根。
+  - 根目录 `fileCount` 改为递归统计子树文件数。
+- 前端 `MaterialDB.jsx` 增加固定根合并：
+  - 即使接口返回为空，也会渲染三个母目录。
+  - 按技术标/商务标过滤时，三个母目录仍保留显示，子目录继续按标类过滤。
+
+验证结果：
+
+- `py_compile app/services/material_store.py` 通过。
+- `npm run build` 通过。
+- 已重新 build 并 force recreate：
+  - `fastapi`
+  - `worker`
+  - `web`
+- API 验证 `/api/materials/raw/tree` 顶层固定返回：
+  - `通用素材`
+  - `客户素材`
+  - `项目素材`
+- `docker compose ps` 显示 `fastapi / web / worker` 已使用新容器启动，`fastapi` 健康。
+
+### 2026-04-27 10:36 素材库与 Wiki 库结构清理
+
+改动目标：
+
+- 按当前工作流把素材库收敛为三层：通用素材、客户素材、项目素材。
+- 技术标/商务标在素材库和 Wiki 中继续隔离。
+- 移除旧的“标准模板/客户定制/项目定制/通用材料/质量审计/平台级 Wiki”口径。
+- 删除前期清洗烟测留下的测试素材 `RAW-0012`。
+
+改动内容：
+
+- 前端素材库默认入口改为：
+  - `通用素材/技术标`
+  - `通用素材/商务标`
+- 项目创建归档路径预览改为：
+  - `客户素材/{客户名}/{标类}`
+  - `项目素材/{项目ID}/{标类}`
+- 后端项目材料路径、mock fallback、初始化 SQL 全部改为新素材根。
+- Wiki 生成 prompt、确定性 fallback、opencode repair schema 和测试用例统一为 `质量日志`。
+- 删除旧的通用 Wiki skill：`bid-wiki-bootstrap-json`。
+- 保留底层 legacy alias，仅用于读取历史路径，不再作为新写入口径。
+- 当前 PostgreSQL 数据已迁移：
+  - `标准模板` -> `通用素材`
+  - `客户定制` -> `客户素材`
+  - `项目定制` -> `项目素材`
+  - `客户素材/{客户}/通用材料` -> `客户素材/{客户}/技术标`
+  - 补齐 `客户素材/{客户}/商务标`
+- 删除旧 Wiki 根：
+  - `风资源`
+  - `机组选型`
+  - `平台级Wiki（自动生成）`
+- 重新生成并覆盖：
+  - `技术标Wiki（自动生成）`
+  - `商务标Wiki（自动生成）`
+
+验证结果：
+
+- 已备份清理前数据到 `/tmp/bid_material_wiki_cleanup_20260427_103117.sql`。
+- `py_compile` 通过：
+  - `material_store.py`
+  - `wiki_generation.py`
+  - `opencode_client.py`
+  - `peripheral.py`
+  - `store.py`
+  - `projects.py`
+- `.venv/bin/python -m pytest tests/test_wiki_generation.py tests/test_opencode_client.py tests/test_toc_skill_scripts.py` 通过，13 个测试全部通过。
+- `npm run build` 通过。
+- 已重新 build 并 force recreate：
+  - `opencode`
+  - `fastapi`
+  - `worker`
+  - `web`
+- API 验证：
+  - `/api/materials/raw/tree` 只返回 `通用素材 / 客户素材 / 项目素材` 三个根。
+  - `/api/materials/wiki?bidType=技术标` 只返回 `技术标Wiki（自动生成）`。
+  - `/api/materials/wiki?bidType=商务标` 只返回 `商务标Wiki（自动生成）`。
+  - Wiki 子节点已改为 `07-技术标质量日志` 和 `07-商务标质量日志`。
+  - `opencode` 容器内 skill 只保留两个 Wiki builder：`bid-tech-wiki-material-builder`、`bid-business-wiki-material-builder`。
+
+遗留问题：
+
+- 历史内置技术标素材已标记为 `pending`，表示还没有可下载的清洗后 Word；后续需要用真实源文件重新上传或批量补源后再触发清洗。
+- 商务标当前没有真实素材，所以商务标 Wiki 是待补料框架。
+
+### 2026-04-27 10:17 技术标素材库清洗与 Wiki 创建入口收敛
+
+改动目标：
+
+- 技术标/商务标素材库上传时让用户选择素材层级：通用素材、客户素材、项目素材。
+- 上传后自动触发 `format-cleaner-v4`，把 PDF/Excel/Word 统一清洗为 Word。
+- 源文件继续保留在 MinIO `raw/...`，清洗后的正式 Word 存入 MinIO `cleaned/...`。
+- 前端状态收敛为少量可用状态，重点展示“已清洗 / 清洗失败”。
+- 创建 Wiki 从三个模式按钮收敛为两个入口：生成/更新 Wiki、重建 Wiki。
+
+改动内容：
+
+- 安装 `format-cleaner-v4` 到 `opencode/skill/format-cleaner-v4/`，并补充 Docker 依赖：
+  - `PyMuPDF`
+  - `pandas`
+  - `openpyxl`
+  - `lxml`
+- `format-cleaner-v4` driver 增加 `FORMAT_CLEANER_ALLOW_SYSTEM_PY=1`，允许 Docker/worker 使用系统 Python 运行。
+- 新增 `app/services/material_cleaning.py`：
+  - 从 PostgreSQL 读取 `raw_files`。
+  - 从 MinIO 下载源文件。
+  - 调用 `format-cleaner-v4/scripts/driver.py`。
+  - 上传清洗后的 Word 到 MinIO `cleaned/RAW-xxxx/...docx`。
+  - 把 `cleanStatus / cleanMessage / cleanedMinioKey / cleanedFileName / cleanedSize` 写回 `raw_files.ext_fields`。
+- Redis worker 新增 `material_cleaning` 任务类型。
+- `raw_upload` 上传成功后自动入队清洗任务。
+- 新增 API：
+  - `POST /api/materials/raw/{file_id}/clean`
+  - `GET /api/materials/raw/{file_id}/cleaned/download`
+  - `GET /api/materials/raw/{file_id}/cleaned/content`
+- 前端 `MaterialDB.jsx`：
+  - 上传弹窗增加素材层级选择。
+  - 文件列表增加层级和清洗状态列。
+  - 支持下载源文件、下载清洗后 Word、清洗失败后重试。
+  - 状态筛选收敛为全部、已清洗、清洗失败。
+  - Wiki 操作收敛为“生成/更新 Wiki”和“重建 Wiki”两个按钮。
+- 更新上传白名单：`.pdf,.doc,.docx,.md,.xls,.xlsx,.xlsm`。
+
+验证结果：
+
+- `npm run build` 通过。
+- `py_compile` 通过：
+  - `material_store.py`
+  - `material_cleaning.py`
+  - `materials.py`
+  - `job_queue.py`
+  - `redis_worker.py`
+  - `models/materials.py`
+  - `format-cleaner-v4/scripts/driver.py`
+- `.venv/bin/python -m pytest tests/test_wiki_generation.py tests/test_opencode_client.py` 通过，10 个测试全部通过。
+- 已重新部署并 force recreate：
+  - `opencode`
+  - `fastapi`
+  - `worker`
+  - `web`
+- 运行时核对：
+  - `opencode` 容器内存在 `format-cleaner-v4`，且 `fitz/pandas/openpyxl/lxml/docx` 依赖可导入。
+  - `fastapi` 容器内存在 `format-cleaner-v4/scripts/driver.py`，且依赖可导入。
+  - `docker compose ps` 显示 `fastapi / opencode / postgres / redis / minio` 健康。
+- 真实链路烟测通过：
+  - 上传测试文件 `RAW-0012` 到 `标准模板/技术标`。
+  - Redis worker 自动清洗完成。
+  - API 返回 `cleanStatus=cleaned`、`cleanResultStatus=SKIP`、`hasCleanedWord=true`。
+  - 清洗后 Word 已上传至 MinIO `bid-materials/cleaned/RAW-0012/...docx`。
+  - `GET /api/materials/raw/RAW-0012/cleaned/content` 下载成功，HTTP 200，大小 36721 bytes。
+
+遗留问题：
+
+- `tests/test_peripheral_routes.py` 在当前本地测试环境仍存在 asyncpg 连接跨事件循环问题，表现为 `Future attached to a different loop / cannot perform operation: another operation is in progress`。本次改造相关的运行时 API 已用真实 Docker 链路验证通过。
+- 目前 `format-cleaner-v4` 支持 `.pdf/.doc/.docx/.xls/.xlsx/.xlsm`；图片、zip、md 等非 Word 化素材后续需要单独定义 OCR/解包/文本清洗策略。
+
+### 2026-04-27 09:19 S2 目录 skill 三段式优化
+
+改动目标：
+
+- 按“投标模板主骨架 -> 招标文件修订 -> Wiki 小标题/素材补充”的思路优化 `bid-toc-wiki-driven-v2`。
+- 让目录 JSON 不只是标题，而是带模板来源、招标证据和素材引用，供后续 S3 审核、S4 缺口识别和 S7 正文生成继续使用。
+
+改动内容：
+
+- `extract_template.py`
+  - 优先使用 Word TOC 样式作为目录主骨架。
+  - 当 TOC 可用时，不再把正文 Heading 1/2 重复抽成第 7/8/9 章。
+  - 保留模板来源信息：`raw_text / page / style / source_kind`。
+- `extract_tender.py`
+  - 招标关键词抽取增加 `site_evidence / model_evidence / plot_evidence`。
+  - `specials[]` 增加 `confidence` 和 `evidence`，不再只是关键词。
+- `wiki_lookup.py`
+  - 支持把聚合 Wiki 卡片中的 `### 素材名` 拆成具体素材条目。
+  - 从 `attach / skeleton / docx / title` 推断素材挂载章节。
+  - 跳过“投标文件-模板”这类主模板素材，避免把主模板又加回目录子项。
+- `build_plan.py`
+  - 模板 H1/H2 始终作为主骨架。
+  - Wiki 同名素材挂到模板 H2 的 `material_refs`，不重复生成标题。
+  - Wiki 中模板未覆盖的小标题作为子目录补充。
+  - 招标 specials 可插入多个新增条目，不再每章只插入一个。
+  - 每个条目尽量补充 `source_refs / material_refs`。
+- `outline_generation.py`
+  - V2 JSON 转前端审核树时透传 `sourceRefs / materialRefs`。
+- `bid-toc-wiki-driven-v2/SKILL.md`
+  - 更新输出契约，明确 `source_refs / material_refs` 和三段式生成原则。
+
+验证结果：
+
+- `.venv/bin/python -m py_compile ...` 通过。
+- `.venv/bin/python -m pytest tests/test_opencode_client.py tests/test_directory_generation.py tests/test_wiki_generation.py tests/test_toc_skill_scripts.py` 通过，22 个测试全部通过。
+- 使用 `PRJ-0022` 真实输入本地 manifest 烟测通过，输出 62 条目录项：
+  - 保留 27
+  - 适配 30
+  - 新增-招标要求 4
+  - 新增-素材库建议 1
+- 已重新部署 `opencode / fastapi / worker / web`。
+- 已用新版 skill 重新生成并写回 `PRJ-0022`：
+  - 一级章从 13 个收敛为 6 个。
+  - 总节点从 115 个收敛为 62 个。
+  - API 验证 `/api/projects/PRJ-0022/outline` 返回 `roots=6 / total=62`。
+  - 节点已包含 `materialRefs`，例如 `技术评分标准索引表` 指向 `RAW-0004`。
+
+遗留问题：
+
+- 招标 specials 的证据已经进入 JSON，但仍可能包含“提到但不是明确要求”的上下文；后续需要继续做否定语义和“强要求/弱出现”的区分。
+- Wiki 的 `attach` 和 `skeleton` 元数据质量会直接影响小标题挂载准确性，后续仍需把 Wiki 卡片维护得更规范。
+
+### 2026-04-27 08:49 S3 目录审核卡顿修复
+
+问题现象：
+
+- 进入目录审核界面后页面明显卡顿，滚动和交互都很慢。
+
+根因：
+
+- `PRJ-0022` 的 S2 目录结果被抽成 659 个节点，其中一级节点 385 个。
+- 大量正文句子、日期、测风塔数据、页码等被 `extract_template.py` 的兜底逻辑误判成目录标题。
+- S3 目录审核前端会递归渲染每个节点为可编辑输入框，且默认全部展开；几百个受控输入框一起渲染，导致页面滚动卡顿。
+
+修复：
+
+- 收紧 `extract_template.py` 的模板目录兜底识别：
+  - 限制标题长度。
+  - 排除日期、正文长句、带明显正文标点的段落、`#` 开头的数据行。
+  - 普通编号标题必须有明确分隔符。
+  - 限制异常的大编号一级章节。
+  - H2 必须匹配当前 H1 编号。
+  - 清理目录行尾页码。
+- 优化 `OutlineReview.jsx`：
+  - 增加节点计数。
+  - 当目录节点超过 180 个时默认折叠所有可展开节点，避免一次性展开大树拖慢页面。
+
+验证结果：
+
+- `extract_template.py` 手工夹具验证通过，日期、正文句子和测风塔数据不再被识别为标题。
+- `.venv/bin/python -m py_compile opencode/skill/bid-toc-wiki-driven-v2/scripts/extract_template.py opencode/skill/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py` 通过。
+- `npm run build` 通过。
+- `.venv/bin/python -m pytest tests/test_opencode_client.py tests/test_directory_generation.py tests/test_wiki_generation.py` 通过，19 个测试全部通过。
+- `docker compose up -d --build opencode web` 已重新部署，`fastapi / opencode / web` 均为 healthy/up。
+- 已重新生成并写回 `PRJ-0022` 目录状态：由 659 个节点降为 115 个节点，一级节点由 385 个降为 13 个。
+
+遗留问题：
+
+- 当前目录不再是灾难性膨胀，但仍能看到部分模板章节重复，例如第七章到第九章重复出现技术章节名；后续还需要继续优化模板目录去重和章节边界识别。
+
+### 2026-04-27 08:40 S2 流式输出卡住排查与修复
+
+问题现象：
+
+- 本地测试 `PRJ-0022` 时，S2 目录生成页面停在流式输出阶段。
+- 前端 SSE 连接存在，但后续没有新内容。
+
+根因：
+
+- `bid-toc-wiki-driven-v2` 已经成功生成完整目录 JSON：`/data/parsed/PRJ-0022/s2_toc_workdir/投标文件-总目录.json`。
+- 本次完整 JSON 有 659 条目录项，约 158KB。
+- OpenCode 在 Bash 命令完成后尝试把完整 JSON 再读回模型上下文，读到 50KB 截断后继续调用 `Glob` 检查输出文件。
+- 这个 `Glob` 工具调用长期处于 running，导致 worker 一直等待 OpenCode 最终响应，页面流式输出不再更新。
+
+修复：
+
+- `run_from_manifest.py` 新增 `--response summary`。
+- OpenCode 现在只返回小型摘要 JSON：`schema_version / document_title / outputFile / summary / itemCount`。
+- 后端 `outline_generation.py` 收到 `outputFile` 后，直接从共享卷读取完整 `投标文件-总目录.json`，再转换为 S3 所需的 `nodes[]`。
+- OpenCode prompt 明确禁止再用 `Read/Glob` 打开完整大 JSON。
+- `opencode_client.py` 接受 `outputFile` 型 S2 摘要响应。
+
+验证结果：
+
+- `.venv/bin/python -m pytest tests/test_opencode_client.py tests/test_directory_generation.py tests/test_wiki_generation.py` 通过，19 个测试全部通过。
+- `run_from_manifest.py --response summary` 本地烟测通过。
+- `docker compose up -d --build opencode fastapi worker` 已重新部署。
+- 容器内确认 `bid-toc-wiki-driven-v2` 已使用 `--response summary`，脚本 py_compile 通过。
+- 当前 `PRJ-0022` 已用已生成的 V2 JSON 收口为 completed：共 659 条目录项，输出为 385 个一级节点。
+- Redis `directory_generation:PRJ-0022` 锁不存在。
+
+### 2026-04-27 08:23 S2 目录 skill 替换与 API/wiki 适配
+
+改动目标：
+
+- 删除旧目录生成 skill，替换为 `bid-toc-wiki-driven-v2`。
+- 新 skill 不再只吃 prompt 文本，而是通过后端准备的 manifest 读取招标文件、投标正文模板、可选附表模板。
+- 新 skill 在缺少文件系统 wiki 时，通过后端 API 读取数据库中的对应标类 Wiki 并导出为 `wiki/卡片`。
+- 放开 OpenCode Bash 权限，让 skill 可以运行 Python 脚本。
+
+改动文件：
+
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/`
+- `code/sewpg-bid-backend/opencode/skill/bid-outline-json/`（已删除）
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/`（已删除）
+- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/`（旧共享 Wiki skill，已删除）
+- `code/sewpg-bid-backend/opencode/.opencode/skills/bid-outline-json/`（已删除）
+- `code/sewpg-bid-backend/app/services/outline_generation.py`
+- `code/sewpg-bid-backend/app/services/opencode_client.py`
+- `code/sewpg-bid-backend/app/core/config.py`
+- `code/sewpg-bid-backend/opencode/opencode.json`
+- `code/sewpg-bid-backend/opencode/docker-entrypoint.sh`
+- `code/docker-compose.yml`
+- `code/sewpg-bid-backend/tests/test_directory_generation.py`
+- `code/sewpg-bid-backend/tests/test_opencode_client.py`
+
+实现说明：
+
+- S2 后端会创建 `s2_toc_workdir/s2_input.json`，其中包含项目 ID、标类、工作目录、后端 API 地址、招标文件路径、投标正文模板路径、附表模板路径、wiki 目录和输出 JSON 路径。
+- OpenCode prompt 改为调用 `bid-toc-wiki-driven-v2`，并明确执行：
+  `python3 /workspace/.opencode/skills/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py --manifest <s2_input.json>`。
+- 新增 `export_wiki_from_api.py`：通过 `GET /api/materials/wiki?bidType=技术标/商务标` 拉取数据库 Wiki，导出为 V2 可读的文件系统卡片。
+- 新增 `run_from_manifest.py`：串起 `extract_template / extract_tender / extract_attach / build_plan`，最终把完整 V2 JSON 打印给 OpenCode。
+- `opencode` 容器增加 `/data/uploads:ro` 和 `/data/parsed` volume，使 skill 能读取上传文件并写回输出 JSON。
+- `outline_generation.py` 增加 V2 `items[] -> nodes[]` 适配层，S3 前端仍可使用原来的目录树，同时在 `opencodeOutput` 保留 skill 名、manifest 路径和 V2 JSON 路径。
+- `extract_template.py` 增加普通编号段落兜底识别，避免模板没有 Word Heading 样式时抽空。
+- 旧共享 Wiki skill 已下线，Wiki 生成只保留 `bid-tech-wiki-material-builder` 和 `bid-business-wiki-material-builder` 两个分标类入口。
+
+验证结果：
+
+- `python -m py_compile` 通过。
+- `.venv/bin/python -m pytest tests/test_opencode_client.py tests/test_directory_generation.py tests/test_wiki_generation.py` 通过，17 个测试全部通过。
+- 使用临时 docx + 临时 wiki 跑 `run_from_manifest.py` 通过，输出 `bid-toc-json-v1`，并生成 4 条目录项。
+- `docker compose config` 通过。
+- `docker compose up -d --build opencode fastapi worker` 已完成部署，`opencode / fastapi / worker` 均已重建并启动。
+- 运行时核对通过：`opencode` 容器内 `bash=allow`，存在 `bid-toc-wiki-driven-v2`，不存在旧 `bid-outline-json` 和旧共享 `bid-wiki-material-builder`。
+- 运行时 API 导出通过：`opencode` 容器调用 `http://fastapi:8000/api/materials/wiki?bidType=技术标` 成功导出 7 张 wiki 卡片。
+
+遗留问题：
+
+- 真实业务效果取决于数据库 Wiki 卡片中的 `skeleton_section` 质量；当前导出脚本会从 Markdown Merge 信息和标题兜底推断，但后续仍应把 Wiki 卡片元数据维护得更规范。
+
+### 2026-04-27 S2 新目录 skill 替换前理解
+
+改动目标：
+
+- 理解当前 S2 目录生成链路。
+- 理解 `/Users/wlb/Downloads/skills/bid-toc-wiki-driven-v2.zip` 的输入输出契约，为后续替换做准备。
+
+当前链路结论：
+
+- 当前 S2 已调用 OpenCode，但使用的是轻量 `bid-outline-json` skill。
+- 当前 S2 输入来自 S1：
+  - `parse_storage.combinedTextPath`：招标文件解析后的合并文本。
+  - `templateFileRecords`：S1 上传的投标模板文件记录。
+- 当前后端只从招标文本和模板 docx 中提取少量章节线索，再把线索放进 prompt，不把原始 docx 工作目录交给 skill。
+- 当前 S2 没有读取素材 Wiki。
+
+新 skill 结论：
+
+- `bid-toc-wiki-driven-v2` 是文件工作目录型 skill。
+- 它要求工作目录里能识别：
+  - `*招标*.docx`
+  - `*投标*正文*.docx`
+  - 可选 `*投标*附表*.docx`
+  - 文件系统版 `wiki/卡片` 与规则文件
+- 它输出的是总目录 JSON，结构为 `schema_version / document_title / project / source_files / summary / items`，不是当前前端直接使用的 `summary / nodes`。
+
+替换前需要做的适配：
+
+- 安装新 skill 到 `opencode/skill/bid-toc-wiki-driven-v2/`。
+- S2 后端准备项目级临时工作目录，把招标 docx、投标正文模板、可选附表模板、技术标或商务标 wiki 放进去。
+- OpenCode prompt 改为调用 `bid-toc-wiki-driven-v2`。
+- 增加 JSON 适配层：把新 skill 的 `items[]` 转成 S3 前端需要的 `nodes[]`，同时保留完整目录 JSON 作为审计/后续正文生成输入。
+- 当前 OpenCode 配置里 `bash` 是 `deny`；新 skill 依赖 Bash 调 python 脚本，替换时需要调整权限或改成后端直接执行脚本。
+
+验证结果：
+
+- 已解压新 skill 到临时目录。
+- `python -m py_compile scripts/*.py` 通过。
+
+### 2026-04-27 工作区入口收敛
+
+改动目标：
+
+- 将原方案文档改名为 `progress.md`，作为持续进度记录文件。
+- 创建进度记录 hook，后续提交后自动写入本文件。
+- 技术标/商务标工作区顶部标签只保留 `项目 / 素材库 / 日志`。
+- 移除顶部的 `流程` 和 `Wiki` 标签。
+
+改动说明：
+
+- `项目` 是工作区的自然入口，点击项目后进入 S1-S10 流程，因此不再单独暴露 `流程` 标签。
+- `素材库` 是人可见入口，Wiki 仍保留在素材库内部展示；Wiki 本质上主要给 AI/Skill 读取，不作为工作区顶部独立入口。
+- `/workspace/:workspace/flow` 保留兼容，但会跳回对应工作区的项目页。
+- `/workspace/:workspace/materials/wiki` 仍保留兼容，素材库内部切换到 Wiki 时继续可用。
+- 原 `code/progress.md` 的联调历史已合并到本文末尾，避免改名时丢失旧记录。
+
+涉及文件：
+
+- `code/progress.md`
+- `code/hooks/record-progress.sh`
+- `.git/hooks/post-commit`
+- `code/sewpg-bid-frontend/src/components/layout/AppShell.jsx`
+- `code/sewpg-bid-frontend/src/App.jsx`
+
+验证结果：
+
+- `npm run build` 通过。
+- `sh -n code/hooks/record-progress.sh && sh -n .git/hooks/post-commit` 通过。
+- `docker compose up -d --build web` 已完成，web 容器已重建并启动。
+- 代码检查确认工作区顶部标签只剩 `项目 / 素材库 / 日志`；素材库内部仍保留 Wiki 切换。
+
+## 标书工作区隔离改造方案
+
+## 目标
+
+系统入口调整为：
+
+```text
+解析（共用）
+  -> 解析通过后创建投标项目
+    -> 技术标工作区
+    -> 商务标工作区
+
+设置（共用）
+```
+
+除 `解析` 和 `设置` 外，项目、S1-S10 流程、素材库、Wiki、日志都按标类隔离。
+
+对人可见的工作区顶部入口收敛为：
+
+```text
+项目 / 素材库 / 日志
+```
+
+其中：
+
+- `项目` 内自然进入 S1-S10 撰写流程。
+- `素材库` 内保留原始素材和 Wiki 展示。
+- `Wiki` 不作为顶部独立入口，主要作为 AI/Skill 可读取的素材组织层。
+
+## 入口定义
+
+### 解析
+
+解析是全局共用入口。用户在这里上传招标文件，点击解析后调用后续的 opencode skill。
+
+该 skill 的目标：
+
+- 解析招标文件。
+- 提取资格、评分、技术、商务、交付、合同等关键关注点。
+- 判断公司是否满足招标要求。
+- 给出参与 / 不参与 / 风险待确认的前置判断。
+
+解析通过后，系统进入正式标书撰写阶段，并创建技术标、商务标两个工作区入口。
+
+### 技术标工作区
+
+技术标工作区只展示技术标数据：
+
+- 技术标项目
+- 技术标 S1-S10 流程
+- 技术标素材库
+- 技术标 Wiki
+- 技术标日志
+
+技术标页面不展示商务标项目、商务标素材、商务标 Wiki。
+
+### 商务标工作区
+
+商务标工作区只展示商务标数据：
+
+- 商务标项目
+- 商务标 S1-S10 流程
+- 商务标素材库
+- 商务标 Wiki
+- 商务标日志
+
+商务标页面不展示技术标项目、技术标素材、技术标 Wiki。
+
+### 设置
+
+设置仍为全局共用，管理系统级配置：
+
+- 用户与角色
+- opencode 配置
+- OnlyOffice 配置
+- 模板和系统参数
+
+## 第一版落地边界
+
+第一版先搭框架，不一次性重写全部业务：
+
+1. 全局导航改为 `解析 / 技术标 / 商务标 / 设置`。
+2. 技术标、商务标进入独立工作区。
+3. 工作区内提供 `项目 / 素材库 / 日志`。
+4. 前端路由带工作区上下文。
+5. 所有项目、素材、Wiki 请求自动带 `bidType`。
+6. 保留旧路由作为兼容入口，避免当前演示链路断开。
+
+## 路由草案
+
+```text
+/parse
+
+/workspace/tech/projects
+/workspace/tech/projects/:projectId/parse
+/workspace/tech/projects/:projectId/directory
+/workspace/tech/projects/:projectId/outline
+/workspace/tech/projects/:projectId/gaps
+/workspace/tech/projects/:projectId/gaps-fill
+/workspace/tech/projects/:projectId/gaps/review
+/workspace/tech/projects/:projectId/generate
+/workspace/tech/projects/:projectId/coverage
+/workspace/tech/projects/:projectId/editor
+/workspace/tech/projects/:projectId/export
+/workspace/tech/materials/structured
+/workspace/tech/materials/wiki
+/workspace/tech/logs
+
+/workspace/business/projects
+/workspace/business/projects/:projectId/...
+/workspace/business/materials/structured
+/workspace/business/materials/wiki
+/workspace/business/logs
+
+/settings
+```
+
+## 底层数据边界
+
+短期使用现有字段做兼容隔离：
+
+```text
+project.bidType
+raw_folder.bid_type
+raw_file.ext_fields.bidType
+wiki_node.bid_types
+```
+
+后续正式化时建议补充 `bid_workspace` 概念：
+
+```text
+tender_parse
+  id
+  tender_file
+  parsed_requirements
+  eligibility_result
+  status
+
+bid_project
+  id
+  tender_parse_id
+  project_name
+  owner
+  status
+
+bid_workspace
+  id
+  project_id
+  bid_type: 技术标 / 商务标
+  current_stage
+  current_document
+  status
+```
+
+正式版本中，S1-S10、素材、Wiki、日志都应挂到 `bid_workspace`，而不是只靠项目 ID。
+
+## Skill 分工
+
+解析阶段：
+
+- `bid-tender-parse-eligibility`：解析招标文件并判断是否满足投标要求。
+
+技术标工作区：
+
+- 技术标目录生成 skill。
+- 技术标正文生成 skill。
+- `bid-tech-wiki-material-builder`。
+
+商务标工作区：
+
+- 商务标目录生成 skill。
+- 商务标正文生成 skill。
+- `bid-business-wiki-material-builder`。
+
+## 验收标准
+
+第一版验收：
+
+- 顶部/侧边入口从 `审核` 改为 `解析`，从 `审计` 改为 `日志`。
+- 点击 `技术标` 只看到技术标项目、素材库、日志。
+- 点击 `商务标` 只看到商务标项目、素材库、日志。
+- Wiki 不出现在工作区顶部标签中，但可在素材库内部展示。
+- 技术标和商务标都能进入自己的 S1-S10 流程。
+- 旧的 `/projects`、`/materials/*`、`/audit` 路由不立即删除，作为兼容入口保留。
+
+## 历史联调进展（原 progress.md）
+
+### 联调进展
 
 ## 当前状态
 
@@ -265,3 +935,290 @@
    - `baseUrl` 需要可配置
    - 外部模型 `apiKey` 需要可配置
    - `.env.example` / 部署文档 / Compose 保持一致
+
+## 2026-04-27 11:32 上传弹窗与素材清洗排障
+
+- 前端上传弹窗改为固定视口高度：头部与底部操作区固定，中间内容区滚动，已选文件列表限制高度，避免文件夹内文件过多时“确认上传”按钮被顶出屏幕。
+- 排查素材清洗队列：Redis `bid:jobs` 队列为空，但 5 个素材停在 `pending`；worker 日志显示 `asyncpg` 连接跨 `asyncio.run()` event loop 复用导致 `cannot perform operation: another operation is in progress`。
+- 后端清洗同步入口改为复用 worker 内同一个 event loop，避免 SQLAlchemy asyncpg 连接池跨 loop 使用。
+- 已重新构建并重启 `web / fastapi / worker`。重新触发 `RAW-0017` 至 `RAW-0021` 清洗后，当前 6 个素材均为 `cleaned`，Redis 队列为 0，worker 未再出现 asyncpg 报错。
+
+## 2026-04-27 11:45 素材与项目字段匹配检查
+
+- 核查项目主数据与素材库：项目主数据目前在 SQLite，本地素材库在 PostgreSQL，二者尚未做强约束关联。
+- 当前项目素材存在不一致：上传到 `项目素材/1/技术标` 的文件记录了 `projectId=1`，但系统项目编号是 `PRJ-xxxx`；当前没有独立“外部项目编号”字段。
+- 当前客户素材存在口径差异：项目里有 `华能集团`，素材目录是 `客户素材/华能/技术标`，只能靠模糊/包含关系识别，不能算严格匹配。
+- 修复上传弹窗的参数：指定目录上传时不再额外提交默认 `materialTier=standard`，让后端按目标目录推断 `客户素材/项目素材`，避免写错素材层级。
+- 已校正本次已上传素材元数据：`RAW-0089` 至 `RAW-0093` 改为 `项目素材/projectId=1`，`RAW-0094` 改为 `客户素材/customerName=华能`。
+- `npm run build` 通过，已重新 build 并 force recreate `web`。
+
+## 2026-04-27 12:34 项目/客户身份统一与 AI Wiki 改造
+
+改动目标：
+
+- 统一项目、业主、素材库、Wiki 和 S2 目录 skill 的身份口径。
+- 人仍然按 `通用素材 / 客户素材 / 项目素材` 管理文件；AI 读取 Wiki 时按标准身份字段过滤素材。
+- 清洗后的 Word 作为 Wiki 建卡和后续 AI 使用的正式素材来源。
+
+改动内容：
+
+- 新增轻量身份层：
+  - 项目返回 `identity`，包含 `projectId / projectCode / customerId / customerCanonicalName / customerAliases`。
+  - 新建/编辑项目增加 `业务项目编号` 字段。
+  - 客户名如 `华能 / 华能集团 / 中国华能` 统一归一到 `CUST-HUANENG / 华能集团`。
+- 素材上传与查询：
+  - `raw_files.ext_fields` 写入 `identityScope / materialScope / customerId / customerCanonicalName / customerAliases / projectCode`。
+  - 客户筛选改为客户 ID/别名匹配；项目筛选改为 `projectId/projectCode` 匹配。
+  - 指定三母目录上传文件夹时，保留原文件夹结构并按路径推断客户/项目/标类。
+- Wiki 生成：
+  - 卡片新增 `AI 检索身份` 和 Merge 身份字段。
+  - 索引、目录骨架、装配规则写入身份匹配规则。
+  - Wiki 生成优先使用已清洗 Word；PDF/Excel 源文件只要已有 `cleanedMinioKey`，也会进入 Wiki 卡片。
+- S2 目录 skill：
+  - manifest 增加 `projectIdentity`。
+  - `export_wiki_from_api.py` 导出身份字段到 frontmatter。
+  - `wiki_lookup.py` 读取身份字段。
+  - `build_plan.py` 在目录生成前过滤 Wiki：通用素材可读，客户素材需客户命中，项目素材需项目编号命中。
+- 数据修复：
+  - 71 个历史素材已补齐身份字段。
+  - 当前技术标 Wiki 已重建：60 张通用卡片、6 张华能客户卡片、5 张项目编号 `1` 卡片。
+
+验证结果：
+
+- `py_compile` 通过：
+  - `identity.py`
+  - `store.py`
+  - `material_store.py`
+  - `wiki_generation.py`
+  - `outline_generation.py`
+  - `export_wiki_from_api.py`
+  - `wiki_lookup.py`
+  - `build_plan.py`
+  - `run_from_manifest.py`
+- `.venv/bin/python -m pytest tests/test_wiki_generation.py tests/test_toc_skill_scripts.py` 通过，8 个测试全部通过。
+- `npm run build` 通过。
+- 已重新 build 并 force recreate：
+  - `opencode`
+  - `fastapi`
+  - `worker`
+  - `web`
+- API 验证：
+  - 项目列表返回 `identity`。
+  - 客户素材返回 `identityScope=customer / customerId=CUST-HUANENG`。
+  - Wiki 卡片包含 `identity_scope`、`customer_id`、`project_code`、`cleaned_file_name`。
+  - 文件系统版 Wiki 导出后，`wiki_lookup --list-by-section` 可读到 6 个客户素材和 5 个项目素材身份字段。
+
+遗留问题：
+
+- 现有 `项目素材/1/技术标` 只会命中 `projectCode=1` 或招标解析出的项目编号 `1`。旧项目默认 `projectCode=PRJ-xxxx`，如要让某个旧项目使用这批项目素材，需要在项目信息里把业务项目编号改为 `1`。
+
+## 2026-04-27 13:56 客户/项目选择式素材上传
+
+改动目标：
+
+- 用户上传客户素材、项目素材时不再手填客户名或项目编号。
+- 前端改为“选择客户 / 选择项目”；系统把 `customerId / projectId / projectCode / projectName` 写入素材元数据。
+- 项目素材目录统一使用系统项目 ID，例如 `项目素材/PRJ-0021/技术标`；业务编号保留为 `projectCode`，供 Wiki 和 AI 检索使用。
+
+改动内容：
+
+- `/api/customers/key-accounts` 返回 `CUST-*` 客户 ID、标准客户名和别名。
+- 原始素材上传接口接收 `customerId / projectCode / projectName`。
+- 素材入库时保留系统项目 ID，同时写入业务项目编号、项目名、客户 ID 和标准客户名。
+- 素材库上传弹窗中，客户素材改为“选择客户”，项目素材改为“选择项目”；选择项目会自动带出所属客户、业务编号和项目名。
+- 项目材料路径接口改为返回系统项目 ID 目录，避免继续生成 `项目素材/业务编号/...` 这种容易混淆的路径。
+
+验证结果：
+
+- `python3 -m py_compile` 通过：`materials.py / auth.py / projects.py / material_store.py`。
+- `npm run build` 通过。
+- `.venv/bin/python -m pytest tests/test_toc_skill_scripts.py tests/test_wiki_generation.py` 通过，8 个测试全部通过。
+- 已重新 build 并 force recreate：`fastapi / worker / web`。
+- API 冒烟：
+  - `/api/customers/key-accounts` 返回 `CUST-HUANENG / CUST-DATANG / CUST-CHNENERGY`。
+  - `/api/projects?pageSize=3` 返回项目 `identity`。
+  - `/api/projects/PRJ-0021/materials-path` 返回 `项目素材/PRJ-0021/技术标`。
+
+注意事项：
+
+- 旧数据里的 `项目素材/1/技术标` 仍保留，不自动迁移；后续已改回以素材库项目 ID 为准，见下一条记录。
+
+## 2026-04-27 14:49 素材库身份作为项目创建依据
+
+改动目标：
+
+- 改回“素材库为准”：投标项目列表只是工作单，客户/素材项目身份由素材库提供。
+- 创建投标项目时选择素材库客户、素材库项目；同时保留普通客户、普通项目入口，由系统生成稳定 ID。
+- 后续 Wiki/目录/AI 检索使用绑定到投标项目上的素材库身份，而不是把投标工作单的 `PRJ-*` 当素材项目。
+
+改动内容：
+
+- 新增 `/api/materials/identity-options`：
+  - 返回素材库客户选项，当前包括 `CUST-HUANENG / CUST-DATANG / CUST-CHNENERGY`。
+  - 返回素材库项目选项，当前从 `项目素材/...` 与文件身份字段汇总，现有项目素材为 `projectId=1`。
+- 创建项目弹窗：
+  - 客户来源改为 `素材库客户 / 普通客户`。
+  - 素材项目来源改为 `素材库项目 / 普通项目`。
+  - 选择素材库项目时写入 `materialProjectId / materialProjectCode / materialProjectName`。
+  - 普通客户生成 `CUST-*`，普通项目生成 `MATPRJ-*`。
+- 项目身份结构：
+  - `id` 仍是投标工作单 ID，例如 `PRJ-0025`。
+  - `identity.projectId` 改为素材库项目 ID，例如 `1` 或 `MATPRJ-*`。
+  - `identity.workspaceProjectId / bidProjectId` 保留投标工作单 ID。
+  - `/api/projects/{id}/materials-path` 返回素材库项目路径，例如 `项目素材/1/技术标` 或 `项目素材/MATPRJ-.../技术标`。
+- 素材上传弹窗的“选择项目”改为读取素材库身份选项，不再读取投标项目列表。
+
+验证结果：
+
+- `python3 -m py_compile` 通过：`identity.py / store.py / material_store.py / materials.py / projects.py`。
+- `npm run build` 通过。
+- `.venv/bin/python -m pytest tests/test_toc_skill_scripts.py tests/test_wiki_generation.py` 通过，8 个测试全部通过。
+- 已重新 build 并 force recreate：`fastapi / worker / web`。
+- API 冒烟：
+  - `/api/materials/identity-options?bidType=技术标` 返回 3 个客户、1 个素材库项目。
+  - 普通客户 + 普通项目临时创建验证：生成 `CUST-C5CE12F7EB` 与 `MATPRJ-6D38EC5521`，材料路径为 `项目素材/MATPRJ-6D38EC5521/技术标`。
+  - 素材库客户 + 素材库项目临时创建验证：`CUST-HUANENG + projectId=1`，材料路径为 `项目素材/1/技术标`。
+
+注意事项：
+
+- 当前素材库项目只有旧数据 `1`；后续如果要更清晰，需要在素材库侧补“素材项目管理/重命名/归属客户”能力，而不是从投标项目列表里倒推。
+
+### 2026-04-27 14:55:31 post-commit 13b6d71
+
+提交摘要：chore(runtime): wire redis worker runtime
+
+变更文件：
+
+- `code/.env.airgap.example`
+- `code/.env.example`
+- `code/docker-compose.yml`
+- `code/sewpg-bid-backend/Dockerfile`
+- `code/sewpg-bid-backend/app/core/config.py`
+- `code/sewpg-bid-backend/app/services/job_queue.py`
+- `code/sewpg-bid-backend/app/workers/redis_worker.py`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-04-27 14:55:49 post-commit 6cdeaa9
+
+提交摘要：feat(material-store): add persisted materials and cleaning
+
+变更文件：
+
+- `code/initdb/01-init.sql`
+- `code/sewpg-bid-backend/app/api/routes/auth.py`
+- `code/sewpg-bid-backend/app/api/routes/materials.py`
+- `code/sewpg-bid-backend/app/api/routes/projects.py`
+- `code/sewpg-bid-backend/app/models/materials.py`
+- `code/sewpg-bid-backend/app/services/identity.py`
+- `code/sewpg-bid-backend/app/services/material_cleaning.py`
+- `code/sewpg-bid-backend/app/services/material_store.py`
+- `code/sewpg-bid-backend/app/services/peripheral.py`
+- `code/sewpg-bid-backend/app/services/store.py`
+- `code/sewpg-bid-backend/requirements.txt`
+- `code/sewpg-bid-backend/tests/test_peripheral_routes.py`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-04-27 14:56:02 post-commit 07ec90e
+
+提交摘要：feat(opencode-skills): refactor toc wiki and cleaner skills
+
+变更文件：
+
+- `code/sewpg-bid-backend/app/services/opencode_client.py`
+- `code/sewpg-bid-backend/app/services/outline_generation.py`
+- `code/sewpg-bid-backend/app/services/wiki_generation.py`
+- `code/sewpg-bid-backend/opencode/.opencode/skills/bid-outline-json/SKILL.md`
+- `code/sewpg-bid-backend/opencode/Dockerfile`
+- `code/sewpg-bid-backend/opencode/docker-entrypoint.sh`
+- `code/sewpg-bid-backend/opencode/opencode.json`
+- `code/sewpg-bid-backend/opencode/skill/bid-business-wiki-material-builder/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-outline-json/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-wiki-material-builder/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/references/example_run.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/build_plan.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/export_wiki_from_api.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/extract_attach.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/extract_template.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/extract_tender.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/wiki_lookup.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/references/example_run.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/references/style_spec.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/scripts/build_plan.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/scripts/extract_attach.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/scripts/extract_template.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/scripts/extract_tender.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/scripts/gen_toc.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/scripts/wiki_lookup.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-wiki-bootstrap-json/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/references/card_template.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/references/wiki_material_rules.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/scripts/bootstrap_wiki.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/scripts/check.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/scripts/extract_headings.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/scripts/parse_skeleton.py`
+- `code/sewpg-bid-backend/opencode/skill/format-cleaner-v4/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/format-cleaner-v4/scripts/driver.py`
+- `code/sewpg-bid-backend/opencode/skill/format-cleaner-v4/scripts/excel_to_word.py`
+- `code/sewpg-bid-backend/opencode/skill/format-cleaner-v4/scripts/pdf_to_word.py`
+- `code/sewpg-bid-backend/opencode/skill/format-cleaner-v4/scripts/word_cleaner.py`
+- `code/sewpg-bid-backend/tests/test_directory_generation.py`
+- `code/sewpg-bid-backend/tests/test_opencode_client.py`
+- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
+- `code/sewpg-bid-backend/tests/test_wiki_generation.py`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-04-27 14:56:11 post-commit 1cf5c15
+
+提交摘要：feat(frontend-materials): reorganize materials workspace
+
+变更文件：
+
+- `code/sewpg-bid-frontend/src/App.jsx`
+- `code/sewpg-bid-frontend/src/api/index.js`
+- `code/sewpg-bid-frontend/src/components/layout/AppShell.jsx`
+- `code/sewpg-bid-frontend/src/components/modals/AuditDetailModal.jsx`
+- `code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx`
+- `code/sewpg-bid-frontend/src/components/shared/MaterialsViewSwitch.jsx`
+- `code/sewpg-bid-frontend/src/components/shared/ProjectStageProgress.jsx`
+- `code/sewpg-bid-frontend/src/components/shared/StageBreadcrumb.jsx`
+- `code/sewpg-bid-frontend/src/pages/AuditLog.jsx`
+- `code/sewpg-bid-frontend/src/pages/CoCreationEditor.jsx`
+- `code/sewpg-bid-frontend/src/pages/CoverageHeatmap.jsx`
+- `code/sewpg-bid-frontend/src/pages/DirectoryGeneration.jsx`
+- `code/sewpg-bid-frontend/src/pages/GapFilling.jsx`
+- `code/sewpg-bid-frontend/src/pages/GapRecognition.jsx`
+- `code/sewpg-bid-frontend/src/pages/GenerateProgress.jsx`
+- `code/sewpg-bid-frontend/src/pages/MaterialDB.jsx`
+- `code/sewpg-bid-frontend/src/pages/MaterialReview.jsx`
+- `code/sewpg-bid-frontend/src/pages/MaterialWiki.jsx`
+- `code/sewpg-bid-frontend/src/pages/OutlineReview.jsx`
+- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
+- `code/sewpg-bid-frontend/src/pages/ProjectCockpit.jsx`
+- `code/sewpg-bid-frontend/src/pages/ProjectEntryRedirect.jsx`
+- `code/sewpg-bid-frontend/src/pages/ProjectList.jsx`
+- `code/sewpg-bid-frontend/src/pages/TenderReview.jsx`
+- `code/sewpg-bid-frontend/src/utils/stageFlow.js`
+- `code/sewpg-bid-frontend/src/utils/workspace.js`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-04-27 14:57:45 post-commit 2445c54
+
+提交摘要：docs: align delivery and storage guidance
+
+变更文件：
+
+- `code/AGENT.md`
+- `code/hooks/record-progress.sh`
+- `code/progress.md`
+- `"code/sewpg-bid-frontend/docs/10-API\346\216\245\345\217\243\346\200\273\350\247\210\344\270\216\345\245\221\347\272\246\350\257\264\346\230\216.md"`
+- `"code/sewpg-bid-frontend/docs/11-API\345\255\227\346\256\265\347\272\247\345\245\221\347\272\246\346\230\216\347\273\206.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

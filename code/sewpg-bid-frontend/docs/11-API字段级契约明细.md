@@ -228,7 +228,7 @@ Path 参数：
 | 字段 | 类型 | 必有 | 说明 |
 |---|---|---:|---|
 | `projectId` | `string` | 是 | 项目 ID |
-| `archiveType` | `string` | 是 | `客户定制/项目定制` |
+| `archiveType` | `string` | 是 | `客户素材/项目素材` |
 | `basePath` | `string` | 是 | 根路径 |
 | `customerName` | `string` | 是 | 客户名 |
 | `isKeyAccount` | `boolean` | 是 | 是否重点客户 |
