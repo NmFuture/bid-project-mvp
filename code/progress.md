@@ -1692,54 +1692,25 @@ bid_workspace
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
 
-### 2026-05-01 17:38:37 手动记录：待办 3 技术标通用/华能目录模板沉淀
+### 2026-05-01 17:47:18 手动记录：撤回待办 3 目录模板沉淀实现
 
 改动目标：
 
-- 完成 `doc/14-甲方新增需求待办.md` 序号 3。
-- 沉淀技术标通用目录模板和华能类大客户目录模板，供 S2 目录生成和 S3 审核使用。
-- S2 manifest 带上命中的 `directoryTemplates`，prompt 明确目录模板沉淀只补齐缺失稳定章节，项目上传模板仍为主骨架。
-- `bid-toc-wiki-driven-v2` 支持读取目录模板沉淀，并把补齐章节标记为 `directory_template` 来源，便于 S3 审核。
+- 撤回 `258a131 feat: add technical bid directory templates` 和 `723d6be docs: record directory template progress`。
+- 将 `doc/14-甲方新增需求待办.md` 序号 3 恢复为未完成。
+- 删除本次新增的内置通用/华能目录模板沉淀逻辑，恢复 S2 目录生成 skill 原有职责边界。
 
-变更文件：
+撤回原因：
 
-- `doc/14-甲方新增需求待办.md`
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/services/directory_templates.py`
-- `code/sewpg-bid-backend/app/services/outline_generation.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/build_plan.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/tests/test_directory_generation.py`
-- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
+- 当前 `bid-toc-wiki-driven-v2` 已负责读取招标文件、投标文件和素材 Wiki，并输出目录 JSON。
+- 内置目录模板沉淀会把目录结构配置写死到后端/skill，和当前“由 Skill 根据输入文件与 Wiki 生成目录”的方向不一致。
+- 真正有价值的下一项是待办 4：当用户不上传投标模板时，给 S2/S7 提供 fallback 模板文件来源。
 
-验证结果：
+验证计划：
 
-- `.venv/bin/python -m pytest tests/test_directory_generation.py tests/test_toc_skill_scripts.py`：28 passed。
-- `.venv/bin/python -m py_compile app/services/directory_templates.py app/services/outline_generation.py opencode/skill/bid-toc-wiki-driven-v2/scripts/build_plan.py opencode/skill/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py`：通过。
+- `.venv/bin/python -m pytest tests/test_directory_generation.py tests/test_toc_skill_scripts.py`：24 passed。
+- `.venv/bin/python -m py_compile app/services/outline_generation.py opencode/skill/bid-toc-wiki-driven-v2/scripts/build_plan.py opencode/skill/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py`：通过。
 - `docker compose build fastapi worker opencode && docker compose up -d fastapi worker opencode`：通过。
 - `docker compose ps fastapi worker opencode`：`fastapi`、`opencode` healthy，`worker` 已启动。
 - `GET http://127.0.0.1/api/healthz`：返回 `status=ok`。
-- 容器内验证：`fastapi` 可选中 `['tech-general', 'tech-huaneng']`，`opencode` 中 `s2toc` 可用。
-
-遗留问题：
-
-- 本次先以内置通用技术标结构和当前华能样例模板抽取口径沉淀；后续如甲方指定新的通用目录模板，可替换或扩展 `directory_templates.py` 的模板配置。
-
-### 2026-05-01 17:40:32 post-commit 258a131
-
-提交摘要：feat: add technical bid directory templates
-
-变更文件：
-
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/services/directory_templates.py`
-- `code/sewpg-bid-backend/app/services/outline_generation.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/build_plan.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/tests/test_directory_generation.py`
-- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
+- 容器内验证：`app.services.directory_templates` 不存在；`bid-toc-wiki-driven-v2` 中无 `directoryTemplates / directory_template` 残留。

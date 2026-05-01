@@ -9,7 +9,6 @@ from typing import Any, Callable
 from xml.etree import ElementTree as ET
 
 from app.core.config import settings
-from app.services.directory_templates import select_directory_template_profiles
 from app.services.identity import build_project_identity
 from app.services.opencode_client import OpencodeClient
 from app.services.store import build_directory_opencode_output, now_iso, store
@@ -68,7 +67,6 @@ def generate_outline_for_project_with_progress(
                 "templateHintCount": len(template_hints),
                 "workDir": skill_workspace["workDir"],
                 "bidType": skill_workspace["bidType"],
-                "directoryTemplateCount": skill_workspace.get("directoryTemplateCount", 0),
             },
         )
 
@@ -219,7 +217,6 @@ def _prepare_toc_skill_workspace(
     tender_paths = _copy_tender_inputs(tender_file_records, work_dir)
     template_path, attach_path = _copy_template_inputs(template_file_records, work_dir)
     bid_type = _normalize_bid_type(str(project.get("bidType") or "技术标"))
-    directory_templates = select_directory_template_profiles({**project, "bidType": bid_type})
     wiki_dir = work_dir / "wiki"
     output_file = work_dir / "投标文件-总目录.json"
     manifest_path = work_dir / "s2_input.json"
@@ -241,7 +238,6 @@ def _prepare_toc_skill_workspace(
         ],
         "templateFile": str(template_path) if template_path else "",
         "attachFile": str(attach_path) if attach_path else "",
-        "directoryTemplates": directory_templates,
         "wikiDir": str(wiki_dir),
         "outputFile": str(output_file),
     }
@@ -255,8 +251,6 @@ def _prepare_toc_skill_workspace(
         "tenderFileCount": len(tender_paths),
         "templateFileCount": 1 if template_path else 0,
         "hasAttachFile": bool(attach_path),
-        "directoryTemplateCount": len(directory_templates),
-        "directoryTemplateIds": [str(item.get("id") or "") for item in directory_templates],
     }
 
 
@@ -413,9 +407,6 @@ def _build_outline_prompt(
     template_hint_text = "\n".join(f"- {item}" for item in template_hints) or "- 当前没有模板章节线索"
     include_key_points_text = "是" if include_key_points else "否"
     project_identity_text = json.dumps(skill_workspace.get("projectIdentity") or {}, ensure_ascii=False)
-    directory_template_text = _format_directory_templates_for_prompt(
-        skill_workspace.get("directoryTemplates") or []
-    )
 
     return f"""
 Use the {TOC_SKILL_NAME} skill.
@@ -432,11 +423,7 @@ manifest 备份：{skill_workspace["canonicalManifestPath"]}
 输出文件：{skill_workspace["outputFile"]}
 项目身份：{project_identity_text}
 
-目录模板沉淀：
-{directory_template_text}
-
 请先按投标模板目录起基础目录，再对照招标要求删改、补改，并结合 {skill_workspace["bidType"]} Wiki 素材库给出新增/删除/适配建议。读取 Wiki 时必须按项目身份过滤：通用素材可读；客户素材需 customer_id/同义词命中；项目素材需 project_id/project_code 命中。
-如果 manifest 中包含 directoryTemplates，请把这些通用/客户目录模板作为 S2 目录生成和 S3 审核的对照结构；项目上传的投标模板仍为主骨架，目录模板沉淀只补齐缺失的稳定章节或客户专属结构。
 
 请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 600000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径。命令会把完整目录 JSON 写入 outputFile，并只在 stdout 打印小型摘要 JSON：
 
@@ -469,37 +456,6 @@ manifest 备份：{skill_workspace["canonicalManifestPath"]}
 招标正文摘录（仅前段关键信息）：
 {tender_excerpt}
 """.strip()
-
-
-def _format_directory_templates_for_prompt(directory_templates: list[dict[str, Any]]) -> str:
-    if not directory_templates:
-        return "- 未命中目录模板沉淀"
-    compact_profiles: list[dict[str, Any]] = []
-    for profile in directory_templates:
-        chapters = []
-        for chapter in profile.get("chapters") or []:
-            chapters.append(
-                {
-                    "num": chapter.get("num") or "",
-                    "title": chapter.get("title") or "",
-                    "h2s": [
-                        {
-                            "num": h2.get("num") or "",
-                            "title": h2.get("title") or "",
-                        }
-                        for h2 in (chapter.get("h2s") or [])
-                    ],
-                }
-            )
-        compact_profiles.append(
-            {
-                "id": profile.get("id") or "",
-                "name": profile.get("name") or "",
-                "source": profile.get("source") or "",
-                "chapters": chapters,
-            }
-        )
-    return json.dumps(compact_profiles, ensure_ascii=False, indent=2)
 
 
 def _nodes_from_generation_result(result: dict[str, Any]) -> list[dict[str, Any]]:
