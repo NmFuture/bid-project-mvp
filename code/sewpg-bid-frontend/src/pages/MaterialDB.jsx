@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { materialsAPI } from '../api'
 import MaterialsViewSwitch from '../components/shared/MaterialsViewSwitch'
+import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
+import OnlyOfficeWorkspace from '../components/shared/OnlyOfficeWorkspace'
 import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
 import { bidTypeFromWorkspace, useWorkspaceSlug, workspaceRoute } from '../utils/workspace'
 
@@ -72,6 +74,15 @@ const cleanStatusMeta = (status) => {
   if (status === 'failed') return { label: '清洗失败', className: 'bg-error-container text-on-error-container' }
   if (status === 'cleaning') return { label: '清洗中', className: 'bg-primary/10 text-primary' }
   return { label: '待清洗', className: 'bg-surface-container-high text-on-surface-variant' }
+}
+
+const canPreviewCleaned = (item) => item?.cleanStatus === 'cleaned' && Boolean(item?.hasCleanedWord)
+
+const cleanedPreviewBlockedMessage = (item) => {
+  if (!item) return '点击左侧已清洗文件，可在这里预览清洗稿。'
+  if (item.cleanStatus === 'failed') return '该文件清洗失败，暂不开放清洗稿预览。'
+  if (item.cleanStatus === 'cleaning') return '该文件仍在清洗中，完成后才可预览。'
+  return '该文件尚未生成清洗后 Word，暂不开放预览。'
 }
 
 const displayFolderName = (name, path) => {
@@ -441,6 +452,11 @@ export default function MaterialDB({ showToast = () => {} }) {
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
   const [creatingWiki, setCreatingWiki] = useState(false)
+  const [previewItem, setPreviewItem] = useState(null)
+  const [previewSession, setPreviewSession] = useState(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState('')
+  const [onlyofficePreviewError, setOnlyofficePreviewError] = useState('')
 
   const [conflictContext, setConflictContext] = useState(null)
 
@@ -451,6 +467,17 @@ export default function MaterialDB({ showToast = () => {} }) {
   const fileItems = filesPayload?.items || []
   const totalCount = Number(filesPayload?.total || 0)
   const activeBidTypeMeta = bidTypeTabMeta(activeBidType)
+  const previewTitle = previewSession?.fileName || previewItem?.cleanedFileName || previewItem?.name || '未选择清洗稿'
+  const hasPreviewSession = Boolean(previewSession?.onlyoffice?.fileUrl) && !onlyofficePreviewError
+  const previewModeLabel = previewLoading
+    ? '加载中'
+    : onlyofficePreviewError
+      ? '异常'
+      : hasPreviewSession
+        ? '可预览'
+        : previewItem
+          ? '未开放'
+          : '未选择'
   const selectedUploadCustomer = customerOptions.find((option) => option.customerId === uploadCustomerId)
   const selectedUploadProject = projectOptions.find((option) => option.id === uploadProjectId)
 
@@ -856,6 +883,30 @@ export default function MaterialDB({ showToast = () => {} }) {
     }
   }
 
+  const handlePreviewCleaned = async (item) => {
+    setPreviewItem(item)
+    setPreviewSession(null)
+    setOnlyofficePreviewError('')
+
+    if (!canPreviewCleaned(item)) {
+      const message = cleanedPreviewBlockedMessage(item)
+      setPreviewError(message)
+      showToast(message, 'error')
+      return
+    }
+
+    setPreviewLoading(true)
+    setPreviewError('')
+    try {
+      const payload = await materialsAPI.raw.previewCleanedFile(item.id)
+      setPreviewSession(payload)
+    } catch (e) {
+      setPreviewError(safeMessage(e, '清洗稿预览加载失败'))
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
   const handleRetryClean = async (item) => {
     try {
       const payload = await materialsAPI.raw.cleanFile(item.id)
@@ -1026,239 +1077,317 @@ export default function MaterialDB({ showToast = () => {} }) {
         </div>
       )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-        <div className="xl:col-span-3 bg-surface-container-lowest rounded-xl border border-surface-container-high p-4 max-h-[720px] overflow-auto">
-          <div className="flex items-center justify-between mb-3 gap-2">
-            <div className="text-sm font-semibold text-on-surface">目录树</div>
-            <div className="flex items-center gap-1">
-              <button onClick={() => setCollapseForAll(false)} className="px-2 py-1 text-xs rounded bg-surface-container-high hover:bg-surface-dim">展开</button>
-              <button onClick={() => setCollapseForAll(true)} className="px-2 py-1 text-xs rounded bg-surface-container-high hover:bg-surface-dim">收起</button>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between mb-3 text-xs text-on-surface-variant">
-            <span>目录缩放</span>
-            <div className="flex items-center gap-1">
-              <button onClick={() => changeTreeScale(-10)} className="w-6 h-6 rounded bg-surface-container-high hover:bg-surface-dim">-</button>
-              <span className="w-10 text-center">{treeScale}%</span>
-              <button onClick={() => changeTreeScale(10)} className="w-6 h-6 rounded bg-surface-container-high hover:bg-surface-dim">+</button>
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-1">
-            {tree.map((node) => (
-              <TreeNode
-                key={node.id}
-                node={node}
-                selectedPath={selectedFolderPath}
-                onSelect={(path) => setSelectedFolderPath(path)}
-                collapsedMap={collapsedMap}
-                onToggle={toggleNode}
-                scale={treeScale}
-              />
-            ))}
-          </div>
-
-          <div className="mt-4 pt-3 border-t border-surface-container-high grid grid-cols-3 gap-2">
-            <button
-              onClick={handleCreateFolder}
-              disabled={!canCreateFolder}
-              className="px-2 py-2 text-xs rounded bg-surface-container-high hover:bg-surface-dim disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              新建文件夹
-            </button>
-            <button
-              onClick={handleDeleteFolder}
-              disabled={!canDeleteFolder}
-              className="px-2 py-2 text-xs rounded bg-surface-container-high hover:bg-surface-dim disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              删除文件夹
-            </button>
-            <button
-              onClick={() => openUploadModal({ mode: 'path', targetPath: selectedFolderPath })}
-              disabled={!canManageCurrentFolder || !selectedFolderPath}
-              className="px-2 py-2 text-xs rounded bg-primary text-on-primary hover:bg-primary-container disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              上传到此目录
-            </button>
-          </div>
-        </div>
-
-        <div className="xl:col-span-9 flex flex-col gap-4">
-          <div className="bg-surface-container-lowest rounded-xl border border-surface-container-high p-4">
-            <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
-              <input
-                value={filters.keyword}
-                onChange={(e) => updateFilter('keyword', e.target.value)}
-                placeholder="搜索文件名"
-                className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-              />
-              <input
-                value={filters.customerName}
-                onChange={(e) => updateFilter('customerName', e.target.value)}
-                placeholder="按客户筛选"
-                className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-              />
-              <input
-                value={filters.projectId}
-                onChange={(e) => updateFilter('projectId', e.target.value)}
-                placeholder="按项目ID/编号筛选"
-                className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-              />
-              <select
-                value={filters.materialTier}
-                onChange={(e) => updateFilter('materialTier', e.target.value)}
-                className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-              >
-                <option value="">全部层级</option>
-                {MATERIAL_TIER_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-              <select
-                value={filters.cleanStatus}
-                onChange={(e) => updateFilter('cleanStatus', e.target.value)}
-                className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-              >
-                {CLEAN_STATUS_OPTIONS.map((option) => (
-                  <option key={option.value || 'all'} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-              <select
-                value={filters.pageSize}
-                onChange={(e) => updateFilter('pageSize', Number(e.target.value))}
-                className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-              >
-                {[10, 20, 50].map((size) => (
-                  <option key={size} value={size}>每页 {size} 条</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="bg-surface-container-lowest rounded-xl border border-surface-container-high overflow-hidden">
-            {noData ? (
-              <div className="p-8">
-                <PageEmpty
-                  title="当前目录暂无文件"
-                  description="可上传文件、调整筛选，或在目录树中新建文件夹。"
-                  actionText="立即上传"
-                  onAction={() => openUploadModal({ mode: 'path' })}
-                  showActionIcon={false}
-                />
+      <OnlyOfficeWorkspace
+        heightClass="min-h-[760px]"
+        gridClassName="xl:grid-cols-[minmax(38rem,54rem)_minmax(0,1fr)]"
+        documentTitle="清洗稿预览"
+        documentSubtitle={`当前文件：${previewTitle}`}
+        documentMeta={(
+          <span className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${hasPreviewSession ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
+            {previewModeLabel}
+          </span>
+        )}
+        documentAreaClassName="flex flex-col"
+        sidebar={(
+          <section className="flex h-full min-h-0 flex-col">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-on-surface">素材库</h3>
+                <p className="mt-1 truncate text-xs text-outline">点击已清洗文件预览清洗稿</p>
               </div>
-            ) : (
-              <>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-surface-container-high bg-surface-container-low">
-                        <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">文件名</th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">类型</th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">大小</th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">层级/身份</th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">标书类型</th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">清洗状态</th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">版本</th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">更新人/时间</th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">操作</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {fileItems.map((item) => (
-                        <tr key={item.id} className="border-b border-surface-container-high/60 hover:bg-surface-container-low">
-	                          <td className="px-4 py-3 min-w-[280px]">
-	                            <div className="font-medium text-on-surface truncate">{item.name || '-'}</div>
-	                            <div className="text-xs text-outline truncate mt-1">{item.folderPath || '-'}</div>
-	                            {item.sourceRelativePath && item.sourceRelativePath !== item.name ? (
-	                              <div className="text-xs text-outline truncate mt-1">{item.sourceRelativePath}</div>
-	                            ) : null}
-	                          </td>
-                          <td className="px-4 py-3">{item.ext || item.type || '-'}</td>
-                          <td className="px-4 py-3">{item.sizeLabel || toSizeLabel(item.size)}</td>
-                          <td className="px-4 py-3">
-                            <div>{item.materialTierLabel || materialTierMeta(item.materialTier).label}</div>
-                            {item.identityScope && item.identityScope !== 'general' ? (
-                              <div className="text-xs text-outline mt-1">
-                                {item.identityScope === 'customer'
-                                  ? (item.customerCanonicalName || item.customerName || '-')
-                                  : (item.projectCode || item.projectId || '-')}
-                              </div>
-                            ) : null}
-                          </td>
-                          <td className="px-4 py-3">{item.bidType || '-'}</td>
-                          <td className="px-4 py-3">
-                            {(() => {
-                              const meta = cleanStatusMeta(item.cleanStatus)
-                              return (
-                                <div className="flex flex-col gap-1">
-                                  <span className={`w-fit px-2 py-1 rounded-full text-xs font-medium ${meta.className}`}>
-                                    {meta.label}
-                                  </span>
-                                  {item.cleanMessage && (
-                                    <span className="text-xs text-outline max-w-[180px] truncate" title={item.cleanMessage}>
-                                      {item.cleanMessage}
-                                    </span>
-                                  )}
-                                </div>
-                              )
-                            })()}
-                          </td>
-                          <td className="px-4 py-3">{item.version ? `v${item.version}` : '-'}</td>
-                          <td className="px-4 py-3 text-xs text-on-surface-variant">
-                            <div>{item.lastOperator || '-'}</div>
-                            <div>{item.updatedAt || '-'}</div>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex flex-wrap gap-2">
-                              <button onClick={() => handleDownload(item)} className="text-primary hover:underline text-xs">源文件</button>
-                              <button
-                                onClick={() => handleDownloadCleaned(item)}
-                                disabled={!item.hasCleanedWord}
-                                className="text-primary hover:underline text-xs disabled:text-outline disabled:no-underline disabled:cursor-not-allowed"
-                              >
-                                Word
-                              </button>
-                              {item.cleanStatus === 'failed' && (
-                                <button onClick={() => handleRetryClean(item)} className="text-on-surface-variant hover:underline text-xs">
-                                  重试清洗
-                                </button>
-                              )}
-                              <button onClick={() => handleRename(item)} disabled={!canManageCurrentFolder} className="text-on-surface-variant hover:underline text-xs disabled:opacity-50">重命名</button>
-                              <button onClick={() => handleMove(item)} disabled={!canManageCurrentFolder} className="text-on-surface-variant hover:underline text-xs disabled:opacity-50">移动</button>
-                              <button onClick={() => handleDelete(item)} disabled={!canManageCurrentFolder} className="text-error hover:underline text-xs disabled:opacity-50">删除</button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="px-4 py-3 border-t border-surface-container-high text-xs text-outline flex items-center justify-between">
-                  <span>总计 {totalCount} 条</span>
-                  <div className="flex items-center gap-2">
+              <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant">
+                文件 {totalCount}
+              </span>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              <div className="grid grid-cols-1 2xl:grid-cols-[minmax(16rem,20rem)_minmax(0,1fr)] gap-4">
+                <div className="bg-surface-container-lowest rounded-xl border border-surface-container-high p-4 max-h-[360px] 2xl:max-h-[720px] overflow-auto">
+                  <div className="flex items-center justify-between mb-3 gap-2">
+                    <div className="text-sm font-semibold text-on-surface">目录树</div>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => setCollapseForAll(false)} className="px-2 py-1 text-xs rounded bg-surface-container-high hover:bg-surface-dim">展开</button>
+                      <button onClick={() => setCollapseForAll(true)} className="px-2 py-1 text-xs rounded bg-surface-container-high hover:bg-surface-dim">收起</button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between mb-3 text-xs text-on-surface-variant">
+                    <span>目录缩放</span>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => changeTreeScale(-10)} className="w-6 h-6 rounded bg-surface-container-high hover:bg-surface-dim">-</button>
+                      <span className="w-10 text-center">{treeScale}%</span>
+                      <button onClick={() => changeTreeScale(10)} className="w-6 h-6 rounded bg-surface-container-high hover:bg-surface-dim">+</button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-1">
+                    {tree.map((node) => (
+                      <TreeNode
+                        key={node.id}
+                        node={node}
+                        selectedPath={selectedFolderPath}
+                        onSelect={(path) => setSelectedFolderPath(path)}
+                        collapsedMap={collapsedMap}
+                        onToggle={toggleNode}
+                        scale={treeScale}
+                      />
+                    ))}
+                  </div>
+
+                  <div className="mt-4 pt-3 border-t border-surface-container-high grid grid-cols-3 gap-2">
                     <button
-                      onClick={() => updateFilter('page', Math.max(1, filters.page - 1))}
-                      disabled={filters.page <= 1}
-                      className="px-2 py-1 rounded border border-surface-container-high disabled:opacity-40"
+                      onClick={handleCreateFolder}
+                      disabled={!canCreateFolder}
+                      className="px-2 py-2 text-xs rounded bg-surface-container-high hover:bg-surface-dim disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      上一页
+                      新建文件夹
                     </button>
-                    <span>第 {filters.page} 页</span>
                     <button
-                      onClick={() => updateFilter('page', filters.page + 1)}
-                      disabled={filters.page * filters.pageSize >= totalCount}
-                      className="px-2 py-1 rounded border border-surface-container-high disabled:opacity-40"
+                      onClick={handleDeleteFolder}
+                      disabled={!canDeleteFolder}
+                      className="px-2 py-2 text-xs rounded bg-surface-container-high hover:bg-surface-dim disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      下一页
+                      删除文件夹
+                    </button>
+                    <button
+                      onClick={() => openUploadModal({ mode: 'path', targetPath: selectedFolderPath })}
+                      disabled={!canManageCurrentFolder || !selectedFolderPath}
+                      className="px-2 py-2 text-xs rounded bg-primary text-on-primary hover:bg-primary-container disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      上传到此目录
                     </button>
                   </div>
                 </div>
-              </>
-            )}
+
+                <div className="flex min-w-0 flex-col gap-4">
+                  <div className="bg-surface-container-lowest rounded-xl border border-surface-container-high p-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                      <input
+                        value={filters.keyword}
+                        onChange={(e) => updateFilter('keyword', e.target.value)}
+                        placeholder="搜索文件名"
+                        className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
+                      />
+                      <input
+                        value={filters.customerName}
+                        onChange={(e) => updateFilter('customerName', e.target.value)}
+                        placeholder="按客户筛选"
+                        className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
+                      />
+                      <input
+                        value={filters.projectId}
+                        onChange={(e) => updateFilter('projectId', e.target.value)}
+                        placeholder="按项目ID/编号筛选"
+                        className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
+                      />
+                      <select
+                        value={filters.materialTier}
+                        onChange={(e) => updateFilter('materialTier', e.target.value)}
+                        className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
+                      >
+                        <option value="">全部层级</option>
+                        {MATERIAL_TIER_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={filters.cleanStatus}
+                        onChange={(e) => updateFilter('cleanStatus', e.target.value)}
+                        className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
+                      >
+                        {CLEAN_STATUS_OPTIONS.map((option) => (
+                          <option key={option.value || 'all'} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={filters.pageSize}
+                        onChange={(e) => updateFilter('pageSize', Number(e.target.value))}
+                        className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
+                      >
+                        {[10, 20, 50].map((size) => (
+                          <option key={size} value={size}>每页 {size} 条</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="bg-surface-container-lowest rounded-xl border border-surface-container-high overflow-hidden">
+                    {noData ? (
+                      <div className="p-8">
+                        <PageEmpty
+                          title="当前目录暂无文件"
+                          description="可上传文件、调整筛选，或在目录树中新建文件夹。"
+                          actionText="立即上传"
+                          onAction={() => openUploadModal({ mode: 'path' })}
+                          showActionIcon={false}
+                        />
+                      </div>
+                    ) : (
+                      <>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="border-b border-surface-container-high bg-surface-container-low">
+                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">文件名</th>
+                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">类型</th>
+                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">大小</th>
+                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">层级/身份</th>
+                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">标书类型</th>
+                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">清洗状态</th>
+                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">版本</th>
+                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">更新人/时间</th>
+                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">操作</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {fileItems.map((item) => {
+                                const selected = previewItem?.id === item.id
+                                const previewable = canPreviewCleaned(item)
+                                return (
+                                  <tr key={item.id} className={`border-b border-surface-container-high/60 ${selected ? 'bg-primary/5' : 'hover:bg-surface-container-low'}`}>
+                                    <td className="px-4 py-3 min-w-[280px]">
+                                      {previewable ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => handlePreviewCleaned(item)}
+                                          className="block max-w-[260px] truncate text-left font-medium text-primary hover:underline"
+                                          title={item.name || ''}
+                                        >
+                                          {item.name || '-'}
+                                        </button>
+                                      ) : (
+                                        <div className="font-medium text-on-surface truncate">{item.name || '-'}</div>
+                                      )}
+                                      <div className="text-xs text-outline truncate mt-1">{item.folderPath || '-'}</div>
+                                      {item.sourceRelativePath && item.sourceRelativePath !== item.name ? (
+                                        <div className="text-xs text-outline truncate mt-1">{item.sourceRelativePath}</div>
+                                      ) : null}
+                                    </td>
+                                    <td className="px-4 py-3">{item.ext || item.type || '-'}</td>
+                                    <td className="px-4 py-3">{item.sizeLabel || toSizeLabel(item.size)}</td>
+                                    <td className="px-4 py-3">
+                                      <div>{item.materialTierLabel || materialTierMeta(item.materialTier).label}</div>
+                                      {item.identityScope && item.identityScope !== 'general' ? (
+                                        <div className="text-xs text-outline mt-1">
+                                          {item.identityScope === 'customer'
+                                            ? (item.customerCanonicalName || item.customerName || '-')
+                                            : (item.projectCode || item.projectId || '-')}
+                                        </div>
+                                      ) : null}
+                                    </td>
+                                    <td className="px-4 py-3">{item.bidType || '-'}</td>
+                                    <td className="px-4 py-3">
+                                      {(() => {
+                                        const meta = cleanStatusMeta(item.cleanStatus)
+                                        return (
+                                          <div className="flex flex-col gap-1">
+                                            <span className={`w-fit px-2 py-1 rounded-full text-xs font-medium ${meta.className}`}>
+                                              {meta.label}
+                                            </span>
+                                            {item.cleanMessage && (
+                                              <span className="text-xs text-outline max-w-[180px] truncate" title={item.cleanMessage}>
+                                                {item.cleanMessage}
+                                              </span>
+                                            )}
+                                          </div>
+                                        )
+                                      })()}
+                                    </td>
+                                    <td className="px-4 py-3">{item.version ? `v${item.version}` : '-'}</td>
+                                    <td className="px-4 py-3 text-xs text-on-surface-variant">
+                                      <div>{item.lastOperator || '-'}</div>
+                                      <div>{item.updatedAt || '-'}</div>
+                                    </td>
+                                    <td className="px-4 py-3">
+                                      <div className="flex flex-wrap gap-2">
+                                        <button
+                                          onClick={() => handlePreviewCleaned(item)}
+                                          disabled={!previewable}
+                                          className="text-primary hover:underline text-xs disabled:text-outline disabled:no-underline disabled:cursor-not-allowed"
+                                        >
+                                          预览
+                                        </button>
+                                        <button onClick={() => handleDownload(item)} className="text-primary hover:underline text-xs">源文件</button>
+                                        <button
+                                          onClick={() => handleDownloadCleaned(item)}
+                                          disabled={!item.hasCleanedWord}
+                                          className="text-primary hover:underline text-xs disabled:text-outline disabled:no-underline disabled:cursor-not-allowed"
+                                        >
+                                          Word
+                                        </button>
+                                        {item.cleanStatus === 'failed' && (
+                                          <button onClick={() => handleRetryClean(item)} className="text-on-surface-variant hover:underline text-xs">
+                                            重试清洗
+                                          </button>
+                                        )}
+                                        <button onClick={() => handleRename(item)} disabled={!canManageCurrentFolder} className="text-on-surface-variant hover:underline text-xs disabled:opacity-50">重命名</button>
+                                        <button onClick={() => handleMove(item)} disabled={!canManageCurrentFolder} className="text-on-surface-variant hover:underline text-xs disabled:opacity-50">移动</button>
+                                        <button onClick={() => handleDelete(item)} disabled={!canManageCurrentFolder} className="text-error hover:underline text-xs disabled:opacity-50">删除</button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        <div className="px-4 py-3 border-t border-surface-container-high text-xs text-outline flex items-center justify-between">
+                          <span>总计 {totalCount} 条</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => updateFilter('page', Math.max(1, filters.page - 1))}
+                              disabled={filters.page <= 1}
+                              className="px-2 py-1 rounded border border-surface-container-high disabled:opacity-40"
+                            >
+                              上一页
+                            </button>
+                            <span>第 {filters.page} 页</span>
+                            <button
+                              onClick={() => updateFilter('page', filters.page + 1)}
+                              disabled={filters.page * filters.pageSize >= totalCount}
+                              className="px-2 py-1 rounded border border-surface-container-high disabled:opacity-40"
+                            >
+                              下一页
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+      >
+        {onlyofficePreviewError && (
+          <div className="mb-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-xs text-error">
+            {onlyofficePreviewError}
           </div>
-        </div>
-      </div>
+        )}
+        {previewLoading ? (
+          <div className="flex min-h-[560px] flex-1 items-center justify-center rounded-md border border-surface-container-high bg-surface-container-lowest px-6 text-center">
+            <div>
+              <span className="material-symbols-outlined text-4xl text-primary">hourglass_empty</span>
+              <p className="mt-3 text-sm text-on-surface-variant">正在加载清洗稿预览...</p>
+            </div>
+          </div>
+        ) : hasPreviewSession ? (
+          <OnlyOfficeEmbed
+            session={previewSession?.onlyoffice}
+            mode="view"
+            className="h-full min-h-[560px] w-full rounded-md border border-surface-container-high bg-white"
+            onReady={() => setOnlyofficePreviewError('')}
+            onError={(message) => setOnlyofficePreviewError(message || 'OnlyOffice 清洗稿加载失败')}
+          />
+        ) : (
+          <div className="flex min-h-[560px] flex-1 items-center justify-center rounded-md border border-dashed border-surface-container-high px-6 text-center">
+            <p className="max-w-md text-sm text-on-surface-variant">
+              {onlyofficePreviewError || previewError || cleanedPreviewBlockedMessage(previewItem)}
+            </p>
+          </div>
+        )}
+      </OnlyOfficeWorkspace>
 
       {showUploadModal && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">

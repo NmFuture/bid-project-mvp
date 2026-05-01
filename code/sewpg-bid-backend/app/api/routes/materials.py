@@ -7,6 +7,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Body, Query, Request
 from fastapi.responses import StreamingResponse
 
+from app.api.utils import onlyoffice_backend_base_url
 from app.services.material_store import material_store
 from app.services.minio_client import minio_client
 from app.services.wiki_generation import generate_platform_wiki
@@ -181,9 +182,16 @@ async def raw_download_cleaned_file(file_id: str) -> dict[str, Any]:
     return await material_store.raw_download_cleaned_file(file_id)
 
 
-@router.get("/api/materials/raw/{file_id}/cleaned/content")
-async def raw_download_cleaned_content(file_id: str) -> StreamingResponse:
-    payload = await material_store.raw_download_cleaned_content(file_id)
+@router.get("/api/materials/raw/{file_id}/cleaned/preview")
+async def raw_cleaned_preview(file_id: str, request: Request) -> dict[str, Any]:
+    return await material_store.raw_cleaned_preview(
+        file_id,
+        browser_base_url=str(request.base_url).rstrip("/"),
+        onlyoffice_base_url=onlyoffice_backend_base_url(request),
+    )
+
+
+def _cleaned_content_response(payload: dict[str, Any]) -> StreamingResponse:
     response = minio_client.get_object_response(payload["bucket"], payload["key"])
 
     def iterate_chunks():
@@ -203,6 +211,18 @@ async def raw_download_cleaned_content(file_id: str) -> StreamingResponse:
         media_type=str(payload["mimeType"] or "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
         headers=headers,
     )
+
+
+@router.get("/api/materials/raw/{file_id}/cleaned/content")
+async def raw_download_cleaned_content(file_id: str) -> StreamingResponse:
+    payload = await material_store.raw_download_cleaned_content(file_id)
+    return _cleaned_content_response(payload)
+
+
+@router.get("/api/materials/raw/{file_id}/cleaned/content/{filename:path}")
+async def raw_download_cleaned_content_by_name(file_id: str, filename: str) -> StreamingResponse:
+    payload = await material_store.raw_download_cleaned_content(file_id)
+    return _cleaned_content_response(payload)
 
 
 @router.get("/api/materials/structured")

@@ -370,6 +370,7 @@ export const materialsAPI = {
     downloadFile: (id) => request(`/materials/raw/${id}/download`),
     cleanFile: (id) => request(`/materials/raw/${id}/clean`, { method: 'POST' }),
     downloadCleanedFile: (id) => request(`/materials/raw/${id}/cleaned/download`),
+    previewCleanedFile: (id) => request(`/materials/raw/${id}/cleaned/preview`),
     parseStatus: (projectId) => request(`/projects/${projectId}/materials/parse-status`),
   },
   structured: {

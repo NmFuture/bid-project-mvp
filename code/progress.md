@@ -10,6 +10,37 @@
 
 ## 进度记录
 
+### 2026-05-01 20:03 素材库清洗稿 OnlyOffice 预览
+
+改动目标：
+
+- 素材库页面支持点击已清洗文件，在右侧用 OnlyOffice 只读预览清洗稿。
+- 清洗失败、清洗中、待清洗或未生成清洗后 Word 的素材不开放预览。
+
+改动内容：
+
+- 后端新增 `/api/materials/raw/{file_id}/cleaned/preview`，返回清洗稿 OnlyOffice 会话。
+- 清洗稿预览会话使用浏览器可访问 URL 和 OnlyOffice 容器可访问 URL 分离的现有口径。
+- 清洗稿内容接口增加带文件名的 URL 形式，便于 OnlyOffice 识别文档。
+- 前端素材库页面改为左侧素材库、右侧清洗稿预览的左右结构。
+- 文件列表中已清洗且已生成 Word 的文件名和“预览”按钮可打开右侧预览；其他状态按钮禁用。
+- 新增 OnlyOffice 预览路由回归测试。
+- 已勾选 `doc/14-甲方新增需求待办.md` 第 5 项。
+
+验证结果：
+
+- `.venv/bin/python -m pytest -q` 通过：60 passed，6 skipped。
+- `npm run lint && npm run build` 通过；Vite 仍提示主 chunk 超过 500KB，这是既有构建体积提示。
+- `docker compose build fastapi web` 通过。
+- `docker compose up -d fastapi web` 已重建并启动，`fastapi` 健康，`web` 监听 80。
+- `http://127.0.0.1/` 返回 HTTP 200。
+- `/api/materials/raw/RAW-0094/cleaned/preview` 对真实已清洗素材返回 `status=ready` 和 OnlyOffice 会话。
+- 已用本地 Chrome headless 截图检查素材页左右结构，无明显布局重叠。
+
+遗留问题：
+
+- 清洗稿预览依赖 OnlyOffice Document Server 与 `ONLYOFFICE_BACKEND_BASE_URL` 连通性；若客户内网地址变化，需要按部署说明调整该环境变量。
+
 ### 2026-05-01 18:04 模板上传 Fallback 读取
 
 改动目标：
@@ -1801,6 +1832,22 @@ bid_workspace
 - `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
 - `code/sewpg-bid-frontend/src/api/index.js`
 - `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 20:08:08 post-commit 03d1f19
+
+提交摘要：feat: preview cleaned materials with onlyoffice
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/api/routes/materials.py`
+- `code/sewpg-bid-backend/app/services/material_store.py`
+- `code/sewpg-bid-backend/tests/test_onlyoffice_document.py`
+- `code/sewpg-bid-frontend/src/api/index.js`
+- `code/sewpg-bid-frontend/src/pages/MaterialDB.jsx`
 - `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。

@@ -4,7 +4,7 @@ import platform
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
@@ -12,6 +12,8 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.config import settings
 from app.services.onlyoffice_documents import build_editor_session_key, document_path
+from app.services.material_store import material_store
+from app.services.peripheral import PeripheralError
 from app.services.store import store
 
 
@@ -247,6 +249,57 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
                 review_response.json()["version"],
             ),
         )
+
+    def test_cleaned_material_preview_route_returns_onlyoffice_session(self) -> None:
+        settings.onlyoffice_backend_base_url = "http://fastapi:8000"
+        preview_payload = {
+            "status": "ready",
+            "fileId": "RAW-0007",
+            "fileName": "清洗稿.docx",
+            "fileUrl": "http://127.0.0.1:8000/api/materials/raw/RAW-0007/cleaned/content/%E6%B8%85%E6%B4%97%E7%A8%BF.docx",
+            "onlyoffice": {
+                "documentKey": "material-RAW-0007-v1",
+                "title": "清洗稿.docx",
+                "fileUrl": "http://fastapi:8000/api/materials/raw/RAW-0007/cleaned/content/%E6%B8%85%E6%B4%97%E7%A8%BF.docx",
+                "browserFileUrl": "http://127.0.0.1:8000/api/materials/raw/RAW-0007/cleaned/content/%E6%B8%85%E6%B4%97%E7%A8%BF.docx",
+                "fileType": "docx",
+                "documentType": "word",
+                "user": {"id": "user-1", "name": "当前用户"},
+            },
+        }
+
+        with patch.object(
+            material_store,
+            "raw_cleaned_preview",
+            new=AsyncMock(return_value=preview_payload),
+            create=True,
+        ) as mocked:
+            response = self.client.get("/api/materials/raw/RAW-0007/cleaned/preview")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["onlyoffice"]["fileUrl"], preview_payload["onlyoffice"]["fileUrl"])
+        self.assertEqual(payload["onlyoffice"]["browserFileUrl"], preview_payload["onlyoffice"]["browserFileUrl"])
+        self.assertEqual(payload["onlyoffice"]["documentType"], "word")
+        mocked.assert_awaited_once()
+
+    def test_cleaned_material_preview_route_blocks_unavailable_cleaned_word(self) -> None:
+        with patch.object(
+            material_store,
+            "raw_cleaned_preview",
+            new=AsyncMock(
+                side_effect=PeripheralError(
+                    400,
+                    "素材清洗完成后才可预览清洗稿。",
+                    "RAW_CLEANED_PREVIEW_UNAVAILABLE",
+                )
+            ),
+            create=True,
+        ):
+            response = self.client.get("/api/materials/raw/RAW-0008/cleaned/preview")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], "RAW_CLEANED_PREVIEW_UNAVAILABLE")
 
 
 if __name__ == "__main__":

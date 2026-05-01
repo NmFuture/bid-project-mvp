@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import logging
 import re
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
 from uuid import uuid4
+from urllib.parse import quote
 
 from sqlalchemy import desc, func, or_, select, text
 from sqlalchemy.orm import selectinload
@@ -1139,6 +1141,78 @@ class MaterialStore:
                 "fileName": ext.get("cleanedFileName") or f"{PurePosixPath(item.name).stem}.docx",
                 "downloadUrl": f"/api/materials/raw/{file_id}/cleaned/content",
                 "message": "已生成清洗后 Word 下载地址",
+            }
+
+    async def raw_cleaned_preview(
+        self,
+        file_id: str,
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        numeric_id = int(file_id.replace("RAW-", ""))
+        async with async_session() as session:
+            result = await session.execute(select(RawFile).where(RawFile.id == numeric_id).options(selectinload(RawFile.folder)))
+            item = result.scalar_one_or_none()
+            if item is None:
+                raise PeripheralError(404, "文件不存在。", "RAW_FILE_NOT_FOUND")
+
+            ext = item.ext_fields or {}
+            cleaned_key = str(ext.get("cleanedMinioKey") or "")
+            if str(ext.get("cleanStatus") or "") != "cleaned" or not cleaned_key:
+                raise PeripheralError(
+                    400,
+                    "素材清洗完成后才可预览清洗稿。",
+                    "RAW_CLEANED_PREVIEW_UNAVAILABLE",
+                )
+
+            raw_id = f"RAW-{item.id:04d}"
+            cleaned_file_name = str(ext.get("cleanedFileName") or f"{PurePosixPath(item.name).stem}.docx")
+            encoded_name = quote(cleaned_file_name)
+            file_path = f"/api/materials/raw/{raw_id}/cleaned/content/{encoded_name}"
+            browser_file_url = f"{browser_base_url.rstrip('/')}{file_path}" if browser_base_url else file_path
+            onlyoffice_file_url = (
+                f"{onlyoffice_base_url.rstrip('/')}{file_path}"
+                if onlyoffice_base_url
+                else browser_file_url
+            )
+            digest = hashlib.sha1(
+                "|".join(
+                    [
+                        raw_id,
+                        cleaned_key,
+                        str(item.version or 1),
+                        str(ext.get("cleanedSize") or 0),
+                        str(ext.get("cleanedAt") or ext.get("cleanUpdatedAt") or ""),
+                    ]
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+
+            return {
+                "status": "ready",
+                "fileId": raw_id,
+                "sourceFileName": item.name,
+                "fileName": cleaned_file_name,
+                "fileType": "docx",
+                "documentType": "word",
+                "folderPath": item.folder.path if item.folder else "",
+                "version": item.version or 1,
+                "cleanMessage": ext.get("cleanMessage") or "",
+                "cleanedAt": ext.get("cleanedAt") or "",
+                "cleanedSize": ext.get("cleanedSize") or 0,
+                "fileUrl": browser_file_url,
+                "onlyoffice": {
+                    "documentKey": f"material-{raw_id}-v{item.version or 1}-{digest}",
+                    "title": cleaned_file_name,
+                    "fileUrl": onlyoffice_file_url,
+                    "browserFileUrl": browser_file_url,
+                    "fileType": "docx",
+                    "documentType": "word",
+                    "user": {
+                        "id": "user-1",
+                        "name": "当前用户",
+                    },
+                },
             }
 
     async def raw_download_cleaned_content(self, file_id: str) -> dict[str, Any]:
