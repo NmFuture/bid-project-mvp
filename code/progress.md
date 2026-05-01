@@ -1596,3 +1596,33 @@ bid_workspace
 
 - `npm run lint`：通过。
 - `npm run build`：通过。
+
+### 2026-05-01 17:22:45 post-commit 919ce2e
+
+提交摘要：chore: complete backlog items 1 & 2 — clean old demos, OnlyOffice layout
+
+变更文件：
+
+- `code/AGENT.md`
+- `code/progress.md`
+- `code/sewpg-bid-backend/.dockerignore`
+- `code/sewpg-bid-backend/README.md`
+- `code/sewpg-bid-backend/onlyoffice/README.md`
+- `code/sewpg-bid-backend/onlyoffice/data/.private/ds_release_date`
+- `code/sewpg-bid-backend/onlyoffice/docker-compose.onlyoffice.yml`
+- `code/sewpg-bid-backend/onlyoffice/files/sample.docx`
+- `code/sewpg-bid-backend/onlyoffice/frontend_bridge_reference.md`
+- `code/sewpg-bid-backend/onlyoffice/onlyoffice_demo_backend.py`
+- `code/sewpg-bid-backend/onlyoffice/requirements.txt`
+- `code/sewpg-bid-backend/onlyoffice/smoke_test.html`
+- `code/sewpg-bid-backend/opencode/opencode-fastapi-word-skill-demo/README.md`
+- `code/sewpg-bid-backend/opencode/opencode-fastapi-word-skill-demo/app/__init__.py`
+- `code/sewpg-bid-backend/opencode/opencode-fastapi-word-skill-demo/app/main.py`
+- `code/sewpg-bid-backend/opencode/opencode-fastapi-word-skill-demo/requirements.txt`
+- `code/sewpg-bid-frontend/src/components/shared/OnlyOfficeWorkspace.jsx`
+- `code/sewpg-bid-frontend/src/pages/CoCreationEditor.jsx`
+- `code/sewpg-bid-frontend/src/pages/MaterialReview.jsx`
+- `code/sewpg-bid-frontend/src/pages/OutlineReview.jsx`
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
