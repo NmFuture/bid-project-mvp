@@ -1204,6 +1204,26 @@ bid_workspace
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
 
+### 2026-05-01 21:39 S1 解析进度与 3.1 字段增强
+
+变更摘要：
+
+- S1 `/parse` 上传并解析改为记录真实后端进度，前端轮询展示进度条、步骤记录与 opencode 输出片段。
+- 解析结果按 3.1 要求拆成确定字段表：评分细则、项目基础信息、风机核心参数、性能保证指标、环境适应性。
+- 专题方案、供货范围、考核条款改为展示“是否有明确要求”及摘要/证据。
+- 附表识别支持 markdown 空表和 Word 招标文件中“附表/副表”标题后的空表，并生成 `.docx` 到技术标工作区 `technical-workspace/appendices`。
+- S1 opencode 调用继续使用 `bid-tender-structured-parser` skill；本地结构化结果会补齐 opencode 摘要里缺失的字段组、存在性判断和附表产物。
+
+验证结果：
+
+- `code/sewpg-bid-backend/.venv/bin/python -m pytest tests/test_parse_pipeline.py -q`：11 passed。
+- `code/sewpg-bid-backend/.venv/bin/python -m pytest -q`：65 passed, 6 skipped。
+- `code/sewpg-bid-frontend/npm run lint`：通过。
+- `code/sewpg-bid-frontend/npm run build`：通过，保留既有 Vite chunk > 500KB 提示。
+- `docker compose build opencode fastapi web`：通过。
+- `docker compose up -d opencode fastapi worker web`：通过，FastAPI healthy。
+- 真实 API 烟测：临时项目上传 markdown 招标文件，进度事件包含 `upload/extract/appendix/skill/opencode/complete`，评分项拆分为 2 条，附表 Word 生成到 `/data/documents/.../technical-workspace/appendices/`。
+
 ### 2026-04-27 14:55:49 post-commit 6cdeaa9
 
 提交摘要：feat(material-store): add persisted materials and cleaning
@@ -1884,6 +1904,46 @@ bid_workspace
 - `code/sewpg-bid-backend/tests/test_onlyoffice_document.py`
 - `code/sewpg-bid-frontend/src/api/index.js`
 - `code/sewpg-bid-frontend/src/pages/MaterialDB.jsx`
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 20:57:06 post-commit 5ec4384
+
+提交摘要：Fix OnlyOffice fullscreen and folder loading
+
+变更文件：
+
+- `code/sewpg-bid-backend/app/api/routes/materials.py`
+- `code/sewpg-bid-backend/app/services/material_store.py`
+- `code/sewpg-bid-backend/app/services/peripheral.py`
+- `code/sewpg-bid-frontend/src/components/shared/OnlyOfficeWorkspace.jsx`
+- `code/sewpg-bid-frontend/src/pages/MaterialDB.jsx`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 21:13:06 post-commit cfe4488
+
+提交摘要：feat: add structured tender parsing and project dates
+
+变更文件：
+
+- `code/docker-compose.yml`
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/api/routes/projects.py`
+- `code/sewpg-bid-backend/app/core/config.py`
+- `code/sewpg-bid-backend/app/services/opencode_client.py`
+- `code/sewpg-bid-backend/app/services/parsing.py`
+- `code/sewpg-bid-backend/app/services/store.py`
+- `code/sewpg-bid-backend/opencode/Dockerfile`
+- `code/sewpg-bid-backend/opencode/skill/bid-tender-structured-parser/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-tender-structured-parser/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
+- `code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx`
+- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
+- `code/sewpg-bid-frontend/src/pages/ProjectCockpit.jsx`
+- `code/sewpg-bid-frontend/src/pages/ProjectList.jsx`
+- `code/sewpg-bid-frontend/src/pages/TenderReview.jsx`
 - `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。

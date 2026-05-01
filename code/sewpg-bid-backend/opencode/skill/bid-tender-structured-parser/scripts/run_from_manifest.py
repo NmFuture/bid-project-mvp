@@ -93,6 +93,8 @@ def split_label_value(line: str, fallback_label: str) -> tuple[str, str]:
 
 
 def first_category(line: str) -> Category | None:
+    if "考核" in line:
+        return next(category for category in CATEGORIES if category.key == "assessment_terms")
     for category in CATEGORIES:
         if any(keyword in line for keyword in category.keywords):
             return category

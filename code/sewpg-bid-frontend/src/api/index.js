@@ -231,6 +231,7 @@ export const stagesAPI = {
 // ===== S1 Parse =====
 export const parseAPI = {
   results: (projectId) => request(`/projects/${projectId}/parse-results`),
+  progress: (projectId) => request(`/projects/${projectId}/parse-results/progress`),
   run: (projectId) => request(`/projects/${projectId}/parse-results/run`, { method: 'POST' }),
   uploadAndRun: (projectId, data) =>
     request(`/projects/${projectId}/parse-results/upload-and-run`, {

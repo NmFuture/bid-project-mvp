@@ -23,6 +23,27 @@ def build_docx_bytes(*lines: str) -> bytes:
     return file_obj.getvalue()
 
 
+def build_appendix_docx_bytes() -> bytes:
+    file_obj = io.BytesIO()
+    doc = Document()
+    doc.add_paragraph("附表1：供货范围空表")
+    table = doc.add_table(rows=3, cols=3)
+    values = [
+        ["序号", "设备名称", "投标响应"],
+        ["1", "风力发电机组", ""],
+        ["2", "塔筒", ""],
+    ]
+    for row_index, row in enumerate(values):
+        for col_index, value in enumerate(row):
+            table.cell(row_index, col_index).text = value
+    doc.save(file_obj)
+    return file_obj.getvalue()
+
+
+def field_by_key(items: list[dict], key: str) -> dict:
+    return next(item for item in items if item["key"] == key)
+
+
 class ParsePipelineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -163,6 +184,164 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(project["startDate"], "2026-06-01")
         self.assertEqual(project["endDate"], "2026-09-30")
         self.assertEqual(project["deadline"], "2026-09-30")
+
+    def test_parse_result_exposes_fixed_fields_presence_and_appendix_docx_assets(self) -> None:
+        project_id = self.create_project()
+        tender = "\n".join(
+            [
+                "# 招标文件",
+                "项目名称：华能甘肃100MW风电项目",
+                "招标编号：HN-2026-001",
+                "招标人：华能集团",
+                "管理单位：华能甘肃公司",
+                "标段规模：100MW",
+                "交货周期：2026年10月1日至2027年3月31日",
+                "质保期：5年",
+                "技术承诺：投标人应承诺满足全部技术规范。",
+                "评分细则：技术方案30分，需提供技术响应表和证明材料；供货保障10分，需提供供货计划。",
+                "单机容量：6.25MW",
+                "叶轮直径：200m",
+                "轮毂高度：120m",
+                "叶片最低点距地：20m",
+                "塔筒型式：钢混塔筒",
+                "箱变型式：华式箱变",
+                "安全等级：IEC IIB",
+                "空气密度：1.225kg/m3",
+                "风速：8.5m/s",
+                "湍流强度：0.14",
+                "功率曲线：投标人应提供经认证功率曲线。",
+                "可利用率：97%",
+                "发电量：年上网电量不少于300GWh",
+                "涉网性能：满足高低电压穿越要求。",
+                "环境适应性：抗低温、抗覆冰防凝露、防潮湿、防雷暴、防风沙、抗高温。",
+                "专题方案：应提供叶片专题、变桨系统专题、主轴专题、齿轮箱专题。",
+                "供货范围：风力发电机组、塔筒、箱变及备品备件。",
+                "考核条款：发电量考核、可利用率考核、功率曲线考核、部件考核、认证考核。",
+                "附表1：技术参数响应表",
+                "| 序号 | 参数 | 投标响应 |",
+                "| --- | --- | --- |",
+                "| 1 | 单机容量 | |",
+                "| 2 | 叶轮直径 | |",
+            ]
+        ).encode("utf-8")
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[("tenderFiles", ("招标文件.md", tender, "text/markdown"))],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        structured = payload["structured"]
+        field_groups = structured["fieldGroups"]
+
+        project_basics = field_groups["projectBasics"]
+        self.assertEqual(field_by_key(project_basics, "projectName")["value"], "华能甘肃100MW风电项目")
+        self.assertEqual(field_by_key(project_basics, "tenderNo")["value"], "HN-2026-001")
+        self.assertEqual(field_by_key(project_basics, "tenderer")["value"], "华能集团")
+        self.assertEqual(field_by_key(project_basics, "managementUnit")["value"], "华能甘肃公司")
+        self.assertEqual(field_by_key(project_basics, "bidSectionScale")["value"], "100MW")
+        self.assertEqual(field_by_key(project_basics, "deliveryPeriod")["value"], "2026年10月1日至2027年3月31日")
+        self.assertEqual(field_by_key(project_basics, "warrantyPeriod")["value"], "5年")
+        self.assertIn("全部技术规范", field_by_key(project_basics, "technicalCommitment")["value"])
+
+        turbine = field_groups["turbineCoreParameters"]
+        self.assertEqual(field_by_key(turbine, "singleCapacity")["value"], "6.25MW")
+        self.assertEqual(field_by_key(turbine, "rotorDiameter")["value"], "200m")
+        self.assertEqual(field_by_key(turbine, "hubHeight")["value"], "120m")
+        self.assertEqual(field_by_key(turbine, "bladeTipClearance")["value"], "20m")
+        self.assertEqual(field_by_key(turbine, "towerType")["value"], "钢混塔筒")
+        self.assertEqual(field_by_key(turbine, "boxTransformerType")["value"], "华式箱变")
+        self.assertEqual(field_by_key(turbine, "safetyClass")["value"], "IEC IIB")
+        self.assertEqual(field_by_key(turbine, "airDensity")["value"], "1.225kg/m3")
+        self.assertEqual(field_by_key(turbine, "windSpeed")["value"], "8.5m/s")
+        self.assertEqual(field_by_key(turbine, "turbulenceIntensity")["value"], "0.14")
+
+        performance = field_groups["performanceGuarantees"]
+        self.assertIn("认证功率曲线", field_by_key(performance, "powerCurve")["value"])
+        self.assertEqual(field_by_key(performance, "availability")["value"], "97%")
+        self.assertEqual(field_by_key(performance, "generation")["value"], "年上网电量不少于300GWh")
+        self.assertIn("电压穿越", field_by_key(performance, "gridPerformance")["value"])
+
+        scoring = field_groups["scoringCriteria"]
+        self.assertEqual(scoring[0]["scoringItem"], "技术方案")
+        self.assertEqual(scoring[0]["score"], "30分")
+        self.assertIn("证明材料", scoring[0]["proofRequirement"])
+        self.assertEqual(scoring[1]["scoringItem"], "供货保障")
+        self.assertEqual(scoring[1]["score"], "10分")
+        self.assertIn("供货计划", scoring[1]["proofRequirement"])
+
+        presence = structured["requirementPresence"]
+        self.assertEqual(presence["topicPlans"]["status"], "present")
+        self.assertIn("叶片专题", presence["topicPlans"]["summary"])
+        self.assertEqual(presence["supplyScope"]["status"], "present")
+        self.assertIn("风力发电机组", presence["supplyScope"]["summary"])
+        self.assertEqual(presence["assessmentTerms"]["status"], "present")
+        self.assertIn("发电量考核", presence["assessmentTerms"]["summary"])
+
+        appendices = structured["appendices"]
+        self.assertEqual(len(appendices), 1)
+        self.assertEqual(appendices[0]["title"], "附表1：技术参数响应表")
+        self.assertEqual(appendices[0]["status"], "generated")
+        self.assertEqual(appendices[0]["rowCount"], 3)
+        appendix_path = Path(appendices[0]["docxPath"])
+        self.assertTrue(appendix_path.exists())
+        self.assertIn(str(settings.documents_dir / project_id / "technical-workspace" / "appendices"), str(appendix_path))
+        appendix_doc = Document(str(appendix_path))
+        self.assertEqual(len(appendix_doc.tables), 1)
+        self.assertEqual(appendix_doc.tables[0].cell(0, 1).text, "参数")
+        self.assertEqual(appendix_doc.tables[0].cell(1, 2).text, "")
+
+    def test_parse_docx_appendix_table_generates_workspace_docx(self) -> None:
+        project_id = self.create_project()
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "含附表招标文件.docx",
+                        build_appendix_docx_bytes(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        self.assertEqual(len(appendices), 1)
+        self.assertEqual(appendices[0]["status"], "generated")
+        self.assertEqual(appendices[0]["rowCount"], 3)
+        appendix_doc = Document(appendices[0]["docxPath"])
+        self.assertEqual(appendix_doc.tables[0].cell(0, 1).text, "设备名称")
+        self.assertEqual(appendix_doc.tables[0].cell(1, 2).text, "")
+
+    def test_parse_progress_records_real_steps_and_completion(self) -> None:
+        project_id = self.create_project()
+        tender = "项目名称：进度测试项目\n单机容量：6.25MW\n".encode("utf-8")
+
+        before = self.client.get(f"/api/projects/{project_id}/parse-results/progress")
+        self.assertEqual(before.status_code, 200)
+        self.assertEqual(before.json()["status"], "idle")
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[("tenderFiles", ("招标文件.md", tender, "text/markdown"))],
+        )
+        self.assertEqual(response.status_code, 200)
+
+        progress = self.client.get(f"/api/projects/{project_id}/parse-results/progress")
+        self.assertEqual(progress.status_code, 200)
+        payload = progress.json()
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["percentage"], 100)
+        steps = [event["step"] for event in payload["events"]]
+        self.assertIn("upload", steps)
+        self.assertIn("extract", steps)
+        self.assertIn("skill", steps)
+        self.assertIn("appendix", steps)
+        self.assertIn("complete", steps)
 
     def test_project_create_and_update_support_start_and_end_dates(self) -> None:
         response = self.client.post(

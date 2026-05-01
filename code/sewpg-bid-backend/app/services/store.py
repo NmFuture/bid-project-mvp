@@ -112,6 +112,21 @@ def build_directory_opencode_output(
     }
 
 
+def build_parse_event(
+    message: str,
+    *,
+    level: str = "info",
+    step: str = "general",
+    at: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "at": at or now_iso(),
+        "level": level,
+        "step": step,
+        "message": message,
+    }
+
+
 def default_fill_tasks() -> list[dict[str, Any]]:
     return [
         {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "pending"},
@@ -413,6 +428,15 @@ class AppStore:
                 "manifestPath": "",
                 "documents": [],
             },
+            "parse_progress": {
+                "status": "idle",
+                "percentage": 0,
+                "summary": "尚未触发招标文件解析。",
+                "startedAt": "",
+                "completedAt": "",
+                "events": [],
+                "opencodeOutput": build_directory_opencode_output(),
+            },
             "directory_state": {
                 "status": "idle",
                 "percentage": 0,
@@ -658,6 +682,81 @@ class AppStore:
 
     def get_parse_result(self, project_id: str) -> dict[str, Any]:
         return copy.deepcopy(self._require(project_id)["parse_result"])
+
+    def get_parse_progress(self, project_id: str) -> dict[str, Any]:
+        project = self._require(project_id)
+        progress = project.get("parse_progress")
+        if not isinstance(progress, dict):
+            progress = {
+                "status": "idle",
+                "percentage": 0,
+                "summary": "尚未触发招标文件解析。",
+                "startedAt": "",
+                "completedAt": "",
+                "events": [],
+                "opencodeOutput": build_directory_opencode_output(),
+            }
+            project["parse_progress"] = progress
+            self._persist_project(project)
+        return copy.deepcopy(progress)
+
+    def start_parse_progress(self, project_id: str, message: str = "已开始招标文件解析。") -> dict[str, Any]:
+        project = self._require(project_id)
+        started_at = now_iso()
+        progress = {
+            "status": "running",
+            "percentage": 5,
+            "summary": message,
+            "startedAt": started_at,
+            "completedAt": "",
+            "events": [build_parse_event(message, step="start", at=started_at)],
+            "opencodeOutput": build_directory_opencode_output(status="idle"),
+        }
+        project["parse_progress"] = progress
+        project["updatedAt"] = started_at
+        self._persist_project(project)
+        return copy.deepcopy(progress)
+
+    def update_parse_progress(
+        self,
+        project_id: str,
+        *,
+        status: str | None = None,
+        percentage: int | None = None,
+        summary: str | None = None,
+        event_message: str = "",
+        event_step: str = "general",
+        event_level: str = "info",
+        opencode_output: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        progress = project.get("parse_progress") if isinstance(project.get("parse_progress"), dict) else {}
+        if not progress:
+            progress = self.start_parse_progress(project_id)
+            project = self._require(project_id)
+            progress = project["parse_progress"]
+        if status:
+            progress["status"] = status
+        if percentage is not None:
+            progress["percentage"] = max(0, min(100, int(percentage)))
+        if summary is not None:
+            progress["summary"] = summary
+        if opencode_output:
+            progress["opencodeOutput"] = {
+                **build_directory_opencode_output(),
+                **copy.deepcopy(opencode_output),
+            }
+        if event_message:
+            events = progress.setdefault("events", [])
+            events.append(build_parse_event(event_message, level=event_level, step=event_step))
+            progress["events"] = events[-80:]
+        if status == "completed":
+            progress["completedAt"] = now_iso()
+            progress["percentage"] = 100
+        project["parse_progress"] = progress
+        project["updatedAt"] = now_iso()
+        self._persist_project(project)
+        return copy.deepcopy(progress)
 
     def get_parse_storage(self, project_id: str) -> dict[str, Any]:
         return copy.deepcopy(self._require(project_id)["parse_storage"])

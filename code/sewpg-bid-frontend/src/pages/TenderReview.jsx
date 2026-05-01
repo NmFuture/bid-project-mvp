@@ -76,6 +76,48 @@ const buildFallbackSourceFiles = (fileNames = []) =>
     size: '-',
   }))
 
+const groupValue = (field) => {
+  if (!field) return '-'
+  const value = String(field.value || '').trim()
+  return value || '未识别'
+}
+
+const presenceLabel = (status) => (status === 'present' ? '有明确要求' : '未识别')
+
+function FieldGroupTable({ title, fields = [] }) {
+  return (
+    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
+      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low">
+        <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[640px]">
+          <thead>
+            <tr className="border-b border-surface-container-high">
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">字段</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">解析内容</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+            </tr>
+          </thead>
+          <tbody>
+            {fields.map((field) => (
+              <tr key={field.key || field.label} className="border-b border-surface-container-high last:border-b-0">
+                <td className="px-4 py-2 text-on-surface whitespace-nowrap">{field.label || '-'}</td>
+                <td className={`px-4 py-2 min-w-[220px] ${field.status === 'found' ? 'text-primary font-medium' : 'text-outline'}`}>
+                  {groupValue(field)}
+                </td>
+                <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{field.sourceFile || '-'}</td>
+                <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{field.evidenceLocation || '-'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 export default function TenderReview({ showToast }) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -90,6 +132,7 @@ export default function TenderReview({ showToast }) {
   const [uploadError, setUploadError] = useState('')
   const [tenderFiles, setTenderFiles] = useState([])
   const [uploading, setUploading] = useState(false)
+  const [parseProgress, setParseProgress] = useState(null)
   const [deciding, setDeciding] = useState('')
   const [creatingReview, setCreatingReview] = useState(false)
   const [showProjectInfoModal, setShowProjectInfoModal] = useState(false)
@@ -128,12 +171,14 @@ export default function TenderReview({ showToast }) {
     setLoadingDetail(true)
     setError('')
     try {
-      const [projectData, parseResult] = await Promise.all([
+      const [projectData, parseResult, progressResult] = await Promise.all([
         projectsAPI.get(selectedProjectId),
         parseAPI.results(selectedProjectId),
+        parseAPI.progress(selectedProjectId).catch(() => null),
       ])
       setProject(projectData)
       setParseData(parseResult)
+      setParseProgress(progressResult)
     } catch (e) {
       setError(e?.message || '解析详情加载失败')
     } finally {
@@ -186,6 +231,25 @@ export default function TenderReview({ showToast }) {
     return () => clearTimeout(timer)
   }, [loadCurrentProject])
 
+  useEffect(() => {
+    if (!uploading || !selectedProjectId) return undefined
+    let stopped = false
+    const loadProgress = async () => {
+      try {
+        const progress = await parseAPI.progress(selectedProjectId)
+        if (!stopped) setParseProgress(progress)
+      } catch {
+        // Keep the previous progress snapshot while the upload request owns the main path.
+      }
+    }
+    loadProgress()
+    const timer = setInterval(loadProgress, 1000)
+    return () => {
+      stopped = true
+      clearInterval(timer)
+    }
+  }, [selectedProjectId, uploading])
+
   const sourceFiles = Array.isArray(parseData?.sourceFiles) && parseData.sourceFiles.length
     ? parseData.sourceFiles
     : buildFallbackSourceFiles(project?.files || [])
@@ -197,6 +261,10 @@ export default function TenderReview({ showToast }) {
   }, [projects, queryProjectId])
 
   const parsedItems = useMemo(() => parseData?.items || [], [parseData?.items])
+  const fieldGroups = parseData?.structured?.fieldGroups || {}
+  const scoringCriteria = Array.isArray(fieldGroups.scoringCriteria) ? fieldGroups.scoringCriteria : []
+  const requirementPresence = parseData?.structured?.requirementPresence || {}
+  const appendices = Array.isArray(parseData?.structured?.appendices) ? parseData.structured.appendices : []
   const structuredCategories = useMemo(
     () => (Array.isArray(parseData?.structured?.categories) ? parseData.structured.categories : []),
     [parseData],
@@ -278,11 +346,20 @@ export default function TenderReview({ showToast }) {
 
     setUploading(true)
     setUploadError('')
+    setParseProgress({
+      status: 'running',
+      percentage: 3,
+      summary: '正在上传招标文件。',
+      events: [{ step: 'upload', level: 'info', message: '正在上传招标文件。' }],
+      opencodeOutput: { parts: [] },
+    })
     try {
       const formData = new FormData()
       tenderFiles.forEach((file) => formData.append('tenderFiles', file))
       const response = await parseAPI.uploadAndRun(selectedProjectId, { formData })
       setParseData(response)
+      const latestProgress = await parseAPI.progress(selectedProjectId).catch(() => null)
+      if (latestProgress) setParseProgress(latestProgress)
       const latestProject = await projectsAPI.get(selectedProjectId)
       setProject(latestProject)
       setProjects((prev) => prev.map((item) => (
@@ -350,6 +427,66 @@ export default function TenderReview({ showToast }) {
           </div>
         ))}
       </div>
+    )
+  }
+
+  const renderParseProgress = () => {
+    if (!parseProgress || (parseProgress.status === 'idle' && !uploading)) return null
+    const events = Array.isArray(parseProgress.events) ? parseProgress.events.slice(-6).reverse() : []
+    const parts = Array.isArray(parseProgress.opencodeOutput?.parts)
+      ? parseProgress.opencodeOutput.parts.filter((part) => part?.text).slice(-3)
+      : []
+    const percentage = Math.max(0, Math.min(100, Number(parseProgress.percentage || 0)))
+    return (
+      <DataCard className="!p-5 flex flex-col gap-4">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-on-surface">解析进度</h3>
+            <p className="text-xs text-outline mt-1">{parseProgress.summary || '正在解析招标文件。'}</p>
+          </div>
+          <span className={`text-xs px-2.5 py-1 rounded-md font-semibold ${
+            parseProgress.status === 'completed'
+              ? 'bg-secondary-container text-on-secondary-container'
+              : parseProgress.status === 'failed'
+                ? 'bg-error-container text-error'
+                : 'bg-surface-container-high text-on-surface-variant'
+          }`}>
+            {parseProgress.status === 'completed' ? '完成' : parseProgress.status === 'failed' ? '失败' : '进行中'} · {percentage}%
+          </span>
+        </div>
+        <div className="h-2 bg-surface-container-high overflow-hidden">
+          <div className="h-full bg-primary transition-all" style={{ width: `${percentage}%` }} />
+        </div>
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <div className="rounded-md border border-surface-container-high bg-[#f7f7f7] p-3">
+            <p className="text-xs font-semibold text-on-surface mb-2">步骤记录</p>
+            <div className="flex flex-col gap-2">
+              {events.length ? events.map((event, index) => (
+                <div key={`${event.at || ''}-${index}`} className="text-xs text-on-surface-variant flex items-start gap-2">
+                  <span className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${event.level === 'success' ? 'bg-secondary' : event.level === 'warning' ? 'bg-tertiary' : 'bg-primary'}`} />
+                  <span>{event.message || '-'}</span>
+                </div>
+              )) : (
+                <p className="text-xs text-outline">等待解析服务返回进度。</p>
+              )}
+            </div>
+          </div>
+          <div className="rounded-md border border-surface-container-high bg-[#f7f7f7] p-3">
+            <p className="text-xs font-semibold text-on-surface mb-2">opencode 输出</p>
+            {parts.length ? (
+              <div className="flex flex-col gap-2">
+                {parts.map((part, index) => (
+                  <pre key={`${part.type || 'text'}-${index}`} className="max-h-24 overflow-auto whitespace-pre-wrap break-words rounded bg-white px-2 py-1 text-[11px] leading-relaxed text-on-surface-variant">
+                    {part.text}
+                  </pre>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-outline">尚未收到 opencode 流式片段；当前显示后端真实步骤进度。</p>
+            )}
+          </div>
+        </div>
+      </DataCard>
     )
   }
 
@@ -491,6 +628,8 @@ export default function TenderReview({ showToast }) {
         </div>
       </DataCard>
 
+      {renderParseProgress()}
+
       <DataCard className="!p-0 overflow-hidden">
         <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between">
           <h3 className="text-sm font-semibold text-on-surface">结构化解析结果</h3>
@@ -504,31 +643,125 @@ export default function TenderReview({ showToast }) {
         ) : !isParseCompleted ? (
           <div className="p-6 text-sm text-on-surface-variant">请点击上方“上传并解析”开始提取结构化要求。</div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[1120px]">
-              <thead>
-                <tr className="bg-surface-container-low border-b border-surface-container-high">
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">类别</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">字段</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">提取值</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">来源文件</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">证据位置</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">证据文本</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => (
-                  <tr key={row.id} className="border-b border-surface-container-high hover:bg-surface-container-low/60">
-                    <td className="px-6 py-3 text-on-surface whitespace-nowrap">{row.category}</td>
-                    <td className="px-6 py-3 text-on-surface-variant min-w-[160px]">{row.field}</td>
-                    <td className="px-6 py-3 text-primary font-medium min-w-[220px]">{row.value}</td>
-                    <td className="px-6 py-3 text-on-surface-variant min-w-[220px]">{row.fileName}</td>
-                    <td className="px-6 py-3 text-on-surface-variant whitespace-nowrap">{row.evidenceLocation}</td>
-                    <td className="px-6 py-3 text-on-surface-variant min-w-[300px]">{row.evidence}</td>
+          <div className="p-5 flex flex-col gap-5">
+            <div className="overflow-x-auto border border-surface-container-high rounded-md">
+              <table className="w-full text-sm min-w-[760px]">
+                <thead>
+                  <tr className="bg-surface-container-low border-b border-surface-container-high">
+                    <th className="px-4 py-2 text-left font-semibold text-on-surface">评分项</th>
+                    <th className="px-4 py-2 text-left font-semibold text-on-surface">分值</th>
+                    <th className="px-4 py-2 text-left font-semibold text-on-surface">得分点/要求</th>
+                    <th className="px-4 py-2 text-left font-semibold text-on-surface">证明材料要求</th>
+                    <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {scoringCriteria.length ? scoringCriteria.map((item) => (
+                    <tr key={item.id || item.scoringItem} className="border-b border-surface-container-high last:border-b-0">
+                      <td className="px-4 py-2 text-on-surface font-medium">{item.scoringItem || '-'}</td>
+                      <td className="px-4 py-2 text-primary whitespace-nowrap">{item.score || '-'}</td>
+                      <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{item.scorePoint || '-'}</td>
+                      <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{item.proofRequirement || '-'}</td>
+                      <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.evidenceLocation || '-'}</td>
+                    </tr>
+                  )) : (
+                    <tr>
+                      <td className="px-4 py-3 text-outline" colSpan={5}>未识别到评分细则。</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
+              <FieldGroupTable title="项目基础信息" fields={fieldGroups.projectBasics || []} />
+              <FieldGroupTable title="风机核心参数" fields={fieldGroups.turbineCoreParameters || []} />
+              <FieldGroupTable title="性能保证指标" fields={fieldGroups.performanceGuarantees || []} />
+              <FieldGroupTable title="环境适应性" fields={fieldGroups.environmentAdaptation || []} />
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+              {[
+                ['专题方案', requirementPresence.topicPlans],
+                ['供货范围', requirementPresence.supplyScope],
+                ['考核条款', requirementPresence.assessmentTerms],
+              ].map(([label, item]) => (
+                <div key={label} className="rounded-md border border-surface-container-high bg-[#f7f7f7] p-4">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <h4 className="text-sm font-semibold text-on-surface">{label}</h4>
+                    <span className={`text-xs px-2 py-0.5 rounded-md font-semibold ${item?.status === 'present' ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
+                      {presenceLabel(item?.status)}
+                    </span>
+                  </div>
+                  <p className="text-sm text-on-surface-variant leading-relaxed">{item?.summary || '未识别到明确要求。'}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="border border-surface-container-high rounded-md overflow-hidden">
+              <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-on-surface">附表空表产物</h4>
+                <span className="text-xs text-outline">{appendices.length} 个</span>
+              </div>
+              {appendices.length ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm min-w-[760px]">
+                    <thead>
+                      <tr className="border-b border-surface-container-high">
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">附表</th>
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">状态</th>
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">行数</th>
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">工作区路径</th>
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {appendices.map((appendix) => (
+                        <tr key={appendix.id || appendix.title} className="border-b border-surface-container-high last:border-b-0">
+                          <td className="px-4 py-2 text-on-surface font-medium">{appendix.title || '-'}</td>
+                          <td className="px-4 py-2 text-secondary whitespace-nowrap">{appendix.status === 'generated' ? '已生成 Word' : '待人工处理'}</td>
+                          <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{appendix.rowCount ?? '-'}</td>
+                          <td className="px-4 py-2 text-on-surface-variant min-w-[260px]">{appendix.workspacePath || appendix.docxPath || '-'}</td>
+                          <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{appendix.sourceFile || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="px-4 py-3 text-sm text-outline">未识别到带空表样例的附表。</div>
+              )}
+            </div>
+
+            <details className="rounded-md border border-surface-container-high bg-white">
+              <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-on-surface">证据明细</summary>
+              <div className="overflow-x-auto border-t border-surface-container-high">
+                <table className="w-full text-sm min-w-[1120px]">
+                  <thead>
+                    <tr className="bg-surface-container-low border-b border-surface-container-high">
+                      <th className="px-4 py-2 text-left font-semibold text-on-surface">类别</th>
+                      <th className="px-4 py-2 text-left font-semibold text-on-surface">字段</th>
+                      <th className="px-4 py-2 text-left font-semibold text-on-surface">提取值</th>
+                      <th className="px-4 py-2 text-left font-semibold text-on-surface">来源文件</th>
+                      <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+                      <th className="px-4 py-2 text-left font-semibold text-on-surface">证据文本</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row) => (
+                      <tr key={row.id} className="border-b border-surface-container-high hover:bg-surface-container-low/60">
+                        <td className="px-4 py-2 text-on-surface whitespace-nowrap">{row.category}</td>
+                        <td className="px-4 py-2 text-on-surface-variant min-w-[160px]">{row.field}</td>
+                        <td className="px-4 py-2 text-primary font-medium min-w-[220px]">{row.value}</td>
+                        <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{row.fileName}</td>
+                        <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{row.evidenceLocation}</td>
+                        <td className="px-4 py-2 text-on-surface-variant min-w-[300px]">{row.evidence}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
           </div>
         )}
       </DataCard>

@@ -120,12 +120,113 @@ async def get_parse_results(project_id: str) -> dict[str, Any]:
     return store.get_parse_result(project_id)
 
 
+@router.get("/api/projects/{project_id}/parse-results/progress")
+async def get_parse_progress(project_id: str) -> dict[str, Any]:
+    return store.get_parse_progress(project_id)
+
+
+def _progress_callback(project_id: str):
+    def update(event: str, details: dict[str, Any] | None = None) -> None:
+        payload = details or {}
+        if event == "upload_ready":
+            store.update_parse_progress(
+                project_id,
+                percentage=15,
+                summary=f"已保存 {payload.get('fileCount', 0)} 个招标文件，准备提取文本。",
+                event_step="upload",
+                event_message=f"已保存 {payload.get('fileCount', 0)} 个招标文件。",
+            )
+        elif event == "extract_started":
+            store.update_parse_progress(
+                project_id,
+                percentage=25,
+                summary="正在提取招标文件文本。",
+                event_step="extract",
+                event_message=f"开始提取 {payload.get('fileCount', 0)} 个招标文件。",
+            )
+        elif event == "file_extracted":
+            store.update_parse_progress(
+                project_id,
+                percentage=40,
+                summary="招标文件文本提取中。",
+                event_step="extract",
+                event_message=f"{payload.get('fileName', '招标文件')} 已提取 {payload.get('textLength', 0)} 字。",
+            )
+        elif event == "appendices_extracted":
+            store.update_parse_progress(
+                project_id,
+                percentage=55,
+                summary="正在识别附表并生成空表 Word。",
+                event_step="appendix",
+                event_message=(
+                    f"识别附表 {payload.get('appendixCount', 0)} 个，"
+                    f"已生成 {payload.get('generatedCount', 0)} 个 Word 空表。"
+                ),
+            )
+        elif event == "skill_manifest_ready":
+            store.update_parse_progress(
+                project_id,
+                percentage=65,
+                summary="解析 Skill 输入已准备，正在调用 opencode。",
+                event_step="skill",
+                event_message="S1 解析 Skill manifest 已生成。",
+            )
+        elif event == "opencode_delta":
+            store.update_parse_progress(
+                project_id,
+                percentage=80,
+                summary="opencode 正在返回解析输出。",
+                event_step="opencode",
+                event_message="收到 opencode 解析输出片段。",
+                opencode_output=payload,
+            )
+        elif event == "complete":
+            store.update_parse_progress(
+                project_id,
+                status="completed",
+                percentage=100,
+                summary=f"解析完成，提取 {payload.get('extractedCount', 0)} 条结构化要求。",
+                event_step="complete",
+                event_level="success",
+                event_message=(
+                    f"解析完成，提取 {payload.get('extractedCount', 0)} 条结构化要求，"
+                    f"附表 {payload.get('appendixCount', 0)} 个。"
+                ),
+            )
+
+    return update
+
+
 @router.post("/api/projects/{project_id}/parse-results/run")
 async def run_parse_without_upload(project_id: str) -> dict[str, Any]:
     tender_files, template_files = store.get_parse_inputs(project_id, include_fallback=False)
     if not tender_files:
         raise HTTPException(status_code=400, detail="当前项目还没有已上传的招标文件。")
-    summary, parse_storage = parse_tender_documents(project_id, tender_files)
+    store.start_parse_progress(project_id)
+    store.update_parse_progress(
+        project_id,
+        percentage=15,
+        summary="正在复用已上传招标文件进行解析。",
+        event_step="upload",
+        event_message=f"复用 {len(tender_files)} 个已上传招标文件。",
+    )
+    try:
+        summary, parse_storage = parse_tender_documents(
+            project_id,
+            tender_files,
+            progress_callback=_progress_callback(project_id),
+        )
+    except Exception as exc:
+        store.update_parse_progress(
+            project_id,
+            status="failed",
+            percentage=100,
+            summary=f"解析失败：{exc}",
+            event_step="failed",
+            event_level="error",
+            event_message=f"解析失败：{exc}",
+        )
+        raise
     parse_result = store.complete_parse(
         project_id,
         tender_files,
@@ -165,7 +266,25 @@ async def upload_and_parse(
     else:
         merged_template = existing_template
 
-    summary, parse_storage = parse_tender_documents(project_id, active_tender)
+    store.start_parse_progress(project_id)
+    _progress_callback(project_id)("upload_ready", {"fileCount": len(active_tender)})
+    try:
+        summary, parse_storage = parse_tender_documents(
+            project_id,
+            active_tender,
+            progress_callback=_progress_callback(project_id),
+        )
+    except Exception as exc:
+        store.update_parse_progress(
+            project_id,
+            status="failed",
+            percentage=100,
+            summary=f"解析失败：{exc}",
+            event_step="failed",
+            event_level="error",
+            event_message=f"解析失败：{exc}",
+        )
+        raise
     parse_result = store.complete_parse(
         project_id,
         active_tender,
