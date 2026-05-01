@@ -1725,3 +1725,21 @@ bid_workspace
 遗留问题：
 
 - 本次先以内置通用技术标结构和当前华能样例模板抽取口径沉淀；后续如甲方指定新的通用目录模板，可替换或扩展 `directory_templates.py` 的模板配置。
+
+### 2026-05-01 17:40:32 post-commit 258a131
+
+提交摘要：feat: add technical bid directory templates
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/services/directory_templates.py`
+- `code/sewpg-bid-backend/app/services/outline_generation.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/build_plan.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_directory_generation.py`
+- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
