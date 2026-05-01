@@ -41,6 +41,19 @@ async def update_project(project_id: str, data: dict[str, Any] = Body(default_fa
     return store.update_project(project_id, data)
 
 
+@router.get("/api/projects/{project_id}/template-fallback")
+async def get_template_fallback(project_id: str) -> dict[str, Any]:
+    return store.get_template_fallback(project_id)
+
+
+@router.put("/api/projects/{project_id}/template-fallback")
+async def update_template_fallback(
+    project_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    return store.update_template_fallback(project_id, data)
+
+
 @router.delete("/api/projects/{project_id}")
 async def delete_project(project_id: str) -> dict[str, str]:
     store.delete_project(project_id)

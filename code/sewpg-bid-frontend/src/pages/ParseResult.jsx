@@ -80,17 +80,21 @@ export default function ParseResult({ showToast }) {
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
   const [templateFiles, setTemplateFiles] = useState([])
+  const [templateFallback, setTemplateFallback] = useState(null)
+  const [savingFallback, setSavingFallback] = useState(false)
 
   const loadData = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const [projectResponse, parseResponse] = await Promise.all([
+      const [projectResponse, parseResponse, fallbackResponse] = await Promise.all([
         projectsAPI.get(id),
         parseAPI.results(id),
+        projectsAPI.templateFallback(id),
       ])
       setProject(projectResponse)
       setData(parseResponse)
+      setTemplateFallback(fallbackResponse)
     } catch (e) {
       setError(e?.message || 'S1 模板上传信息加载失败')
     } finally {
@@ -113,6 +117,15 @@ export default function ParseResult({ showToast }) {
     () => normalizeUploadedTemplateFiles(project?.templateFiles),
     [project?.templateFiles],
   )
+  const fallbackTemplate = templateFallback?.template || {}
+  const fallbackEnabled = Boolean(templateFallback?.enabled ?? project?.templateFallback?.enabled ?? true)
+  const fallbackAvailable = Boolean(fallbackTemplate?.available)
+  const fallbackWillBeUsed = fallbackEnabled && fallbackAvailable && uploadedTemplateFiles.length === 0
+  const fallbackStatus = fallbackWillBeUsed
+    ? '未上传项目模板时使用'
+    : fallbackEnabled
+      ? (fallbackAvailable ? '已启用，项目模板优先' : '已启用，等待模板入库')
+      : '未启用'
 
   const reviewDecision = String(project?.reviewDecision || 'participate')
   const reviewDecisionLabel = REVIEW_DECISION_LABELS[reviewDecision] || REVIEW_DECISION_LABELS.pending
@@ -179,6 +192,23 @@ export default function ParseResult({ showToast }) {
       showToast?.(message, 'error')
     } finally {
       setUploading(false)
+    }
+  }
+
+  const handleToggleFallback = async () => {
+    if (!fallbackAvailable && !fallbackEnabled) {
+      showToast?.('Fallback 模板尚未入库。', 'error')
+      return
+    }
+    setSavingFallback(true)
+    try {
+      const payload = await projectsAPI.updateTemplateFallback(id, { enabled: !fallbackEnabled })
+      setTemplateFallback(payload)
+      showToast?.(!fallbackEnabled ? '已启用 fallback 模板。' : '已停用 fallback 模板。')
+    } catch (e) {
+      showToast?.(e?.message || 'Fallback 模板设置失败', 'error')
+    } finally {
+      setSavingFallback(false)
     }
   }
 
@@ -325,6 +355,39 @@ export default function ParseResult({ showToast }) {
               ))}
             </div>
           )}
+        </div>
+
+        <div className="border border-surface-container-high rounded-md p-4 flex flex-col gap-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div className="min-w-0">
+              <h4 className="text-sm font-semibold text-on-surface">Fallback 模板来源</h4>
+              <p className="mt-1 text-sm text-on-surface-variant truncate" title={fallbackTemplate?.name || ''}>
+                {fallbackTemplate?.name || '未配置'}
+              </p>
+            </div>
+            <button
+              onClick={handleToggleFallback}
+              disabled={savingFallback || (!fallbackAvailable && !fallbackEnabled)}
+              className="stage-action-btn h-9 px-4 bg-surface-container-high text-on-surface text-sm font-semibold hover:bg-surface-dim transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span className="material-symbols-outlined text-[18px]">{fallbackEnabled ? 'toggle_on' : 'toggle_off'}</span>
+              {savingFallback ? '保存中...' : fallbackEnabled ? '停用' : '启用'}
+            </button>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
+            <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+              <p className="font-medium text-on-surface mb-1">状态</p>
+              <p className="text-on-surface-variant">{fallbackStatus}</p>
+            </div>
+            <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+              <p className="font-medium text-on-surface mb-1">MinIO Bucket</p>
+              <p className="text-on-surface-variant break-all">{fallbackTemplate?.minioBucket || '-'}</p>
+            </div>
+            <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+              <p className="font-medium text-on-surface mb-1">MinIO Key</p>
+              <p className="text-on-surface-variant break-all">{fallbackTemplate?.minioKey || '-'}</p>
+            </div>
+          </div>
         </div>
 
         {uploadError && (

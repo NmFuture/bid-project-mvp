@@ -10,6 +10,44 @@
 
 ## 进度记录
 
+### 2026-05-01 18:04 模板上传 Fallback 读取
+
+改动目标：
+
+- S1 模板上传界面支持查看和启停系统 fallback 模板来源。
+- 项目未上传模板文件时，S2 目录生成和 S7 正文拼装可以读取 fallback 模板。
+- 按用户指定文件 `/Users/wlb/Agent/bid-project/code/测试文档/投标文件-模板.docx` 入库为 fallback 模板。
+
+改动内容：
+
+- 新增系统 fallback 模板 MinIO 读取与下载逻辑。
+- 项目状态增加 `templateFallback` 开关，新增 `/api/projects/{project_id}/template-fallback` 查询和更新接口。
+- `store.get_parse_inputs()` 默认返回“有效生成输入”，仅在没有项目模板且 fallback 启用时临时追加 fallback 模板；上传/解析接口改为读取原始上传记录，避免把 fallback 混入项目模板列表。
+- 前端 S1 模板上传页增加 fallback 来源、启停状态、MinIO bucket/key 展示。
+- Docker Compose 增加 fallback 模板 bucket/key/name 环境变量。
+- 已上传 fallback 模板到 MinIO：
+  - bucket：`bid-templates`
+  - key：`templates/fallback/technical/投标文件-模板.docx`
+  - size：`190.53 MB`
+
+验证结果：
+
+- `.venv/bin/python -m pytest -q` 通过：58 passed，6 skipped。
+- `npm run build` 通过。
+- 受 Docker Hub metadata 查询影响，标准 `docker compose build fastapi web` 未能完成；已改用本机已有 `sewpg-bid/fastapi:latest`、`sewpg-bid/web:latest` 作为基础镜像做本地增量重建。
+- 已重新部署并 force recreate：
+  - `fastapi`
+  - `worker`
+  - `web`
+- 烟测通过：
+  - `http://127.0.0.1/` 返回 HTTP 200。
+  - `/api/projects/{project_id}/template-fallback` 返回 `enabled=true`、`available=true`。
+  - MinIO fallback 对象存在：`bid-templates/templates/fallback/technical/投标文件-模板.docx`。
+
+遗留问题：
+
+- 当前 fallback 模板来源只有一个系统默认源；后续如需要多套模板，可扩展 source 列表和选择器。
+
 ### 2026-04-27 11:19 上传文件夹弹窗滚动优化
 
 改动目标：
@@ -1726,3 +1764,43 @@ bid_workspace
 验证结果：
 
 - 文档清理，无代码变更。
+
+### 2026-05-01 18:06:21 post-commit e238a55
+
+提交摘要：feat: add fallback bid template source
+
+变更文件：
+
+- `code/.env.example`
+- `code/docker-compose.yml`
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/api/routes/parse.py`
+- `code/sewpg-bid-backend/app/api/routes/projects.py`
+- `code/sewpg-bid-backend/app/services/store.py`
+- `code/sewpg-bid-backend/app/services/template_store.py`
+- `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
+- `code/sewpg-bid-frontend/src/api/index.js`
+- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 18:06:44 post-commit 7913aaf
+
+提交摘要：feat: add fallback bid template source
+
+变更文件：
+
+- `code/.env.example`
+- `code/docker-compose.yml`
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/api/routes/parse.py`
+- `code/sewpg-bid-backend/app/api/routes/projects.py`
+- `code/sewpg-bid-backend/app/services/store.py`
+- `code/sewpg-bid-backend/app/services/template_store.py`
+- `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
+- `code/sewpg-bid-frontend/src/api/index.js`
+- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

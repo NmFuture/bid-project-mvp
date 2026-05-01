@@ -122,7 +122,7 @@ async def get_parse_results(project_id: str) -> dict[str, Any]:
 
 @router.post("/api/projects/{project_id}/parse-results/run")
 async def run_parse_without_upload(project_id: str) -> dict[str, Any]:
-    tender_files, template_files = store.get_parse_inputs(project_id)
+    tender_files, template_files = store.get_parse_inputs(project_id, include_fallback=False)
     if not tender_files:
         raise HTTPException(status_code=400, detail="当前项目还没有已上传的招标文件。")
     summary, parse_storage = parse_tender_documents(project_id, tender_files)
@@ -142,7 +142,7 @@ async def upload_and_parse(
     tenderFiles: list[UploadFile] | None = File(default=None),
     templateFiles: list[UploadFile] | None = File(default=None),
 ) -> dict[str, Any]:
-    existing_tender, existing_template = store.get_parse_inputs(project_id)
+    existing_tender, existing_template = store.get_parse_inputs(project_id, include_fallback=False)
     tender_files = tenderFiles or []
     template_files = templateFiles or []
 
@@ -184,7 +184,7 @@ async def upload_template_files(
     project_id: str,
     templateFiles: list[UploadFile] | None = File(default=None),
 ) -> dict[str, Any]:
-    existing_tender, existing_template = store.get_parse_inputs(project_id)
+    existing_tender, existing_template = store.get_parse_inputs(project_id, include_fallback=False)
     parse_result = store.get_parse_result(project_id)
     files = templateFiles or []
 

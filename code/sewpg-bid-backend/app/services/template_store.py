@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+import os
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -11,6 +14,13 @@ from app.models.materials import StructuredTable, TemplateAsset
 from app.services.material_store import size_label
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError, peripheral_store
+
+logger = logging.getLogger(__name__)
+
+FALLBACK_BID_TEMPLATE_ID = "FBT-DEFAULT"
+FALLBACK_BID_TEMPLATE_KEY = "templates/fallback/technical/投标文件-模板.docx"
+FALLBACK_BID_TEMPLATE_NAME = "投标文件-模板.docx"
+WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 def now_display() -> str:
@@ -25,6 +35,88 @@ def safe_segment(value: str, fallback: str) -> str:
     text = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
     text = re.sub(r"\s+", " ", text).strip(" .")
     return text or fallback
+
+
+def fallback_bid_template_bucket() -> str:
+    return os.getenv("BID_FALLBACK_TEMPLATE_MINIO_BUCKET", "").strip() or settings.minio_buckets["templates"]
+
+
+def fallback_bid_template_key() -> str:
+    return os.getenv("BID_FALLBACK_TEMPLATE_MINIO_KEY", "").strip() or FALLBACK_BID_TEMPLATE_KEY
+
+
+def fallback_bid_template_name() -> str:
+    configured = os.getenv("BID_FALLBACK_TEMPLATE_NAME", "").strip()
+    if configured:
+        return safe_segment(configured, FALLBACK_BID_TEMPLATE_NAME)
+    return safe_segment(Path(fallback_bid_template_key()).name, FALLBACK_BID_TEMPLATE_NAME)
+
+
+def fallback_bid_template_summary(*, check_exists: bool = True) -> dict[str, Any]:
+    bucket = fallback_bid_template_bucket()
+    key = fallback_bid_template_key()
+    name = fallback_bid_template_name()
+    available = False
+    size_bytes = 0
+    content_type = WORD_MEDIA_TYPE
+
+    if check_exists:
+        try:
+            stat = minio_client.client.stat_object(bucket, key)
+            available = True
+            size_bytes = int(getattr(stat, "size", 0) or 0)
+            content_type = str(getattr(stat, "content_type", "") or WORD_MEDIA_TYPE)
+        except Exception as exc:  # MinIO may be unavailable in local tests or before seed upload.
+            logger.info("Fallback bid template is not available at %s/%s: %s", bucket, key, exc)
+
+    return {
+        "id": FALLBACK_BID_TEMPLATE_ID,
+        "name": name,
+        "source": "minio",
+        "available": available,
+        "minioBucket": bucket,
+        "minioKey": key,
+        "sizeBytes": size_bytes,
+        "sizeLabel": size_label(size_bytes),
+        "contentType": content_type,
+    }
+
+
+def upload_fallback_bid_template(source_path: Path) -> dict[str, Any]:
+    path = Path(source_path).expanduser()
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(str(path))
+    bucket = fallback_bid_template_bucket()
+    key = fallback_bid_template_key()
+    minio_client.upload_file(bucket, key, path, content_type=WORD_MEDIA_TYPE)
+    return fallback_bid_template_summary(check_exists=True)
+
+
+def resolve_fallback_bid_template_file(project_id: str) -> dict[str, Any] | None:
+    summary = fallback_bid_template_summary(check_exists=True)
+    if not summary["available"]:
+        return None
+
+    name = safe_segment(str(summary["name"] or ""), FALLBACK_BID_TEMPLATE_NAME)
+    target_dir = settings.uploads_dir / project_id / "fallback-template"
+    target = target_dir / name
+    minio_client.download_file(str(summary["minioBucket"]), str(summary["minioKey"]), target)
+    size_bytes = target.stat().st_size if target.exists() else int(summary.get("sizeBytes") or 0)
+
+    return {
+        "id": FALLBACK_BID_TEMPLATE_ID,
+        "name": name,
+        "stored_name": name,
+        "size_bytes": size_bytes,
+        "size_label": size_label(size_bytes),
+        "content_type": str(summary.get("contentType") or WORD_MEDIA_TYPE),
+        "path": str(target),
+        "source": "fallback",
+        "isFallback": True,
+        "fallbackSourceId": FALLBACK_BID_TEMPLATE_ID,
+        "minioBucket": str(summary["minioBucket"]),
+        "minioKey": str(summary["minioKey"]),
+    }
 
 
 class TemplateStore:

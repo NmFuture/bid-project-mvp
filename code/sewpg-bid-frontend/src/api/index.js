@@ -210,6 +210,9 @@ export const projectsAPI = {
   delete: (id) => request(`/projects/${id}`, { method: 'DELETE' }),
   cockpit: (id) => request(`/projects/${id}/cockpit`),
   materialsPath: (id) => request(`/projects/${id}/materials-path`),
+  templateFallback: (id) => request(`/projects/${id}/template-fallback`),
+  updateTemplateFallback: (id, data) =>
+    request(`/projects/${id}/template-fallback`, { method: 'PUT', body: data }),
   parseStatus: (id) => request(`/projects/${id}/materials/parse-status`),
 }
 

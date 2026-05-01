@@ -4,6 +4,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -150,6 +151,78 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["fileCount"], 1)
         self.assertEqual(len(payload["project"]["templateFiles"]), 1)
         self.assertEqual(payload["project"]["templateFiles"][0]["name"], "投标模板.docx")
+
+    def test_parse_inputs_use_fallback_template_when_project_has_no_template(self) -> None:
+        project_id = self.create_project()
+        tender_bytes = build_docx_bytes("招标文件正文", "项目概况", "项目没有单独上传投标模板。")
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    ("招标文件.docx", tender_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+                )
+            ],
+        )
+        self.assertEqual(response.status_code, 200)
+
+        fallback_path = settings.uploads_dir / project_id / "fallback-template" / "投标文件-模板.docx"
+        fallback_path.parent.mkdir(parents=True, exist_ok=True)
+        fallback_path.write_bytes(build_docx_bytes("Fallback 投标模板", "第一章 模板章节"))
+        fallback_record = {
+            "id": "FBT-DEFAULT",
+            "name": "投标文件-模板.docx",
+            "stored_name": "投标文件-模板.docx",
+            "size_bytes": fallback_path.stat().st_size,
+            "size_label": store.format_size(fallback_path.stat().st_size),
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "path": str(fallback_path),
+            "source": "fallback",
+            "isFallback": True,
+            "minioBucket": "bid-templates",
+            "minioKey": "templates/fallback/technical/投标文件-模板.docx",
+        }
+
+        with patch("app.services.template_store.resolve_fallback_bid_template_file", return_value=fallback_record):
+            _, template_files = store.get_parse_inputs(project_id)
+
+        self.assertEqual(len(template_files), 1)
+        self.assertEqual(template_files[0]["name"], "投标文件-模板.docx")
+        self.assertTrue(template_files[0]["isFallback"])
+        self.assertEqual(template_files[0]["minioKey"], "templates/fallback/technical/投标文件-模板.docx")
+
+    def test_project_template_overrides_fallback_template(self) -> None:
+        project_id = self.create_project()
+        tender_bytes = build_docx_bytes("招标文件正文", "项目概况", "项目后续上传自己的投标模板。")
+        template_bytes = build_docx_bytes("项目投标模板", "第一章 项目模板章节")
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    ("招标文件.docx", tender_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+                ),
+                (
+                    "templateFiles",
+                    ("项目模板.docx", template_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+                ),
+            ],
+        )
+        self.assertEqual(response.status_code, 200)
+
+        fallback_record = {
+            "id": "FBT-DEFAULT",
+            "name": "投标文件-模板.docx",
+            "path": "/tmp/fallback.docx",
+            "source": "fallback",
+            "isFallback": True,
+        }
+        with patch("app.services.template_store.resolve_fallback_bid_template_file", return_value=fallback_record):
+            _, template_files = store.get_parse_inputs(project_id)
+
+        self.assertEqual(len(template_files), 1)
+        self.assertEqual(template_files[0]["name"], "项目模板.docx")
+        self.assertNotEqual(template_files[0].get("source"), "fallback")
 
 
 if __name__ == "__main__":

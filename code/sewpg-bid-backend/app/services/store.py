@@ -309,9 +309,22 @@ class AppStore:
             **self._summary(project),
             "files": copy.deepcopy(project["files"]),
             "templateFiles": copy.deepcopy(project["templateFiles"]),
+            "templateFallback": copy.deepcopy(self._normalize_template_fallback(project)),
             "isKeyAccount": project["isKeyAccount"],
             "keyAccountId": project["keyAccountId"],
             "reviewComment": str(project.get("reviewComment") or ""),
+        }
+
+    @staticmethod
+    def _normalize_template_fallback(project: dict[str, Any]) -> dict[str, Any]:
+        raw = project.get("templateFallback")
+        fallback = raw if isinstance(raw, dict) else {}
+        enabled = fallback.get("enabled")
+        if enabled is None:
+            enabled = True
+        return {
+            "enabled": bool(enabled),
+            "sourceId": str(fallback.get("sourceId") or "system-default"),
         }
 
     def list_projects(
@@ -368,6 +381,10 @@ class AppStore:
             "templateFiles": [],
             "fileRecords": [],
             "templateFileRecords": [],
+            "templateFallback": {
+                "enabled": True,
+                "sourceId": "system-default",
+            },
             "currentStage": 1,
             "updatedAt": now_iso(),
             "parse_result": {
@@ -614,12 +631,48 @@ class AppStore:
     def get_parse_storage(self, project_id: str) -> dict[str, Any]:
         return copy.deepcopy(self._require(project_id)["parse_storage"])
 
-    def get_parse_inputs(self, project_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    def get_parse_inputs(
+        self,
+        project_id: str,
+        *,
+        include_fallback: bool = True,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         project = self._require(project_id)
+        template_file_records = copy.deepcopy(project.get("templateFileRecords") or [])
+        if include_fallback and not template_file_records and self._normalize_template_fallback(project)["enabled"]:
+            from app.services import template_store as template_store_module
+
+            fallback_record = template_store_module.resolve_fallback_bid_template_file(project_id)
+            if fallback_record is not None:
+                template_file_records = [fallback_record]
         return (
             copy.deepcopy(project.get("fileRecords") or []),
-            copy.deepcopy(project.get("templateFileRecords") or []),
+            template_file_records,
         )
+
+    def get_template_fallback(self, project_id: str) -> dict[str, Any]:
+        project = self._require(project_id)
+        from app.services.template_store import fallback_bid_template_summary
+
+        return {
+            "projectId": project_id,
+            "enabled": self._normalize_template_fallback(project)["enabled"],
+            "sourceId": self._normalize_template_fallback(project)["sourceId"],
+            "template": fallback_bid_template_summary(check_exists=True),
+            "usesFallbackWhenProjectTemplateMissing": not bool(project.get("templateFileRecords")),
+        }
+
+    def update_template_fallback(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        project = self._require(project_id)
+        current = self._normalize_template_fallback(project)
+        if "enabled" in data:
+            current["enabled"] = bool(data.get("enabled"))
+        if "sourceId" in data:
+            current["sourceId"] = str(data.get("sourceId") or "system-default")
+        project["templateFallback"] = current
+        project["updatedAt"] = now_iso()
+        self._persist_project(project)
+        return self.get_template_fallback(project_id)
 
     def update_template_files(self, project_id: str, template_files: list[dict[str, Any]]) -> dict[str, Any]:
         project = self._require(project_id)
