@@ -105,6 +105,7 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
     tender_json = temp_dir / "tender.json"
     attach_json = temp_dir / "attach.json"
     project_identity_json = temp_dir / "project_identity.json"
+    directory_templates_json = temp_dir / "directory_templates.json"
 
     run_capture(
         [sys.executable, str(SCRIPT_DIR / "extract_template.py"), str(template_file)],
@@ -131,6 +132,13 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
     if isinstance(project_identity, dict) and project_identity:
         project_identity_json.write_text(json.dumps(project_identity, ensure_ascii=False, indent=2), encoding="utf-8")
         build_command.extend(["--project-identity", str(project_identity_json)])
+    directory_templates = manifest.get("directoryTemplates") or []
+    if isinstance(directory_templates, list) and directory_templates:
+        directory_templates_json.write_text(
+            json.dumps(directory_templates, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        build_command.extend(["--directory-templates", str(directory_templates_json)])
     if attach_file and attach_file.exists():
         run_capture(
             [sys.executable, str(SCRIPT_DIR / "extract_attach.py"), str(attach_file)],

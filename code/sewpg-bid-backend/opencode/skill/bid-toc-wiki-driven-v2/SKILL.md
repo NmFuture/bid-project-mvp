@@ -48,6 +48,10 @@ manifest 字段：
   "tenderFiles": [{"name": "招标文件.docx", "path": "/data/parsed/PRJ-0001/s2_toc_workdir/招标文件.docx"}],
   "templateFile": "/data/parsed/PRJ-0001/s2_toc_workdir/投标文件-正文.docx",
   "attachFile": "/data/parsed/PRJ-0001/s2_toc_workdir/投标文件-附表.docx",
+  "directoryTemplates": [
+    {"id": "tech-general", "name": "技术标通用目录模板", "chapters": []},
+    {"id": "tech-huaneng", "name": "华能类大客户技术标目录模板", "chapters": []}
+  ],
   "wikiDir": "/data/parsed/PRJ-0001/s2_toc_workdir/wiki",
   "outputFile": "/data/parsed/PRJ-0001/s2_toc_workdir/投标文件-总目录.json"
 }
@@ -77,8 +81,9 @@ python3 /workspace/.opencode/skills/bid-toc-wiki-driven-v2/scripts/run_from_mani
 2. 若 `wiki/卡片` 不存在或为空，调用后端 API：`GET /api/materials/wiki?bidType=...`，导出文件系统版 wiki。
    导出后的卡片 frontmatter 会包含 `identity_scope/customer_id/project_id/project_code`，用于按项目身份过滤素材。
 3. 执行 `extract_template / extract_tender / extract_attach / build_plan`。
-4. 将完整 JSON 写入 `outputFile`。
-5. `--response summary` 只向 stdout 打印小型摘要 JSON，包含 `outputFile / summary / itemCount`。
+4. 若 manifest 带 `directoryTemplates`，传入 `build_plan` 作为通用/客户目录模板沉淀；项目上传的投标正文模板仍为主骨架，沉淀模板只补齐缺失章节并保留来源。
+5. 将完整 JSON 写入 `outputFile`。
+6. `--response summary` 只向 stdout 打印小型摘要 JSON，包含 `outputFile / summary / itemCount`。
 
 返回给调用方时只输出命令 stdout 中的小型 JSON，不要读取完整 `outputFile`，不要使用 Glob/Read 再打开大 JSON，不要输出 Markdown 代码块或解释文字。完整目录 JSON 由后端根据 `outputFile` 自行读取。
 

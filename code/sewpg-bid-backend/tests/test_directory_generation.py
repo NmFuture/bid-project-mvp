@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,11 +30,11 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.client.close()
         self.temp_dir.cleanup()
 
-    def _prepare_project_with_parse_result(self) -> str:
+    def _prepare_project_with_parse_result(self, *, customer_name: str = "测试业主") -> str:
         project = store.create_project(
             {
                 "name": "目录生成联调项目",
-                "customerName": "测试业主",
+                "customerName": customer_name,
             }
         )
         project_id = project["id"]
@@ -85,6 +86,55 @@ class DirectoryGenerationTests(unittest.TestCase):
             },
         )
         return project_id
+
+    def test_directory_template_profiles_select_common_and_huaneng(self) -> None:
+        from app.services.directory_templates import select_directory_template_profiles
+
+        profiles = select_directory_template_profiles({"bidType": "技术标", "customerName": "华能集团"})
+
+        self.assertEqual([profile["id"] for profile in profiles], ["tech-general", "tech-huaneng"])
+        self.assertIn("技术标通用目录模板", profiles[0]["name"])
+        huaneng_titles = [
+            h2["title"]
+            for chapter in profiles[1]["chapters"]
+            for h2 in chapter.get("h2s", [])
+        ]
+        self.assertIn("技术评分标准索引表", huaneng_titles)
+
+    def test_generate_outline_writes_directory_templates_to_manifest_and_prompt(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result(customer_name="华能集团")
+        captured: dict[str, str] = {}
+
+        def fake_generate_outline(
+            prompt: str,
+            session_ready_callback=None,
+            stream_callback=None,
+        ) -> dict[str, object]:
+            captured["prompt"] = prompt
+            return {
+                "summary": "目录生成完成。",
+                "nodes": [
+                    {"id": "OL-1", "title": "标前概述", "children": []},
+                ],
+                "opencodeOutput": {"status": "received", "parts": []},
+            }
+
+        with patch(
+            "app.services.outline_generation.OpencodeClient.generate_outline_with_trace",
+            side_effect=fake_generate_outline,
+        ):
+            generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        manifest_path = settings.parsed_dir / project_id / "s2.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [profile["id"] for profile in manifest["directoryTemplates"]],
+            ["tech-general", "tech-huaneng"],
+        )
+        self.assertIn("目录模板沉淀", captured["prompt"])
+        self.assertIn("tech-huaneng", captured["prompt"])
 
     def test_generate_outline_for_project_updates_directory_and_outline_state(self) -> None:
         from app.services.outline_generation import generate_outline_for_project

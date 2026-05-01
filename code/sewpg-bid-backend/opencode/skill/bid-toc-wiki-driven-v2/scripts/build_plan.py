@@ -21,6 +21,7 @@ V2 标签体系：
 6. [素材内置标题]：素材 merge 时自带的 Heading，已展开为总目录子目录。
 """
 import argparse
+import copy
 import json
 import re
 import subprocess
@@ -215,15 +216,23 @@ def tag_for(item: dict) -> str:
 
 
 def template_ref(item: dict) -> dict:
+    ref_type = "directory_template" if item.get("source_kind") == "directory_template" else "template"
     ref = {
-        "type": "template",
+        "type": ref_type,
         "raw_text": str(item.get("raw_text") or ""),
     }
+    if ref_type == "directory_template":
+        ref["template_id"] = str(item.get("template_id") or "")
+        ref["template_name"] = str(item.get("template_name") or "")
     for key in ("page", "style", "source_kind"):
         value = item.get(key)
         if value not in (None, ""):
             ref[key] = value
     return ref
+
+
+def template_source(item: dict) -> str:
+    return "directory_template" if item.get("source_kind") == "directory_template" else "template"
 
 
 def wiki_ref(item: dict) -> dict:
@@ -384,7 +393,16 @@ def add_internal_heading_items(items: list, parent_item: dict, parent_number: st
         )
 
 
-def build_plan(tpl: dict, tender: dict, attach: dict, wiki_items: list, title: str) -> dict:
+def build_plan(
+    tpl: dict,
+    tender: dict,
+    attach: dict,
+    wiki_items: list,
+    title: str,
+    *,
+    directory_templates: list[dict] | None = None,
+) -> dict:
+    tpl = apply_directory_templates(tpl, directory_templates or [])
     template_title_sections = template_section_map(tpl)
     by_section = defaultdict(list)
     for it in wiki_items:
@@ -425,7 +443,7 @@ def build_plan(tpl: dict, tender: dict, attach: dict, wiki_items: list, title: s
                 number=chapter_cn.get(cnum, cnum),
                 title=ctitle,
                 annotation=TAG_KEEP,
-                source="template",
+                source=template_source(chap),
                 source_refs=[template_ref(chap)],
             )
         )
@@ -460,6 +478,136 @@ def build_plan(tpl: dict, tender: dict, attach: dict, wiki_items: list, title: s
     return {"document_title": title, "items": items}
 
 
+def apply_directory_templates(tpl: dict, directory_templates: list[dict]) -> dict:
+    """Merge stored directory-template profiles into extracted template skeleton.
+
+    The uploaded project template remains primary. Stored profiles only add
+    missing chapters/H2s and mark those additions so S3 can review their source.
+    """
+    if not directory_templates:
+        return tpl
+
+    merged = copy.deepcopy(tpl or {})
+    chapters = merged.setdefault("chapters", [])
+    if not isinstance(chapters, list):
+        merged["chapters"] = chapters = []
+
+    profile_queue = sorted(
+        [profile for profile in directory_templates if isinstance(profile, dict)],
+        key=lambda profile: 1 if str(profile.get("id") or "") == "tech-general" else 0,
+    )
+
+    for profile in profile_queue:
+        profile_id = str(profile.get("id") or "")
+        profile_name = str(profile.get("name") or "")
+        for profile_chapter in profile.get("chapters") or []:
+            if not isinstance(profile_chapter, dict):
+                continue
+            target = _find_template_chapter(chapters, profile_chapter)
+            if target is None:
+                target = _directory_template_chapter(profile_chapter, profile_id, profile_name)
+                chapters.append(target)
+            elif not str(target.get("source_kind") or ""):
+                _add_missing_directory_template_h2s(target, profile_chapter, profile_id, profile_name)
+            else:
+                _add_missing_directory_template_h2s(target, profile_chapter, profile_id, profile_name)
+
+    chapters.sort(key=lambda item: _section_sort_key(str(item.get("num") or "")))
+    for chapter in chapters:
+        if isinstance(chapter.get("h2s"), list):
+            chapter["h2s"].sort(key=lambda item: _section_sort_key(str(item.get("num") or "")))
+    return merged
+
+
+def _find_template_chapter(chapters: list[dict], profile_chapter: dict) -> dict | None:
+    p_num = str(profile_chapter.get("num") or "").strip()
+    p_title_key = title_key(str(profile_chapter.get("title") or ""))
+    for chapter in chapters:
+        c_num = str(chapter.get("num") or "").strip()
+        c_title_key = title_key(str(chapter.get("title") or ""))
+        if p_num and c_num == p_num:
+            return chapter
+        if p_title_key and c_title_key == p_title_key:
+            return chapter
+    return None
+
+
+def _directory_template_chapter(chapter: dict, profile_id: str, profile_name: str) -> dict:
+    num = str(chapter.get("num") or "").strip()
+    title = str(chapter.get("title") or "").strip()
+    result = {
+        "num": num,
+        "title": title,
+        "raw_text": f"{num} {title}".strip(),
+        "source_kind": "directory_template",
+        "template_id": profile_id,
+        "template_name": profile_name,
+        "h2s": [],
+    }
+    _add_missing_directory_template_h2s(result, chapter, profile_id, profile_name)
+    return result
+
+
+def _add_missing_directory_template_h2s(
+    target_chapter: dict,
+    profile_chapter: dict,
+    profile_id: str,
+    profile_name: str,
+) -> None:
+    h2s = target_chapter.setdefault("h2s", [])
+    existing_titles = {title_key(str(item.get("title") or "")) for item in h2s if isinstance(item, dict)}
+    chapter_num = str(target_chapter.get("num") or profile_chapter.get("num") or "").strip()
+    for index, profile_h2 in enumerate(profile_chapter.get("h2s") or [], start=1):
+        if not isinstance(profile_h2, dict):
+            continue
+        title = str(profile_h2.get("title") or "").strip()
+        key = title_key(title)
+        if not title or key in existing_titles:
+            continue
+        num = str(profile_h2.get("num") or "").strip()
+        if not num and chapter_num:
+            num = f"{chapter_num}.{len(h2s) + index}"
+        if num and _section_number_exists(h2s, num):
+            num = _next_available_child_number(chapter_num, h2s)
+        h2s.append(
+            {
+                "num": num,
+                "title": title,
+                "raw_text": f"{num} {title}".strip(),
+                "source_kind": "directory_template",
+                "template_id": profile_id,
+                "template_name": profile_name,
+            }
+        )
+        existing_titles.add(key)
+
+
+def _section_number_exists(items: list[dict], number: str) -> bool:
+    return any(str(item.get("num") or "").strip() == number for item in items if isinstance(item, dict))
+
+
+def _next_available_child_number(chapter_num: str, h2s: list[dict]) -> str:
+    if not chapter_num:
+        return ""
+    used = {str(item.get("num") or "").strip() for item in h2s if isinstance(item, dict)}
+    index = 1
+    while True:
+        candidate = f"{chapter_num}.{index}"
+        if candidate not in used:
+            return candidate
+        index += 1
+
+
+def _section_sort_key(value: str) -> tuple:
+    parts = []
+    for part in str(value or "").split("."):
+        if part.isdigit():
+            parts.append((0, int(part)))
+        else:
+            parts.append((1, part))
+    return tuple(parts or [(1, value)])
+
+
 def title_key(value: str) -> str:
     import re as _re
     return _re.sub(r"[\s　,，、.。:：()（）\[\]【】\-—_]+", "", str(value or "")).lower()
@@ -487,7 +635,16 @@ def add_order(items: list) -> list:
     return items
 
 
-def build_output(tpl: dict, tender: dict, attach: dict, wiki_root: Path, title: str, items: list, project_identity: dict | None = None) -> dict:
+def build_output(
+    tpl: dict,
+    tender: dict,
+    attach: dict,
+    wiki_root: Path,
+    title: str,
+    items: list,
+    project_identity: dict | None = None,
+    directory_templates: list[dict] | None = None,
+) -> dict:
     """组装最终 JSON 输出。"""
     ordered_items = add_order(items)
     counts = Counter(item.get("annotation", "") for item in ordered_items)
@@ -510,6 +667,7 @@ def build_output(tpl: dict, tender: dict, attach: dict, wiki_root: Path, title: 
             "tender": tender.get("source", ""),
             "attach": attach.get("source", "") if attach else "",
             "wiki": str(wiki_root),
+            "directory_templates": [str(item.get("id") or "") for item in (directory_templates or [])],
         },
         "summary": {
             "total_items": len(ordered_items),
@@ -661,7 +819,7 @@ def emit_from_template_h2(items: list, chap: dict, wiki_under: dict = None):
                 number=h2_num,
                 title=h2["title"],
                 annotation=template_tag(h2["title"], wiki_names),
-                source="template",
+                source=template_source(h2),
                 reason=reason,
                 source_refs=[template_ref(h2)],
                 material_refs=[material_ref(g) for g in matched_materials],
@@ -819,6 +977,7 @@ def main():
     ap.add_argument("--attach", help="extract_attach.py 输出的 JSON（可选）")
     ap.add_argument("--wiki", required=True, help="wiki 根目录")
     ap.add_argument("--project-identity", help="项目身份 JSON，用于过滤客户/项目素材")
+    ap.add_argument("--directory-templates", help="目录模板沉淀 JSON，用于补齐通用/客户专属结构")
     ap.add_argument("--title", help="文档标题（缺省组装）")
     ap.add_argument("--output", required=True, help="输出 JSON 路径")
     args = ap.parse_args()
@@ -829,6 +988,9 @@ def main():
     wiki_root = Path(args.wiki)
     wiki_items = load_wiki(wiki_root)
     project_identity = load_json(args.project_identity) if args.project_identity else {}
+    directory_templates = load_json(args.directory_templates) if args.directory_templates else []
+    if not isinstance(directory_templates, list):
+        directory_templates = []
     wiki_items = filter_wiki_by_project_identity(wiki_items, project_identity, tender)
 
     title = args.title
@@ -846,8 +1008,17 @@ def main():
             base = f"{base}（{c}）"
         title = f"{base}投标文件总目录"
 
-    plan = build_plan(tpl, tender, attach, wiki_items, title)
-    output = build_output(tpl, tender, attach, wiki_root, title, plan["items"], project_identity)
+    plan = build_plan(tpl, tender, attach, wiki_items, title, directory_templates=directory_templates)
+    output = build_output(
+        tpl,
+        tender,
+        attach,
+        wiki_root,
+        title,
+        plan["items"],
+        project_identity,
+        directory_templates,
+    )
     Path(args.output).write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"output": args.output, "items": len(output["items"]), "schema_version": output["schema_version"]}, ensure_ascii=False))
 
