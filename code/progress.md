@@ -1714,3 +1714,15 @@ bid_workspace
 - `docker compose ps fastapi worker opencode`：`fastapi`、`opencode` healthy，`worker` 已启动。
 - `GET http://127.0.0.1/api/healthz`：返回 `status=ok`。
 - 容器内验证：`app.services.directory_templates` 不存在；`bid-toc-wiki-driven-v2` 中无 `directoryTemplates / directory_template` 残留。
+
+### 2026-05-01 17:50:35 手动记录：删除无效的目录模板沉淀待办
+
+改动目标：
+
+- 从 `doc/14-甲方新增需求待办.md` 删除原序号 3“技术标通用/华能目录模板沉淀”。
+- 将后续待办重新编号，原“模板上传 Fallback 读取”成为新的序号 3。
+- 在 `doc/15-技术标与商务标需求整理.md` 中同步口径：不单独沉淀目录模板，目录仍由 S2 Skill 基于招标文件、投标模板和 Wiki 生成；后续重点是未上传投标模板时读取 fallback 模板。
+
+验证结果：
+
+- 文档清理，无代码变更。
