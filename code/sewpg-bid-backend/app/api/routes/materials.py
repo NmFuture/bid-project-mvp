@@ -39,6 +39,7 @@ async def raw_files(
     materialTier: str = "",
     cleanStatus: str = "",
     keyword: str = "",
+    recursive: bool = True,
     page: int = 1,
     pageSize: int = 20,
 ) -> dict[str, Any]:
@@ -50,6 +51,7 @@ async def raw_files(
         material_tier=materialTier,
         clean_status=cleanStatus,
         keyword=keyword,
+        recursive=recursive,
         page=page,
         page_size=pageSize,
     )

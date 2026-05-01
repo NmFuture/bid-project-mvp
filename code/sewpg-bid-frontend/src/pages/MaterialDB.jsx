@@ -4,7 +4,7 @@ import { materialsAPI } from '../api'
 import MaterialsViewSwitch from '../components/shared/MaterialsViewSwitch'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
 import OnlyOfficeWorkspace from '../components/shared/OnlyOfficeWorkspace'
-import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
+import { PageError, PageLoading } from '../components/states/PageState'
 import { bidTypeFromWorkspace, useWorkspaceSlug, workspaceRoute } from '../utils/workspace'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
@@ -142,6 +142,7 @@ const normalizeTreeNodes = (nodes = []) =>
     id: String(node?.id || node?.path || node?.name || `node-${Math.random().toString(36).slice(2, 8)}`),
     name: displayFolderName(node?.name || node?.title || node?.path || '未命名目录', node?.path || node?.name || ''),
     path: String(node?.path || node?.name || ''),
+    directFileCount: Number(node?.directFileCount || 0),
     fileCount: Number(node?.fileCount || 0),
     children: normalizeTreeNodes(node?.children || []),
   }))
@@ -156,6 +157,7 @@ const ensureMaterialRootNodes = (nodes = []) => {
     id: path,
     name: path,
     path,
+    directFileCount: 0,
     fileCount: 0,
     children: [],
   }))
@@ -193,8 +195,10 @@ const collectCollapsiblePaths = (nodes = []) => {
   const result = []
   const walk = (list) => {
     list.forEach((node) => {
-      if (Array.isArray(node.children) && node.children.length) {
+      if ((Array.isArray(node.children) && node.children.length) || Number(node.directFileCount || 0) > 0) {
         result.push(node.path)
+      }
+      if (Array.isArray(node.children) && node.children.length) {
         walk(node.children)
       }
     })
@@ -205,13 +209,25 @@ const collectCollapsiblePaths = (nodes = []) => {
 
 const buildDefaultCollapsedMap = (nodes = [], level = 0, map = {}) => {
   nodes.forEach((node) => {
-    if (Array.isArray(node.children) && node.children.length) {
+    if ((Array.isArray(node.children) && node.children.length) || Number(node.directFileCount || 0) > 0) {
       map[node.path] = level > 0
+    }
+    if (Array.isArray(node.children) && node.children.length) {
       buildDefaultCollapsedMap(node.children, level + 1, map)
     }
   })
   return map
 }
+
+const expandPathInMap = (map, path) => {
+  const parts = String(path || '').replace(/^\/+|\/+$/g, '').split('/').filter(Boolean)
+  parts.forEach((_, index) => {
+    map[parts.slice(0, index + 1).join('/')] = false
+  })
+  return map
+}
+
+const normalizePath = (path) => String(path || '').replace(/^\/+|\/+$/g, '')
 
 const parentPath = (path) => {
   const normalized = String(path || '').replace(/^\/+|\/+$/g, '')
@@ -351,15 +367,22 @@ function TreeNode({
   collapsedMap,
   onToggle,
   scale = 100,
+  renderSelectedContent,
 }) {
   const hasChildren = Array.isArray(node.children) && node.children.length > 0
-  const collapsed = hasChildren ? Boolean(collapsedMap[node.path]) : false
+  const directFileCount = Number(node.directFileCount || 0)
+  const canExpand = hasChildren || directFileCount > 0
+  const collapsed = canExpand ? Boolean(collapsedMap[node.path]) : false
   const selected = selectedPath === node.path
   const indent = (12 + level * 16) * (scale / 100)
+  const selectedContentInset = Math.min(68, 34 + level * 14) * (scale / 100)
   return (
     <div>
       <button
-        onClick={() => onSelect(node.path)}
+        onClick={() => {
+          onSelect(node.path)
+          if (canExpand) onToggle(node.path, false)
+        }}
         style={{ paddingLeft: `${indent}px`, fontSize: `${Math.max(11, Math.min(14, 13 * (scale / 100)))}px` }}
         className={`w-full text-left rounded-lg py-2 pr-2 transition-colors flex items-center justify-between gap-2 ${
           selected
@@ -368,7 +391,7 @@ function TreeNode({
         }`}
       >
         <span className="min-w-0 flex items-center gap-1.5">
-          {hasChildren ? (
+          {canExpand ? (
             <span
               onClick={(event) => {
                 event.stopPropagation()
@@ -400,10 +423,16 @@ function TreeNode({
               collapsedMap={collapsedMap}
               onToggle={onToggle}
               scale={scale}
+              renderSelectedContent={renderSelectedContent}
             />
           ))}
         </div>
       )}
+      {selected && !collapsed && renderSelectedContent ? (
+        <div style={{ marginLeft: `${selectedContentInset}px` }} className="my-1">
+          {renderSelectedContent()}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -414,6 +443,7 @@ export default function MaterialDB({ showToast = () => {} }) {
   const lockedBidType = bidTypeFromWorkspace(workspaceSlug)
   const materialsBasePath = workspaceSlug ? workspaceRoute(workspaceSlug, '/materials') : '/materials'
   const uploadPickerRef = useRef(null)
+  const libraryLoadedRef = useRef(false)
   const [tree, setTree] = useState([])
   const [collapsedMap, setCollapsedMap] = useState({})
   const [treeScale, setTreeScale] = useState(100)
@@ -482,7 +512,7 @@ export default function MaterialDB({ showToast = () => {} }) {
   const selectedUploadProject = projectOptions.find((option) => option.id === uploadProjectId)
 
   const loadLibrary = useCallback(async (options = {}) => {
-    const silent = Boolean(options.silent)
+    const silent = Boolean(options.silent || libraryLoadedRef.current)
     if (silent) setRefreshing(true)
     else setLoading(true)
     setError('')
@@ -493,25 +523,27 @@ export default function MaterialDB({ showToast = () => {} }) {
       )
       const visibleTree = filterTreeByBidType(normalizedTree, activeBidType)
       setTree(visibleTree)
-      setCollapsedMap((prev) => {
-        const validPathSet = new Set(flattenTreePaths(visibleTree))
-        const next = Object.fromEntries(
-          Object.entries(prev).filter(([path]) => validPathSet.has(path)),
-        )
-        if (Object.keys(next).length > 0) return next
-        return buildDefaultCollapsedMap(visibleTree)
-      })
-
       const validPaths = new Set(flattenTreePaths(visibleTree))
       const effectiveFolder = validPaths.has(selectedFolderPath)
         ? selectedFolderPath
         : pickDefaultFolder(visibleTree, activeBidType)
+      setCollapsedMap((prev) => {
+        const validPathSet = new Set(flattenTreePaths(visibleTree))
+        let next = Object.fromEntries(
+          Object.entries(prev).filter(([path]) => validPathSet.has(path)),
+        )
+        if (Object.keys(next).length === 0) {
+          next = buildDefaultCollapsedMap(visibleTree)
+        }
+        return expandPathInMap(next, effectiveFolder)
+      })
       if (selectedFolderPath !== effectiveFolder) {
         setSelectedFolderPath(effectiveFolder)
       }
 
       const payload = await materialsAPI.raw.files({
         folderPath: effectiveFolder,
+        recursive: false,
         keyword: filters.keyword.trim(),
         bidType: activeBidType,
         customerName: filters.customerName.trim(),
@@ -536,6 +568,7 @@ export default function MaterialDB({ showToast = () => {} }) {
     } catch (e) {
       setError(safeMessage(e, '原始材料库加载失败，请稍后重试。'))
     } finally {
+      libraryLoadedRef.current = true
       if (silent) setRefreshing(false)
       else setLoading(false)
     }
@@ -609,8 +642,11 @@ export default function MaterialDB({ showToast = () => {} }) {
     setCollapsedMap(map)
   }
 
-  const toggleNode = (path) => {
-    setCollapsedMap((prev) => ({ ...prev, [path]: !prev[path] }))
+  const toggleNode = (path, nextValue) => {
+    setCollapsedMap((prev) => ({
+      ...prev,
+      [path]: typeof nextValue === 'boolean' ? nextValue : !prev[path],
+    }))
   }
 
   const changeTreeScale = (delta) => {
@@ -963,7 +999,150 @@ export default function MaterialDB({ showToast = () => {} }) {
     }))
   }
 
-  const noData = !fileItems.length
+  const directFileItems = fileItems.filter((item) => normalizePath(item.folderPath) === normalizePath(selectedFolderPath))
+  const directFileTotal = directFileItems.length === fileItems.length ? totalCount : directFileItems.length
+  const noDirectData = !directFileItems.length
+  const renderSelectedFolderFiles = () => (
+    <div className="space-y-1 border-l border-surface-container-high pl-2">
+      {noDirectData ? (
+        null
+      ) : (
+        <>
+          <div className="max-h-[520px] overflow-y-auto space-y-1 pr-1">
+            {directFileItems.map((item) => {
+              const selected = previewItem?.id === item.id
+              const previewable = canPreviewCleaned(item)
+              const meta = cleanStatusMeta(item.cleanStatus)
+              return (
+                <div key={item.id} className={`rounded-md px-2 py-2 transition-colors ${selected ? 'bg-primary/10' : 'hover:bg-surface-container-low'}`}>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handlePreviewCleaned(item)}
+                      disabled={!previewable}
+                      title={previewable ? '预览清洗稿' : cleanedPreviewBlockedMessage(item)}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-primary transition-colors hover:bg-primary hover:text-on-primary disabled:cursor-not-allowed disabled:text-outline disabled:hover:bg-transparent"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">
+                        {previewable ? 'description' : 'draft'}
+                      </span>
+                    </button>
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handlePreviewCleaned(item)}
+                          disabled={!previewable}
+                          className="min-w-0 flex-1 truncate text-left text-sm font-semibold text-on-surface hover:text-primary disabled:cursor-not-allowed disabled:hover:text-on-surface"
+                          title={item.name || ''}
+                        >
+                          {item.name || '-'}
+                        </button>
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-outline">
+                        <span>{item.ext || item.type || '-'}</span>
+                        <span>{item.sizeLabel || toSizeLabel(item.size)}</span>
+                        <span>v{item.version || 1}</span>
+                        {item.materialTierLabel || item.materialTier ? (
+                          <span>{item.materialTierLabel || materialTierMeta(item.materialTier).label}</span>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${meta.className}`}>
+                      {meta.label}
+                    </span>
+
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      <button
+                        onClick={() => handlePreviewCleaned(item)}
+                        disabled={!previewable}
+                        title={previewable ? '预览清洗稿' : cleanedPreviewBlockedMessage(item)}
+                        className="flex h-7 w-7 items-center justify-center rounded text-primary hover:bg-surface-container-high disabled:cursor-not-allowed disabled:text-outline"
+                      >
+                        <span className="material-symbols-outlined text-[17px]">visibility</span>
+                      </button>
+                      <button
+                        onClick={() => handleDownload(item)}
+                        title="下载原始文件"
+                        className="flex h-7 w-7 items-center justify-center rounded text-on-surface-variant hover:bg-surface-container-high hover:text-primary"
+                      >
+                        <span className="material-symbols-outlined text-[17px]">file_download</span>
+                      </button>
+                      <button
+                        onClick={() => handleDownloadCleaned(item)}
+                        disabled={!item.hasCleanedWord}
+                        title="下载清洗后 Word"
+                        className="flex h-7 w-7 items-center justify-center rounded text-secondary hover:bg-secondary-container disabled:cursor-not-allowed disabled:text-outline disabled:hover:bg-transparent"
+                      >
+                        <span className="material-symbols-outlined text-[17px]">task</span>
+                      </button>
+                      {item.cleanStatus === 'failed' && (
+                        <button
+                          onClick={() => handleRetryClean(item)}
+                          title="重试清洗"
+                          className="flex h-7 w-7 items-center justify-center rounded text-on-surface-variant hover:bg-surface-container-high hover:text-primary"
+                        >
+                          <span className="material-symbols-outlined text-[17px]">refresh</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleRename(item)}
+                        disabled={!canManageCurrentFolder}
+                        title="重命名"
+                        className="flex h-7 w-7 items-center justify-center rounded text-on-surface-variant hover:bg-surface-container-high hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <span className="material-symbols-outlined text-[17px]">edit</span>
+                      </button>
+                      <button
+                        onClick={() => handleMove(item)}
+                        disabled={!canManageCurrentFolder}
+                        title="移动"
+                        className="flex h-7 w-7 items-center justify-center rounded text-on-surface-variant hover:bg-surface-container-high hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <span className="material-symbols-outlined text-[17px]">drive_file_move</span>
+                      </button>
+                      <button
+                        onClick={() => handleDelete(item)}
+                        disabled={!canManageCurrentFolder}
+                        title="删除"
+                        className="flex h-7 w-7 items-center justify-center rounded text-error hover:bg-error-container/40 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <span className="material-symbols-outlined text-[17px]">delete</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <div className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs text-outline">
+            <span>本级 {directFileTotal} 个文件</span>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => updateFilter('page', Math.max(1, filters.page - 1))}
+                disabled={filters.page <= 1}
+                title="上一页"
+                className="flex h-7 w-7 items-center justify-center rounded border border-surface-container-high disabled:opacity-40"
+              >
+                <span className="material-symbols-outlined text-[17px]">chevron_left</span>
+              </button>
+              <span className="px-1">第 {filters.page} 页</span>
+              <button
+                onClick={() => updateFilter('page', filters.page + 1)}
+                disabled={filters.page * filters.pageSize >= directFileTotal}
+                title="下一页"
+                className="flex h-7 w-7 items-center justify-center rounded border border-surface-container-high disabled:opacity-40"
+              >
+                <span className="material-symbols-outlined text-[17px]">chevron_right</span>
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
 
   if (loading) {
     return (
@@ -1079,7 +1258,7 @@ export default function MaterialDB({ showToast = () => {} }) {
 
       <OnlyOfficeWorkspace
         heightClass="min-h-[760px]"
-        gridClassName="xl:grid-cols-[minmax(38rem,54rem)_minmax(0,1fr)]"
+        gridClassName="xl:grid-cols-[minmax(28rem,38rem)_minmax(0,1fr)]"
         documentTitle="清洗稿预览"
         documentSubtitle={`当前文件：${previewTitle}`}
         documentMeta={(
@@ -1092,268 +1271,126 @@ export default function MaterialDB({ showToast = () => {} }) {
           <section className="flex h-full min-h-0 flex-col">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
               <div className="min-w-0">
-                <h3 className="text-base font-semibold text-on-surface">素材库</h3>
-                <p className="mt-1 truncate text-xs text-outline">点击已清洗文件预览清洗稿</p>
+                <h3 className="text-base font-semibold text-on-surface">素材目录</h3>
+                <p className="mt-1 truncate text-xs text-outline">{selectedFolderPath || '未选择目录'}</p>
               </div>
               <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant">
-                文件 {totalCount}
+                本级 {directFileTotal}
               </span>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4">
-              <div className="grid grid-cols-1 2xl:grid-cols-[minmax(16rem,20rem)_minmax(0,1fr)] gap-4">
-                <div className="bg-surface-container-lowest rounded-xl border border-surface-container-high p-4 max-h-[360px] 2xl:max-h-[720px] overflow-auto">
-                  <div className="flex items-center justify-between mb-3 gap-2">
-                    <div className="text-sm font-semibold text-on-surface">目录树</div>
-                    <div className="flex items-center gap-1">
-                      <button onClick={() => setCollapseForAll(false)} className="px-2 py-1 text-xs rounded bg-surface-container-high hover:bg-surface-dim">展开</button>
-                      <button onClick={() => setCollapseForAll(true)} className="px-2 py-1 text-xs rounded bg-surface-container-high hover:bg-surface-dim">收起</button>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between mb-3 text-xs text-on-surface-variant">
-                    <span>目录缩放</span>
-                    <div className="flex items-center gap-1">
-                      <button onClick={() => changeTreeScale(-10)} className="w-6 h-6 rounded bg-surface-container-high hover:bg-surface-dim">-</button>
-                      <span className="w-10 text-center">{treeScale}%</span>
-                      <button onClick={() => changeTreeScale(10)} className="w-6 h-6 rounded bg-surface-container-high hover:bg-surface-dim">+</button>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-1">
-                    {tree.map((node) => (
-                      <TreeNode
-                        key={node.id}
-                        node={node}
-                        selectedPath={selectedFolderPath}
-                        onSelect={(path) => setSelectedFolderPath(path)}
-                        collapsedMap={collapsedMap}
-                        onToggle={toggleNode}
-                        scale={treeScale}
-                      />
-                    ))}
-                  </div>
-
-                  <div className="mt-4 pt-3 border-t border-surface-container-high grid grid-cols-3 gap-2">
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="border-b border-surface-container-high bg-surface-container-lowest px-3 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-semibold text-on-surface">目录与文件</div>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setCollapseForAll(false)} title="展开全部" className="flex h-7 w-7 items-center justify-center rounded bg-surface-container-high hover:bg-surface-dim">
+                      <span className="material-symbols-outlined text-[18px]">unfold_more</span>
+                    </button>
+                    <button onClick={() => setCollapseForAll(true)} title="收起全部" className="flex h-7 w-7 items-center justify-center rounded bg-surface-container-high hover:bg-surface-dim">
+                      <span className="material-symbols-outlined text-[18px]">unfold_less</span>
+                    </button>
+                    <span className="mx-1 h-4 w-px bg-surface-container-high" />
+                    <button onClick={() => changeTreeScale(-10)} title="缩小目录" className="flex h-7 w-7 items-center justify-center rounded bg-surface-container-high hover:bg-surface-dim">-</button>
+                    <span className="w-9 text-center text-xs text-on-surface-variant">{treeScale}%</span>
+                    <button onClick={() => changeTreeScale(10)} title="放大目录" className="flex h-7 w-7 items-center justify-center rounded bg-surface-container-high hover:bg-surface-dim">+</button>
+                    <span className="mx-1 h-4 w-px bg-surface-container-high" />
                     <button
                       onClick={handleCreateFolder}
                       disabled={!canCreateFolder}
-                      className="px-2 py-2 text-xs rounded bg-surface-container-high hover:bg-surface-dim disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="新建文件夹"
+                      className="flex h-7 w-7 items-center justify-center rounded bg-surface-container-high hover:bg-surface-dim disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      新建文件夹
+                      <span className="material-symbols-outlined text-[17px]">create_new_folder</span>
                     </button>
                     <button
                       onClick={handleDeleteFolder}
                       disabled={!canDeleteFolder}
-                      className="px-2 py-2 text-xs rounded bg-surface-container-high hover:bg-surface-dim disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="删除文件夹"
+                      className="flex h-7 w-7 items-center justify-center rounded bg-surface-container-high hover:bg-surface-dim disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      删除文件夹
+                      <span className="material-symbols-outlined text-[17px]">folder_delete</span>
                     </button>
                     <button
                       onClick={() => openUploadModal({ mode: 'path', targetPath: selectedFolderPath })}
                       disabled={!canManageCurrentFolder || !selectedFolderPath}
-                      className="px-2 py-2 text-xs rounded bg-primary text-on-primary hover:bg-primary-container disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="上传到此目录"
+                      className="flex h-7 w-7 items-center justify-center rounded bg-primary text-on-primary hover:bg-primary-container disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      上传到此目录
+                      <span className="material-symbols-outlined text-[17px]">upload_file</span>
                     </button>
                   </div>
                 </div>
 
-                <div className="flex min-w-0 flex-col gap-4">
-                  <div className="bg-surface-container-lowest rounded-xl border border-surface-container-high p-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                      <input
-                        value={filters.keyword}
-                        onChange={(e) => updateFilter('keyword', e.target.value)}
-                        placeholder="搜索文件名"
-                        className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                      />
-                      <input
-                        value={filters.customerName}
-                        onChange={(e) => updateFilter('customerName', e.target.value)}
-                        placeholder="按客户筛选"
-                        className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                      />
-                      <input
-                        value={filters.projectId}
-                        onChange={(e) => updateFilter('projectId', e.target.value)}
-                        placeholder="按项目ID/编号筛选"
-                        className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                      />
-                      <select
-                        value={filters.materialTier}
-                        onChange={(e) => updateFilter('materialTier', e.target.value)}
-                        className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                      >
-                        <option value="">全部层级</option>
-                        {MATERIAL_TIER_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>{option.label}</option>
-                        ))}
-                      </select>
-                      <select
-                        value={filters.cleanStatus}
-                        onChange={(e) => updateFilter('cleanStatus', e.target.value)}
-                        className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                      >
-                        {CLEAN_STATUS_OPTIONS.map((option) => (
-                          <option key={option.value || 'all'} value={option.value}>{option.label}</option>
-                        ))}
-                      </select>
-                      <select
-                        value={filters.pageSize}
-                        onChange={(e) => updateFilter('pageSize', Number(e.target.value))}
-                        className="h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                      >
-                        {[10, 20, 50].map((size) => (
-                          <option key={size} value={size}>每页 {size} 条</option>
-                        ))}
-                      </select>
-                    </div>
+                <details className="mt-2 rounded-md border border-surface-container-high bg-surface-container-low px-3 py-2">
+                  <summary className="cursor-pointer text-xs font-semibold text-on-surface marker:text-outline">
+                    筛选
+                  </summary>
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <input
+                      value={filters.keyword}
+                      onChange={(e) => updateFilter('keyword', e.target.value)}
+                      placeholder="搜索文件名"
+                      className="h-9 px-3 rounded-md bg-surface-container-highest border-none text-xs"
+                    />
+                    <select
+                      value={filters.cleanStatus}
+                      onChange={(e) => updateFilter('cleanStatus', e.target.value)}
+                      className="h-9 px-3 rounded-md bg-surface-container-highest border-none text-xs"
+                    >
+                      {CLEAN_STATUS_OPTIONS.map((option) => (
+                        <option key={option.value || 'all'} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                    <input
+                      value={filters.customerName}
+                      onChange={(e) => updateFilter('customerName', e.target.value)}
+                      placeholder="按客户筛选"
+                      className="h-9 px-3 rounded-md bg-surface-container-highest border-none text-xs"
+                    />
+                    <input
+                      value={filters.projectId}
+                      onChange={(e) => updateFilter('projectId', e.target.value)}
+                      placeholder="按项目ID/编号筛选"
+                      className="h-9 px-3 rounded-md bg-surface-container-highest border-none text-xs"
+                    />
+                    <select
+                      value={filters.materialTier}
+                      onChange={(e) => updateFilter('materialTier', e.target.value)}
+                      className="h-9 px-3 rounded-md bg-surface-container-highest border-none text-xs"
+                    >
+                      <option value="">全部层级</option>
+                      {MATERIAL_TIER_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={filters.pageSize}
+                      onChange={(e) => updateFilter('pageSize', Number(e.target.value))}
+                      className="h-9 px-3 rounded-md bg-surface-container-highest border-none text-xs"
+                    >
+                      {[10, 20, 50].map((size) => (
+                        <option key={size} value={size}>每页 {size} 条</option>
+                      ))}
+                    </select>
                   </div>
+                </details>
+              </div>
 
-                  <div className="bg-surface-container-lowest rounded-xl border border-surface-container-high overflow-hidden">
-                    {noData ? (
-                      <div className="p-8">
-                        <PageEmpty
-                          title="当前目录暂无文件"
-                          description="可上传文件、调整筛选，或在目录树中新建文件夹。"
-                          actionText="立即上传"
-                          onAction={() => openUploadModal({ mode: 'path' })}
-                          showActionIcon={false}
-                        />
-                      </div>
-                    ) : (
-                      <>
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-sm">
-                            <thead>
-                              <tr className="border-b border-surface-container-high bg-surface-container-low">
-                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">文件名</th>
-                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">类型</th>
-                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">大小</th>
-                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">层级/身份</th>
-                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">标书类型</th>
-                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">清洗状态</th>
-                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">版本</th>
-                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">更新人/时间</th>
-                                <th className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase">操作</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {fileItems.map((item) => {
-                                const selected = previewItem?.id === item.id
-                                const previewable = canPreviewCleaned(item)
-                                return (
-                                  <tr key={item.id} className={`border-b border-surface-container-high/60 ${selected ? 'bg-primary/5' : 'hover:bg-surface-container-low'}`}>
-                                    <td className="px-4 py-3 min-w-[280px]">
-                                      {previewable ? (
-                                        <button
-                                          type="button"
-                                          onClick={() => handlePreviewCleaned(item)}
-                                          className="block max-w-[260px] truncate text-left font-medium text-primary hover:underline"
-                                          title={item.name || ''}
-                                        >
-                                          {item.name || '-'}
-                                        </button>
-                                      ) : (
-                                        <div className="font-medium text-on-surface truncate">{item.name || '-'}</div>
-                                      )}
-                                      <div className="text-xs text-outline truncate mt-1">{item.folderPath || '-'}</div>
-                                      {item.sourceRelativePath && item.sourceRelativePath !== item.name ? (
-                                        <div className="text-xs text-outline truncate mt-1">{item.sourceRelativePath}</div>
-                                      ) : null}
-                                    </td>
-                                    <td className="px-4 py-3">{item.ext || item.type || '-'}</td>
-                                    <td className="px-4 py-3">{item.sizeLabel || toSizeLabel(item.size)}</td>
-                                    <td className="px-4 py-3">
-                                      <div>{item.materialTierLabel || materialTierMeta(item.materialTier).label}</div>
-                                      {item.identityScope && item.identityScope !== 'general' ? (
-                                        <div className="text-xs text-outline mt-1">
-                                          {item.identityScope === 'customer'
-                                            ? (item.customerCanonicalName || item.customerName || '-')
-                                            : (item.projectCode || item.projectId || '-')}
-                                        </div>
-                                      ) : null}
-                                    </td>
-                                    <td className="px-4 py-3">{item.bidType || '-'}</td>
-                                    <td className="px-4 py-3">
-                                      {(() => {
-                                        const meta = cleanStatusMeta(item.cleanStatus)
-                                        return (
-                                          <div className="flex flex-col gap-1">
-                                            <span className={`w-fit px-2 py-1 rounded-full text-xs font-medium ${meta.className}`}>
-                                              {meta.label}
-                                            </span>
-                                            {item.cleanMessage && (
-                                              <span className="text-xs text-outline max-w-[180px] truncate" title={item.cleanMessage}>
-                                                {item.cleanMessage}
-                                              </span>
-                                            )}
-                                          </div>
-                                        )
-                                      })()}
-                                    </td>
-                                    <td className="px-4 py-3">{item.version ? `v${item.version}` : '-'}</td>
-                                    <td className="px-4 py-3 text-xs text-on-surface-variant">
-                                      <div>{item.lastOperator || '-'}</div>
-                                      <div>{item.updatedAt || '-'}</div>
-                                    </td>
-                                    <td className="px-4 py-3">
-                                      <div className="flex flex-wrap gap-2">
-                                        <button
-                                          onClick={() => handlePreviewCleaned(item)}
-                                          disabled={!previewable}
-                                          className="text-primary hover:underline text-xs disabled:text-outline disabled:no-underline disabled:cursor-not-allowed"
-                                        >
-                                          预览
-                                        </button>
-                                        <button onClick={() => handleDownload(item)} className="text-primary hover:underline text-xs">源文件</button>
-                                        <button
-                                          onClick={() => handleDownloadCleaned(item)}
-                                          disabled={!item.hasCleanedWord}
-                                          className="text-primary hover:underline text-xs disabled:text-outline disabled:no-underline disabled:cursor-not-allowed"
-                                        >
-                                          Word
-                                        </button>
-                                        {item.cleanStatus === 'failed' && (
-                                          <button onClick={() => handleRetryClean(item)} className="text-on-surface-variant hover:underline text-xs">
-                                            重试清洗
-                                          </button>
-                                        )}
-                                        <button onClick={() => handleRename(item)} disabled={!canManageCurrentFolder} className="text-on-surface-variant hover:underline text-xs disabled:opacity-50">重命名</button>
-                                        <button onClick={() => handleMove(item)} disabled={!canManageCurrentFolder} className="text-on-surface-variant hover:underline text-xs disabled:opacity-50">移动</button>
-                                        <button onClick={() => handleDelete(item)} disabled={!canManageCurrentFolder} className="text-error hover:underline text-xs disabled:opacity-50">删除</button>
-                                      </div>
-                                    </td>
-                                  </tr>
-                                )
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                        <div className="px-4 py-3 border-t border-surface-container-high text-xs text-outline flex items-center justify-between">
-                          <span>总计 {totalCount} 条</span>
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => updateFilter('page', Math.max(1, filters.page - 1))}
-                              disabled={filters.page <= 1}
-                              className="px-2 py-1 rounded border border-surface-container-high disabled:opacity-40"
-                            >
-                              上一页
-                            </button>
-                            <span>第 {filters.page} 页</span>
-                            <button
-                              onClick={() => updateFilter('page', filters.page + 1)}
-                              disabled={filters.page * filters.pageSize >= totalCount}
-                              className="px-2 py-1 rounded border border-surface-container-high disabled:opacity-40"
-                            >
-                              下一页
-                            </button>
-                          </div>
-                        </div>
-                      </>
-                    )}
-                  </div>
+              <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                <div className="min-h-full rounded-md border border-surface-container-high bg-surface-container-lowest p-2">
+                  {tree.map((node) => (
+                    <TreeNode
+                      key={node.id}
+                      node={node}
+                      selectedPath={selectedFolderPath}
+                      onSelect={(path) => setSelectedFolderPath(path)}
+                      collapsedMap={collapsedMap}
+                      onToggle={toggleNode}
+                      scale={treeScale}
+                      renderSelectedContent={renderSelectedFolderFiles}
+                    />
+                  ))}
                 </div>
               </div>
             </div>

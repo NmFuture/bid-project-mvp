@@ -414,6 +414,7 @@ class PeripheralStore:
                         "id": node["path"],
                         "name": node["name"],
                         "path": node["path"],
+                        "directFileCount": current_count,
                         "fileCount": current_count + nested_count,
                         "children": child_nodes,
                     }
@@ -445,12 +446,19 @@ class PeripheralStore:
         customer_name: str = "",
         bid_type: str = "",
         keyword: str = "",
+        recursive: bool = True,
         page: int = 1,
         page_size: int = 20,
     ) -> dict[str, Any]:
         items = list(self._raw_files)
         if folder_path:
-            items = [item for item in items if item["folderPath"] == folder_path]
+            if recursive:
+                items = [
+                    item for item in items
+                    if item["folderPath"] == folder_path or str(item["folderPath"]).startswith(f"{folder_path}/")
+                ]
+            else:
+                items = [item for item in items if item["folderPath"] == folder_path]
         if project_id:
             items = [item for item in items if item.get("projectId") == project_id]
         if customer_name:

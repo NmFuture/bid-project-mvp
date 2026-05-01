@@ -36,18 +36,12 @@ export default function OnlyOfficeWorkspace({
   const fullscreenLabel = fullscreen ? '退出全屏' : '全屏查看'
 
   return (
-    <div
-      className={[
-        fullscreen
-          ? 'fixed inset-0 z-[160] bg-surface p-3 sm:p-4'
-          : `relative ${className}`,
-      ].join(' ')}
-    >
+    <div className={['relative', className].join(' ')}>
       <div
         className={[
           'grid grid-cols-1 overflow-hidden rounded-md border border-outline-variant/50 bg-surface-container-lowest shadow-[0_1px_3px_rgba(13,33,55,0.08)]',
           gridClassName,
-          fullscreen ? 'h-full' : heightClass,
+          heightClass,
         ].join(' ')}
       >
         <aside
@@ -59,7 +53,13 @@ export default function OnlyOfficeWorkspace({
           {sidebar}
         </aside>
 
-        <section className="flex min-h-0 flex-col bg-white">
+        <section
+          className={[
+            fullscreen
+              ? 'fixed inset-0 z-[160] flex min-h-0 flex-col bg-white'
+              : 'flex min-h-0 flex-col bg-white',
+          ].join(' ')}
+        >
           <div className="flex min-h-[58px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
             <div className="min-w-0">
               <h3 className="truncate text-base font-semibold text-on-surface">
@@ -88,7 +88,11 @@ export default function OnlyOfficeWorkspace({
             </div>
           </div>
 
-          <div className={['min-h-0 flex-1 p-4', documentAreaClassName].join(' ')}>
+          <div className={[
+            'min-h-0 flex-1',
+            fullscreen ? 'p-2 sm:p-3' : 'p-4',
+            documentAreaClassName,
+          ].join(' ')}>
             {children}
           </div>
         </section>

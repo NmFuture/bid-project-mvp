@@ -333,10 +333,12 @@ class MaterialStore:
 
             def build_node(folder: RawFolder) -> dict[str, Any]:
                 child_folders = children_by_parent.get(folder.id, [])
+                direct_file_count = len(files_by_folder.get(folder.id, []))
                 return {
                     "id": folder.path,
                     "name": folder.name,
                     "path": folder.path,
+                    "directFileCount": direct_file_count,
                     "fileCount": subtree_file_count(folder),
                     "children": [build_node(c) for c in child_folders],
                 }
@@ -491,6 +493,7 @@ class MaterialStore:
         material_tier: str = "",
         clean_status: str = "",
         keyword: str = "",
+        recursive: bool = True,
         page: int = 1,
         page_size: int = 20,
     ) -> dict[str, Any]:
@@ -498,12 +501,15 @@ class MaterialStore:
             stmt = select(RawFile).options(selectinload(RawFile.folder))
             normalized_folder_path = str(folder_path or "").strip().strip("/")
             if normalized_folder_path:
-                stmt = stmt.join(RawFolder).where(
-                    or_(
-                        RawFolder.path == normalized_folder_path,
-                        RawFolder.path.like(f"{normalized_folder_path}/%"),
+                if recursive:
+                    stmt = stmt.join(RawFolder).where(
+                        or_(
+                            RawFolder.path == normalized_folder_path,
+                            RawFolder.path.like(f"{normalized_folder_path}/%"),
+                        )
                     )
-                )
+                else:
+                    stmt = stmt.join(RawFolder).where(RawFolder.path == normalized_folder_path)
             if keyword:
                 stmt = stmt.where(RawFile.name.ilike(f"%{keyword}%"))
             stmt = stmt.order_by(desc(RawFile.updated_at))
