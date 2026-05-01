@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { reviewAPI, stagesAPI } from '../api'
 import { PageError, PageLoading } from '../components/states/PageState'
-import DataCard from '../components/shared/DataCard'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
+import OnlyOfficeWorkspace from '../components/shared/OnlyOfficeWorkspace'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
@@ -182,155 +182,119 @@ export default function MaterialReview({ showToast }) {
         )}
       />
 
-      <DataCard className="!p-0 overflow-hidden min-h-[420px]">
-        <div className="px-6 py-4 border-b border-surface-container-high bg-surface-container-low">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-surface-container-high text-on-surface-variant">
-                总计 {summary.total}
-              </span>
-              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-secondary-container text-on-secondary-container">
-                已补录 {summary.resolvedCount}
-              </span>
-              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-error-container text-on-error-container">
-                未补录 {summary.skippedCount}
-              </span>
-              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-tertiary-fixed text-on-tertiary-fixed">
-                待处理 {summary.pendingCount}
-              </span>
+      <OnlyOfficeWorkspace
+        heightClass="min-h-[720px]"
+        gridClassName="xl:grid-cols-[minmax(22rem,32rem)_minmax(0,1fr)]"
+        documentTitle="解析文档预览"
+        documentSubtitle={reviewDoc?.fileName || 'S6 解析文档暂未就绪'}
+        documentMeta={(
+          <span className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${(reviewDoc?.parseStatus || data?.parse?.status) === 'completed' ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
+            {(reviewDoc?.parseStatus || data?.parse?.status) === 'completed' ? '解析完成' : '待解析'}
+          </span>
+        )}
+        documentAreaClassName="flex flex-col"
+        sidebar={(
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="border-b border-surface-container-high bg-surface-container-low px-5 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h3 className="text-base font-semibold text-on-surface">审核上下文</h3>
+                <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${data?.confirmed ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
+                  {data?.confirmed ? '已确认' : '待确认'}
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-outline">审核时间：{formatDateTime(data?.reviewedAt)}</p>
             </div>
-            <div className="flex items-center gap-3 text-xs">
-              <span className="text-outline">审核时间：{formatDateTime(data?.reviewedAt)}</span>
-              <span className={`px-2.5 py-1 rounded-full font-semibold ${data?.confirmed ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
-                {data?.confirmed ? '已确认' : '待确认'}
-              </span>
-            </div>
-          </div>
-        </div>
+            <div className="flex-1 space-y-4 overflow-y-auto p-5">
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <span className="rounded-md bg-surface-container-low px-3 py-2 font-semibold text-on-surface-variant">总计 {summary.total}</span>
+                <span className="rounded-md bg-secondary-container px-3 py-2 font-semibold text-on-secondary-container">已补录 {summary.resolvedCount}</span>
+                <span className="rounded-md bg-error-container px-3 py-2 font-semibold text-on-error-container">未补录 {summary.skippedCount}</span>
+                <span className="rounded-md bg-tertiary-fixed px-3 py-2 font-semibold text-on-tertiary-fixed">待处理 {summary.pendingCount}</span>
+              </div>
 
-        {!items.length ? (
-          <div className="h-[320px] px-6 py-8 flex flex-col items-center justify-center text-center">
-            <div className="w-14 h-14 rounded-full bg-surface-container-high flex items-center justify-center mb-4">
-              <span className="material-symbols-outlined text-primary text-3xl">inventory_2</span>
-            </div>
-            <h4 className="text-lg font-headline font-bold text-on-surface mb-2">暂无审核素材</h4>
-            <p className="text-sm text-on-surface-variant max-w-xl leading-relaxed">
-              当前没有需要审核的备料项，请先在 S5 补录并提交审核。
-            </p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-surface-container-low border-b border-surface-container-high">
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">缺失素材</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">所属分区</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">补录状态</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">补录情况</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">未补录原因</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((item) => {
-                  const cfg = statusConfig[item.status] || statusConfig.pending
-                  return (
-                    <tr key={item.id} className="border-b border-surface-container-high hover:bg-surface-container-low/60">
-                      <td className="px-6 py-3 text-on-surface font-medium min-w-[220px]">{item.title || '-'}</td>
-                      <td className="px-6 py-3 text-on-surface-variant min-w-[180px]">{item.section || '-'}</td>
-                      <td className="px-6 py-3 whitespace-nowrap">
-                        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${cfg.badgeClass}`}>
-                          {cfg.label}
-                        </span>
-                      </td>
-                      <td className="px-6 py-3 text-on-surface min-w-[220px]">
-                        {item.status === 'resolved' ? (
-                          <div className="flex flex-col gap-1 text-xs">
-                            <span className="text-on-surface">{item.resolvedSource || item.submission?.fileName || '已补录'}</span>
-                            <span className="text-outline break-all">{item.submission?.storedPath || '-'}</span>
-                            <span className="text-outline">{item.submission?.submittedAt || item.resolvedAt || '-'}</span>
+              {!items.length ? (
+                <div className="rounded-md border border-dashed border-surface-container-high px-4 py-8 text-center">
+                  <span className="material-symbols-outlined text-4xl text-outline">inventory_2</span>
+                  <h4 className="mt-3 text-sm font-semibold text-on-surface">暂无审核素材</h4>
+                  <p className="mt-2 text-xs leading-relaxed text-on-surface-variant">
+                    当前没有需要审核的备料项，请先在 S5 补录并提交审核。
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {items.map((item) => {
+                    const cfg = statusConfig[item.status] || statusConfig.pending
+                    return (
+                      <div key={item.id} className="rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <h4 className="break-words text-sm font-semibold text-on-surface">{item.title || '-'}</h4>
+                            <p className="mt-1 text-xs text-on-surface-variant">{item.section || '-'}</p>
                           </div>
-                        ) : '-'}
-                      </td>
-                      <td className="px-6 py-3 text-on-surface-variant min-w-[220px]">
-                        {item.status === 'skipped' ? (item.skipReason || '未填写') : '-'}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </DataCard>
-
-      <DataCard className="!p-0 overflow-hidden">
-        <div className="px-6 py-4 border-b border-surface-container-high bg-surface-container-low flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-col gap-1 text-sm">
-            <div className="text-on-surface">
-              <span className="text-on-surface-variant">解析文档预览：</span>
-              <span className="font-medium">{reviewDoc?.fileName || '-'}</span>
-            </div>
-            <div className="text-on-surface">
-              <span className="text-on-surface-variant">解析时间：</span>
-              <span>{formatDateTime(reviewDoc?.parsedAt || data?.parse?.parsedAt)}</span>
+                          <span className={`shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${cfg.badgeClass}`}>
+                            {cfg.label}
+                          </span>
+                        </div>
+                        {item.status === 'resolved' ? (
+                          <div className="mt-3 space-y-1 text-xs">
+                            <div className="text-on-surface">{item.resolvedSource || item.submission?.fileName || '已补录'}</div>
+                            <div className="break-all text-outline">{item.submission?.storedPath || '-'}</div>
+                            <div className="text-outline">{item.submission?.submittedAt || item.resolvedAt || '-'}</div>
+                          </div>
+                        ) : null}
+                        {item.status === 'skipped' ? (
+                          <p className="mt-3 text-xs text-on-surface-variant">未补录原因：{item.skipReason || '未填写'}</p>
+                        ) : null}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           </div>
-          <div className="flex items-center gap-2 text-xs">
-            <span className={`px-2.5 py-1 rounded-full font-semibold ${(reviewDoc?.parseStatus || data?.parse?.status) === 'completed' ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
-              {(reviewDoc?.parseStatus || data?.parse?.status) === 'completed' ? '解析完成' : '待解析'}
-            </span>
-          </div>
-        </div>
-
-        {docError && (
-          <div className="px-6 pt-4">
-            <div className="rounded-lg border border-error/30 bg-error-container/20 px-3 py-2 text-xs text-error">{docError}</div>
-          </div>
         )}
-
+      >
         {!reviewDoc ? (
-          <div className="h-[280px] px-6 py-8 flex items-center justify-center text-center text-sm text-on-surface-variant">
-            S6 解析文档暂未就绪。请先在 S5 点击“提交至 S6 审核”触发解析。
+          <div className="flex min-h-[560px] flex-1 items-center justify-center rounded-md border border-dashed border-surface-container-high px-6 text-center text-sm text-on-surface-variant">
+            {docError || 'S6 解析文档暂未就绪。请先在 S5 点击“提交至 S6 审核”触发解析。'}
           </div>
         ) : (
-          <div className="p-4 flex flex-col gap-3">
-            {onlyofficeError && (
-              <div className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
-                {onlyofficeError}
+          <>
+            {(docError || onlyofficeError) && (
+              <div className="mb-3 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+                {docError || onlyofficeError}
               </div>
             )}
 
-            <div className={useFallbackPreview ? 'hidden' : 'block'}>
-              <div className="h-[58vh] min-h-[560px] rounded-lg border border-outline-variant bg-surface-container-low overflow-hidden">
-                <OnlyOfficeEmbed
-                  session={reviewDoc?.onlyoffice}
-                  mode="view"
-                  className="w-full h-full border-0 bg-white"
-                  onReady={() => setOnlyofficeError('')}
-                  onError={(message) => setOnlyofficeError(message)}
-                />
-              </div>
+            <div className={useFallbackPreview ? 'hidden' : 'min-h-0 flex-1'}>
+              <OnlyOfficeEmbed
+                session={reviewDoc?.onlyoffice}
+                mode="view"
+                className="h-full min-h-[560px] w-full rounded-md border border-outline-variant bg-white"
+                onReady={() => setOnlyofficeError('')}
+                onError={(message) => setOnlyofficeError(message)}
+              />
             </div>
 
-            <div className={useFallbackPreview ? 'flex flex-col gap-3' : 'hidden'}>
+            <div className={useFallbackPreview ? 'flex min-h-0 flex-1 flex-col gap-3' : 'hidden'}>
               <textarea
                 value={fallbackContent}
                 onChange={(event) => setFallbackContent(event.target.value)}
-                className="w-full h-[46vh] rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-3 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30"
+                className="min-h-[520px] flex-1 rounded-md border border-outline-variant bg-surface-container-lowest px-3 py-3 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30"
               />
               <div className="flex justify-end">
                 <button
                   onClick={handleSaveFallback}
                   disabled={savingFallback}
-                  className="px-4 py-2 text-sm font-semibold rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex h-8 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-on-primary transition-colors hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {savingFallback ? '保存中...' : '保存回写'}
                 </button>
               </div>
             </div>
-          </div>
+          </>
         )}
-      </DataCard>
+      </OnlyOfficeWorkspace>
     </div>
   )
 }

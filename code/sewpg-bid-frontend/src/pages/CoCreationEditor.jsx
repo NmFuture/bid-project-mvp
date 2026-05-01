@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { documentAPI, stagesAPI } from '../api'
 import { PageError, PageLoading } from '../components/states/PageState'
-import DataCard from '../components/shared/DataCard'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
+import OnlyOfficeWorkspace from '../components/shared/OnlyOfficeWorkspace'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
@@ -53,6 +53,7 @@ export default function CoCreationEditor({ showToast }) {
 
   const hasOnlyOfficeSession = Boolean(data?.onlyoffice?.fileUrl && data?.onlyoffice?.callbackUrl)
   const useFallbackEditor = !hasOnlyOfficeSession || Boolean(onlyofficeError)
+  const editorModeLabel = useFallbackEditor ? '文本兜底' : 'OnlyOffice 在线编辑'
 
   const handleSaveFallback = async () => {
     const content = fallbackContent.trim()
@@ -128,75 +129,90 @@ export default function CoCreationEditor({ showToast }) {
         )}
       />
 
-      <DataCard className="!p-0 overflow-hidden">
-        <div className="px-6 py-4 border-b border-surface-container-high bg-surface-container-low flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-col gap-1 text-sm">
-            <div className="text-on-surface">
-              <span className="text-on-surface-variant">文件：</span>
-              <span className="font-medium">{data?.fileName || '-'}</span>
+      <OnlyOfficeWorkspace
+        heightClass="min-h-[780px]"
+        gridClassName="xl:grid-cols-[minmax(18rem,24rem)_minmax(0,1fr)]"
+        documentTitle="共创文档"
+        documentSubtitle={data?.fileName || '未生成文档'}
+        documentMeta={(
+          <span className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${useFallbackEditor ? 'bg-error-container text-on-error-container' : 'bg-secondary-container text-on-secondary-container'}`}>
+            {editorModeLabel}
+          </span>
+        )}
+        documentAreaClassName="flex flex-col"
+        sidebar={(
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="border-b border-surface-container-high bg-surface-container-low px-5 py-4">
+              <h3 className="text-base font-semibold text-on-surface">文档上下文</h3>
+              <p className="mt-1 truncate text-xs text-outline" title={data?.sourceFileName || '-'}>
+                来源：{data?.sourceFileName || '-'}
+              </p>
             </div>
-            <div className="text-on-surface">
-              <span className="text-on-surface-variant">来源：</span>
-              <span>{data?.sourceFileName || '-'}</span>
-            </div>
-          </div>
-          <div className="flex flex-col gap-1 text-xs text-outline">
-            <span>保存版本：v{data?.version || 1}</span>
-            <span>最近保存：{formatDateTime(data?.lastSavedAt)}</span>
-          </div>
-        </div>
+            <div className="flex-1 space-y-4 overflow-y-auto p-5">
+              <div className="space-y-3 text-sm">
+                <div>
+                  <div className="text-xs text-on-surface-variant">文件名</div>
+                  <div className="mt-1 break-words font-medium text-on-surface">{data?.fileName || '-'}</div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-md bg-surface-container-low px-3 py-2">
+                    <div className="text-xs text-on-surface-variant">版本</div>
+                    <div className="mt-1 font-semibold text-on-surface">v{data?.version || 1}</div>
+                  </div>
+                  <div className="rounded-md bg-surface-container-low px-3 py-2">
+                    <div className="text-xs text-on-surface-variant">模式</div>
+                    <div className="mt-1 font-semibold text-on-surface">{editorModeLabel}</div>
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-on-surface-variant">最近保存</div>
+                  <div className="mt-1 text-on-surface">{formatDateTime(data?.lastSavedAt)}</div>
+                </div>
+              </div>
 
-        <div className="p-4 flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-xs text-on-surface-variant">
-              {useFallbackEditor
-                ? '当前未拿到可用的 OnlyOffice 会话，或编辑器初始化失败，已切换为文本编辑兜底模式。保存后同样会回写，不会丢失。'
-                : 'OnlyOffice 在线编辑已启用。文档保存由真实 OnlyOffice 服务回写；如需同步最新保存时间与版本号，请点击“刷新文档状态”。'}
-            </div>
-            <button
-              onClick={handleForceSave}
-              disabled={forceSaving}
-              className="stage-action-btn px-4 py-2 text-xs font-semibold rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {forceSaving ? '刷新中...' : '刷新文档状态'}
-            </button>
-          </div>
+              {onlyofficeError && (
+                <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+                  {onlyofficeError}
+                </div>
+              )}
 
-          {onlyofficeError && (
-            <div className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
-              {onlyofficeError}
-            </div>
-          )}
-
-          <div className={useFallbackEditor ? 'hidden' : 'block'}>
-            <div className="h-[78vh] min-h-[780px] rounded-xl border border-outline-variant bg-surface-container-low overflow-hidden">
-              <OnlyOfficeEmbed
-                session={data?.onlyoffice}
-                className="w-full h-full border-0 bg-white"
-                onReady={() => setOnlyofficeError('')}
-                onError={(message) => setOnlyofficeError(message)}
-              />
-            </div>
-          </div>
-
-          <div className={useFallbackEditor ? 'flex flex-col gap-3' : 'hidden'}>
-            <textarea
-              value={fallbackContent}
-              onChange={(event) => setFallbackContent(event.target.value)}
-              className="w-full h-[75vh] min-h-[720px] rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-3 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30"
-            />
-            <div className="flex justify-end">
               <button
-                onClick={handleSaveFallback}
-                disabled={savingFallback}
-                className="stage-action-btn px-4 py-2 text-sm font-semibold rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={handleForceSave}
+                disabled={forceSaving}
+                className="flex h-8 w-full items-center justify-center rounded-md bg-primary px-3 text-xs font-semibold text-on-primary transition-colors hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {savingFallback ? '保存中...' : '保存回写'}
+                {forceSaving ? '刷新中...' : '刷新文档状态'}
               </button>
             </div>
           </div>
+        )}
+      >
+        <div className={useFallbackEditor ? 'hidden' : 'min-h-0 flex-1'}>
+          <OnlyOfficeEmbed
+            session={data?.onlyoffice}
+            className="h-full min-h-[680px] w-full rounded-md border border-outline-variant bg-white"
+            onReady={() => setOnlyofficeError('')}
+            onError={(message) => setOnlyofficeError(message)}
+          />
         </div>
-      </DataCard>
+
+        <div className={useFallbackEditor ? 'flex min-h-0 flex-1 flex-col gap-3' : 'hidden'}>
+          <textarea
+            value={fallbackContent}
+            onChange={(event) => setFallbackContent(event.target.value)}
+            className="min-h-[620px] flex-1 rounded-md border border-outline-variant bg-surface-container-lowest px-3 py-3 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+          <div className="flex justify-end">
+            <button
+              onClick={handleSaveFallback}
+              disabled={savingFallback}
+              className="flex h-8 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-on-primary transition-colors hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {savingFallback ? '保存中...' : '保存回写'}
+            </button>
+          </div>
+        </div>
+      </OnlyOfficeWorkspace>
     </div>
   )
 }

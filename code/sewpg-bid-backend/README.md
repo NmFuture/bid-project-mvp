@@ -10,8 +10,8 @@ sewpg-bid-backend/
     api/              # 路由层
     core/             # 配置与基础设施
     services/         # 当前服务层与内存态 store
-  onlyoffice/         # OnlyOffice 接入参考与独立验证资产
-  opencode/           # opencode 接入参考与 skill 相关资产
+  onlyoffice/         # OnlyOffice Document Server entrypoint
+  opencode/           # opencode 镜像、配置与 skill 相关资产
   .localdata/         # 本机联调数据目录
 ```
 
@@ -19,7 +19,7 @@ sewpg-bid-backend/
 
 - 前端最终只调这里提供的 FastAPI
 - 主链路真实接口与外围承接接口都放在这里
-- `onlyoffice/` 和 `opencode/` 目前先保留为后端侧参考资产
+- `onlyoffice/` 和 `opencode/` 只保留当前 compose 与主链路需要的运行资产
 - 当前主链路真实阶段：`S0 / S1 / S2 / S3 / S7 / S8 / S9 / S10`
 - 当前 mock / 承接阶段：`S4 / S5 / S6`
 - 外围模块当前已由正式 FastAPI 承接：`materials / audit / settings / export`

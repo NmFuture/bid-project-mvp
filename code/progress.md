@@ -1506,3 +1506,93 @@ bid_workspace
 验证结果：
 
 - 文档整理，无代码验证。
+
+### 2026-05-01 17:10:23 post-commit 243ddcf
+
+提交摘要：Organize doc archive and backlog workflow
+
+变更文件：
+
+- `README.md`
+- `code/AGENT.md`
+- `code/plan.md`
+- `code/progress.md`
+- `code/sewpg-bid-api/README.md`
+- `code/sewpg-bid-backend/README.md`
+- `code/sewpg-bid-frontend/README.md`
+- `"doc/01-\351\234\200\346\261\202\344\270\216\347\233\256\346\240\207.md"`
+- `"doc/02-\346\212\200\346\234\257\351\200\211\345\236\213\344\270\216\346\236\266\346\236\204.md"`
+- `"doc/03-UI\350\256\276\350\256\241.md"`
+- `"doc/04-\350\267\257\347\272\277\345\244\207\351\200\211\344\270\216\345\212\237\350\203\275\347\233\230\347\202\271.md"`
+- `"doc/07-FastAPI\346\211\277\346\216\245\344\270\216\345\211\215\347\253\257\346\224\271\351\200\240.md"`
+- `"doc/09-\344\272\214\351\230\266\346\256\265\345\210\206\345\267\245\344\270\216\347\254\254\344\270\200\345\221\250\351\207\214\347\250\213\347\242\221.md"`
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+- `doc/README.md`
+- `"doc/archive/01-\351\234\200\346\261\202\344\270\216\347\233\256\346\240\207.md"`
+- `"doc/archive/02-\346\212\200\346\234\257\351\200\211\345\236\213\344\270\216\346\236\266\346\236\204.md"`
+- `"doc/archive/03-UI\350\256\276\350\256\241.md"`
+- `"doc/archive/04-\350\267\257\347\272\277\345\244\207\351\200\211\344\270\216\345\212\237\350\203\275\347\233\230\347\202\271.md"`
+- `"doc/archive/07-FastAPI\346\211\277\346\216\245\344\270\216\345\211\215\347\253\257\346\224\271\351\200\240.md"`
+- `"doc/archive/09-\344\272\214\351\230\266\346\256\265\345\210\206\345\267\245\344\270\216\347\254\254\344\270\200\345\221\250\351\207\214\347\250\213\347\242\221.md"`
+- `doc/archive/README.md`
+- `tmp/active-projects-20260427-230500.txt`
+- `tmp/bid-project-snapshot-20260427-230500.tar.gz`
+- `"tmp/docx_pdf/10-\347\224\262\346\226\271\346\212\200\346\234\257\347\273\206\350\256\256\350\215\211\346\241\210-\345\220\210\345\220\214\351\242\204\346\234\237\346\234\200\347\273\210\344\272\244\344\273\230\347\211\210.pdf"`
+- `tmp/export_contract_docx.py`
+- `tmp/orphan-before-documents-20260427-230500.txt`
+- `tmp/orphan-before-parsed-20260427-230500.txt`
+- `tmp/orphan-before-uploads-20260427-230500.txt`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 17:11:43 手动记录：待办 1 清理旧 mock/demo 资产
+
+改动目标：
+
+- 完成 `doc/14-甲方新增需求待办.md` 序号 1。
+- 清理前端历史 `mock-server`、`legacy/fastapi-mock` 残留目录。
+- 清理后端不再进入当前运行路径的 opencode FastAPI Word Skill demo。
+- 清理 OnlyOffice 独立 demo、smoke、样例文件、历史 compose、运行数据和日志，仅保留当前 Docker Compose 需要的 `docker-entrypoint.sh`。
+- 增加后端 `.dockerignore`，避免旧 demo 和本地运行产物重新进入 Docker build context。
+
+变更文件：
+
+- `doc/14-甲方新增需求待办.md`
+- `code/progress.md`
+- `code/AGENT.md`
+- `code/sewpg-bid-backend/README.md`
+- `code/sewpg-bid-backend/.dockerignore`
+- `code/sewpg-bid-backend/onlyoffice/README.md`
+- `code/sewpg-bid-backend/opencode/opencode-fastapi-word-skill-demo/`
+- `code/sewpg-bid-frontend/mock-server/`
+- `code/sewpg-bid-frontend/legacy/`
+
+验证结果：
+
+- 静态引用检查：无正式前后端代码引用已删除的 demo/smoke 入口。
+- `docker compose config --quiet`：通过。
+- `npm run build`：通过。
+- `python -m pytest`：56 passed, 6 skipped。
+
+### 2026-05-01 17:19:04 手动记录：待办 2 OnlyOffice 左右布局与全屏
+
+改动目标：
+
+- 完成 `doc/14-甲方新增需求待办.md` 序号 2。
+- 抽取统一的 `OnlyOfficeWorkspace` 工作台组件，提供左侧上下文、右侧文档和全屏/退出全屏开关。
+- S3 目录审核、S6 解析文档预览、S9 共创编辑统一接入左右布局。
+- 全屏状态支持 Esc 退出，并在全屏时锁定页面滚动。
+
+变更文件：
+
+- `doc/14-甲方新增需求待办.md`
+- `code/progress.md`
+- `code/sewpg-bid-frontend/src/components/shared/OnlyOfficeWorkspace.jsx`
+- `code/sewpg-bid-frontend/src/pages/OutlineReview.jsx`
+- `code/sewpg-bid-frontend/src/pages/MaterialReview.jsx`
+- `code/sewpg-bid-frontend/src/pages/CoCreationEditor.jsx`
+
+验证结果：
+
+- `npm run lint`：通过。
+- `npm run build`：通过。

@@ -96,8 +96,8 @@ code/
 ```text
 sewpg-bid-backend/
   app/           # 正式 FastAPI 代码
-  opencode/      # opencode skill / 调用参考 / demo
-  onlyoffice/    # OnlyOffice 接入参考 / demo 资产
+  opencode/      # opencode 镜像、配置与 skill 资产
+  onlyoffice/    # OnlyOffice Document Server entrypoint
 ```
 
 ### 2.3 `sewpg-bid-api`
@@ -114,7 +114,7 @@ sewpg-bid-backend/
 
 - FastAPI 代码
 - 前端代码
-- demo 脚本
+- 历史 mock / demo 脚本
 
 ## 3. 当前 MVP 口径
 

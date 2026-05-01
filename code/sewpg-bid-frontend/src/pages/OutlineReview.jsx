@@ -3,10 +3,10 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { outlineAPI, stagesAPI } from '../api'
 import { PageLoading, PageError } from '../components/states/PageState'
 import PageHeader from '../components/shared/PageHeader'
-import DataCard from '../components/shared/DataCard'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
+import OnlyOfficeWorkspace from '../components/shared/OnlyOfficeWorkspace'
 import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const cloneNodes = (nodes = []) => JSON.parse(JSON.stringify(nodes))
@@ -435,10 +435,20 @@ export default function OutlineReview({ showToast }) {
         )}
       />
 
-      <DataCard className="!p-0 overflow-hidden min-h-[560px]">
-        <div className="grid grid-cols-1 xl:grid-cols-2 min-h-[560px]">
-          <section className="flex flex-col border-r border-surface-container-high">
-            <div className="px-6 py-4 border-b border-surface-container-high bg-surface-container-low flex flex-wrap items-center justify-between gap-3">
+      <OnlyOfficeWorkspace
+        heightClass="min-h-[720px]"
+        gridClassName="xl:grid-cols-[minmax(26rem,40rem)_minmax(0,1fr)]"
+        documentTitle="招标文件"
+        documentSubtitle={`当前文件：${activeTenderFileName}`}
+        documentMeta={(
+          <span className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${hasOnlyOfficeSession && !onlyofficeError ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
+            {hasOnlyOfficeSession && !onlyofficeError ? '可预览' : '无预览'}
+          </span>
+        )}
+        documentAreaClassName="flex flex-col"
+        sidebar={(
+          <section className="flex h-full min-h-0 flex-col">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
               <h3 className="text-base font-semibold text-on-surface">目录文档</h3>
               <div className="flex items-center gap-3">
                 <button
@@ -457,7 +467,7 @@ export default function OutlineReview({ showToast }) {
               </div>
             </div>
 
-            <div className="p-6 flex-1 overflow-y-auto">
+            <div className="flex-1 overflow-y-auto p-5">
               {nodes.length ? (
                 renderRows(nodes)
               ) : (
@@ -474,39 +484,29 @@ export default function OutlineReview({ showToast }) {
               )}
             </div>
           </section>
-
-          <section className="flex flex-col bg-white">
-            <div className="px-6 py-4 border-b border-surface-container-high bg-surface-container-low">
-              <h3 className="text-base font-semibold text-on-surface">招标文件（OnlyOffice）</h3>
-              <p className="text-xs text-outline mt-1 truncate" title={activeTenderFileName}>
-                当前文件：{activeTenderFileName}
-              </p>
-            </div>
-            <div className="p-4 flex-1 min-h-0">
-              {onlyofficeError && (
-                <div className="mb-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-xs text-error">
-                  {onlyofficeError}
-                </div>
-              )}
-              {hasOnlyOfficeSession && !onlyofficeError ? (
-                <OnlyOfficeEmbed
-                  session={tenderPreview?.onlyoffice}
-                  mode="view"
-                  className="w-full h-full min-h-[460px] border border-surface-container-high bg-white"
-                  onReady={() => setOnlyofficeError('')}
-                  onError={(message) => setOnlyofficeError(message || 'OnlyOffice 文档加载失败')}
-                />
-              ) : (
-                <div className="h-full min-h-[460px] border border-dashed border-surface-container-high flex items-center justify-center text-center px-6">
-                  <p className="text-sm text-on-surface-variant">
-                    {tenderPreview?.message || '暂无可预览的招标文件。'}
-                  </p>
-                </div>
-              )}
-            </div>
-          </section>
-        </div>
-      </DataCard>
+        )}
+      >
+        {onlyofficeError && (
+          <div className="mb-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-xs text-error">
+            {onlyofficeError}
+          </div>
+        )}
+        {hasOnlyOfficeSession && !onlyofficeError ? (
+          <OnlyOfficeEmbed
+            session={tenderPreview?.onlyoffice}
+            mode="view"
+            className="h-full min-h-[560px] w-full rounded-md border border-surface-container-high bg-white"
+            onReady={() => setOnlyofficeError('')}
+            onError={(message) => setOnlyofficeError(message || 'OnlyOffice 文档加载失败')}
+          />
+        ) : (
+          <div className="flex min-h-[560px] flex-1 items-center justify-center rounded-md border border-dashed border-surface-container-high px-6 text-center">
+            <p className="text-sm text-on-surface-variant">
+              {tenderPreview?.message || '暂无可预览的招标文件。'}
+            </p>
+          </div>
+        )}
+      </OnlyOfficeWorkspace>
     </div>
   )
 }
