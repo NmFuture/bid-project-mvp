@@ -4,9 +4,9 @@ merger v2（方案 B）：按 assembly_plan.json 合并素材到技术标母版�
 
 关键特性：
 - 使用 docxcompose 做 section 级合并（媒体/样式自动处理）
-- 在 compose.append 前对每份素材调 inject_prefix_to_headings（父章节号注入）
 - 手插 toc heading：text="{chapter_no}  {title}"，样式=Heading N
-- 素材首 Heading 若匹配 toc_title 由 inject 去重（物理移除）
+- 素材内部 Heading 降级为正文小标题并清除 outlineLvl，不进入 Word/OnlyOffice 导航
+- 素材首 Heading 若匹配 toc_title 则去重（物理移除）
 - 前言段特殊：style=Heading 1，text="前言  投标说明函"
 - 封面段：attach_mode=cover 的卡片优先 compose，放在文档最前
 - STRUCTURAL / NEEDS_REVIEW 只插 Heading（+ 占位）
@@ -44,7 +44,7 @@ from copy import deepcopy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from preprocess import preprocess
-from numbering_fixer import inject_prefix_to_headings, strip_numPr_from_body, strip_numPr_from_heading_styles
+from numbering_fixer import demote_headings_to_body, strip_numPr_from_body, strip_numPr_from_heading_styles
 
 
 def _isolate_section(doc) -> bool:
@@ -239,11 +239,29 @@ def merge(
 
     # 状态：记录"当前父章节号"。appendix (附 xxx) 素材用这个作 parent
     current_parent_chapter = ""
-    # 每个父章节下已用的子编号计数，用于 appendix 不撞 MATCHED 的子节号
-    parent_counters: dict[str, int] = {}
     # 每个父章节下已经由素材 inject 生成的子 heading pure titles（去前缀去空白）
     # 用于让后续同父下的 NEEDS_REVIEW 子条目判"已被父素材覆盖"，避免重复占位
     seen_titles_by_parent: dict[str, set[str]] = {}
+    # Parent chapter -> raw child title -> official S2 heading metadata. Whole
+    # chapter materials often contain headings for their children (e.g. 4.1-4.7).
+    # Keep only those matched child titles as navigation headings; demote all
+    # other material-internal headings.
+    toc_children_by_parent: dict[str, dict[str, dict]] = {}
+    for child in non_cover:
+        if child.get("status") == "OUT_OF_SCOPE" or child.get("is_appendix"):
+            continue
+        child_flat = child.get("chapter_no_flat") or ""
+        parent = _parent_of(child_flat)
+        if not parent:
+            continue
+        title_key = str(child.get("title") or "").strip()
+        if not title_key:
+            continue
+        toc_children_by_parent.setdefault(parent, {})[title_key] = {
+            "chapter_no": child.get("chapter_no") or "",
+            "title": child.get("title") or "",
+            "level": child.get("level") or 1,
+        }
 
     # Step 1: 遍历正文 plan
     for i, entry in enumerate(non_cover):
@@ -340,30 +358,31 @@ def merge(
                     stats["errors"] += 1
                     continue
 
-                # 关键：inject 前缀到素材内部 heading
-                # skip_first_if_match 只对本条 entry 的第一份素材启用（避免叠加场景下
-                # 两份素材首 heading 都被删）
+                # 关键：S2 TOC 条目由 merger 手插为真正的导航 Heading。
+                # 素材内部 Heading 只作为正文小标题保留，不进入 Word/OnlyOffice
+                # 左侧导航；否则运行时 TOC 会被素材内部结构撑爆。
+                # remove_first_if_match 只对本条 entry 的第一份素材启用（避免叠加场景下
+                # 两份素材首 heading 都被删）。
                 try:
                     sub_doc = Document(str(prep))
-                    l1_off = parent_counters.get(parent_chapter, 0)
-                    inj_stats = inject_prefix_to_headings(
-                        sub_doc,
-                        parent_chapter_no=parent_chapter,
-                        toc_title=title,
-                        skip_first_if_match=(path_idx == 0),
-                        l1_offset=l1_off,
-                    )
-                    # 更新 parent 下已用 L1 计数，后续 appendix 接续
-                    parent_counters[parent_chapter] = inj_stats.get("final_l1", l1_off)
-                    if inj_stats["skipped_first"]:
-                        stats["inject_skipped_first"] += 1
-
-                    # 收集素材内部 heading 的 pure titles（去 inject 前缀）供后续 NEEDS_REVIEW 去重
                     _collect_heading_titles(
                         sub_doc,
                         seen_titles_by_parent.setdefault(parent_chapter, set()),
                     )
-                    # 保存 inject 后的副本
+                    demote_stats = demote_headings_to_body(
+                        sub_doc,
+                        toc_title=title,
+                        remove_first_if_match=(path_idx == 0),
+                        keep_heading_map=toc_children_by_parent.get(parent_chapter, {}),
+                    )
+                    if demote_stats["skipped_first"]:
+                        stats["inject_skipped_first"] += 1
+                    stats.setdefault("material_headings_demoted", 0)
+                    stats["material_headings_demoted"] += demote_stats["demoted"]
+                    stats.setdefault("material_headings_kept", 0)
+                    stats["material_headings_kept"] += demote_stats.get("kept", 0)
+
+                    # 保存处理后的副本
                     inj_path = prep_dir / f"inj_{_hash_path(src)}_{src.name}"
                     sub_doc.save(str(inj_path))
                     # 重新打开用于 compose；先隔离 section，避免 landscape 串扰

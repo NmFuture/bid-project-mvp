@@ -72,14 +72,50 @@ def scan_docx(docx_path: Path) -> dict:
     W_DRAWING = qn("w:drawing")
     W_PICT = qn("w:pict")
 
+    style_level_map: dict[str, int] = {}
+    styles_el = doc.part.styles._element
+    for style_el in styles_el.findall(qn("w:style")):
+        if style_el.get(qn("w:type")) != "paragraph":
+            continue
+        sid = style_el.get(qn("w:styleId")) or ""
+        if not sid:
+            continue
+        lvl = None
+        name_el = style_el.find(qn("w:name"))
+        name = name_el.get(qn("w:val")) if name_el is not None else ""
+        m = re.match(r"^(?:Heading|heading|标题)\s*(\d+)$", name or "")
+        if m:
+            lvl = int(m.group(1))
+        if lvl is None:
+            outline = style_el.find(qn("w:pPr") + "/" + qn("w:outlineLvl"))
+            if outline is not None:
+                try:
+                    value = int(outline.get(qn("w:val")))
+                    if 0 <= value <= 8:
+                        lvl = value + 1
+                except (TypeError, ValueError):
+                    pass
+        if lvl is not None:
+            style_level_map[sid] = lvl
+
     def _para_style_level(el):
         pPr = el.find(qn("w:pPr"))
         if pPr is None:
             return None
+        direct_outline = pPr.find(qn("w:outlineLvl"))
+        if direct_outline is not None:
+            try:
+                value = int(direct_outline.get(qn("w:val")))
+                if 0 <= value <= 8:
+                    return value + 1
+            except (TypeError, ValueError):
+                pass
         pStyle = pPr.find(qn("w:pStyle"))
         if pStyle is None:
             return None
         val = pStyle.get(qn("w:val")) or ""
+        if val in style_level_map:
+            return style_level_map[val]
         # styleId 数字 2-6 对应 Heading 2-6，10 对应 H1；也接受以 "Heading" 或 "标题" 开头
         if val in ("1", "10"):
             return 1

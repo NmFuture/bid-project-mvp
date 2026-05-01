@@ -487,18 +487,24 @@ def _material_matches_project(item: dict[str, Any], identity: dict[str, Any]) ->
 
 
 def _best_toc_section_for_material(item: dict[str, Any], toc_entries: list[dict[str, str]]) -> tuple[str, int]:
-    material_text = " ".join(
+    material_name_text = " ".join(
         [
             str(item.get("name") or ""),
             str(item.get("cleanedFileName") or ""),
-            str(item.get("folderPath") or ""),
         ]
     )
+    material_text = " ".join([material_name_text, str(item.get("folderPath") or "")])
     best_section = ""
     best_score = 0
+    best_rank: tuple[int, int, int] = (0, 0, 0)
     for entry in toc_entries:
-        score = _title_match_score(material_text, str(entry.get("title") or ""))
-        if score > best_score:
+        title = str(entry.get("title") or "")
+        score = _title_match_score(material_text, title)
+        direct_score = _title_match_score(material_name_text, title)
+        depth = len(str(entry.get("section") or "").split("."))
+        rank = (score, direct_score, depth)
+        if rank > best_rank:
+            best_rank = rank
             best_score = score
             best_section = str(entry.get("section") or "")
     return best_section, best_score
@@ -531,11 +537,13 @@ def _normalize_match_text(value: str) -> str:
 
 def _render_runtime_material_card(item: dict[str, Any], section: str) -> str:
     name = str(item.get("name") or item.get("cleanedFileName") or "未命名素材")
+    card_name = Path(str(item.get("cleanedFileName") or name)).stem
     scope = "通用" if str(item.get("materialTier") or "") == "standard" else "定制"
     category = str(item.get("group") or Path(str(item.get("folderPath") or "素材")).name or "素材")
     cleaned_name = str(item.get("cleanedFileName") or "")
     lines = [
         "---",
+        f"name: {json.dumps(card_name, ensure_ascii=False)}",
         f"path: {json.dumps(str(item.get('folderPath') or '') + '/' + name, ensure_ascii=False)}",
         f"scope: {json.dumps(scope, ensure_ascii=False)}",
         f"category: {json.dumps(category, ensure_ascii=False)}",

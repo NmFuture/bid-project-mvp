@@ -90,6 +90,32 @@ def _heading_level(style_name: str) -> Optional[int]:
     return None
 
 
+def _direct_outline_level(para) -> Optional[int]:
+    from docx.oxml.ns import qn
+
+    p_pr = para._p.find(qn("w:pPr"))
+    if p_pr is None:
+        return None
+    outline = p_pr.find(qn("w:outlineLvl"))
+    if outline is None:
+        return None
+    try:
+        value = int(outline.get(qn("w:val")))
+    except (TypeError, ValueError):
+        return None
+    if 0 <= value <= 8:
+        return value + 1
+    return None
+
+
+def _paragraph_heading_level(para) -> Optional[int]:
+    direct = _direct_outline_level(para)
+    if direct is not None:
+        return direct
+    style_name = (para.style.name or "") if para.style else ""
+    return _heading_level(style_name)
+
+
 def _replace_paragraph_text_preserve_format(para, new_text: str) -> None:
     """替换段落文本，尽量保留第一个 run 的格式（粗体/字体/字号）。"""
     if not para.runs:
@@ -99,6 +125,44 @@ def _replace_paragraph_text_preserve_format(para, new_text: str) -> None:
     first_run.text = new_text
     for extra_run in para.runs[1:]:
         extra_run.text = ""
+
+
+def _clear_direct_outline_and_numbering(para) -> None:
+    """Remove paragraph-level outline/numbering overrides.
+
+    Word/OnlyOffice navigation gives direct ``w:outlineLvl`` priority over the
+    paragraph style. If a source H1 paragraph is later restyled to Heading 3 but
+    keeps ``outlineLvl=0``, it still appears as a top-level item in the left
+    outline pane.
+    """
+    from docx.oxml.ns import qn
+
+    p_pr = para._p.find(qn("w:pPr"))
+    if p_pr is None:
+        return
+    for tag in ("w:outlineLvl", "w:numPr"):
+        el = p_pr.find(qn(tag))
+        if el is not None:
+            p_pr.remove(el)
+
+
+def _set_body_style_or_clear(para, doc) -> None:
+    """Switch to a body style; if the source doc lacks one, clear pStyle."""
+    from docx.oxml.ns import qn
+
+    for name in ("Normal", "正文"):
+        try:
+            para.style = doc.styles[name]
+            return
+        except KeyError:
+            continue
+
+    p_pr = para._p.find(qn("w:pPr"))
+    if p_pr is None:
+        return
+    p_style = p_pr.find(qn("w:pStyle"))
+    if p_style is not None:
+        p_pr.remove(p_style)
 
 
 # ---------- 方案 B 核心：前缀注入 ----------
@@ -215,12 +279,14 @@ def _set_heading_style(para, level: int, doc) -> None:
     target = f"Heading {level}"
     try:
         para.style = doc.styles[target]
+        _clear_direct_outline_and_numbering(para)
         return
     except KeyError:
         pass
     cn = f"标题 {level}"
     try:
         para.style = doc.styles[cn]
+        _clear_direct_outline_and_numbering(para)
     except KeyError:
         pass
 
@@ -236,6 +302,86 @@ def _normalize_for_match(s: str) -> str:
     s = s.replace("（", "(").replace("）", ")")
     s = s.replace("：", ":").replace("，", ",")
     return s
+
+
+def _normalize_title_key(s: str) -> str:
+    """Stronger title key for matching material subheadings to S2 TOC items."""
+    s = _normalize_for_match(s)
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", s)
+
+
+def demote_headings_to_body(
+    doc,
+    *,
+    toc_title: Optional[str] = None,
+    remove_first_if_match: bool = True,
+    keep_heading_map: Optional[dict] = None,
+) -> dict:
+    """Convert material-internal headings to body paragraphs.
+
+    S7 inserts navigational headings from the S2 TOC. Source-material headings
+    are useful as in-body subheadings. If a source heading matches a known S2
+    child item, keep it as the official numbered TOC heading; otherwise it must
+    not enter Word/OnlyOffice navigation. This keeps text, removes existing
+    numbering prefixes, and clears both Heading styles and direct outline levels
+    for non-TOC material headings.
+    """
+    normalized_keep: dict[str, dict] = {}
+    for key, value in (keep_heading_map or {}).items():
+        if not isinstance(value, dict):
+            continue
+        normalized_keep[_normalize_title_key(str(key))] = value
+
+    stats = {"demoted": 0, "kept": 0, "removed": 0, "skipped_first": False}
+    heading_entries: list[tuple] = []
+    for para in doc.paragraphs:
+        lvl = _paragraph_heading_level(para)
+        if lvl is None:
+            continue
+        pure = strip_prefix(para.text)
+        if not pure:
+            continue
+        heading_entries.append((para, pure))
+
+    if not heading_entries:
+        return stats
+
+    first_to_remove = None
+    if remove_first_if_match and toc_title:
+        first_para, first_pure = heading_entries[0]
+        if _normalize_for_match(first_pure) == _normalize_for_match(toc_title):
+            first_to_remove = first_para
+            stats["skipped_first"] = True
+
+    for para, pure in heading_entries:
+        if para is first_to_remove:
+            continue
+        keep = normalized_keep.get(_normalize_title_key(pure))
+        if keep:
+            title = str(keep.get("title") or pure).strip()
+            chapter_no = str(keep.get("chapter_no") or "").strip()
+            try:
+                level = int(keep.get("level") or 1)
+            except (TypeError, ValueError):
+                level = 1
+            new_text = f"{chapter_no}  {title}" if chapter_no else title
+            _replace_paragraph_text_preserve_format(para, new_text)
+            _set_heading_style(para, level, doc)
+            stats["kept"] += 1
+            continue
+        if para.text != pure:
+            _replace_paragraph_text_preserve_format(para, pure)
+        _set_body_style_or_clear(para, doc)
+        _clear_direct_outline_and_numbering(para)
+        for run in para.runs:
+            run.bold = True
+        stats["demoted"] += 1
+
+    if first_to_remove is not None:
+        first_to_remove._p.getparent().remove(first_to_remove._p)
+        stats["removed"] = 1
+
+    return stats
 
 
 # ---------- 正文手写编号擦除 ----------

@@ -309,6 +309,41 @@ class FillGenerationTests(unittest.TestCase):
         self.assertIn("noCoverItems", coverage)
         self.assertGreater(len(coverage["tree"]), 0)
 
+    def test_runtime_material_card_matching_prefers_specific_child_section(self) -> None:
+        from app.services.tech_assembly import _best_toc_section_for_material
+
+        section, score = _best_toc_section_for_material(
+            {
+                "name": "技术标-投标项目塔筒专题.docx",
+                "cleanedFileName": "技术标-投标项目塔筒专题.docx",
+                "folderPath": "通用素材/技术标/技术标-专题方案要求",
+            },
+            [
+                {"section": "5", "title": "专题方案要求"},
+                {"section": "5.10", "title": "投标项目塔筒专题"},
+            ],
+        )
+
+        self.assertGreaterEqual(score, 8)
+        self.assertEqual(section, "5.10")
+
+    def test_runtime_material_card_writes_clean_name_for_custom_override_rules(self) -> None:
+        from app.services.tech_assembly import _render_runtime_material_card
+
+        card_text = _render_runtime_material_card(
+            {
+                "id": "RAW-0081",
+                "name": "项目技术承诺函.docx",
+                "cleanedFileName": "项目技术承诺函.docx",
+                "materialTier": "customer",
+                "folderPath": "定制素材/技术标",
+            },
+            "4",
+        )
+
+        self.assertIn('name: "项目技术承诺函"', card_text)
+        self.assertIn('skeleton_section: "4"', card_text)
+
 
 if __name__ == "__main__":
     unittest.main()

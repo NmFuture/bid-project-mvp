@@ -12,12 +12,12 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 
 - **Heading text 直接带章节号字符串**（"第一章  标前概述" / "1.1  xxx" / "5.8.1  xxx"），不依赖 Word 多级列表自动编号
 - **母版 Heading 1-6 样式已解绑 numId**（由 tools/clean_master_numbering.py 保证）
-- 素材 docx 预处理时剥 `w:numPr`；合并前按父章节号**注入**编号前缀（相对深度算法）
-- 素材首 Heading 若文本匹配 toc 标题，**物理去重**（避免相邻重复）
+- 素材 docx 预处理时剥 `w:numPr`；最终 Word 导航 Heading **只来自 S2 目录**。素材内部 Heading 若能匹配当前父章节下的 S2 子目录，则改写为该 S2 编号 Heading；其余素材内部 Heading 降级为正文小标题并清除段落级 `w:outlineLvl`
+- 素材首 Heading 若文本匹配 toc 标题，**物理去重**（避免相邻重复）；不在 S2 目录内的素材内部 Heading 不进入左侧导航/TOC
 - 前言段 text="前言  投标说明函"，Heading 1 样式但无章节号前缀
 - **封面**作为 skeleton_section="封面" 的 L0 条目，attach_mode=cover，置于文档最前
 
-流水线：`parse_toc`（优先读 S2 JSON）+ `init_params` → `build_assembly`（plan 首位插 COVER） → `merger`（docxcompose + inject）→ `finalize`（TOC 域插于封面后、首 Heading 前）→ `verify`（硬性检查：幽灵章节=0 / 非法 H1=0 / 相邻重复=0）。
+流水线：`parse_toc`（优先读 S2 JSON）+ `init_params` → `build_assembly`（plan 首位插 COVER） → `merger`（docxcompose + 素材 Heading 对齐 S2/降级）→ `finalize`（TOC 域插于封面后、首 Heading 前）→ `verify`（硬性检查：幽灵章节=0 / 非法 H1=0 / 相邻重复=0）。
 
 ## 与 bid-toc-wiki-driven 的关系
 
@@ -124,7 +124,7 @@ python3 scripts/merger.py \
     --out /tmp/bid_merged.docx
 ```
 
-XML 级合并：relationship ID 去重、image 媒体合并、numbering.xml 兼容；[新增] 条目插占位；前言段作无编号 Heading 1。
+XML 级合并：relationship ID 去重、image 媒体合并、numbering.xml 兼容；[新增] 条目插占位；前言段作无编号 Heading 1；素材内部 Heading 只在匹配 S2 子目录时保留为导航 Heading，否则作为正文小标题保留，不进入 Word/OnlyOffice 导航。
 
 ### 第 6 步：终检打磨
 
