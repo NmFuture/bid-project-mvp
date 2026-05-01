@@ -35,7 +35,8 @@ const buildInitialForm = (project = null, defaultBidType = '') => ({
   materialProjectName: String(project?.materialProjectName || ''),
   manager: String(project?.manager || ''),
   bidType: String(project?.bidType || defaultBidType || '技术标'),
-  deadline: String(project?.deadline || ''),
+  startDate: String(project?.startDate || ''),
+  endDate: String(project?.endDate || project?.deadline || ''),
 })
 
 const customerLabel = (item) => `${item.name}${item.customerId ? ` / ${item.customerId}` : ''}`
@@ -178,7 +179,8 @@ export default function ProjectWizardModal({
     if (customerMode === 'library' && !selectedMaterialCustomerId) return false
     if (materialProjectMode === 'library' && !selectedMaterialProjectId) return false
     if (!form.manager.trim()) return false
-    if (!form.deadline) return false
+    if (!form.startDate) return false
+    if (!form.endDate) return false
     return true
   }, [customerMode, form, materialProjectMode, selectedMaterialCustomerId, selectedMaterialProjectId, step])
 
@@ -196,6 +198,7 @@ export default function ProjectWizardModal({
     try {
       const payload = {
         ...form,
+        deadline: form.endDate,
         owner: form.customerName,
         isKeyAccount: customerMode === 'library' && Boolean(selectedMaterialCustomerId),
         keyAccountId: customerMode === 'library' ? selectedMaterialCustomerId : '',
@@ -485,15 +488,23 @@ export default function ProjectWizardModal({
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
+                  <label className="block text-sm font-semibold text-on-surface mb-2">起始日期 *</label>
+                  <input
+                    type="date"
+                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                    value={form.startDate}
+                    onChange={(e) => updateForm('startDate', e.target.value)}
+                  />
+                </div>
+                <div>
                   <label className="block text-sm font-semibold text-on-surface mb-2">截止日期 *</label>
                   <input
                     type="date"
                     className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                    value={form.deadline}
-                    onChange={(e) => updateForm('deadline', e.target.value)}
+                    value={form.endDate}
+                    onChange={(e) => updateForm('endDate', e.target.value)}
                   />
                 </div>
-                <div className="hidden md:block" />
               </div>
             </div>
           )}
@@ -514,7 +525,8 @@ export default function ProjectWizardModal({
 	                    ['素材项目ID', materialProjectMode === 'library' ? selectedMaterialProjectId || '—' : project?.materialProjectId || '创建后生成'],
 	                    ['负责人', form.manager || '—'],
 	                    ['标书类型', form.bidType],
-	                    ['截止日期', form.deadline || '—'],
+	                    ['起始日期', form.startDate || '—'],
+	                    ['截止日期', form.endDate || '—'],
                   ].map(([label, value], i) => (
                     <div key={i} className="flex flex-col gap-1">
                       <span className="text-xs text-outline">{label}</span>

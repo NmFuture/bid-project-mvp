@@ -229,7 +229,7 @@ export default function ProjectList({ showToast, viewMode = 'projects' }) {
       ) : (
         <div className="project-table-frame mt-2 bg-surface-container-lowest border border-outline-variant/50 flex-1 min-h-0 flex flex-col">
           <div className="overflow-x-auto overflow-y-auto flex-1 min-h-0">
-            <table className="w-full min-w-[1080px]">
+            <table className="w-full min-w-[1180px]">
               <thead>
                 <tr>
                   <th className="px-6 text-left text-[14px]">项目编号</th>
@@ -238,6 +238,7 @@ export default function ProjectList({ showToast, viewMode = 'projects' }) {
                   <th className="px-6 text-left text-[14px]">负责人</th>
                   <th className="px-6 text-left text-[14px]">标书类型</th>
                   <th className="px-6 text-left text-[14px]">当前阶段</th>
+                  <th className="px-6 text-left text-[14px]">起始日期</th>
                   <th className="px-6 text-left text-[14px]">截止日期</th>
                   <th className="px-6 text-left text-[14px]">更新时间</th>
                   <th className="px-4 text-center text-[14px] w-[80px]">操作</th>
@@ -259,7 +260,8 @@ export default function ProjectList({ showToast, viewMode = 'projects' }) {
                       <td className="px-6 text-[14px] text-on-surface-variant">{project.manager || '-'}</td>
                       <td className="px-6 text-[14px] text-on-surface-variant">{project.bidType || '-'}</td>
                       <td className="px-6 text-[14px] text-on-surface">{project.stageLabel || '-'}</td>
-                      <td className="px-6 text-[14px] text-on-surface-variant">{project.deadline || '-'}</td>
+                      <td className="px-6 text-[14px] text-on-surface-variant">{project.startDate || '-'}</td>
+                      <td className="px-6 text-[14px] text-on-surface-variant">{project.endDate || project.deadline || '-'}</td>
                       <td className="px-6 text-[14px] text-on-surface-variant">{formatDateTime(project.updatedAt)}</td>
                       <td className="px-4 text-center relative">
                         <button

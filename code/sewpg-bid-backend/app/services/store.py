@@ -235,6 +235,9 @@ class AppStore:
     def _normalize_project_identity(project: dict[str, Any]) -> dict[str, Any]:
         project_id = str(project.get("id") or "")
         project["projectCode"] = str(project.get("projectCode") or project_id)
+        project["startDate"] = str(project.get("startDate") or "")
+        project["endDate"] = str(project.get("endDate") or project.get("deadline") or "")
+        project["deadline"] = str(project.get("deadline") or project.get("endDate") or "")
         identity = build_project_identity(project)
         project["identity"] = identity
         project["customerId"] = identity.get("customerId") or ""
@@ -293,7 +296,9 @@ class AppStore:
             "materialProjectMode": project.get("materialProjectMode") or identity.get("materialProjectMode") or "",
             "owner": project["owner"],
             "manager": project["manager"],
-            "deadline": project["deadline"],
+            "startDate": project.get("startDate") or "",
+            "endDate": project.get("endDate") or project.get("deadline") or "",
+            "deadline": project.get("deadline") or project.get("endDate") or "",
             "bidType": project["bidType"],
             "currentStage": project["currentStage"],
             "stageLabel": stage_label,
@@ -370,7 +375,9 @@ class AppStore:
             "materialProjectName": str(data.get("materialProjectName") or data.get("name") or ""),
             "owner": str(data.get("owner") or data.get("customerName") or ""),
             "manager": str(data.get("manager") or ""),
-            "deadline": str(data.get("deadline") or ""),
+            "startDate": str(data.get("startDate") or ""),
+            "endDate": str(data.get("endDate") or data.get("deadline") or ""),
+            "deadline": str(data.get("deadline") or data.get("endDate") or ""),
             "bidType": str(data.get("bidType") or "技术标"),
             "isKeyAccount": bool(data.get("isKeyAccount")),
             "keyAccountId": str(data.get("keyAccountId") or ""),
@@ -503,11 +510,17 @@ class AppStore:
             "materialProjectName",
             "owner",
             "manager",
+            "startDate",
+            "endDate",
             "deadline",
             "bidType",
         ]:
             if field in data:
                 project[field] = str(data[field] or "") if field == "projectCode" else data[field]
+        if "endDate" in data and "deadline" not in data:
+            project["deadline"] = str(data.get("endDate") or "")
+        if "deadline" in data and "endDate" not in data:
+            project["endDate"] = str(data.get("deadline") or "")
         if "reviewDecision" in data:
             decision = str(data.get("reviewDecision") or "").strip().lower()
             if decision not in REVIEW_DECISION_LABELS:
@@ -572,6 +585,12 @@ class AppStore:
     ) -> dict[str, Any]:
         project = self._require(project_id)
         parsed_at = now_iso()
+        project_updates = parse_storage.get("projectUpdates") if isinstance(parse_storage, dict) else {}
+        if isinstance(project_updates, dict):
+            for field in ["startDate", "endDate", "deadline"]:
+                value = str(project_updates.get(field) or "").strip()
+                if value and not str(project.get(field) or "").strip():
+                    project[field] = value
         project["files"] = [item["name"] for item in tender_files]
         project["fileRecords"] = copy.deepcopy(tender_files)
         project["templateFileRecords"] = copy.deepcopy(template_files)
@@ -594,6 +613,14 @@ class AppStore:
             for item in tender_files
         ]
         items: list[dict[str, Any]] = []
+        structured: dict[str, Any] = {}
+        if isinstance(parse_storage, dict):
+            raw_items = parse_storage.get("items")
+            raw_structured = parse_storage.get("structured")
+            if isinstance(raw_items, list):
+                items = copy.deepcopy(raw_items)
+            if isinstance(raw_structured, dict):
+                structured = copy.deepcopy(raw_structured)
         source_file_lookup = {item["name"]: item for item in source_files}
         if summary and parse_storage:
             for document in parse_storage.get("documents", []):
@@ -607,11 +634,15 @@ class AppStore:
                 "id": project["id"],
                 "files": copy.deepcopy(project["files"]),
                 "templateFiles": copy.deepcopy(project["templateFiles"]),
+                "startDate": project.get("startDate") or "",
+                "endDate": project.get("endDate") or project.get("deadline") or "",
+                "deadline": project.get("deadline") or project.get("endDate") or "",
                 "currentStage": project["currentStage"],
                 "stageLabel": STAGE_NAMES[project["currentStage"]],
             },
             "sourceFiles": source_files,
             "items": items,
+            "structured": structured,
             "summary": summary or {
                 "fileCount": len(source_files),
                 "extractedCount": len(items),

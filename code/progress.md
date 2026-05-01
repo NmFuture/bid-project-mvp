@@ -10,6 +10,42 @@
 
 ## 进度记录
 
+### 2026-05-01 21:11 待办 8/13 项目日期与多招标文件结构化解析
+
+改动目标：
+
+- `http://127.0.0.1/parse` 支持多份招标文件一起解析，并输出评分细则、项目基础信息、风机参数、性能指标、环境适应性、专题方案等结构化结果。
+- 结构化解析项保留来源文件、证据文本和证据位置。
+- 项目支持起始日期和截止日期；S1 从招标文件识别日期并回填空字段，用户可在项目信息弹窗人工覆盖。
+
+改动内容：
+
+- 后端 S1 解析新增 `bid-tender-structured-parser` 目标 Skill、`s1parse` opencode 命令、结构化 JSON 产物和本地兜底解析。
+- `parse_result` 增加 `items`、`structured`、`summary.categoryCounts` 和 `summary.projectDates`。
+- 项目状态、列表、详情和驾驶舱增加 `startDate` / `endDate`，保留 `deadline` 作为截止日期兼容字段。
+- 前端解析页从“关键技术参数”升级为结构化解析结果表，展示类别、字段、提取值、来源文件、证据位置和证据文本。
+- 项目创建/完善弹窗增加起始日期和截止日期，确认提交时允许人工覆盖解析结果。
+- 已勾选 `doc/14-甲方新增需求待办.md` 第 8 项和第 13 项。
+
+验证结果：
+
+- 后端 RED 测试已先失败并确认覆盖新增行为。
+- `tests/test_parse_pipeline.py` 通过：8 passed。
+- `.venv/bin/python -m pytest -q` 通过：62 passed，6 skipped。
+- `python3 -m py_compile app/services/parsing.py app/services/store.py app/services/opencode_client.py app/api/routes/projects.py opencode/skill/bid-tender-structured-parser/scripts/run_from_manifest.py` 通过。
+- `npm run lint` 通过。
+- `npm run build` 通过；Vite 仍提示主 chunk 超过 500KB，这是既有构建体积提示。
+- `docker compose build opencode fastapi web` 通过。
+- `docker compose up -d opencode fastapi worker web` 已重建并启动，`fastapi` 健康，`web` 监听 80，`opencode` 健康。
+- `http://127.0.0.1/` 返回 HTTP 200。
+- `/api/healthz` 返回 `status=ok`。
+- opencode 容器内 `s1parse` 命令存在，并已用容器内 manifest 烟测输出结构化 JSON。
+- 已用临时项目调用 `/api/projects/{id}/parse-results/upload-and-run` 上传 Markdown 招标文件，返回 `extractedCount=7`，并正确识别 `startDate=2026-06-01`、`endDate=2026-09-30`；临时项目已删除。
+
+遗留问题：
+
+- S1 结构化解析当前是 Skill 命令 + 本地规则兜底，复杂自然语言和表格型 PDF 的高召回仍依赖后续 OCR/模型增强。
+
 ### 2026-05-01 20:03 素材库清洗稿 OnlyOffice 预览
 
 改动目标：

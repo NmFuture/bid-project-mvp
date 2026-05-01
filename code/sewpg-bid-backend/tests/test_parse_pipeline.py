@@ -93,6 +93,114 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(payload["sourceFiles"][0]["type"], "MD")
         self.assertIn("Markdown 招标说明", payload["summary"]["textPreview"])
 
+    def test_upload_and_parse_multiple_tenders_extracts_structured_requirements_and_dates(self) -> None:
+        project_id = self.create_project()
+        main_tender = "\n".join(
+            [
+                "# 总发包招标文件",
+                "项目名称：华能甘肃100MW风电项目",
+                "招标编号：HN-2026-001",
+                "招标人：华能集团",
+                "项目起始日期：2026年6月1日",
+                "投标截止日期：2026年9月30日",
+                "评分细则：技术方案30分，供货保障10分。",
+                "交货周期：2026年10月1日至2027年3月31日",
+            ]
+        ).encode("utf-8")
+        child_tender = "\n".join(
+            [
+                "# 子项目招标文件",
+                "单机容量：6.25MW",
+                "叶轮直径：200m",
+                "轮毂高度：120m",
+                "可利用率：97%",
+                "功率曲线保证率：95%",
+                "环境适应性要求：低温-30℃、覆冰、防雷暴。",
+                "专题方案要求：叶片专题方案、变桨系统专题方案。",
+            ]
+        ).encode("utf-8")
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                ("tenderFiles", ("总发包招标文件.md", main_tender, "text/markdown")),
+                ("tenderFiles", ("子项目招标文件.md", child_tender, "text/markdown")),
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["summary"]["fileCount"], 2)
+        self.assertGreaterEqual(payload["summary"]["extractedCount"], 10)
+
+        category_labels = {category["label"] for category in payload["structured"]["categories"]}
+        self.assertIn("评分细则", category_labels)
+        self.assertIn("项目基础信息", category_labels)
+        self.assertIn("风机核心参数", category_labels)
+        self.assertIn("性能保证指标", category_labels)
+        self.assertIn("环境适应性要求", category_labels)
+        self.assertIn("专题方案要求", category_labels)
+
+        item_types = {item["type"] for item in payload["items"]}
+        self.assertIn("评分细则", item_types)
+        self.assertIn("项目基础信息", item_types)
+        self.assertIn("风机核心参数", item_types)
+        self.assertIn("性能保证指标", item_types)
+        self.assertIn("环境适应性要求", item_types)
+        self.assertIn("专题方案要求", item_types)
+
+        source_files = {item["sourceFile"] for item in payload["items"]}
+        self.assertIn("总发包招标文件.md", source_files)
+        self.assertIn("子项目招标文件.md", source_files)
+        self.assertTrue(all(item.get("evidence") for item in payload["items"]))
+        self.assertTrue(all(item.get("evidenceLocation") for item in payload["items"]))
+
+        parsed_dates = payload["structured"]["projectDates"]
+        self.assertEqual(parsed_dates["startDate"], "2026-06-01")
+        self.assertEqual(parsed_dates["endDate"], "2026-09-30")
+
+        project = store._require(project_id)
+        self.assertEqual(project["startDate"], "2026-06-01")
+        self.assertEqual(project["endDate"], "2026-09-30")
+        self.assertEqual(project["deadline"], "2026-09-30")
+
+    def test_project_create_and_update_support_start_and_end_dates(self) -> None:
+        response = self.client.post(
+            "/api/projects",
+            json={
+                "name": "日期测试项目",
+                "customerName": "测试业主",
+                "startDate": "2026-05-10",
+                "endDate": "2026-08-20",
+                "deadline": "2026-08-20",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        created = response.json()
+        self.assertEqual(created["startDate"], "2026-05-10")
+        self.assertEqual(created["endDate"], "2026-08-20")
+        self.assertEqual(created["deadline"], "2026-08-20")
+
+        update_response = self.client.put(
+            f"/api/projects/{created['id']}",
+            json={
+                "startDate": "2026-05-15",
+                "endDate": "2026-09-01",
+                "deadline": "2026-09-01",
+            },
+        )
+        self.assertEqual(update_response.status_code, 200)
+        updated = update_response.json()
+        self.assertEqual(updated["startDate"], "2026-05-15")
+        self.assertEqual(updated["endDate"], "2026-09-01")
+        self.assertEqual(updated["deadline"], "2026-09-01")
+
+        list_response = self.client.get("/api/projects")
+        self.assertEqual(list_response.status_code, 200)
+        listed = list_response.json()["items"][0]
+        self.assertEqual(listed["startDate"], "2026-05-15")
+        self.assertEqual(listed["endDate"], "2026-09-01")
+
     def test_upload_and_parse_persists_text_to_disk_artifact(self) -> None:
         project_id = self.create_project()
         file_bytes = build_docx_bytes(

@@ -65,6 +65,8 @@ async def project_cockpit(project_id: str) -> dict[str, Any]:
     project = store.get_project(project_id)
     return {
         "summary": "当前按 MVP 主链路推进，关键集成点是解析、目录、正文拼装、OnlyOffice。",
+        "startDate": project.get("startDate") or "",
+        "endDate": project.get("endDate") or project.get("deadline") or "",
         "deadline": project.get("deadline") or "",
         "tasks": [
             {"id": "task-1", "label": "完成 S1 模板上传", "status": "done" if project["currentStage"] > 1 else "pending"},

@@ -135,7 +135,8 @@ export default function ParseResult({ showToast }) {
     String(project?.name || '').trim()
     && String(project?.customerName || '').trim()
     && String(project?.manager || '').trim()
-    && String(project?.deadline || '').trim(),
+    && String(project?.startDate || '').trim()
+    && String(project?.endDate || project?.deadline || '').trim(),
   )
   const canGoNextStage = isReviewApproved && isParseCompleted && isProjectInfoComplete
 
@@ -279,7 +280,7 @@ export default function ParseResult({ showToast }) {
           </button>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs">
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 text-xs">
           <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
             <p className="font-medium text-on-surface mb-1">解析决策状态</p>
             <p className="text-on-surface-variant">{reviewDecisionLabel}</p>
@@ -291,6 +292,14 @@ export default function ParseResult({ showToast }) {
           <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
             <p className="font-medium text-on-surface mb-1">已上传招标文件（只读）</p>
             <p className="text-on-surface-variant">{sourceFiles.length ? sourceFiles.map((item) => item.name).join('，') : '暂无'}</p>
+          </div>
+          <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+            <p className="font-medium text-on-surface mb-1">项目起始日期</p>
+            <p className="text-on-surface-variant">{project?.startDate || '-'}</p>
+          </div>
+          <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+            <p className="font-medium text-on-surface mb-1">项目截止日期</p>
+            <p className="text-on-surface-variant">{project?.endDate || project?.deadline || '-'}</p>
           </div>
         </div>
 

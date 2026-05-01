@@ -193,6 +193,16 @@ class OpencodeClient:
             "opencodeOutput": self._build_output_trace(session_id, response),
         }
 
+    def generate_tender_parse_with_trace(self, prompt_text: str) -> dict[str, Any]:
+        session = self.create_session("S1 招标文件结构化解析")
+        session_id = str(session.get("id") or "")
+        response = self._send_prompt_with_session_polling(session_id, prompt_text)
+        parsed = self._extract_tender_parse_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
     def list_session_messages(self, session_id: str) -> list[dict[str, Any]]:
         try:
             with httpx.Client(timeout=httpx.Timeout(5.0, connect=5.0)) as client:
@@ -248,6 +258,20 @@ class OpencodeClient:
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("outputFile"), str):
             raise RuntimeError("futurecode 返回的正文拼装 JSON 结构不正确。")
+        return parsed
+
+    def _extract_tender_parse_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = self._extract_json_response(
+            response,
+            empty_message="futurecode 未返回招标解析结果。",
+            repair_kind="tender_parse",
+        )
+        if not isinstance(parsed, dict) or (
+            not isinstance(parsed.get("items"), list)
+            and not isinstance(parsed.get("structured"), dict)
+            and not isinstance(parsed.get("outputFile"), str)
+        ):
+            raise RuntimeError("futurecode 返回的招标解析 JSON 结构不正确。")
         return parsed
 
     def _extract_json_response(
@@ -447,6 +471,16 @@ class OpencodeClient:
                 '"needsReview":"/data/parsed/PRJ-0001/s7_assembly_workdir/needs_review.md",'
                 '"planFile":"/data/parsed/PRJ-0001/s7_assembly_workdir/assembly_plan.json",'
                 '"summary":{"total":1,"byStatus":{"MATCHED":1},"usedPathCount":1}}'
+            )
+        elif repair_kind == "tender_parse":
+            schema_hint = (
+                '{"schemaVersion":"bid-tender-structured-v1","outputFile":'
+                '"/data/parsed/PRJ-0001/s1_structured_result.json",'
+                '"items":[{"id":"REQ-0001","type":"项目基础信息","category":"project_basics",'
+                '"title":"项目名称","keyEntity":"项目名称","keyValue":"示例项目",'
+                '"sourceFile":"招标文件.docx","evidence":"项目名称：示例项目","evidenceLocation":"L1"}],'
+                '"structured":{"projectDates":{"startDate":"2026-01-01","endDate":"2026-02-01"},'
+                '"categories":[{"key":"project_basics","label":"项目基础信息","count":1,"items":[]}]}}'
             )
         else:
             schema_hint = (

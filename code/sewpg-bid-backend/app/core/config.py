@@ -26,6 +26,13 @@ def _int_env(name: str, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _upload_extensions() -> tuple[str, ...]:
     raw = _csv_env("ALLOWED_UPLOAD_EXTENSIONS", (".pdf", ".docx", ".md"))
     normalized: list[str] = []
@@ -50,6 +57,7 @@ class Settings:
     opencode_provider_id: str
     opencode_model_id: str
     opencode_timeout_sec: float
+    s1_parse_opencode_enabled: bool
     bid_internal_api_base_url: str
     onlyoffice_internal_url: str
     onlyoffice_backend_base_url: str
@@ -92,6 +100,10 @@ settings = Settings(
     opencode_provider_id=os.getenv("OPENCODE_PROVIDER_ID", "opencode"),
     opencode_model_id=os.getenv("OPENCODE_MODEL_ID", "big-pickle"),
     opencode_timeout_sec=float(os.getenv("OPENCODE_TIMEOUT_SEC", "1800")),
+    s1_parse_opencode_enabled=_bool_env(
+        "S1_PARSE_OPENCODE_ENABLED",
+        os.getenv("APP_ENV", "development") == "production",
+    ),
     bid_internal_api_base_url=os.getenv("BID_INTERNAL_API_BASE_URL", "http://fastapi:8000").rstrip("/"),
     onlyoffice_internal_url=os.getenv("ONLYOFFICE_INTERNAL_URL", "http://127.0.0.1:8080"),
     onlyoffice_backend_base_url=os.getenv("ONLYOFFICE_BACKEND_BASE_URL", "").rstrip("/"),

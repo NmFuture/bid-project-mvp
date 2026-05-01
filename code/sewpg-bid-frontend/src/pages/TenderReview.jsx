@@ -197,42 +197,47 @@ export default function TenderReview({ showToast }) {
   }, [projects, queryProjectId])
 
   const parsedItems = useMemo(() => parseData?.items || [], [parseData?.items])
-  const technicalItems = useMemo(() => {
-    const filtered = parsedItems.filter((item) => item.type === '技术参数')
-    if (filtered.length) return filtered
-    return parsedItems.filter((item) => item.keyEntity || item.keyValue || item.title)
-  }, [parsedItems])
-
-  const technicalRows = useMemo(() => {
-    if (!technicalItems.length) return []
-    return technicalItems.map((item, index) => {
+  const structuredCategories = useMemo(
+    () => (Array.isArray(parseData?.structured?.categories) ? parseData.structured.categories : []),
+    [parseData],
+  )
+  const parsedDates = parseData?.structured?.projectDates || parseData?.summary?.projectDates || {}
+  const structuredRows = useMemo(() => {
+    if (!parsedItems.length) return []
+    return parsedItems.map((item, index) => {
       const fileName = item.sourceFile || sourceFiles[0]?.name || '-'
       const fileMeta = sourceFiles.find((file) => file.name === fileName)
-      const technicalParam = item.keyEntity && item.keyValue
+      const value = item.keyEntity && item.keyValue
         ? `${item.keyEntity}：${item.keyValue}`
         : item.keyValue || item.keyEntity || item.title || '-'
       return {
         id: item.id || `TP-${index + 1}`,
+        category: item.type || item.category || '-',
+        field: item.keyEntity || item.title || '-',
+        value,
         fileName,
         fileType: fileMeta?.type || getFileTypeLabel(fileName),
-        pageLabel: item.page ? `P.${item.page}` : (fileMeta?.pageCount || '-'),
-        technicalParam,
+        evidenceLocation: item.evidenceLocation || (item.page ? `P.${item.page}` : '-'),
+        evidence: item.evidence || '-',
       }
     })
-  }, [technicalItems, sourceFiles])
+  }, [parsedItems, sourceFiles])
 
   const fallbackRows = useMemo(() => {
     if (!sourceFiles.length) return []
     return sourceFiles.map((file) => ({
       id: file.id || file.name,
+      category: '-',
+      field: file.name,
+      value: parseData?.status === 'completed' ? '未提取到结构化结果' : '待触发解析',
       fileName: file.name,
       fileType: file.type || getFileTypeLabel(file.name),
-      pageLabel: file.pageCount || '-',
-      technicalParam: parseData?.status === 'completed' ? '未提取到技术参数' : '待触发解析',
+      evidenceLocation: file.pageCount || '-',
+      evidence: '-',
     }))
   }, [sourceFiles, parseData?.status])
 
-  const rows = technicalRows.length ? technicalRows : fallbackRows
+  const rows = structuredRows.length ? structuredRows : fallbackRows
   const isParseCompleted = parseData?.status === 'completed'
   const reviewDecision = String(project?.reviewDecision || 'pending')
   const reviewDecisionLabel = REVIEW_DECISION_LABELS[reviewDecision] || REVIEW_DECISION_LABELS.pending
@@ -427,7 +432,7 @@ export default function TenderReview({ showToast }) {
         <div className="flex items-center justify-between gap-4">
           <div>
             <h3 className="text-sm font-semibold text-on-surface">招标文件上传与关键参数解析</h3>
-            <p className="text-xs text-outline mt-1">本模块负责上传招标文件并解析关键参数，供投标决策判断。</p>
+            <p className="text-xs text-outline mt-1">本模块负责上传多份招标文件并解析结构化要求，供投标决策判断。</p>
           </div>
           <button
             onClick={handleUploadAndParse}
@@ -466,7 +471,7 @@ export default function TenderReview({ showToast }) {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs text-outline">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 text-xs text-outline">
           <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
             <p className="font-medium text-on-surface mb-1">已上传招标文件（当前项目）</p>
             <p>{sourceFiles.length ? sourceFiles.map((file) => file.name).join('，') : '暂无'}</p>
@@ -475,39 +480,51 @@ export default function TenderReview({ showToast }) {
             <p className="font-medium text-on-surface mb-1">解析时间</p>
             <p>{formatDateTime(parseData?.parsedAt)}</p>
           </div>
+          <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+            <p className="font-medium text-on-surface mb-1">项目起始日期</p>
+            <p>{parsedDates?.startDate || project?.startDate || '-'}</p>
+          </div>
+          <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+            <p className="font-medium text-on-surface mb-1">项目截止日期</p>
+            <p>{parsedDates?.endDate || project?.endDate || project?.deadline || '-'}</p>
+          </div>
         </div>
       </DataCard>
 
       <DataCard className="!p-0 overflow-hidden">
         <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-on-surface">关键技术参数（解析输出）</h3>
+          <h3 className="text-sm font-semibold text-on-surface">结构化解析结果</h3>
           <span className={`text-xs px-2.5 py-1 rounded-md font-medium ${isParseCompleted ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
-            {isParseCompleted ? '解析完成' : '待解析'}
+            {isParseCompleted ? `解析完成${structuredCategories.length ? ` · ${structuredCategories.length} 类` : ''}` : '待解析'}
           </span>
         </div>
 
         {!sourceFiles.length ? (
           <div className="p-6 text-sm text-on-surface-variant">当前项目尚未上传招标文件。</div>
         ) : !isParseCompleted ? (
-          <div className="p-6 text-sm text-on-surface-variant">请点击上方“上传并解析”开始提取关键技术参数。</div>
+          <div className="p-6 text-sm text-on-surface-variant">请点击上方“上传并解析”开始提取结构化要求。</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm min-w-[1120px]">
               <thead>
                 <tr className="bg-surface-container-low border-b border-surface-container-high">
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">文件名称</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">文件类型</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">页数</th>
-                  <th className="px-6 py-3 text-left font-semibold text-on-surface">技术参数</th>
+                  <th className="px-6 py-3 text-left font-semibold text-on-surface">类别</th>
+                  <th className="px-6 py-3 text-left font-semibold text-on-surface">字段</th>
+                  <th className="px-6 py-3 text-left font-semibold text-on-surface">提取值</th>
+                  <th className="px-6 py-3 text-left font-semibold text-on-surface">来源文件</th>
+                  <th className="px-6 py-3 text-left font-semibold text-on-surface">证据位置</th>
+                  <th className="px-6 py-3 text-left font-semibold text-on-surface">证据文本</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row) => (
                   <tr key={row.id} className="border-b border-surface-container-high hover:bg-surface-container-low/60">
-                    <td className="px-6 py-3 text-on-surface min-w-[240px]">{row.fileName}</td>
-                    <td className="px-6 py-3 text-on-surface-variant whitespace-nowrap">{row.fileType}</td>
-                    <td className="px-6 py-3 text-on-surface-variant whitespace-nowrap">{row.pageLabel}</td>
-                    <td className="px-6 py-3 text-primary font-medium min-w-[260px]">{row.technicalParam}</td>
+                    <td className="px-6 py-3 text-on-surface whitespace-nowrap">{row.category}</td>
+                    <td className="px-6 py-3 text-on-surface-variant min-w-[160px]">{row.field}</td>
+                    <td className="px-6 py-3 text-primary font-medium min-w-[220px]">{row.value}</td>
+                    <td className="px-6 py-3 text-on-surface-variant min-w-[220px]">{row.fileName}</td>
+                    <td className="px-6 py-3 text-on-surface-variant whitespace-nowrap">{row.evidenceLocation}</td>
+                    <td className="px-6 py-3 text-on-surface-variant min-w-[300px]">{row.evidence}</td>
                   </tr>
                 ))}
               </tbody>

@@ -79,7 +79,8 @@ export default function ProjectCockpit({ showToast }) {
 
   const tasks = Array.isArray(cockpit?.tasks) ? cockpit.tasks : []
   const stageSummary = String(cockpit?.summary || '请根据当前阶段推进任务，关键阻塞项会在此汇总。')
-  const stageDeadline = String(cockpit?.deadline || project?.deadline || '-')
+  const stageStartDate = String(cockpit?.startDate || project?.startDate || '-')
+  const stageDeadline = String(cockpit?.endDate || cockpit?.deadline || project?.endDate || project?.deadline || '-')
 
   const exportLockReason = getStageLockReason(10)
   const editorLockReason = getStageLockReason(9)
@@ -151,9 +152,15 @@ export default function ProjectCockpit({ showToast }) {
               </div>
               <h2 className="text-xl font-headline font-bold text-on-surface">当前阶段: {project?.stageLabel}</h2>
             </div>
-            <div className="text-sm text-outline flex items-center gap-1">
-              <span className="material-symbols-outlined text-sm">schedule</span>
-              截止日期: {stageDeadline}
+            <div className="text-sm text-outline flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
+              <span className="inline-flex items-center gap-1">
+                <span className="material-symbols-outlined text-sm">event</span>
+                起始日期: {stageStartDate}
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="material-symbols-outlined text-sm">schedule</span>
+                截止日期: {stageDeadline}
+              </span>
             </div>
           </div>
           <div className="p-6 flex flex-col gap-4">
