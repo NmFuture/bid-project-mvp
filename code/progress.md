@@ -1597,6 +1597,41 @@ bid_workspace
 - `npm run lint`：通过。
 - `npm run build`：通过。
 
+### 2026-05-01 17:26:35 手动记录：前端 Docker web 重新部署
+
+改动目标：
+
+- 用户反馈浏览器中未看到 OnlyOffice 布局变化后，确认此前只启动了 Vite 开发服务，Docker `sewpg_bid_web` 仍是旧镜像。
+- 重新构建并重启 compose 中的 `web` 服务，让正式入口 `http://127.0.0.1/` 也加载待办 2 的前端改动。
+
+变更文件：
+
+- `code/progress.md`
+
+验证结果：
+
+- `docker compose build web && docker compose up -d web`：通过。
+- `sewpg_bid_web`：已重启并运行。
+- `http://127.0.0.1/`：返回新前端 bundle `index-0YSUo2CI.js`。
+
+### 2026-05-01 17:29:48 手动记录：待办完成后的部署与提交规则
+
+改动目标：
+
+- 记录用户新规则：以后每完成一项待办，都要重新部署相关服务给用户检查。
+- 涉及前端展示的改动，至少要重建并重启 compose 的 `web` 服务，不能只启动 Vite 开发服务。
+- 每完成一项待办后，同步创建一次 git commit，保持一项待办一个提交的节奏。
+
+变更文件：
+
+- `code/AGENT.md`
+- `doc/README.md`
+- `code/progress.md`
+
+验证结果：
+
+- 文档规则更新，无代码验证。
+
 ### 2026-05-01 17:22:45 post-commit 919ce2e
 
 提交摘要：chore: complete backlog items 1 & 2 — clean old demos, OnlyOffice layout
@@ -1640,6 +1675,16 @@ bid_workspace
 ### 2026-05-01 17:23:06 post-commit ddd95b0
 
 提交摘要：docs: update progress log
+
+变更文件：
+
+- `code/progress.md`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 17:23:16 post-commit 27312d1
+
+提交摘要：docs: sync progress log
 
 变更文件：
 
