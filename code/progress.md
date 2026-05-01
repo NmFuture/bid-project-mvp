@@ -1369,3 +1369,140 @@ bid_workspace
 - `code/progress.md`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 14:41:55 post-commit 8d47514
+
+提交摘要：fix(s7): keep material sub-headings out of word navigation
+
+变更文件：
+
+- `code/sewpg-bid-backend/app/services/tech_assembly.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/merger.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/numbering_fixer.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/verify.py`
+- `code/sewpg-bid-backend/tests/test_fill_generation.py`
+- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 14:42:53 post-commit 8e6108d
+
+提交摘要：docs: reorder customer backlog by implementation difficulty
+
+变更文件：
+
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 15:36:17 post-commit 4f8a115
+
+提交摘要：docs(backlog): add S7 agent matching as new high-difficulty item
+
+变更文件：
+
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 16:17:29 post-commit 3c96d92
+
+提交摘要：fix(web): resolve stale compose upstream dns
+
+变更文件：
+
+- `code/sewpg-bid-frontend/nginx.conf`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 16:17:35 post-commit e9c7547
+
+提交摘要：docs: consolidate bid requirements backlog
+
+变更文件：
+
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+- `"doc/15-\346\212\200\346\234\257\346\240\207\344\270\216\345\225\206\345\212\241\346\240\207\351\234\200\346\261\202\346\225\264\347\220\206.md"`
+- `doc/README.md`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 16:24:01 post-commit 802a3c1
+
+提交摘要：docs: simplify requirements backlog
+
+变更文件：
+
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 16:52:49 手动记录：待办推进规则更新
+
+改动目标：
+
+- 从现在开始按 `doc/14-甲方新增需求待办.md` 的待办清单推进。
+- 待办清单增加“完成情况”列，完成一项即在文档中勾选。
+- 每完成或推进一项待办，同步在本文件记录进度。
+
+变更文件：
+
+- `doc/14-甲方新增需求待办.md`
+- `code/progress.md`
+
+验证结果：
+
+- 文档结构调整，无代码验证。
+
+### 2026-05-01 17:00:09 手动记录：neat-freak 文档与记忆同步
+
+改动目标：
+
+- 把项目根 README、agent 执行说明、历史联调计划和子项目 README 同步到当前口径：后续按 `doc/14-甲方新增需求待办.md` 推进。
+- 明确待办完成后需要勾选“完成情况”，并同步记录到本文件。
+- 更新 Codex 记忆，避免后续会话继续把旧 MVP 联调计划当作下一阶段待办。
+
+变更文件：
+
+- `README.md`
+- `code/AGENT.md`
+- `code/plan.md`
+- `code/sewpg-bid-backend/README.md`
+- `code/sewpg-bid-frontend/README.md`
+- `doc/README.md`
+- `/Users/wlb/.codex/memories/MEMORY.md`
+- `/Users/wlb/.codex/memories/memory_summary.md`
+- `code/progress.md`
+
+验证结果：
+
+- 文档与记忆同步，无代码验证。
+
+### 2026-05-01 17:04:59 手动记录：doc 目录清理与新会话规则
+
+改动目标：
+
+- 清理 `doc/` 入口，把早期设计、路线讨论、迁移方案和阶段分工资料移入 `doc/archive/`。
+- 重写 `doc/README.md`，让新会话先看 `doc/14`、`doc/15`、根 README 和当前运行基线。
+- 记录用户的新协作规则：准备开始逐项做待办清单，每个待办默认开新会话。
+
+变更文件：
+
+- `doc/README.md`
+- `doc/archive/README.md`
+- `doc/archive/01-需求与目标.md`
+- `doc/archive/02-技术选型与架构.md`
+- `doc/archive/03-UI设计.md`
+- `doc/archive/04-路线备选与功能盘点.md`
+- `doc/archive/07-FastAPI承接与前端改造.md`
+- `doc/archive/09-二阶段分工与第一周里程碑.md`
+- `doc/14-甲方新增需求待办.md`
+- `README.md`
+- `code/AGENT.md`
+- `code/sewpg-bid-api/README.md`
+- `code/progress.md`
+
+验证结果：
+
+- 文档整理，无代码验证。

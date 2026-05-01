@@ -1,65 +1,67 @@
 # doc 目录说明
 
-> 用途：统一说明当前哪些文档是背景资料，哪些文档是当前开发应直接遵循的口径。
+> 用途：让新会话和新同事能在 5 分钟内知道“当前该看什么、历史资料在哪里”。
+> 更新日期：2026-05-01
 
-## 当前开发以这 8 份为准
+## 先看这 3 份
 
-1. [05-MVP主链路说明.md](/Users/wlb/Agent/bid-project/doc/05-MVP主链路说明.md)
-- 讲清楚成品思路和当前 MVP 落地方式
+1. [14-甲方新增需求待办.md](/Users/wlb/Agent/bid-project/doc/14-甲方新增需求待办.md)
+- 当前唯一的下一阶段待办池
+- 按实施难度升序排列
+- 每条待办都有“完成情况”
+- 完成或推进一项后，同步记录到 `/Users/wlb/Agent/bid-project/code/progress.md`
 
-2. [06-MVP接口文档.md](/Users/wlb/Agent/bid-project/doc/06-MVP接口文档.md)
-- 当前 `Web -> FastAPI` 正式接口口径
+2. [15-技术标与商务标需求整理.md](/Users/wlb/Agent/bid-project/doc/15-技术标与商务标需求整理.md)
+- 技术标、商务标 Word 需求整理结果
+- 用作待办来源和讨论依据
 
-3. [07-FastAPI承接与前端改造.md](/Users/wlb/Agent/bid-project/doc/07-FastAPI承接与前端改造.md)
-- FastAPI 如何统一承接 `/api`
-- 哪些阶段真实执行，哪些先 mock
+3. [README.md](/Users/wlb/Agent/bid-project/README.md)
+- 当前 MVP 运行、部署、健康检查和验收入口
+- 新人先按这里把系统跑起来
 
-4. [08-MVP部署说明.md](/Users/wlb/Agent/bid-project/doc/08-MVP部署说明.md)
-- 当前 MVP 的部署口径
-- Docker Compose 组成
-- 客户内网使用方式
+## 做待办时的协作规则
 
-5. [12-数据存储与素材库数据说明.md](/Users/wlb/Agent/bid-project/doc/12-数据存储与素材库数据说明.md)
-- 当前项目状态、文件目录、MinIO、素材库和 S7 拼装工作目录的数据落点
+- 用户准备开始按待办清单推进，每个待办会尽量开一个新会话。
+- 新会话先读 `doc/14-甲方新增需求待办.md`、`code/progress.md` 和 `code/AGENT.md`。
+- 一次会话尽量只处理一个待办，避免把多个需求混在一个大改动里。
+- 完成后必须做两件事：
+  - 把 `doc/14-甲方新增需求待办.md` 对应待办的“完成情况”改为 `[x]`
+  - 在 `code/progress.md` 写清楚改动目标、变更文件和验证结果
 
-6. [13-S7技术标正文拼装与S8素材校验说明.md](/Users/wlb/Agent/bid-project/doc/13-S7技术标正文拼装与S8素材校验说明.md)
-- 当前 S7/S8 的真实实现口径
-- S2 JSON、Wiki、素材库和 `bid-tech-assembler` 的衔接方式
+## 当前运行与实现基线
 
-7. [14-甲方新增需求待办.md](/Users/wlb/Agent/bid-project/doc/14-甲方新增需求待办.md)
-- 当前甲方新增需求、技术标/商务标后续能力和现存 mock 清理待办
-- 用作下一阶段开发排期和拆任务的统一待办池
+- [05-MVP主链路说明.md](/Users/wlb/Agent/bid-project/doc/05-MVP主链路说明.md)
+  - 当前 MVP 与最终成品主链路口径
 
-8. [15-技术标与商务标需求整理.md](/Users/wlb/Agent/bid-project/doc/15-技术标与商务标需求整理.md)
-- 从技术标/商务标 Word 需求整理出的产品与实现口径
-- 用作 `14-甲方新增需求待办.md` 的需求来源和讨论依据
+- [06-MVP接口文档.md](/Users/wlb/Agent/bid-project/doc/06-MVP接口文档.md)
+  - 当前 `Web -> FastAPI` 接口基线
 
-## 当前协作与推进口径
+- [08-MVP部署说明.md](/Users/wlb/Agent/bid-project/doc/08-MVP部署说明.md)
+  - Docker Compose 部署口径和环境变量说明
 
-- [09-二阶段分工与第一周里程碑.md](/Users/wlb/Agent/bid-project/doc/09-二阶段分工与第一周里程碑.md)
-  - 当前 5 人团队的负责人、目标、边界与交付物
+- [11-内网离线部署说明.md](/Users/wlb/Agent/bid-project/doc/11-内网离线部署说明.md)
+  - 内网离线交付、镜像打包和现场部署步骤
 
-## 背景资料
+- [12-数据存储与素材库数据说明.md](/Users/wlb/Agent/bid-project/doc/12-数据存储与素材库数据说明.md)
+  - PostgreSQL、MinIO、本地文件目录和素材库数据落点
 
-下面几份保留作为背景和设计参考，不直接作为当前开发实现基线：
+- [13-S7技术标正文拼装与S8素材校验说明.md](/Users/wlb/Agent/bid-project/doc/13-S7技术标正文拼装与S8素材校验说明.md)
+  - S7/S8 当前真实实现口径
 
-- [01-需求与目标.md](/Users/wlb/Agent/bid-project/doc/01-需求与目标.md)
-- [02-技术选型与架构.md](/Users/wlb/Agent/bid-project/doc/02-技术选型与架构.md)
-- [03-UI设计.md](/Users/wlb/Agent/bid-project/doc/03-UI设计.md)
-- [04-路线备选与功能盘点.md](/Users/wlb/Agent/bid-project/doc/04-路线备选与功能盘点.md)
+## 协作与对外资料
 
-说明：
+- [GIT_WORKFLOW.md](/Users/wlb/Agent/bid-project/doc/GIT_WORKFLOW.md)
+  - 分支、PR、合并和质量门禁约定
 
-- 这些文档保留了较完整的产品设想和讨论过程
-- 其中部分技术表述早于当前实现决策
-- 真正开发时，若与 `05-08` 冲突，以 `05-08` 为准
+- [10-甲方技术细议草案-合同预期最终交付版.md](/Users/wlb/Agent/bid-project/doc/10-甲方技术细议草案-合同预期最终交付版.md)
+  - 合同沟通和最终交付范围口径
 
-## 已删除
+## 已归档
 
-- 早期“两天联调计划”文档
+早期设计、路线讨论、迁移方案和阶段分工资料已经移入 [archive/](/Users/wlb/Agent/bid-project/doc/archive/README.md)。
 
-删除原因：
+归档原因：
 
-- 这是早期两天联调计划
-- 已包含较多旧口径，例如旧接口名、旧前端技术假设、旧阶段实现方式
-- 当前已被 `05-08`、`12-13` 覆盖
+- 它们对理解历史有价值，但不是当前开发入口。
+- 部分内容早于 8 服务 Docker Compose、真实 S7/S8、`doc/14` 待办池等当前口径。
+- 后续实现若与归档资料冲突，以当前根 README、`doc/14`、`doc/15` 和本文件列出的运行基线为准。

@@ -1,6 +1,8 @@
 # FastAPI 承接与前端最小改造方案
 
-> 目标：保留现有前端 `S0-S10` 展示流，用 FastAPI 统一承接所有 `/api`。  
+> 归档说明：本文已于 2026-05-01 移入 `doc/archive/`，仅作历史迁移方案参考。当前开发入口请看 `/Users/wlb/Agent/bid-project/doc/14-甲方新增需求待办.md` 和 `/Users/wlb/Agent/bid-project/doc/README.md`。
+>
+> 目标：保留现有前端 `S0-S10` 展示流，用 FastAPI 统一承接所有 `/api`。
 > 原则：**关键阶段真实执行，其余阶段先由 FastAPI mock。**
 
 ## 1. 总体方案

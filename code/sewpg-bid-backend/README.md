@@ -44,6 +44,4 @@ sewpg-bid-backend/
 
 ## 下一步
 
-1. 把当前本机运行方式进一步收敛到完整 `docker compose`
-2. 继续把外围模块的 fixture 语义替换成真实业务持久化
-3. 逐步拆分 `store.py`，把主链路状态与基础设施继续解耦
+后续不要再按这里的旧三条独立拆任务，统一以 `/Users/wlb/Agent/bid-project/doc/14-甲方新增需求待办.md` 为下一阶段待办池。完成或推进一项后，同步更新待办“完成情况”和 `/Users/wlb/Agent/bid-project/code/progress.md`。

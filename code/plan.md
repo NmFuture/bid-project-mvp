@@ -1,11 +1,14 @@
 # MVP 联调计划
 
+> 状态：历史联调计划，保留用于追溯 MVP 如何收口。
+> 当前下一阶段工作不再按本文件拆任务，而以 `/Users/wlb/Agent/bid-project/doc/14-甲方新增需求待办.md` 为统一待办池；完成或推进事项要同步写入 `/Users/wlb/Agent/bid-project/code/progress.md`。
+
 ## 目标
 
 最终跑通：
 
 ```text
-web -> fastapi -> opencode -> onlyoffice
+web -> fastapi -> worker -> opencode -> onlyoffice
 ```
 
 最终部署形态：
@@ -14,8 +17,12 @@ web -> fastapi -> opencode -> onlyoffice
 docker compose
   - web
   - fastapi
+  - worker
   - opencode
   - onlyoffice
+  - postgres
+  - redis
+  - minio
 ```
 
 ## 步骤
@@ -58,14 +65,19 @@ docker compose
   - S8 基于 S7 `assembly_plan.json` 和素材卡片生成覆盖树、未匹配目录项、未拼装素材清单
   - 保证 `S7 -> S8 -> S9 -> S10` 可以继续走通
 
-- [ ] 5. 收成最终 Docker Compose
+- [x] 5. 收成最终 Docker Compose
   - `web`
   - `fastapi`
+  - `worker`
   - `opencode`
   - `onlyoffice`
+  - `postgres`
+  - `redis`
+  - `minio`
   - 明确 `.env` / 环境变量口径，至少包含：
     - `OPENCODE_BASE_URL`
     - `OPENCODE_PROVIDER_ID`
     - `OPENCODE_MODEL_ID`
     - 外部模型 `API_KEY`
   - 保证部署使用者可以自行配置 `opencode` 的 `baseUrl / apiKey`
+  - 当前状态：已按 8 服务 Docker Compose 口径完成 MVP 主链路验收；后续部署与新增需求以 README、`doc/08-MVP部署说明.md`、`doc/14-甲方新增需求待办.md` 为准

@@ -1,7 +1,33 @@
 # 项目执行说明
 
-> 这份文件给后续参与这个项目的开发同学和智能体使用。  
-> 目标只有一个：**在 `code` 目录下完成前后端联调，并能通过 Docker Compose 在本机跑通 MVP。**
+> 这份文件给后续参与这个项目的开发同学和智能体使用。
+> 当前目标：**在已跑通 Docker Compose MVP 的基础上，按甲方新增需求待办逐项推进。**
+
+## 0. 当前推进规则
+
+从 2026-05-01 起，下一阶段工作以这两份文档为准：
+
+- `/Users/wlb/Agent/bid-project/doc/14-甲方新增需求待办.md`
+  - 当前统一待办池
+  - 按实施难度升序排列
+  - 每条待办都有“完成情况”
+- `/Users/wlb/Agent/bid-project/doc/15-技术标与商务标需求整理.md`
+  - 技术标、商务标需求来源和讨论依据
+
+执行规则：
+
+- 按 `doc/14-甲方新增需求待办.md` 的待办清单推进。
+- 完成一项后，把对应行的“完成情况”从 `[ ]` 改为 `[x]`。
+- 每完成或推进一项，同步在 `/Users/wlb/Agent/bid-project/code/progress.md` 写进度记录。
+- 用户准备开始做待办清单上的事情，并且每次会尽量开新会话；新会话默认只处理一个待办。
+- 新会话开工时先读 `doc/14-甲方新增需求待办.md`、`code/progress.md` 和本文件，再看具体代码。
+- 用户明确说“先更新待办文档，不需要直接做”时，只改文档，不实现功能。
+
+当前重要口径：
+
+- `http://127.0.0.1/parse` 解析页面后续要支持多个招标文件，并触发专门解析 Skill；这不是旧 S1 步骤的简单字段补充。
+- S7 里原先的 Agent 决策素材匹配，应前移到“缺口识别与处理”步骤中统一处理。
+- 新工作流方向是收敛目录生成、缺口处理和校验，而不是继续扩展旧的独立 S2/S4/S5/S6/S7/S8 页面边界。
 
 ## 1. 当前结论
 
@@ -219,8 +245,12 @@ docker compose up
 
 - `/Users/wlb/Agent/bid-project/doc/05-MVP主链路说明.md`
 - `/Users/wlb/Agent/bid-project/doc/06-MVP接口文档.md`
-- `/Users/wlb/Agent/bid-project/doc/07-FastAPI承接与前端改造.md`
 - `/Users/wlb/Agent/bid-project/doc/08-MVP部署说明.md`
+- `/Users/wlb/Agent/bid-project/doc/11-内网离线部署说明.md`
+- `/Users/wlb/Agent/bid-project/doc/12-数据存储与素材库数据说明.md`
+- `/Users/wlb/Agent/bid-project/doc/13-S7技术标正文拼装与S8素材校验说明.md`
+- `/Users/wlb/Agent/bid-project/doc/14-甲方新增需求待办.md`
+- `/Users/wlb/Agent/bid-project/doc/15-技术标与商务标需求整理.md`
 
 ### 8.3 优先打通闭环
 
@@ -234,16 +264,15 @@ frontend -> FastAPI -> opencode/skill -> docx -> OnlyOffice -> callback -> downl
 
 ## 9. 当前最重要的落地顺序
 
-1. 把 `docker-compose.yml` 和真实目录对齐
-2. 确定 `sewpg-bid-backend/app` 是唯一正式后端入口
-3. 把 `S0/S1/S2/S3/S7/S8/S9/S10` 接成真链路
-4. 把 `S8` 接到 S7 拼装计划和素材覆盖结果
-5. 把 `S4/S5/S6` 改成 FastAPI mock / 承接
-6. 最后继续收口文档与部署说明，保持“正式 FastAPI 单入口”口径一致
+旧 MVP 联调顺序已经基本完成，后续不要继续按本节旧序列扩功能。当前落地顺序改为：
+
+1. 从 `/Users/wlb/Agent/bid-project/doc/14-甲方新增需求待办.md` 的序号 1 开始推进。
+2. 每开始一项前，先确认它与当前代码、页面和接口的真实状态。
+3. 完成后勾选待办，并写入 `/Users/wlb/Agent/bid-project/code/progress.md`。
 
 ## 10. 一句话总结
 
-> **当前项目就按“前端、后端、API”三层推进；后端统一收 `opencode` 和 `onlyoffice`；目标是在 `code` 目录下通过 Docker Compose 跑通 MVP 前后端联调。**
+> **当前项目就按“前端、后端、API”三层推进；后端统一收 `opencode` 和 `onlyoffice`；已跑通的 MVP 继续保持，下一阶段按 `doc/14-甲方新增需求待办.md` 逐项收口。**
 
 ## 11. Git 分支约定
 
