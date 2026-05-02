@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
 import unittest
@@ -261,6 +262,77 @@ class GapReviewFlowTests(unittest.TestCase):
         updated_item = next(item for item in gap_payload["gapPlan"]["items"] if item["id"] == gap_id)
         self.assertEqual(updated_item["resolvedArtifacts"][0]["source"], "manual_upload")
         self.assertEqual(updated_item["status"], "resolved")
+
+    def test_gap_upload_preserves_browser_docx_data_url_for_s7(self) -> None:
+        project_id = self._create_project_with_confirmed_directory_json()
+        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        self.assertEqual(detection_response.status_code, 200)
+        gap_plan = detection_response.json()["gapPlan"]
+        gap_id = next(item for item in gap_plan["items"] if item["status"] == "needs_input")["id"]
+
+        upload_docx = Path(self.temp_dir.name) / "客户补充性能保证.docx"
+        doc = Document()
+        doc.add_paragraph("客户原始上传 Word 内容")
+        doc.save(upload_docx)
+        data_url = (
+            "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,"
+            + base64.b64encode(upload_docx.read_bytes()).decode("ascii")
+        )
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/gaps/{gap_id}/upload",
+            json={
+                "bidType": "技术标",
+                "files": [
+                    {
+                        "name": "客户补充性能保证.docx",
+                        "type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        "data": data_url,
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        artifact_path = Path(response.json()["artifact"]["path"])
+        self.assertTrue(artifact_path.exists())
+        uploaded_doc = Document(str(artifact_path))
+        self.assertIn(
+            "客户原始上传 Word 内容",
+            "\n".join(paragraph.text for paragraph in uploaded_doc.paragraphs),
+        )
+
+    def test_gap_detection_matches_material_from_s2_wiki_cards_when_toc_has_no_refs(self) -> None:
+        project_id = self._create_project_with_confirmed_directory_json()
+        project_dir = settings.parsed_dir / project_id
+        toc_json = project_dir / "s2_toc_workdir" / "投标文件-总目录.json"
+        toc_data = json.loads(toc_json.read_text(encoding="utf-8"))
+        for item in toc_data["items"]:
+            item["material_refs"] = []
+        toc_json.write_text(json.dumps(toc_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        wiki_cards = project_dir / "s2_toc_workdir" / "wiki" / "卡片"
+        wiki_cards.mkdir(parents=True, exist_ok=True)
+        (wiki_cards / "技术评分标准索引表.md").write_text(
+            "---\n"
+            "name: 技术评分标准索引表\n"
+            "path: 通用素材/技术标/技术评分标准索引表.docx\n"
+            "scope: 通用\n"
+            "category: 技术标\n"
+            "material_id: RAW-0001\n"
+            "skeleton_section: \"1.1\"\n"
+            "deprecated: false\n"
+            "---\n",
+            encoding="utf-8",
+        )
+
+        response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+
+        self.assertEqual(response.status_code, 200)
+        plan = response.json()["gapPlan"]
+        matched = next(item for item in plan["items"] if item["number"] == "1.1")
+        self.assertEqual(matched["status"], "matched")
+        self.assertEqual(matched["matchedMaterials"][0]["id"], "RAW-0001")
+        self.assertEqual(matched["matchedMaterials"][0]["source"], "wiki")
 
     def test_gap_review_mock_flow_runs_from_s4_to_s6(self) -> None:
         project_id = self._create_project_with_confirmed_outline()

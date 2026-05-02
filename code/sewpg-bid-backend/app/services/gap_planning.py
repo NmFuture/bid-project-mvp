@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 import shutil
@@ -57,12 +59,14 @@ def build_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
     )
     output_file = work_dir / "gap_plan.json"
     manifest_path = work_dir / "s4_gap_input.json"
+    wiki_dir = _resolve_wiki_dir(project, project_dir, work_dir)
     manifest = {
         "projectId": project_id,
         "projectName": str(project.get("name") or project_id),
         "bidType": str(project.get("bidType") or "技术标"),
         "workDir": str(work_dir),
         "tocJsonPath": str(toc_json_path),
+        "wikiDir": str(wiki_dir) if wiki_dir else "",
         "parseResultPath": str(parse_result_path),
         "projectIdentity": project.get("identity") or {},
         "existingSubmissions": list((project.get("gap_state") or {}).get("submissions") or []),
@@ -280,12 +284,32 @@ def register_manual_gap_upload(
 
 def _write_manual_upload_docx(path: Path, *, title: str, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    uploaded_bytes = _decode_uploaded_docx(content)
+    if uploaded_bytes is not None:
+        path.write_bytes(uploaded_bytes)
+        return
     doc = Document()
     doc.add_heading(title or path.stem, level=1)
     text = content.strip() or "人工上传客户资料，原始文件内容请以项目素材库归档为准。"
     for paragraph in text.splitlines() or [text]:
         doc.add_paragraph(paragraph)
     doc.save(path)
+
+
+def _decode_uploaded_docx(content: str) -> bytes | None:
+    text = str(content or "").strip()
+    if not text.startswith("data:"):
+        return None
+    header, separator, payload = text.partition(",")
+    if not separator or ";base64" not in header.lower():
+        return None
+    try:
+        decoded = base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if decoded.startswith(b"PK\x03\x04"):
+        return decoded
+    return None
 
 
 def summarize_gap_plan(plan: dict[str, Any]) -> dict[str, Any]:
@@ -363,6 +387,18 @@ def _resolve_toc_json(project: dict[str, Any], work_dir: Path) -> Path:
     target = work_dir / "投标文件-总目录.json"
     target.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     return target
+
+
+def _resolve_wiki_dir(project: dict[str, Any], project_dir: Path, work_dir: Path) -> Path | None:
+    candidates = [project_dir / "s2_toc_workdir" / "wiki"]
+    for candidate in candidates:
+        if (candidate / "卡片").exists():
+            target = work_dir / "wiki"
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(candidate, target, dirs_exist_ok=True)
+            return target
+    return None
 
 
 def _outline_nodes_to_toc_items(nodes: list[dict[str, Any]], prefix: str = "", level: int = 1) -> list[dict[str, Any]]:

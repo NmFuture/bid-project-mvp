@@ -50,6 +50,54 @@ def appendices_from_parse(parse_result: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def wiki_cards_by_section(wiki_dir: Path | None) -> dict[str, list[dict[str, Any]]]:
+    if not wiki_dir or not (wiki_dir / "卡片").exists():
+        return {}
+    result: dict[str, list[dict[str, Any]]] = {}
+    for path in sorted((wiki_dir / "卡片").rglob("*.md")):
+        fields = parse_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
+        if not fields or str(fields.get("deprecated") or "").lower() == "true":
+            continue
+        section = str(fields.get("skeleton_section") or "").strip()
+        if not section:
+            continue
+        result.setdefault(section, []).append(
+            {
+                "id": str(fields.get("material_id") or fields.get("id") or fields.get("path") or path.stem),
+                "path": str(fields.get("path") or ""),
+                "name": str(fields.get("name") or path.stem),
+                "scope": str(fields.get("scope") or ""),
+                "category": str(fields.get("category") or ""),
+                "source": "wiki",
+                "matchReason": f"Wiki 卡片 skeleton_section={section}",
+                "confidence": 0.82,
+            }
+        )
+    return result
+
+
+def parse_frontmatter(text: str) -> dict[str, str]:
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    if end < 0:
+        return {}
+    fields: dict[str, str] = {}
+    for raw_line in text[3:end].strip().splitlines():
+        if ":" not in raw_line:
+            continue
+        key, _, value = raw_line.partition(":")
+        fields[key.strip()] = clean_value(value)
+    return fields
+
+
+def clean_value(value: str) -> str:
+    text = str(value or "").strip()
+    if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
+        text = text[1:-1]
+    return text
+
+
 def is_structural(item: dict[str, Any], all_items: list[dict[str, Any]]) -> bool:
     level = int(item.get("level") or 0)
     number = str(item.get("number") or "").strip()
@@ -77,6 +125,7 @@ def normalize_material_refs(item: dict[str, Any]) -> list[dict[str, Any]]:
                 "usage": str(ref.get("usage") or "both"),
                 "matchReason": str(ref.get("reason") or "目录生成已引用素材"),
                 "confidence": float(ref.get("confidence") or 0.85),
+                "source": "toc",
             }
         )
     return output
@@ -119,12 +168,16 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     parse_result = load_json(parse_result_path) if parse_result_path.exists() else {}
     items = toc_items(toc)
     appendices = appendices_from_parse(parse_result)
+    raw_wiki_dir = str(manifest.get("wikiDir") or "").strip()
+    wiki_index = wiki_cards_by_section(Path(raw_wiki_dir) if raw_wiki_dir else None)
     plan_items: list[dict[str, Any]] = []
     for index, item in enumerate(items, start=1):
         number = str(item.get("number") or "").strip()
         title = str(item.get("title") or "").strip() or f"目录项-{index}"
         gap_id = f"GAP-{index:04d}"
         matched_materials = normalize_material_refs(item)
+        if not matched_materials and number:
+            matched_materials = list(wiki_index.get(number) or [])
         structural = is_structural(item, items)
         fill_tasks: list[dict[str, Any]] = []
         required_inputs: list[dict[str, Any]] = []

@@ -42,6 +42,13 @@ const normalizeItems = (payload) => {
   }))
 }
 
+const readFileAsDataUrl = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader()
+  reader.onload = () => resolve(String(reader.result || ''))
+  reader.onerror = () => reject(reader.error || new Error('文件读取失败'))
+  reader.readAsDataURL(file)
+})
+
 export default function GapRecognition({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -149,11 +156,12 @@ export default function GapRecognition({ showToast }) {
     try {
       const payload = await gapsAPI.upload(id, selected.id, {
         bidType: '技术标',
-        files: files.map((file) => ({
+        files: await Promise.all(files.map(async (file) => ({
           name: file.name,
           type: file.type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
           size: Number(file.size || 0),
-        })),
+          data: await readFileAsDataUrl(file),
+        }))),
       })
       updatePayload(payload)
       showToast?.('客户资料已上传并挂回缺口计划。')

@@ -2132,3 +2132,24 @@ bid_workspace
 - `code/progress.md`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-02 13:39:34 待办 12/15 联合改造收尾审计
+
+- S4 缺口识别补齐读取 S2 目录生成产物中的 Wiki 卡片：当人工确认目录没有 `material_refs` 时，`bid-tech-gap-planner` 会按 Wiki frontmatter 的 `skeleton_section` 匹配素材。
+- S5/S6 缺口页上传改为浏览器读取真实文件 Data URL 后提交；后端对 `.docx` Data URL 保存原始 Word 字节并挂回 `gapPlan.resolvedArtifacts`，S7 可直接读取该路径拼接。
+- 保留纯文本上传兼容路径，用于测试或非 Word 输入生成可预览的补料 Word。
+
+验证：
+
+- `python3 -m py_compile app/services/gap_planning.py opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py`：通过。
+- `./.venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_onlyoffice_document.py -q`：26 passed。
+- `./.venv/bin/python -m pytest -q`：81 passed, 6 skipped。
+- `npm run lint`：通过。
+- `npm run build`：通过。
+- `docker compose build opencode fastapi worker web`：通过。
+- `docker compose up -d --force-recreate opencode fastapi worker web`：通过，`fastapi` healthy。
+- `curl -fsS http://127.0.0.1/api/healthz`：返回 `status=ok`。
+- `curl -fsS -o /tmp/bid-web-home.html -w '%{http_code}' http://127.0.0.1/`：200。
+- `docker compose exec -T opencode sh -lc 'command -v s4gap && command -v s4fill && command -v s7assemble'`：三个命令存在。
+- 容器内 `s4gap` 最小 Wiki 卡片匹配烟测：输出 `matched wiki`。
+- 容器内 `s4fill` 最小填写烟测：生成 `out.docx`，首段为“性能保证附表”。
