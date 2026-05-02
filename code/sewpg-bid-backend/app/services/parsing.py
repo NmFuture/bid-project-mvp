@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import copy
 import re
+import shutil
+import sys
 import zipfile
 from dataclasses import dataclass
 from datetime import date
@@ -14,9 +17,15 @@ from docx import Document
 from app.core.config import settings
 from app.services.opencode_client import OpencodeClient
 
+PARSE_SKILL_NAME = "bid-tender-structured-parser"
+PARSER_CORE_DIR = Path(__file__).resolve().parents[2] / "opencode" / "skill" / PARSE_SKILL_NAME / "scripts"
+if str(PARSER_CORE_DIR) not in sys.path:
+    sys.path.insert(0, str(PARSER_CORE_DIR))
+
+from parser_core import parse_documents as parse_structured_documents  # noqa: E402
+
 WORD_NAMESPACE = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 TEXT_PREVIEW_LIMIT = 600
-PARSE_SKILL_NAME = "bid-tender-structured-parser"
 
 
 @dataclass(frozen=True)
@@ -158,6 +167,16 @@ def parsed_project_dir(project_id: str) -> Path:
     path = settings.parsed_dir / project_id
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def parsed_appendix_dir(project_id: str) -> Path:
+    path = settings.parsed_dir / project_id / "s1_appendices"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def parsed_appendix_path(project_id: str) -> Path:
+    return settings.parsed_dir / project_id / "s1_appendices"
 
 
 def _normalize_text(raw_text: str) -> str:
@@ -425,6 +444,8 @@ def _build_field_groups(items: list[dict[str, Any]]) -> dict[str, Any]:
 def _sanitize_docx_name(value: str, fallback: str) -> str:
     cleaned = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    while len(cleaned.encode("utf-8")) > 120:
+        cleaned = cleaned[:-1].strip(" .")
     return cleaned or fallback
 
 
@@ -451,8 +472,180 @@ def _write_appendix_docx(path: Path, title: str, rows: list[list[str]]) -> None:
     doc.save(path)
 
 
+def _appendix_output_dir(project_id: str) -> Path:
+    return parsed_appendix_path(project_id)
+
+
+def _workspace_appendix_output_dir(project_id: str) -> Path:
+    return settings.documents_dir / project_id / "technical-workspace" / "appendices"
+
+
+def _appendix_asset_path(project_id: str, appendix_id: str, title: str) -> tuple[Path, str]:
+    file_name = f"{appendix_id}-{_sanitize_docx_name(title, '附表')}.docx"
+    return _appendix_output_dir(project_id) / file_name, f"s1_appendices/{file_name}"
+
+
+def _path_is_inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def materialize_appendix_docx(project_id: str, appendix: dict[str, Any]) -> dict[str, Any]:
+    """Ensure an appendix entry has a generated Word asset, even when no template table was found."""
+
+    item = copy.deepcopy(appendix)
+    appendix_id = str(item.get("id") or "").strip() or "APPX-0000"
+    title = str(item.get("title") or item.get("evidence") or "附表").strip() or "附表"
+    rows = item.get("rows") if isinstance(item.get("rows"), list) else []
+    output_dir = _appendix_output_dir(project_id)
+    workspace_output_dir = _workspace_appendix_output_dir(project_id)
+
+    existing_path = Path(str(item.get("docxPath") or ""))
+    if not existing_path.is_absolute():
+        existing_path = Path()
+    existing_path_allowed = (
+        bool(existing_path)
+        and (
+            _path_is_inside(existing_path, output_dir)
+            or _path_is_inside(existing_path, workspace_output_dir)
+        )
+    )
+    if not existing_path_allowed:
+        existing_path, workspace_path = _appendix_asset_path(project_id, appendix_id, title)
+    else:
+        workspace_path = str(item.get("workspacePath") or f"technical-workspace/appendices/{existing_path.name}")
+
+    if not existing_path.exists():
+        _write_appendix_docx(existing_path, title, rows)
+
+    item.update(
+        {
+            "id": appendix_id,
+            "title": title,
+            "status": "generated",
+            "rows": rows,
+            "rowCount": len(rows),
+            "docxPath": str(existing_path),
+            "workspacePath": workspace_path,
+        }
+    )
+    return item
+
+
+def _appendix_title_for_match(value: str) -> str:
+    title = str(value or "").strip().lstrip("#").strip()
+    return re.sub(r"\s+", " ", title)
+
+
+def _appendix_row_count(item: dict[str, Any]) -> int:
+    row_count = item.get("rowCount")
+    if isinstance(row_count, int):
+        return row_count
+    rows = item.get("rows")
+    return len(rows) if isinstance(rows, list) else 0
+
+
+def _is_toc_page_number_appendix(item: dict[str, Any], candidates: list[dict[str, Any]]) -> bool:
+    if _appendix_row_count(item) > 0:
+        return False
+
+    title = _appendix_title_for_match(str(item.get("title") or item.get("evidence") or ""))
+    if not re.search(r"\d{1,4}$", title):
+        return False
+
+    for candidate in candidates:
+        if candidate is item:
+            continue
+        candidate_title = _appendix_title_for_match(str(candidate.get("title") or candidate.get("evidence") or ""))
+        if not candidate_title or candidate_title == title or not title.startswith(candidate_title):
+            continue
+
+        suffix = title[len(candidate_title):]
+        if not re.fullmatch(r"\d{1,4}", suffix):
+            continue
+        if len(suffix) == 1 and re.search(r"[\w.]$", candidate_title):
+            continue
+        return True
+
+    return False
+
+
+def _dedupe_appendix_page_number_artifacts(appendices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates = [
+        item
+        for item in appendices
+        if isinstance(item, dict) and _is_appendix_heading(str(item.get("title") or item.get("evidence") or ""))
+    ]
+    return [item for item in candidates if not _is_toc_page_number_appendix(item, candidates)]
+
+
+def _prepare_appendix_outputs(
+    project_id: str,
+    appendices: list[dict[str, Any]],
+    *,
+    renumber: bool,
+) -> list[dict[str, Any]]:
+    prepared: list[dict[str, Any]] = []
+    for index, appendix in enumerate(_dedupe_appendix_page_number_artifacts(appendices), start=1):
+        item = copy.deepcopy(appendix)
+        if renumber:
+            item["id"] = f"APPX-{index:04d}"
+            item["docxPath"] = ""
+            item.pop("workspacePath", None)
+        prepared.append(materialize_appendix_docx(project_id, item))
+    return prepared
+
+
+def materialize_parse_appendix_docx_assets(project_id: str, parse_result: dict[str, Any]) -> dict[str, Any]:
+    payload = copy.deepcopy(parse_result)
+    structured = payload.get("structured")
+    if not isinstance(structured, dict):
+        return payload
+    appendices = structured.get("appendices")
+    if not isinstance(appendices, list):
+        return payload
+    structured["appendices"] = _prepare_appendix_outputs(project_id, appendices, renumber=False)
+    return payload
+
+
 def _is_appendix_heading(text: str) -> bool:
-    return "附表" in text or "副表" in text
+    normalized = str(text or "").strip().lstrip("#").strip()
+    return bool(re.match(r"^(?:技术)?[附副]表(?:\s*[A-Za-z0-9一二三四五六七八九十]+)?(?:[：:、.．\s]|$)", normalized))
+
+
+def _is_scoring_appendix_heading(text: str) -> bool:
+    return any(keyword in text for keyword in ("评分标准", "评分细则", "评标办法", "符合性审查", "投标报价评分", "度电成本评分"))
+
+
+def _appendix_title_has_trailing_page_number(text: str) -> bool:
+    title = _appendix_title_for_match(text)
+    return bool(re.search(r"\D\d{2,4}$", title))
+
+
+def _is_docx_appendix_toc_artifact(blocks: list[dict[str, Any]], index: int) -> bool:
+    line = str(blocks[index].get("text") or "").strip()
+    if not _appendix_title_has_trailing_page_number(line):
+        return False
+
+    for lookahead in range(index + 1, min(len(blocks), index + 8)):
+        next_block = blocks[lookahead]
+        if next_block.get("type") == "table":
+            return False
+        if next_block.get("type") == "paragraph" and _is_appendix_heading(str(next_block.get("text") or "")):
+            break
+
+    nearby_headings = 0
+    for nearby in range(max(0, index - 3), min(len(blocks), index + 4)):
+        if nearby == index:
+            continue
+        block = blocks[nearby]
+        if block.get("type") == "paragraph" and _is_appendix_heading(str(block.get("text") or "")):
+            nearby_headings += 1
+
+    return nearby_headings >= 1
 
 
 def _extract_markdown_appendices(
@@ -463,7 +656,6 @@ def _extract_markdown_appendices(
     start_index: int = 0,
 ) -> list[dict[str, Any]]:
     appendices: list[dict[str, Any]] = []
-    output_dir = settings.documents_dir / project_id / "technical-workspace" / "appendices"
     for document in documents:
         document_id = str(document.get("id") or "")
         source_file = str(document.get("name") or document_id or "招标文件")
@@ -477,6 +669,9 @@ def _extract_markdown_appendices(
             if not _is_appendix_heading(line):
                 index += 1
                 continue
+            if _is_scoring_appendix_heading(line):
+                index += 1
+                continue
 
             title = line.strip(" #")
             table_start = index + 1
@@ -486,11 +681,12 @@ def _extract_markdown_appendices(
                 table_start += 1
             if table_start >= len(lines) or not MARKDOWN_TABLE_LINE_PATTERN.match(lines[table_start]):
                 appendix_id = f"APPX-{start_index + len(appendices) + 1:04d}"
-                appendices.append(
+                appendices.append(materialize_appendix_docx(
+                    project_id,
                     {
                         "id": appendix_id,
                         "title": title,
-                        "status": "required_no_template",
+                        "status": "generated",
                         "sourceFile": source_file,
                         "evidence": line,
                         "evidenceLocation": f"L{index + 1}",
@@ -498,7 +694,7 @@ def _extract_markdown_appendices(
                         "rowCount": 0,
                         "docxPath": "",
                     }
-                )
+                ))
                 index += 1
                 continue
 
@@ -511,10 +707,8 @@ def _extract_markdown_appendices(
                 table_end += 1
 
             appendix_id = f"APPX-{start_index + len(appendices) + 1:04d}"
-            file_name = f"{appendix_id}-{_sanitize_docx_name(title, '附表')}.docx"
-            docx_path = output_dir / file_name
-            _write_appendix_docx(docx_path, title, rows)
-            appendices.append(
+            appendices.append(materialize_appendix_docx(
+                project_id,
                 {
                     "id": appendix_id,
                     "title": title,
@@ -524,10 +718,9 @@ def _extract_markdown_appendices(
                     "evidenceLocation": f"L{index + 1}",
                     "rows": rows,
                     "rowCount": len(rows),
-                    "docxPath": str(docx_path),
-                    "workspacePath": f"technical-workspace/appendices/{file_name}",
+                    "docxPath": "",
                 }
-            )
+            ))
             index = table_end
     return appendices
 
@@ -561,7 +754,6 @@ def _extract_docx_appendices(
     start_index: int = 0,
 ) -> list[dict[str, Any]]:
     appendices: list[dict[str, Any]] = []
-    output_dir = settings.documents_dir / project_id / "technical-workspace" / "appendices"
     for document in documents:
         source_path = Path(str(document.get("sourcePath") or ""))
         if source_path.suffix.lower() != ".docx" or not source_path.exists():
@@ -575,6 +767,10 @@ def _extract_docx_appendices(
                 continue
             line = str(block.get("text") or "").strip()
             if not _is_appendix_heading(line):
+                continue
+            if _is_scoring_appendix_heading(line):
+                continue
+            if _is_docx_appendix_toc_artifact(blocks, index):
                 continue
 
             title = line.strip(" #") or "附表"
@@ -591,11 +787,12 @@ def _extract_docx_appendices(
 
             appendix_id = f"APPX-{start_index + len(appendices) + 1:04d}"
             if table_index == -1 or not rows:
-                appendices.append(
+                appendices.append(materialize_appendix_docx(
+                    project_id,
                     {
                         "id": appendix_id,
                         "title": title,
-                        "status": "required_no_template",
+                        "status": "generated",
                         "sourceFile": source_file,
                         "evidence": line,
                         "evidenceLocation": f"B{index + 1}",
@@ -603,14 +800,12 @@ def _extract_docx_appendices(
                         "rowCount": 0,
                         "docxPath": "",
                     }
-                )
+                ))
                 continue
 
             used_tables.add(table_index)
-            file_name = f"{appendix_id}-{_sanitize_docx_name(title, '附表')}.docx"
-            docx_path = output_dir / file_name
-            _write_appendix_docx(docx_path, title, rows)
-            appendices.append(
+            appendices.append(materialize_appendix_docx(
+                project_id,
                 {
                     "id": appendix_id,
                     "title": title,
@@ -620,92 +815,18 @@ def _extract_docx_appendices(
                     "evidenceLocation": f"B{index + 1}",
                     "rows": rows,
                     "rowCount": len(rows),
-                    "docxPath": str(docx_path),
-                    "workspacePath": f"technical-workspace/appendices/{file_name}",
+                    "docxPath": "",
                 }
-            )
+            ))
     return appendices
 
 
 def _extract_structured_requirements(documents: list[dict[str, Any]], texts_by_id: dict[str, str]) -> dict[str, Any]:
-    items: list[dict[str, Any]] = []
-    category_map: dict[str, list[dict[str, Any]]] = {category.key: [] for category in PARSE_CATEGORIES}
-    project_basics: dict[str, str] = {}
-    project_dates = {"startDate": "", "endDate": ""}
-    date_item_ids: list[str] = []
-    seen: set[tuple[str, str, str]] = set()
-
-    for document in documents:
-        document_id = str(document.get("id") or "")
-        source_file = str(document.get("name") or document_id or "招标文件")
-        for line_no, raw_line in enumerate(texts_by_id.get(document_id, "").splitlines(), start=1):
-            line = raw_line.strip()
-            if not line or line.startswith("# "):
-                continue
-
-            category = _first_matching_category(line)
-            dates = _find_dates(line)
-            _record_project_date(line, dates, project_dates)
-            if category is None:
-                continue
-
-            label, value = _split_label_value(line, category.label)
-            dedupe_key = (category.key, source_file, line)
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-
-            item = {
-                "id": f"REQ-{len(items) + 1:04d}",
-                "type": category.label,
-                "category": category.key,
-                "title": label,
-                "keyEntity": label,
-                "keyValue": value,
-                "value": value,
-                "sourceFile": source_file,
-                "sourceDocumentId": document_id,
-                "evidence": line,
-                "evidenceLocation": f"L{line_no}",
-                "evidenceLine": line_no,
-                "confidence": 0.82,
-            }
-            if dates:
-                item["dates"] = dates
-                date_item_ids.append(item["id"])
-            items.append(item)
-            category_map[category.key].append(item)
-            if category.key == "project_basics":
-                project_basics.setdefault(label, value)
-
-    categories = [
-        {
-            "key": category.key,
-            "label": category.label,
-            "count": len(category_map[category.key]),
-            "items": category_map[category.key],
-        }
-        for category in PARSE_CATEGORIES
-        if category_map[category.key]
-    ]
-    return {
-        "items": items,
-        "structured": {
-            "schemaVersion": "bid-tender-structured-v1",
-            "targetSkill": PARSE_SKILL_NAME,
-            "mode": "local-structured-parser",
-            "projectDates": {
-                **project_dates,
-                "itemIds": date_item_ids,
-            },
-            "projectBasics": project_basics,
-            "categories": categories,
-            "categoryCounts": {category["label"]: category["count"] for category in categories},
-            "fieldGroups": _build_field_groups(items),
-            "requirementPresence": _build_requirement_presence(items),
-            "appendices": [],
-        },
-    }
+    return parse_structured_documents(
+        documents,
+        texts_by_id,
+        mode="local-structured-parser",
+    )
 
 
 def _build_tender_parse_prompt(skill_manifest_path: Path) -> str:
@@ -726,7 +847,7 @@ s1parse {skill_manifest_path}
   "schemaVersion": "bid-tender-structured-v1",
   "targetSkill": "{PARSE_SKILL_NAME}",
   "outputFile": "manifest 中的 structuredResultPath",
-  "summary": {{"itemCount": 0, "categoryCounts": {{}}, "projectDates": {{"startDate": "", "endDate": ""}}}}
+  "summary": {{"itemCount": 0, "categoryCounts": {{}}, "scoringCounts": {{"technical": 0, "business": 0, "price": 0, "lcoe": 0, "compliance": 0}}, "projectDates": {{"startDate": "", "endDate": ""}}}}
 }}
 
 解析目标必须覆盖：
@@ -737,9 +858,9 @@ s1parse {skill_manifest_path}
 5. 环境适应性要求：低温、覆冰防凝露、潮湿、防雷暴、防风沙、高温。
 6. 专题方案要求：叶片、变桨系统、主轴、齿轮箱等专题。
 7. 附表、供货范围和考核条款。
-8. 项目起始日期和截止日期。
+8. 投标相关日期：招标文件获取/报名起始日期、投标文件递交截止日期或开标日期。不要把交货、供货、服务期、工期、竣工、安装调试等履约日期写入 projectDates。
 
-每条 item 必须保留 sourceFile、sourceDocumentId、evidence、evidenceLocation。
+完整 JSON 必须包含 structured.sourceDocuments、structured.scoringCriteria、structured.fieldGroups、structured.requirementPresence、structured.coverage。每条 item、评分行和字段必须保留 sourceFile、sourceDocumentId、section、evidence、evidenceLocation。
 """.strip()
 
 
@@ -767,7 +888,7 @@ def _resolve_skill_structured_result(
     if isinstance(structured, dict):
         local_structured = local_result.get("structured") if isinstance(local_result, dict) else {}
         if isinstance(local_structured, dict):
-            for key in ["fieldGroups", "requirementPresence", "appendices"]:
+            for key in ["sourceDocuments", "fieldGroups", "scoringCriteria", "requirementPresence", "coverage", "appendices"]:
                 if not structured.get(key) and local_structured.get(key):
                     structured[key] = local_structured[key]
         structured["targetSkill"] = PARSE_SKILL_NAME
@@ -809,6 +930,9 @@ def parse_tender_documents(
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     project_dir = parsed_project_dir(project_id)
+    appendix_temp_dir = project_dir / "s1_appendices"
+    if appendix_temp_dir.exists():
+        shutil.rmtree(appendix_temp_dir)
     documents: list[dict[str, Any]] = []
     combined_parts: list[str] = []
     texts_by_id: dict[str, str] = {}
@@ -873,6 +997,7 @@ def parse_tender_documents(
     structured_result = _extract_structured_requirements(documents, texts_by_id)
     appendices = _extract_markdown_appendices(project_id, documents, texts_by_id)
     appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices)))
+    appendices = _prepare_appendix_outputs(project_id, appendices, renumber=True)
     structured_result["structured"]["appendices"] = appendices
     if progress_callback:
         progress_callback(
@@ -900,7 +1025,7 @@ def parse_tender_documents(
             "专题方案要求",
             "附表和供货范围",
             "考核条款",
-            "项目起止日期",
+            "投标相关日期",
         ],
     }
     skill_manifest_path.write_text(json.dumps(skill_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -914,6 +1039,12 @@ def parse_tender_documents(
     resolved_structured = structured_result.setdefault("structured", {})
     if not resolved_structured.get("appendices"):
         resolved_structured["appendices"] = appendices
+    elif isinstance(resolved_structured.get("appendices"), list):
+        resolved_structured["appendices"] = _prepare_appendix_outputs(
+            project_id,
+            resolved_structured["appendices"],
+            renumber=True,
+        )
     if skill_warning:
         warnings.append(skill_warning)
     structured_path.write_text(json.dumps(structured_result, ensure_ascii=False, indent=2), encoding="utf-8")

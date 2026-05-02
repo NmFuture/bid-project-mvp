@@ -14,6 +14,7 @@ from psycopg.types.json import Jsonb
 
 from app.core.config import settings
 from app.services.identity import build_project_identity
+from app.services.workspace_artifacts import cleanup_parse_temp_workspace, promote_parse_artifacts_to_workspace
 
 
 STAGE_NAMES = {
@@ -551,6 +552,17 @@ class AppStore:
                 decision = "pending"
             project["reviewDecision"] = decision
             project["reviewDecidedAt"] = now_iso() if decision in {"participate", "abandon"} else ""
+            if decision == "participate":
+                parse_result = project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {}
+                parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
+                if parse_result.get("status") == "completed":
+                    promoted = promote_parse_artifacts_to_workspace(project_id, parse_result, parse_storage)
+                    project["parse_result"] = promoted["parseResult"]
+                    project["parse_storage"] = promoted["parseStorage"]
+                    project["workspaceArtifacts"] = promoted["artifacts"]
+                    cleanup_parse_temp_workspace(project_id)
+            elif decision == "abandon":
+                cleanup_parse_temp_workspace(project_id)
         if "reviewComment" in data:
             project["reviewComment"] = str(data.get("reviewComment") or "")
         self._normalize_project_identity(project)
@@ -559,9 +571,9 @@ class AppStore:
         return self._detail(project)
 
     def delete_project(self, project_id: str) -> None:
-        if project_id not in self._projects:
-            raise KeyError(project_id)
-        del self._projects[project_id]
+        self._require(project_id)
+        cleanup_parse_temp_workspace(project_id)
+        self._projects.pop(project_id, None)
         self._delete_project_record(project_id)
 
     def get_stages(self, project_id: str) -> list[dict[str, Any]]:

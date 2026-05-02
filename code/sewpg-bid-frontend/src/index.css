@@ -243,6 +243,39 @@ h1, h2, h3, h4, h5, h6, .font-headline {
   box-shadow: none !important;
 }
 
+.appendix-preview-workspace {
+  height: clamp(700px, 76vh, 780px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.appendix-preview-workspace .appendix-preview-shell {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  grid-auto-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.appendix-preview-workspace .appendix-preview-aside,
+.appendix-preview-workspace .appendix-preview-sidebar,
+.appendix-preview-workspace .appendix-preview-document {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.appendix-preview-workspace .appendix-preview-document {
+  padding: 12px;
+}
+
+.appendix-preview-workspace .appendix-preview-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .stage-breadcrumb-link {
   border: none !important;
   background: transparent !important;

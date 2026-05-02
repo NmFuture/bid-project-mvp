@@ -3,6 +3,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { parseAPI, projectsAPI } from '../api'
 import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
 import DataCard from '../components/shared/DataCard'
+import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
+import OnlyOfficeWorkspace from '../components/shared/OnlyOfficeWorkspace'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectWizardModal from '../components/modals/ProjectWizardModal'
 import { projectRoute, slugFromBidType } from '../utils/workspace'
@@ -26,6 +28,8 @@ const REVIEW_DECISION_BADGE_CLASSES = {
   participate: 'bg-secondary-container text-on-secondary-container',
   abandon: 'bg-error-container text-error',
 }
+
+const EMPTY_APPENDICES = []
 
 const extensionOf = (name) => {
   const parts = String(name || '').split('.')
@@ -84,6 +88,9 @@ const groupValue = (field) => {
 
 const presenceLabel = (status) => (status === 'present' ? '有明确要求' : '未识别')
 
+const appendixKey = (appendix, index = 0) =>
+  String(appendix?.id || appendix?.title || `appendix-${index}`)
+
 function FieldGroupTable({ title, fields = [] }) {
   return (
     <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
@@ -118,6 +125,92 @@ function FieldGroupTable({ title, fields = [] }) {
   )
 }
 
+function ScoringCriteriaTable({ title, rows = [], emptyText = '未识别到相关评分细则。' }) {
+  return (
+    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
+      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
+        <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
+        <span className="text-xs text-outline">{rows.length} 条</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[980px]">
+          <thead>
+            <tr className="border-b border-surface-container-high">
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">序号</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">评分/审查项</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">分值</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">得分点/要求</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">证明材料要求</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">章节</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map((item, index) => (
+              <tr key={item.id || `${title}-${index}`} className="border-b border-surface-container-high last:border-b-0">
+                <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.order || index + 1}</td>
+                <td className="px-4 py-2 text-on-surface font-medium min-w-[160px]">{item.scoringItem || '-'}</td>
+                <td className="px-4 py-2 text-primary whitespace-nowrap">{item.score || '-'}</td>
+                <td className="px-4 py-2 text-on-surface-variant min-w-[260px]">{item.scorePoint || '-'}</td>
+                <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{item.proofRequirement || '-'}</td>
+                <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{item.sourceFile || '-'}</td>
+                <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{item.section || '-'}</td>
+                <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.evidenceLocation || '-'}</td>
+              </tr>
+            )) : (
+              <tr>
+                <td className="px-4 py-3 text-outline" colSpan={8}>{emptyText}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function PresenceTable({ rows = [] }) {
+  return (
+    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
+      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low">
+        <h4 className="text-sm font-semibold text-on-surface">专题方案 / 供货范围 / 考核条款</h4>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[860px]">
+          <thead>
+            <tr className="border-b border-surface-container-high">
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">项目</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">识别结果</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">摘要</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const evidence = Array.isArray(row.item?.evidences) ? row.item.evidences[0] : null
+              return (
+                <tr key={row.label} className="border-b border-surface-container-high last:border-b-0">
+                  <td className="px-4 py-2 text-on-surface font-medium whitespace-nowrap">{row.label}</td>
+                  <td className="px-4 py-2 whitespace-nowrap">
+                    <span className={`text-xs px-2 py-0.5 rounded-md font-semibold ${row.item?.status === 'present' ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
+                      {presenceLabel(row.item?.status)}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 text-on-surface-variant min-w-[340px]">{row.item?.summary || '未识别到明确要求。'}</td>
+                  <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{evidence?.sourceFile || '-'}</td>
+                  <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{evidence?.evidenceLocation || '-'}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 export default function TenderReview({ showToast }) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -137,6 +230,10 @@ export default function TenderReview({ showToast }) {
   const [creatingReview, setCreatingReview] = useState(false)
   const [showProjectInfoModal, setShowProjectInfoModal] = useState(false)
   const [projectToComplete, setProjectToComplete] = useState(null)
+  const [selectedAppendixId, setSelectedAppendixId] = useState('')
+  const [appendixPreview, setAppendixPreview] = useState(null)
+  const [appendixPreviewLoading, setAppendixPreviewLoading] = useState(false)
+  const [appendixPreviewError, setAppendixPreviewError] = useState('')
 
   const loadProjects = useCallback(async () => {
     setLoadingProjects(true)
@@ -262,9 +359,47 @@ export default function TenderReview({ showToast }) {
 
   const parsedItems = useMemo(() => parseData?.items || [], [parseData?.items])
   const fieldGroups = parseData?.structured?.fieldGroups || {}
-  const scoringCriteria = Array.isArray(fieldGroups.scoringCriteria) ? fieldGroups.scoringCriteria : []
-  const requirementPresence = parseData?.structured?.requirementPresence || {}
-  const appendices = Array.isArray(parseData?.structured?.appendices) ? parseData.structured.appendices : []
+  const structuredScoring = useMemo(
+    () => parseData?.structured?.scoringCriteria || {},
+    [parseData?.structured?.scoringCriteria],
+  )
+  const scoringGroups = useMemo(() => {
+    const fallbackRows = Array.isArray(fieldGroups.scoringCriteria) ? fieldGroups.scoringCriteria : []
+    const groups = [
+      ['technical', '技术评分标准', structuredScoring.technical],
+      ['business', '商务评分标准', structuredScoring.business],
+      ['price', '投标报价评分标准', structuredScoring.price],
+      ['lcoe', '投标度电成本评分标准', structuredScoring.lcoe],
+      ['compliance', '符合性审查标准', structuredScoring.compliance],
+    ].map(([key, title, rows]) => ({
+      key,
+      title,
+      rows: Array.isArray(rows) ? rows : [],
+    }))
+    if (groups.some((group) => group.rows.length)) return groups
+    return [{ key: 'flat', title: '评分细则', rows: fallbackRows }]
+  }, [fieldGroups.scoringCriteria, structuredScoring])
+  const requirementPresence = useMemo(
+    () => parseData?.structured?.requirementPresence || {},
+    [parseData?.structured?.requirementPresence],
+  )
+  const presenceRows = useMemo(() => ([
+    { label: '专题方案', item: requirementPresence.topicPlans },
+    { label: '供货范围', item: requirementPresence.supplyScope },
+    { label: '考核条款', item: requirementPresence.assessmentTerms },
+  ]), [requirementPresence])
+  const appendices = Array.isArray(parseData?.structured?.appendices)
+    ? parseData.structured.appendices
+    : EMPTY_APPENDICES
+  const activeAppendixId = appendices.length && appendices.some((appendix, index) => appendixKey(appendix, index) === selectedAppendixId)
+    ? selectedAppendixId
+    : appendices.length
+      ? appendixKey(appendices[0], 0)
+      : ''
+  const selectedAppendix = useMemo(
+    () => appendices.find((appendix, index) => appendixKey(appendix, index) === activeAppendixId) || appendices[0] || null,
+    [activeAppendixId, appendices],
+  )
   const structuredCategories = useMemo(
     () => (Array.isArray(parseData?.structured?.categories) ? parseData.structured.categories : []),
     [parseData],
@@ -309,6 +444,38 @@ export default function TenderReview({ showToast }) {
   const isParseCompleted = parseData?.status === 'completed'
   const reviewDecision = String(project?.reviewDecision || 'pending')
   const reviewDecisionLabel = REVIEW_DECISION_LABELS[reviewDecision] || REVIEW_DECISION_LABELS.pending
+
+  useEffect(() => {
+    const appendixId = selectedAppendix?.id
+    if (!selectedProjectId || !appendixId) {
+      return undefined
+    }
+
+    let cancelled = false
+    const timer = setTimeout(() => {
+      setAppendixPreviewLoading(true)
+      setAppendixPreview(null)
+      setAppendixPreviewError('')
+      parseAPI.appendixPreview(selectedProjectId, appendixId)
+        .then((data) => {
+          if (!cancelled) setAppendixPreview(data)
+        })
+        .catch((e) => {
+          if (!cancelled) {
+            setAppendixPreview(null)
+            setAppendixPreviewError(e?.message || '附表 Word 预览加载失败')
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setAppendixPreviewLoading(false)
+        })
+    }, 0)
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [selectedProjectId, selectedAppendix?.docxPath, selectedAppendix?.id])
 
   const handleFilesPicked = (event) => {
     const picked = Array.from(event.target.files || [])
@@ -618,12 +785,12 @@ export default function TenderReview({ showToast }) {
             <p>{formatDateTime(parseData?.parsedAt)}</p>
           </div>
           <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-            <p className="font-medium text-on-surface mb-1">项目起始日期</p>
-            <p>{parsedDates?.startDate || project?.startDate || '-'}</p>
+            <p className="font-medium text-on-surface mb-1">投标起始日期</p>
+            <p>{parsedDates?.startDate || '-'}</p>
           </div>
           <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-            <p className="font-medium text-on-surface mb-1">项目截止日期</p>
-            <p>{parsedDates?.endDate || project?.endDate || project?.deadline || '-'}</p>
+            <p className="font-medium text-on-surface mb-1">投标截止日期</p>
+            <p>{parsedDates?.endDate || '-'}</p>
           </div>
         </div>
       </DataCard>
@@ -644,33 +811,10 @@ export default function TenderReview({ showToast }) {
           <div className="p-6 text-sm text-on-surface-variant">请点击上方“上传并解析”开始提取结构化要求。</div>
         ) : (
           <div className="p-5 flex flex-col gap-5">
-            <div className="overflow-x-auto border border-surface-container-high rounded-md">
-              <table className="w-full text-sm min-w-[760px]">
-                <thead>
-                  <tr className="bg-surface-container-low border-b border-surface-container-high">
-                    <th className="px-4 py-2 text-left font-semibold text-on-surface">评分项</th>
-                    <th className="px-4 py-2 text-left font-semibold text-on-surface">分值</th>
-                    <th className="px-4 py-2 text-left font-semibold text-on-surface">得分点/要求</th>
-                    <th className="px-4 py-2 text-left font-semibold text-on-surface">证明材料要求</th>
-                    <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {scoringCriteria.length ? scoringCriteria.map((item) => (
-                    <tr key={item.id || item.scoringItem} className="border-b border-surface-container-high last:border-b-0">
-                      <td className="px-4 py-2 text-on-surface font-medium">{item.scoringItem || '-'}</td>
-                      <td className="px-4 py-2 text-primary whitespace-nowrap">{item.score || '-'}</td>
-                      <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{item.scorePoint || '-'}</td>
-                      <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{item.proofRequirement || '-'}</td>
-                      <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.evidenceLocation || '-'}</td>
-                    </tr>
-                  )) : (
-                    <tr>
-                      <td className="px-4 py-3 text-outline" colSpan={5}>未识别到评分细则。</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+            <div className="flex flex-col gap-4">
+              {scoringGroups.map((group) => (
+                <ScoringCriteriaTable key={group.key} title={group.title} rows={group.rows} />
+              ))}
             </div>
 
             <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
@@ -680,23 +824,7 @@ export default function TenderReview({ showToast }) {
               <FieldGroupTable title="环境适应性" fields={fieldGroups.environmentAdaptation || []} />
             </div>
 
-            <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-              {[
-                ['专题方案', requirementPresence.topicPlans],
-                ['供货范围', requirementPresence.supplyScope],
-                ['考核条款', requirementPresence.assessmentTerms],
-              ].map(([label, item]) => (
-                <div key={label} className="rounded-md border border-surface-container-high bg-[#f7f7f7] p-4">
-                  <div className="flex items-center justify-between gap-3 mb-2">
-                    <h4 className="text-sm font-semibold text-on-surface">{label}</h4>
-                    <span className={`text-xs px-2 py-0.5 rounded-md font-semibold ${item?.status === 'present' ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
-                      {presenceLabel(item?.status)}
-                    </span>
-                  </div>
-                  <p className="text-sm text-on-surface-variant leading-relaxed">{item?.summary || '未识别到明确要求。'}</p>
-                </div>
-              ))}
-            </div>
+            <PresenceTable rows={presenceRows} />
 
             <div className="border border-surface-container-high rounded-md overflow-hidden">
               <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
@@ -704,32 +832,81 @@ export default function TenderReview({ showToast }) {
                 <span className="text-xs text-outline">{appendices.length} 个</span>
               </div>
               {appendices.length ? (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm min-w-[760px]">
-                    <thead>
-                      <tr className="border-b border-surface-container-high">
-                        <th className="px-4 py-2 text-left font-semibold text-on-surface">附表</th>
-                        <th className="px-4 py-2 text-left font-semibold text-on-surface">状态</th>
-                        <th className="px-4 py-2 text-left font-semibold text-on-surface">行数</th>
-                        <th className="px-4 py-2 text-left font-semibold text-on-surface">工作区路径</th>
-                        <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {appendices.map((appendix) => (
-                        <tr key={appendix.id || appendix.title} className="border-b border-surface-container-high last:border-b-0">
-                          <td className="px-4 py-2 text-on-surface font-medium">{appendix.title || '-'}</td>
-                          <td className="px-4 py-2 text-secondary whitespace-nowrap">{appendix.status === 'generated' ? '已生成 Word' : '待人工处理'}</td>
-                          <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{appendix.rowCount ?? '-'}</td>
-                          <td className="px-4 py-2 text-on-surface-variant min-w-[260px]">{appendix.workspacePath || appendix.docxPath || '-'}</td>
-                          <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{appendix.sourceFile || '-'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <OnlyOfficeWorkspace
+                  className="m-4 appendix-preview-workspace"
+                  heightClass="appendix-preview-shell"
+                  gridClassName="grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]"
+                  sidebarClassName="appendix-preview-aside"
+                  documentAreaClassName="appendix-preview-document"
+                  documentTitle={selectedAppendix?.title || '附表预览'}
+                  documentSubtitle={selectedAppendix?.workspacePath || selectedAppendix?.sourceFile || ''}
+                  documentMeta={(
+                    <span className="whitespace-nowrap rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant">
+                      {selectedAppendix?.rowCount ?? 0} 行
+                    </span>
+                  )}
+                  sidebar={(
+                    <div className="appendix-preview-sidebar flex h-full min-h-0 flex-col">
+                      <div className="border-b border-surface-container-high px-4 py-3">
+                        <p className="text-sm font-semibold text-on-surface">附表条目</p>
+                        <p className="mt-1 text-xs text-outline">空表 Word 已生成，可切换预览。</p>
+                      </div>
+                      <div className="appendix-preview-list min-h-0 flex-1 overflow-y-auto p-2">
+                        {appendices.map((appendix, index) => {
+                          const key = appendixKey(appendix, index)
+                          const active = key === activeAppendixId
+                          return (
+                            <button
+                              key={key}
+                              type="button"
+                              aria-pressed={active}
+                              onClick={() => setSelectedAppendixId(key)}
+                              className={[
+                                'mb-2 flex w-full flex-col items-start gap-1 rounded-md border px-3 py-2 text-left transition-colors',
+                                active
+                                  ? 'border-primary bg-primary/5 text-primary'
+                                  : 'border-surface-container-high bg-white text-on-surface hover:border-outline-variant hover:bg-surface-container-low',
+                              ].join(' ')}
+                            >
+                              <span className="line-clamp-2 text-sm font-semibold">{appendix.title || '-'}</span>
+                              <span className="text-xs text-on-surface-variant">{appendix.sourceFile || '-'}</span>
+                              <span className="text-xs text-outline">{appendix.workspacePath || appendix.docxPath || '-'}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                >
+                  {appendixPreviewLoading ? (
+                    <div className="flex h-full min-h-0 items-center justify-center text-sm text-on-surface-variant">
+                      正在加载附表预览...
+                    </div>
+                  ) : appendixPreview?.onlyoffice?.fileUrl && appendixPreview?.onlyoffice?.callbackUrl && !appendixPreviewError ? (
+                    <OnlyOfficeEmbed
+                      session={appendixPreview.onlyoffice}
+                      mode="view"
+                      className="h-full min-h-0 w-full rounded-md border border-surface-container-high bg-white"
+                      onError={(message) => setAppendixPreviewError(message || 'OnlyOffice 附表预览加载失败')}
+                    />
+                  ) : (
+                    <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 text-center text-sm text-on-surface-variant">
+                      <p>{appendixPreviewError || '当前附表暂时无法载入 OnlyOffice 预览。'}</p>
+                      {appendixPreview?.onlyoffice?.browserFileUrl ? (
+                        <a
+                          href={appendixPreview.onlyoffice.browserFileUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-on-primary"
+                        >
+                          打开 Word 文件
+                        </a>
+                      ) : null}
+                    </div>
+                  )}
+                </OnlyOfficeWorkspace>
               ) : (
-                <div className="px-4 py-3 text-sm text-outline">未识别到带空表样例的附表。</div>
+                <div className="px-4 py-3 text-sm text-outline">未识别到附表要求。</div>
               )}
             </div>
 

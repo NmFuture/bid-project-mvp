@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import io
+import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +22,24 @@ def build_docx_bytes(*lines: str) -> bytes:
     doc = Document()
     for line in lines:
         doc.add_paragraph(line)
+    doc.save(file_obj)
+    return file_obj.getvalue()
+
+
+def build_docx_blocks_bytes(*blocks: str | list[list[str]]) -> bytes:
+    file_obj = io.BytesIO()
+    doc = Document()
+    for block in blocks:
+        if isinstance(block, str):
+            doc.add_paragraph(block)
+            continue
+        if not block:
+            continue
+        column_count = max(len(row) for row in block)
+        table = doc.add_table(rows=len(block), cols=column_count)
+        for row_index, row in enumerate(block):
+            for col_index in range(column_count):
+                table.cell(row_index, col_index).text = row[col_index] if col_index < len(row) else ""
     doc.save(file_obj)
     return file_obj.getvalue()
 
@@ -42,6 +63,91 @@ def build_appendix_docx_bytes() -> bytes:
 
 def field_by_key(items: list[dict], key: str) -> dict:
     return next(item for item in items if item["key"] == key)
+
+
+def sample_evaluation_docx_bytes() -> bytes:
+    return build_docx_blocks_bytes(
+        "第三章 评标办法（综合评估法）",
+        "附表2：技术评分标准表",
+        [
+            ["序号", "评分项", "分值", "得分点", "证明材料要求"],
+            ["1", "技术方案", "30分", "总体方案完整、技术路线先进得满分。", "提供技术方案和技术承诺函。"],
+            ["2", "供货保障", "10分", "供货计划合理、保障措施充分得满分。", "提供供货计划。"],
+        ],
+        "附表3：商务评分标准表",
+        [
+            ["序号", "评分项", "分值", "得分点", "证明材料要求"],
+            ["1", "企业业绩", "20分", "近三年同类风电项目业绩满足要求得满分。", "提供合同或中标通知书。"],
+            ["2", "财务状况", "10分", "财务状况良好得满分。", "提供审计报告。"],
+        ],
+        "附表4：投标报价评分标准",
+        [
+            ["序号", "评分项", "满分", "评分办法"],
+            ["1", "投标报价", "100分", "以评标基准价为基础计算报价得分。"],
+        ],
+        "附表5：投标度电成本评分标准",
+        [
+            ["序号", "评分项", "满分", "评分办法"],
+            ["1", "度电成本", "100分", "按度电成本由低到高计算得分。"],
+        ],
+        "附表1：符合性审查标准表",
+        [
+            ["序号", "审查项目", "审查标准", "证明材料要求"],
+            ["1", "投标文件签署", "投标文件按招标文件要求签字盖章。", "提供签字盖章页。"],
+        ],
+    )
+
+
+def sample_technical_spec_docx_bytes() -> bytes:
+    return build_docx_blocks_bytes(
+        "第二卷 技术规范书",
+        "1.1.1 项目概况",
+        [
+            ["项目名称", "华能甘肃100MW风电项目"],
+            ["招标编号", "HN-2026-001"],
+            ["招标人", "华能集团"],
+            ["管理单位", "华能甘肃公司"],
+            ["标段规模", "100MW"],
+            ["交货周期", "2026年10月1日至2027年3月31日"],
+            ["质保期", "5年"],
+            ["技术承诺", "投标人应承诺满足全部技术规范。"],
+        ],
+        "招标机型要求",
+        [
+            ["参数", "要求"],
+            ["单机容量", "6.25MW"],
+            ["叶轮直径", "200m"],
+            ["轮毂高度", "120m"],
+            ["叶片最低点距地", "20m"],
+            ["塔筒型式", "钢混塔筒"],
+            ["箱变型式", "华式箱变"],
+            ["安全等级", "IEC IIB"],
+            ["空气密度", "1.225kg/m3"],
+            ["风速", "8.5m/s"],
+            ["湍流强度", "0.14"],
+        ],
+        "性能保证指标",
+        [
+            ["指标", "要求"],
+            ["功率曲线", "投标人应提供经认证功率曲线。"],
+            ["可利用率", "97%"],
+            ["发电量", "年上网电量不少于300GWh"],
+            ["涉网性能", "满足高低电压穿越要求。"],
+        ],
+        "环境适应性要求",
+        [
+            ["要求", "说明"],
+            ["抗低温", "满足-30℃低温运行。"],
+            ["抗覆冰防凝露", "具备覆冰及防凝露措施。"],
+            ["防潮湿", "适应高湿环境。"],
+            ["防雷暴", "配置防雷保护。"],
+            ["防风沙", "满足风沙环境防护。"],
+            ["抗高温", "满足高温环境运行。"],
+        ],
+        "专题方案：应提供叶片专题、变桨系统专题、主轴专题、齿轮箱专题。",
+        "供货范围：风力发电机组、塔筒、箱变及备品备件。",
+        "考核条款：发电量考核、可利用率考核、功率曲线考核、部件考核、认证考核。",
+    )
 
 
 class ParsePipelineTests(unittest.TestCase):
@@ -122,7 +228,7 @@ class ParsePipelineTests(unittest.TestCase):
                 "项目名称：华能甘肃100MW风电项目",
                 "招标编号：HN-2026-001",
                 "招标人：华能集团",
-                "项目起始日期：2026年6月1日",
+                "招标文件获取时间：2026年6月1日至2026年6月10日",
                 "投标截止日期：2026年9月30日",
                 "评分细则：技术方案30分，供货保障10分。",
                 "交货周期：2026年10月1日至2027年3月31日",
@@ -184,6 +290,203 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(project["startDate"], "2026-06-01")
         self.assertEqual(project["endDate"], "2026-09-30")
         self.assertEqual(project["deadline"], "2026-09-30")
+
+    def test_bid_dates_ignore_supply_delivery_ranges(self) -> None:
+        project_id = self.create_project()
+        tender = "\n".join(
+            [
+                "# 招标文件",
+                "项目名称：供货日期不应污染投标日期",
+                "供货范围及交货进度",
+                "主机设备2026年4月10日前开始供货，截止2026年8月30日前完成全部供货。",
+                "安装调试服务期：2026年9月1日至2026年10月30日。",
+            ]
+        ).encode("utf-8")
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[("tenderFiles", ("招标文件.md", tender, "text/markdown"))],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        parsed_dates = response.json()["structured"]["projectDates"]
+        self.assertEqual(parsed_dates["startDate"], "")
+        self.assertEqual(parsed_dates["endDate"], "")
+
+        project = store._require(project_id)
+        self.assertEqual(project["startDate"], "")
+        self.assertEqual(project["endDate"], "")
+        self.assertEqual(project["deadline"], "")
+
+    def test_bid_dates_parse_bid_submission_and_opening_dates(self) -> None:
+        project_id = self.create_project()
+        tender = "\n".join(
+            [
+                "# 招标公告",
+                "招标文件获取时间：2026年5月8日至2026年5月15日。",
+                "投标文件递交截止时间：2026年6月20日09时30分。",
+                "开标时间：2026年6月20日09时30分。",
+                "交货周期：2026年10月1日至2027年3月31日。",
+            ]
+        ).encode("utf-8")
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[("tenderFiles", ("招标文件.md", tender, "text/markdown"))],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        parsed_dates = response.json()["structured"]["projectDates"]
+        self.assertEqual(parsed_dates["startDate"], "2026-05-08")
+        self.assertEqual(parsed_dates["endDate"], "2026-06-20")
+
+        project = store._require(project_id)
+        self.assertEqual(project["startDate"], "2026-05-08")
+        self.assertEqual(project["endDate"], "2026-06-20")
+        self.assertEqual(project["deadline"], "2026-06-20")
+
+    def test_upload_and_parse_multifile_docx_tables_builds_structured_contract(self) -> None:
+        project_id = self.create_project()
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "评标办法.docx",
+                        sample_evaluation_docx_bytes(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                ),
+                (
+                    "tenderFiles",
+                    (
+                        "技术规范书.docx",
+                        sample_technical_spec_docx_bytes(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                ),
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        structured = payload["structured"]
+
+        source_documents = structured["sourceDocuments"]
+        self.assertEqual(len(source_documents), 2)
+        self.assertEqual(source_documents[0]["role"], "evaluation")
+        self.assertEqual(source_documents[1]["role"], "technical_spec")
+
+        scoring = structured["scoringCriteria"]
+        self.assertEqual(len(scoring["technical"]), 2)
+        self.assertEqual(len(scoring["business"]), 2)
+        self.assertEqual(len(scoring["price"]), 1)
+        self.assertEqual(len(scoring["lcoe"]), 1)
+        self.assertEqual(len(scoring["compliance"]), 1)
+        self.assertEqual(scoring["technical"][0]["scoringItem"], "技术方案")
+        self.assertEqual(scoring["technical"][0]["score"], "30分")
+        self.assertIn("技术承诺函", scoring["technical"][0]["proofRequirement"])
+        self.assertEqual(scoring["business"][0]["scoringItem"], "企业业绩")
+        self.assertIn("合同", scoring["business"][0]["proofRequirement"])
+
+        for bucket in scoring.values():
+            for row in bucket:
+                self.assertTrue(row["sourceFile"])
+                self.assertTrue(row["sourceDocumentId"])
+                self.assertTrue(row["section"])
+                self.assertTrue(row["evidence"])
+                self.assertTrue(row["evidenceLocation"])
+
+        field_groups = structured["fieldGroups"]
+        self.assertEqual(field_by_key(field_groups["projectBasics"], "projectName")["value"], "华能甘肃100MW风电项目")
+        self.assertEqual(field_by_key(field_groups["projectBasics"], "tenderNo")["value"], "HN-2026-001")
+        self.assertEqual(field_by_key(field_groups["projectBasics"], "deliveryPeriod")["value"], "2026年10月1日至2027年3月31日")
+        self.assertEqual(field_by_key(field_groups["turbineCoreParameters"], "singleCapacity")["value"], "6.25MW")
+        self.assertEqual(field_by_key(field_groups["turbineCoreParameters"], "bladeTipClearance")["value"], "20m")
+        self.assertIn("认证功率曲线", field_by_key(field_groups["performanceGuarantees"], "powerCurve")["value"])
+        self.assertIn("防凝露", field_by_key(field_groups["environmentAdaptation"], "icingCondensation")["value"])
+
+        for group in field_groups.values():
+            if isinstance(group, list):
+                for field in group:
+                    if field["status"] == "found":
+                        self.assertTrue(field["sourceFile"])
+                        self.assertTrue(field["sourceDocumentId"])
+                        self.assertTrue(field["evidence"])
+                        self.assertTrue(field["evidenceLocation"])
+
+        presence = structured["requirementPresence"]
+        self.assertEqual(presence["topicPlans"]["status"], "present")
+        self.assertEqual(presence["supplyScope"]["status"], "present")
+        self.assertEqual(presence["assessmentTerms"]["status"], "present")
+
+    def test_s1parse_skill_script_outputs_same_multifile_structured_contract(self) -> None:
+        project_dir = Path(self.temp_dir.name) / "skill-script"
+        project_dir.mkdir()
+        evaluation_path = project_dir / "评标办法.docx"
+        technical_path = project_dir / "技术规范书.docx"
+        evaluation_path.write_bytes(sample_evaluation_docx_bytes())
+        technical_path.write_bytes(sample_technical_spec_docx_bytes())
+        evaluation_text = project_dir / "evaluation.txt"
+        technical_text = project_dir / "technical.txt"
+        evaluation_text.write_text("第三章 评标办法（综合评估法）\n附表2：技术评分标准表\n", encoding="utf-8")
+        technical_text.write_text(
+            "第二卷 技术规范书\n专题方案：应提供叶片专题、变桨系统专题、主轴专题、齿轮箱专题。\n",
+            encoding="utf-8",
+        )
+        output_path = project_dir / "s1_structured_result.json"
+        manifest_path = project_dir / "s1_parse_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "projectId": "PRJ-SKILL",
+                    "structuredResultPath": str(output_path),
+                    "documents": [
+                        {
+                            "id": "DOC-1",
+                            "name": "评标办法.docx",
+                            "sourcePath": str(evaluation_path),
+                            "textPath": str(evaluation_text),
+                        },
+                        {
+                            "id": "DOC-2",
+                            "name": "技术规范书.docx",
+                            "sourcePath": str(technical_path),
+                            "textPath": str(technical_text),
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        script_path = (
+            Path(__file__).resolve().parents[1]
+            / "opencode"
+            / "skill"
+            / "bid-tender-structured-parser"
+            / "scripts"
+            / "run_from_manifest.py"
+        )
+
+        completed = subprocess.run(
+            [sys.executable, str(script_path), str(manifest_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        summary = json.loads(completed.stdout)
+        self.assertEqual(summary["schemaVersion"], "bid-tender-structured-v1")
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(payload["structured"]["scoringCriteria"]["technical"]), 2)
+        self.assertEqual(len(payload["structured"]["scoringCriteria"]["business"]), 2)
+        self.assertEqual(
+            field_by_key(payload["structured"]["fieldGroups"]["projectBasics"], "projectName")["value"],
+            "华能甘肃100MW风电项目",
+        )
 
     def test_parse_result_exposes_fixed_fields_presence_and_appendix_docx_assets(self) -> None:
         project_id = self.create_project()
@@ -286,7 +589,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(appendices[0]["rowCount"], 3)
         appendix_path = Path(appendices[0]["docxPath"])
         self.assertTrue(appendix_path.exists())
-        self.assertIn(str(settings.documents_dir / project_id / "technical-workspace" / "appendices"), str(appendix_path))
+        self.assertIn(str(settings.parsed_dir / project_id / "s1_appendices"), str(appendix_path))
         appendix_doc = Document(str(appendix_path))
         self.assertEqual(len(appendix_doc.tables), 1)
         self.assertEqual(appendix_doc.tables[0].cell(0, 1).text, "参数")
@@ -316,6 +619,217 @@ class ParsePipelineTests(unittest.TestCase):
         appendix_doc = Document(appendices[0]["docxPath"])
         self.assertEqual(appendix_doc.tables[0].cell(0, 1).text, "设备名称")
         self.assertEqual(appendix_doc.tables[0].cell(1, 2).text, "")
+
+    def test_parse_docx_appendices_ignores_toc_titles_with_page_numbers(self) -> None:
+        project_id = self.create_project()
+        file_bytes = build_docx_blocks_bytes(
+            "目录",
+            "附表A.1 投标机型总方案信息表169",
+            "附表B.1.2 机型配置品牌表1173",
+            "附表B.9.1 双馈型风电机组179",
+            "正文",
+            "附表A.1 投标机型总方案信息表",
+            [
+                ["序号", "项目", "投标响应"],
+                ["1", "总方案", ""],
+            ],
+            "附表B.1.2 机型配置品牌表1",
+            [
+                ["序号", "部件", "品牌"],
+                ["1", "叶片", ""],
+            ],
+        )
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "含目录附表招标文件.docx",
+                        file_bytes,
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        self.assertEqual(
+            [appendix["title"] for appendix in appendices],
+            [
+                "附表A.1 投标机型总方案信息表",
+                "附表B.1.2 机型配置品牌表1",
+            ],
+        )
+        self.assertEqual([appendix["id"] for appendix in appendices], ["APPX-0001", "APPX-0002"])
+        self.assertEqual([appendix["rowCount"] for appendix in appendices], [2, 2])
+
+    def test_markdown_appendix_heading_without_table_generates_workspace_docx(self) -> None:
+        project_id = self.create_project()
+        tender = "\n".join(
+            [
+                "# 招标文件",
+                "项目名称：附表空表测试项目",
+                "附表2：投标偏离表",
+                "请投标人按招标文件要求填写。",
+            ]
+        ).encode("utf-8")
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[("tenderFiles", ("招标文件.md", tender, "text/markdown"))],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        self.assertEqual(len(appendices), 1)
+        self.assertEqual(appendices[0]["status"], "generated")
+        self.assertEqual(appendices[0]["rowCount"], 0)
+        appendix_path = Path(appendices[0]["docxPath"])
+        self.assertTrue(appendix_path.exists())
+        self.assertEqual(appendices[0]["workspacePath"], f"s1_appendices/{appendix_path.name}")
+        appendix_doc = Document(str(appendix_path))
+        self.assertEqual(len(appendix_doc.tables), 0)
+        self.assertIn("附表2：投标偏离表", [paragraph.text for paragraph in appendix_doc.paragraphs])
+
+    def test_participating_promotes_parse_json_and_appendices_to_workspace(self) -> None:
+        project_id = self.create_project()
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "含附表招标文件.docx",
+                        build_appendix_docx_bytes(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+        self.assertEqual(response.status_code, 200)
+        temp_appendix_path = Path(response.json()["structured"]["appendices"][0]["docxPath"])
+        self.assertIn(str(settings.parsed_dir / project_id / "s1_appendices"), str(temp_appendix_path))
+        temp_project_dir = settings.parsed_dir / project_id
+        self.assertTrue(temp_project_dir.exists())
+        stale_path = settings.documents_dir / project_id / "technical-workspace" / "appendices" / "stale.docx"
+        stale_path.parent.mkdir(parents=True, exist_ok=True)
+        stale_path.write_bytes(b"old")
+
+        updated = self.client.put(
+            f"/api/projects/{project_id}",
+            json={
+                "name": "参与后归档项目",
+                "customerName": "测试业主",
+                "manager": "项目经理",
+                "startDate": "2026-01-01",
+                "endDate": "2026-02-01",
+                "bidType": "技术标",
+                "reviewDecision": "participate",
+            },
+        )
+
+        self.assertEqual(updated.status_code, 200)
+        self.assertFalse(stale_path.exists())
+        workspace_parse_dir = settings.documents_dir / project_id / "technical-workspace" / "parse"
+        workspace_appendix_dir = settings.documents_dir / project_id / "technical-workspace" / "appendices"
+        self.assertTrue((workspace_parse_dir / "s1_structured_result.json").exists())
+        self.assertTrue((workspace_parse_dir / "parse-result.workspace.json").exists())
+        workspace_appendices = sorted(workspace_appendix_dir.glob("*.docx"))
+        self.assertEqual(len(workspace_appendices), 1)
+        self.assertFalse(temp_project_dir.exists())
+
+        promoted_payload = self.client.get(f"/api/projects/{project_id}/parse-results")
+        self.assertEqual(promoted_payload.status_code, 200)
+        appendix = promoted_payload.json()["structured"]["appendices"][0]
+        self.assertIn(str(workspace_appendix_dir), appendix["docxPath"])
+        self.assertEqual(appendix["workspacePath"], f"technical-workspace/appendices/{workspace_appendices[0].name}")
+
+        project = store._require(project_id)
+        parse_storage = project["parse_storage"]
+        self.assertEqual(Path(parse_storage["projectDir"]), workspace_parse_dir)
+        self.assertEqual(Path(parse_storage["combinedTextPath"]), workspace_parse_dir / "combined.txt")
+        self.assertEqual(Path(parse_storage["structuredResultPath"]), workspace_parse_dir / "s1_structured_result.json")
+        self.assertEqual(Path(parse_storage["manifestPath"]), workspace_parse_dir / "manifest.json")
+        self.assertEqual(Path(parse_storage["skillManifestPath"]), workspace_parse_dir / "s1_parse_manifest.json")
+        self.assertTrue(all(str(workspace_parse_dir) in item["textPath"] for item in parse_storage["documents"]))
+
+        preview = self.client.get(f"/api/projects/{project_id}/parse-results/appendices/APPX-0001/preview")
+        self.assertEqual(preview.status_code, 200)
+        self.assertIn(str(workspace_appendix_dir), preview.json()["docxPath"])
+        self.assertFalse(temp_project_dir.exists())
+
+    def test_delete_project_cleans_parse_temp_workspace(self) -> None:
+        project_id = self.create_project()
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "含附表招标文件.docx",
+                        build_appendix_docx_bytes(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+        self.assertEqual(response.status_code, 200)
+        temp_project_dir = settings.parsed_dir / project_id
+        self.assertTrue(temp_project_dir.exists())
+
+        deleted = self.client.delete(f"/api/projects/{project_id}")
+
+        self.assertEqual(deleted.status_code, 200)
+        self.assertFalse(temp_project_dir.exists())
+
+    def test_parse_results_materializes_legacy_required_appendix_preview_docx(self) -> None:
+        project_id = self.create_project()
+        store.complete_parse(
+            project_id,
+            [{"id": "TEN-1", "name": "招标文件.docx", "size_label": "1.0 MB"}],
+            [],
+            summary={"fileCount": 1, "extractedCount": 0, "textLength": 0, "warnings": []},
+            parse_storage={
+                "items": [],
+                "structured": {
+                    "appendices": [
+                        {
+                            "id": "APPX-0007",
+                            "title": "附表7：技术资料递交表",
+                            "status": "required_no_template",
+                            "sourceFile": "招标文件.docx",
+                            "evidence": "附表7：技术资料递交表",
+                            "evidenceLocation": "L88",
+                            "rows": [],
+                            "rowCount": 0,
+                            "docxPath": "",
+                        }
+                    ]
+                },
+            },
+        )
+
+        response = self.client.get(f"/api/projects/{project_id}/parse-results")
+        self.assertEqual(response.status_code, 200)
+        appendix = response.json()["structured"]["appendices"][0]
+        self.assertEqual(appendix["status"], "generated")
+        self.assertEqual(appendix["rowCount"], 0)
+        appendix_path = Path(appendix["docxPath"])
+        self.assertTrue(appendix_path.exists())
+
+        preview = self.client.get(f"/api/projects/{project_id}/parse-results/appendices/APPX-0007/preview")
+        self.assertEqual(preview.status_code, 200)
+        preview_payload = preview.json()
+        self.assertEqual(preview_payload["id"], "APPX-0007")
+        self.assertEqual(preview_payload["onlyoffice"]["documentType"], "word")
+        self.assertTrue(preview_payload["onlyoffice"]["documentKey"])
+
+        file_response = self.client.get(f"/api/projects/{project_id}/parse-results/appendices/APPX-0007/file/{appendix_path.name}")
+        self.assertEqual(file_response.status_code, 200)
+        self.assertGreater(len(file_response.content), 0)
 
     def test_parse_progress_records_real_steps_and_completion(self) -> None:
         project_id = self.create_project()

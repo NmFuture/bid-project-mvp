@@ -249,6 +249,8 @@ export const parseAPI = {
     }),
   updateItem: (projectId, rid, data) =>
     request(`/projects/${projectId}/parse-results/${rid}`, { method: 'PUT', body: data }),
+  appendixPreview: (projectId, appendixId) =>
+    request(`/projects/${projectId}/parse-results/appendices/${encodeURIComponent(appendixId)}/preview`),
 }
 
 // ===== S2 Directory Generate =====

@@ -1947,3 +1947,53 @@ bid_workspace
 - `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 21:40:20 post-commit 3f986b3
+
+提交摘要：feat: stream parse progress and appendix extraction
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/api/routes/parse.py`
+- `code/sewpg-bid-backend/app/services/opencode_client.py`
+- `code/sewpg-bid-backend/app/services/parsing.py`
+- `code/sewpg-bid-backend/app/services/store.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tender-structured-parser/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
+- `code/sewpg-bid-frontend/src/api/index.js`
+- `code/sewpg-bid-frontend/src/pages/TenderReview.jsx`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-01 22:28:25 S1 招标解析结构化增强
+
+- 将 S1 解析核心抽到 `bid-tender-structured-parser/scripts/parser_core.py`，后端本地解析和 opencode `s1parse` 共用同一套规则。
+- 新增多文件 Word 表格解析契约：`sourceDocuments`、分组 `scoringCriteria`、固定字段 `fieldGroups`、存在性 `requirementPresence`、覆盖度 `coverage` 与项目日期。
+- 前端解析结果改为分表展示技术评分、商务评分、报价评分、度电成本、符合性审查，并保留来源/章节/证据位置。
+- 真实华能两份招标文件本地解析烟测：技术评分 18 条、商务评分 11 条、报价 2 条、度电成本 1 条、符合性审查 13 条；风机核心参数从“招标机型要求/风资源情况”提取。
+- 已重建并启动 `opencode / fastapi / worker / web`，容器内 `s1parse` 烟测通过。
+
+验证：
+
+- `./.venv/bin/python -m pytest -q`：67 passed, 6 skipped。
+- `npm run lint`：通过。
+- `npm run build`：通过，保留 Vite chunk >500KB 既有警告。
+- `docker compose build opencode fastapi web`：通过。
+- `docker compose up -d opencode fastapi worker web`：通过。
+- `docker compose exec -T opencode ... s1parse ...`：通过。
+
+### 2026-05-01 22:51:10 S1 附表 Word 与 OnlyOffice 预览调整
+
+- 附表识别改为仅匹配明确“附表/副表/技术附表”标题，避免正文句子误入附表清单。
+- 所有识别到的附表条目都会生成 Word；没有空表样例时生成仅含标题的空 Word，并对历史 `required_no_template` 结果做读取时补齐。
+- 新增 S1 附表 OnlyOffice 预览 API，前端附表区改为左侧条目列表、右侧 OnlyOffice 预览框，不再显示“待处理/已生成 Word”状态列。
+
+验证：
+
+- `./.venv/bin/python -m pytest tests/test_parse_pipeline.py -q`：15 passed。
+- `./.venv/bin/python -m pytest -q`：69 passed, 6 skipped。
+- `npm run lint`：通过。
+- `npm run build`：通过，保留 Vite chunk >500KB 既有警告。
+- `docker compose build fastapi worker web && docker compose up -d --force-recreate fastapi worker web`：通过。
+- 浏览器验证 `http://127.0.0.1/parse`：附表 159 个，状态列消失，左侧条目 + 右侧 OnlyOffice 预览 iframe 可见。

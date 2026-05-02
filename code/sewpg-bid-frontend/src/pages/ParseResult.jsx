@@ -130,6 +130,7 @@ export default function ParseResult({ showToast }) {
   const reviewDecision = String(project?.reviewDecision || 'participate')
   const reviewDecisionLabel = REVIEW_DECISION_LABELS[reviewDecision] || REVIEW_DECISION_LABELS.pending
   const isParseCompleted = data?.status === 'completed'
+  const parsedDates = data?.structured?.projectDates || data?.summary?.projectDates || {}
   const isReviewApproved = reviewDecision === 'participate' || (isParseCompleted && sourceFiles.length > 0)
   const isProjectInfoComplete = Boolean(
     String(project?.name || '').trim()
@@ -294,12 +295,12 @@ export default function ParseResult({ showToast }) {
             <p className="text-on-surface-variant">{sourceFiles.length ? sourceFiles.map((item) => item.name).join('，') : '暂无'}</p>
           </div>
           <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-            <p className="font-medium text-on-surface mb-1">项目起始日期</p>
-            <p className="text-on-surface-variant">{project?.startDate || '-'}</p>
+            <p className="font-medium text-on-surface mb-1">投标起始日期</p>
+            <p className="text-on-surface-variant">{parsedDates?.startDate || '-'}</p>
           </div>
           <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-            <p className="font-medium text-on-surface mb-1">项目截止日期</p>
-            <p className="text-on-surface-variant">{project?.endDate || project?.deadline || '-'}</p>
+            <p className="font-medium text-on-surface mb-1">投标截止日期</p>
+            <p className="text-on-surface-variant">{parsedDates?.endDate || '-'}</p>
           </div>
         </div>
 

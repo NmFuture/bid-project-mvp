@@ -2,17 +2,40 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Body, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 
+from app.api.utils import absolute_url, onlyoffice_backend_base_url
 from app.core.config import settings
-from app.services.parsing import parse_tender_documents
+from app.services.onlyoffice_documents import WORD_MEDIA_TYPE, build_editor_session_key
+from app.services.parsing import materialize_appendix_docx, materialize_parse_appendix_docx_assets, parse_tender_documents
 from app.services.store import store
 
 router = APIRouter()
 
 _CHUNK_SIZE = 1024 * 1024
+
+
+def _add_callback_token(url: str) -> str:
+    token = settings.onlyoffice_callback_token
+    if not token:
+        return url
+    parsed = urlparse(url)
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    query.append(("oo_callback_token", token))
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+def _validate_callback_token(request: Request) -> None:
+    expected = settings.onlyoffice_callback_token
+    if not expected:
+        return
+    supplied = request.query_params.get("oo_callback_token", "")
+    if supplied != expected:
+        raise HTTPException(status_code=403, detail="OnlyOffice callback token 无效。")
 
 
 def _safe_display_name(filename: str | None, index: int) -> str:
@@ -117,12 +140,112 @@ async def save_uploads_with_offset(
 
 @router.get("/api/projects/{project_id}/parse-results")
 async def get_parse_results(project_id: str) -> dict[str, Any]:
-    return store.get_parse_result(project_id)
+    return materialize_parse_appendix_docx_assets(project_id, store.get_parse_result(project_id))
 
 
 @router.get("/api/projects/{project_id}/parse-results/progress")
 async def get_parse_progress(project_id: str) -> dict[str, Any]:
     return store.get_parse_progress(project_id)
+
+
+def _document_type_by_suffix(path: Path) -> tuple[str, str]:
+    suffix = path.suffix.lower().lstrip(".") or "docx"
+    if suffix == "pdf":
+        return "pdf", "pdf"
+    if suffix in {"xlsx", "xls"}:
+        return suffix, "cell"
+    if suffix in {"pptx", "ppt"}:
+        return suffix, "slide"
+    return suffix, "word"
+
+
+def _resolve_appendix_docx(project_id: str, appendix_id: str) -> tuple[dict[str, Any], Path]:
+    parse_result = store.get_parse_result(project_id)
+    structured = parse_result.get("structured") if isinstance(parse_result, dict) else {}
+    appendices = structured.get("appendices") if isinstance(structured, dict) else []
+    for appendix in appendices if isinstance(appendices, list) else []:
+        if not isinstance(appendix, dict):
+            continue
+        if str(appendix.get("id") or "") != appendix_id:
+            continue
+        item = materialize_appendix_docx(project_id, appendix)
+        path = Path(str(item.get("docxPath") or ""))
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="附表 Word 文件不存在。")
+        return item, path
+    raise HTTPException(status_code=404, detail="未找到对应的附表。")
+
+
+def _build_appendix_preview(project_id: str, appendix_id: str, request: Request) -> dict[str, Any]:
+    appendix, path = _resolve_appendix_docx(project_id, appendix_id)
+    file_name = path.name
+    file_type, document_type = _document_type_by_suffix(path)
+    quoted_name = quote(file_name)
+    browser_file_url = absolute_url(
+        request,
+        f"/api/projects/{project_id}/parse-results/appendices/{appendix_id}/file/{quoted_name}",
+    )
+    browser_callback_url = _add_callback_token(
+        absolute_url(request, f"/api/projects/{project_id}/parse-results/appendices/callback"),
+    )
+    onlyoffice_base = onlyoffice_backend_base_url(request)
+    onlyoffice_file_url = (
+        f"{onlyoffice_base}/api/projects/{project_id}/parse-results/appendices/{appendix_id}/file/{quoted_name}"
+    )
+    onlyoffice_callback_url = _add_callback_token(
+        f"{onlyoffice_base}/api/projects/{project_id}/parse-results/appendices/callback",
+    )
+    return {
+        **appendix,
+        "fileUrl": browser_file_url,
+        "onlyoffice": {
+            "documentKey": build_editor_session_key(path),
+            "title": appendix.get("title") or file_name,
+            "fileType": file_type,
+            "documentType": document_type,
+            "fileUrl": onlyoffice_file_url,
+            "callbackUrl": onlyoffice_callback_url,
+            "browserFileUrl": browser_file_url,
+            "browserCallbackUrl": browser_callback_url,
+            "user": {
+                "id": "user-1",
+                "name": "当前用户",
+            },
+        },
+    }
+
+
+@router.get("/api/projects/{project_id}/parse-results/appendices/{appendix_id}/preview")
+async def get_appendix_preview(project_id: str, appendix_id: str, request: Request) -> dict[str, Any]:
+    return _build_appendix_preview(project_id, appendix_id, request)
+
+
+@router.get("/api/projects/{project_id}/parse-results/appendices/{appendix_id}/file")
+async def get_appendix_file(project_id: str, appendix_id: str) -> FileResponse:
+    return await get_appendix_file_by_name(project_id, appendix_id, "")
+
+
+@router.get("/api/projects/{project_id}/parse-results/appendices/{appendix_id}/file/{filename:path}")
+async def get_appendix_file_by_name(project_id: str, appendix_id: str, filename: str) -> FileResponse:
+    appendix, path = _resolve_appendix_docx(project_id, appendix_id)
+    _ = filename
+    return FileResponse(
+        path=path,
+        media_type=WORD_MEDIA_TYPE,
+        filename=Path(str(appendix.get("workspacePath") or path.name)).name,
+    )
+
+
+@router.post("/api/projects/{project_id}/parse-results/appendices/callback")
+async def appendix_onlyoffice_callback(
+    project_id: str,
+    request: Request,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> JSONResponse:
+    _ = project_id
+    _ = data
+    _validate_callback_token(request)
+    return JSONResponse({"error": 0})
 
 
 def _progress_callback(project_id: str):
@@ -234,6 +357,7 @@ async def run_parse_without_upload(project_id: str) -> dict[str, Any]:
         summary=summary,
         parse_storage=parse_storage,
     )
+    parse_result = materialize_parse_appendix_docx_assets(project_id, parse_result)
     return {**parse_result, "message": "解析完成"}
 
 
@@ -292,6 +416,7 @@ async def upload_and_parse(
         summary=summary,
         parse_storage=parse_storage,
     )
+    parse_result = materialize_parse_appendix_docx_assets(project_id, parse_result)
     return {
         **parse_result,
         "message": "上传成功，已自动完成解析。",

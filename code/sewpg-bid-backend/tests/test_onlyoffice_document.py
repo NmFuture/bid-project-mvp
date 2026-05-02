@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import platform
 import tempfile
 import unittest
@@ -249,6 +250,18 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
                 review_response.json()["version"],
             ),
         )
+
+    def test_editor_session_key_is_ascii_safe_for_onlyoffice_paths(self) -> None:
+        path = settings.documents_dir / "APPX-0003-附表A.1 投标机型总方案信息表169.docx"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"PK-test-docx")
+
+        key = build_editor_session_key(path)
+
+        self.assertLessEqual(len(key), 128)
+        self.assertRegex(key, re.compile(r"^[A-Za-z0-9._=-]+$"))
+        self.assertNotIn("附表", key)
+        self.assertNotIn(" ", key)
 
     def test_cleaned_material_preview_route_returns_onlyoffice_session(self) -> None:
         settings.onlyoffice_backend_base_url = "http://fastapi:8000"

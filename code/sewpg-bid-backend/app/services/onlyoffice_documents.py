@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import time
 from pathlib import Path
 
@@ -31,7 +33,12 @@ def review_document_object_key(project_id: str) -> str:
 
 def build_document_key(path: Path) -> str:
     stat = path.stat()
-    return f"{path.stem}-{stat.st_mtime_ns}-{stat.st_size}"
+    raw_key = f"{path.resolve()}-{stat.st_mtime_ns}-{stat.st_size}"
+    digest = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:24]
+    safe_stem = re.sub(r"[^A-Za-z0-9._=-]+", "-", path.stem).strip(".-_= ")
+    safe_stem = safe_stem[:56].strip(".-_= ")
+    prefix = f"{safe_stem}-" if safe_stem else ""
+    return f"{prefix}{digest}-{stat.st_size}"
 
 
 def build_editor_session_key(path: Path, version: int | str | None = None) -> str:
