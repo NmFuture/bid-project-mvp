@@ -2212,3 +2212,18 @@ bid_workspace
 - `curl -fsS http://127.0.0.1/api/healthz`：返回 `status=ok`。
 - `curl -fsS -o /tmp/bid-web-home.html -w '%{http_code}' http://127.0.0.1/`：200。
 - `/api/projects/{project_id}/stages` 烟测返回 6 个节点：模板与目录、审核目录、缺口处理、生成标书、共创、导出；烟测项目已删除。
+
+### 2026-05-02 14:38:49 当前项目阶段与收紧审计
+
+- 核对当前项目阶段：`PRJ-0007/0006/0005/0003` 仍在“模板与目录”，`PRJ-0001` 在“导出”；`/api/projects/{id}/stages` 返回 6 个合并节点。
+- 进一步收紧前端主线：内部 S8 自动跳转从 `/coverage` 改回 `/generate`，`/coverage` 仅保留为诊断/导出检查入口。
+- 删除主流程已不再引用的旧页面：`DirectoryGeneration.jsx`、`GapFilling.jsx`、`MaterialReview.jsx`。
+- 用户可见文案从旧 `S5/S6/S7 填充` 收敛为“缺口处理/缺口处理确认预览/生成标书”；项目 `stageLabel` 也改为 6 节点名称。
+- 更新 `doc/README.md`、`doc/05`、`doc/06`、`doc/12`、`doc/13`，补充 2026-05-02 当前基线，并说明内部 S 段/兼容接口与 6 节点主流程的关系。
+
+验证：
+
+- `python3 -m py_compile code/sewpg-bid-backend/app/services/store.py code/sewpg-bid-backend/app/api/routes/review.py code/sewpg-bid-backend/app/services/tech_assembly.py code/sewpg-bid-backend/app/api/routes/projects.py code/sewpg-bid-backend/app/api/routes/generation.py`：通过。
+- `PYTHONPATH=. pytest tests/test_stage_progress.py tests/test_gap_review_flow.py tests/test_onlyoffice_document.py tests/test_fill_generation.py -q`：29 passed。
+- `npm run lint`：通过。
+- `npm run build`：通过，保留既有 Vite chunk size warning。

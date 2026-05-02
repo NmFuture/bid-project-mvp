@@ -64,14 +64,14 @@ async def delete_project(project_id: str) -> dict[str, str]:
 async def project_cockpit(project_id: str) -> dict[str, Any]:
     project = store.get_project(project_id)
     return {
-        "summary": "当前按 MVP 主链路推进，关键集成点是解析、目录、正文拼装、OnlyOffice。",
+        "summary": "当前按技术标 6 节点主链路推进，关键集成点是模板与目录、缺口处理、生成标书和 OnlyOffice 共创。",
         "startDate": project.get("startDate") or "",
         "endDate": project.get("endDate") or project.get("deadline") or "",
         "deadline": project.get("deadline") or "",
         "tasks": [
-            {"id": "task-1", "label": "完成 S1 模板上传", "status": "done" if project["currentStage"] > 1 else "pending"},
-            {"id": "task-2", "label": "完成 S2 目录生成", "status": "done" if project["currentStage"] > 2 else "pending"},
-            {"id": "task-3", "label": "完成 S7 正文拼装", "status": "done" if project["currentStage"] > 7 else "pending"},
+            {"id": "task-1", "label": "完成模板与目录", "status": "done" if project["currentStage"] > 1 else "pending"},
+            {"id": "task-2", "label": "完成目录审核", "status": "done" if project["currentStage"] > 3 else "pending"},
+            {"id": "task-3", "label": "完成生成标书", "status": "done" if project["currentStage"] > 7 else "pending"},
         ],
     }
 

@@ -274,7 +274,7 @@ export const outlineAPI = {
   confirm: (projectId) => request(`/projects/${projectId}/outline/confirm`, { method: 'POST' }),
 }
 
-// ===== S4/S5 Gaps =====
+// ===== Gap Handling =====
 export const gapsAPI = {
   detectionStatus: (projectId) => request(`/projects/${projectId}/gaps-detection`),
   runDetection: (projectId) => request(`/projects/${projectId}/gaps-detection/run`, { method: 'POST' }),
@@ -303,7 +303,7 @@ export const gapsAPI = {
     request(`/projects/${projectId}/materials/missing/${missingId}`, { method: 'PATCH', body: data }),
 }
 
-// ===== S6 Review =====
+// ===== Gap Confirmation Preview =====
 export const reviewAPI = {
   list: (projectId) => request(`/projects/${projectId}/review-items`),
   prepareParse: (projectId) =>
@@ -317,7 +317,7 @@ export const reviewAPI = {
     request(`/projects/${projectId}/review-items/confirm`, { method: 'POST' }),
 }
 
-// ===== S7 Generate =====
+// ===== Bid Generation =====
 export const generateAPI = {
   status: (projectId) => request(`/projects/${projectId}/fill-generation`),
   run: (projectId) =>
@@ -328,12 +328,12 @@ export const generateAPI = {
     }),
 }
 
-// ===== S8 Coverage =====
+// ===== Coverage Diagnostics =====
 export const coverageAPI = {
   get: (projectId) => request(`/projects/${projectId}/coverage`),
 }
 
-// ===== S9 Document =====
+// ===== Co-creation Document =====
 export const documentAPI = {
   get: (projectId) => request(`/projects/${projectId}/document`),
   save: (projectId, data) =>
@@ -343,7 +343,7 @@ export const documentAPI = {
   final: (projectId) => request(`/projects/${projectId}/final-document`),
 }
 
-// ===== S10 Export =====
+// ===== Export =====
 export const exportAPI = {
   check: (projectId) => request(`/projects/${projectId}/export/check`),
   doExport: (projectId, data) => request(`/projects/${projectId}/export`, { method: 'POST', body: data }),

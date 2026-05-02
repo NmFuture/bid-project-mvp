@@ -38,9 +38,9 @@ def assemble_tech_bid_for_project_with_progress(
     _, template_file_records = store.get_parse_inputs(project_id)
 
     if outline_state.get("reviewStatus") != "confirmed":
-        raise ValueError("请先在 S3 完成目录确认后再触发 S7 填充。")
+        raise ValueError("请先完成目录确认后再生成标书。")
     if not review_state.get("confirmed"):
-        raise ValueError("请先在 S6 完成审核确认后再触发 S7 填充。")
+        raise ValueError("请先完成缺口处理确认后再生成标书。")
 
     started_at = time.monotonic()
     work_dir = _prepare_work_dir(project_id, parse_storage)
@@ -266,10 +266,10 @@ def _prepare_gap_plan(project_id: str, work_dir: Path) -> Path | None:
     if not plan:
         return None
     if not bool(review_state.get("confirmed")):
-        raise ValueError("请先完成缺口处理和审核确认后再触发 S7 填充。")
+        raise ValueError("请先完成缺口处理确认后再生成标书。")
     integrity = gap_state.get("integrity") if isinstance(gap_state.get("integrity"), dict) else {}
     if integrity and str(integrity.get("status") or "") != "passed":
-        raise ValueError("缺口完整性校验未通过，暂不可触发 S7 填充。")
+        raise ValueError("缺口完整性校验未通过，暂不可生成标书。")
     target = work_dir / "gap_plan.json"
     target.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
     return target

@@ -74,7 +74,7 @@ def _ensure_review_document_file(project_id: str) -> tuple[dict[str, Any], Path]
 def _build_review_document_payload(project_id: str, request: Request) -> dict[str, Any]:
     state, path = _ensure_review_document_file(project_id)
     if state.get("parseStatus") != "completed":
-        raise HTTPException(status_code=400, detail="S6 解析文档尚未生成，请先在 S5 提交审核触发解析。")
+        raise HTTPException(status_code=400, detail="缺口处理确认预览尚未生成，请先在缺口处理页提交确认。")
 
     quoted_name = quote(state["fileName"])
     browser_file_url = absolute_url(request, f"/api/projects/{project_id}/review-items/document/file/{quoted_name}")
@@ -151,7 +151,7 @@ async def save_review_document(
     path = ensure_review_document(project_id, state["fileName"], content)
     write_document(path, state["fileName"], content)
     sync_document_to_minio(path, review_document_object_key(project_id))
-    return now_message("S6 预览文档已保存并回写。", _build_review_document_payload(project_id, request))
+    return now_message("缺口处理确认预览已保存并回写。", _build_review_document_payload(project_id, request))
 
 
 @router.post("/api/projects/{project_id}/review-items/document/force-save")
@@ -160,7 +160,7 @@ async def force_save_review_document(project_id: str, request: Request) -> dict[
     path = ensure_review_document(project_id, state["fileName"], state.get("content") or "")
     write_document(path, state["fileName"], state.get("content") or "")
     sync_document_to_minio(path, review_document_object_key(project_id))
-    return now_message("S6 文档已触发保存回写。", _build_review_document_payload(project_id, request))
+    return now_message("缺口处理确认预览已触发保存回写。", _build_review_document_payload(project_id, request))
 
 
 @router.post("/api/projects/{project_id}/review-items/document/callback")
@@ -200,7 +200,7 @@ async def review_document_file(project_id: str) -> FileResponse:
 async def review_document_file_by_name(project_id: str, filename: str) -> FileResponse:
     state, path = _ensure_review_document_file(project_id)
     if state.get("parseStatus") != "completed" or not path.exists():
-        raise HTTPException(status_code=400, detail="S6 解析文档尚未生成。")
+        raise HTTPException(status_code=400, detail="缺口处理确认预览尚未生成。")
     return FileResponse(path=path, media_type=WORD_MEDIA_TYPE, filename=state["fileName"])
 
 

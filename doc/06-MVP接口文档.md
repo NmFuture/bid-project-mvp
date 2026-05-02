@@ -3,34 +3,39 @@
 > 用途：作为当前 MVP 阶段 `Web 前端 -> FastAPI` 的正式接口基线。  
 > 说明：本文件定义的是前端要调用的业务接口，不是 `FastAPI -> opencode` 的内部调用接口。
 
+> 2026-05-02 更新：前端主进度已收敛为 6 个节点：模板与目录、审核目录、缺口处理、生成标书、共创、导出。本文保留 `directory-generation`、`gaps`、`review-items`、`fill-generation`、`coverage` 等接口名，是为了兼容当前代码和历史状态；这些接口不再代表独立的用户主流程页面。
+
 ## 1. 范围说明
 
-当前 MVP 保留前端完整展示流 `S0-S10`，但只把关键阶段做成真实能力：
+当前 MVP 内部保留 S 段状态号和接口名，但前端主路径已经收敛为 6 个节点：
 
-- 真实阶段：`S0`、`S1`、`S2`、`S3`、`S7`、`S8`、`S9`、`S10`
-- Mock / 承接阶段：`S4`、`S5`、`S6`
+- 模板与目录
+- 审核目录
+- 缺口处理
+- 生成标书
+- 共创
+- 导出
 
 补充说明：
 
-- `S0` 当前只覆盖项目列表 / 新建项目
 - 登录鉴权本轮先不纳入 MVP，可先保留空实现或 mock
 
 关键边界：
 
-- `S2`：调用 `opencode` 的目录生成 skill
-- `S7`：调用本地 `bid-tech-assembler` skill，按 S2 目录 JSON 和素材库拼装正文
-- `S8`：读取 S7 拼装计划，校验未拼上的素材和未匹配目录项
-- `S9`：由 FastAPI 对接 OnlyOffice
-- `S10`：下载最终 Word
+- 模板与目录：调用 `opencode` 的目录生成 skill
+- 缺口处理：调用缺口识别 skill 和 AI 填写 skill，读取真实素材库、Wiki、解析结果和项目补料产物
+- 生成标书：调用本地 `bid-tech-assembler` skill，按目录 JSON、缺口处理计划和素材库拼装正文
+- 覆盖诊断：读取正文拼装计划，校验未拼上的素材和未匹配目录项；保留为诊断/导出检查能力
+- 共创：由 FastAPI 对接 OnlyOffice
+- 导出：下载最终 Word
 
 ## 2. 设计原则
 
 - 前端只调用 FastAPI，不直接调用 `opencode`
 - FastAPI 是唯一 `/api` 后端，同时承担真实执行和 mock 返回
-- `S2` 由 FastAPI 内部调用 `opencode serve`
-- `S7` 由 FastAPI/worker 调用 `opencode/skill/bid-tech-assembler` 下的本地 Python 拼装脚本
+- 目录生成、缺口识别、AI 填写、标书生成均由 FastAPI 内部调用 OpenCode/Skill 或对应本地 runner
 - 项目列表和项目状态需要持久化，MVP 统一使用 `PostgreSQL + 本地文件目录`
-- 当前前端展示流保留 `S0-S10`，接口优先兼容现有 React 前端
+- 当前接口优先兼容现有 React 前端；用户主路径以 6 个合并节点展示
 
 ## 3. 正式接口范围
 
@@ -90,8 +95,8 @@
 
 说明：
 
-- 主链路阶段由后端状态驱动
-- `S4/S5/S6` 虽然是 mock / 承接，但仍需要这个接口配合前端流转；`S8` 已接到 S7 拼装覆盖结果
+- 主链路阶段由后端状态驱动。
+- `/stages` 返回 6 个合并节点，并保留 `stageIds`、`routeStageId` 兼容内部 S 段状态。
 
 ## 3.2 S1 解析
 
@@ -148,7 +153,59 @@
 - 用途：确认目录，进入后续流程
 - 是否真实：真实
 
-## 3.5 S7 技术标正文拼装
+## 3.5 缺口识别与处理
+
+### `GET /api/projects/{id}/gaps-detection`
+
+- 用途：获取缺口识别状态和处理计划
+- 是否真实：真实
+
+### `POST /api/projects/{id}/gaps-detection/run`
+
+- 用途：调用缺口识别 Skill，生成匹配/缺口/处理计划
+- 是否真实：真实
+
+### `GET /api/projects/{id}/gaps`
+
+- 用途：获取统一缺口处理页数据
+- 是否真实：真实
+
+### `POST /api/projects/{id}/gaps/{gap_id}/upload`
+
+- 用途：上传客户资料并挂回缺口计划
+- 是否真实：真实，写入项目级缺口工作目录和 `gapPlan.resolvedArtifacts`
+
+### `POST /api/projects/{id}/gaps/{gap_id}/select-material`
+
+- 用途：选择素材库已有素材并挂回缺口计划
+- 是否真实：真实
+
+### `POST /api/projects/{id}/gaps/{gap_id}/ai-fill`
+
+- 用途：调用 AI 填写 Skill，按人工指定的空表/Word 和参考素材补齐缺口
+- 是否真实：真实
+
+### `POST /api/projects/{id}/gaps/recheck`
+
+- 用途：重新检查缺口完整性
+- 是否真实：真实
+
+### `POST /api/projects/{id}/gaps/submit-review`
+
+- 用途：提交缺口处理确认
+- 是否真实：真实
+
+### `POST /api/projects/{id}/review-items/prepare`
+
+- 用途：生成缺口处理确认预览文档
+- 是否真实：真实
+
+### `POST /api/projects/{id}/review-items/confirm`
+
+- 用途：确认缺口处理结果，允许进入标书生成
+- 是否真实：真实
+
+## 3.6 生成标书
 
 ### `GET /api/projects/{id}/fill-generation`
 
@@ -163,14 +220,14 @@
 说明：
 
 - 当前仍兼容前端原有 `fill-generation` 接口名。
-- 后端会读取 S2 目录 JSON、S2 Wiki 卡片和素材库清洗后 Word，调用 `bid-tech-assembler` 生成正文 docx。
-- S7 输出会写入项目文档路径，供 S9 OnlyOffice 和 S10 下载继续使用。
+- 后端会读取目录 JSON、Wiki 卡片、素材库清洗后 Word、缺口处理计划和补料/AI 填写产物，调用 `bid-tech-assembler` 生成正文 docx。
+- 输出会写入项目文档路径，供 OnlyOffice 共创和导出继续使用。
 
-## 3.6 S8 素材拼装覆盖校验
+## 3.7 覆盖诊断
 
 ### `GET /api/projects/{id}/coverage`
 
-- 用途：查看 S7 拼装后素材覆盖情况
+- 用途：查看标书生成后素材覆盖情况；当前保留为诊断/导出检查能力
 - 是否真实：真实
 
 说明：
@@ -178,9 +235,9 @@
 - `fullCover` 表示已被拼装计划使用的素材数量。
 - `noCover` 表示素材库中可用但未出现在 S2 目录 JSON 或拼装计划中的素材数量。
 - `partialItems` 表示 S2 目录项中未匹配素材或需要人工确认的项。
-- 当前 S8 是素材拼装覆盖校验，不等同于正式评分点覆盖审计。
+- 当前覆盖诊断是素材拼装覆盖校验，不等同于正式评分点覆盖审计。
 
-## 3.7 S9 共创编辑
+## 3.8 共创编辑
 
 ### `GET /api/projects/{id}/document`
 
@@ -202,7 +259,7 @@
 - 用途：接收 OnlyOffice 回调
 - 是否真实：真实
 
-## 3.8 S10 导出
+## 3.9 导出
 
 ### `GET /api/projects/{id}/final-document`
 
@@ -219,15 +276,12 @@
 - 用途：导出动作
 - 是否真实：可先做轻量真实，或直接复用最终文档下载
 
-## 4. 当前先 mock 的接口
+## 4. 当前仍需收紧的接口
 
-下面这些接口当前由 FastAPI 返回固定结构即可：
+下面这些接口仍有兼容或 MVP 形态，后续应继续按实际业务收紧：
 
 - `/api/projects/{id}/cockpit`
 - `/api/customers/key-accounts`
-- `/api/projects/{id}/gaps-detection*`
-- `/api/projects/{id}/gaps*`
-- `/api/projects/{id}/review-items*`
 - `/api/materials/raw/*`
 - `/api/materials/structured/*`
 - `/api/materials/wiki/*`

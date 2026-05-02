@@ -8,7 +8,7 @@ export const STAGE_ROUTE_BUILDERS = {
   5: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps', workspaceSlug),
   6: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps', workspaceSlug),
   7: (projectId, workspaceSlug = '') => projectRoute(projectId, '/generate', workspaceSlug),
-  8: (projectId, workspaceSlug = '') => projectRoute(projectId, '/coverage', workspaceSlug),
+  8: (projectId, workspaceSlug = '') => projectRoute(projectId, '/generate', workspaceSlug),
   9: (projectId, workspaceSlug = '') => projectRoute(projectId, '/editor', workspaceSlug),
   10: (projectId, workspaceSlug = '') => projectRoute(projectId, '/export', workspaceSlug),
 }

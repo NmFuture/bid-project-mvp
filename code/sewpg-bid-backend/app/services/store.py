@@ -27,16 +27,16 @@ from app.services.workspace_artifacts import cleanup_parse_temp_workspace, promo
 
 
 STAGE_NAMES = {
-    1: "S1 模板与目录生成",
-    2: "S2 模板与目录生成",
-    3: "S3 目录审核",
-    4: "S4 缺口识别与处理",
-    5: "S5 缺口识别与处理",
-    6: "S6 缺口识别与处理",
-    7: "S7 标书生成",
-    8: "S8 标书生成",
-    9: "S9 共创",
-    10: "S10 导出",
+    1: "模板与目录",
+    2: "模板与目录",
+    3: "审核目录",
+    4: "缺口处理",
+    5: "缺口处理",
+    6: "缺口处理",
+    7: "生成标书",
+    8: "生成标书",
+    9: "共创",
+    10: "导出",
 }
 
 STAGE_PROGRESS_NAMES = {
@@ -519,7 +519,7 @@ class AppStore:
                 "filledAt": "",
                 "runDurationSec": 0,
                 "runDuration": "",
-                "summary": "尚未触发填充，请点击“触发填充”后继续。",
+                "summary": "尚未生成标书，请点击“生成标书”后继续。",
                 "output": None,
                 "sections": [],
                 "opencodeOutput": build_directory_opencode_output(),
@@ -560,7 +560,7 @@ class AppStore:
                 "parsedAt": "",
                 "documentId": f"REV-DOC-{project_id}",
                 "sourceFileName": "",
-                "fileName": f"{str(data.get('name') or project_id)}_S6审核备料预览.docx",
+                "fileName": f"{str(data.get('name') or project_id)}_缺口处理确认预览.docx",
                 "fileType": "docx",
                 "content": "",
                 "lastSavedAt": "",
@@ -1181,7 +1181,7 @@ class AppStore:
         project = self._require(project_id)
         gap_state = self._ensure_gap_state(project)
         if gap_state["recognitionStatus"] != "completed":
-            raise ValueError("请先在 S4 触发缺口识别后再进入 S5。")
+            raise ValueError("请先触发缺口识别后再进入缺口处理。")
         return {
             "status": "ready",
             "recognizedAt": gap_state["recognizedAt"],
@@ -1204,7 +1204,7 @@ class AppStore:
         project = self._require(project_id)
         gap_state = self._ensure_gap_state(project)
         if gap_state["recognitionStatus"] != "completed":
-            raise ValueError("请先在 S4 完成缺口识别。")
+            raise ValueError("请先完成缺口识别。")
         result = run_ai_fill_for_gap(
             project,
             gap_id,
@@ -1233,7 +1233,7 @@ class AppStore:
         project = self._require(project_id)
         gap_state = self._ensure_gap_state(project)
         if gap_state["recognitionStatus"] != "completed":
-            raise ValueError("请先在 S4 完成缺口识别。")
+            raise ValueError("请先完成缺口识别。")
         result = register_manual_gap_upload(
             project,
             gap_id,
@@ -1262,7 +1262,7 @@ class AppStore:
         project = self._require(project_id)
         gap_state = self._ensure_gap_state(project)
         if gap_state["recognitionStatus"] != "completed":
-            raise ValueError("请先在 S4 完成缺口识别。")
+            raise ValueError("请先完成缺口识别。")
         prepared_files = await prepare_existing_gap_material_files(project, gap_id, data)
         result = register_existing_gap_material(
             project,
@@ -1316,7 +1316,7 @@ class AppStore:
         project = self._require(project_id)
         gap_state = self._ensure_gap_state(project)
         if gap_state["recognitionStatus"] != "completed":
-            raise ValueError("请先在 S4 完成缺口识别。")
+            raise ValueError("请先完成缺口识别。")
 
         missing_id = str(data.get("missingId") or "").strip()
         files = list(data.get("files") or [])
@@ -1388,7 +1388,7 @@ class AppStore:
         project = self._require(project_id)
         gap_state = self._ensure_gap_state(project)
         if gap_state["recognitionStatus"] != "completed":
-            raise ValueError("请先在 S4 完成缺口识别。")
+            raise ValueError("请先完成缺口识别。")
 
         item = self._find_gap_item(gap_state, gap_id)
         plan_item = self._find_gap_plan_item(gap_state, gap_id)
@@ -1455,7 +1455,7 @@ class AppStore:
         project = self._require(project_id)
         gap_state = self._ensure_gap_state(project)
         if gap_state["recognitionStatus"] != "completed":
-            raise ValueError("请先完成 S4 缺口识别后再提交审核。")
+            raise ValueError("请先完成缺口识别后再提交确认。")
 
         integrity = check_gap_integrity(gap_state.get("plan") or {})
         gap_state["integrity"] = integrity
@@ -1481,11 +1481,11 @@ class AppStore:
         project = self._require(project_id)
         gap_state = self._ensure_gap_state(project)
         if not gap_state["submittedForReview"]:
-            raise ValueError("请先在 S5 提交审核后再触发 S6 解析。")
+            raise ValueError("请先在缺口处理页提交确认后再生成预览文档。")
 
         pending = [item for item in gap_state["items"] if item["status"] not in {"resolved", "skipped"}]
         if pending:
-            raise ValueError(f"仍有 {len(pending)} 项素材未处理，暂不可触发 S6 解析。")
+            raise ValueError(f"仍有 {len(pending)} 项素材未处理，暂不可生成预览文档。")
 
         review_state = self._ensure_review_document_state(project)
         parsed_at = now_iso()
@@ -1494,7 +1494,7 @@ class AppStore:
                 "parseStatus": "completed",
                 "parsedAt": parsed_at,
                 "sourceFileName": self._review_source_file_name(gap_state),
-                "fileName": f"{project['name']}_S6审核备料预览.docx",
+                "fileName": f"{project['name']}_缺口处理确认预览.docx",
                 "fileType": "docx",
                 "content": self._build_review_document_content(project, gap_state),
                 "lastSavedAt": parsed_at,
@@ -1505,7 +1505,7 @@ class AppStore:
         project["updatedAt"] = parsed_at
         self._persist_project(project)
         return {
-            "message": "S6 审核备料解析完成，可在 S6 预览解析文档。",
+            "message": "缺口处理确认预览已生成，可继续生成标书。",
             "payload": copy.deepcopy(review_state),
         }
 
@@ -1550,7 +1550,7 @@ class AppStore:
         project = self._require(project_id)
         gap_state = self._ensure_gap_state(project)
         if not gap_state["submittedForReview"]:
-            raise ValueError("请先在 S5 提交审核后再执行 S6 审核。")
+            raise ValueError("请先在缺口处理页提交确认后再执行确认。")
 
         integrity = check_gap_integrity(gap_state.get("plan") or {})
         gap_state["integrity"] = integrity
@@ -1562,7 +1562,7 @@ class AppStore:
         project["updatedAt"] = gap_state["reviewedAt"]
         self._persist_project(project)
         return {
-            "message": "S6 审核完成，已进入 S7 填充。",
+            "message": "缺口处理已确认，可进入标书生成。",
             "reviewStatus": "confirmed",
             "payload": self._build_review_payload(project, gap_state),
         }
@@ -1929,7 +1929,7 @@ class AppStore:
         state.setdefault("parsedAt", "")
         state.setdefault("documentId", f"REV-DOC-{project['id']}")
         state.setdefault("sourceFileName", "")
-        state.setdefault("fileName", f"{project['name']}_S6审核备料预览.docx")
+        state.setdefault("fileName", f"{project['name']}_缺口处理确认预览.docx")
         state.setdefault("fileType", "docx")
         state.setdefault("content", "")
         state.setdefault("lastSavedAt", "")
@@ -1943,7 +1943,7 @@ class AppStore:
             "parsedAt": "",
             "documentId": f"REV-DOC-{project['id']}",
             "sourceFileName": "",
-            "fileName": f"{project['name']}_S6审核备料预览.docx",
+            "fileName": f"{project['name']}_缺口处理确认预览.docx",
             "fileType": "docx",
             "content": "",
             "lastSavedAt": "",
@@ -2027,7 +2027,7 @@ class AppStore:
             "gapPlan": gap_plan,
             "integrity": copy.deepcopy(gap_state.get("integrity") or {}),
             "source": {
-                "fromStage": "S4",
+                "fromStage": "缺口处理",
                 "projectId": project["id"],
                 "projectName": project["name"],
             },
@@ -2088,7 +2088,7 @@ class AppStore:
             "summary": self._review_summary(gap_state),
             "items": items,
             "source": {
-                "fromStage": "S5",
+                "fromStage": "缺口处理",
                 "projectId": project["id"],
                 "projectName": project["name"],
             },
@@ -2103,15 +2103,15 @@ class AppStore:
         for item in gap_state["items"]:
             if item.get("status") == "resolved" and item.get("resolvedSource"):
                 return str(item["resolvedSource"])
-        return "S5补料结果.docx"
+        return "缺口处理结果.docx"
 
     def _build_review_document_content(self, project: dict[str, Any], gap_state: dict[str, Any]) -> str:
         resolved_items = [item for item in gap_state["items"] if item["status"] == "resolved"]
         skipped_items = [item for item in gap_state["items"] if item["status"] == "skipped"]
         lines = [
-            f"# {project['name']}（S6 审核备料解析稿）",
+            f"# {project['name']}（缺口处理确认预览）",
             "",
-            "该文档由 S5 提交审核后自动生成，用于 S6 预览。",
+            "该文档由缺口处理提交确认后自动生成，用于生成标书前预览。",
             "",
             f"- 已补录：{len(resolved_items)} 项",
             f"- 未补录：{len(skipped_items)} 项",

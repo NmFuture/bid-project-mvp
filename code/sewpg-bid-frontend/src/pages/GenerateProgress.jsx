@@ -93,7 +93,7 @@ export default function GenerateProgress({ showToast }) {
       const payload = await generateAPI.status(id)
       setData(payload)
     } catch (e) {
-      if (!silent) setError(e?.message || 'S7 填充状态加载失败')
+      if (!silent) setError(e?.message || '标书生成状态加载失败')
     } finally {
       if (!silent) setLoading(false)
     }
@@ -134,7 +134,7 @@ export default function GenerateProgress({ showToast }) {
       setData(payload)
       showToast?.(payload?.message || '已开始拼装正文，请稍候。')
     } catch (e) {
-      showToast?.(e?.message || '触发填充失败，请稍后重试', 'error')
+      showToast?.(e?.message || '触发标书生成失败，请稍后重试', 'error')
     } finally {
       setRunningAction(false)
     }
@@ -158,8 +158,8 @@ export default function GenerateProgress({ showToast }) {
     }
   }
 
-  if (loading) return <PageLoading title="正在加载 S7 填充状态..." />
-  if (error) return <PageError title="S7 填充状态加载失败" description={error} onRetry={loadData} />
+  if (loading) return <PageLoading title="正在加载标书生成状态..." />
+  if (error) return <PageError title="标书生成状态加载失败" description={error} onRetry={loadData} />
 
   const taskStatusLabelMap = {
     pending: '待处理',
@@ -246,7 +246,7 @@ export default function GenerateProgress({ showToast }) {
         <div>
           <h3 className="text-sm font-semibold text-on-surface">拼装输出</h3>
           <p className="text-xs text-on-surface-variant mt-1">
-            这里直接显示 S7 技术标正文拼装链路返回的原始片段；如果还没返回，会明确提示当前正在等待。
+            这里直接显示技术标正文拼装链路返回的原始片段；如果还没返回，会明确提示当前正在等待。
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -332,7 +332,7 @@ export default function GenerateProgress({ showToast }) {
               disabled={runningAction || isRunning}
               className="px-4 py-2.5 bg-primary text-on-primary text-sm font-medium rounded-lg hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isRunning ? '生成中...' : isCompleted ? '重新触发填充' : '触发填充'}
+              {isRunning ? '生成中...' : isCompleted ? '重新生成标书' : '生成标书'}
             </button>
             <button
               onClick={handleGoEditor}
@@ -350,7 +350,7 @@ export default function GenerateProgress({ showToast }) {
         <div className="px-0 py-1 bg-white">
           <div className="flex flex-col lg:flex-row lg:items-center gap-3">
             <div className="flex items-center gap-3 shrink-0">
-              <h2 className="text-lg font-headline font-bold text-on-surface">填充执行状态</h2>
+              <h2 className="text-lg font-headline font-bold text-on-surface">标书生成状态</h2>
             </div>
             <div className="flex-1 flex items-center gap-3 min-w-0">
               <div className="w-full h-2.5 bg-[#e8eef2] rounded-full overflow-hidden">
@@ -369,16 +369,16 @@ export default function GenerateProgress({ showToast }) {
             <div className="w-14 h-14 rounded-full bg-surface-container-high flex items-center justify-center mb-4">
               <span className="material-symbols-outlined text-primary text-3xl">draw</span>
             </div>
-            <h4 className="text-lg font-headline font-bold text-on-surface mb-2">S7 尚未触发</h4>
+            <h4 className="text-lg font-headline font-bold text-on-surface mb-2">标书尚未生成</h4>
             <p className="text-sm text-on-surface-variant max-w-xl leading-relaxed">
-              点击“触发填充”后会异步调用后端正文拼装链路，并持续显示当前步骤、执行过程和拼装原始输出。
+              点击“生成标书”后会异步调用后端正文拼装链路，并持续显示当前步骤、执行过程和拼装原始输出。
             </p>
             <button
               onClick={handleRunFill}
               disabled={runningAction}
               className="stage-action-btn mt-6 px-5 py-2.5 bg-primary text-on-primary text-sm font-semibold rounded-lg hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {runningAction ? '提交中...' : '触发填充'}
+              {runningAction ? '提交中...' : '生成标书'}
             </button>
           </div>
         ) : (
