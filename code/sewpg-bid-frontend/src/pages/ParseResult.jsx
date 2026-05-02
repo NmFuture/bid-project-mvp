@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { parseAPI, projectsAPI, stagesAPI } from '../api'
+import { directoryAPI, parseAPI, projectsAPI, stagesAPI } from '../api'
 import { PageError, PageLoading } from '../components/states/PageState'
 import DataCard from '../components/shared/DataCard'
 import PageHeader from '../components/shared/PageHeader'
@@ -82,19 +82,23 @@ export default function ParseResult({ showToast }) {
   const [templateFiles, setTemplateFiles] = useState([])
   const [templateFallback, setTemplateFallback] = useState(null)
   const [savingFallback, setSavingFallback] = useState(false)
+  const [directoryState, setDirectoryState] = useState(null)
+  const [generatingDirectory, setGeneratingDirectory] = useState(false)
 
   const loadData = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const [projectResponse, parseResponse, fallbackResponse] = await Promise.all([
+      const [projectResponse, parseResponse, fallbackResponse, directoryResponse] = await Promise.all([
         projectsAPI.get(id),
         parseAPI.results(id),
         projectsAPI.templateFallback(id),
+        directoryAPI.status(id).catch(() => null),
       ])
       setProject(projectResponse)
       setData(parseResponse)
       setTemplateFallback(fallbackResponse)
+      setDirectoryState(directoryResponse)
     } catch (e) {
       setError(e?.message || 'S1 模板上传信息加载失败')
     } finally {
@@ -140,6 +144,24 @@ export default function ParseResult({ showToast }) {
     && String(project?.endDate || project?.deadline || '').trim(),
   )
   const canGoNextStage = isReviewApproved && isParseCompleted && isProjectInfoComplete
+  const directoryStatus = directoryState?.status || 'idle'
+  const isDirectoryRunning = directoryStatus === 'running'
+  const isDirectoryCompleted = directoryStatus === 'completed'
+  const directoryProgress = Math.max(0, Math.min(100, Number(directoryState?.percentage) || 0))
+  const directoryTasks = Array.isArray(directoryState?.tasks) ? directoryState.tasks : []
+
+  useEffect(() => {
+    if (!isDirectoryRunning) return undefined
+    const timer = window.setInterval(async () => {
+      try {
+        const payload = await directoryAPI.status(id)
+        setDirectoryState(payload)
+      } catch {
+        // 保持页面可操作，用户可手动刷新查看失败原因
+      }
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [id, isDirectoryRunning])
 
   const handleFilesPicked = (event) => {
     const picked = Array.from(event.target.files || [])
@@ -230,12 +252,36 @@ export default function ParseResult({ showToast }) {
     setAdvancing(true)
     try {
       await stagesAPI.update(id, 1, { status: 'completed' })
-      showToast?.('已进入 S2 目录生成')
-      navigate(projectRoute(id, '/directory', workspaceSlug))
+      if (isDirectoryCompleted) {
+        await stagesAPI.update(id, 2, { status: 'completed' })
+        showToast?.('已进入目录审核')
+        navigate(projectRoute(id, '/outline', workspaceSlug))
+      } else {
+        showToast?.('请先在当前页生成目录')
+      }
     } catch (e) {
       showToast?.(e?.message || '进入下一阶段失败', 'error')
     } finally {
       setAdvancing(false)
+    }
+  }
+
+  const handleGenerateDirectory = async () => {
+    if (!canGoNextStage) {
+      showToast?.('请先完成解析、确认参与并补全项目信息。', 'error')
+      return
+    }
+    if (generatingDirectory || isDirectoryRunning) return
+    setGeneratingDirectory(true)
+    try {
+      await stagesAPI.update(id, 1, { status: 'completed' })
+      const payload = await directoryAPI.run(id)
+      setDirectoryState(payload)
+      showToast?.(payload?.message || '已开始生成目录。')
+    } catch (e) {
+      showToast?.(e?.message || '目录生成失败', 'error')
+    } finally {
+      setGeneratingDirectory(false)
     }
   }
 
@@ -260,11 +306,11 @@ export default function ParseResult({ showToast }) {
             </button>
             <button
               onClick={handleGoNextStage}
-              disabled={!canGoNextStage || advancing}
-              title={!canGoNextStage ? '完成解析后可进入 S2（模板文件可选）' : ''}
+              disabled={!canGoNextStage || !isDirectoryCompleted || advancing}
+              title={!isDirectoryCompleted ? '目录生成完成后可进入审核' : ''}
               className="px-5 py-2.5 bg-secondary text-on-secondary font-medium rounded-lg shadow-sm hover:bg-secondary/90 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {advancing ? '进入中...' : '进入下一阶段'}
+              {advancing ? '进入中...' : '进入目录审核'}
             </button>
           </>
         )}
@@ -410,6 +456,57 @@ export default function ParseResult({ showToast }) {
           <p className="font-medium text-on-surface mb-1">已上传模板文件（当前项目）</p>
           <p>{uploadedTemplateFiles.length ? uploadedTemplateFiles.map((file) => file.name).join('，') : '暂无'}</p>
         </div>
+      </DataCard>
+
+      <DataCard className="!p-6 flex flex-col gap-5">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div>
+            <h3 className="text-base font-headline font-bold text-on-surface">目录生成</h3>
+            <p className="text-sm text-on-surface-variant mt-1">
+              使用招标解析结果、素材库 Wiki 和当前模板生成技术标目录。
+            </p>
+          </div>
+          <button
+            onClick={handleGenerateDirectory}
+            disabled={!canGoNextStage || generatingDirectory || isDirectoryRunning}
+            className="stage-action-btn px-5 py-2.5 bg-primary text-on-primary font-semibold rounded-lg transition-colors hover:bg-primary/90 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {generatingDirectory || isDirectoryRunning ? '生成中...' : isDirectoryCompleted ? '重新生成目录' : '生成目录'}
+          </button>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="flex-1 h-2.5 bg-[#e8eef2] rounded-full overflow-hidden">
+            <div className="h-full bg-primary transition-all duration-700" style={{ width: `${directoryProgress}%` }} />
+          </div>
+          <span className="text-xs text-outline whitespace-nowrap">{directoryProgress}%</span>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          {directoryTasks.length ? directoryTasks.map((task) => (
+            <div key={task.id} className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+              <p className="text-sm font-medium text-on-surface">{task.label}</p>
+              <p className="text-xs text-on-surface-variant mt-1">
+                {task.status === 'done' ? '已完成' : task.status === 'running' ? '进行中' : task.status === 'failed' ? '失败' : '待处理'}
+              </p>
+            </div>
+          )) : (
+            <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high text-sm text-on-surface-variant">
+              尚未生成目录。
+            </div>
+          )}
+        </div>
+
+        {directoryState?.opencodeOutput?.parts?.length ? (
+          <div className="rounded-md border border-surface-container-high bg-white p-4 max-h-64 overflow-auto">
+            <h4 className="text-sm font-semibold text-on-surface mb-3">OpenCode / Skill 输出</h4>
+            {directoryState.opencodeOutput.parts.map((part, index) => (
+              <pre key={`${part.type}-${index}`} className="text-xs whitespace-pre-wrap break-words text-on-surface-variant mb-3 last:mb-0">
+                {part.text || part.type}
+              </pre>
+            ))}
+          </div>
+        ) : null}
       </DataCard>
     </div>
   )

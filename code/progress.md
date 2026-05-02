@@ -10,6 +10,70 @@
 
 ## 进度记录
 
+### 2026-05-02 13:21 待办 12/15 工作流收敛与 S4/S5/S6 真实化
+
+改动目标：
+
+- 完成待办 12/15 联合改造：模板页承接目录生成，缺口识别/补料/审核合并为“缺口识别与处理”，并用真实 `gapPlan` 串联素材匹配、AI 填写、完整性校验和 S7 拼接。
+
+改动内容：
+
+- 新增 `bid-tech-gap-planner` OpenCode Skill 和 `s4gap` 命令，输出 `bid-tech-gap-plan-v1` 匹配/缺口/处理计划。
+- 新增 `bid-tech-table-filler` OpenCode Skill 和 `s4fill` 命令，AI 填写空表/Word 并输出 Word 产物、未填字段和证据引用。
+- 后端新增 `app/services/gap_planning.py`，将已确认目录、解析结果和补料记录生成 `gapPlan`，支持 AI 填写产物挂回计划、OnlyOffice 预览 URL 和完整性校验。
+- S4/S5/S6 接口改为读取和维护真实 `gapPlan`，不再自动跳过缺口；必须全部解决或人工忽略后才能提交审核。
+- S7 manifest 增加 `gapPlanPath`，`bid-tech-assembler` 的 `build_assembly.py` 支持按缺口计划覆盖素材路径；S7 会把人工补料和 AI 填写产物写成运行时 Wiki 卡片纳入拼接。
+- 前端模板上传页内嵌目录生成按钮、进度、任务状态和 OpenCode/Skill 输出；目录完成后直接进入目录审核。
+- 前端 S5/S6 主流程收敛到 `/gaps`，旧 `/gaps-fill` 和 `/gaps/review` 重定向回统一缺口页。
+- 前端缺口页升级为“缺口识别与处理”，展示匹配素材、缺口原因、AI 填写任务、处理产物、重新检查缺口和生成标书入口。
+- 已勾选 `doc/14-甲方新增需求待办.md` 第 12 项和第 15 项。
+
+验证结果：
+
+- 后端 RED 测试已先失败，失败点为缺少 `gapPlan`、AI 填写接口和 S7 `gapPlanPath`。
+- `python3 -m py_compile app/services/gap_planning.py app/services/store.py app/api/routes/gaps.py app/services/tech_assembly.py app/services/opencode_client.py opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py opencode/skill/bid-tech-assembler/scripts/build_assembly.py opencode/skill/bid-tech-assembler/scripts/run_from_manifest.py` 通过。
+- `.venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_onlyoffice_document.py -q` 通过：23 passed。
+- `.venv/bin/python -m pytest -q` 通过：78 passed，6 skipped。
+- `npm run lint` 通过。
+- `npm run build` 通过。
+- `docker compose build opencode fastapi worker web` 通过。
+- `docker compose up -d --force-recreate opencode fastapi worker web` 已重建并启动，`fastapi` 和 `opencode` 健康，`web` 监听 80。
+- `http://127.0.0.1/api/healthz` 返回 `status=ok`。
+- `http://127.0.0.1/` 返回 HTTP 200。
+- opencode 容器内 `s4gap`、`s4fill`、`s7assemble` 命令存在。
+- opencode 容器内 `s4gap` 烟测通过，生成 `bid-tech-gap-plan-v1`，包含 3 个目录项、1 个匹配项、1 个缺口和 1 个 AI 填写任务。
+- opencode 容器内 `s4fill` 烟测通过，生成 `bid-tech-table-fill-v1` JSON 和 Word 填写产物。
+
+遗留问题：
+
+- 当前 `bid-tech-gap-planner` 和 `bid-tech-table-filler` 已形成可运行 Skill 契约和本地 runner；实际模型效果、复杂表格填写准确率和证据页码质量仍需后续结合真实招标样本持续调优。
+- S8 待办 16 仍需后续升级为评分点、证据和正文段落覆盖审计。
+
+### 2026-05-02 12:59 待办 12/15 联合改造计划细化
+
+改动目标：
+
+- 细化待办 12“工作流收敛”和待办 15“S4/S5/S6 真实化”的联合实施口径。
+- 明确 AI 填写也必须通过 OpenCode 调用专门 Skill 完成，而不是前端或后端本地规则直接填写。
+
+改动内容：
+
+- 在 `doc/14-甲方新增需求待办.md` 新增“待办 12/15 联合改造计划”。
+- 明确目标流程：解析决策、模板上传/fallback、目录生成、目录审核、缺口识别与处理、AI 填写、OnlyOffice 预览、完整性校验、标书生成、共创。
+- 明确核心中间产物 `gap_plan.json` / `gapPlan`，作为目录审核后到 S7 拼接前的统一桥梁。
+- 明确新增两个 OpenCode Skill：
+  - `bid-tech-gap-planner`：根据已确认目录、素材库 Wiki、真实素材库、解析结果和补料记录生成匹配/缺口/处理计划。
+  - `bid-tech-table-filler` 或 `bid-appendix-filler`：根据空表/Word、人工指定参考素材和解析字段生成 AI 填写产物。
+- 明确后端、前端、S7 拼接改造范围和完成标准。
+
+验证结果：
+
+- 本次仅更新需求计划文档，未改代码，未运行测试和部署。
+
+遗留问题：
+
+- 后续实现时需先确定 `gapPlan` 的具体 JSON Schema、Skill manifest 字段和 S7 `bid-tech-assembler` 对 `gapPlanPath` 的兼容方式。
+
 ### 2026-05-01 21:11 待办 8/13 项目日期与多招标文件结构化解析
 
 改动目标：
@@ -1997,3 +2061,27 @@ bid_workspace
 - `npm run build`：通过，保留 Vite chunk >500KB 既有警告。
 - `docker compose build fastapi worker web && docker compose up -d --force-recreate fastapi worker web`：通过。
 - 浏览器验证 `http://127.0.0.1/parse`：附表 159 个，状态列消失，左侧条目 + 右侧 OnlyOffice 预览 iframe 可见。
+
+### 2026-05-02 12:51:52 post-commit 4b36b7e
+
+提交摘要：Refine tech bid workflow with real gap planning
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/api/routes/parse.py`
+- `code/sewpg-bid-backend/app/services/onlyoffice_documents.py`
+- `code/sewpg-bid-backend/app/services/parsing.py`
+- `code/sewpg-bid-backend/app/services/store.py`
+- `code/sewpg-bid-backend/app/services/workspace_artifacts.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tender-structured-parser/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-tender-structured-parser/scripts/parser_core.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tender-structured-parser/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_onlyoffice_document.py`
+- `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
+- `code/sewpg-bid-frontend/src/api/index.js`
+- `code/sewpg-bid-frontend/src/index.css`
+- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
+- `code/sewpg-bid-frontend/src/pages/TenderReview.jsx`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

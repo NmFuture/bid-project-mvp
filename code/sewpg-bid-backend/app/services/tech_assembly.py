@@ -45,7 +45,9 @@ def assemble_tech_bid_for_project_with_progress(
     started_at = time.monotonic()
     work_dir = _prepare_work_dir(project_id, parse_storage)
     toc_json_path = _prepare_toc_json(project_id, project, outline_state, parse_storage, work_dir)
+    gap_plan_path = _prepare_gap_plan(project_id, work_dir)
     wiki_dir = _prepare_wiki_dir(project, parse_storage, work_dir)
+    gap_plan_card_count = _augment_wiki_with_gap_plan_cards(gap_plan_path, wiki_dir) if gap_plan_path else 0
     synthesized_card_count = _augment_wiki_with_material_cards(toc_json_path, wiki_dir, project)
     material_library_dir, material_cards = _export_material_library(wiki_dir, work_dir / "素材库")
     template_file = _select_template_file(template_file_records)
@@ -59,6 +61,7 @@ def assemble_tech_bid_for_project_with_progress(
                 "wikiCardCount": len(material_cards),
                 "exportedMaterialCount": len([item for item in material_cards if item.get("available")]),
                 "synthesizedMaterialCardCount": synthesized_card_count,
+                "gapPlanMaterialCardCount": gap_plan_card_count,
             },
         )
 
@@ -70,6 +73,7 @@ def assemble_tech_bid_for_project_with_progress(
         "bidType": str(project.get("bidType") or "技术标"),
         "workDir": str(work_dir),
         "tocJsonPath": str(toc_json_path),
+        "gapPlanPath": str(gap_plan_path) if gap_plan_path else "",
         "wikiDir": str(wiki_dir),
         "materialLibraryDir": str(material_library_dir),
         "templateFile": str(template_file) if template_file else "",
@@ -172,6 +176,7 @@ def assemble_tech_bid_for_project_with_progress(
             "workDir": str(work_dir),
             "manifestPath": str(manifest_path),
             "tocJsonPath": str(toc_json_path),
+            "gapPlanPath": str(gap_plan_path) if gap_plan_path else "",
             "wikiDir": str(wiki_dir),
             "materialLibraryDir": str(material_library_dir),
             "outputFile": str(assembled_path),
@@ -251,6 +256,22 @@ def _prepare_toc_json(
     }
     target = work_dir / "投标文件-总目录.json"
     target.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+    return target
+
+
+def _prepare_gap_plan(project_id: str, work_dir: Path) -> Path | None:
+    review_state = store.get_review_items(project_id)
+    gap_state = store._require(project_id).get("gap_state") or {}
+    plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+    if not plan:
+        return None
+    if not bool(review_state.get("confirmed")):
+        raise ValueError("请先完成缺口处理和审核确认后再触发 S7 填充。")
+    integrity = gap_state.get("integrity") if isinstance(gap_state.get("integrity"), dict) else {}
+    if integrity and str(integrity.get("status") or "") != "passed":
+        raise ValueError("缺口完整性校验未通过，暂不可触发 S7 填充。")
+    target = work_dir / "gap_plan.json"
+    target.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
     return target
 
 
@@ -368,6 +389,85 @@ def _augment_wiki_with_material_cards(toc_json_path: Path, wiki_dir: Path, proje
         card_path.write_text(_render_runtime_material_card(item, section), encoding="utf-8")
         written += 1
     return written
+
+
+def _augment_wiki_with_gap_plan_cards(gap_plan_path: Path | None, wiki_dir: Path) -> int:
+    if not gap_plan_path or not gap_plan_path.exists():
+        return 0
+    plan = json.loads(gap_plan_path.read_text(encoding="utf-8"))
+    items = plan.get("items") if isinstance(plan, dict) else []
+    if not isinstance(items, list):
+        return 0
+    cards_dir = wiki_dir / "卡片"
+    cards_dir.mkdir(parents=True, exist_ok=True)
+    written = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        section = str(item.get("number") or item.get("tocItemId") or "").strip()
+        title = str(item.get("title") or "缺口补料").strip()
+        sources: list[dict[str, Any]] = []
+        sources.extend(source for source in item.get("matchedMaterials") or [] if isinstance(source, dict))
+        sources.extend(source for source in item.get("resolvedArtifacts") or [] if isinstance(source, dict))
+        for index, source in enumerate(sources, start=1):
+            material_id = str(source.get("id") or "")
+            path = str(source.get("path") or source.get("docx") or "").strip()
+            if not material_id and not path:
+                continue
+            card_name = _safe_filename(str(source.get("title") or source.get("fileName") or title), f"{title}-{index}")
+            card_path = cards_dir / f"gap-plan-{_safe_filename(section, 'section')}-{index}-{card_name}.md"
+            card_path.write_text(
+                _render_gap_plan_material_card(
+                    item=item,
+                    source=source,
+                    section=section,
+                    title=card_name,
+                ),
+                encoding="utf-8",
+            )
+            written += 1
+    return written
+
+
+def _render_gap_plan_material_card(
+    *,
+    item: dict[str, Any],
+    source: dict[str, Any],
+    section: str,
+    title: str,
+) -> str:
+    source_type = str(source.get("source") or "gap_plan")
+    scope = "定制" if source_type in {"ai_fill", "manual"} else "通用"
+    path = str(source.get("path") or source.get("docx") or "").strip()
+    material_id = str(source.get("id") or "")
+    file_name = str(source.get("fileName") or Path(path).name or f"{title}.docx")
+    lines = [
+        "---",
+        f"name: {json.dumps(title, ensure_ascii=False)}",
+        f"path: {json.dumps(path or file_name, ensure_ascii=False)}",
+        f"scope: {json.dumps(scope, ensure_ascii=False)}",
+        'category: "缺口处理"',
+        f"material_id: {json.dumps(material_id if material_id.startswith('RAW-') else '', ensure_ascii=False)}",
+        f"cleaned_file_name: {json.dumps(file_name, ensure_ascii=False)}",
+        f"skeleton_section: {json.dumps(section, ensure_ascii=False)}",
+        'skeleton_level: "section"',
+        'material_level_range: "none"',
+        "heading_count: 0",
+        "shift: 0",
+        'attach_mode: "normal"',
+        "deprecated: false",
+        "---",
+        "",
+        f"# {title}",
+        "",
+        "## Gap Plan 信息",
+        f"- toc_title: {item.get('title') or ''}",
+        f"- source: {source_type}",
+        f"- path: {path}",
+        f"- material_id: {material_id}",
+        f"- skeleton_section: {section}",
+    ]
+    return "\n".join(lines).strip() + "\n"
 
 
 def _load_toc_match_entries(toc_json_path: Path) -> list[dict[str, str]]:
@@ -624,6 +724,11 @@ def _export_material_library(wiki_dir: Path, library_dir: Path) -> tuple[Path, l
 
 def _copy_material_to_library(material_id: str, original_path: str, target_path: Path) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    path = _runtime_path(original_path)
+    if path.exists() and path.suffix.lower() == ".docx":
+        shutil.copy2(path, target_path)
+        return
+
     if material_id:
         try:
             payload = _run_async(material_store.raw_download_cleaned_content(material_id))
@@ -634,11 +739,6 @@ def _copy_material_to_library(material_id: str, original_path: str, target_path:
         if "wordprocessingml" not in mime_type and not file_name.lower().endswith(".docx"):
             raise RuntimeError(f"素材 {material_id} 不是可拼装 docx。")
         minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
-        return
-
-    path = _runtime_path(original_path)
-    if path.exists() and path.suffix.lower() == ".docx":
-        shutil.copy2(path, target_path)
         return
     raise RuntimeError("卡片缺少 material_id，且 path 不是可读 docx。")
 

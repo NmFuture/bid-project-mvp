@@ -79,6 +79,9 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         )
         store.confirm_outline(project_id)
         store.run_gap_detection(project_id)
+        for item in store.get_gap_filling(project_id)["items"]:
+            store.update_gap_item(project_id, item["id"], {"status": "skipped", "reason": "测试中人工确认忽略"})
+        store.check_gap_plan_integrity(project_id)
         store.submit_gap_review(project_id)
         store.prepare_review_document(project_id)
         return project_id

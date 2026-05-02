@@ -2,11 +2,11 @@ import { projectRoute } from './workspace'
 
 export const STAGE_ROUTE_BUILDERS = {
   1: (projectId, workspaceSlug = '') => projectRoute(projectId, '/parse', workspaceSlug),
-  2: (projectId, workspaceSlug = '') => projectRoute(projectId, '/directory', workspaceSlug),
+  2: (projectId, workspaceSlug = '') => projectRoute(projectId, '/parse', workspaceSlug),
   3: (projectId, workspaceSlug = '') => projectRoute(projectId, '/outline', workspaceSlug),
   4: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps', workspaceSlug),
-  5: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps-fill', workspaceSlug),
-  6: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps/review', workspaceSlug),
+  5: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps', workspaceSlug),
+  6: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps', workspaceSlug),
   7: (projectId, workspaceSlug = '') => projectRoute(projectId, '/generate', workspaceSlug),
   8: (projectId, workspaceSlug = '') => projectRoute(projectId, '/coverage', workspaceSlug),
   9: (projectId, workspaceSlug = '') => projectRoute(projectId, '/editor', workspaceSlug),

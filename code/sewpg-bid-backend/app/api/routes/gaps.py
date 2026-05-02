@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from pathlib import Path
 
+from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import FileResponse
+
+from app.api.utils import onlyoffice_backend_base_url
 from app.services.store import store
 
 router = APIRouter()
@@ -55,6 +59,54 @@ async def update_gap(
         raise _value_error(exc) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Gap not found") from exc
+
+
+@router.post("/api/projects/{project_id}/gaps/recheck")
+async def recheck_gaps(project_id: str) -> dict[str, Any]:
+    try:
+        return {
+            "message": "缺口完整性校验完成。",
+            "integrity": store.check_gap_plan_integrity(project_id),
+        }
+    except ValueError as exc:
+        raise _value_error(exc) from exc
+
+
+@router.post("/api/projects/{project_id}/gaps/{gap_id}/ai-fill")
+async def ai_fill_gap_material(
+    project_id: str,
+    gap_id: str,
+    request: Request,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    try:
+        return store.run_gap_ai_fill(
+            project_id,
+            gap_id,
+            data,
+            browser_base_url=str(request.base_url).rstrip("/"),
+            onlyoffice_base_url=onlyoffice_backend_base_url(request),
+        )
+    except ValueError as exc:
+        raise _value_error(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Gap not found") from exc
+
+
+@router.get("/api/projects/{project_id}/gaps/artifacts/{artifact_id}/content/{filename:path}")
+async def gap_artifact_content(project_id: str, artifact_id: str, filename: str) -> FileResponse:
+    try:
+        artifact = store.get_gap_artifact(project_id, artifact_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Artifact not found") from exc
+    path = Path(str(artifact.get("path") or ""))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Artifact file not found")
+    return FileResponse(
+        path,
+        filename=str(artifact.get("fileName") or filename or path.name),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
 
 
 @router.post("/api/projects/{project_id}/gaps/{gap_id}/upload")

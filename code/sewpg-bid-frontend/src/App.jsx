@@ -4,11 +4,8 @@ import AppShell from './components/layout/AppShell'
 import ProjectList from './pages/ProjectList'
 import ProjectEntryRedirect from './pages/ProjectEntryRedirect'
 import ParseResult from './pages/ParseResult'
-import DirectoryGeneration from './pages/DirectoryGeneration'
 import OutlineReview from './pages/OutlineReview'
 import GapRecognition from './pages/GapRecognition'
-import GapFilling from './pages/GapFilling'
-import MaterialReview from './pages/MaterialReview'
 import GenerateProgress from './pages/GenerateProgress'
 import CoverageHeatmap from './pages/CoverageHeatmap'
 import CoCreationEditor from './pages/CoCreationEditor'
@@ -21,7 +18,7 @@ import Settings from './pages/Settings'
 import Login from './pages/Login'
 import Toast from './components/shared/Toast'
 import { authAPI } from './api'
-import { workspaceFromSlug, workspaceRoute } from './utils/workspace'
+import { projectRoute, useWorkspaceSlug, workspaceFromSlug, workspaceRoute } from './utils/workspace'
 
 const AUTH_STORAGE_KEY = 'sewpg.auth.session'
 
@@ -52,6 +49,12 @@ function WorkspaceRedirect() {
   const resolved = workspaceFromSlug(workspace)
   if (!resolved) return <Navigate to="/parse" replace />
   return <Navigate to={workspaceRoute(resolved.slug, '/projects')} replace />
+}
+
+function ProjectPathRedirect({ path }) {
+  const { id } = useParams()
+  const workspaceSlug = useWorkspaceSlug()
+  return <Navigate to={projectRoute(id, path, workspaceSlug)} replace />
 }
 
 export default function App() {
@@ -131,11 +134,11 @@ export default function App() {
           <Route path="/workspace/:workspace/flow" element={<WorkspaceRedirect />} />
           <Route path="/workspace/:workspace/projects/:id" element={<ProjectEntryRedirect />} />
           <Route path="/workspace/:workspace/projects/:id/parse" element={<ParseResult showToast={showToast} />} />
-          <Route path="/workspace/:workspace/projects/:id/directory" element={<DirectoryGeneration showToast={showToast} />} />
+          <Route path="/workspace/:workspace/projects/:id/directory" element={<ProjectPathRedirect path="/parse" />} />
           <Route path="/workspace/:workspace/projects/:id/outline" element={<OutlineReview showToast={showToast} />} />
           <Route path="/workspace/:workspace/projects/:id/gaps" element={<GapRecognition showToast={showToast} />} />
-          <Route path="/workspace/:workspace/projects/:id/gaps-fill" element={<GapFilling showToast={showToast} />} />
-          <Route path="/workspace/:workspace/projects/:id/gaps/review" element={<MaterialReview showToast={showToast} />} />
+          <Route path="/workspace/:workspace/projects/:id/gaps-fill" element={<ProjectPathRedirect path="/gaps" />} />
+          <Route path="/workspace/:workspace/projects/:id/gaps/review" element={<ProjectPathRedirect path="/gaps" />} />
           <Route path="/workspace/:workspace/projects/:id/generate" element={<GenerateProgress showToast={showToast} />} />
           <Route path="/workspace/:workspace/projects/:id/coverage" element={<CoverageHeatmap showToast={showToast} />} />
           <Route path="/workspace/:workspace/projects/:id/editor" element={<CoCreationEditor showToast={showToast} />} />
@@ -146,11 +149,11 @@ export default function App() {
           <Route path="/projects" element={<ProjectList showToast={showToast} />} />
           <Route path="/projects/:id" element={<ProjectEntryRedirect />} />
           <Route path="/projects/:id/parse" element={<ParseResult showToast={showToast} />} />
-          <Route path="/projects/:id/directory" element={<DirectoryGeneration showToast={showToast} />} />
+          <Route path="/projects/:id/directory" element={<ProjectPathRedirect path="/parse" />} />
           <Route path="/projects/:id/outline" element={<OutlineReview showToast={showToast} />} />
           <Route path="/projects/:id/gaps" element={<GapRecognition showToast={showToast} />} />
-          <Route path="/projects/:id/gaps-fill" element={<GapFilling showToast={showToast} />} />
-          <Route path="/projects/:id/gaps/review" element={<MaterialReview showToast={showToast} />} />
+          <Route path="/projects/:id/gaps-fill" element={<ProjectPathRedirect path="/gaps" />} />
+          <Route path="/projects/:id/gaps/review" element={<ProjectPathRedirect path="/gaps" />} />
           <Route path="/projects/:id/generate" element={<GenerateProgress showToast={showToast} />} />
           <Route path="/projects/:id/coverage" element={<CoverageHeatmap showToast={showToast} />} />
           <Route path="/projects/:id/editor" element={<CoCreationEditor showToast={showToast} />} />

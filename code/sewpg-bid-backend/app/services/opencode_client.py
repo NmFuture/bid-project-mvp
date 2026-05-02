@@ -166,6 +166,33 @@ class OpencodeClient:
             "opencodeOutput": self._build_output_trace(session_id, response),
         }
 
+    def run_bid_tech_table_filler_with_trace(
+        self,
+        prompt_text: str,
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        session = self.create_session("S4 技术标缺口 AI 填写")
+        session_id = str(session.get("id") or "")
+        if session_ready_callback:
+            session_ready_callback(
+                {
+                    "sessionId": session_id,
+                    "providerId": self.provider_id,
+                    "modelId": self.model_id,
+                }
+            )
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback,
+        )
+        parsed = self._extract_table_fill_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
     def generate_wiki_blueprint_with_trace(
         self,
         prompt_text: str,
@@ -280,6 +307,16 @@ class OpencodeClient:
             and not isinstance(parsed.get("outputFile"), str)
         ):
             raise RuntimeError("futurecode 返回的招标解析 JSON 结构不正确。")
+        return parsed
+
+    def _extract_table_fill_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = self._extract_json_response(
+            response,
+            empty_message="futurecode 未返回 AI 填写结果。",
+            repair_kind="table_fill",
+        )
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("outputFile"), str):
+            raise RuntimeError("futurecode 返回的 AI 填写 JSON 结构不正确。")
         return parsed
 
     def _extract_json_response(
@@ -489,6 +526,12 @@ class OpencodeClient:
                 '"sourceFile":"招标文件.docx","evidence":"项目名称：示例项目","evidenceLocation":"L1"}],'
                 '"structured":{"projectDates":{"startDate":"2026-01-01","endDate":"2026-02-01"},'
                 '"categories":[{"key":"project_basics","label":"项目基础信息","count":1,"items":[]}]}}'
+            )
+        elif repair_kind == "table_fill":
+            schema_hint = (
+                '{"schema_version":"bid-tech-table-fill-v1","outputFile":'
+                '"/data/parsed/PRJ-0001/s4_gap_workdir/ai_fill/GAP-0001/AI填写.docx",'
+                '"unfilledFields":[],"evidenceRefs":[{"type":"material","id":"RAW-0001"}]}'
             )
         else:
             schema_hint = (

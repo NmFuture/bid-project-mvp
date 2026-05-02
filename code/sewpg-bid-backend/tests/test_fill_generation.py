@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -119,6 +120,9 @@ class FillGenerationTests(unittest.TestCase):
         )
         store.confirm_outline(project_id)
         store.run_gap_detection(project_id)
+        for item in store.get_gap_filling(project_id)["items"]:
+            store.update_gap_item(project_id, item["id"], {"status": "skipped", "reason": "测试中人工确认忽略"})
+        store.check_gap_plan_integrity(project_id)
         store.submit_gap_review(project_id)
         store.prepare_review_document(project_id)
         store.confirm_review(project_id)
@@ -343,6 +347,103 @@ class FillGenerationTests(unittest.TestCase):
 
         self.assertIn('name: "项目技术承诺函"', card_text)
         self.assertIn('skeleton_section: "4"', card_text)
+
+    def test_s7_manifest_includes_confirmed_gap_plan_path(self) -> None:
+        from app.services import tech_assembly
+
+        project_id = self._prepare_project_for_s7()
+        project = store._require(project_id)
+        gap_state = project["gap_state"]
+        gap_state["plan"] = {
+            "schemaVersion": "bid-tech-gap-plan-v1",
+            "status": "ready",
+            "items": [
+                {
+                    "id": "GAP-1",
+                    "number": "1.1",
+                    "title": "项目背景",
+                    "status": "matched",
+                    "matchedMaterials": [{"id": "RAW-0001", "path": "通用素材/技术标/项目背景.docx"}],
+                    "resolvedArtifacts": [],
+                }
+            ],
+        }
+        gap_state["planFile"] = ""
+        gap_state["integrity"] = {"status": "passed", "blockingCount": 0}
+        gap_state["reviewConfirmed"] = True
+        store._persist_project(project)
+
+        manifest_payloads = []
+
+        def fake_prepare_wiki_dir(project, parse_storage, work_dir):
+            wiki_dir = work_dir / "wiki"
+            cards_dir = wiki_dir / "卡片"
+            cards_dir.mkdir(parents=True, exist_ok=True)
+            (cards_dir / "项目背景.md").write_text(
+                "---\n"
+                "name: 项目背景\n"
+                "path: 通用素材/技术标/项目背景.docx\n"
+                "scope: 通用\n"
+                "category: 技术标\n"
+                "material_id: RAW-0001\n"
+                "skeleton_section: \"1.1\"\n"
+                "deprecated: false\n"
+                "---\n",
+                encoding="utf-8",
+            )
+            return wiki_dir
+
+        def fake_export_material_library(wiki_dir, library_dir):
+            library_dir.mkdir(parents=True, exist_ok=True)
+            return library_dir, [{"id": "RAW-0001", "path": "通用素材/技术标/项目背景.docx", "available": True}]
+
+        def fake_run_assembler_manifest(manifest_path, progress_callback=None):
+            manifest_payloads.append(json.loads(Path(manifest_path).read_text(encoding="utf-8")))
+            output_file = Path(manifest_payloads[-1]["outputFile"])
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            doc = Document()
+            doc.add_paragraph("项目背景")
+            doc.save(output_file)
+            plan_file = output_file.parent / "assembly_plan.json"
+            plan_file.write_text(
+                json.dumps(
+                    [
+                        {
+                            "toc_idx": 1,
+                            "level": 1,
+                            "title": "项目背景",
+                            "status": "MATCHED",
+                            "paths": ["通用素材/技术标/项目背景.docx"],
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            report = output_file.parent / "assembly_report.md"
+            review = output_file.parent / "needs_review.md"
+            report.write_text("ok", encoding="utf-8")
+            review.write_text("ok", encoding="utf-8")
+            return {
+                "schema_version": "bid-tech-assembly-v1",
+                "outputFile": str(output_file),
+                "planFile": str(plan_file),
+                "assemblyReport": str(report),
+                "needsReview": str(review),
+                "summary": {"total": 1, "byStatus": {"MATCHED": 1}, "usedPathCount": 1},
+            }
+
+        with patch.object(tech_assembly, "_prepare_wiki_dir", side_effect=fake_prepare_wiki_dir), \
+            patch.object(tech_assembly, "_export_material_library", side_effect=fake_export_material_library), \
+            patch.object(tech_assembly, "_run_assembler_manifest", side_effect=fake_run_assembler_manifest):
+            tech_assembly.assemble_tech_bid_for_project_with_progress(project_id)
+
+        self.assertEqual(len(manifest_payloads), 1)
+        self.assertIn("gapPlanPath", manifest_payloads[0])
+        gap_plan_path = Path(manifest_payloads[0]["gapPlanPath"])
+        self.assertTrue(gap_plan_path.exists())
+        gap_plan = json.loads(gap_plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(gap_plan["schemaVersion"], "bid-tech-gap-plan-v1")
 
 
 if __name__ == "__main__":

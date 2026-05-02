@@ -14,6 +14,12 @@ from psycopg.types.json import Jsonb
 
 from app.core.config import settings
 from app.services.identity import build_project_identity
+from app.services.gap_planning import (
+    build_gap_plan_for_project,
+    check_gap_integrity,
+    run_ai_fill_for_gap,
+    summarize_gap_plan,
+)
 from app.services.workspace_artifacts import cleanup_parse_temp_workspace, promote_parse_artifacts_to_workspace
 
 
@@ -497,6 +503,9 @@ class AppStore:
                 "reviewedAt": "",
                 "items": [],
                 "submissions": [],
+                "plan": {},
+                "planFile": "",
+                "integrity": {},
             },
             "review_document_state": {
                 "parseStatus": "idle",
@@ -1089,20 +1098,28 @@ class AppStore:
     def run_gap_detection(self, project_id: str) -> dict[str, Any]:
         project = self._require(project_id)
         gap_state = self._ensure_gap_state(project)
-        items = self._build_gap_items_from_outline(project)
+        plan = build_gap_plan_for_project(project)
+        items = self._legacy_gap_items_from_plan(plan)
+        recognized_at = now_iso()
+        integrity = check_gap_integrity(plan)
+        plan["summary"] = summarize_gap_plan(plan)
+        plan["integrity"] = integrity
         gap_state.update(
             {
                 "recognitionStatus": "completed",
-                "recognizedAt": now_iso(),
+                "recognizedAt": recognized_at,
                 "submittedForReview": False,
                 "reviewConfirmed": False,
                 "reviewedAt": "",
                 "items": items,
-                "submissions": [],
+                "submissions": list(gap_state.get("submissions") or []),
+                "plan": plan,
+                "planFile": str(plan.get("planFile") or ""),
+                "integrity": integrity,
             }
         )
         project["review_document_state"] = self._default_review_document_state(project)
-        project["updatedAt"] = now_iso()
+        project["updatedAt"] = recognized_at
         self._persist_project(project)
         return self._build_gap_detection_payload(project, gap_state)
 
@@ -1117,7 +1134,60 @@ class AppStore:
             "submittedForReview": bool(gap_state["submittedForReview"]),
             "items": copy.deepcopy(gap_state["items"]),
             "submissions": copy.deepcopy(gap_state["submissions"]),
+            "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
+            "integrity": copy.deepcopy(gap_state.get("integrity") or {}),
         }
+
+    def run_gap_ai_fill(
+        self,
+        project_id: str,
+        gap_id: str,
+        data: dict[str, Any],
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        gap_state = self._ensure_gap_state(project)
+        if gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先在 S4 完成缺口识别。")
+        result = run_ai_fill_for_gap(
+            project,
+            gap_id,
+            data,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+        )
+        gap_state = self._ensure_gap_state(project)
+        gap_state["integrity"] = check_gap_integrity(gap_state.get("plan") or {})
+        project["updatedAt"] = now_iso()
+        self._persist_project(project)
+        return copy.deepcopy(result)
+
+    def check_gap_plan_integrity(self, project_id: str) -> dict[str, Any]:
+        project = self._require(project_id)
+        gap_state = self._ensure_gap_state(project)
+        if gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先完成缺口识别。")
+        integrity = check_gap_integrity(gap_state.get("plan") or {})
+        gap_state["integrity"] = integrity
+        plan = gap_state.get("plan")
+        if isinstance(plan, dict):
+            plan["integrity"] = integrity
+            plan["summary"] = summarize_gap_plan(plan)
+        project["updatedAt"] = now_iso()
+        self._persist_project(project)
+        return copy.deepcopy(integrity)
+
+    def get_gap_artifact(self, project_id: str, artifact_id: str) -> dict[str, Any]:
+        project = self._require(project_id)
+        gap_state = self._ensure_gap_state(project)
+        plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+        for item in plan.get("items") or []:
+            for artifact in item.get("resolvedArtifacts") or []:
+                if str(artifact.get("id") or "") == artifact_id:
+                    return copy.deepcopy(artifact)
+        raise KeyError(artifact_id)
 
     def list_gap_submissions(self, project_id: str) -> dict[str, Any]:
         project = self._require(project_id)
@@ -1163,6 +1233,26 @@ class AppStore:
         item["latestSubmissionId"] = receipts[0]["receiptId"]
         if item["status"] != "resolved":
             item["status"] = "checking"
+        plan_item = self._find_gap_plan_item(gap_state, missing_id)
+        if plan_item is not None:
+            plan_item["status"] = "filling"
+            plan_item["latestUploadAt"] = timestamp
+            plan_item["latestSubmissionId"] = receipts[0]["receiptId"]
+            plan_item.setdefault("resolvedArtifacts", []).extend(
+                {
+                    "id": receipt["receiptId"],
+                    "source": "manual_upload",
+                    "fileName": receipt["fileName"],
+                    "path": receipt["storedPath"],
+                    "createdAt": receipt["submittedAt"],
+                    "s7Ready": False,
+                }
+                for receipt in receipts
+            )
+            if isinstance(gap_state.get("plan"), dict):
+                gap_state["plan"]["summary"] = summarize_gap_plan(gap_state["plan"])
+                gap_state["integrity"] = check_gap_integrity(gap_state["plan"])
+                gap_state["plan"]["integrity"] = gap_state["integrity"]
         gap_state["submittedForReview"] = False
         gap_state["reviewConfirmed"] = False
         gap_state["reviewedAt"] = ""
@@ -1184,12 +1274,17 @@ class AppStore:
             raise ValueError("请先在 S4 完成缺口识别。")
 
         item = self._find_gap_item(gap_state, gap_id)
+        plan_item = self._find_gap_plan_item(gap_state, gap_id)
         action = str(data.get("action") or data.get("status") or "").strip()
         if action in {"skip", "skipped"}:
             item["status"] = "skipped"
             item["skipReason"] = str(data.get("reason") or item.get("skipReason") or "未填写原因")
             item["resolvedSource"] = ""
             item["resolvedAt"] = ""
+            if plan_item is not None:
+                plan_item["status"] = "ignored"
+                plan_item["skipReason"] = item["skipReason"]
+                plan_item["reviewNotes"] = list(plan_item.get("reviewNotes") or []) + [f"人工忽略：{item['skipReason']}"]
         elif action in {"resolve", "resolved"}:
             source = data.get("source") or {}
             if isinstance(source, dict):
@@ -1200,14 +1295,33 @@ class AppStore:
             item["resolvedSource"] = source_name.strip() or str(data.get("resolvedSource") or item.get("resolvedSource") or "已补录")
             item["skipReason"] = ""
             item["resolvedAt"] = now_iso()
+            if plan_item is not None:
+                plan_item["status"] = "resolved"
+                plan_item["resolvedSource"] = item["resolvedSource"]
+                plan_item["resolvedAt"] = item["resolvedAt"]
+                plan_item.setdefault("resolvedArtifacts", []).append(
+                    {
+                        "id": f"ART-{gap_id}-{len(plan_item.get('resolvedArtifacts') or []) + 1}",
+                        "source": "manual",
+                        "fileName": item["resolvedSource"],
+                        "createdAt": item["resolvedAt"],
+                        "s7Ready": True,
+                    }
+                )
         elif action in {"checking", "pending"}:
             item["status"] = action
+            if plan_item is not None:
+                plan_item["status"] = "filling" if action == "checking" else "needs_input"
         else:
             raise ValueError("不支持的缺口状态更新。")
 
         gap_state["submittedForReview"] = False
         gap_state["reviewConfirmed"] = False
         gap_state["reviewedAt"] = ""
+        if isinstance(gap_state.get("plan"), dict):
+            gap_state["plan"]["summary"] = summarize_gap_plan(gap_state["plan"])
+            gap_state["integrity"] = check_gap_integrity(gap_state["plan"])
+            gap_state["plan"]["integrity"] = gap_state["integrity"]
         project["review_document_state"] = self._default_review_document_state(project)
         project["updatedAt"] = now_iso()
         self._persist_project(project)
@@ -1226,12 +1340,10 @@ class AppStore:
         if gap_state["recognitionStatus"] != "completed":
             raise ValueError("请先完成 S4 缺口识别后再提交审核。")
 
-        pending = [item for item in gap_state["items"] if item["status"] not in {"resolved", "skipped"}]
-        for item in pending:
-            item["status"] = "skipped"
-            item["skipReason"] = item.get("skipReason") or "MVP 阶段跳过 S5 备料，后续在素材库正式化后补齐。"
-            item["resolvedSource"] = ""
-            item["resolvedAt"] = ""
+        integrity = check_gap_integrity(gap_state.get("plan") or {})
+        gap_state["integrity"] = integrity
+        if integrity["status"] != "passed":
+            raise ValueError(f"仍有 {integrity['blockingCount']} 项缺口未解决，暂不可提交审核。")
 
         gap_state["submittedForReview"] = True
         gap_state["reviewConfirmed"] = False
@@ -1239,7 +1351,7 @@ class AppStore:
         project["updatedAt"] = now_iso()
         self._persist_project(project)
         return {
-            "message": "S5 已跳过未处理缺口并提交审核。",
+            "message": "缺口处理已通过完整性校验并提交审核。",
             "payload": self.get_gap_filling(project_id),
         }
 
@@ -1323,9 +1435,10 @@ class AppStore:
         if not gap_state["submittedForReview"]:
             raise ValueError("请先在 S5 提交审核后再执行 S6 审核。")
 
-        pending = [item for item in gap_state["items"] if item["status"] not in {"resolved", "skipped"}]
-        if pending:
-            raise ValueError(f"仍有 {len(pending)} 项素材未处理，暂不可确认审核。")
+        integrity = check_gap_integrity(gap_state.get("plan") or {})
+        gap_state["integrity"] = integrity
+        if integrity["status"] != "passed":
+            raise ValueError(f"仍有 {integrity['blockingCount']} 项缺口未解决，暂不可确认审核。")
 
         gap_state["reviewConfirmed"] = True
         gap_state["reviewedAt"] = now_iso()
@@ -1660,7 +1773,35 @@ class AppStore:
         gap_state.setdefault("reviewedAt", "")
         gap_state.setdefault("items", [])
         gap_state.setdefault("submissions", [])
+        gap_state.setdefault("plan", {})
+        gap_state.setdefault("planFile", "")
+        gap_state.setdefault("integrity", {})
         return gap_state
+
+    @staticmethod
+    def _legacy_gap_items_from_plan(plan: dict[str, Any]) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for index, item in enumerate(plan.get("items") or [], start=1):
+            status = str(item.get("status") or "")
+            if status in {"matched", "structural"}:
+                continue
+            items.append(
+                {
+                    "id": str(item.get("id") or f"GAP-{index}"),
+                    "section": str(item.get("section") or ""),
+                    "title": str(item.get("title") or ""),
+                    "desc": str(item.get("gapReason") or "请补充该目录项所需素材。"),
+                    "priority": str(item.get("priority") or "medium"),
+                    "bidType": "技术标",
+                    "status": "resolved" if status == "resolved" else "skipped" if status == "ignored" else "pending",
+                    "skipReason": str(item.get("skipReason") or ""),
+                    "resolvedSource": str(item.get("resolvedSource") or ""),
+                    "resolvedAt": str(item.get("resolvedAt") or ""),
+                    "latestUploadAt": str(item.get("latestUploadAt") or ""),
+                    "latestSubmissionId": str(item.get("latestSubmissionId") or ""),
+                }
+            )
+        return items
 
     def _ensure_review_document_state(self, project: dict[str, Any]) -> dict[str, Any]:
         state = project.get("review_document_state")
@@ -1746,6 +1887,8 @@ class AppStore:
 
     def _build_gap_detection_payload(self, project: dict[str, Any], gap_state: dict[str, Any]) -> dict[str, Any]:
         items = copy.deepcopy(gap_state["items"])
+        gap_plan = copy.deepcopy(gap_state.get("plan") or {})
+        plan_summary = gap_plan.get("summary") if isinstance(gap_plan.get("summary"), dict) else {}
         high_priority_count = sum(1 for item in items if item.get("priority") == "high")
         medium_priority_count = sum(1 for item in items if item.get("priority") == "medium")
         low_priority_count = max(0, len(items) - high_priority_count - medium_priority_count)
@@ -1754,11 +1897,18 @@ class AppStore:
             "recognizedAt": gap_state["recognizedAt"],
             "summary": {
                 "totalMissing": len(items),
+                "totalTocItems": int(plan_summary.get("totalTocItems") or 0),
+                "matchedCount": int(plan_summary.get("matchedCount") or 0),
+                "missingCount": int(plan_summary.get("missingCount") or len(items)),
+                "resolvedCount": int(plan_summary.get("resolvedCount") or 0),
+                "fillableTaskCount": int(plan_summary.get("fillableTaskCount") or 0),
                 "highPriorityCount": high_priority_count,
                 "mediumPriorityCount": medium_priority_count,
                 "lowPriorityCount": low_priority_count,
             },
             "items": items,
+            "gapPlan": gap_plan,
+            "integrity": copy.deepcopy(gap_state.get("integrity") or {}),
             "source": {
                 "fromStage": "S4",
                 "projectId": project["id"],
@@ -1771,6 +1921,14 @@ class AppStore:
             if item.get("id") == gap_id:
                 return item
         raise KeyError(gap_id)
+
+    @staticmethod
+    def _find_gap_plan_item(gap_state: dict[str, Any], gap_id: str) -> dict[str, Any] | None:
+        plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+        for item in plan.get("items") or []:
+            if str(item.get("id") or "") == gap_id:
+                return item
+        return None
 
     def _review_summary(self, gap_state: dict[str, Any]) -> dict[str, int]:
         items = list(gap_state["items"])

@@ -662,11 +662,72 @@ def summarize(plan: list[dict]) -> dict:
     }
 
 
+def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
+    if not gap_plan_path or not gap_plan_path.exists():
+        return plan
+    data = json.loads(gap_plan_path.read_text(encoding="utf-8"))
+    items = data.get("items") if isinstance(data, dict) else []
+    if not isinstance(items, list):
+        return plan
+
+    by_number: dict[str, dict] = {}
+    by_title: dict[str, dict] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        number = str(item.get("number") or "").strip()
+        title = _normalize_title(str(item.get("title") or ""))
+        if number:
+            by_number[number] = item
+        if title:
+            by_title[title] = item
+
+    for entry in plan:
+        number = str(entry.get("chapter_no_flat") or entry.get("chapter_no") or "").strip()
+        title = _normalize_title(str(entry.get("title") or ""))
+        gap_item = by_number.get(number) or by_title.get(title)
+        if not gap_item:
+            continue
+        paths = _gap_plan_paths(gap_item)
+        if not paths:
+            continue
+        entry["paths"] = paths
+        entry["shifts"] = [0 for _ in paths]
+        entry["attach_modes"] = ["normal" for _ in paths]
+        entry["status"] = STATUS_ADAPTED if entry.get("field_replace") else STATUS_MATCHED
+        entry["note"] = "来自缺口识别与处理计划"
+        entry["gap_plan_item_id"] = str(gap_item.get("id") or "")
+    return plan
+
+
+def _gap_plan_paths(item: dict) -> list[str]:
+    paths: list[str] = []
+    for key in ("matchedMaterials", "resolvedArtifacts"):
+        values = item.get(key) or []
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if isinstance(value, str):
+                candidate = value
+            elif isinstance(value, dict):
+                candidate = str(value.get("path") or value.get("docx") or "")
+            else:
+                candidate = ""
+            if candidate and candidate not in paths:
+                paths.append(candidate)
+    return paths
+
+
+def _normalize_title(value: str) -> str:
+    return re.sub(r"[\s:：，,。.！!？?\\\-_/'\"“”‘’·（）()【】\[\]/]+", "", str(value or ""))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--toc", type=Path, required=True)
     ap.add_argument("--wiki", type=Path, required=True, help="wiki 根目录（含 卡片/ index.md）")
     ap.add_argument("--params", type=Path, default=None, help="project_params.json（目前未用；占位）")
+    ap.add_argument("--gap-plan", type=Path, default=None, help="S4 缺口识别与处理计划 JSON")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--summary", action="store_true", help="同时打印摘要到 stderr")
     args = ap.parse_args()
@@ -678,6 +739,7 @@ def main():
         params = json.loads(args.params.read_text(encoding="utf-8"))
 
     plan = build_plan(toc, cards, params)
+    plan = apply_gap_plan(plan, args.gap_plan)
     plan = rearrange_appendices(plan)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)

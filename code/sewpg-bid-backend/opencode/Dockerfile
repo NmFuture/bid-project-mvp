@@ -55,7 +55,23 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       'fi' \
       'exec python3 /workspace/.opencode/skills/bid-tech-assembler/scripts/run_from_manifest.py --manifest "$1" --response summary' \
       > /usr/local/bin/s7assemble \
-    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/s7assemble
+    && printf '%s\n' \
+      '#!/bin/sh' \
+      'if [ "$#" -ne 1 ]; then' \
+      '  echo "usage: s4gap <manifest>" >&2' \
+      '  exit 64' \
+      'fi' \
+      'exec python3 /workspace/.opencode/skills/bid-tech-gap-planner/scripts/run_from_manifest.py --manifest "$1" --response summary' \
+      > /usr/local/bin/s4gap \
+    && printf '%s\n' \
+      '#!/bin/sh' \
+      'if [ "$#" -ne 1 ]; then' \
+      '  echo "usage: s4fill <manifest>" >&2' \
+      '  exit 64' \
+      'fi' \
+      'exec python3 /workspace/.opencode/skills/bid-tech-table-filler/scripts/run_from_manifest.py --manifest "$1" --response summary' \
+      > /usr/local/bin/s4fill \
+    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/s7assemble /usr/local/bin/s4gap /usr/local/bin/s4fill
 
 EXPOSE 4096
 
