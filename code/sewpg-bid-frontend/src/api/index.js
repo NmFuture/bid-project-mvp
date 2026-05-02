@@ -469,6 +469,16 @@ export const settingsAPI = {
     update: (data) => request('/settings/llm-gateway', { method: 'PUT', body: data }),
     test: (data) => request('/settings/llm-gateway/test', { method: 'POST', body: data }),
   },
+  ocr: {
+    get: () => request('/settings/ocr'),
+    update: (data) => request('/settings/ocr', { method: 'PUT', body: data }),
+    test: (data) => request('/settings/ocr/test', { method: 'POST', body: data }),
+  },
+  defaultTemplates: {
+    list: () => request('/settings/default-templates'),
+    upload: (data) => request('/settings/default-templates', { method: 'POST', body: data }),
+    activate: (id) => request(`/settings/default-templates/${id}/activate`, { method: 'POST' }),
+  },
   dotxTemplates: {
     list: () => request('/settings/dotx-templates'),
     upload: (data) => request('/settings/dotx-templates', { method: 'POST', body: data }),
@@ -492,6 +502,15 @@ export const authAPI = {
   login: (data) => request('/auth/login', { method: 'POST', body: data }),
   me: (token) => request('/auth/me', { authToken: token }),
   logout: () => request('/auth/logout', { method: 'POST' }),
+}
+
+// ===== OCR =====
+export const ocrAPI = {
+  list: (projectId) => request(`/projects/${projectId}/ocr/tasks`),
+  run: (projectId, data) => request(`/projects/${projectId}/ocr/tasks`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
+  detail: (projectId, taskId) => request(`/projects/${projectId}/ocr/tasks/${taskId}`),
+  confirm: (projectId, candidateId, data) =>
+    request(`/projects/${projectId}/ocr/candidates/${candidateId}/confirm`, { method: 'POST', body: data }),
 }
 
 export { ApiError }

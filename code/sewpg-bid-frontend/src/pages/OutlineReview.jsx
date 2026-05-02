@@ -100,7 +100,7 @@ const sendOnlyOfficeSearch = (text, onlyofficeEmbedRef = null, beforeSend = null
   beforeSend?.(payload.nonce)
   try {
     window.localStorage.setItem(SEARCH_STORAGE_KEY, JSON.stringify(storedPayload))
-  } catch (e) {
+  } catch {
     // BroadcastChannel is still enough in normal browser contexts.
   }
   if ('BroadcastChannel' in window) {
@@ -129,13 +129,11 @@ export default function OutlineReview({ showToast }) {
   const [collapsedNodeIds, setCollapsedNodeIds] = useState(new Set())
   const [pendingSearchText, setPendingSearchText] = useState('')
   const [activeBasisRef, setActiveBasisRef] = useState(null)
-  const [pendingSearchNonce, setPendingSearchNonce] = useState('')
   const onlyofficeEmbedRef = useRef(null)
   const pendingSearchNonceRef = useRef('')
 
   const markPendingSearch = useCallback((nonce) => {
     pendingSearchNonceRef.current = nonce || ''
-    setPendingSearchNonce(nonce || '')
   }, [])
 
   const loadData = useCallback(async () => {

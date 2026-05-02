@@ -19,14 +19,37 @@ export default function Settings({ showToast = () => {} }) {
   const [gatewayDraft, setGatewayDraft] = useState({
     enabled: true,
     endpoint: '',
+    baseUrl: '',
     model: '',
     timeoutMs: 30000,
     maxTokens: 4096,
+    apiKey: '',
     apiKeyMasked: '',
   })
   const [gatewaySaving, setGatewaySaving] = useState(false)
   const [gatewayTesting, setGatewayTesting] = useState(false)
   const [gatewayTestResult, setGatewayTestResult] = useState(null)
+
+  const [ocr, setOcr] = useState(null)
+  const [ocrDraft, setOcrDraft] = useState({
+    enabled: false,
+    baseUrl: '',
+    model: 'deepseek-ai/DeepSeek-OCR',
+    timeoutMs: 60000,
+    maxTokens: 2048,
+    apiKey: '',
+    apiKeyMasked: '',
+  })
+  const [ocrSaving, setOcrSaving] = useState(false)
+  const [ocrTesting, setOcrTesting] = useState(false)
+  const [ocrTestResult, setOcrTestResult] = useState(null)
+
+  const [defaultTemplates, setDefaultTemplates] = useState([])
+  const [defaultTemplateTypes, setDefaultTemplateTypes] = useState([])
+  const [defaultTemplateUploadType, setDefaultTemplateUploadType] = useState('technical')
+  const [defaultTemplateUploadVersion, setDefaultTemplateUploadVersion] = useState('2026.05')
+  const [defaultTemplateUploading, setDefaultTemplateUploading] = useState(false)
+  const [defaultTemplateActivatingId, setDefaultTemplateActivatingId] = useState('')
 
   const [dotxTemplates, setDotxTemplates] = useState([])
   const [dotxUploading, setDotxUploading] = useState(false)
@@ -49,6 +72,7 @@ export default function Settings({ showToast = () => {} }) {
 
   const dotxFileInputRef = useRef(null)
   const excelFileInputRef = useRef(null)
+  const defaultTemplateFileInputRef = useRef(null)
 
   const loadAll = useCallback(async (options = {}) => {
     if (options.silent) {
@@ -59,9 +83,11 @@ export default function Settings({ showToast = () => {} }) {
     setError('')
 
     try {
-      const [usersRes, gatewayRes, dotxRes, excelRes, backupsRes, healthRes] = await Promise.all([
+      const [usersRes, gatewayRes, ocrRes, defaultTemplatesRes, dotxRes, excelRes, backupsRes, healthRes] = await Promise.all([
         settingsAPI.users.list(),
         settingsAPI.gateway.get(),
+        settingsAPI.ocr.get(),
+        settingsAPI.defaultTemplates.list(),
         settingsAPI.dotxTemplates.list(),
         settingsAPI.excelTemplates.list(),
         settingsAPI.backups.list(),
@@ -71,13 +97,32 @@ export default function Settings({ showToast = () => {} }) {
       setGateway(gatewayRes || null)
       setGatewayDraft({
         enabled: Boolean(gatewayRes?.enabled),
-        endpoint: String(gatewayRes?.endpoint || ''),
+        endpoint: String(gatewayRes?.endpoint || gatewayRes?.baseUrl || ''),
+        baseUrl: String(gatewayRes?.baseUrl || gatewayRes?.endpoint || ''),
         model: String(gatewayRes?.model || ''),
         timeoutMs: Number(gatewayRes?.timeoutMs || 30000),
         maxTokens: Number(gatewayRes?.maxTokens || 4096),
+        apiKey: '',
         apiKeyMasked: String(gatewayRes?.apiKeyMasked || ''),
       })
+      setOcr(ocrRes || null)
+      setOcrDraft({
+        enabled: Boolean(ocrRes?.enabled),
+        baseUrl: String(ocrRes?.baseUrl || ''),
+        model: String(ocrRes?.model || 'deepseek-ai/DeepSeek-OCR'),
+        timeoutMs: Number(ocrRes?.timeoutMs || 60000),
+        maxTokens: Number(ocrRes?.maxTokens || 2048),
+        apiKey: '',
+        apiKeyMasked: String(ocrRes?.apiKeyMasked || ''),
+      })
 
+      setDefaultTemplates(defaultTemplatesRes?.items || [])
+      const templateTypeOptions = defaultTemplatesRes?.templateTypes || []
+      setDefaultTemplateTypes(templateTypeOptions)
+      setDefaultTemplateUploadType((prev) => {
+        if (prev && templateTypeOptions.some((item) => item.key === prev)) return prev
+        return templateTypeOptions[0]?.key || 'technical'
+      })
       setDotxTemplates(dotxRes?.items || [])
       setExcelTemplates(excelRes?.items || [])
       const optionsList = excelRes?.tableOptions || []
@@ -112,7 +157,9 @@ export default function Settings({ showToast = () => {} }) {
 
   const sections = [
     { id: 'gateway', icon: 'hub', label: 'LLM 网关', group: '系统核心' },
-    { id: 'dotx', icon: 'description', label: '.dotx 模板', group: '系统核心' },
+    { id: 'defaultTemplates', icon: 'description', label: '默认模板', group: '系统核心' },
+    { id: 'ocr', icon: 'document_scanner', label: 'OCR 模型', group: '系统核心' },
+    { id: 'dotx', icon: 'format_shapes', label: '.dotx 样式模板', group: '系统核心' },
     { id: 'excel', icon: 'table_chart', label: 'Excel 模板版本', group: '系统核心' },
     { id: 'backup', icon: 'database', label: '备份与恢复', group: '系统核心' },
     { id: 'health', icon: 'monitor_heart', label: '系统健康', group: '系统核心' },
@@ -121,8 +168,15 @@ export default function Settings({ showToast = () => {} }) {
 
   const gatewayDirty = useMemo(() => {
     if (!gateway) return false
-    return !deepEqualByKeys(gatewayDraft, gateway, ['enabled', 'endpoint', 'model', 'timeoutMs', 'maxTokens'])
+    return !deepEqualByKeys(gatewayDraft, gateway, ['enabled', 'baseUrl', 'model', 'timeoutMs', 'maxTokens'])
+      || Boolean(gatewayDraft.apiKey.trim())
   }, [gateway, gatewayDraft])
+
+  const ocrDirty = useMemo(() => {
+    if (!ocr) return false
+    return !deepEqualByKeys(ocrDraft, ocr, ['enabled', 'baseUrl', 'model', 'timeoutMs', 'maxTokens'])
+      || Boolean(ocrDraft.apiKey.trim())
+  }, [ocr, ocrDraft])
 
   const activeDotxId = useMemo(
     () => dotxTemplates.find((item) => item.isActive)?.id || '',
@@ -144,18 +198,22 @@ export default function Settings({ showToast = () => {} }) {
     try {
       const result = await settingsAPI.gateway.update({
         enabled: gatewayDraft.enabled,
-        endpoint: gatewayDraft.endpoint.trim(),
+        baseUrl: (gatewayDraft.baseUrl || gatewayDraft.endpoint).trim(),
+        endpoint: (gatewayDraft.baseUrl || gatewayDraft.endpoint).trim(),
         model: gatewayDraft.model.trim(),
         timeoutMs: Number(gatewayDraft.timeoutMs || 0),
         maxTokens: Number(gatewayDraft.maxTokens || 0),
+        ...(gatewayDraft.apiKey.trim() ? { apiKey: gatewayDraft.apiKey.trim() } : {}),
       })
       setGateway(result.config)
       setGatewayDraft({
         enabled: Boolean(result.config?.enabled),
-        endpoint: String(result.config?.endpoint || ''),
+        endpoint: String(result.config?.endpoint || result.config?.baseUrl || ''),
+        baseUrl: String(result.config?.baseUrl || result.config?.endpoint || ''),
         model: String(result.config?.model || ''),
         timeoutMs: Number(result.config?.timeoutMs || 30000),
         maxTokens: Number(result.config?.maxTokens || 4096),
+        apiKey: '',
         apiKeyMasked: String(result.config?.apiKeyMasked || ''),
       })
       showToast('LLM 网关配置已保存')
@@ -172,8 +230,11 @@ export default function Settings({ showToast = () => {} }) {
     setGatewayTestResult(null)
     try {
       const result = await settingsAPI.gateway.test({
-        endpoint: gatewayDraft.endpoint.trim(),
+        baseUrl: (gatewayDraft.baseUrl || gatewayDraft.endpoint).trim(),
+        endpoint: (gatewayDraft.baseUrl || gatewayDraft.endpoint).trim(),
         model: gatewayDraft.model.trim(),
+        timeoutMs: Number(gatewayDraft.timeoutMs || 0),
+        ...(gatewayDraft.apiKey.trim() ? { apiKey: gatewayDraft.apiKey.trim() } : {}),
       })
       setGatewayTestResult({ success: true, message: result.message, latencyMs: result.latencyMs })
       showToast('网关连通性测试通过')
@@ -183,6 +244,92 @@ export default function Settings({ showToast = () => {} }) {
       showToast(safeMessage(e, '网关测试失败'), 'error')
     } finally {
       setGatewayTesting(false)
+    }
+  }
+
+  const handleSaveOcr = async () => {
+    if (!ocrDirty) return
+    setOcrSaving(true)
+    try {
+      const result = await settingsAPI.ocr.update({
+        enabled: ocrDraft.enabled,
+        baseUrl: ocrDraft.baseUrl.trim(),
+        model: ocrDraft.model.trim(),
+        timeoutMs: Number(ocrDraft.timeoutMs || 0),
+        maxTokens: Number(ocrDraft.maxTokens || 0),
+        ...(ocrDraft.apiKey.trim() ? { apiKey: ocrDraft.apiKey.trim() } : {}),
+      })
+      setOcr(result.config)
+      setOcrDraft({
+        enabled: Boolean(result.config?.enabled),
+        baseUrl: String(result.config?.baseUrl || ''),
+        model: String(result.config?.model || 'deepseek-ai/DeepSeek-OCR'),
+        timeoutMs: Number(result.config?.timeoutMs || 60000),
+        maxTokens: Number(result.config?.maxTokens || 2048),
+        apiKey: '',
+        apiKeyMasked: String(result.config?.apiKeyMasked || ''),
+      })
+      showToast('OCR 模型配置已保存')
+    } catch (e) {
+      console.error(e)
+      showToast(safeMessage(e, 'OCR 配置保存失败'), 'error')
+    } finally {
+      setOcrSaving(false)
+    }
+  }
+
+  const handleTestOcr = async () => {
+    setOcrTesting(true)
+    setOcrTestResult(null)
+    try {
+      const result = await settingsAPI.ocr.test({
+        baseUrl: ocrDraft.baseUrl.trim(),
+        model: ocrDraft.model.trim(),
+        timeoutMs: Number(ocrDraft.timeoutMs || 0),
+        ...(ocrDraft.apiKey.trim() ? { apiKey: ocrDraft.apiKey.trim() } : {}),
+      })
+      setOcrTestResult({ success: true, message: result.message, latencyMs: result.latencyMs })
+      showToast('OCR 连通性测试通过')
+    } catch (e) {
+      console.error(e)
+      setOcrTestResult({ success: false, message: safeMessage(e, 'OCR 测试失败'), latencyMs: null })
+      showToast(safeMessage(e, 'OCR 测试失败'), 'error')
+    } finally {
+      setOcrTesting(false)
+    }
+  }
+
+  const handleUploadDefaultTemplate = async (file) => {
+    if (!file) return
+    setDefaultTemplateUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('fileName', file.name)
+      formData.append('templateType', defaultTemplateUploadType)
+      formData.append('version', defaultTemplateUploadVersion || '2026.05')
+      const result = await settingsAPI.defaultTemplates.upload(formData)
+      setDefaultTemplates(result.items || [])
+      showToast('系统默认模板上传成功')
+    } catch (e) {
+      console.error(e)
+      showToast(safeMessage(e, '系统默认模板上传失败'), 'error')
+    } finally {
+      setDefaultTemplateUploading(false)
+    }
+  }
+
+  const handleActivateDefaultTemplate = async (id) => {
+    setDefaultTemplateActivatingId(id)
+    try {
+      const result = await settingsAPI.defaultTemplates.activate(id)
+      setDefaultTemplates(result.items || [])
+      showToast('系统默认模板已启用')
+    } catch (e) {
+      console.error(e)
+      showToast(safeMessage(e, '默认模板启用失败'), 'error')
+    } finally {
+      setDefaultTemplateActivatingId('')
     }
   }
 
@@ -365,10 +512,10 @@ export default function Settings({ showToast = () => {} }) {
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <label className="text-sm text-on-surface-variant">
-                  网关地址
+                  Base URL
                   <input
-                    value={gatewayDraft.endpoint}
-                    onChange={(event) => setGatewayDraft((prev) => ({ ...prev, endpoint: event.target.value }))}
+                    value={gatewayDraft.baseUrl || gatewayDraft.endpoint}
+                    onChange={(event) => setGatewayDraft((prev) => ({ ...prev, baseUrl: event.target.value, endpoint: event.target.value }))}
                     className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
                   />
                 </label>
@@ -386,6 +533,16 @@ export default function Settings({ showToast = () => {} }) {
                     type="number"
                     value={gatewayDraft.timeoutMs}
                     onChange={(event) => setGatewayDraft((prev) => ({ ...prev, timeoutMs: Number(event.target.value || 0) }))}
+                    className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
+                  />
+                </label>
+                <label className="text-sm text-on-surface-variant">
+                  API Key
+                  <input
+                    type="password"
+                    value={gatewayDraft.apiKey}
+                    onChange={(event) => setGatewayDraft((prev) => ({ ...prev, apiKey: event.target.value }))}
+                    placeholder={gatewayDraft.apiKeyMasked ? '保持当前 Key 不变' : '输入 API Key'}
                     className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
                   />
                 </label>
@@ -431,6 +588,186 @@ export default function Settings({ showToast = () => {} }) {
                   {gatewaySaving ? '保存中...' : '保存配置'}
                 </button>
               </div>
+            </div>
+          )}
+
+          {activeSection === 'ocr' && (
+            <div className="p-6 space-y-6">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-headline font-bold text-on-surface">OCR 模型配置</h2>
+                  <p className="text-sm text-on-surface-variant mt-1">维护图片型 PDF 和图片识别所用模型。</p>
+                </div>
+                <label className="inline-flex items-center gap-2 text-sm text-on-surface-variant">
+                  <input
+                    type="checkbox"
+                    checked={ocrDraft.enabled}
+                    onChange={(event) => setOcrDraft((prev) => ({ ...prev, enabled: event.target.checked }))}
+                  />
+                  启用 OCR
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <label className="text-sm text-on-surface-variant">
+                  Base URL
+                  <input
+                    value={ocrDraft.baseUrl}
+                    onChange={(event) => setOcrDraft((prev) => ({ ...prev, baseUrl: event.target.value }))}
+                    className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
+                  />
+                </label>
+                <label className="text-sm text-on-surface-variant">
+                  模型
+                  <input
+                    value={ocrDraft.model}
+                    onChange={(event) => setOcrDraft((prev) => ({ ...prev, model: event.target.value }))}
+                    className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
+                  />
+                </label>
+                <label className="text-sm text-on-surface-variant">
+                  API Key
+                  <input
+                    type="password"
+                    value={ocrDraft.apiKey}
+                    onChange={(event) => setOcrDraft((prev) => ({ ...prev, apiKey: event.target.value }))}
+                    placeholder={ocrDraft.apiKeyMasked ? '保持当前 Key 不变' : '输入 API Key'}
+                    className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
+                  />
+                </label>
+                <label className="text-sm text-on-surface-variant">
+                  超时 (ms)
+                  <input
+                    type="number"
+                    value={ocrDraft.timeoutMs}
+                    onChange={(event) => setOcrDraft((prev) => ({ ...prev, timeoutMs: Number(event.target.value || 0) }))}
+                    className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
+                  />
+                </label>
+              </div>
+
+              <div className="rounded-lg bg-surface-container-low p-3 text-xs text-outline">
+                API Key：{ocrDraft.apiKeyMasked || '-'} · 最近更新：{ocr?.updatedAt || '-'} / {ocr?.updatedBy || '-'}
+              </div>
+
+              {ocrTestResult && (
+                <div className={`rounded-lg p-3 text-sm border ${
+                  ocrTestResult.success
+                    ? 'bg-secondary-container/30 border-secondary/30 text-secondary'
+                    : 'bg-error-container/20 border-error/30 text-error'
+                }`}>
+                  {ocrTestResult.message}
+                  {ocrTestResult.latencyMs ? `（${ocrTestResult.latencyMs}ms）` : ''}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={handleTestOcr}
+                  disabled={ocrTesting}
+                  className="px-4 py-2 text-sm font-medium text-on-surface-variant bg-surface-container-high hover:bg-surface-dim rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {ocrTesting ? '测试中...' : '连接测试'}
+                </button>
+                <button
+                  onClick={handleSaveOcr}
+                  disabled={!ocrDirty || ocrSaving}
+                  className="px-4 py-2 text-sm font-medium text-on-primary bg-primary hover:bg-primary-container rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {ocrSaving ? '保存中...' : '保存配置'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'defaultTemplates' && (
+            <div className="p-6 space-y-5">
+              <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-headline font-bold text-on-surface">系统默认模板</h2>
+                  <p className="text-sm text-on-surface-variant mt-1">项目未上传模板时，自动使用这里启用的默认模板。</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <select
+                    value={defaultTemplateUploadType}
+                    onChange={(event) => setDefaultTemplateUploadType(event.target.value)}
+                    className="h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm"
+                  >
+                    {defaultTemplateTypes.map((item) => (
+                      <option key={item.key} value={item.key}>{item.label}</option>
+                    ))}
+                  </select>
+                  <input
+                    value={defaultTemplateUploadVersion}
+                    onChange={(event) => setDefaultTemplateUploadVersion(event.target.value)}
+                    className="h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm w-32"
+                    placeholder="版本"
+                  />
+                  <input
+                    ref={defaultTemplateFileInputRef}
+                    type="file"
+                    accept=".docx,.dotx"
+                    className="hidden"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0]
+                      if (file) handleUploadDefaultTemplate(file)
+                      event.target.value = ''
+                    }}
+                  />
+                  <button
+                    onClick={() => defaultTemplateFileInputRef.current?.click()}
+                    disabled={defaultTemplateUploading}
+                    className="px-4 py-2 text-sm font-medium text-on-primary bg-primary hover:bg-primary-container rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {defaultTemplateUploading ? '上传中...' : '上传默认模板'}
+                  </button>
+                </div>
+              </div>
+
+              {!defaultTemplates.length ? (
+                <PageEmpty title="暂无系统默认模板" description="请上传技术标或商务标默认模板。" />
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-surface-container-high">
+                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">类型</th>
+                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">模板名称</th>
+                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">版本</th>
+                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">上传信息</th>
+                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">状态</th>
+                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {defaultTemplates.map((item) => (
+                        <tr key={item.id} className="border-b border-surface-container-high/50">
+                          <td className="px-3 py-3">{item.templateTypeLabel}</td>
+                          <td className="px-3 py-3 text-on-surface">{item.name}</td>
+                          <td className="px-3 py-3 font-mono text-xs">{item.version}</td>
+                          <td className="px-3 py-3 text-xs text-outline">{item.uploadedBy} · {item.uploadedAt}</td>
+                          <td className="px-3 py-3">
+                            {item.isActive ? (
+                              <span className="text-xs px-2 py-1 rounded bg-secondary-container text-on-secondary-container">默认生效</span>
+                            ) : (
+                              <span className="text-xs px-2 py-1 rounded bg-surface-container-high text-on-surface-variant">未生效</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-3">
+                            <button
+                              onClick={() => handleActivateDefaultTemplate(item.id)}
+                              disabled={item.isActive || defaultTemplateActivatingId === item.id}
+                              className="text-xs text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              {defaultTemplateActivatingId === item.id ? '启用中...' : item.isActive ? '当前默认' : '设为默认'}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 

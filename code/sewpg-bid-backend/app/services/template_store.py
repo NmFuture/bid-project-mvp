@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -21,6 +23,10 @@ FALLBACK_BID_TEMPLATE_ID = "FBT-DEFAULT"
 FALLBACK_BID_TEMPLATE_KEY = "templates/fallback/technical/投标文件-模板.docx"
 FALLBACK_BID_TEMPLATE_NAME = "投标文件-模板.docx"
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+DEFAULT_TEMPLATE_TYPES = {
+    "technical": "技术标",
+    "business": "商务标",
+}
 
 
 def now_display() -> str:
@@ -82,6 +88,148 @@ def fallback_bid_template_summary(*, check_exists: bool = True) -> dict[str, Any
     }
 
 
+def template_type_for_bid_type(bid_type: str) -> str:
+    text = str(bid_type or "").strip()
+    if "商" in text:
+        return "business"
+    return "technical"
+
+
+def _record_to_template_summary(asset: TemplateAsset, *, source: str) -> dict[str, Any]:
+    available = bool(asset.minio_bucket and asset.minio_key)
+    size_bytes = int(asset.size_bytes or 0)
+    return {
+        "id": f"TPL-{asset.id:04d}",
+        "name": asset.file_name,
+        "source": source,
+        "available": available,
+        "templateType": str(asset.table_key or ""),
+        "templateTypeLabel": DEFAULT_TEMPLATE_TYPES.get(str(asset.table_key or ""), str(asset.table_key or "")),
+        "version": asset.version,
+        "uploadedBy": asset.uploaded_by or "",
+        "minioBucket": asset.minio_bucket or settings.minio_buckets["templates"],
+        "minioKey": asset.minio_key or "",
+        "sizeBytes": size_bytes,
+        "sizeLabel": size_label(size_bytes),
+        "contentType": asset.mime_type or WORD_MEDIA_TYPE,
+    }
+
+
+async def system_default_bid_template_summary(
+    *,
+    bid_type: str,
+    check_exists: bool = True,
+) -> dict[str, Any]:
+    template_type = template_type_for_bid_type(bid_type)
+    async with async_session() as session:
+        asset = (
+            await session.execute(
+                select(TemplateAsset)
+                .where(
+                    TemplateAsset.asset_type == "default_template",
+                    TemplateAsset.table_key == template_type,
+                    TemplateAsset.is_active.is_(True),
+                )
+                .order_by(desc(TemplateAsset.created_at), desc(TemplateAsset.id))
+            )
+        ).scalars().first()
+
+    if asset is None:
+        return {
+            "id": "",
+            "name": "",
+            "source": "system-default",
+            "available": False,
+            "templateType": template_type,
+            "templateTypeLabel": DEFAULT_TEMPLATE_TYPES.get(template_type, template_type),
+            "minioBucket": settings.minio_buckets["templates"],
+            "minioKey": "",
+            "sizeBytes": 0,
+            "sizeLabel": size_label(0),
+            "contentType": WORD_MEDIA_TYPE,
+        }
+
+    summary = _record_to_template_summary(asset, source="system-default")
+    if check_exists and summary["available"]:
+        try:
+            stat = minio_client.client.stat_object(str(summary["minioBucket"]), str(summary["minioKey"]))
+            summary["sizeBytes"] = int(getattr(stat, "size", 0) or summary["sizeBytes"])
+            summary["sizeLabel"] = size_label(int(summary["sizeBytes"]))
+            summary["contentType"] = str(getattr(stat, "content_type", "") or summary["contentType"])
+        except Exception as exc:  # MinIO may be unavailable in unit tests.
+            logger.info(
+                "System default template is not available at %s/%s: %s",
+                summary["minioBucket"],
+                summary["minioKey"],
+                exc,
+            )
+            summary["available"] = False
+    return summary
+
+
+async def resolve_system_default_bid_template_file(project_id: str, bid_type: str) -> dict[str, Any] | None:
+    summary = await system_default_bid_template_summary(bid_type=bid_type, check_exists=True)
+    if not summary["available"]:
+        return None
+
+    name = safe_segment(str(summary["name"] or ""), FALLBACK_BID_TEMPLATE_NAME)
+    target_dir = settings.uploads_dir / project_id / "system-default-template"
+    target = target_dir / name
+    minio_client.download_file(str(summary["minioBucket"]), str(summary["minioKey"]), target)
+    size_bytes = target.stat().st_size if target.exists() else int(summary.get("sizeBytes") or 0)
+
+    return {
+        "id": str(summary["id"]),
+        "name": name,
+        "stored_name": name,
+        "size_bytes": size_bytes,
+        "size_label": size_label(size_bytes),
+        "content_type": str(summary.get("contentType") or WORD_MEDIA_TYPE),
+        "path": str(target),
+        "source": "system-default",
+        "isFallback": True,
+        "fallbackSourceId": str(summary["id"]),
+        "templateType": str(summary.get("templateType") or ""),
+        "templateTypeLabel": str(summary.get("templateTypeLabel") or ""),
+        "minioBucket": str(summary["minioBucket"]),
+        "minioKey": str(summary["minioKey"]),
+    }
+
+
+async def seed_legacy_fallback_as_system_default() -> None:
+    summary = fallback_bid_template_summary(check_exists=True)
+    if not summary["available"]:
+        return
+
+    async with async_session() as session:
+        existing = (
+            await session.execute(
+                select(TemplateAsset).where(
+                    TemplateAsset.asset_type == "default_template",
+                    TemplateAsset.table_key == "technical",
+                    TemplateAsset.is_active.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return
+
+        asset = TemplateAsset(
+            asset_type="default_template",
+            table_key="technical",
+            file_name=str(summary["name"]),
+            version="legacy-fallback",
+            minio_key=str(summary["minioKey"]),
+            minio_bucket=str(summary["minioBucket"]),
+            size_bytes=int(summary["sizeBytes"] or 0),
+            mime_type=str(summary["contentType"] or WORD_MEDIA_TYPE),
+            is_active=True,
+            uploaded_by="系统初始化",
+        )
+        session.add(asset)
+        await session.commit()
+
+
 def upload_fallback_bid_template(source_path: Path) -> dict[str, Any]:
     path = Path(source_path).expanduser()
     if not path.exists() or not path.is_file():
@@ -92,7 +240,7 @@ def upload_fallback_bid_template(source_path: Path) -> dict[str, Any]:
     return fallback_bid_template_summary(check_exists=True)
 
 
-def resolve_fallback_bid_template_file(project_id: str) -> dict[str, Any] | None:
+def resolve_legacy_fallback_bid_template_file(project_id: str) -> dict[str, Any] | None:
     summary = fallback_bid_template_summary(check_exists=True)
     if not summary["available"]:
         return None
@@ -116,6 +264,73 @@ def resolve_fallback_bid_template_file(project_id: str) -> dict[str, Any] | None
         "fallbackSourceId": FALLBACK_BID_TEMPLATE_ID,
         "minioBucket": str(summary["minioBucket"]),
         "minioKey": str(summary["minioKey"]),
+    }
+
+
+async def resolve_fallback_bid_template_file(project_id: str, bid_type: str = "技术标") -> dict[str, Any] | None:
+    default_record = await resolve_system_default_bid_template_file(project_id, bid_type)
+    if default_record is not None:
+        return default_record
+    return resolve_legacy_fallback_bid_template_file(project_id)
+
+
+def resolve_fallback_bid_template_file_sync(project_id: str, bid_type: str = "技术标") -> dict[str, Any] | None:
+    import asyncio
+
+    result: dict[str, Any] | None = None
+    error: BaseException | None = None
+
+    def runner() -> None:
+        nonlocal result, error
+        try:
+            with tempfile.TemporaryDirectory(prefix="bid-template-loop-"):
+                result = asyncio.run(resolve_fallback_bid_template_file(project_id, bid_type))
+        except BaseException as exc:  # pragma: no cover - re-raised in caller thread
+            error = exc
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+    if error is not None:
+        raise error
+    return result
+
+
+async def template_fallback_payload(
+    *,
+    project_id: str,
+    bid_type: str,
+    enabled: bool,
+    source_id: str,
+    has_project_template: bool,
+) -> dict[str, Any]:
+    effective_template = None
+    if enabled and not has_project_template:
+        record = await resolve_fallback_bid_template_file(project_id, bid_type)
+        if record is not None:
+            effective_template = {
+                "id": str(record.get("id") or ""),
+                "name": str(record.get("name") or ""),
+                "source": str(record.get("source") or ""),
+                "available": True,
+                "templateType": str(record.get("templateType") or ""),
+                "templateTypeLabel": str(record.get("templateTypeLabel") or ""),
+                "minioBucket": str(record.get("minioBucket") or ""),
+                "minioKey": str(record.get("minioKey") or ""),
+                "sizeBytes": int(record.get("size_bytes") or 0),
+                "sizeLabel": str(record.get("size_label") or ""),
+                "contentType": str(record.get("content_type") or ""),
+            }
+
+    system_template = await system_default_bid_template_summary(bid_type=bid_type)
+    return {
+        "projectId": project_id,
+        "enabled": enabled,
+        "sourceId": source_id,
+        "template": effective_template or system_template,
+        "systemDefaultTemplate": system_template,
+        "legacyFallbackTemplate": fallback_bid_template_summary(check_exists=True),
+        "usesFallbackWhenProjectTemplateMissing": not has_project_template,
     }
 
 

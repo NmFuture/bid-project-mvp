@@ -276,6 +276,71 @@ class TemplateAsset(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class SystemUser(Base):
+    __tablename__ = "system_users"
+
+    id = Column(VARCHAR(80), primary_key=True)
+    name = Column(VARCHAR(120), nullable=False)
+    email = Column(VARCHAR(255), unique=True, nullable=False)
+    password_hash = Column(Text, nullable=False)
+    dept = Column(VARCHAR(120))
+    roles = Column(ARRAY(VARCHAR(80)), default=[])
+    status = Column(VARCHAR(20), default="active")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    def to_public_dict(self) -> dict[str, Any]:
+        roles = self.roles or []
+        role = "admin" if any(str(item).lower() in {"admin", "管理员"} for item in roles) else "member"
+        return {
+            "id": self.id,
+            "name": self.name,
+            "email": self.email,
+            "avatar": (self.name or self.email or "人")[:1],
+            "dept": self.dept or "",
+            "roles": roles,
+            "role": role,
+            "status": self.status or "active",
+        }
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    token = Column(VARCHAR(128), primary_key=True)
+    user_id = Column(VARCHAR(80), ForeignKey("system_users.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True))
+    user_agent = Column(Text)
+    ip_address = Column(VARCHAR(80))
+
+
+class SystemConfig(Base):
+    __tablename__ = "system_configs"
+
+    key = Column(VARCHAR(100), primary_key=True)
+    value = Column(JSONB, nullable=False)
+    sensitive = Column(Boolean, default=False)
+    updated_by = Column(VARCHAR(100))
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class BackupRecord(Base):
+    __tablename__ = "backup_records"
+
+    id = Column(VARCHAR(80), primary_key=True)
+    backup_type = Column(VARCHAR(20), default="manual")
+    status = Column(VARCHAR(20), default="success")
+    size_bytes = Column(BigInteger, default=0)
+    note = Column(Text)
+    manifest = Column(JSONB, default={})
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_by = Column(VARCHAR(100))
+    restored_at = Column(DateTime(timezone=True))
+    restored_by = Column(VARCHAR(100))
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 
@@ -289,6 +354,9 @@ class AuditLog(Base):
     target = Column(VARCHAR(500))
     status = Column(VARCHAR(20))
     diff = Column(JSONB)
+    meta = Column(JSONB)
+    ip_address = Column(VARCHAR(80))
+    user_agent = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     def to_dict(self) -> dict[str, Any]:
@@ -304,4 +372,76 @@ class AuditLog(Base):
             "target": self.target or "",
             "status": self.status or "成功",
             "diff": self.diff or {"before": {}, "after": {}},
+            "metadata": self.meta or {},
+            "ipAddress": self.ip_address or "",
+            "userAgent": self.user_agent or "",
+        }
+
+
+class OcrTask(Base):
+    __tablename__ = "ocr_tasks"
+
+    id = Column(VARCHAR(80), primary_key=True)
+    project_id = Column(VARCHAR(50), nullable=False)
+    source_file_name = Column(VARCHAR(255), nullable=False)
+    source_path = Column(Text)
+    mime_type = Column(VARCHAR(100))
+    status = Column(VARCHAR(30), default="pending")
+    error_message = Column(Text)
+    page_count = Column(Integer, default=0)
+    raw_response = Column(JSONB, default={})
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_by = Column(VARCHAR(100))
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    def to_dict(self, *, candidates: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "projectId": self.project_id,
+            "sourceFileName": self.source_file_name,
+            "mimeType": self.mime_type or "",
+            "status": self.status or "pending",
+            "errorMessage": self.error_message or "",
+            "pageCount": int(self.page_count or 0),
+            "createdAt": self.created_at.strftime("%Y-%m-%d %H:%M:%S") if self.created_at else "",
+            "createdBy": self.created_by or "",
+            "candidates": candidates or [],
+        }
+
+
+class OcrCandidate(Base):
+    __tablename__ = "ocr_candidates"
+
+    id = Column(VARCHAR(80), primary_key=True)
+    task_id = Column(VARCHAR(80), ForeignKey("ocr_tasks.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(VARCHAR(50), nullable=False)
+    page_number = Column(Integer, default=1)
+    field_name = Column(VARCHAR(200), nullable=False)
+    field_value = Column(Text)
+    field_type = Column(VARCHAR(40), default="text")
+    confidence = Column(Integer, default=80)
+    source_text = Column(Text)
+    status = Column(VARCHAR(30), default="pending")
+    confirmed_value = Column(Text)
+    confirmed_by = Column(VARCHAR(100))
+    confirmed_at = Column(DateTime(timezone=True))
+    ignored_reason = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "taskId": self.task_id,
+            "projectId": self.project_id,
+            "pageNumber": int(self.page_number or 1),
+            "fieldName": self.field_name,
+            "fieldValue": self.field_value or "",
+            "fieldType": self.field_type or "text",
+            "confidence": int(self.confidence or 0),
+            "sourceText": self.source_text or "",
+            "status": self.status or "pending",
+            "confirmedValue": self.confirmed_value or "",
+            "confirmedBy": self.confirmed_by or "",
+            "confirmedAt": self.confirmed_at.strftime("%Y-%m-%d %H:%M:%S") if self.confirmed_at else "",
+            "ignoredReason": self.ignored_reason or "",
         }

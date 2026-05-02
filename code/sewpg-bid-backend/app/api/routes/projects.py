@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Body
 
 from app.services.store import store
+from app.services.template_store import template_fallback_payload
 
 router = APIRouter()
 
@@ -43,7 +44,14 @@ async def update_project(project_id: str, data: dict[str, Any] = Body(default_fa
 
 @router.get("/api/projects/{project_id}/template-fallback")
 async def get_template_fallback(project_id: str) -> dict[str, Any]:
-    return store.get_template_fallback(project_id)
+    context = store.template_fallback_context(project_id)
+    return await template_fallback_payload(
+        project_id=project_id,
+        bid_type=str(context["bidType"]),
+        enabled=bool(context["enabled"]),
+        source_id=str(context["sourceId"]),
+        has_project_template=bool(context["hasProjectTemplate"]),
+    )
 
 
 @router.put("/api/projects/{project_id}/template-fallback")
@@ -51,7 +59,15 @@ async def update_template_fallback(
     project_id: str,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
-    return store.update_template_fallback(project_id, data)
+    store.update_template_fallback(project_id, data)
+    context = store.template_fallback_context(project_id)
+    return await template_fallback_payload(
+        project_id=project_id,
+        bid_type=str(context["bidType"]),
+        enabled=bool(context["enabled"]),
+        source_id=str(context["sourceId"]),
+        has_project_template=bool(context["hasProjectTemplate"]),
+    )
 
 
 @router.delete("/api/projects/{project_id}")

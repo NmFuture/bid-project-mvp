@@ -8,6 +8,8 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
+from app.services.auth_service import auth_service
+from app.services.system_settings import system_settings_service
 
 
 @asynccontextmanager
@@ -16,6 +18,8 @@ async def lifespan(app: FastAPI):
     # Ensure MinIO buckets exist
     for bucket in settings.minio_buckets.values():
         minio_client.ensure_bucket(bucket)
+    await auth_service.ensure_bootstrap_admin()
+    await system_settings_service._ensure_tables()
     yield
 
 

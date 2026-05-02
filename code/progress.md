@@ -10,6 +10,85 @@
 
 ## 进度记录
 
+### 2026-05-03 01:05 待办 6/7/11/22 设置、鉴权、审计和 OCR 闭环
+
+改动目标：
+
+- 完成待办 11 登录鉴权真实化：去掉固定 mock token 和前端默认账号密码，接入真实用户、密码校验和服务端会话。
+- 完成待办 7 审计日志真实化：审计日志持久化，设置、登录、默认模板、OCR 等关键操作写入真实日志。
+- 完成待办 6 系统设置真实化：设置页管理技术标/商务标系统默认模板、LLM/OCR Base URL 和 API Key、备份、健康状态。
+- 完成待办 22 OCR / 图片型 PDF 内容识别与人工复核：OCR 结果进入候选字段，人工确认后才写入项目结构化字段。
+
+改动内容：
+
+- 新增真实认证服务 `app/services/auth_service.py`，使用 PBKDF2 密码哈希和服务端会话 token；初始化管理员通过环境变量配置，前端登录页不再预填默认账号密码。
+- 新增持久化审计服务 `app/services/audit_service.py`，审计列表、详情和导出读取真实 `audit_log` 数据。
+- 新增系统设置服务 `app/services/system_settings.py`，支持 LLM/OCR 模型配置、系统默认模板、备份记录和依赖健康探测。
+- 新增 OCR 服务 `app/services/ocr_service.py` 和 `/api/projects/{project_id}/ocr/*` 路由，支持图片和图片型 PDF OCR、候选字段、确认/忽略和项目结构化字段写回。
+- 扩展数据库模型和初始化脚本：`system_users`、`auth_sessions`、`system_configs`、`backup_records`、`ocr_tasks`、`ocr_candidates`，并补充 `audit_log` 元数据字段。
+- 设置页新增“默认模板”和“OCR 模型”区域；LLM/OCR 均可维护 Base URL、API Key、模型和连接测试，API Key 只写入不明文回显。
+- 明确设置页管理的是系统默认模板：S2/S7 生成输入优先读取项目上传模板；项目未上传时读取同标类已启用系统默认模板；旧固定 fallback 仅作为兼容兜底。
+- 解析/模板与目录页新增 OCR 候选字段入口，图片或图片型 PDF 识别后必须人工确认才写入。
+- Docker Compose 和 `.env.example` 增加认证管理员、默认 LLM、默认 OCR 配置入口。
+- 已勾选 `doc/14-甲方新增需求待办.md` 第 6、7、11、22 项。
+
+验证结果：
+
+- `python3 -m py_compile app/services/auth_service.py app/services/audit_service.py app/services/system_settings.py app/services/ocr_service.py app/services/template_store.py app/api/routes/auth.py app/api/routes/audit.py app/api/routes/settings.py app/api/routes/ocr.py app/api/routes/projects.py app/api/router.py app/main.py app/models/materials.py app/core/config.py` 通过。
+- `.venv/bin/python -m pytest tests/test_security_settings_ocr_routes.py -q` 通过：6 passed。
+- `.venv/bin/python -m pytest -q` 通过：103 passed，6 skipped。
+- `npm run lint` 通过。
+- `npm run build` 通过；仍有 Vite 主 chunk 超过 500KB 的既有体积提示。
+- Docker 已重建并重启 `fastapi / worker / web`。
+- 已用硅基流动 `deepseek-ai/DeepSeek-OCR` 做在线 OCR 冒烟：上传测试图片后任务 `completed`，生成 `Project / Bid No / Capacity` 3 个候选字段；接口响应不回显明文 API Key。
+
+遗留问题：
+
+- 本次 OCR 已完成接口、配置、候选字段和人工确认闭环；实际 OCR 模型效果、复杂扫描件版面还需要结合真实招标 PDF 调优。
+- 当前鉴权重点保护了登录、设置、审计、OCR 等本次安全相关入口；全站所有历史业务接口统一强制权限策略可作为后续安全硬化项继续收口。
+
+### 2026-05-03 01:25 系统默认模板口径补齐与 OCR 在线冒烟
+
+改动目标：
+
+- 按用户确认补齐口径：设置页管理的是系统默认模板，不是项目级模板。
+- 确保项目模板优先；项目没有上传模板时，才使用设置页启用的技术标/商务标系统默认模板。
+- 用硅基流动 `deepseek-ai/DeepSeek-OCR` 做一次真实在线调用验证。
+
+改动内容：
+
+- 后端生成输入 `store.get_parse_inputs()` 改为按项目 `bidType` 读取同标类系统默认模板；未配置系统默认模板时继续兼容旧固定 fallback。
+- `/api/projects/{project_id}/template-fallback` 返回有效模板、系统默认模板和旧兼容 fallback 的区分信息。
+- S1 模板页文案从“Fallback 模板来源”调整为“系统默认模板来源”。
+- 新增系统默认模板 fallback 覆盖测试和 OCR 成功候选字段落库/确认测试。
+
+验证结果：
+
+- `.venv/bin/python -m pytest tests/test_security_settings_ocr_routes.py -q` 通过：6 passed。
+- `.venv/bin/python -m pytest -q` 通过：103 passed，6 skipped。
+- `npm run lint`、`npm run build` 通过；build 保留既有 chunk 体积提示。
+- Docker 重新构建并启动后，在线 OCR 测试成功：SiliconFlow OCR 返回 3 个候选字段，API Key 未在响应中泄露。
+
+### 2026-05-03 01:35 用户管理审计缺口补齐
+
+改动目标：
+
+- 补齐完成审计中发现的缺口：设置页用户新增、用户更新和密码重置也必须写入真实审计日志。
+
+改动内容：
+
+- `auth_service.create_user()` 写入“创建用户”审计日志。
+- `auth_service.update_user()` 写入“更新用户”审计日志；密码变更只记录 `passwordUpdated=true`，不记录明文密码。
+- 设置页用户更新路由传入当前登录用户，确保审计日志中有真实操作人。
+
+验证结果：
+
+- `python3 -m py_compile app/services/auth_service.py app/api/routes/settings.py` 通过。
+- `.venv/bin/python -m pytest tests/test_security_settings_ocr_routes.py -q` 通过：6 passed。
+- `.venv/bin/python -m pytest -q` 通过：103 passed，6 skipped。
+- `npm run lint`、`npm run build` 通过；build 保留既有 chunk 体积提示。
+- Docker 重建 `fastapi / worker` 后冒烟通过：创建用户、更新用户、审计查询均成功，审计响应不包含测试密码明文。
+
 ### 2026-05-02 13:21 待办 12/15 工作流收敛与 S4/S5/S6 真实化
 
 改动目标：
@@ -2280,5 +2359,105 @@ bid_workspace
 - `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
 - `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
 - `"doc/13-S7\346\212\200\346\234\257\346\240\207\346\255\243\346\226\207\346\213\274\350\243\205\344\270\216S8\347\264\240\346\235\220\346\240\241\351\252\214\350\257\264\346\230\216.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-02 23:56:48 post-commit f99bb1a
+
+提交摘要：Exclude tender attachments from generated TOC
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/api/routes/directory.py`
+- `code/sewpg-bid-backend/app/core/config.py`
+- `code/sewpg-bid-backend/app/services/opencode_client.py`
+- `code/sewpg-bid-backend/app/services/outline_generation.py`
+- `code/sewpg-bid-backend/app/services/store.py`
+- `code/sewpg-bid-backend/app/services/toc_engine.py`
+- `code/sewpg-bid-backend/opencode/Dockerfile`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-outline-generator/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-outline-generator/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_directory_generation.py`
+- `code/sewpg-bid-backend/tests/test_opencode_client.py`
+- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
+- `code/sewpg-bid-frontend/src/pages/OutlineReview.jsx`
+- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
+- `code/sewpg-bid-frontend/src/pages/TenderReview.jsx`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-03 00:24 S2 工作目录 staging/归档与文档收口
+
+改动目标：
+
+- S2 目录生成失败时不再破坏上一轮成功产物，保留失败现场方便排查。
+- 删除 `parsed/{project_id}/s2.json` alias，统一使用 canonical manifest。
+- 同步 README、接口、部署、数据落点和 agent 指南中的 S2 运行口径。
+
+改动内容：
+
+- `app/services/outline_generation.py` 将 S2 工作区改为先写 `s2_toc_workdir.new/`，成功后发布为 `s2_toc_workdir/`。
+- 旧的成功 `s2_toc_workdir/` 会归档到 `s2_toc_workdir.runs/`；失败时旧成功目录保持不动，`.new` 留作排查。
+- `manifestPath` 与 `canonicalManifestPath` 统一指向 `s2_toc_workdir/s2_input.json`，不再写 `parsed/{project_id}/s2.json`。
+- 发布成功后会回写 manifest、toc、evidence 和 agent review 输入中的 staging 路径，避免 `.new` 路径泄漏给后续 S4/S7。
+- 补充回归测试，覆盖 alias 删除、成功归档旧目录、失败保留旧目录。
+- 同步文档：
+  - `README.md`
+  - `code/AGENT.md`
+  - `doc/05-MVP主链路说明.md`
+  - `doc/06-MVP接口文档.md`
+  - `doc/08-MVP部署说明.md`
+  - `doc/12-数据存储与素材库数据说明.md`
+  - `doc/README.md`
+
+验证结果：
+
+- `python3 -m py_compile app/services/outline_generation.py` 通过。
+- `PYTHONPATH=. pytest tests/test_directory_generation.py tests/test_gap_review_flow.py -q` 通过：25 passed。
+- `PYTHONPATH=. pytest tests/test_toc_skill_scripts.py tests/test_opencode_client.py -q` 通过：24 passed。
+- 已在 `code/` 下重建并 force recreate `opencode / fastapi / worker`。
+- `http://127.0.0.1/api/healthz` 返回 `status=ok`。
+- `http://127.0.0.1:4096/global/health` 返回 `healthy=true`。
+- PRJ-0007 重新跑 S2 成功：`143 条目录项（保留57，新增-副表86）`。
+- 容器内核对：`s2.json` 不存在，`s2_toc_workdir.new` 不残留，`s2_toc_workdir.runs` 已生成归档，`s2_input.json / toc.json / toc_evidence.json` 均无 `.new` 路径。
+
+遗留问题：
+
+- task 2 仍显示为 `futurecode 语义审核`，但当前 S2 的稳定链路是 futurecode/opencode 执行 `s2toc` + 后端读取脚本产物；是否改文案或增加 digest 级 agentDecisions，需要另起小改处理。
+
+### 2026-05-03 01:29:13 post-commit ba7ea5b
+
+提交摘要：Complete settings auth audit and OCR todos
+
+变更文件：
+
+- `code/.env.example`
+- `code/docker-compose.yml`
+- `code/initdb/01-init.sql`
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/api/router.py`
+- `code/sewpg-bid-backend/app/api/routes/audit.py`
+- `code/sewpg-bid-backend/app/api/routes/auth.py`
+- `code/sewpg-bid-backend/app/api/routes/ocr.py`
+- `code/sewpg-bid-backend/app/api/routes/projects.py`
+- `code/sewpg-bid-backend/app/api/routes/settings.py`
+- `code/sewpg-bid-backend/app/core/config.py`
+- `code/sewpg-bid-backend/app/main.py`
+- `code/sewpg-bid-backend/app/models/materials.py`
+- `code/sewpg-bid-backend/app/services/audit_service.py`
+- `code/sewpg-bid-backend/app/services/auth_service.py`
+- `code/sewpg-bid-backend/app/services/material_store.py`
+- `code/sewpg-bid-backend/app/services/ocr_service.py`
+- `code/sewpg-bid-backend/app/services/store.py`
+- `code/sewpg-bid-backend/app/services/system_settings.py`
+- `code/sewpg-bid-backend/app/services/template_store.py`
+- `code/sewpg-bid-backend/tests/test_security_settings_ocr_routes.py`
+- `code/sewpg-bid-frontend/src/api/index.js`
+- `code/sewpg-bid-frontend/src/pages/Login.jsx`
+- `code/sewpg-bid-frontend/src/pages/OutlineReview.jsx`
+- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
+- `code/sewpg-bid-frontend/src/pages/Settings.jsx`
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。

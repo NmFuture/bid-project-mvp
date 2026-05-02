@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { directoryAPI, parseAPI, projectsAPI, stagesAPI } from '../api'
+import { directoryAPI, ocrAPI, parseAPI, projectsAPI, stagesAPI } from '../api'
 import { PageError, PageLoading } from '../components/states/PageState'
 import DataCard from '../components/shared/DataCard'
 import PageHeader from '../components/shared/PageHeader'
@@ -95,21 +95,26 @@ export default function ParseResult({ showToast }) {
   const [savingFallback, setSavingFallback] = useState(false)
   const [directoryState, setDirectoryState] = useState(null)
   const [generatingDirectory, setGeneratingDirectory] = useState(false)
+  const [ocrTasks, setOcrTasks] = useState([])
+  const [ocrUploading, setOcrUploading] = useState(false)
+  const [ocrCandidateBusyId, setOcrCandidateBusyId] = useState('')
 
   const loadData = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const [projectResponse, parseResponse, fallbackResponse, directoryResponse] = await Promise.all([
+      const [projectResponse, parseResponse, fallbackResponse, directoryResponse, ocrResponse] = await Promise.all([
         projectsAPI.get(id),
         parseAPI.results(id),
         projectsAPI.templateFallback(id),
         directoryAPI.status(id).catch(() => null),
+        ocrAPI.list(id).catch(() => ({ items: [] })),
       ])
       setProject(projectResponse)
       setData(parseResponse)
       setTemplateFallback(fallbackResponse)
       setDirectoryState(directoryResponse)
+      setOcrTasks(ocrResponse?.items || [])
     } catch (e) {
       setError(e?.message || 'S1 模板上传信息加载失败')
     } finally {
@@ -137,9 +142,9 @@ export default function ParseResult({ showToast }) {
   const fallbackAvailable = Boolean(fallbackTemplate?.available)
   const fallbackWillBeUsed = fallbackEnabled && fallbackAvailable && uploadedTemplateFiles.length === 0
   const fallbackStatus = fallbackWillBeUsed
-    ? '未上传项目模板时使用'
+    ? '未上传项目模板时使用系统默认模板'
     : fallbackEnabled
-      ? (fallbackAvailable ? '已启用，项目模板优先' : '已启用，等待模板入库')
+      ? (fallbackAvailable ? '已启用，项目模板优先' : '已启用，等待系统默认模板入库')
       : '未启用'
 
   const reviewDecision = String(project?.reviewDecision || 'participate')
@@ -241,16 +246,16 @@ export default function ParseResult({ showToast }) {
 
   const handleToggleFallback = async () => {
     if (!fallbackAvailable && !fallbackEnabled) {
-      showToast?.('Fallback 模板尚未入库。', 'error')
+      showToast?.('系统默认模板尚未入库。', 'error')
       return
     }
     setSavingFallback(true)
     try {
       const payload = await projectsAPI.updateTemplateFallback(id, { enabled: !fallbackEnabled })
       setTemplateFallback(payload)
-      showToast?.(!fallbackEnabled ? '已启用 fallback 模板。' : '已停用 fallback 模板。')
+      showToast?.(!fallbackEnabled ? '已启用系统默认模板 fallback。' : '已停用系统默认模板 fallback。')
     } catch (e) {
-      showToast?.(e?.message || 'Fallback 模板设置失败', 'error')
+      showToast?.(e?.message || '系统默认模板 fallback 设置失败', 'error')
     } finally {
       setSavingFallback(false)
     }
@@ -302,6 +307,41 @@ export default function ParseResult({ showToast }) {
       showToast?.(e?.message || '目录生成失败', 'error')
     } finally {
       setGeneratingDirectory(false)
+    }
+  }
+
+  const handleOcrUpload = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    setOcrUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const result = await ocrAPI.run(id, formData)
+      setOcrTasks((prev) => [result, ...prev.filter((item) => item.id !== result.id)])
+      showToast?.('OCR 识别任务已完成，请确认候选字段。')
+    } catch (e) {
+      showToast?.(e?.message || 'OCR 识别失败，请先检查系统设置中的 OCR 配置。', 'error')
+    } finally {
+      setOcrUploading(false)
+    }
+  }
+
+  const handleConfirmOcrCandidate = async (candidate, action = 'confirm') => {
+    setOcrCandidateBusyId(candidate.id)
+    try {
+      await ocrAPI.confirm(id, candidate.id, {
+        action,
+        value: candidate.confirmedValue || candidate.fieldValue,
+      })
+      const payload = await ocrAPI.list(id)
+      setOcrTasks(payload.items || [])
+      showToast?.(action === 'ignore' ? '已忽略 OCR 候选字段。' : 'OCR 候选字段已确认写入。')
+    } catch (e) {
+      showToast?.(e?.message || 'OCR 候选字段处理失败', 'error')
+    } finally {
+      setOcrCandidateBusyId('')
     }
   }
 
@@ -436,9 +476,9 @@ export default function ParseResult({ showToast }) {
         <div className="border border-surface-container-high rounded-md p-4 flex flex-col gap-3">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div className="min-w-0">
-              <h4 className="text-sm font-semibold text-on-surface">Fallback 模板来源</h4>
+              <h4 className="text-sm font-semibold text-on-surface">系统默认模板来源</h4>
               <p className="mt-1 text-sm text-on-surface-variant truncate" title={fallbackTemplate?.name || ''}>
-                {fallbackTemplate?.name || '未配置'}
+                {fallbackTemplate?.name || '未配置，请到设置页维护'}
               </p>
             </div>
             <button
@@ -476,6 +516,100 @@ export default function ParseResult({ showToast }) {
           <p className="font-medium text-on-surface mb-1">已上传模板文件（当前项目）</p>
           <p>{uploadedTemplateFiles.length ? uploadedTemplateFiles.map((file) => file.name).join('，') : '暂无'}</p>
         </div>
+      </DataCard>
+
+      <DataCard className="!p-6 flex flex-col gap-5">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-headline font-bold text-on-surface">OCR 候选字段</h2>
+            <p className="text-sm text-on-surface-variant mt-1">图片或图片型 PDF 识别后先进入候选区，人工确认后才写入项目结构化字段。</p>
+          </div>
+          <label className="px-4 py-2 text-sm font-medium text-on-primary bg-primary hover:bg-primary-container rounded-lg cursor-pointer disabled:opacity-50">
+            {ocrUploading ? '识别中...' : '上传 OCR 文件'}
+            <input
+              type="file"
+              accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"
+              className="hidden"
+              disabled={ocrUploading}
+              onChange={handleOcrUpload}
+            />
+          </label>
+        </div>
+
+        {!ocrTasks.length ? (
+          <div className="rounded-lg bg-surface-container-low p-4 text-sm text-on-surface-variant">
+            暂无 OCR 任务。未配置 OCR 模型时，请先到系统设置中填写 OCR Base URL、API Key 和模型。
+          </div>
+        ) : (
+          <div className="flex flex-col gap-4">
+            {ocrTasks.map((task) => (
+              <div key={task.id} className="rounded-xl border border-surface-container-high p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-on-surface">{task.sourceFileName}</div>
+                    <div className="text-xs text-outline mt-1">{task.id} · {task.createdAt} · {task.status}</div>
+                  </div>
+                  <span className={`text-xs px-2 py-1 rounded-full ${
+                    task.status === 'completed'
+                      ? 'bg-secondary-container text-on-secondary-container'
+                      : task.status === 'failed'
+                        ? 'bg-error-container text-on-error-container'
+                        : 'bg-surface-container-high text-on-surface-variant'
+                  }`}>
+                    {task.status === 'completed' ? '已识别' : task.status === 'failed' ? '失败' : '处理中'}
+                  </span>
+                </div>
+                {task.errorMessage && <p className="text-xs text-error mt-2">{task.errorMessage}</p>}
+                <div className="mt-3 divide-y divide-surface-container-high">
+                  {(task.candidates || []).map((candidate) => (
+                    <div key={candidate.id} className="py-3 flex flex-col md:flex-row md:items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-on-surface">
+                          <span className="font-semibold">{candidate.fieldName}</span>
+                          <span className="text-outline">：</span>
+                          <span>{candidate.confirmedValue || candidate.fieldValue || '-'}</span>
+                        </div>
+                        <div className="text-xs text-outline mt-1">第 {candidate.pageNumber} 页 · 置信度 {candidate.confidence}% · {candidate.sourceText}</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs px-2 py-1 rounded ${
+                          candidate.status === 'confirmed'
+                            ? 'bg-secondary-container text-on-secondary-container'
+                            : candidate.status === 'ignored'
+                              ? 'bg-surface-container-high text-on-surface-variant'
+                              : 'bg-primary/10 text-primary'
+                        }`}>
+                          {candidate.status === 'confirmed' ? '已确认' : candidate.status === 'ignored' ? '已忽略' : '待确认'}
+                        </span>
+                        {candidate.status === 'pending' && (
+                          <>
+                            <button
+                              onClick={() => handleConfirmOcrCandidate(candidate, 'confirm')}
+                              disabled={ocrCandidateBusyId === candidate.id}
+                              className="text-xs text-primary hover:underline disabled:opacity-50"
+                            >
+                              确认
+                            </button>
+                            <button
+                              onClick={() => handleConfirmOcrCandidate(candidate, 'ignore')}
+                              disabled={ocrCandidateBusyId === candidate.id}
+                              className="text-xs text-on-surface-variant hover:underline disabled:opacity-50"
+                            >
+                              忽略
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {!(task.candidates || []).length && (
+                    <div className="py-3 text-sm text-on-surface-variant">未生成候选字段。</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </DataCard>
 
       <DataCard className="!p-6 flex flex-col gap-5">

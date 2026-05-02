@@ -181,6 +181,53 @@ CREATE TABLE template_assets (
 );
 
 -- ============================================================
+-- 3.2 System users / config / backups / OCR
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS system_users (
+    id            VARCHAR(80) PRIMARY KEY,
+    name          VARCHAR(120) NOT NULL,
+    email         VARCHAR(255) UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    dept          VARCHAR(120),
+    roles         VARCHAR(80)[] DEFAULT '{}',
+    status        VARCHAR(20) DEFAULT 'active',
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    token      VARCHAR(128) PRIMARY KEY,
+    user_id    VARCHAR(80) NOT NULL REFERENCES system_users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    user_agent TEXT,
+    ip_address VARCHAR(80)
+);
+
+CREATE TABLE IF NOT EXISTS system_configs (
+    key        VARCHAR(100) PRIMARY KEY,
+    value      JSONB NOT NULL,
+    sensitive  BOOLEAN DEFAULT FALSE,
+    updated_by VARCHAR(100),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS backup_records (
+    id          VARCHAR(80) PRIMARY KEY,
+    backup_type VARCHAR(20) DEFAULT 'manual',
+    status      VARCHAR(20) DEFAULT 'success',
+    size_bytes  BIGINT DEFAULT 0,
+    note        TEXT,
+    manifest    JSONB DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    created_by  VARCHAR(100),
+    restored_at TIMESTAMPTZ,
+    restored_by VARCHAR(100)
+);
+
+-- ============================================================
 -- 4. Audit Log (审计日志)
 -- ============================================================
 
@@ -195,7 +242,43 @@ CREATE TABLE audit_log (
     target      VARCHAR(500),
     status      VARCHAR(20),
     diff        JSONB,
+    meta        JSONB,
+    ip_address  VARCHAR(80),
+    user_agent  TEXT,
     created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ocr_tasks (
+    id               VARCHAR(80) PRIMARY KEY,
+    project_id       VARCHAR(50) NOT NULL,
+    source_file_name VARCHAR(255) NOT NULL,
+    source_path      TEXT,
+    mime_type        VARCHAR(100),
+    status           VARCHAR(30) DEFAULT 'pending',
+    error_message    TEXT,
+    page_count       INT DEFAULT 0,
+    raw_response     JSONB DEFAULT '{}'::jsonb,
+    created_at       TIMESTAMPTZ DEFAULT NOW(),
+    created_by       VARCHAR(100),
+    updated_at       TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ocr_candidates (
+    id              VARCHAR(80) PRIMARY KEY,
+    task_id         VARCHAR(80) NOT NULL REFERENCES ocr_tasks(id) ON DELETE CASCADE,
+    project_id      VARCHAR(50) NOT NULL,
+    page_number     INT DEFAULT 1,
+    field_name      VARCHAR(200) NOT NULL,
+    field_value     TEXT,
+    field_type      VARCHAR(40) DEFAULT 'text',
+    confidence      INT DEFAULT 80,
+    source_text     TEXT,
+    status          VARCHAR(30) DEFAULT 'pending',
+    confirmed_value TEXT,
+    confirmed_by    VARCHAR(100),
+    confirmed_at    TIMESTAMPTZ,
+    ignored_reason  TEXT,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX idx_audit_user_time ON audit_log (user_id, created_at DESC);

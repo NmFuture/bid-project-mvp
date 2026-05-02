@@ -848,7 +848,10 @@ class AppStore:
         if include_fallback and not template_file_records and self._normalize_template_fallback(project)["enabled"]:
             from app.services import template_store as template_store_module
 
-            fallback_record = template_store_module.resolve_fallback_bid_template_file(project_id)
+            fallback_record = template_store_module.resolve_fallback_bid_template_file_sync(
+                project_id,
+                str(project.get("bidType") or "技术标"),
+            )
             if fallback_record is not None:
                 template_file_records = [fallback_record]
         return (
@@ -858,14 +861,30 @@ class AppStore:
 
     def get_template_fallback(self, project_id: str) -> dict[str, Any]:
         project = self._require(project_id)
-        from app.services.template_store import fallback_bid_template_summary
+        from app.services.template_store import template_fallback_payload
 
+        current = self._normalize_template_fallback(project)
+        import asyncio
+
+        return asyncio.run(
+            template_fallback_payload(
+                project_id=project_id,
+                bid_type=str(project.get("bidType") or "技术标"),
+                enabled=bool(current["enabled"]),
+                source_id=str(current["sourceId"]),
+                has_project_template=bool(project.get("templateFileRecords")),
+            )
+        )
+
+    def template_fallback_context(self, project_id: str) -> dict[str, Any]:
+        project = self._require(project_id)
+        current = self._normalize_template_fallback(project)
         return {
             "projectId": project_id,
-            "enabled": self._normalize_template_fallback(project)["enabled"],
-            "sourceId": self._normalize_template_fallback(project)["sourceId"],
-            "template": fallback_bid_template_summary(check_exists=True),
-            "usesFallbackWhenProjectTemplateMissing": not bool(project.get("templateFileRecords")),
+            "bidType": str(project.get("bidType") or "技术标"),
+            "enabled": bool(current["enabled"]),
+            "sourceId": str(current["sourceId"]),
+            "hasProjectTemplate": bool(project.get("templateFileRecords")),
         }
 
     def update_template_fallback(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -878,7 +897,7 @@ class AppStore:
         project["templateFallback"] = current
         project["updatedAt"] = now_iso()
         self._persist_project(project)
-        return self.get_template_fallback(project_id)
+        return self.template_fallback_context(project_id)
 
     def update_template_files(self, project_id: str, template_files: list[dict[str, Any]]) -> dict[str, Any]:
         project = self._require(project_id)

@@ -97,6 +97,20 @@ class Settings:
     redis_job_result_ttl_sec: int
     redis_worker_poll_timeout_sec: int
 
+    # Auth bootstrap
+    auth_admin_email: str
+    auth_admin_password: str
+    auth_admin_name: str
+    auth_session_ttl_sec: int
+
+    # Default model configuration shown in system settings.
+    default_llm_base_url: str
+    default_llm_api_key: str
+    default_llm_model: str
+    default_ocr_base_url: str
+    default_ocr_api_key: str
+    default_ocr_model: str
+
     def ensure_dirs(self) -> None:
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self.documents_dir.mkdir(parents=True, exist_ok=True)
@@ -160,4 +174,14 @@ settings = Settings(
     redis_job_lock_ttl_sec=_int_env("REDIS_JOB_LOCK_TTL_SEC", 2 * 60 * 60),
     redis_job_result_ttl_sec=_int_env("REDIS_JOB_RESULT_TTL_SEC", 24 * 60 * 60),
     redis_worker_poll_timeout_sec=_int_env("REDIS_WORKER_POLL_TIMEOUT_SEC", 5),
+    auth_admin_email=os.getenv("AUTH_ADMIN_EMAIL", "admin@sewpg.com").strip() or "admin@sewpg.com",
+    auth_admin_password=os.getenv("AUTH_ADMIN_PASSWORD", "123456").strip() or "123456",
+    auth_admin_name=os.getenv("AUTH_ADMIN_NAME", "当前用户").strip() or "当前用户",
+    auth_session_ttl_sec=_int_env("AUTH_SESSION_TTL_SEC", 24 * 60 * 60),
+    default_llm_base_url=os.getenv("DEFAULT_LLM_BASE_URL", os.getenv("INTERNAL_LLM_BASE_URL", "")).strip(),
+    default_llm_api_key=os.getenv("DEFAULT_LLM_API_KEY", os.getenv("INTERNAL_LLM_API_KEY", "")).strip(),
+    default_llm_model=os.getenv("DEFAULT_LLM_MODEL", os.getenv("OPENCODE_MODEL_ID", "big-pickle")).strip() or "big-pickle",
+    default_ocr_base_url=os.getenv("DEFAULT_OCR_BASE_URL", "").strip(),
+    default_ocr_api_key=os.getenv("DEFAULT_OCR_API_KEY", "").strip(),
+    default_ocr_model=os.getenv("DEFAULT_OCR_MODEL", "deepseek-ai/DeepSeek-OCR").strip() or "deepseek-ai/DeepSeek-OCR",
 )
