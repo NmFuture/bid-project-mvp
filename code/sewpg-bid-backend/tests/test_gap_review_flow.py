@@ -26,8 +26,14 @@ class GapReviewFlowTests(unittest.TestCase):
 
         store.reset_for_tests()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
+        self.gap_planner_patcher = patch(
+            "app.services.gap_planning.OpencodeClient.run_bid_tech_gap_planner_with_trace",
+            side_effect=RuntimeError("offline test fallback"),
+        )
+        self.gap_planner_mock = self.gap_planner_patcher.start()
 
     def tearDown(self) -> None:
+        self.gap_planner_patcher.stop()
         self.client.close()
         self.temp_dir.cleanup()
 
@@ -170,6 +176,10 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(missing["number"], "2.1")
         self.assertEqual(missing["fillTasks"][0]["skill"], "bid-tech-table-filler")
         self.assertTrue(payload["gapPlan"]["planFile"].endswith("gap_plan.json"))
+        self.gap_planner_mock.assert_called_once()
+        planner_prompt = self.gap_planner_mock.call_args.args[0]
+        self.assertIn("Use the bid-tech-gap-planner skill", planner_prompt)
+        self.assertIn("s4gap", planner_prompt)
 
     def test_gap_ai_fill_calls_opencode_skill_and_registers_resolved_artifact(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()

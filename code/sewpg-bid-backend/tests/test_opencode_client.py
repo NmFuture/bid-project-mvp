@@ -131,3 +131,25 @@ class OpencodeClientTests(unittest.TestCase):
 
         repair.assert_called_once()
         self.assertEqual(parsed["nodes"][0]["title"], "00-Wiki使用说明")
+
+    def test_extract_gap_plan_json_accepts_output_file_summary(self) -> None:
+        client = OpencodeClient()
+        response = {
+            "parts": [
+                {
+                    "type": "text",
+                    "text": (
+                        '{"schema_version":"bid-tech-gap-plan-v1","outputFile":'
+                        '"/data/parsed/PRJ-0001/s4_gap_workdir/gap_plan.json",'
+                        '"summary":{"totalTocItems":3,"matchedCount":1,"missingCount":1,'
+                        '"resolvedCount":0,"ignoredCount":0,"structuralCount":1,'
+                        '"fillableTaskCount":1,"blockingCount":1},"itemCount":3}'
+                    ),
+                }
+            ]
+        }
+
+        parsed = client._extract_gap_plan_json(response)
+
+        self.assertEqual(parsed["schema_version"], "bid-tech-gap-plan-v1")
+        self.assertIn("gap_plan.json", parsed["outputFile"])

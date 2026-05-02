@@ -93,7 +93,14 @@ def build_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_gap_planner_skill(manifest_path: Path) -> dict[str, Any]:
-    return _run_local_skill_runner(GAP_PLANNER_RUNNER, manifest_path, GAP_PLAN_SCHEMA_VERSION)
+    prompt = _build_gap_planner_prompt(manifest_path)
+    try:
+        return OpencodeClient().run_bid_tech_gap_planner_with_trace(prompt)
+    except Exception:
+        # Keep S4 usable in offline tests and local environments. The fallback
+        # executes the same skill command contract that OpenCode is instructed
+        # to run, so the generated gap plan schema stays identical.
+        return _run_local_skill_runner(GAP_PLANNER_RUNNER, manifest_path, GAP_PLAN_SCHEMA_VERSION)
 
 
 def run_table_filler_skill(
@@ -605,6 +612,29 @@ manifest：{manifest_path}
 s4fill {manifest_path}
 
 只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
+""".strip()
+
+
+def _build_gap_planner_prompt(manifest_path: Path) -> str:
+    return f"""
+Use the {GAP_PLANNER_SKILL_NAME} skill.
+
+你现在在做 S4 技术标缺口识别。后端已经准备好 manifest，其中包含人工确认后的目录 JSON、招标解析结构化结果、S2 素材 Wiki 副本、项目身份信息和历史补料记录。
+
+manifest：{manifest_path}
+
+请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径。命令会把完整 gap_plan.json 写入 manifest 指定路径，并只在 stdout 打印小型摘要 JSON：
+
+s4gap {manifest_path}
+
+只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
+返回格式必须是：
+{{
+  "schema_version": "{GAP_PLAN_SCHEMA_VERSION}",
+  "outputFile": "/data/parsed/PRJ-0001/s4_gap_workdir/gap_plan.json",
+  "summary": {{"totalTocItems": 0, "matchedCount": 0, "missingCount": 0, "resolvedCount": 0, "ignoredCount": 0, "structuralCount": 0, "fillableTaskCount": 0, "blockingCount": 0}},
+  "itemCount": 0
+}}
 """.strip()
 
 

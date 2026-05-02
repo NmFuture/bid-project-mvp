@@ -34,8 +34,14 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
 
         store.reset_for_tests()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
+        self.gap_planner_patcher = patch(
+            "app.services.gap_planning.OpencodeClient.run_bid_tech_gap_planner_with_trace",
+            side_effect=RuntimeError("offline test fallback"),
+        )
+        self.gap_planner_patcher.start()
 
     def tearDown(self) -> None:
+        self.gap_planner_patcher.stop()
         self.client.close()
         settings.onlyoffice_backend_base_url = self.original_onlyoffice_backend_base_url
         settings.onlyoffice_callback_token = self.original_onlyoffice_callback_token

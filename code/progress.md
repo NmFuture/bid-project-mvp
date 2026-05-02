@@ -2172,3 +2172,24 @@ bid_workspace
 - `curl -fsS http://127.0.0.1/api/healthz`：返回 `status=ok`。
 - `curl -fsS -o /tmp/bid-web-home.html -w '%{http_code}' http://127.0.0.1/`：200。
 - `docker compose exec -T opencode sh -lc 'command -v s4gap && command -v s4fill && command -v s7assemble'`：三个命令存在。
+
+### 2026-05-02 14:04:56 待办 12/15 S4 OpenCode 调用审计补齐
+
+- 完成最终审计时发现 S4 缺口识别虽已沉淀为 `bid-tech-gap-planner` Skill，但后端入口仍直接跑本地 runner。
+- `run_gap_planner_skill` 已改为 OpenCode-first：先调用 `OpencodeClient.run_bid_tech_gap_planner_with_trace()`，prompt 明确要求使用 `bid-tech-gap-planner` 并执行 `s4gap <manifest>`。
+- 保留本地 runner fallback，用于离线测试或 OpenCode 服务异常时生成同一份 `bid-tech-gap-plan-v1` 契约。
+- `OpencodeClient` 新增 S4 缺口识别 session、返回 JSON 校验和 repair schema，和 S4 AI 填写、S7 正文拼装的调用形态保持一致。
+- 测试补齐 S4 缺口识别 OpenCode-first 行为，并在相关后端测试中 mock OpenCode 调用，避免测试套件依赖外部模型服务。
+
+验证：
+
+- `python3 -m py_compile code/sewpg-bid-backend/app/services/gap_planning.py code/sewpg-bid-backend/app/services/opencode_client.py`：通过。
+- `python3 -m py_compile code/sewpg-bid-backend/app/services/store.py`：通过。
+- `./.venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_onlyoffice_document.py tests/test_opencode_client.py -q`：34 passed。
+- `./.venv/bin/python -m pytest -q`：83 passed, 6 skipped。
+- `npm run lint && npm run build`：通过，保留既有 Vite chunk size warning。
+- `docker compose build fastapi worker`：通过。
+- `docker compose up -d --force-recreate fastapi worker`：通过，`fastapi` healthy。
+- `curl -fsS http://127.0.0.1/api/healthz`：返回 `status=ok`。
+- `curl -fsS -o /tmp/bid-web-home.html -w '%{http_code}' http://127.0.0.1/`：200。
+- `docker compose exec -T opencode sh -lc 'command -v s4gap && command -v s4fill && command -v s7assemble'`：三个命令存在。

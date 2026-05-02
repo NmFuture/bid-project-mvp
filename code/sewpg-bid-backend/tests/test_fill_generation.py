@@ -25,8 +25,14 @@ class FillGenerationTests(unittest.TestCase):
 
         store.reset_for_tests()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
+        self.gap_planner_patcher = patch(
+            "app.services.gap_planning.OpencodeClient.run_bid_tech_gap_planner_with_trace",
+            side_effect=RuntimeError("offline test fallback"),
+        )
+        self.gap_planner_patcher.start()
 
     def tearDown(self) -> None:
+        self.gap_planner_patcher.stop()
         self.client.close()
         self.temp_dir.cleanup()
 

@@ -166,6 +166,33 @@ class OpencodeClient:
             "opencodeOutput": self._build_output_trace(session_id, response),
         }
 
+    def run_bid_tech_gap_planner_with_trace(
+        self,
+        prompt_text: str,
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        session = self.create_session("S4 技术标缺口识别")
+        session_id = str(session.get("id") or "")
+        if session_ready_callback:
+            session_ready_callback(
+                {
+                    "sessionId": session_id,
+                    "providerId": self.provider_id,
+                    "modelId": self.model_id,
+                }
+            )
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback,
+        )
+        parsed = self._extract_gap_plan_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
     def run_bid_tech_table_filler_with_trace(
         self,
         prompt_text: str,
@@ -293,6 +320,19 @@ class OpencodeClient:
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("outputFile"), str):
             raise RuntimeError("futurecode 返回的正文拼装 JSON 结构不正确。")
+        return parsed
+
+    def _extract_gap_plan_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = self._extract_json_response(
+            response,
+            empty_message="futurecode 未返回缺口识别结果。",
+            repair_kind="gap_plan",
+        )
+        if not isinstance(parsed, dict) or (
+            not isinstance(parsed.get("outputFile"), str)
+            and not isinstance(parsed.get("items"), list)
+        ):
+            raise RuntimeError("futurecode 返回的缺口识别 JSON 结构不正确。")
         return parsed
 
     def _extract_tender_parse_json(self, response: dict[str, Any]) -> dict[str, Any]:
@@ -516,6 +556,14 @@ class OpencodeClient:
                 '"needsReview":"/data/parsed/PRJ-0001/s7_assembly_workdir/needs_review.md",'
                 '"planFile":"/data/parsed/PRJ-0001/s7_assembly_workdir/assembly_plan.json",'
                 '"summary":{"total":1,"byStatus":{"MATCHED":1},"usedPathCount":1}}'
+            )
+        elif repair_kind == "gap_plan":
+            schema_hint = (
+                '{"schema_version":"bid-tech-gap-plan-v1","outputFile":'
+                '"/data/parsed/PRJ-0001/s4_gap_workdir/gap_plan.json",'
+                '"summary":{"totalTocItems":1,"matchedCount":0,"missingCount":1,'
+                '"resolvedCount":0,"ignoredCount":0,"structuralCount":0,'
+                '"fillableTaskCount":1,"blockingCount":1},"itemCount":1}'
             )
         elif repair_kind == "tender_parse":
             schema_hint = (
