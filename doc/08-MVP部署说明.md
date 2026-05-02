@@ -121,7 +121,7 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 
 - `S0`：项目列表 / 新建项目
 - `S1`：解析招标文件
-- `S2`：调用 `opencode` 生成目录
+- `S2`：FastAPI 本地规则引擎生成目录
 - `S3`：审核目录
 - `S7`：调用 `bid-tech-assembler`，按 S2 目录 JSON 和素材库拼装正文
 - `S8`：根据拼装计划校验未拼上的素材和未匹配目录项
@@ -300,7 +300,7 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 
 补充：
 
-- `S2` 默认先真实调用 `opencode`，由 opencode 执行镜像内短命令 `s2toc /data/parsed/<projectId>/s2.json`，再转调目录生成 skill
+- `S2` 由 FastAPI 直接运行本地规则引擎生成目录，不再调用 `opencode` 或 `s2toc`
 - 如果 `opencode` 在超时内没有返回可解析 JSON，系统会自动生成一版回退目录，保证后续 `S3-S10` 可继续联调
 - `S7` 以本地 `bid-tech-assembler` skill 拼装正文为主；这一步依赖 S2 目录 JSON、Wiki 卡片和素材库清洗后的 Word 文件
 

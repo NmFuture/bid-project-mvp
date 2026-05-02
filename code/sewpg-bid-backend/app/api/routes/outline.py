@@ -58,7 +58,7 @@ def _document_type_by_suffix(path: Path) -> tuple[str, str]:
     return suffix or "docx", "word"
 
 
-def _build_tender_preview(project_id: str, request: Request) -> dict[str, Any]:
+def _build_tender_preview(project_id: str, request: Request, file_id_hint: str = "") -> dict[str, Any]:
     file_records, _ = store.get_parse_inputs(project_id)
     source_files = [
         {
@@ -78,7 +78,14 @@ def _build_tender_preview(project_id: str, request: Request) -> dict[str, Any]:
 
     candidate = None
     candidate_path = None
-    for item in file_records:
+    ordered_records = list(file_records)
+    if file_id_hint:
+        ordered_records = sorted(
+            ordered_records,
+            key=lambda item: 0 if str(item.get("id") or "") == file_id_hint else 1,
+        )
+
+    for item in ordered_records:
         path = Path(str(item.get("path") or ""))
         suffix = path.suffix.lower()
         if suffix not in _OUTLINE_PREVIEW_EXTENSIONS:
@@ -146,9 +153,9 @@ def _build_tender_preview(project_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.get("/api/projects/{project_id}/outline")
-async def get_outline(project_id: str, request: Request) -> dict[str, Any]:
+async def get_outline(project_id: str, request: Request, fileId: str = "") -> dict[str, Any]:
     payload = store.get_outline_state(project_id)
-    payload["tenderPreview"] = _build_tender_preview(project_id, request)
+    payload["tenderPreview"] = _build_tender_preview(project_id, request, fileId)
     return payload
 
 

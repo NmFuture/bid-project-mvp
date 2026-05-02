@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { outlineAPI, stagesAPI } from '../api'
 import { PageLoading, PageError } from '../components/states/PageState'
@@ -50,6 +50,51 @@ const collectExpandableNodeIds = (items = []) =>
 const countNodes = (items = []) =>
   (items || []).reduce((total, item) => total + 1 + countNodes(item.children || []), 0)
 
+const SEARCH_STORAGE_KEY = 'onlyoffice-search-bridge-message'
+const SEARCH_CHANNEL_NAME = 'onlyoffice-search-bridge'
+const SEARCH_RESULT_SOURCE = 'onlyoffice-search-bridge'
+
+const collectSourceRefs = (node) => (Array.isArray(node?.sourceRefs) ? node.sourceRefs : [])
+
+const pickTenderBasisRef = (node) => {
+  const refs = collectSourceRefs(node).filter((ref) => ref?.type === 'tender')
+  return refs.find((ref) => ref?.role === 'basis') || refs[0] || null
+}
+
+const sourceRefSearchText = (ref) =>
+  String(ref?.basisText || ref?.searchText || ref?.rawText || ref?.raw_text || ref?.title || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const sendOnlyOfficeSearch = (text, onlyofficeEmbedRef = null, beforeSend = null) => {
+  const cleanText = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!cleanText) return null
+  const payload = {
+    source: SEARCH_RESULT_SOURCE,
+    type: 'search-basis-text',
+    text: cleanText,
+    nonce: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  }
+  const storedPayload = {
+    type: payload.type,
+    text: payload.text,
+    nonce: payload.nonce,
+  }
+  beforeSend?.(payload.nonce)
+  try {
+    window.localStorage.setItem(SEARCH_STORAGE_KEY, JSON.stringify(storedPayload))
+  } catch (e) {
+    // BroadcastChannel is still enough in normal browser contexts.
+  }
+  if ('BroadcastChannel' in window) {
+    const channel = new BroadcastChannel(SEARCH_CHANNEL_NAME)
+    channel.postMessage(storedPayload)
+    channel.close()
+  }
+  onlyofficeEmbedRef?.current?.postMessage?.(payload)
+  return payload.nonce
+}
+
 export default function OutlineReview({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -65,6 +110,16 @@ export default function OutlineReview({ showToast }) {
   const [tenderPreview, setTenderPreview] = useState(null)
   const [onlyofficeError, setOnlyofficeError] = useState('')
   const [collapsedNodeIds, setCollapsedNodeIds] = useState(new Set())
+  const [pendingSearchText, setPendingSearchText] = useState('')
+  const [activeBasisRef, setActiveBasisRef] = useState(null)
+  const [pendingSearchNonce, setPendingSearchNonce] = useState('')
+  const onlyofficeEmbedRef = useRef(null)
+  const pendingSearchNonceRef = useRef('')
+
+  const markPendingSearch = useCallback((nonce) => {
+    pendingSearchNonceRef.current = nonce || ''
+    setPendingSearchNonce(nonce || '')
+  }, [])
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -95,6 +150,65 @@ export default function OutlineReview({ showToast }) {
     }, 0)
     return () => clearTimeout(timer)
   }, [loadData])
+
+  useEffect(() => {
+    if (!pendingSearchText) return undefined
+    const timer = setTimeout(() => {
+      sendOnlyOfficeSearch(pendingSearchText, onlyofficeEmbedRef, markPendingSearch)
+      setPendingSearchText('')
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [markPendingSearch, pendingSearchText, showToast, tenderPreview?.activeFile?.id])
+
+  useEffect(() => {
+    const handleSearchResult = (event) => {
+      if (event.origin !== window.location.origin) return
+      const payload = event.data
+      if (!payload || payload.source !== SEARCH_RESULT_SOURCE) return
+      if (payload.type === 'search-debug') {
+        console.debug('[onlyoffice-search]', payload.stage, payload.detail || '')
+        return
+      }
+      if (payload.type !== 'search-result') return
+      const expectedNonce = pendingSearchNonceRef.current
+      if (expectedNonce && payload.nonce && payload.nonce !== expectedNonce) return
+      markPendingSearch('')
+      if (payload.found) {
+        showToast?.('已定位到招标依据')
+      } else {
+        showToast?.('未在当前招标文件中找到这段依据', 'error')
+      }
+    }
+
+    window.addEventListener('message', handleSearchResult)
+    return () => window.removeEventListener('message', handleSearchResult)
+  }, [markPendingSearch, showToast])
+
+  const focusTenderBasis = useCallback(async (node) => {
+    const basisRef = pickTenderBasisRef(node)
+    if (!basisRef) return
+
+    const searchText = sourceRefSearchText(basisRef)
+    if (!searchText) return
+
+    setActiveBasisRef(basisRef)
+    const refFileId = String(basisRef.fileId || '').trim()
+    const activeFileId = String(tenderPreview?.activeFile?.id || '').trim()
+    if (refFileId && refFileId !== activeFileId) {
+      try {
+        const payload = await outlineAPI.get(id, { fileId: refFileId })
+        setTenderPreview(payload?.tenderPreview || null)
+        setOnlyofficeError('')
+        setPendingSearchText(searchText)
+      } catch (e) {
+        setPendingSearchText('')
+        showToast?.(e?.message || '招标文件预览切换失败', 'error')
+      }
+      return
+    }
+
+    sendOnlyOfficeSearch(searchText, onlyofficeEmbedRef, markPendingSearch)
+  }, [id, markPendingSearch, showToast, tenderPreview?.activeFile?.id])
 
   const handleSave = async () => {
     if (saving) return
@@ -273,11 +387,15 @@ export default function OutlineReview({ showToast }) {
         const canMoveDown = index < siblings.length - 1
         const hasChildren = Array.isArray(node.children) && node.children.length > 0
         const isCollapsed = collapsedNodeIds.has(node.id)
+        const basisRef = pickTenderBasisRef(node)
 
         return (
           <div key={node.id}>
             <div
-              onClick={() => setActiveNodeId(node.id)}
+              onClick={() => {
+                setActiveNodeId(node.id)
+                focusTenderBasis(node)
+              }}
               className={`flex items-center gap-1 px-2 py-1.5 transition-colors border-b border-surface-container-high ${
                 isActive ? 'bg-primary/5' : 'bg-white'
               }`}
@@ -302,10 +420,25 @@ export default function OutlineReview({ showToast }) {
               <span className="w-9 shrink-0 text-xs font-semibold text-outline">{seq}</span>
               <input
                 value={node.title || ''}
+                onClick={(e) => e.stopPropagation()}
                 onChange={(e) => handleTitleChange(node.id, e.target.value)}
                 className="flex-1 !min-h-0 h-8 px-1.5 border-0 bg-transparent text-sm text-on-surface focus:ring-0 focus:outline-none"
                 placeholder="输入章节标题"
               />
+              {basisRef ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setActiveNodeId(node.id)
+                    focusTenderBasis(node)
+                  }}
+                  className="shrink-0 rounded border border-secondary/20 bg-secondary-container px-2 py-1 text-[11px] font-semibold text-on-secondary-container transition-colors hover:border-secondary hover:bg-secondary/20 focus:outline-none focus:ring-2 focus:ring-secondary/30"
+                  title={sourceRefSearchText(basisRef)}
+                >
+                  有依据
+                </button>
+              ) : null}
               <button
                 onClick={(e) => {
                   e.stopPropagation()
@@ -394,6 +527,8 @@ export default function OutlineReview({ showToast }) {
 
   const hasOnlyOfficeSession = Boolean(tenderPreview?.onlyoffice?.fileUrl && tenderPreview?.onlyoffice?.callbackUrl)
   const activeTenderFileName = tenderPreview?.activeFile?.name || '未选择文件'
+  const activeNode = findNodeContext(nodes, activeNodeId)?.node || null
+  const activeRefs = collectSourceRefs(activeNode)
 
   return (
     <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
@@ -436,8 +571,8 @@ export default function OutlineReview({ showToast }) {
       />
 
       <OnlyOfficeWorkspace
-        heightClass="min-h-[720px]"
-        gridClassName="xl:grid-cols-[minmax(26rem,40rem)_minmax(0,1fr)]"
+        heightClass="h-[calc(100vh-16rem)] min-h-[620px] max-h-[860px]"
+        gridClassName="grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-rows-none lg:grid-cols-[minmax(24rem,38rem)_minmax(0,1fr)]"
         documentTitle="招标文件"
         documentSubtitle={`当前文件：${activeTenderFileName}`}
         documentMeta={(
@@ -447,7 +582,7 @@ export default function OutlineReview({ showToast }) {
         )}
         documentAreaClassName="flex flex-col"
         sidebar={(
-          <section className="flex h-full min-h-0 flex-col">
+          <section className="flex h-full min-h-0 flex-col overflow-hidden">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
               <h3 className="text-base font-semibold text-on-surface">目录文档</h3>
               <div className="flex items-center gap-3">
@@ -467,7 +602,7 @@ export default function OutlineReview({ showToast }) {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-5">
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
               {nodes.length ? (
                 renderRows(nodes)
               ) : (
@@ -483,6 +618,44 @@ export default function OutlineReview({ showToast }) {
                 </div>
               )}
             </div>
+            {activeRefs.length ? (
+              <div className="max-h-[34%] min-h-[140px] overflow-y-auto border-t border-surface-container-high bg-white px-5 py-4">
+                <h4 className="text-xs font-semibold text-on-surface">当前目录依据</h4>
+                <div className="mt-2 flex flex-col gap-2">
+                  {activeRefs.slice(0, 4).map((ref, index) => {
+                    const searchText = sourceRefSearchText(ref)
+                    const isTender = ref?.type === 'tender'
+                    const selected = activeBasisRef === ref
+                    return (
+                      <button
+                        key={`${ref?.type || 'ref'}-${ref?.paragraphIndex || index}-${index}`}
+                        type="button"
+                        onClick={() => {
+                          if (!isTender || !searchText) return
+                          setActiveBasisRef(ref)
+                          setPendingSearchText(searchText)
+                        }}
+                        disabled={!isTender || !searchText}
+                        className={`rounded-md border px-3 py-2 text-left text-xs transition-colors disabled:cursor-default disabled:opacity-70 ${
+                          selected
+                            ? 'border-primary bg-primary/5 text-on-surface'
+                            : 'border-surface-container-high bg-surface-container-low text-on-surface-variant enabled:hover:border-primary enabled:hover:bg-primary/5'
+                        }`}
+                        title={searchText}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-on-surface">
+                            {isTender ? '招标依据' : '模板骨架'}
+                          </span>
+                          <span>{ref?.fileName || ref?.type || '-'}</span>
+                        </div>
+                        <div className="mt-1 line-clamp-2">{searchText || ref?.rawText || ref?.raw_text || '-'}</div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : null}
           </section>
         )}
       >
@@ -493,10 +666,18 @@ export default function OutlineReview({ showToast }) {
         )}
         {hasOnlyOfficeSession && !onlyofficeError ? (
           <OnlyOfficeEmbed
+            ref={onlyofficeEmbedRef}
             session={tenderPreview?.onlyoffice}
             mode="view"
-            className="h-full min-h-[560px] w-full rounded-md border border-surface-container-high bg-white"
-            onReady={() => setOnlyofficeError('')}
+            className="h-full min-h-0 w-full rounded-md border border-surface-container-high bg-white"
+            onReady={() => {
+              setOnlyofficeError('')
+              if (pendingSearchText) {
+                setTimeout(() => {
+                  sendOnlyOfficeSearch(pendingSearchText, onlyofficeEmbedRef, markPendingSearch)
+                }, 300)
+              }
+            }}
             onError={(message) => setOnlyofficeError(message || 'OnlyOffice 文档加载失败')}
           />
         ) : (

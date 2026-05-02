@@ -2,6 +2,8 @@ import { ENV } from './env'
 
 // OnlyOffice Document Server 配置（环境变量驱动）
 
+const SEARCH_PLUGIN_GUID = 'asc.{5A9C9C4B-9E6F-4F57-9A22-0F4D7BBE0001}'
+
 export const loadOnlyOfficeScript = (src) =>
   new Promise((resolve, reject) => {
     if (typeof window === 'undefined') {
@@ -99,6 +101,12 @@ export const ONLYOFFICE_CONFIG = {
         toolbarNoTabs: false,
         uiTheme: 'theme-light',
       },
+      plugins: resolvedDocumentType === 'word'
+        ? {
+            autostart: [SEARCH_PLUGIN_GUID],
+            pluginsData: [`${window.location.origin}/onlyoffice-search-plugin/config.json`],
+          }
+        : undefined,
     },
     height: '100%',
     width: '100%',
@@ -122,3 +130,5 @@ export const ONLYOFFICE_CONFIG = {
     }
   },
 }
+
+export const ONLYOFFICE_SEARCH_PLUGIN_GUID = SEARCH_PLUGIN_GUID

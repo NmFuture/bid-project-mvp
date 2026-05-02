@@ -4,7 +4,6 @@ import asyncio
 import json
 import re
 import shutil
-import subprocess
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -16,13 +15,13 @@ from app.services.minio_client import minio_client
 from app.services.onlyoffice_documents import document_path
 from app.services.opencode_client import OpencodeClient
 from app.services.store import now_iso, store
+from app.services.wiki_export import export_wiki
 
 
 ASSEMBLER_SKILL_NAME = "bid-tech-assembler"
 ASSEMBLER_SKILL_COMMAND = "s7assemble"
 ASSEMBLER_SKILL_DIR = BASE_DIR / "opencode" / "skill" / "bid-tech-assembler"
 ASSEMBLER_RUNNER = ASSEMBLER_SKILL_DIR / "scripts" / "run_from_manifest.py"
-TOC_EXPORT_SCRIPT = BASE_DIR / "opencode" / "skill" / "bid-toc-wiki-driven-v2" / "scripts" / "export_wiki_from_api.py"
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
@@ -229,14 +228,15 @@ def _prepare_toc_json(
     ]
     raw_project_dir = str(parse_storage.get("projectDir") or "").strip()
     if raw_project_dir:
-        candidates.append(str(Path(raw_project_dir) / "s2_toc_workdir" / "投标文件-总目录.json"))
+        s2_work_dir = Path(raw_project_dir) / "s2_toc_workdir"
+        candidates.extend(str(path) for path in sorted(s2_work_dir.glob("*.json")) if "evidence" not in path.name.lower())
 
     for candidate in candidates:
         if not candidate:
             continue
         path = _runtime_path(candidate)
         if path.exists() and path.suffix.lower() == ".json":
-            target = work_dir / "投标文件-总目录.json"
+            target = work_dir / settings.s2_toc_output_file_name
             shutil.copy2(path, target)
             return target
 
@@ -254,7 +254,7 @@ def _prepare_toc_json(
         },
         "items": _outline_nodes_to_toc_items(nodes),
     }
-    target = work_dir / "投标文件-总目录.json"
+    target = work_dir / settings.s2_toc_output_file_name
     target.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     return target
 
@@ -308,19 +308,11 @@ def _prepare_wiki_dir(project: dict[str, Any], parse_storage: dict[str, Any], wo
             return target
 
     target.mkdir(parents=True, exist_ok=True)
-    if TOC_EXPORT_SCRIPT.exists():
-        _run_command(
-            [
-                "python",
-                str(TOC_EXPORT_SCRIPT),
-                "--api-base",
-                settings.bid_internal_api_base_url or "http://fastapi:8000",
-                "--bid-type",
-                str(project.get("bidType") or "技术标"),
-                "--out",
-                str(target),
-            ]
-        )
+    export_wiki(
+        api_base=settings.bid_internal_api_base_url or "http://fastapi:8000",
+        bid_type=str(project.get("bidType") or "投标文件"),
+        out_dir=target,
+    )
     if not (target / "卡片").exists():
         raise RuntimeError("当前项目没有可用 Wiki 卡片，无法按素材库拼装正文。")
     return target
@@ -881,14 +873,6 @@ manifest：{manifest_path}
   "summary": {{"total": 0, "byStatus": {{}}, "usedPathCount": 0}}
 }}
 """.strip()
-
-
-def _run_command(command: list[str]) -> str:
-    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8")
-    if result.returncode != 0:
-        detail = "\n".join(part for part in ((result.stdout or "").strip(), (result.stderr or "").strip()) if part)
-        raise RuntimeError(f"命令执行失败（{result.returncode}）：{' '.join(command)}\n{detail}")
-    return result.stdout or "{}"
 
 
 def _load_json_list(path: Path) -> list[dict[str, Any]]:

@@ -32,7 +32,7 @@ sewpg-bid-backend/
 - `app/services/store.py`
   - 主链路状态、解析、目录、正文拼装、覆盖、文档状态
 - `app/services/outline_generation.py`
-  - 准备 S2 目录 manifest，并通过 `opencode` 执行 `s2toc` 转调目录生成 skill
+  - 准备 S2 目录 manifest，并由 FastAPI 本地规则引擎直接生成目录 JSON
 - `app/services/tech_assembly.py`
   - 准备 S2 目录 JSON、Wiki、素材库导出，并调用 `bid-tech-assembler` 拼装正文
 - `app/services/draft_generation.py`

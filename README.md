@@ -254,7 +254,7 @@ compose 会把这个目录挂进 `opencode` 容器。
 
 - 审核模块若选择“不参与该项目”，项目会在流程中终止，并从项目总览移除
 - 审核模块若选择“参与该项目”，会先要求补全项目信息，再进入项目模块
-- `S2` 默认先真实调用 `opencode`，由 opencode 执行镜像内短命令 `s2toc /data/parsed/<projectId>/s2.json`，再转调目录生成 skill
+- `S2` 由 FastAPI 直接运行本地规则引擎生成目录，不再调用 `opencode` 或 `s2toc`
 - 如果 `opencode` 在 `OPENCODE_TIMEOUT_SEC` 内没有返回可用 JSON，系统会自动生成一版“可继续审核的回退目录”
 - `S7` 不再走自由初稿生成，而是使用 S2 目录 JSON、S2 Wiki 卡片和素材库清洗后 Word，通过 `bid-tech-assembler` 拼装正文
 
@@ -285,7 +285,7 @@ compose 会把这个目录挂进 `opencode` 容器。
 - `S8` 当前校验的是 S7 拼装计划与素材库的覆盖关系，还不是完整评分点覆盖审计
 - 当前默认已经接入 PostgreSQL、MinIO、Redis
 - 当前默认没有接入 SSO、OCR
-- `S2` 目录能否真实生成，取决于 `opencode` 的 provider / model / key 是否可用；`S7` 正文拼装还取决于 S2 JSON、Wiki 卡片和素材库清洗后 Word 是否齐备
+- `S2` 目录生成不依赖 `opencode`；`S7` 正文拼装仍取决于 S2 JSON、Wiki 卡片和素材库清洗后 Word 是否齐备
 
 ## GitHub 协作提交（必须走分支 + PR 审核）
 

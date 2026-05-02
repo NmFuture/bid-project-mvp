@@ -505,16 +505,17 @@ def _resolve_toc_json(project: dict[str, Any], work_dir: Path) -> Path:
     project_id = str(project.get("id") or "")
     parse_storage = project.get("parse_storage") or {}
     candidates = []
-    raw_project_dir = str(parse_storage.get("projectDir") or "").strip()
-    if raw_project_dir:
-        candidates.append(Path(raw_project_dir) / "s2_toc_workdir" / "投标文件-总目录.json")
     directory_output = ((project.get("directory_state") or {}).get("opencodeOutput") or {})
     for value in (directory_output.get("tocJsonPath"), directory_output.get("outputFile")):
         if value:
             candidates.append(Path(str(value)))
+    raw_project_dir = str(parse_storage.get("projectDir") or "").strip()
+    if raw_project_dir:
+        s2_work_dir = Path(raw_project_dir) / "s2_toc_workdir"
+        candidates.extend(path for path in sorted(s2_work_dir.glob("*.json")) if "evidence" not in path.name.lower())
     for candidate in candidates:
         if candidate.exists() and candidate.suffix.lower() == ".json":
-            target = work_dir / "投标文件-总目录.json"
+            target = work_dir / settings.s2_toc_output_file_name
             shutil.copy2(candidate, target)
             return target
 
@@ -529,7 +530,7 @@ def _resolve_toc_json(project: dict[str, Any], work_dir: Path) -> Path:
         },
         "items": _outline_nodes_to_toc_items(outline_nodes),
     }
-    target = work_dir / "投标文件-总目录.json"
+    target = work_dir / settings.s2_toc_output_file_name
     target.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     return target
 

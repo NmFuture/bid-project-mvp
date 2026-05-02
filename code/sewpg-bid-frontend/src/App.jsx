@@ -28,7 +28,7 @@ const readStoredSession = () => {
     const raw = window.localStorage.getItem(AUTH_STORAGE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object') return parsed
+    if (parsed && typeof parsed === 'object' && parsed.token) return parsed
     return null
   } catch {
     return null
@@ -70,11 +70,18 @@ export default function App() {
   useEffect(() => {
     let mounted = true
     const syncSession = async () => {
+      const stored = readStoredSession()
+      if (!stored?.token) {
+        setSession(null)
+        persistSession(null)
+        setAuthLoading(false)
+        return
+      }
       setAuthLoading(true)
       try {
-        const payload = await authAPI.me()
+        const payload = await authAPI.me(stored.token)
         if (!mounted) return
-        const next = { token: payload?.token || '', user: payload?.user || null }
+        const next = { token: payload?.token || stored.token, user: stored.user || payload?.user || null }
         setSession(next)
         persistSession(next)
       } catch {

@@ -35,7 +35,7 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 
 | 输入 | 模式 | 必需 |
 |---|---|---|
-| 目录 JSON / docx | `投标文件-总目录.json` 或 `投标文件-总目录_*.docx` | 是 |
+| 目录 JSON / docx | manifest 中的 `tocJsonPath`，或工作目录中的目录 JSON / 历史目录 docx | 是 |
 | wiki | `wiki/rules.md` 三件套 + `wiki/卡片/*.md` | 是 |
 | 素材库 | 后端从当前素材库导出的 `素材库/投标资料库-通用/` + `素材库/投标资料库-定制/` | 是 |
 | 格式要求 | `投标文件格式要求.md`（或回退到 `references/style_spec.md`） | 否 |
@@ -174,7 +174,7 @@ python3 scripts/run_from_manifest.py \
 ```
 
 manifest 会指定：
-- `tocJsonPath`：S2 生成的 `投标文件-总目录.json`
+- `tocJsonPath`：S2 生成的目录 JSON 路径
 - `wikiDir`：S2 导出的当前数据库 Wiki 文件系统副本
 - `materialLibraryDir`：后端按 Wiki 卡片 `material_id / path / cleaned_file_name` 从当前素材库导出的 Word 文件根目录
 - `templateFile`：可选的投标正文模板，用于生成母版；没有时生成最小母版

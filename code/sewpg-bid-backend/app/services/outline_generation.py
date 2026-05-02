@@ -9,17 +9,13 @@ from typing import Any, Callable
 from xml.etree import ElementTree as ET
 
 from app.core.config import settings
-from app.services.identity import build_project_identity
-from app.services.opencode_client import OpencodeClient
 from app.services.store import build_directory_opencode_output, now_iso, store
+from app.services.toc_engine import generate_toc_from_manifest
 
 WORD_NAMESPACE = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-MAX_TENDER_TEXT_CHARS = 1200
 MAX_TENDER_HINTS = 12
 MAX_TEMPLATE_HINTS = 12
-MAX_FALLBACK_ERROR_PREVIEW_CHARS = 200
-TOC_SKILL_NAME = "bid-toc-wiki-driven-v2"
-TOC_SKILL_COMMAND = "s2toc"
+TOC_ENGINE_NAME = "local-rule-engine"
 
 HEADING_PATTERNS = [
     re.compile(r"^第[一二三四五六七八九十百千0-9]+章[\s　].+"),
@@ -70,68 +66,29 @@ def generate_outline_for_project_with_progress(
             },
         )
 
-    options = data or {}
-    prompt = _build_outline_prompt(
-        project_name=str(project.get("name") or project_id),
-        outline_strategy=str(options.get("outlineStrategy") or "strict"),
-        include_key_points=bool(options.get("includeKeyPoints", True)),
-        tender_excerpt=combined_text[:MAX_TENDER_TEXT_CHARS],
-        tender_hints=tender_hints,
-        template_hints=template_hints,
-        skill_workspace=skill_workspace,
-    )
-
-    client = OpencodeClient()
-    used_fallback = False
-    fallback_error = ""
-    try:
-        result = client.generate_outline_with_trace(
-            prompt,
-            session_ready_callback=(
-                (lambda details: progress_callback("calling_opencode", details))
-                if progress_callback
-                else None
-            ),
-            stream_callback=(
-                (lambda details: progress_callback("opencode_delta", details))
-                if progress_callback
-                else None
-            ),
-        )
-        toc_result = _resolve_toc_generation_result(result, skill_workspace)
-        nodes = _nodes_from_generation_result(toc_result)
-        summary = _summary_from_generation_result(toc_result)
-        opencode_output = result.get("opencodeOutput") or {}
-        opencode_output.update(
+    if progress_callback:
+        progress_callback(
+            "generating_outline",
             {
-                "skill": TOC_SKILL_NAME,
-                "workDir": skill_workspace["workDir"],
-                "manifestPath": skill_workspace["manifestPath"],
-                "canonicalManifestPath": skill_workspace["canonicalManifestPath"],
-                "tocJsonPath": str(toc_result.get("outputFile") or skill_workspace["outputFile"]),
-            }
+                "templateHeadingCount": len(template_hints),
+                "tenderCandidateCount": len(tender_hints),
+            },
         )
-    except RuntimeError as exc:
-        used_fallback = True
-        fallback_error = str(exc)
-        fallback_error_text = _shorten_for_event(fallback_error)
-        nodes = _build_outline_fallback_nodes(
-            project_name=str(project.get("name") or project_id),
-            tender_hints=tender_hints,
-            template_hints=template_hints,
-        )
-        summary = (
-            f"futurecode 响应异常（{fallback_error_text}），已根据模板与招标章节线索生成回退目录。"
-        )
-        opencode_output = build_directory_opencode_output(
-            status="failed",
-            parts=[
-                {
-                    "type": "text",
-                    "text": f"futurecode 响应异常：{fallback_error}",
-                }
-            ],
-        )
+
+    toc_result = generate_toc_from_manifest(skill_workspace)
+    nodes = _nodes_from_generation_result(toc_result)
+    summary = _summary_from_generation_result(toc_result)
+    opencode_output = build_directory_opencode_output(status="not_used")
+    opencode_output.update(
+        {
+            "engine": TOC_ENGINE_NAME,
+            "workDir": skill_workspace["workDir"],
+            "manifestPath": skill_workspace["manifestPath"],
+            "canonicalManifestPath": skill_workspace["canonicalManifestPath"],
+            "tocJsonPath": str(toc_result.get("outputFile") or skill_workspace["outputFile"]),
+            "evidencePath": str(toc_result.get("evidenceFile") or skill_workspace["evidenceFile"]),
+        }
+    )
     if progress_callback:
         progress_callback(
             "normalizing_result",
@@ -147,31 +104,9 @@ def generate_outline_for_project_with_progress(
         generated_at=generated_at,
         summary=summary,
         opencode_output=opencode_output,
+        rule_evidence=toc_result.get("ruleEvidence") if isinstance(toc_result.get("ruleEvidence"), dict) else {},
     )
-    if used_fallback:
-        payload = store.update_directory_generation_state(
-            project_id,
-            event_message=f"futurecode 响应异常（{_shorten_for_event(fallback_error)}），已切换为本地回退目录。",
-            event_level="warning",
-            event_step="fallback",
-            opencode_output={
-                "status": "failed",
-                "parts": [
-                    {
-                        "type": "text",
-                        "text": f"回退原因：{_shorten_for_event(fallback_error, limit=340)}",
-                    }
-                ],
-            },
-        )
     return payload
-
-
-def _shorten_for_event(message: str, limit: int = MAX_FALLBACK_ERROR_PREVIEW_CHARS) -> str:
-    text = str(message or "").strip().replace("\n", " ")
-    if len(text) <= limit:
-        return text or "未知错误"
-    return f"{text[: limit - 3]}..."
 
 
 def _collect_template_hints(template_file_records: list[dict[str, Any]]) -> list[str]:
@@ -214,11 +149,11 @@ def _prepare_toc_skill_workspace(
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    tender_paths = _copy_tender_inputs(tender_file_records, work_dir)
+    tender_inputs = _copy_tender_inputs(tender_file_records, work_dir)
     template_path, attach_path = _copy_template_inputs(template_file_records, work_dir)
-    bid_type = _normalize_bid_type(str(project.get("bidType") or "技术标"))
-    wiki_dir = work_dir / "wiki"
-    output_file = work_dir / "投标文件-总目录.json"
+    bid_type = _normalize_bid_type(str(project.get("bidType") or "投标文件"))
+    output_file = work_dir / _safe_file_name(settings.s2_toc_output_file_name, "toc.json")
+    evidence_file = work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json")
     manifest_path = work_dir / "s2_input.json"
     manifest_alias_path = project_dir / "s2.json"
     manifest = {
@@ -226,20 +161,18 @@ def _prepare_toc_skill_workspace(
         "projectCode": str(project.get("projectCode") or project_id),
         "projectName": str(project.get("name") or project_id),
         "bidType": bid_type,
-        "projectIdentity": build_project_identity(project),
         "workDir": str(work_dir),
-        "apiBaseUrl": settings.bid_internal_api_base_url or "http://fastapi:8000",
-        "tenderFiles": [
-            {
-                "name": item.name,
-                "path": str(item),
-            }
-            for item in tender_paths
-        ],
+        "tenderFiles": tender_inputs,
         "templateFile": str(template_path) if template_path else "",
         "attachFile": str(attach_path) if attach_path else "",
-        "wikiDir": str(wiki_dir),
         "outputFile": str(output_file),
+        "evidenceFile": str(evidence_file),
+        "rules": {
+            "maxLevel": settings.s2_toc_max_level,
+            "maxTenderCandidates": settings.s2_toc_max_tender_candidates,
+            "maxTitleChars": settings.s2_toc_max_title_chars,
+            "autoAppendTenderRequirements": settings.s2_toc_auto_append_tender_requirements,
+        },
     }
     manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2)
     manifest_path.write_text(manifest_text, encoding="utf-8")
@@ -248,24 +181,29 @@ def _prepare_toc_skill_workspace(
         **manifest,
         "manifestPath": str(manifest_alias_path),
         "canonicalManifestPath": str(manifest_path),
-        "tenderFileCount": len(tender_paths),
+        "tenderFileCount": len(tender_inputs),
         "templateFileCount": 1 if template_path else 0,
         "hasAttachFile": bool(attach_path),
     }
 
 
-def _copy_tender_inputs(file_records: list[dict[str, Any]], work_dir: Path) -> list[Path]:
-    copied: list[Path] = []
+def _copy_tender_inputs(file_records: list[dict[str, Any]], work_dir: Path) -> list[dict[str, str]]:
+    copied: list[dict[str, str]] = []
     for index, record in enumerate(file_records, start=1):
         source = Path(str(record.get("path") or "")).expanduser()
         if not source.exists() or source.suffix.lower() != ".docx":
             continue
-        name = _safe_file_name(str(record.get("name") or source.name), f"招标文件-{index}.docx")
-        if "招标" not in name:
-            name = f"招标文件-{index}{source.suffix.lower() or '.docx'}"
+        name = _safe_file_name(str(record.get("name") or source.name), f"tender-{index}.docx")
         destination = _unique_path(work_dir / name)
         shutil.copy2(source, destination)
-        copied.append(destination)
+        copied.append(
+            {
+                "id": str(record.get("id") or f"tender-{index}"),
+                "name": name,
+                "path": str(destination),
+                "originalPath": str(source),
+            }
+        )
     return copied
 
 
@@ -276,20 +214,12 @@ def _copy_template_inputs(file_records: list[dict[str, Any]], work_dir: Path) ->
         if Path(str(record.get("path") or "")).expanduser().exists()
         and Path(str(record.get("path") or "")).suffix.lower() == ".docx"
     ]
-    attach_record = next(
-        (
-            record
-            for record in docx_records
-            if "附表" in str(record.get("name") or Path(str(record.get("path") or "")).name)
-        ),
-        None,
-    )
+    attach_record = next((record for record in docx_records if _looks_like_attachment_template(record)), None)
     template_record = next(
         (
             record
             for record in docx_records
             if record is not attach_record
-            and "附表" not in str(record.get("name") or Path(str(record.get("path") or "")).name)
         ),
         None,
     )
@@ -297,16 +227,24 @@ def _copy_template_inputs(file_records: list[dict[str, Any]], work_dir: Path) ->
         template_record = docx_records[0]
 
     template_path = (
-        _copy_single_template(template_record, work_dir / "投标文件-正文.docx")
+        _copy_single_template(template_record, work_dir / "template-main.docx")
         if template_record is not None
         else None
     )
     attach_path = (
-        _copy_single_template(attach_record, work_dir / "投标文件-附表.docx")
+        _copy_single_template(attach_record, work_dir / "template-attachment.docx")
         if attach_record is not None and attach_record is not template_record
         else None
     )
     return template_path, attach_path
+
+
+def _looks_like_attachment_template(record: dict[str, Any]) -> bool:
+    role = str(record.get("role") or record.get("templateRole") or record.get("type") or "").lower()
+    if role in {"attachment", "attachments", "appendix", "appendices", "attach"}:
+        return True
+    name = str(record.get("name") or Path(str(record.get("path") or "")).name)
+    return bool(re.search(r"(附表|附件|appendix|attachment|attach)", name, re.IGNORECASE))
 
 
 def _copy_single_template(record: dict[str, Any], destination: Path) -> Path:
@@ -335,7 +273,7 @@ def _unique_path(path: Path) -> Path:
 
 
 def _normalize_bid_type(value: str) -> str:
-    return value if value in {"技术标", "商务标"} else "技术标"
+    return value.strip() or "投标文件"
 
 
 def _extract_docx_outline_hints(path: Path, limit: int) -> list[str]:
@@ -394,90 +332,10 @@ def _looks_like_heading(line: str) -> bool:
     return False
 
 
-def _build_outline_prompt(
-    project_name: str,
-    outline_strategy: str,
-    include_key_points: bool,
-    tender_excerpt: str,
-    tender_hints: list[str],
-    template_hints: list[str],
-    skill_workspace: dict[str, Any],
-) -> str:
-    tender_hint_text = "\n".join(f"- {item}" for item in tender_hints) or "- 无明显章节线索"
-    template_hint_text = "\n".join(f"- {item}" for item in template_hints) or "- 当前没有模板章节线索"
-    include_key_points_text = "是" if include_key_points else "否"
-    project_identity_text = json.dumps(skill_workspace.get("projectIdentity") or {}, ensure_ascii=False)
-
-    return f"""
-Use the {TOC_SKILL_NAME} skill.
-
-你现在在做 {skill_workspace["bidType"]} 的 S2 目录生成，请调用 OpenCode skill 读取招标文件、投标正文模板、可选附表模板和素材 Wiki，输出一个可直接给后端解析的目录 JSON。
-
-项目名称：{project_name}
-目录策略：{outline_strategy}
-是否尽量包含关键评分点：{include_key_points_text}
-工作目录：{skill_workspace["workDir"]}
-manifest：{skill_workspace["manifestPath"]}
-manifest 备份：{skill_workspace["canonicalManifestPath"]}
-后端 API：{skill_workspace["apiBaseUrl"]}
-输出文件：{skill_workspace["outputFile"]}
-项目身份：{project_identity_text}
-
-请先按投标模板目录起基础目录，再对照招标要求删改、补改，并结合 {skill_workspace["bidType"]} Wiki 素材库给出新增/删除/适配建议。读取 Wiki 时必须按项目身份过滤：通用素材可读；客户素材需 customer_id/同义词命中；项目素材需 project_id/project_code 命中。
-
-请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 600000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径。命令会把完整目录 JSON 写入 outputFile，并只在 stdout 打印小型摘要 JSON：
-
-{TOC_SKILL_COMMAND} {skill_workspace["manifestPath"]}
-
-只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
-不要再使用 Read/Glob/Cat 打开完整 outputFile；完整目录 JSON 由后端根据 outputFile 自行读取。
-返回格式必须是：
-{{
-  "schema_version": "bid-toc-json-v1",
-  "document_title": "投标文件总目录",
-  "outputFile": "{skill_workspace["outputFile"]}",
-  "summary": {{"total_items": 0, "annotation_counts": {{}}}},
-  "itemCount": 0
-}}
-
-规则：
-1. 目录层级最多 6 层。
-2. 标题要简洁，适合中文技术标目录。
-3. 目录必须以投标模板目录为主骨架，再根据招标要求重命名、删除不适用章节、补充遗漏章节。
-4. 不要编造公司业绩、参数或事实内容，这里只生成目录结构。
-5. 如果 manifest 中的 wiki 目录为空，必须通过后端 API 导出当前 {skill_workspace["bidType"]} Wiki，再继续生成。
-
-招标章节线索：
-{tender_hint_text}
-
-投标模板章节线索：
-{template_hint_text}
-
-招标正文摘录（仅前段关键信息）：
-{tender_excerpt}
-""".strip()
-
-
 def _nodes_from_generation_result(result: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(result.get("items"), list):
         return _nodes_from_toc_items(result["items"])
-    return _normalize_nodes(result["nodes"])
-
-
-def _resolve_toc_generation_result(
-    result: dict[str, Any],
-    skill_workspace: dict[str, Any],
-) -> dict[str, Any]:
-    if isinstance(result.get("items"), list) or isinstance(result.get("nodes"), list):
-        return result
-
-    output_file = Path(str(result.get("outputFile") or skill_workspace.get("outputFile") or ""))
-    if output_file.exists():
-        loaded = json.loads(output_file.read_text(encoding="utf-8"))
-        if isinstance(loaded, dict) and isinstance(loaded.get("items"), list):
-            loaded["outputFile"] = str(output_file)
-            return loaded
-    raise RuntimeError("futurecode 已返回目录摘要，但后端未能读取完整目录 JSON。")
+    raise ValueError("目录 JSON 缺少 items[]。")
 
 
 def _summary_from_generation_result(result: dict[str, Any]) -> str:
@@ -550,7 +408,7 @@ def _coerce_toc_level(value: Any) -> int:
         level = int(value)
     except (TypeError, ValueError):
         level = 1
-    return max(1, min(level, 6))
+    return max(1, min(level, max(1, settings.s2_toc_max_level)))
 
 
 def _toc_item_title(item: dict[str, Any], fallback_order: int) -> str:
@@ -563,86 +421,3 @@ def _toc_item_title(item: dict[str, Any], fallback_order: int) -> str:
     if number:
         return number
     return f"未命名章节{fallback_order}"
-
-
-def _normalize_nodes(nodes: list[dict[str, Any]], prefix: str = "OL") -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for index, node in enumerate(nodes, start=1):
-        node_id = f"{prefix}-{index}"
-        children = _normalize_children(node.get("children") or [], node_id)
-        normalized.append(
-            {
-                "id": node_id,
-                "title": str(node.get("title") or "").strip() or f"未命名章节{index}",
-                "children": children,
-            }
-        )
-    return normalized
-
-
-def _build_outline_fallback_nodes(
-    project_name: str,
-    tender_hints: list[str],
-    template_hints: list[str],
-) -> list[dict[str, Any]]:
-    candidates = [*_extract_primary_titles(template_hints), *_extract_primary_titles(tender_hints)]
-    seen: set[str] = set()
-    titles: list[str] = []
-    for title in candidates:
-        normalized = title.strip()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        titles.append(normalized)
-        if len(titles) >= 5:
-            break
-
-    defaults = ["项目概况", "技术方案", "实施与保障"]
-    for title in defaults:
-        if title not in seen:
-            titles.append(title if title != "技术方案" else f"{project_name}技术方案")
-            seen.add(title)
-        if len(titles) >= 3:
-            break
-
-    if len(titles) < 3:
-        titles.extend([f"{project_name}目录章节{index}" for index in range(len(titles) + 1, 4)])
-
-    return [
-        {
-            "id": f"OL-{index}",
-            "title": title,
-            "children": [],
-        }
-        for index, title in enumerate(titles[:5], start=1)
-    ]
-
-
-def _extract_primary_titles(hints: list[str]) -> list[str]:
-    titles: list[str] = []
-    for line in hints:
-        text = re.sub(r"[（(][^）)]*[）)]\s*$", "", line).strip()
-        if not text:
-            continue
-        if re.match(r"^第[一二三四五六七八九十百千0-9]+章", text):
-            titles.append(re.sub(r"^第[一二三四五六七八九十百千0-9]+章[\s　]*", "", text).strip())
-            continue
-        if re.match(r"^[一二三四五六七八九十]+、", text):
-            titles.append(re.sub(r"^[一二三四五六七八九十]+、", "", text).strip())
-            continue
-    return titles
-
-
-def _normalize_children(nodes: list[dict[str, Any]], prefix: str) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for index, node in enumerate(nodes, start=1):
-        node_id = f"{prefix}-{index}"
-        children = _normalize_children(node.get("children") or [], node_id)
-        normalized.append(
-            {
-                "id": node_id,
-                "title": str(node.get("title") or "").strip() or f"未命名章节{index}",
-                "children": children,
-            }
-        )
-    return normalized

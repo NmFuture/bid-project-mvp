@@ -19,7 +19,7 @@ router = APIRouter()
 def _directory_tasks(step1: str, step2: str, step3: str) -> list[dict[str, Any]]:
     return [
         {"id": "task-1", "label": "解析章节线索", "status": step1},
-        {"id": "task-2", "label": "调用目录生成 skill", "status": step2},
+        {"id": "task-2", "label": "规则生成目录", "status": step2},
         {"id": "task-3", "label": "保存目录结果", "status": step3},
     ]
 
@@ -32,62 +32,27 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         store.update_directory_generation_state(
             project_id,
             percentage=30,
-            summary=f"已提取章节线索（招标 {tender_hint_count} 条，模板 {template_hint_count} 条），准备调用 futurecode。",
+            summary=f"已提取章节线索（招标 {tender_hint_count} 条，模板 {template_hint_count} 条），准备运行规则引擎。",
             tasks=_directory_tasks("done", "running", "pending"),
             event_message=f"已完成章节线索提取：招标 {tender_hint_count} 条，模板 {template_hint_count} 条。",
             event_step="hint_ready",
         )
         return
 
-    if stage == "calling_opencode":
-        session_id = str(meta.get("sessionId") or "")
-        provider_id = str(meta.get("providerId") or "")
-        model_id = str(meta.get("modelId") or "")
+    if stage == "generating_outline":
+        template_heading_count = int(meta.get("templateHeadingCount") or 0)
+        tender_candidate_count = int(meta.get("tenderCandidateCount") or 0)
         store.update_directory_generation_state(
             project_id,
-            percentage=60,
-            summary="正在调用 futurecode 生成目录，请稍候。",
+            percentage=70,
+            summary="正在按招标要求和投标模板生成目录，请稍候。",
             tasks=_directory_tasks("done", "running", "pending"),
-            event_message="已进入 futurecode 生成阶段，正在等待模型返回目录结果。",
-            event_step="opencode_waiting",
+            event_message=f"规则引擎正在生成目录：模板线索 {template_heading_count} 条，招标线索 {tender_candidate_count} 条。",
+            event_step="rule_generation",
             opencode_output={
-                "status": "waiting",
-                "sessionId": session_id,
-                "providerId": provider_id,
-                "modelId": model_id,
-                "receivedAt": "",
+                "status": "not_used",
+                "engine": "local-rule-engine",
                 "parts": [],
-            },
-        )
-        return
-
-    if stage == "opencode_delta":
-        parts = list(meta.get("parts") or [])
-        current = store.get_directory_state(project_id)
-        previous_parts = list((current.get("opencodeOutput") or {}).get("parts") or [])
-        summary: str | None = None
-        event_message: str | None = None
-
-        if parts and not previous_parts:
-            summary = "futurecode 已开始流式返回目录片段。"
-            event_message = "futurecode 已开始返回原始片段。"
-        elif len(parts) > len(previous_parts):
-            summary = "futurecode 正在流式输出目录内容，请稍候。"
-
-        store.update_directory_generation_state(
-            project_id,
-            percentage=70 if parts else None,
-            summary=summary,
-            tasks=_directory_tasks("done", "running", "pending"),
-            event_message=event_message,
-            event_step="opencode_streaming",
-            opencode_output={
-                "status": str(meta.get("status") or ("streaming" if parts else "waiting")),
-                "sessionId": str(meta.get("sessionId") or ""),
-                "providerId": str(meta.get("providerId") or ""),
-                "modelId": str(meta.get("modelId") or ""),
-                "receivedAt": str(meta.get("receivedAt") or ""),
-                "parts": parts,
             },
         )
         return
@@ -97,9 +62,9 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         store.update_directory_generation_state(
             project_id,
             percentage=85,
-            summary=f"futurecode 已返回目录结果，正在整理 {chapter_count} 个章节节点。",
+            summary=f"规则引擎已生成目录结果，正在整理 {chapter_count} 个章节节点。",
             tasks=_directory_tasks("done", "done", "running"),
-            event_message=f"futurecode 已返回结果，正在整理 {chapter_count} 个章节节点。",
+            event_message=f"规则引擎已返回结果，正在整理 {chapter_count} 个章节节点。",
             event_step="normalizing",
         )
 

@@ -64,6 +64,20 @@ const getErrorCode = (payload, status) => {
   return `HTTP_${status}`
 }
 
+const AUTH_STORAGE_KEY = 'sewpg.auth.session'
+
+const readAuthToken = () => {
+  if (typeof window === 'undefined') return ''
+  try {
+    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY)
+    if (!raw) return ''
+    const parsed = JSON.parse(raw)
+    return typeof parsed?.token === 'string' ? parsed.token : ''
+  } catch {
+    return ''
+  }
+}
+
 class ApiError extends Error {
   constructor(message, options = {}) {
     super(message)
@@ -127,6 +141,10 @@ async function request(path, options = {}) {
     try {
       const headers = new Headers(options.headers || {})
       if (ENV.API_ENABLE_TRACE) headers.set('x-trace-id', traceId)
+      const authToken = options.authToken ?? readAuthToken()
+      if (authToken && !headers.has('Authorization')) {
+        headers.set('Authorization', `Bearer ${authToken}`)
+      }
 
       const hasBody = options.body !== undefined && options.body !== null
       let body = options.body
@@ -268,7 +286,10 @@ export const directoryAPI = {
 
 // ===== S3 Outline =====
 export const outlineAPI = {
-  get: (projectId) => request(`/projects/${projectId}/outline`),
+  get: (projectId, params = {}) => {
+    const qs = new URLSearchParams(cleanQuery({ fileId: params.fileId })).toString()
+    return request(`/projects/${projectId}/outline${qs ? `?${qs}` : ''}`)
+  },
   save: (projectId, data) => request(`/projects/${projectId}/outline`, { method: 'PUT', body: data }),
   regenerate: (projectId) => request(`/projects/${projectId}/outline/regenerate`, { method: 'POST' }),
   confirm: (projectId) => request(`/projects/${projectId}/outline/confirm`, { method: 'POST' }),
@@ -469,7 +490,7 @@ export const settingsAPI = {
 // ===== Auth =====
 export const authAPI = {
   login: (data) => request('/auth/login', { method: 'POST', body: data }),
-  me: () => request('/auth/me'),
+  me: (token) => request('/auth/me', { authToken: token }),
   logout: () => request('/auth/logout', { method: 'POST' }),
 }
 

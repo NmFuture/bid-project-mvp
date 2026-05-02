@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo } from 'react'
+import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef } from 'react'
 import { ONLYOFFICE_CONFIG } from '../../config/onlyoffice'
 
 const buildHostPath = () => {
@@ -6,14 +6,15 @@ const buildHostPath = () => {
   return `${base.endsWith('/') ? base : `${base}/`}onlyoffice-host.html`
 }
 
-export default function OnlyOfficeEmbed({
+const OnlyOfficeEmbed = forwardRef(function OnlyOfficeEmbed({
   session,
   mode = 'edit',
   className = '',
   onReady,
   onError,
-}) {
+}, ref) {
   const requestId = useId().replaceAll(':', '')
+  const iframeRef = useRef(null)
 
   const iframeSrc = useMemo(() => {
     const fileUrl = session?.fileUrl || session?.browserFileUrl
@@ -49,6 +50,12 @@ export default function OnlyOfficeEmbed({
     return `${buildHostPath()}#${encodeURIComponent(JSON.stringify(payload))}`
   }, [mode, requestId, session])
 
+  useImperativeHandle(ref, () => ({
+    postMessage: (payload) => {
+      iframeRef.current?.contentWindow?.postMessage(payload, window.location.origin)
+    },
+  }), [])
+
   useEffect(() => {
     const handleMessage = (event) => {
       if (event.origin !== window.location.origin) return
@@ -72,10 +79,13 @@ export default function OnlyOfficeEmbed({
 
   return (
     <iframe
+      ref={iframeRef}
       title={mode === 'view' ? 'OnlyOffice 文档预览' : 'OnlyOffice 文档编辑器'}
       src={iframeSrc}
       className={className}
       allow="clipboard-read; clipboard-write"
     />
   )
-}
+})
+
+export default OnlyOfficeEmbed

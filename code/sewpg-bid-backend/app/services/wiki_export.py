@@ -1,12 +1,7 @@
-#!/usr/bin/env python3
-"""Export DB/API wiki nodes into the file-system wiki shape used by V2 TOC skill."""
-
 from __future__ import annotations
 
-import argparse
 import json
 import re
-import sys
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -82,25 +77,26 @@ def parse_frontmatter(text: str) -> dict[str, Any]:
 
 def parse_merge_fields(text: str) -> dict[str, Any]:
     fields: dict[str, Any] = {}
+    allowed_fields = {
+        "path",
+        "scope",
+        "category",
+        "skeleton_section",
+        "skeleton_level",
+        "material_level_range",
+        "heading_count",
+        "shift",
+        "attach_mode",
+        "condition",
+        "deprecated",
+    } | IDENTITY_FIELDS
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line.startswith("- ") or ":" not in line:
             continue
         key, _, value = line[2:].partition(":")
         key = key.strip()
-        if key not in {
-            "path",
-            "scope",
-            "category",
-            "skeleton_section",
-            "skeleton_level",
-            "material_level_range",
-            "heading_count",
-            "shift",
-            "attach_mode",
-            "condition",
-            "deprecated",
-        } | IDENTITY_FIELDS:
+        if key not in allowed_fields:
             continue
         value = value.strip().strip('"').strip("'")
         if value.lower() in {"true", "false"}:
@@ -240,7 +236,7 @@ def classify_root_file(title: str) -> str | None:
     return None
 
 
-def export_wiki(api_base: str, bid_type: str, out_dir: Path, timeout: float) -> dict[str, Any]:
+def export_wiki(api_base: str, bid_type: str, out_dir: Path, timeout: float = 20.0) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     cards_dir = out_dir / "卡片"
     cards_dir.mkdir(parents=True, exist_ok=True)
@@ -283,10 +279,10 @@ def export_wiki(api_base: str, bid_type: str, out_dir: Path, timeout: float) -> 
         card_count += 1
 
     defaults = {
-        "index.md": f"# {bid_type}素材索引\n\n由后端 API 导出，供目录生成 skill 读取。\n",
+        "index.md": f"# {bid_type}素材索引\n\n由后端 API 导出，供正文拼装读取。\n",
         "skeleton.md": f"# {bid_type}目录骨架\n\n素材卡片 frontmatter 中的 skeleton_section 为目录挂载依据。\n",
-        "rules.md": f"# {bid_type}装配规则\n\n优先使用模板骨架，叠加招标要求与素材卡片建议。\n",
-        "synonyms.md": f"# {bid_type}同义词\n\n后续由素材库维护章节词、业主词和文件名词的映射。\n",
+        "rules.md": f"# {bid_type}装配规则\n\n优先使用确认后的目录骨架，叠加可用素材卡片。\n",
+        "synonyms.md": f"# {bid_type}同义词\n\n由素材库维护章节词、业主词和文件名词的映射。\n",
     }
     for file_name, content in defaults.items():
         path = out_dir / file_name
@@ -301,29 +297,3 @@ def export_wiki(api_base: str, bid_type: str, out_dir: Path, timeout: float) -> 
         "selectedNodeCount": len(selected_nodes),
         "cardCount": card_count,
     }
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--api-base", default=DEFAULT_API_BASE)
-    parser.add_argument("--bid-type", default="技术标")
-    parser.add_argument("--out", required=True)
-    parser.add_argument("--timeout", type=float, default=20.0)
-    args = parser.parse_args()
-
-    try:
-        result = export_wiki(
-            api_base=str(args.api_base or DEFAULT_API_BASE),
-            bid_type=str(args.bid_type or "技术标"),
-            out_dir=Path(args.out),
-            timeout=float(args.timeout or 20.0),
-        )
-    except Exception as exc:
-        print(f"export_wiki_from_api failed: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
-
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-
-
-if __name__ == "__main__":
-    main()

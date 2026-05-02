@@ -1,0 +1,19 @@
+{
+  "name": "Search Bridge",
+  "guid": "asc.{5A9C9C4B-9E6F-4F57-9A22-0F4D7BBE0001}",
+  "version": "1.0.0",
+  "variations": [
+    {
+      "url": "index.html",
+      "icons": [],
+      "isViewer": true,
+      "EditorsSupport": ["word"],
+      "isVisual": false,
+      "isModal": false,
+      "isInsideMode": false,
+      "initDataType": "none",
+      "initData": "",
+      "buttons": []
+    }
+  ]
+}

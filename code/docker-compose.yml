@@ -179,6 +179,7 @@ services:
     volumes:
       - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
       - uploads:/data/uploads:ro
+      - documents:/data/documents
       - parsed:/data/parsed
       - opencode_data:/root/.local/share/opencode
       - opencode_cache:/root/.cache/opencode

@@ -39,6 +39,8 @@
 
     <script>
       const HOST_SOURCE = 'onlyoffice-host'
+      const SEARCH_SOURCE = 'onlyoffice-search-bridge'
+      const SEARCH_CHANNEL_NAME = 'onlyoffice-search-bridge'
 
       const postToParent = (payload) => {
         if (!window.parent || window.parent === window) return
@@ -94,6 +96,33 @@
         })
 
       const normalizeBaseUrl = (value) => String(value || '').replace(/\/+$/, '')
+
+      const relaySearchMessage = (message) => {
+        if (!message || message.source !== SEARCH_SOURCE || message.type !== 'search-basis-text') return
+
+        const payload = {
+          type: message.type,
+          text: message.text,
+          nonce: message.nonce,
+        }
+
+        try {
+          window.localStorage.setItem('onlyoffice-search-bridge-message', JSON.stringify(payload))
+        } catch {}
+
+        if ('BroadcastChannel' in window) {
+          try {
+            const channel = new BroadcastChannel(SEARCH_CHANNEL_NAME)
+            channel.postMessage(payload)
+            channel.close()
+          } catch {}
+        }
+      }
+
+      window.addEventListener('message', (event) => {
+        if (event.origin !== window.location.origin) return
+        relaySearchMessage(event.data)
+      })
 
       const buildScriptCandidates = (documentServerUrl) => {
         const candidates = []

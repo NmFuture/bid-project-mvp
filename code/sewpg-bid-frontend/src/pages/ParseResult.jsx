@@ -149,6 +149,11 @@ export default function ParseResult({ showToast }) {
   const isDirectoryCompleted = directoryStatus === 'completed'
   const directoryProgress = Math.max(0, Math.min(100, Number(directoryState?.percentage) || 0))
   const directoryTasks = Array.isArray(directoryState?.tasks) ? directoryState.tasks : []
+  const ruleEvidence = directoryState?.ruleEvidence || {}
+  const ruleDecisions = Array.isArray(ruleEvidence?.decisions) ? ruleEvidence.decisions : []
+  const tenderCandidateDecisions = ruleDecisions
+    .filter((item) => item?.source === 'tender')
+    .slice(0, 8)
 
   useEffect(() => {
     if (!isDirectoryRunning) return undefined
@@ -463,7 +468,7 @@ export default function ParseResult({ showToast }) {
           <div>
             <h3 className="text-base font-headline font-bold text-on-surface">目录生成</h3>
             <p className="text-sm text-on-surface-variant mt-1">
-              使用招标解析结果、素材库 Wiki 和当前模板生成技术标目录。
+              使用招标文件要求和投标文件模板生成目录审核稿。
             </p>
           </div>
           <button
@@ -497,14 +502,35 @@ export default function ParseResult({ showToast }) {
           )}
         </div>
 
-        {directoryState?.opencodeOutput?.parts?.length ? (
+        {directoryState?.opencodeOutput?.tocJsonPath ? (
           <div className="rounded-md border border-surface-container-high bg-white p-4 max-h-64 overflow-auto">
-            <h4 className="text-sm font-semibold text-on-surface mb-3">OpenCode / Skill 输出</h4>
-            {directoryState.opencodeOutput.parts.map((part, index) => (
-              <pre key={`${part.type}-${index}`} className="text-xs whitespace-pre-wrap break-words text-on-surface-variant mb-3 last:mb-0">
-                {part.text || part.type}
-              </pre>
-            ))}
+            <h4 className="text-sm font-semibold text-on-surface mb-3">规则生成输出</h4>
+            <div className="grid grid-cols-1 gap-2 text-xs text-on-surface-variant">
+              <div className="break-all">目录 JSON：{directoryState.opencodeOutput.tocJsonPath}</div>
+              {directoryState.opencodeOutput.evidencePath ? (
+                <div className="break-all">证据 JSON：{directoryState.opencodeOutput.evidencePath}</div>
+              ) : null}
+              <div>执行引擎：{directoryState.opencodeOutput.engine || 'local-rule-engine'}</div>
+              {ruleEvidence?.tenderCandidateCount !== undefined ? (
+                <div>招标候选要求：{ruleEvidence.tenderCandidateCount} 条，模板目录线索：{ruleEvidence.templateOutlineCount || 0} 条</div>
+              ) : null}
+            </div>
+            {tenderCandidateDecisions.length ? (
+              <div className="mt-4 border-t border-surface-container-high pt-3">
+                <h5 className="text-xs font-semibold text-on-surface mb-2">招标要求处理决策</h5>
+                <div className="grid grid-cols-1 gap-2">
+                  {tenderCandidateDecisions.map((item, index) => (
+                    <div key={`${item.title || 'decision'}-${index}`} className="rounded bg-[#f7f7f7] px-3 py-2 text-xs text-on-surface-variant">
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+                        <span className="font-medium text-on-surface">{item.title || '未命名要求'}</span>
+                        <span>{item.action === 'candidate' ? '保留证据，不自动入目录' : item.action === 'covered' ? '模板已覆盖' : item.action || '-'}</span>
+                      </div>
+                      {item.reason ? <div className="mt-1">{item.reason}</div> : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </DataCard>

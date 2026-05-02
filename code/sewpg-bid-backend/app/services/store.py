@@ -6,6 +6,7 @@ import json
 import re
 from contextlib import closing
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import psycopg
@@ -502,7 +503,7 @@ class AppStore:
                 "events": [],
                 "tasks": [
                     {"id": "task-1", "label": "解析章节线索", "status": "pending"},
-                    {"id": "task-2", "label": "调用目录生成 skill", "status": "pending"},
+                    {"id": "task-2", "label": "规则生成目录", "status": "pending"},
                     {"id": "task-3", "label": "保存目录结果", "status": "pending"},
                 ],
             },
@@ -925,12 +926,13 @@ class AppStore:
                 "chapterCount": len(nodes),
             },
             "opencodeOutput": build_directory_opencode_output(),
+            "ruleEvidence": {},
             "events": [
                 build_directory_event("目录生成完成。", level="success", step="done", at=generated_at),
             ],
             "tasks": [
                 {"id": "task-1", "label": "解析章节线索", "status": "done"},
-                {"id": "task-2", "label": "调用目录生成 skill", "status": "done"},
+                {"id": "task-2", "label": "规则生成目录", "status": "done"},
                 {"id": "task-3", "label": "保存目录结果", "status": "done"},
             ],
         }
@@ -955,6 +957,7 @@ class AppStore:
             "generatedAt": "",
             "output": None,
             "opencodeOutput": build_directory_opencode_output(),
+            "ruleEvidence": {},
             "events": [
                 build_directory_event(
                     "已开始生成目录任务，正在准备招标文本与模板线索。",
@@ -963,7 +966,7 @@ class AppStore:
             ],
             "tasks": [
                 {"id": "task-1", "label": "解析章节线索", "status": "running"},
-                {"id": "task-2", "label": "调用目录生成 skill", "status": "pending"},
+                {"id": "task-2", "label": "规则生成目录", "status": "pending"},
                 {"id": "task-3", "label": "保存目录结果", "status": "pending"},
             ],
         }
@@ -1054,6 +1057,7 @@ class AppStore:
         generated_at: str,
         summary: str,
         opencode_output: dict[str, Any] | None = None,
+        rule_evidence: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         project = self._require(project_id)
         current_state = copy.deepcopy(project.get("directory_state") or {})
@@ -1082,10 +1086,11 @@ class AppStore:
                 "chapterCount": len(nodes),
             },
             "opencodeOutput": current_output,
+            "ruleEvidence": copy.deepcopy(rule_evidence or current_state.get("ruleEvidence") or {}),
             "events": current_events[-20:],
             "tasks": [
                 {"id": "task-1", "label": "解析章节线索", "status": "done"},
-                {"id": "task-2", "label": "调用目录生成 skill", "status": "done"},
+                {"id": "task-2", "label": "规则生成目录", "status": "done"},
                 {"id": "task-3", "label": "保存目录结果", "status": "done"},
             ],
         }
@@ -1102,7 +1107,35 @@ class AppStore:
         return copy.deepcopy(payload)
 
     def get_directory_state(self, project_id: str) -> dict[str, Any]:
-        return copy.deepcopy(self._require(project_id)["directory_state"])
+        state = copy.deepcopy(self._require(project_id)["directory_state"])
+        if not isinstance(state.get("ruleEvidence"), dict) or not state.get("ruleEvidence"):
+            evidence = self._load_directory_rule_evidence(state)
+            if evidence:
+                state["ruleEvidence"] = evidence
+        return state
+
+    def _load_directory_rule_evidence(self, state: dict[str, Any]) -> dict[str, Any]:
+        opencode_output = state.get("opencodeOutput") if isinstance(state.get("opencodeOutput"), dict) else {}
+        evidence_path = Path(str(opencode_output.get("evidencePath") or "")).expanduser()
+        if not str(evidence_path).strip() or not evidence_path.exists():
+            return {}
+        try:
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(evidence, dict):
+            return {}
+        decisions = evidence.get("decisions") if isinstance(evidence.get("decisions"), list) else []
+        candidates = evidence.get("tenderCandidates") if isinstance(evidence.get("tenderCandidates"), list) else []
+        template_outline = evidence.get("templateOutline") if isinstance(evidence.get("templateOutline"), list) else []
+        return {
+            "schemaVersion": str(evidence.get("schema_version") or ""),
+            "engine": str(evidence.get("engine") or ""),
+            "ruleConfig": copy.deepcopy(evidence.get("ruleConfig") if isinstance(evidence.get("ruleConfig"), dict) else {}),
+            "templateOutlineCount": len(template_outline),
+            "tenderCandidateCount": len(candidates),
+            "decisions": [copy.deepcopy(item) for item in decisions if isinstance(item, dict)],
+        }
 
     def get_outline_state(self, project_id: str) -> dict[str, Any]:
         return copy.deepcopy(self._require(project_id)["outline_state"])
