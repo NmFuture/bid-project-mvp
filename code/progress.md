@@ -2085,3 +2085,34 @@ bid_workspace
 - `code/sewpg-bid-frontend/src/pages/TenderReview.jsx`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-02 13:25:19 post-commit 84d4a20
+
+提交摘要：Implement tech bid gap planning workflow
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/api/routes/gaps.py`
+- `code/sewpg-bid-backend/app/services/gap_planning.py`
+- `code/sewpg-bid-backend/app/services/opencode_client.py`
+- `code/sewpg-bid-backend/app/services/store.py`
+- `code/sewpg-bid-backend/app/services/tech_assembly.py`
+- `code/sewpg-bid-backend/opencode/Dockerfile`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/build_assembly.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-gap-planner/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-table-filler/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_fill_generation.py`
+- `code/sewpg-bid-backend/tests/test_gap_review_flow.py`
+- `code/sewpg-bid-backend/tests/test_onlyoffice_document.py`
+- `code/sewpg-bid-frontend/src/App.jsx`
+- `code/sewpg-bid-frontend/src/api/index.js`
+- `code/sewpg-bid-frontend/src/pages/GapRecognition.jsx`
+- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
+- `code/sewpg-bid-frontend/src/utils/stageFlow.js`
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
