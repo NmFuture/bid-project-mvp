@@ -2227,3 +2227,58 @@ bid_workspace
 - `PYTHONPATH=. pytest tests/test_stage_progress.py tests/test_gap_review_flow.py tests/test_onlyoffice_document.py tests/test_fill_generation.py -q`：29 passed。
 - `npm run lint`：通过。
 - `npm run build`：通过，保留既有 Vite chunk size warning。
+
+### 2026-05-02 20:01:33 post-commit 89c4a1c
+
+提交摘要：Fix OnlyOffice evidence jump and directory review flow
+
+变更文件：
+
+- `README.md`
+- `code/docker-compose.yml`
+- `code/sewpg-bid-backend/README.md`
+- `code/sewpg-bid-backend/app/api/routes/auth.py`
+- `code/sewpg-bid-backend/app/api/routes/directory.py`
+- `code/sewpg-bid-backend/app/api/routes/outline.py`
+- `code/sewpg-bid-backend/app/core/config.py`
+- `code/sewpg-bid-backend/app/services/gap_planning.py`
+- `code/sewpg-bid-backend/app/services/outline_generation.py`
+- `code/sewpg-bid-backend/app/services/store.py`
+- `code/sewpg-bid-backend/app/services/tech_assembly.py`
+- `code/sewpg-bid-backend/app/services/toc_engine.py`
+- `code/sewpg-bid-backend/app/services/wiki_export.py`
+- `code/sewpg-bid-backend/opencode/Dockerfile`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/references/example_run.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/build_plan.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/export_wiki_from_api.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/extract_attach.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/extract_template.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/extract_tender.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/wiki_lookup.py`
+- `code/sewpg-bid-backend/tests/test_auth_routes.py`
+- `code/sewpg-bid-backend/tests/test_directory_generation.py`
+- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
+- `code/sewpg-bid-frontend/.env.production`
+- `code/sewpg-bid-frontend/public/onlyoffice-host.html`
+- `code/sewpg-bid-frontend/public/onlyoffice-search-plugin/config.json`
+- `code/sewpg-bid-frontend/public/onlyoffice-search-plugin/index.html`
+- `code/sewpg-bid-frontend/public/onlyoffice-search-plugin/plugin.js`
+- `code/sewpg-bid-frontend/public/onlyoffice-search-plugin/translations/en-US.json`
+- `code/sewpg-bid-frontend/public/onlyoffice-search-plugin/translations/langs.json`
+- `code/sewpg-bid-frontend/public/onlyoffice-search-plugin/translations/zh-CN.json`
+- `code/sewpg-bid-frontend/src/App.jsx`
+- `code/sewpg-bid-frontend/src/api/index.js`
+- `code/sewpg-bid-frontend/src/components/shared/OnlyOfficeEmbed.jsx`
+- `code/sewpg-bid-frontend/src/config/onlyoffice.js`
+- `code/sewpg-bid-frontend/src/pages/OutlineReview.jsx`
+- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
+- `code/sewpg-bid-frontend/vite.config.js`
+- `"doc/05-MVP\344\270\273\351\223\276\350\267\257\350\257\264\346\230\216.md"`
+- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
+- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
+- `"doc/13-S7\346\212\200\346\234\257\346\240\207\346\255\243\346\226\207\346\213\274\350\243\205\344\270\216S8\347\264\240\346\235\220\346\240\241\351\252\214\350\257\264\346\230\216.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

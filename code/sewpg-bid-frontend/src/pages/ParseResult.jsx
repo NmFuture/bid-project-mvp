@@ -6,6 +6,7 @@ import DataCard from '../components/shared/DataCard'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
+import { brandFutureCodeOrFallback } from '../utils/branding'
 import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
@@ -43,6 +44,16 @@ const fileSizeLabel = (size) => {
   const value = Number(size || 0)
   if (!Number.isFinite(value) || value <= 0) return '0 MB'
   return `${(value / 1024 / 1024).toFixed(1)} MB`
+}
+
+const formatDirectoryPartText = (part) => {
+  const text = String(part?.text || '')
+  if (!text.trim()) return '(空片段)'
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2)
+  } catch {
+    return text
+  }
 }
 
 const formatDateTime = (value) => {
@@ -154,6 +165,10 @@ export default function ParseResult({ showToast }) {
   const tenderCandidateDecisions = ruleDecisions
     .filter((item) => item?.source === 'tender')
     .slice(0, 8)
+  const directoryFutureCodeOutput = directoryState?.opencodeOutput || {}
+  const directoryFutureCodeParts = Array.isArray(directoryFutureCodeOutput?.parts)
+    ? directoryFutureCodeOutput.parts.filter((part) => part?.text).slice(-8)
+    : []
 
   useEffect(() => {
     if (!isDirectoryRunning) return undefined
@@ -504,13 +519,13 @@ export default function ParseResult({ showToast }) {
 
         {directoryState?.opencodeOutput?.tocJsonPath ? (
           <div className="rounded-md border border-surface-container-high bg-white p-4 max-h-64 overflow-auto">
-            <h4 className="text-sm font-semibold text-on-surface mb-3">规则生成输出</h4>
+            <h4 className="text-sm font-semibold text-on-surface mb-3">futurecode 生成输出</h4>
             <div className="grid grid-cols-1 gap-2 text-xs text-on-surface-variant">
               <div className="break-all">目录 JSON：{directoryState.opencodeOutput.tocJsonPath}</div>
               {directoryState.opencodeOutput.evidencePath ? (
                 <div className="break-all">证据 JSON：{directoryState.opencodeOutput.evidencePath}</div>
               ) : null}
-              <div>执行引擎：{directoryState.opencodeOutput.engine || 'local-rule-engine'}</div>
+              <div>执行引擎：{brandFutureCodeOrFallback(directoryState.opencodeOutput.engine || directoryState.opencodeOutput.providerId)}</div>
               {ruleEvidence?.tenderCandidateCount !== undefined ? (
                 <div>招标候选要求：{ruleEvidence.tenderCandidateCount} 条，模板目录线索：{ruleEvidence.templateOutlineCount || 0} 条</div>
               ) : null}
@@ -531,6 +546,36 @@ export default function ParseResult({ showToast }) {
                 </div>
               </div>
             ) : null}
+          </div>
+        ) : null}
+
+        {(isDirectoryRunning || directoryFutureCodeParts.length || directoryFutureCodeOutput?.sessionId) ? (
+          <div className="rounded-md border border-surface-container-high bg-white p-4">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+              <h4 className="text-sm font-semibold text-on-surface">futurecode 流式输出</h4>
+              <span className="text-xs text-outline break-all">
+                {brandFutureCodeOrFallback(directoryFutureCodeOutput?.providerId)}
+                {directoryFutureCodeOutput?.modelId ? ` / ${directoryFutureCodeOutput.modelId}` : ''}
+              </span>
+            </div>
+            {directoryFutureCodeParts.length ? (
+              <div className="mt-3 flex max-h-72 flex-col gap-2 overflow-y-auto pr-1">
+                {directoryFutureCodeParts.map((part, index) => (
+                  <div key={`${part.type || 'part'}-${index}`} className="rounded-md border border-primary/15 bg-primary/5 p-3">
+                    <div className="mb-1 text-[11px] font-semibold uppercase text-primary">
+                      {part.type || 'text'}
+                    </div>
+                    <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-on-surface">
+                      {formatDirectoryPartText(part)}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-3 text-xs text-outline">
+                futurecode session 已创建，正在等待目录生成片段。
+              </p>
+            )}
           </div>
         ) : null}
       </DataCard>

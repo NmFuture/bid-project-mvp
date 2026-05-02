@@ -639,7 +639,7 @@ export default function TenderReview({ showToast }) {
             </div>
           </div>
           <div className="rounded-md border border-surface-container-high bg-[#f7f7f7] p-3">
-            <p className="text-xs font-semibold text-on-surface mb-2">opencode 输出</p>
+            <p className="text-xs font-semibold text-on-surface mb-2">futurecode 输出</p>
             {parts.length ? (
               <div className="flex flex-col gap-2">
                 {parts.map((part, index) => (
@@ -649,7 +649,7 @@ export default function TenderReview({ showToast }) {
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-outline">尚未收到 opencode 流式片段；当前显示后端真实步骤进度。</p>
+              <p className="text-xs text-outline">尚未收到 futurecode 流式片段；当前显示后端真实步骤进度。</p>
             )}
           </div>
         </div>

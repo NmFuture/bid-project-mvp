@@ -98,6 +98,7 @@ class OpencodeClient:
             session_id,
             prompt_text,
             stream_callback=stream_callback,
+            early_tool_command="s2toc",
         )
         parsed = self._extract_outline_json(response)
         return {
@@ -396,6 +397,7 @@ class OpencodeClient:
         session_id: str,
         prompt_text: str,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
+        early_tool_command: str = "",
     ) -> dict[str, Any]:
         if stream_callback is None:
             return self.send_prompt(session_id, prompt_text)
@@ -426,6 +428,39 @@ class OpencodeClient:
                 stream_callback,
                 last_signature,
             )
+            if early_tool_command:
+                messages = self.list_session_messages(session_id)
+                tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
+                if tool_output:
+                    snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+                    trace_parts = list(snapshot.get("parts") or [])
+                    trace_parts.append(
+                        {
+                            "type": "text",
+                            "text": (
+                                f"{early_tool_command} 已完成，后端直接读取脚本产物，"
+                                "不再等待 futurecode 继续读取大 JSON 文件。"
+                            ),
+                        }
+                    )
+                    early_response = self._tool_output_response(
+                        session_id=session_id,
+                        output=tool_output,
+                        trace_parts=trace_parts,
+                    )
+                    stream_callback(
+                        {
+                            "status": "received",
+                            "sessionId": session_id,
+                            "providerId": self.provider_id,
+                            "modelId": self.model_id,
+                            "receivedAt": early_response["_traceReceivedAt"],
+                            "parts": self._normalize_output_parts(trace_parts),
+                            "earlyCompletion": True,
+                            "completionSource": early_tool_command,
+                        }
+                    )
+                    return early_response
 
         last_signature = self._emit_session_output_delta(
             session_id,
@@ -461,9 +496,18 @@ class OpencodeClient:
         return signature
 
     def _get_session_output_snapshot(self, session_id: str) -> dict[str, Any]:
+        return self._get_session_output_snapshot_from_messages(
+            session_id,
+            self.list_session_messages(session_id),
+        )
+
+    def _get_session_output_snapshot_from_messages(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         assistant_message: dict[str, Any] | None = None
         fallback_assistant: dict[str, Any] | None = None
-        messages = self.list_session_messages(session_id)
         for message in reversed(messages):
             info = message.get("info") or {}
             if str(info.get("role") or "") == "assistant":
@@ -499,6 +543,58 @@ class OpencodeClient:
                 assistant_message_id,
                 tuple((str(part.get("type") or ""), str(part.get("text") or "")) for part in parts),
             ),
+        }
+
+    @staticmethod
+    def _find_completed_bash_tool_output(
+        messages: list[dict[str, Any]],
+        command_name: str,
+    ) -> str:
+        expected = str(command_name or "").strip()
+        if not expected:
+            return ""
+        for message in reversed(messages):
+            for part in reversed(message.get("parts") or []):
+                if not isinstance(part, dict) or part.get("type") != "tool":
+                    continue
+                if str(part.get("tool") or "") != "bash":
+                    continue
+                state = part.get("state") if isinstance(part.get("state"), dict) else {}
+                if state.get("status") != "completed":
+                    continue
+                raw_input = state.get("input") if isinstance(state.get("input"), dict) else {}
+                command = str(raw_input.get("command") or "").strip()
+                first_word = command.split(maxsplit=1)[0] if command else ""
+                if first_word != expected:
+                    continue
+                exit_code = state.get("exit")
+                if exit_code not in (None, 0):
+                    continue
+                output = str(state.get("output") or "").strip()
+                if output:
+                    return output
+        return ""
+
+    def _tool_output_response(
+        self,
+        *,
+        session_id: str,
+        output: str,
+        trace_parts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        received_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        return {
+            "info": {
+                "role": "assistant",
+                "providerID": self.provider_id,
+                "modelID": self.model_id,
+                "time": {"completed": received_at},
+                "id": f"{session_id}:tool-output",
+            },
+            "parts": [{"type": "text", "text": output}],
+            "_traceParts": trace_parts,
+            "_traceReceivedAt": received_at,
+            "_earlyCompletion": True,
         }
 
     @staticmethod
@@ -613,16 +709,22 @@ class OpencodeClient:
     def _build_output_trace(self, session_id: str, response: dict[str, Any]) -> dict[str, Any]:
         info = response.get("info") or {}
         raw_time = info.get("time") or {}
-        return {
+        trace_parts = response.get("_traceParts")
+        if not isinstance(trace_parts, list):
+            trace_parts = response.get("parts") or []
+        output = {
             "status": "received",
             "sessionId": session_id,
             "providerId": str(info.get("providerID") or self.provider_id),
             "modelId": str(info.get("modelID") or self.model_id),
-            "receivedAt": self._coerce_timestamp(
-                raw_time.get("completed") if isinstance(raw_time, dict) else raw_time
-            ),
-            "parts": self._normalize_output_parts(response.get("parts") or []),
+            "receivedAt": str(response.get("_traceReceivedAt") or "")
+            or self._coerce_timestamp(raw_time.get("completed") if isinstance(raw_time, dict) else raw_time),
+            "parts": self._normalize_output_parts(trace_parts),
         }
+        if response.get("_earlyCompletion"):
+            output["earlyCompletion"] = True
+            output["completionSource"] = "s2toc"
+        return output
 
     @staticmethod
     def _coerce_timestamp(value: Any) -> str:

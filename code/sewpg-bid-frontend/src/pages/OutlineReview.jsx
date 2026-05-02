@@ -62,9 +62,26 @@ const pickTenderBasisRef = (node) => {
 }
 
 const sourceRefSearchText = (ref) =>
-  String(ref?.basisText || ref?.searchText || ref?.rawText || ref?.raw_text || ref?.title || '')
+  String(ref?.searchText || ref?.basisText || ref?.rawText || ref?.raw_text || ref?.title || '')
     .replace(/\s+/g, ' ')
     .trim()
+
+const relationLabel = (relation = '') => {
+  const labels = {
+    direct_requirement: '直接要求',
+    chapter_requirement: '章节要求',
+    appendix_requirement: '附表要求',
+    appendix_required: '附表要求',
+    supporting_requirement: '支撑要求',
+    semantic_match: '语义匹配',
+  }
+  return labels[relation] || relation || ''
+}
+
+const confidenceLabel = (value) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return ''
+  return `置信 ${Math.round(value * 100)}%`
+}
 
 const sendOnlyOfficeSearch = (text, onlyofficeEmbedRef = null, beforeSend = null) => {
   const cleanText = String(text || '').replace(/\s+/g, ' ').trim()
@@ -184,10 +201,8 @@ export default function OutlineReview({ showToast }) {
     return () => window.removeEventListener('message', handleSearchResult)
   }, [markPendingSearch, showToast])
 
-  const focusTenderBasis = useCallback(async (node) => {
-    const basisRef = pickTenderBasisRef(node)
-    if (!basisRef) return
-
+  const focusSourceRef = useCallback(async (basisRef) => {
+    if (!basisRef || basisRef?.type !== 'tender') return
     const searchText = sourceRefSearchText(basisRef)
     if (!searchText) return
 
@@ -209,6 +224,11 @@ export default function OutlineReview({ showToast }) {
 
     sendOnlyOfficeSearch(searchText, onlyofficeEmbedRef, markPendingSearch)
   }, [id, markPendingSearch, showToast, tenderPreview?.activeFile?.id])
+
+  const focusTenderBasis = useCallback(async (node) => {
+    const basisRef = pickTenderBasisRef(node)
+    await focusSourceRef(basisRef)
+  }, [focusSourceRef])
 
   const handleSave = async () => {
     if (saving) return
@@ -625,6 +645,9 @@ export default function OutlineReview({ showToast }) {
                   {activeRefs.slice(0, 4).map((ref, index) => {
                     const searchText = sourceRefSearchText(ref)
                     const isTender = ref?.type === 'tender'
+                    const isSemantic = ref?.kind === 'codex_semantic'
+                    const relation = relationLabel(ref?.relation)
+                    const confidence = confidenceLabel(ref?.confidence)
                     const selected = activeBasisRef === ref
                     return (
                       <button
@@ -633,7 +656,7 @@ export default function OutlineReview({ showToast }) {
                         onClick={() => {
                           if (!isTender || !searchText) return
                           setActiveBasisRef(ref)
-                          setPendingSearchText(searchText)
+                          focusSourceRef(ref)
                         }}
                         disabled={!isTender || !searchText}
                         className={`rounded-md border px-3 py-2 text-left text-xs transition-colors disabled:cursor-default disabled:opacity-70 ${
@@ -644,11 +667,26 @@ export default function OutlineReview({ showToast }) {
                         title={searchText}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-semibold text-on-surface">
-                            {isTender ? '招标依据' : '模板骨架'}
-                          </span>
-                          <span>{ref?.fileName || ref?.type || '-'}</span>
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <span className="font-semibold text-on-surface">
+                              {isTender ? (isSemantic ? '语义依据' : '招标依据') : '模板骨架'}
+                            </span>
+                            {relation ? (
+                              <span className="rounded bg-secondary-container px-1.5 py-0.5 text-[10px] font-semibold text-on-secondary-container">
+                                {relation}
+                              </span>
+                            ) : null}
+                            {confidence ? (
+                              <span className="rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] font-semibold text-on-surface-variant">
+                                {confidence}
+                              </span>
+                            ) : null}
+                          </div>
+                          <span className="shrink-0">{ref?.fileName || ref?.type || '-'}</span>
                         </div>
+                        {ref?.reason ? (
+                          <div className="mt-1 line-clamp-2 text-on-surface">{ref.reason}</div>
+                        ) : null}
                         <div className="mt-1 line-clamp-2">{searchText || ref?.rawText || ref?.raw_text || '-'}</div>
                       </button>
                     )

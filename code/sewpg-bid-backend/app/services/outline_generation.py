@@ -3,28 +3,37 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import zipfile
+import subprocess
+import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
-from xml.etree import ElementTree as ET
 
-from app.core.config import settings
+from app.core.config import BASE_DIR, settings
+from app.services.opencode_client import OpencodeClient
 from app.services.store import build_directory_opencode_output, now_iso, store
-from app.services.toc_engine import generate_toc_from_manifest
 
-WORD_NAMESPACE = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-MAX_TENDER_HINTS = 12
-MAX_TEMPLATE_HINTS = 12
-TOC_ENGINE_NAME = "local-rule-engine"
-
-HEADING_PATTERNS = [
-    re.compile(r"^第[一二三四五六七八九十百千0-9]+章[\s　].+"),
-    re.compile(r"^第[一二三四五六七八九十百千0-9]+章.+"),
-    re.compile(r"^[一二三四五六七八九十百千]+、.+"),
-    re.compile(r"^\d+(\.\d+){0,3}[\s　].+"),
-    re.compile(r"^附表[0-9一二三四五六七八九十]+.+"),
-]
-
+OUTLINE_SKILL_NAME = "bid-tech-outline-generator"
+OUTLINE_SKILL_COMMAND = "s2toc"
+OUTLINE_SKILL_RUNNER = (
+    BASE_DIR
+    / "opencode"
+    / "skill"
+    / OUTLINE_SKILL_NAME
+    / "scripts"
+    / "run_from_manifest.py"
+)
+OUTLINE_REVIEW_BUDGET = {
+    "templateOutlineItems": 80,
+    "tenderCandidates": 260,
+    "draftItems": 120,
+    "scriptDecisions": 120,
+    "textChars": 180,
+    "stdoutTenderCandidates": 24,
+    "stdoutDraftItems": 24,
+    "stdoutScriptDecisions": 24,
+}
+PUBLIC_EVIDENCE_DECISION_LIMIT = 80
 
 def generate_outline_for_project(project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
     return generate_outline_for_project_with_progress(project_id, data)
@@ -46,8 +55,6 @@ def generate_outline_for_project_with_progress(
     if not combined_text:
         raise ValueError("S1 解析文本为空，暂时无法生成目录。")
 
-    tender_hints = _extract_heading_candidates(combined_text, MAX_TENDER_HINTS)
-    template_hints = _collect_template_hints(template_file_records)
     skill_workspace = _prepare_toc_skill_workspace(
         project_id=project_id,
         project=project,
@@ -59,29 +66,26 @@ def generate_outline_for_project_with_progress(
         progress_callback(
             "inputs_ready",
             {
-                "tenderHintCount": len(tender_hints),
-                "templateHintCount": len(template_hints),
+                "tenderFileCount": skill_workspace["tenderFileCount"],
+                "templateFileCount": skill_workspace["templateFileCount"],
                 "workDir": skill_workspace["workDir"],
                 "bidType": skill_workspace["bidType"],
             },
         )
 
-    if progress_callback:
-        progress_callback(
-            "generating_outline",
-            {
-                "templateHeadingCount": len(template_hints),
-                "tenderCandidateCount": len(tender_hints),
-            },
-        )
-
-    toc_result = generate_toc_from_manifest(skill_workspace)
+    toc_result = _run_outline_skill(
+        Path(str(skill_workspace["canonicalManifestPath"])),
+        progress_callback=progress_callback,
+    )
     nodes = _nodes_from_generation_result(toc_result)
     summary = _summary_from_generation_result(toc_result)
-    opencode_output = build_directory_opencode_output(status="not_used")
+    opencode_output = toc_result.get("opencodeOutput") if isinstance(toc_result.get("opencodeOutput"), dict) else {}
+    if not opencode_output:
+        opencode_output = build_directory_opencode_output(status="received")
     opencode_output.update(
         {
-            "engine": TOC_ENGINE_NAME,
+            "engine": OUTLINE_SKILL_NAME,
+            "skill": OUTLINE_SKILL_NAME,
             "workDir": skill_workspace["workDir"],
             "manifestPath": skill_workspace["manifestPath"],
             "canonicalManifestPath": skill_workspace["canonicalManifestPath"],
@@ -109,27 +113,346 @@ def generate_outline_for_project_with_progress(
     return payload
 
 
-def _collect_template_hints(template_file_records: list[dict[str, Any]]) -> list[str]:
-    hints: list[str] = []
-    for file_record in template_file_records:
-        path = Path(str(file_record.get("path") or ""))
-        if not path.exists():
+def _run_outline_skill(
+    manifest_path: Path,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
+    prompt = _build_outline_prompt(manifest_path)
+    try:
+        return _load_outline_result(
+            OpencodeClient().generate_outline_with_trace(
+                prompt,
+                session_ready_callback=(
+                    (lambda details: progress_callback("outline_session_ready", details))
+                    if progress_callback
+                    else None
+                ),
+                stream_callback=(
+                    (lambda details: progress_callback("outline_delta", details))
+                    if progress_callback
+                    else None
+                ),
+            ),
+            manifest_path,
+        )
+    except Exception as exc:
+        if progress_callback:
+            progress_callback(
+                "outline_fallback",
+                {"error": str(exc), "manifestPath": str(manifest_path)},
+            )
+        fallback = _run_local_outline_skill(manifest_path)
+        return _load_outline_result(fallback, manifest_path)
+
+
+def _run_local_outline_skill(manifest_path: Path) -> dict[str, Any]:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(OUTLINE_SKILL_RUNNER),
+            "--manifest",
+            str(manifest_path),
+            "--response",
+            "summary",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=max(30, int(settings.opencode_timeout_sec)),
+    )
+    result = json.loads(completed.stdout)
+    result["opencodeOutput"] = {
+        "status": "received",
+        "sessionId": str(manifest_path),
+        "providerId": "local-skill",
+        "modelId": OUTLINE_SKILL_NAME,
+        "receivedAt": now_iso(),
+        "parts": [{"type": "text", "text": completed.stdout.strip()}],
+    }
+    return result
+
+
+def _build_outline_prompt(manifest_path: Path) -> str:
+    return f"""
+Use the {OUTLINE_SKILL_NAME} skill.
+
+你现在在做 S2 技术标目录生成。后端已经准备好 manifest，其中只包含招标文件、投标模板、可选附表模板和输出路径。
+
+manifest：{manifest_path}
+
+请先直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径：
+
+{OUTLINE_SKILL_COMMAND} {manifest_path}
+
+命令会写入 outputFile/evidenceFile/agentReviewFile，并在 stdout 打印小型 JSON。stdout 已包含 agentReviewDigest，请只根据 stdout 里的 agentReviewDigest 做一次语义审核。
+不要读取、cat、head、tail、grep outputFile/evidenceFile/agentReviewFile；这些文件由后端读取并保存。
+1. 判断招标要求是否已被模板目录覆盖，把可靠依据绑定到对应目录项。
+2. 招标明确要求的附表/副表只能放在目录末尾，不要穿插进中间章节。
+3. 不确定的要求只写入 evidence/decisions，不强行新增目录。
+4. 保持 outputFile 是干净的 bid-toc-json-v1，items[] 里不要出现素材库字段以外的冗余解释；material_refs 固定为空数组。
+5. source_refs[] 必须保留可跳转字段，searchText 使用招标原文片段。
+
+如需调整，请直接修改 outputFile 和 evidenceFile。最后只返回严格 JSON，不要 Markdown，不要解释文字：
+{{
+  "schema_version": "bid-toc-json-v1",
+  "outputFile": "<outputFile from manifest>",
+  "evidenceFile": "<evidenceFile from manifest>",
+  "summary": {{"total_items": 0}},
+  "agentDecisions": []
+}}
+""".strip()
+
+
+def _load_outline_result(result: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    output_file = Path(str(result.get("outputFile") or manifest.get("outputFile") or "")).expanduser()
+    evidence_file = Path(str(result.get("evidenceFile") or manifest.get("evidenceFile") or "")).expanduser()
+    if not output_file.exists():
+        raise RuntimeError(f"S2 目录 Skill 未生成 outputFile：{output_file}")
+
+    toc = json.loads(output_file.read_text(encoding="utf-8"))
+    if not isinstance(toc, dict) or not isinstance(toc.get("items"), list):
+        raise RuntimeError("S2 目录 Skill 输出不是有效 bid-toc-json-v1。")
+    if isinstance(result.get("items"), list):
+        toc["items"] = _clean_toc_items(result["items"])
+        _rewrite_toc_file(output_file, toc, evidence_file)
+    elif isinstance(result.get("agentDecisions"), list):
+        toc = _apply_agent_decisions(toc, result["agentDecisions"], evidence_file)
+        _rewrite_toc_file(output_file, toc, evidence_file, agent_decisions=result["agentDecisions"])
+    else:
+        toc["items"] = _clean_toc_items(toc["items"])
+        _rewrite_toc_file(output_file, toc, evidence_file)
+
+    toc["outputFile"] = str(output_file)
+    toc["evidenceFile"] = str(evidence_file)
+    if isinstance(result.get("opencodeOutput"), dict):
+        toc["opencodeOutput"] = result["opencodeOutput"]
+    toc["ruleEvidence"] = _public_rule_evidence_from_file(evidence_file)
+    return toc
+
+
+def _apply_agent_decisions(
+    toc: dict[str, Any],
+    agent_decisions: list[Any],
+    evidence_file: Path,
+) -> dict[str, Any]:
+    evidence = _load_json_dict(evidence_file)
+    candidates = {
+        str(item.get("id") or item.get("candidateId") or ""): item
+        for item in evidence.get("tenderCandidates", [])
+        if isinstance(item, dict)
+    }
+    items = _clean_toc_items(toc.get("items") if isinstance(toc.get("items"), list) else [])
+    item_index = _item_lookup(items)
+    for raw_decision in agent_decisions:
+        if not isinstance(raw_decision, dict):
             continue
-        if path.suffix.lower() == ".docx":
-            hints.extend(_extract_docx_outline_hints(path, MAX_TEMPLATE_HINTS))
-        if len(hints) >= MAX_TEMPLATE_HINTS:
-            break
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for item in hints:
-        normalized = item.strip()
-        if not normalized or normalized in seen:
+        decision = str(raw_decision.get("decision") or raw_decision.get("action") or "").strip()
+        candidate_id = str(raw_decision.get("candidateId") or raw_decision.get("id") or "")
+        candidate = candidates.get(candidate_id)
+        if candidate is None:
             continue
-        seen.add(normalized)
-        ordered.append(normalized)
-        if len(ordered) >= MAX_TEMPLATE_HINTS:
-            break
-    return ordered
+        if decision in {"attach_evidence", "attach", "covered"}:
+            target = _find_decision_target(raw_decision, item_index, items)
+            if target is None:
+                continue
+            target.setdefault("source_refs", []).append(_source_ref_from_agent_candidate(candidate, raw_decision))
+        elif decision in {"append_item", "add", "add_appendix"}:
+            items.append(_toc_item_from_agent_candidate(len(items) + 1, candidate, raw_decision))
+        elif decision in {"exclude", "candidate", "ignore"}:
+            continue
+    toc["items"] = _clean_toc_items(items)
+    return toc
+
+
+def _rewrite_toc_file(
+    output_file: Path,
+    toc: dict[str, Any],
+    evidence_file: Path,
+    *,
+    agent_decisions: list[Any] | None = None,
+) -> None:
+    items = _clean_toc_items(toc.get("items") if isinstance(toc.get("items"), list) else [])
+    counts = Counter(str(item.get("annotation") or "") for item in items)
+    toc["items"] = items
+    summary = toc.get("summary") if isinstance(toc.get("summary"), dict) else {}
+    summary.update(
+        {
+            "total_items": len(items),
+            "annotation_counts": dict(counts),
+        }
+    )
+    toc["summary"] = summary
+    toc["outputFile"] = str(output_file)
+    toc["evidenceFile"] = str(evidence_file)
+    output_file.write_text(json.dumps(toc, ensure_ascii=False, indent=2), encoding="utf-8")
+    if evidence_file.exists():
+        evidence = _load_json_dict(evidence_file)
+        if agent_decisions is not None:
+            evidence["agentDecisions"] = [item for item in agent_decisions if isinstance(item, dict)]
+        evidence_file.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _clean_toc_items(items: list[Any]) -> list[dict[str, Any]]:
+    cleaned: list[dict[str, Any]] = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        source_refs = item.get("source_refs")
+        if not isinstance(source_refs, list):
+            source_refs = item.get("sourceRefs") if isinstance(item.get("sourceRefs"), list) else []
+        material_refs = item.get("material_refs")
+        if not isinstance(material_refs, list):
+            material_refs = item.get("materialRefs") if isinstance(item.get("materialRefs"), list) else []
+        cleaned.append(
+            {
+                "itemId": str(item.get("itemId") or f"TOC-{index:04d}"),
+                "order": index,
+                "number": str(item.get("number") or "").strip(),
+                "title": str(item.get("title") or item.get("name") or f"未命名章节{index}").strip(),
+                "level": _coerce_toc_level(item.get("level")),
+                "annotation": str(item.get("annotation") or "").strip() or "保留",
+                "source": str(item.get("source") or "").strip() or "template",
+                "reason": str(item.get("reason") or "").strip(),
+                "source_refs": [_clean_source_ref(ref) for ref in source_refs if isinstance(ref, dict)],
+                "material_refs": [ref for ref in material_refs if isinstance(ref, dict)],
+            }
+        )
+    return cleaned
+
+
+def _clean_source_ref(ref: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(ref)
+    if "raw_text" in cleaned and "rawText" not in cleaned:
+        cleaned["rawText"] = cleaned.get("raw_text")
+    if "rawText" in cleaned and "raw_text" not in cleaned:
+        cleaned["raw_text"] = cleaned.get("rawText")
+    basis_text = str(cleaned.get("basisText") or cleaned.get("rawText") or cleaned.get("raw_text") or "")
+    if basis_text and not cleaned.get("basisText"):
+        cleaned["basisText"] = basis_text
+    if basis_text and not cleaned.get("searchText"):
+        cleaned["searchText"] = basis_text
+    return cleaned
+
+
+def _item_lookup(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for item in items:
+        for key in (
+            str(item.get("itemId") or ""),
+            str(item.get("title") or ""),
+            _title_key(str(item.get("title") or "")),
+        ):
+            if key:
+                result[key] = item
+    return result
+
+
+def _find_decision_target(
+    decision: dict[str, Any],
+    item_index: dict[str, dict[str, Any]],
+    items: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    for key in (
+        str(decision.get("targetItemId") or ""),
+        str(decision.get("targetTitle") or ""),
+        _title_key(str(decision.get("targetTitle") or "")),
+    ):
+        if key and key in item_index:
+            return item_index[key]
+    return items[-1] if items else None
+
+
+def _source_ref_from_agent_candidate(candidate: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
+    basis_text = str(candidate.get("searchText") or candidate.get("basisText") or candidate.get("rawText") or "")
+    return {
+        "type": "tender",
+        "role": "basis",
+        "kind": "codex_semantic",
+        "candidateKind": str(candidate.get("kind") or ""),
+        "candidateId": str(candidate.get("id") or decision.get("candidateId") or ""),
+        "relation": str(decision.get("relation") or "semantic_match"),
+        "confidence": _coerce_confidence(decision.get("confidence")),
+        "reason": str(decision.get("reason") or ""),
+        "fileId": str(candidate.get("fileId") or ""),
+        "fileName": str(candidate.get("fileName") or ""),
+        "path": str(candidate.get("sourceFile") or candidate.get("path") or ""),
+        "paragraphIndex": candidate.get("paragraphIndex"),
+        "raw_text": str(candidate.get("rawText") or ""),
+        "rawText": str(candidate.get("rawText") or ""),
+        "basisText": basis_text,
+        "searchText": basis_text,
+        "title": str(candidate.get("title") or ""),
+        "number": str(candidate.get("number") or ""),
+        "contextTitle": str(candidate.get("contextTitle") or ""),
+    }
+
+
+def _toc_item_from_agent_candidate(order: int, candidate: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
+    number = str(decision.get("number") or candidate.get("number") or "").strip()
+    title = str(decision.get("title") or candidate.get("title") or "").strip()
+    if number and title.startswith(number):
+        title = title[len(number) :].strip(" ：:、.-")
+    return {
+        "itemId": f"TOC-{order:04d}",
+        "order": order,
+        "number": number,
+        "title": title or f"未命名附表{order}",
+        "level": _coerce_toc_level(decision.get("level") or 1),
+        "annotation": str(decision.get("annotation") or "新增-副表"),
+        "source": "tender",
+        "reason": str(decision.get("reason") or "Agent 判断招标文件要求追加该目录项。"),
+        "source_refs": [_source_ref_from_agent_candidate(candidate, decision)],
+        "material_refs": [],
+    }
+
+
+def _coerce_confidence(value: Any) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(1.0, parsed))
+
+
+def _load_json_dict(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _public_rule_evidence_from_file(path: Path) -> dict[str, Any]:
+    evidence = _load_json_dict(path)
+    decisions = evidence.get("decisions") if isinstance(evidence.get("decisions"), list) else []
+    candidates = evidence.get("tenderCandidates") if isinstance(evidence.get("tenderCandidates"), list) else []
+    template_outline = evidence.get("templateOutline") if isinstance(evidence.get("templateOutline"), list) else []
+    return {
+        "schemaVersion": str(evidence.get("schema_version") or ""),
+        "engine": str(evidence.get("engine") or ""),
+        "templateOutlineCount": len(template_outline),
+        "tenderCandidateCount": len(candidates),
+        "decisions": [
+            dict(item)
+            for item in decisions
+            if isinstance(item, dict)
+        ][:PUBLIC_EVIDENCE_DECISION_LIMIT],
+        "decisionCount": len(decisions),
+        "agentDecisions": [
+            dict(item)
+            for item in (evidence.get("agentDecisions") if isinstance(evidence.get("agentDecisions"), list) else [])
+            if isinstance(item, dict)
+        ][:PUBLIC_EVIDENCE_DECISION_LIMIT],
+    }
+
+
+def _title_key(value: str) -> str:
+    text = re.sub(r"\s+", "", str(value or "").lower())
+    text = re.sub(r"[，,。.:：;；、（）()\[\]【】《》<>\"'“”‘’\\/_-]+", "", text)
+    return text
 
 
 def _prepare_toc_skill_workspace(
@@ -151,6 +474,8 @@ def _prepare_toc_skill_workspace(
 
     tender_inputs = _copy_tender_inputs(tender_file_records, work_dir)
     template_path, attach_path = _copy_template_inputs(template_file_records, work_dir)
+    if template_path is None:
+        raise ValueError("投标模板不存在，请先上传可读取的投标模板文件。")
     bid_type = _normalize_bid_type(str(project.get("bidType") or "投标文件"))
     output_file = work_dir / _safe_file_name(settings.s2_toc_output_file_name, "toc.json")
     evidence_file = work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json")
@@ -167,12 +492,7 @@ def _prepare_toc_skill_workspace(
         "attachFile": str(attach_path) if attach_path else "",
         "outputFile": str(output_file),
         "evidenceFile": str(evidence_file),
-        "rules": {
-            "maxLevel": settings.s2_toc_max_level,
-            "maxTenderCandidates": settings.s2_toc_max_tender_candidates,
-            "maxTitleChars": settings.s2_toc_max_title_chars,
-            "autoAppendTenderRequirements": settings.s2_toc_auto_append_tender_requirements,
-        },
+        "reviewBudget": OUTLINE_REVIEW_BUDGET,
     }
     manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2)
     manifest_path.write_text(manifest_text, encoding="utf-8")
@@ -276,62 +596,6 @@ def _normalize_bid_type(value: str) -> str:
     return value.strip() or "投标文件"
 
 
-def _extract_docx_outline_hints(path: Path, limit: int) -> list[str]:
-    hints: list[str] = []
-    current_parts: list[str] = []
-
-    def flush_paragraph() -> None:
-        line = "".join(current_parts).strip()
-        current_parts.clear()
-        if not line:
-            return
-        if _looks_like_heading(line):
-            hints.append(line)
-
-    with zipfile.ZipFile(path) as archive:
-        with archive.open("word/document.xml") as xml_file:
-            for _, element in ET.iterparse(xml_file, events=("end",)):
-                if element.tag == f"{WORD_NAMESPACE}t":
-                    current_parts.append(element.text or "")
-                elif element.tag == f"{WORD_NAMESPACE}tab":
-                    current_parts.append(" ")
-                elif element.tag in {f"{WORD_NAMESPACE}br", f"{WORD_NAMESPACE}cr"}:
-                    current_parts.append(" ")
-                elif element.tag == f"{WORD_NAMESPACE}p":
-                    flush_paragraph()
-                    element.clear()
-                if len(hints) >= limit:
-                    break
-    return hints[:limit]
-
-
-def _extract_heading_candidates(text: str, limit: int) -> list[str]:
-    candidates: list[str] = []
-    seen: set[str] = set()
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not _looks_like_heading(line):
-            continue
-        if line in seen:
-            continue
-        seen.add(line)
-        candidates.append(line)
-        if len(candidates) >= limit:
-            break
-    return candidates
-
-
-def _looks_like_heading(line: str) -> bool:
-    if not line:
-        return False
-    if len(line) > 80:
-        return False
-    for pattern in HEADING_PATTERNS:
-        if pattern.match(line):
-            return True
-    return False
-
-
 def _nodes_from_generation_result(result: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(result.get("items"), list):
         return _nodes_from_toc_items(result["items"])
@@ -408,7 +672,7 @@ def _coerce_toc_level(value: Any) -> int:
         level = int(value)
     except (TypeError, ValueError):
         level = 1
-    return max(1, min(level, max(1, settings.s2_toc_max_level)))
+    return max(1, level)
 
 
 def _toc_item_title(item: dict[str, Any], fallback_order: int) -> str:

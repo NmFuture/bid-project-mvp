@@ -502,9 +502,9 @@ class AppStore:
                 "opencodeOutput": build_directory_opencode_output(),
                 "events": [],
                 "tasks": [
-                    {"id": "task-1", "label": "解析章节线索", "status": "pending"},
-                    {"id": "task-2", "label": "规则生成目录", "status": "pending"},
-                    {"id": "task-3", "label": "保存目录结果", "status": "pending"},
+                    {"id": "task-1", "label": "准备目录候选", "status": "pending"},
+                    {"id": "task-2", "label": "futurecode 语义审核", "status": "pending"},
+                    {"id": "task-3", "label": "保存审核目录", "status": "pending"},
                 ],
             },
             "outline_state": {
@@ -931,9 +931,9 @@ class AppStore:
                 build_directory_event("目录生成完成。", level="success", step="done", at=generated_at),
             ],
             "tasks": [
-                {"id": "task-1", "label": "解析章节线索", "status": "done"},
-                {"id": "task-2", "label": "规则生成目录", "status": "done"},
-                {"id": "task-3", "label": "保存目录结果", "status": "done"},
+                {"id": "task-1", "label": "准备目录候选", "status": "done"},
+                {"id": "task-2", "label": "futurecode 语义审核", "status": "done"},
+                {"id": "task-3", "label": "保存审核目录", "status": "done"},
             ],
         }
         project["directory_state"] = payload
@@ -953,21 +953,21 @@ class AppStore:
         payload = {
             "status": "running",
             "percentage": 5,
-            "summary": "已开始生成目录，正在准备招标文本与模板线索。",
+            "summary": "已开始生成目录，正在准备招标文件与投标模板候选。",
             "generatedAt": "",
             "output": None,
             "opencodeOutput": build_directory_opencode_output(),
             "ruleEvidence": {},
             "events": [
                 build_directory_event(
-                    "已开始生成目录任务，正在准备招标文本与模板线索。",
+                    "已开始生成目录任务，正在准备招标文件与投标模板候选。",
                     step="bootstrap",
                 ),
             ],
             "tasks": [
-                {"id": "task-1", "label": "解析章节线索", "status": "running"},
-                {"id": "task-2", "label": "规则生成目录", "status": "pending"},
-                {"id": "task-3", "label": "保存目录结果", "status": "pending"},
+                {"id": "task-1", "label": "准备目录候选", "status": "running"},
+                {"id": "task-2", "label": "futurecode 语义审核", "status": "pending"},
+                {"id": "task-3", "label": "保存审核目录", "status": "pending"},
             ],
         }
         project["directory_state"] = payload
@@ -1089,9 +1089,9 @@ class AppStore:
             "ruleEvidence": copy.deepcopy(rule_evidence or current_state.get("ruleEvidence") or {}),
             "events": current_events[-20:],
             "tasks": [
-                {"id": "task-1", "label": "解析章节线索", "status": "done"},
-                {"id": "task-2", "label": "规则生成目录", "status": "done"},
-                {"id": "task-3", "label": "保存目录结果", "status": "done"},
+                {"id": "task-1", "label": "准备目录候选", "status": "done"},
+                {"id": "task-2", "label": "futurecode 语义审核", "status": "done"},
+                {"id": "task-3", "label": "保存审核目录", "status": "done"},
             ],
         }
         project["directory_state"] = payload
@@ -1128,13 +1128,19 @@ class AppStore:
         decisions = evidence.get("decisions") if isinstance(evidence.get("decisions"), list) else []
         candidates = evidence.get("tenderCandidates") if isinstance(evidence.get("tenderCandidates"), list) else []
         template_outline = evidence.get("templateOutline") if isinstance(evidence.get("templateOutline"), list) else []
+        decision_limit = 80
         return {
             "schemaVersion": str(evidence.get("schema_version") or ""),
             "engine": str(evidence.get("engine") or ""),
             "ruleConfig": copy.deepcopy(evidence.get("ruleConfig") if isinstance(evidence.get("ruleConfig"), dict) else {}),
             "templateOutlineCount": len(template_outline),
             "tenderCandidateCount": len(candidates),
-            "decisions": [copy.deepcopy(item) for item in decisions if isinstance(item, dict)],
+            "decisionCount": len(decisions),
+            "decisions": [
+                copy.deepcopy(item)
+                for item in decisions
+                if isinstance(item, dict)
+            ][:decision_limit],
         }
 
     def get_outline_state(self, project_id: str) -> dict[str, Any]:

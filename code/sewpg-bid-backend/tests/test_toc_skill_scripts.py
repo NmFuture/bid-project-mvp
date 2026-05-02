@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -9,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
@@ -20,17 +23,213 @@ ASSEMBLER_SCRIPT_DIR = (
     / "bid-tech-assembler"
     / "scripts"
 )
+OUTLINE_SCRIPT_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "opencode"
+    / "skill"
+    / "bid-tech-outline-generator"
+    / "scripts"
+)
 
 
 def load_assembler_script(name: str):
     spec = importlib.util.spec_from_file_location(name, ASSEMBLER_SCRIPT_DIR / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
+def load_outline_script(name: str):
+    module_name = f"outline_{name}"
+    spec = importlib.util.spec_from_file_location(module_name, OUTLINE_SCRIPT_DIR / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def json_load(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 class TocSkillScriptTests(unittest.TestCase):
+    def test_bid_outline_generator_preserves_appendix_search_text_and_appends_last(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            output = root / "toc.json"
+            evidence = root / "evidence.json"
+
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 风资源评估与机位排布方案", style="Heading 1")
+            template_doc.add_paragraph("1.1 项目风资源评估与机组选型排布及发电量计算", style="Heading 2")
+            template_doc.add_paragraph("第2章 产品交付、考核及验收", style="Heading 1")
+            template_doc.save(template)
+
+            tender_doc = Document()
+            tender_doc.add_paragraph("技术附表E 项目风资源评估及机组选型排布及发电量计算 194")
+            tender_doc.add_paragraph("附表E.3推荐机型各机位发电量成果表 195")
+            tender_doc.save(tender)
+
+            manifest = {
+                "projectId": "PRJ-TEST",
+                "projectName": "测试项目",
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": "tender.docx", "path": str(tender)}],
+                "outputFile": str(output),
+                "evidenceFile": str(evidence),
+            }
+            result = outline_runner.run_manifest(manifest, root / "s2_input.json")
+
+            toc = json_load(output)
+            titles = [item["title"] for item in toc["items"]]
+            self.assertEqual(titles[-1], "推荐机型各机位发电量成果表")
+            self.assertEqual(toc["items"][-1]["number"], "附表E.3")
+            self.assertEqual(
+                toc["items"][-1]["source_refs"][0]["searchText"],
+                "附表E.3推荐机型各机位发电量成果表",
+            )
+            self.assertTrue(Path(result["summary"]["agentReviewFile"]).exists())
+
+    def test_bid_outline_generator_excludes_tender_attachments_and_appendices_from_toc(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            output = root / "toc.json"
+            evidence = root / "evidence.json"
+
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+
+            tender_doc = Document()
+            tender_doc.add_paragraph("附表A.1 投标机型总方案信息表")
+            tender_doc.add_paragraph("附件一 中国华能集团有限公司陆上风电工程设备监理大纲")
+            tender_doc.add_paragraph("附录A 设备制造监理内容")
+            tender_doc.save(tender)
+
+            outline_runner.run_manifest(
+                {
+                    "projectId": "PRJ-TEST",
+                    "workDir": str(root),
+                    "templateFile": str(template),
+                    "tenderFiles": [{"id": "TEN-1", "name": "tender.docx", "path": str(tender)}],
+                    "outputFile": str(output),
+                    "evidenceFile": str(evidence),
+                },
+                root / "s2_input.json",
+            )
+
+            toc = json_load(output)
+            titles = [item["title"] for item in toc["items"]]
+            self.assertIn("投标机型总方案信息表", titles)
+            self.assertNotIn("中国华能集团有限公司陆上风电工程设备监理大纲", titles)
+            self.assertNotIn("设备制造监理内容", titles)
+
+            evidence_data = json_load(evidence)
+            reference_titles = [
+                decision["title"]
+                for decision in evidence_data["decisions"]
+                if decision.get("action") == "reference_only"
+            ]
+            self.assertIn("附件一 中国华能集团有限公司陆上风电工程设备监理大纲", reference_titles)
+            self.assertIn("附录A 设备制造监理内容", reference_titles)
+
+    def test_bid_outline_generator_prefers_toc_region_over_body_headings(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            output = root / "toc.json"
+            evidence = root / "evidence.json"
+
+            template_doc = Document()
+            template_doc.styles.add_style("toc 1", WD_STYLE_TYPE.PARAGRAPH)
+            template_doc.styles.add_style("toc 2", WD_STYLE_TYPE.PARAGRAPH)
+            template_doc.add_paragraph("目录")
+            template_doc.add_paragraph("第1章 模板总述\t1", style="toc 1")
+            template_doc.add_paragraph("1.1 基本情况\t2", style="toc 2")
+            template_doc.add_paragraph("第2章 正文标题不能进入目录", style="Heading 1")
+            template_doc.save(template)
+
+            tender_doc = Document()
+            tender_doc.add_paragraph("投标人应提供实施方案。")
+            tender_doc.save(tender)
+
+            outline_runner.run_manifest(
+                {
+                    "projectId": "PRJ-TEST",
+                    "workDir": str(root),
+                    "templateFile": str(template),
+                    "tenderFiles": [{"id": "TEN-1", "name": "tender.docx", "path": str(tender)}],
+                    "outputFile": str(output),
+                    "evidenceFile": str(evidence),
+                },
+                root / "s2_input.json",
+            )
+
+            toc = json_load(output)
+            template_titles = [item["title"] for item in toc["items"] if item["source"] == "template"]
+            self.assertEqual(template_titles, ["模板总述", "基本情况"])
+            self.assertFalse(any("不能进入目录" in item["title"] for item in toc["items"]))
+
+    def test_bid_outline_generator_ignores_body_numbered_lists_after_toc_region(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            output = root / "toc.json"
+            evidence = root / "evidence.json"
+
+            template_doc = Document()
+            template_doc.styles.add_style("toc 1", WD_STYLE_TYPE.PARAGRAPH)
+            template_doc.styles.add_style("toc 2", WD_STYLE_TYPE.PARAGRAPH)
+            template_doc.add_paragraph("目录")
+            template_doc.add_paragraph("第1章 模板总述\t1", style="toc 1")
+            template_doc.add_paragraph("1.1 基本情况\t2", style="toc 2")
+            template_doc.add_paragraph("正文开始")
+            template_doc.add_paragraph("（4） 风储一体化构网型风机")
+            template_doc.add_paragraph("(1) 叶根部驱动转矩")
+            template_doc.add_paragraph("(2) 变桨电机转矩")
+            template_doc.save(template)
+
+            tender_doc = Document()
+            tender_doc.add_paragraph("投标人应提供实施方案。")
+            tender_doc.save(tender)
+
+            outline_runner.run_manifest(
+                {
+                    "projectId": "PRJ-TEST",
+                    "workDir": str(root),
+                    "templateFile": str(template),
+                    "tenderFiles": [{"id": "TEN-1", "name": "tender.docx", "path": str(tender)}],
+                    "outputFile": str(output),
+                    "evidenceFile": str(evidence),
+                },
+                root / "s2_input.json",
+            )
+
+            toc = json_load(output)
+            titles = [item["title"] for item in toc["items"]]
+            self.assertEqual(titles, ["模板总述", "基本情况"])
+            self.assertNotIn("风储一体化构网型风机", titles)
+            self.assertNotIn("叶根部驱动转矩", titles)
+            self.assertNotIn("变桨电机转矩", titles)
+
     def test_bid_assembler_parse_toc_accepts_current_s2_json(self) -> None:
         parse_toc = load_assembler_script("parse_toc")
 

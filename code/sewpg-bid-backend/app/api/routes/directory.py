@@ -18,42 +18,68 @@ router = APIRouter()
 
 def _directory_tasks(step1: str, step2: str, step3: str) -> list[dict[str, Any]]:
     return [
-        {"id": "task-1", "label": "解析章节线索", "status": step1},
-        {"id": "task-2", "label": "规则生成目录", "status": step2},
-        {"id": "task-3", "label": "保存目录结果", "status": step3},
+        {"id": "task-1", "label": "准备目录候选", "status": step1},
+        {"id": "task-2", "label": "futurecode 语义审核", "status": step2},
+        {"id": "task-3", "label": "保存审核目录", "status": step3},
     ]
 
 
 def _handle_directory_progress(project_id: str, stage: str, details: dict[str, Any] | None = None) -> None:
     meta = details or {}
     if stage == "inputs_ready":
-        tender_hint_count = int(meta.get("tenderHintCount") or 0)
-        template_hint_count = int(meta.get("templateHintCount") or 0)
+        tender_file_count = int(meta.get("tenderFileCount") or 0)
+        template_file_count = int(meta.get("templateFileCount") or 0)
         store.update_directory_generation_state(
             project_id,
             percentage=30,
-            summary=f"已提取章节线索（招标 {tender_hint_count} 条，模板 {template_hint_count} 条），准备运行规则引擎。",
+            summary=f"已准备目录生成输入（招标文件 {tender_file_count} 个，投标模板 {template_file_count} 个），准备调用 futurecode。",
             tasks=_directory_tasks("done", "running", "pending"),
-            event_message=f"已完成章节线索提取：招标 {tender_hint_count} 条，模板 {template_hint_count} 条。",
+            event_message=f"已完成目录输入准备：招标文件 {tender_file_count} 个，投标模板 {template_file_count} 个。",
             event_step="hint_ready",
         )
         return
 
-    if stage == "generating_outline":
-        template_heading_count = int(meta.get("templateHeadingCount") or 0)
-        tender_candidate_count = int(meta.get("tenderCandidateCount") or 0)
+    if stage == "outline_session_ready":
         store.update_directory_generation_state(
             project_id,
-            percentage=70,
-            summary="正在按招标要求和投标模板生成目录，请稍候。",
+            percentage=45,
+            summary="futurecode session 已建立，正在运行 S2 目录生成 Skill。",
             tasks=_directory_tasks("done", "running", "pending"),
-            event_message=f"规则引擎正在生成目录：模板线索 {template_heading_count} 条，招标线索 {tender_candidate_count} 条。",
-            event_step="rule_generation",
+            event_message="futurecode session 已建立，正在等待目录语义审核结果。",
+            event_step="futurecode_session",
             opencode_output={
-                "status": "not_used",
-                "engine": "local-rule-engine",
-                "parts": [],
+                "status": "waiting",
+                "sessionId": str(meta.get("sessionId") or ""),
+                "providerId": str(meta.get("providerId") or ""),
+                "modelId": str(meta.get("modelId") or ""),
             },
+        )
+        return
+
+    if stage == "outline_delta":
+        previous_parts = list((store.get_directory_state(project_id).get("opencodeOutput") or {}).get("parts") or [])
+        parts = list(meta.get("parts") or [])
+        first_delta = bool(parts) and not previous_parts
+        store.update_directory_generation_state(
+            project_id,
+            percentage=65 if first_delta else 70,
+            summary="futurecode 正在执行目录生成和语义审核，请稍候。",
+            tasks=_directory_tasks("done", "running", "pending"),
+            event_message="futurecode 已返回 S2 流式片段。" if first_delta else None,
+            event_step="futurecode_delta",
+            opencode_output=meta,
+        )
+        return
+
+    if stage == "outline_fallback":
+        store.update_directory_generation_state(
+            project_id,
+            percentage=60,
+            summary="futurecode 调用暂不可用，正在使用同一 S2 Skill 脚本生成目录。",
+            tasks=_directory_tasks("done", "running", "pending"),
+            event_message=f"futurecode 调用失败，已切换到本地 Skill 脚本：{meta.get('error') or ''}",
+            event_level="error",
+            event_step="futurecode_fallback",
         )
         return
 
@@ -62,9 +88,9 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         store.update_directory_generation_state(
             project_id,
             percentage=85,
-            summary=f"规则引擎已生成目录结果，正在整理 {chapter_count} 个章节节点。",
+            summary=f"futurecode 已生成目录结果，正在整理 {chapter_count} 个一级章节。",
             tasks=_directory_tasks("done", "done", "running"),
-            event_message=f"规则引擎已返回结果，正在整理 {chapter_count} 个章节节点。",
+            event_message=f"futurecode 已返回目录结果，正在整理 {chapter_count} 个一级章节。",
             event_step="normalizing",
         )
 

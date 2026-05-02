@@ -91,6 +91,54 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(parsed["itemCount"], 659)
         self.assertIn("投标文件-总目录.json", parsed["outputFile"])
 
+    def test_find_completed_s2toc_tool_output_ignores_later_running_reads(self) -> None:
+        messages = [
+            {
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "s2toc /data/documents/PRJ/s2_input.json"},
+                            "output": '{"schema_version":"bid-toc-json-v1","outputFile":"/tmp/toc.json"}',
+                            "exit": 0,
+                        },
+                    },
+                ],
+            },
+            {
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "read",
+                        "state": {
+                            "status": "running",
+                            "input": {"filePath": "/tmp/toc.json"},
+                        },
+                    },
+                ],
+            },
+        ]
+
+        output = OpencodeClient._find_completed_bash_tool_output(messages, "s2toc")
+
+        self.assertIn('"outputFile":"/tmp/toc.json"', output)
+
+    def test_build_output_trace_marks_early_s2_completion(self) -> None:
+        client = OpencodeClient()
+        response = client._tool_output_response(
+            session_id="ses-test",
+            output='{"schema_version":"bid-toc-json-v1","outputFile":"/tmp/toc.json"}',
+            trace_parts=[{"type": "text", "text": "s2toc 已完成"}],
+        )
+
+        trace = client._build_output_trace("ses-test", response)
+
+        self.assertTrue(trace["earlyCompletion"])
+        self.assertEqual(trace["completionSource"], "s2toc")
+        self.assertEqual(trace["parts"][0]["text"], "s2toc 已完成")
+
     def test_extract_wiki_blueprint_json_accepts_valid_payload(self) -> None:
         client = OpencodeClient()
         response = {

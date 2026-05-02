@@ -79,10 +79,6 @@ class Settings:
     onlyoffice_callback_allowed_hosts: tuple[str, ...]
     onlyoffice_download_allowed_hosts: tuple[str, ...]
     onlyoffice_download_max_bytes: int
-    s2_toc_max_level: int
-    s2_toc_max_tender_candidates: int
-    s2_toc_max_title_chars: int
-    s2_toc_auto_append_tender_requirements: bool
     s2_toc_output_file_name: str
     s2_toc_evidence_file_name: str
 
@@ -145,10 +141,6 @@ settings = Settings(
         ("onlyoffice", "127.0.0.1", "localhost"),
     ),
     onlyoffice_download_max_bytes=_int_env("ONLYOFFICE_DOWNLOAD_MAX_BYTES", 1024 * 1024 * 1024),
-    s2_toc_max_level=_int_env("S2_TOC_MAX_LEVEL", 9),
-    s2_toc_max_tender_candidates=_non_negative_int_env("S2_TOC_MAX_TENDER_CANDIDATES", 0),
-    s2_toc_max_title_chars=_int_env("S2_TOC_MAX_TITLE_CHARS", 120),
-    s2_toc_auto_append_tender_requirements=_bool_env("S2_TOC_AUTO_APPEND_TENDER_REQUIREMENTS", False),
     s2_toc_output_file_name=os.getenv("S2_TOC_OUTPUT_FILE_NAME", "toc.json").strip() or "toc.json",
     s2_toc_evidence_file_name=os.getenv("S2_TOC_EVIDENCE_FILE_NAME", "toc_evidence.json").strip()
     or "toc_evidence.json",
