@@ -140,16 +140,17 @@ export default function GenerateProgress({ showToast }) {
     }
   }
 
-  const handleGoCoverage = async () => {
+  const handleGoEditor = async () => {
     if (!isCompleted) {
-      showToast?.('请先完成 S7 填充后再进入 S8。', 'error')
+      showToast?.('请先完成标书生成后再进入共创。', 'error')
       return
     }
     setAdvancing(true)
     try {
       await stagesAPI.update(id, 7, { status: 'completed' })
-      showToast?.('已进入 S8 覆盖校验')
-      navigate(projectRoute(id, '/coverage', workspaceSlug))
+      await stagesAPI.update(id, 8, { status: 'completed' })
+      showToast?.('已进入共创')
+      navigate(projectRoute(id, '/editor', workspaceSlug))
     } catch (e) {
       showToast?.(e?.message || '进入下一阶段失败', 'error')
     } finally {
@@ -334,12 +335,12 @@ export default function GenerateProgress({ showToast }) {
               {isRunning ? '生成中...' : isCompleted ? '重新触发填充' : '触发填充'}
             </button>
             <button
-              onClick={handleGoCoverage}
+              onClick={handleGoEditor}
               disabled={!isCompleted || advancing}
-              title={!isCompleted ? '填充完成后可进入 S8' : ''}
+              title={!isCompleted ? '标书生成完成后可进入共创' : ''}
               className="px-4 py-2.5 bg-secondary text-on-secondary text-sm font-medium rounded-lg hover:bg-secondary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {advancing ? '进入中...' : '进入下一阶段'}
+              {advancing ? '进入中...' : '进入共创'}
             </button>
           </>
         )}

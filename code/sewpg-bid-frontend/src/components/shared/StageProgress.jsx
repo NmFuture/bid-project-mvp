@@ -6,7 +6,7 @@ export default function StageProgress({
   const activeStageIndex = stages.findIndex((stage) => stage.status === 'active')
   const denominator = Math.max(1, stages.length - 1)
   const progressRatio = activeStageIndex > 0 ? activeStageIndex / denominator : 0
-  const nodeSlotWidthPx = 94
+  const nodeSlotWidthPx = stages.length <= 6 ? 128 : 94
   const nodeCenterOffsetPx = nodeSlotWidthPx / 2
 
   return (
@@ -27,7 +27,7 @@ export default function StageProgress({
           }}
         ></div>
         <div className="flex justify-between items-start relative z-10 gap-1">
-          {stages.map((stage) => {
+          {stages.map((stage, index) => {
             const isCompleted = stage.status === 'completed'
             const isActive = stage.status === 'active'
             const lockReason = getStageLockReason?.(stage.id) || ''
@@ -35,9 +35,10 @@ export default function StageProgress({
             return (
               <div
                 key={stage.id}
-                className={`flex flex-col items-center gap-2 w-[94px] relative group ${
+                className={`flex flex-col items-center gap-2 relative group ${
                   isLocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
                 }`}
+                style={{ width: `${nodeSlotWidthPx}px` }}
                 onClick={() => {
                   if (isLocked) return
                   onStageClick?.(stage)
@@ -53,7 +54,7 @@ export default function StageProgress({
                         : 'bg-white border-[#c7d3e0] text-[#8ca1b5]'
                   }`}
                 >
-                  {isCompleted ? '✓' : stage.id}
+                  {isCompleted ? '✓' : index + 1}
                 </div>
                 <span
                   className={`text-xs font-medium text-center leading-tight ${

@@ -25,6 +25,13 @@ export const getStageRoute = (projectId, stageId, workspaceSlug = '') => {
   return builder(projectId, workspaceSlug)
 }
 
+export const getStageNavigationRoute = (projectId, stage, workspaceSlug = '') => {
+  const routeStageId = typeof stage === 'object' && stage !== null
+    ? stage.routeStageId || stage.id
+    : stage
+  return getStageRoute(projectId, routeStageId, workspaceSlug)
+}
+
 export const getActiveStageId = (stages = []) => {
   if (!Array.isArray(stages) || !stages.length) return 1
 
@@ -46,9 +53,18 @@ export const getStrictStageLockReason = (stages = [], targetStageId) => {
   const resolvedTarget = toStageId(targetStageId)
   if (!resolvedTarget) return '阶段信息异常，请刷新后重试。'
 
-  const activeStageId = getActiveStageId(stages)
-  if (resolvedTarget > activeStageId) {
-    return `请先完成当前阶段 S${activeStageId}`
+  const targetIndex = stages.findIndex((stage) => toStageId(stage?.id) === resolvedTarget)
+  const activeIndex = stages.findIndex((stage) => stage?.status === 'active')
+
+  if (targetIndex >= 0 && activeIndex >= 0 && targetIndex > activeIndex) {
+    return `请先完成当前阶段：${stages[activeIndex]?.name || `S${stages[activeIndex]?.id}`}`
+  }
+
+  if (targetIndex < 0) {
+    const activeStageId = getActiveStageId(stages)
+    if (resolvedTarget > activeStageId) {
+      return `请先完成当前阶段 S${activeStageId}`
+    }
   }
 
   return ''

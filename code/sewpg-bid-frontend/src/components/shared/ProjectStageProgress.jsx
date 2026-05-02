@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { stagesAPI } from '../../api'
 import StageProgress from './StageProgress'
-import { getStageRoute, getStrictStageLockReason } from '../../utils/stageFlow'
+import { getStageNavigationRoute, getStrictStageLockReason } from '../../utils/stageFlow'
 import { useWorkspaceSlug } from '../../utils/workspace'
 
 export default function ProjectStageProgress({
@@ -50,16 +50,16 @@ export default function ProjectStageProgress({
         return
       }
 
-      if (Number(stage.id) === 10) {
+      if (Number(stage.routeStageId || stage.id) === 10) {
         if (typeof onStageTenClick === 'function') {
           onStageTenClick()
           return
         }
       }
 
-      const route = getStageRoute(projectId, stage.id, workspaceSlug)
+      const route = getStageNavigationRoute(projectId, stage, workspaceSlug)
       if (!route) {
-        showToast?.(`S${stage.id} 页面正在建设中`, 'error')
+        showToast?.(`${stage.name || `S${stage.id}`} 页面正在建设中`, 'error')
         return
       }
       navigate(route)

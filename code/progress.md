@@ -2193,3 +2193,22 @@ bid_workspace
 - `curl -fsS http://127.0.0.1/api/healthz`：返回 `status=ok`。
 - `curl -fsS -o /tmp/bid-web-home.html -w '%{http_code}' http://127.0.0.1/`：200。
 - `docker compose exec -T opencode sh -lc 'command -v s4gap && command -v s4fill && command -v s7assemble'`：三个命令存在。
+
+### 2026-05-02 14:21:23 待办 12/15 主流程进度条同步
+
+- 将项目阶段进度条从旧 10 节点展示收敛为 6 个主流程节点：模板与目录、审核目录、缺口处理、生成标书、共创、导出。
+- 后端 `/projects/{project_id}/stages` 保留内部阶段范围 `stageIds` 和跳转用 `routeStageId`，避免破坏现有阶段状态推进。
+- 前端进度条圆点改为 1-6 连续编号，点击合并节点时按 `routeStageId` 跳转到真实页面。
+- 生成标书页完成后直接进入共创，不再把旧 S8 校验作为主流程下一步。
+
+验证：
+
+- `python3 -m py_compile code/sewpg-bid-backend/app/services/store.py`：通过。
+- `./.venv/bin/python -m pytest tests/test_stage_progress.py tests/test_gap_review_flow.py tests/test_fill_generation.py -q`：16 passed。
+- `./.venv/bin/python -m pytest -q`：85 passed, 6 skipped。
+- `npm run lint && npm run build`：通过，保留既有 Vite chunk size warning。
+- `docker compose build fastapi worker web`：通过。
+- `docker compose up -d --force-recreate fastapi worker web`：通过，`fastapi` healthy。
+- `curl -fsS http://127.0.0.1/api/healthz`：返回 `status=ok`。
+- `curl -fsS -o /tmp/bid-web-home.html -w '%{http_code}' http://127.0.0.1/`：200。
+- `/api/projects/{project_id}/stages` 烟测返回 6 个节点：模板与目录、审核目录、缺口处理、生成标书、共创、导出；烟测项目已删除。

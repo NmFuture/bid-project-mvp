@@ -27,30 +27,75 @@ from app.services.workspace_artifacts import cleanup_parse_temp_workspace, promo
 
 
 STAGE_NAMES = {
-    1: "S1 模板上传",
-    2: "S2 目录生成",
+    1: "S1 模板与目录生成",
+    2: "S2 模板与目录生成",
     3: "S3 目录审核",
-    4: "S4 缺口识别",
-    5: "S5 备料",
-    6: "S6 审核备料",
-    7: "S7 填充",
-    8: "S8 校验",
+    4: "S4 缺口识别与处理",
+    5: "S5 缺口识别与处理",
+    6: "S6 缺口识别与处理",
+    7: "S7 标书生成",
+    8: "S8 标书生成",
     9: "S9 共创",
     10: "S10 导出",
 }
 
 STAGE_PROGRESS_NAMES = {
-    1: "模板上传",
-    2: "目录",
+    1: "模板与目录",
+    2: "模板与目录",
     3: "审核目录",
-    4: "缺口识别",
-    5: "备料",
-    6: "审核备料",
-    7: "填充",
-    8: "校验",
+    4: "缺口处理",
+    5: "缺口处理",
+    6: "缺口处理",
+    7: "生成标书",
+    8: "生成标书",
     9: "共创",
     10: "导出",
 }
+
+STAGE_PROGRESS_GROUPS = [
+    {
+        "id": 1,
+        "name": "模板与目录",
+        "stageIds": [1, 2],
+        "routeStageId": 1,
+        "isHuman": False,
+    },
+    {
+        "id": 3,
+        "name": "审核目录",
+        "stageIds": [3],
+        "routeStageId": 3,
+        "isHuman": True,
+    },
+    {
+        "id": 4,
+        "name": "缺口处理",
+        "stageIds": [4, 5, 6],
+        "routeStageId": 4,
+        "isHuman": True,
+    },
+    {
+        "id": 7,
+        "name": "生成标书",
+        "stageIds": [7, 8],
+        "routeStageId": 7,
+        "isHuman": False,
+    },
+    {
+        "id": 9,
+        "name": "共创",
+        "stageIds": [9],
+        "routeStageId": 9,
+        "isHuman": True,
+    },
+    {
+        "id": 10,
+        "name": "导出",
+        "stageIds": [10],
+        "routeStageId": 10,
+        "isHuman": False,
+    },
+]
 
 REVIEW_DECISION_LABELS = {
     "pending": "待审核",
@@ -590,20 +635,26 @@ class AppStore:
 
     def get_stages(self, project_id: str) -> list[dict[str, Any]]:
         project = self._require(project_id)
+        current_stage = int(project["currentStage"] or 1)
         stages: list[dict[str, Any]] = []
-        for stage_id in range(1, 11):
-            if stage_id < project["currentStage"]:
+        for group in STAGE_PROGRESS_GROUPS:
+            stage_ids = list(group["stageIds"])
+            first_stage = min(stage_ids)
+            last_stage = max(stage_ids)
+            if last_stage < current_stage:
                 status = "completed"
-            elif stage_id == project["currentStage"]:
+            elif first_stage <= current_stage <= last_stage:
                 status = "active"
             else:
                 status = "pending"
             stages.append(
                 {
-                    "id": stage_id,
-                    "name": STAGE_PROGRESS_NAMES[stage_id],
+                    "id": group["id"],
+                    "name": group["name"],
                     "status": status,
-                    "isHuman": stage_id in {3, 5, 6, 9},
+                    "isHuman": bool(group["isHuman"]),
+                    "stageIds": stage_ids,
+                    "routeStageId": group["routeStageId"],
                 }
             )
         return stages

@@ -6,7 +6,7 @@ import { PageLoading, PageError } from '../components/states/PageState'
 import PageHeader from '../components/shared/PageHeader'
 import StageProgress from '../components/shared/StageProgress'
 import DataCard from '../components/shared/DataCard'
-import { getStageRoute, getStrictStageLockReason } from '../utils/stageFlow'
+import { getStageNavigationRoute, getStrictStageLockReason } from '../utils/stageFlow'
 import { projectRoute, useWorkspaceSlug, workspaceRoute } from '../utils/workspace'
 
 export default function ProjectCockpit({ showToast }) {
@@ -129,16 +129,16 @@ export default function ProjectCockpit({ showToast }) {
             showToast(lockReason, 'error')
             return
           }
-          if (stage.id === 10) {
+          if (Number(stage.routeStageId || stage.id) === 10) {
             openExportWithGuard()
             return
           }
-          const route = getStageRoute(id, stage.id, workspaceSlug)
+          const route = getStageNavigationRoute(id, stage, workspaceSlug)
           if (route) {
             navigate(route)
             return
           }
-          showToast(`S${stage.id} 页面正在建设中`, 'error')
+          showToast(`${stage.name || `S${stage.id}`} 页面正在建设中`, 'error')
         }}
       />
 
