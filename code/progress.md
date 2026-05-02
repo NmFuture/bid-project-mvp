@@ -2153,3 +2153,22 @@ bid_workspace
 - `docker compose exec -T opencode sh -lc 'command -v s4gap && command -v s4fill && command -v s7assemble'`：三个命令存在。
 - 容器内 `s4gap` 最小 Wiki 卡片匹配烟测：输出 `matched wiki`。
 - 容器内 `s4fill` 最小填写烟测：生成 `out.docx`，首段为“性能保证附表”。
+
+### 2026-05-02 13:52:37 待办 12/15 完成审计补齐
+
+- 完成审计时发现“缺口页选择已有素材 / AI 填写人工指定参考素材”已有计划但缺少前端主流程入口。
+- 缺口页新增素材库搜索、勾选和“挂回缺口”能力；后端新增 `POST /api/projects/{projectId}/gaps/{gapId}/select-material`。
+- 选择已有素材时，后端从真实素材库清洗稿或原始 Word 下载到项目 S4 工作目录，并以 `source=material_library` 挂回 `gapPlan.resolvedArtifacts`，确保 S7 可按真实 `path` 拼接。
+- AI 填写会优先使用人工勾选的素材 ID 作为 `referenceMaterialIds`，未勾选时才 fallback 到已匹配素材。
+
+验证：
+
+- `python3 -m py_compile app/services/gap_planning.py app/services/store.py app/api/routes/gaps.py`：通过。
+- `./.venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_onlyoffice_document.py -q`：27 passed。
+- `./.venv/bin/python -m pytest -q`：82 passed, 6 skipped。
+- `npm run lint && npm run build`：通过，保留既有 Vite chunk size warning。
+- `docker compose build fastapi worker web`：通过。
+- `docker compose up -d --force-recreate fastapi worker web`：通过，`fastapi` healthy。
+- `curl -fsS http://127.0.0.1/api/healthz`：返回 `status=ok`。
+- `curl -fsS -o /tmp/bid-web-home.html -w '%{http_code}' http://127.0.0.1/`：200。
+- `docker compose exec -T opencode sh -lc 'command -v s4gap && command -v s4fill && command -v s7assemble'`：三个命令存在。

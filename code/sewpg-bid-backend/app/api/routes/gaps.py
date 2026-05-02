@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from app.api.utils import onlyoffice_backend_base_url
+from app.services.peripheral import PeripheralError
 from app.services.store import store
 
 router = APIRouter()
@@ -126,6 +127,29 @@ async def upload_gap_material(
         )
     except ValueError as exc:
         raise _value_error(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Gap not found") from exc
+
+
+@router.post("/api/projects/{project_id}/gaps/{gap_id}/select-material")
+async def select_gap_material(
+    project_id: str,
+    gap_id: str,
+    request: Request,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    try:
+        return await store.select_gap_material(
+            project_id,
+            gap_id,
+            data,
+            browser_base_url=str(request.base_url).rstrip("/"),
+            onlyoffice_base_url=onlyoffice_backend_base_url(request),
+        )
+    except ValueError as exc:
+        raise _value_error(exc) from exc
+    except PeripheralError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Gap not found") from exc
 

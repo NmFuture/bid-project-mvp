@@ -283,6 +283,8 @@ export const gapsAPI = {
     request(`/projects/${projectId}/gaps/${gid}`, { method: 'PUT', body: data }),
   upload: (projectId, gid, data) =>
     request(`/projects/${projectId}/gaps/${gid}/upload`, { method: 'POST', body: data }),
+  selectMaterial: (projectId, gid, data) =>
+    request(`/projects/${projectId}/gaps/${gid}/select-material`, { method: 'POST', body: data }),
   submitReview: (projectId) =>
     request(`/projects/${projectId}/gaps/submit-review`, { method: 'POST' }),
   recheck: (projectId) =>

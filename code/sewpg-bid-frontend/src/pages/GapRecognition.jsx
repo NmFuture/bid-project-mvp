@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { gapsAPI, generateAPI, reviewAPI, stagesAPI } from '../api'
+import { gapsAPI, generateAPI, materialsAPI, reviewAPI, stagesAPI } from '../api'
 import { PageLoading, PageError } from '../components/states/PageState'
 import PageHeader from '../components/shared/PageHeader'
 import DataCard from '../components/shared/DataCard'
@@ -58,6 +58,10 @@ export default function GapRecognition({ showToast }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [busyAction, setBusyAction] = useState('')
+  const [materialKeyword, setMaterialKeyword] = useState('')
+  const [materialSearch, setMaterialSearch] = useState({ items: [], total: 0 })
+  const [materialLoading, setMaterialLoading] = useState(false)
+  const [selectedMaterialIds, setSelectedMaterialIds] = useState([])
   const fileInputRef = useRef(null)
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
@@ -88,6 +92,10 @@ export default function GapRecognition({ showToast }) {
   const selected = useMemo(
     () => items.find((item) => item.id === selectedId) || items[0] || null,
     [items, selectedId],
+  )
+  const selectedMaterialItems = useMemo(
+    () => materialSearch.items.filter((item) => selectedMaterialIds.includes(item.id)),
+    [materialSearch.items, selectedMaterialIds],
   )
   const summary = data?.gapPlan?.summary || data?.summary || {}
   const integrity = data?.gapPlan?.integrity || data?.integrity || {}
@@ -121,6 +129,55 @@ export default function GapRecognition({ showToast }) {
     (payload) => payload?.message || '缺口识别完成',
   )
 
+  const handleSearchMaterials = async () => {
+    setMaterialLoading(true)
+    try {
+      const payload = await materialsAPI.raw.files({
+        keyword: materialKeyword,
+        bidType: '技术标',
+        pageSize: 12,
+        recursive: true,
+      })
+      setMaterialSearch({
+        items: Array.isArray(payload?.items) ? payload.items : [],
+        total: Number(payload?.total || 0),
+      })
+      setSelectedMaterialIds((prev) => prev.filter((id) => (payload?.items || []).some((item) => item.id === id)))
+    } catch (e) {
+      showToast?.(e?.message || '查询素材失败', 'error')
+    } finally {
+      setMaterialLoading(false)
+    }
+  }
+
+  const toggleMaterial = (materialId) => {
+    setSelectedMaterialIds((prev) => (
+      prev.includes(materialId)
+        ? prev.filter((item) => item !== materialId)
+        : [...prev, materialId]
+    ))
+  }
+
+  const handleSelectMaterials = () => {
+    if (!selected || !selectedMaterialItems.length) {
+      showToast?.('请先选择素材。', 'error')
+      return
+    }
+    return runAction(
+      `select-${selected.id}`,
+      () => gapsAPI.selectMaterial(id, selected.id, {
+        materials: selectedMaterialItems.map((item) => ({
+          id: item.id,
+          name: item.name,
+          folderPath: item.folderPath,
+          materialTier: item.materialTier,
+          cleanedFileName: item.cleanedFileName,
+        })),
+      }),
+      () => '已选择已有素材并挂回缺口计划。',
+    )
+  }
+
   const handleAiFill = () => {
     if (!selected?.fillTasks?.length) {
       showToast?.('当前目录项没有可执行的 AI 填写任务。', 'error')
@@ -131,7 +188,9 @@ export default function GapRecognition({ showToast }) {
       `ai-${selected.id}`,
       () => gapsAPI.aiFill(id, selected.id, {
         fillTaskId: task.id,
-        referenceMaterialIds: (selected.matchedMaterials || []).map((item) => item.id).filter(Boolean),
+        referenceMaterialIds: selectedMaterialIds.length
+          ? selectedMaterialIds
+          : (selected.matchedMaterials || []).map((item) => item.id).filter(Boolean),
         parseFieldIds: [task.blankSource?.id].filter(Boolean),
       }),
       () => 'AI 填写完成，产物已挂回缺口计划。',
@@ -296,7 +355,10 @@ export default function GapRecognition({ showToast }) {
                     return (
                       <tr
                         key={item.id}
-                        onClick={() => setSelectedId(item.id)}
+                        onClick={() => {
+                          setSelectedId(item.id)
+                          setSelectedMaterialIds([])
+                        }}
                         className={`border-b border-surface-container-high cursor-pointer hover:bg-surface-container-low/60 ${selected?.id === item.id ? 'bg-primary/5' : ''}`}
                       >
                         <td className="px-5 py-3 min-w-[280px]">
@@ -343,6 +405,62 @@ export default function GapRecognition({ showToast }) {
                         ))}
                       </div>
                     ) : <p className="text-xs text-outline">暂无匹配素材。</p>}
+                  </section>
+
+                  <section className="rounded-lg border border-surface-container-high p-4">
+                    <div className="flex items-center justify-between gap-2 mb-3">
+                      <h4 className="text-sm font-semibold text-on-surface">选择已有素材</h4>
+                      <button
+                        onClick={handleSelectMaterials}
+                        disabled={!selectedMaterialItems.length || Boolean(busyAction)}
+                        className="h-8 px-3 bg-secondary text-on-secondary text-xs font-semibold rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {busyAction === `select-${selected.id}` ? '挂回中...' : '挂回缺口'}
+                      </button>
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        value={materialKeyword}
+                        onChange={(event) => setMaterialKeyword(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') handleSearchMaterials()
+                        }}
+                        placeholder="搜索素材名称"
+                        className="min-w-0 flex-1 h-9 px-3 rounded-md border border-surface-container-high bg-surface text-sm text-on-surface"
+                      />
+                      <button
+                        onClick={handleSearchMaterials}
+                        disabled={materialLoading}
+                        className="h-9 px-3 bg-surface-container-high text-on-surface-variant text-xs font-semibold rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {materialLoading ? '查询中...' : '查询'}
+                      </button>
+                    </div>
+                    <div className="mt-3 space-y-2 max-h-44 overflow-y-auto">
+                      {materialSearch.items.length ? materialSearch.items.map((item) => {
+                        const checked = selectedMaterialIds.includes(item.id)
+                        return (
+                          <label key={item.id} className="flex items-start gap-2 rounded-md bg-surface-container-low px-3 py-2 text-xs cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleMaterial(item.id)}
+                              className="mt-0.5"
+                            />
+                            <span className="min-w-0">
+                              <span className="block font-medium text-on-surface">{item.name}</span>
+                              <span className="block text-outline break-all mt-1">
+                                {item.id} · {item.hasCleanedWord ? '清洗稿' : '原始 Word'} · {item.folderPath || '-'}
+                              </span>
+                            </span>
+                          </label>
+                        )
+                      }) : (
+                        <p className="text-xs text-outline">
+                          {materialLoading ? '正在查询素材...' : '输入关键词后查询素材库，可作为缺口解决产物或 AI 填写参考。'}
+                        </p>
+                      )}
+                    </div>
                   </section>
 
                   <section className="rounded-lg border border-surface-container-high p-4">

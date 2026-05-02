@@ -302,6 +302,65 @@ class GapReviewFlowTests(unittest.TestCase):
             "\n".join(paragraph.text for paragraph in uploaded_doc.paragraphs),
         )
 
+    def test_gap_select_existing_material_registers_real_artifact_for_s7(self) -> None:
+        project_id = self._create_project_with_confirmed_directory_json()
+        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        self.assertEqual(detection_response.status_code, 200)
+        gap_plan = detection_response.json()["gapPlan"]
+        gap_id = next(item for item in gap_plan["items"] if item["status"] == "needs_input")["id"]
+
+        prepared_docx = Path(self.temp_dir.name) / "素材库既有性能保证.docx"
+        doc = Document()
+        doc.add_paragraph("素材库既有 Word 内容")
+        doc.save(prepared_docx)
+
+        async def fake_prepare_existing_gap_material_files(project, selected_gap_id, data):
+            self.assertEqual(selected_gap_id, gap_id)
+            self.assertEqual(data["materials"][0]["id"], "RAW-0099")
+            return [
+                {
+                    "materialId": "RAW-0099",
+                    "materialName": "素材库既有性能保证",
+                    "fileName": prepared_docx.name,
+                    "path": str(prepared_docx),
+                    "folderPath": "通用素材/技术标",
+                    "materialTier": "standard",
+                    "sourceKind": "cleaned",
+                }
+            ]
+
+        with patch(
+            "app.services.store.prepare_existing_gap_material_files",
+            side_effect=fake_prepare_existing_gap_material_files,
+        ):
+            response = self.client.post(
+                f"/api/projects/{project_id}/gaps/{gap_id}/select-material",
+                json={
+                    "materials": [
+                        {
+                            "id": "RAW-0099",
+                            "name": "素材库既有性能保证",
+                            "folderPath": "通用素材/技术标",
+                            "materialTier": "standard",
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["item"]["status"], "resolved")
+        artifact = payload["artifact"]
+        self.assertEqual(artifact["source"], "material_library")
+        self.assertEqual(artifact["materialId"], "RAW-0099")
+        self.assertEqual(artifact["path"], str(prepared_docx))
+        self.assertTrue(artifact["s7Ready"])
+        self.assertIn("onlyoffice", artifact)
+        updated_gap = self.client.get(f"/api/projects/{project_id}/gaps").json()["gapPlan"]
+        updated_item = next(item for item in updated_gap["items"] if item["id"] == gap_id)
+        self.assertEqual(updated_item["resolvedArtifacts"][0]["source"], "material_library")
+        self.assertEqual(updated_item["resolvedArtifacts"][0]["path"], str(prepared_docx))
+
     def test_gap_detection_matches_material_from_s2_wiki_cards_when_toc_has_no_refs(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
         project_dir = settings.parsed_dir / project_id
