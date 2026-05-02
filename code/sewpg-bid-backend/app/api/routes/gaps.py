@@ -113,12 +113,17 @@ async def gap_artifact_content(project_id: str, artifact_id: str, filename: str)
 async def upload_gap_material(
     project_id: str,
     gap_id: str,
+    request: Request,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
-    body = dict(data)
-    body["missingId"] = gap_id
     try:
-        return store.submit_gap_material(project_id, body)
+        return store.upload_gap_artifact(
+            project_id,
+            gap_id,
+            data,
+            browser_base_url=str(request.base_url).rstrip("/"),
+            onlyoffice_base_url=onlyoffice_backend_base_url(request),
+        )
     except ValueError as exc:
         raise _value_error(exc) from exc
     except KeyError as exc:

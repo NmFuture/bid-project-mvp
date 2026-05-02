@@ -228,6 +228,40 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(updated_item["resolvedArtifacts"][0]["source"], "ai_fill")
         self.assertEqual(updated_item["fillTasks"][0]["status"], "completed")
 
+    def test_gap_upload_registers_real_project_artifact_for_s7(self) -> None:
+        project_id = self._create_project_with_confirmed_directory_json()
+        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        self.assertEqual(detection_response.status_code, 200)
+        gap_plan = detection_response.json()["gapPlan"]
+        gap_id = next(item for item in gap_plan["items"] if item["status"] == "needs_input")["id"]
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/gaps/{gap_id}/upload",
+            json={
+                "bidType": "技术标",
+                "files": [
+                    {
+                        "name": "客户补充性能保证.docx",
+                        "type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        "data": "客户补充性能保证内容",
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["item"]["status"], "resolved")
+        artifact = payload["artifact"]
+        self.assertEqual(artifact["source"], "manual_upload")
+        self.assertEqual(artifact["skill"], "")
+        self.assertTrue(Path(artifact["path"]).exists())
+        self.assertTrue(artifact["s7Ready"])
+        gap_payload = self.client.get(f"/api/projects/{project_id}/gaps").json()
+        updated_item = next(item for item in gap_payload["gapPlan"]["items"] if item["id"] == gap_id)
+        self.assertEqual(updated_item["resolvedArtifacts"][0]["source"], "manual_upload")
+        self.assertEqual(updated_item["status"], "resolved")
+
     def test_gap_review_mock_flow_runs_from_s4_to_s6(self) -> None:
         project_id = self._create_project_with_confirmed_outline()
 

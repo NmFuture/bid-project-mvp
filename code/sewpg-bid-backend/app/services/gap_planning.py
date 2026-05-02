@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from docx import Document
+
 from app.core.config import BASE_DIR, settings
 from app.services.opencode_client import OpencodeClient
 
@@ -205,6 +207,85 @@ def run_ai_fill_for_gap(
     gap_state["reviewConfirmed"] = False
     gap_state["reviewedAt"] = ""
     return {"item": item, "artifact": artifact, "gapPlan": plan}
+
+
+def register_manual_gap_upload(
+    project: dict[str, Any],
+    gap_id: str,
+    data: dict[str, Any],
+    *,
+    browser_base_url: str = "",
+    onlyoffice_base_url: str = "",
+) -> dict[str, Any]:
+    gap_state = project.get("gap_state") or {}
+    plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+    items = plan.get("items") if isinstance(plan.get("items"), list) else []
+    item = next((entry for entry in items if str(entry.get("id") or "") == gap_id), None)
+    if item is None:
+        raise KeyError(gap_id)
+    files = [entry for entry in data.get("files") or [] if isinstance(entry, dict)]
+    if not files:
+        raise ValueError("至少需要提交一个文件。")
+
+    work_dir = _project_dir(project) / "s4_gap_workdir" / "manual_upload" / gap_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+    created_at = now_iso()
+    artifacts: list[dict[str, Any]] = []
+    for index, file in enumerate(files, start=1):
+        name = safe_filename(str(file.get("name") or f"{gap_id}-{index}.docx"), f"{gap_id}-{index}.docx")
+        if not name.lower().endswith(".docx"):
+            name = f"{Path(name).stem}.docx"
+        output_file = work_dir / name
+        content = str(file.get("data") or file.get("text") or file.get("content") or "")
+        _write_manual_upload_docx(output_file, title=str(item.get("title") or name), content=content)
+        artifact_id = f"ART-{gap_id}-UPLOAD-{index}"
+        artifacts.append(
+            {
+                "id": artifact_id,
+                "source": "manual_upload",
+                "skill": "",
+                "title": str(item.get("title") or output_file.stem),
+                "fileName": output_file.name,
+                "path": str(output_file),
+                "createdAt": created_at,
+                "operator": str(data.get("operator") or "当前用户"),
+                "unfilledFields": [],
+                "evidenceRefs": [],
+                "onlyoffice": _artifact_onlyoffice_payload(
+                    project_id=str(project.get("id") or ""),
+                    artifact_id=artifact_id,
+                    file_name=output_file.name,
+                    browser_base_url=browser_base_url,
+                    onlyoffice_base_url=onlyoffice_base_url,
+                ),
+                "s7Ready": True,
+            }
+        )
+
+    item["status"] = "resolved"
+    item.setdefault("resolvedArtifacts", []).extend(artifacts)
+    item["resolvedAt"] = created_at
+    item["resolvedSource"] = artifacts[0]["fileName"]
+    item["latestUploadAt"] = created_at
+    item["latestSubmissionId"] = artifacts[0]["id"]
+    plan["updatedAt"] = created_at
+    plan["summary"] = summarize_gap_plan(plan)
+    gap_state["plan"] = plan
+    gap_state["items"] = _legacy_items_from_plan(plan)
+    gap_state["submittedForReview"] = False
+    gap_state["reviewConfirmed"] = False
+    gap_state["reviewedAt"] = ""
+    return {"item": item, "artifact": artifacts[0], "artifacts": artifacts, "gapPlan": plan}
+
+
+def _write_manual_upload_docx(path: Path, *, title: str, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = Document()
+    doc.add_heading(title or path.stem, level=1)
+    text = content.strip() or "人工上传客户资料，原始文件内容请以项目素材库归档为准。"
+    for paragraph in text.splitlines() or [text]:
+        doc.add_paragraph(paragraph)
+    doc.save(path)
 
 
 def summarize_gap_plan(plan: dict[str, Any]) -> dict[str, Any]:

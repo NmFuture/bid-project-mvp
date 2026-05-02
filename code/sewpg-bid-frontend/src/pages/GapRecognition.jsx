@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { gapsAPI, generateAPI, reviewAPI, stagesAPI } from '../api'
 import { PageLoading, PageError } from '../components/states/PageState'
@@ -51,6 +51,7 @@ export default function GapRecognition({ showToast }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [busyAction, setBusyAction] = useState('')
+  const fileInputRef = useRef(null)
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
     if (!silent) {
@@ -137,6 +138,30 @@ export default function GapRecognition({ showToast }) {
       () => gapsAPI.updateMissing(id, selected.id, { status: 'skipped', reason: '人工确认本项目不适用或无需补充。' }),
       () => '已记录人工忽略原因。',
     )
+  }
+
+  const handleUploadPicked = async (event) => {
+    const files = Array.from(event.target.files || [])
+    if (event.target) event.target.value = ''
+    if (!selected || !files.length) return
+    if (busyAction) return
+    setBusyAction(`upload-${selected.id}`)
+    try {
+      const payload = await gapsAPI.upload(id, selected.id, {
+        bidType: '技术标',
+        files: files.map((file) => ({
+          name: file.name,
+          type: file.type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          size: Number(file.size || 0),
+        })),
+      })
+      updatePayload(payload)
+      showToast?.('客户资料已上传并挂回缺口计划。')
+    } catch (e) {
+      showToast?.(e?.message || '上传客户资料失败', 'error')
+    } finally {
+      setBusyAction('')
+    }
   }
 
   const handleRecheck = () => runAction(
@@ -334,6 +359,29 @@ export default function GapRecognition({ showToast }) {
                         ))}
                       </div>
                     ) : <p className="text-xs text-outline">当前目录项不需要 AI 填写。</p>}
+                  </section>
+
+                  <section className="rounded-lg border border-surface-container-high p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <h4 className="text-sm font-semibold text-on-surface">客户资料上传</h4>
+                        <p className="text-xs text-outline mt-1">上传后会作为项目补料产物挂回当前目录项。</p>
+                      </div>
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={Boolean(busyAction)}
+                        className="h-8 px-3 bg-surface-container-high text-on-surface-variant text-xs font-semibold rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {busyAction === `upload-${selected.id}` ? '上传中...' : '上传资料'}
+                      </button>
+                    </div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      className="hidden"
+                      multiple
+                      onChange={handleUploadPicked}
+                    />
                   </section>
 
                   <section className="rounded-lg border border-surface-container-high p-4">

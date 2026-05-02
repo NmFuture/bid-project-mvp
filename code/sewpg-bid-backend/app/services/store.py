@@ -17,6 +17,7 @@ from app.services.identity import build_project_identity
 from app.services.gap_planning import (
     build_gap_plan_for_project,
     check_gap_integrity,
+    register_manual_gap_upload,
     run_ai_fill_for_gap,
     summarize_gap_plan,
 )
@@ -1152,6 +1153,32 @@ class AppStore:
         if gap_state["recognitionStatus"] != "completed":
             raise ValueError("请先在 S4 完成缺口识别。")
         result = run_ai_fill_for_gap(
+            project,
+            gap_id,
+            data,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+        )
+        gap_state = self._ensure_gap_state(project)
+        gap_state["integrity"] = check_gap_integrity(gap_state.get("plan") or {})
+        project["updatedAt"] = now_iso()
+        self._persist_project(project)
+        return copy.deepcopy(result)
+
+    def upload_gap_artifact(
+        self,
+        project_id: str,
+        gap_id: str,
+        data: dict[str, Any],
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        gap_state = self._ensure_gap_state(project)
+        if gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先在 S4 完成缺口识别。")
+        result = register_manual_gap_upload(
             project,
             gap_id,
             data,

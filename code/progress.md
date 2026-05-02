@@ -36,6 +36,12 @@
 - `.venv/bin/python -m pytest -q` 通过：78 passed，6 skipped。
 - `npm run lint` 通过。
 - `npm run build` 通过。
+- 审计补强后新增统一缺口页客户资料上传闭环：`/api/projects/{project_id}/gaps/{gap_id}/upload` 会生成真实项目补料 Word 产物，挂回 `gapPlan.resolvedArtifacts` 并可供 S7 使用。
+- 补强后 `.venv/bin/python -m pytest -q` 通过：79 passed，6 skipped。
+- 补强后 `npm run lint` 通过。
+- 补强后 `npm run build` 通过。
+- 补强后 `docker compose build fastapi worker web && docker compose up -d --force-recreate fastapi worker web` 通过。
+- 补强后 `/api/healthz` 返回 `status=ok`，`http://127.0.0.1/` 返回 HTTP 200。
 - `docker compose build opencode fastapi worker web` 通过。
 - `docker compose up -d --force-recreate opencode fastapi worker web` 已重建并启动，`fastapi` 和 `opencode` 健康，`web` 监听 80。
 - `http://127.0.0.1/api/healthz` 返回 `status=ok`。
