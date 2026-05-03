@@ -240,6 +240,75 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(updated_item["resolvedArtifacts"][0]["source"], "ai_fill")
         self.assertEqual(updated_item["fillTasks"][0]["status"], "completed")
 
+    def test_gap_ai_fill_manifest_carries_appendix_context_and_recommended_materials(self) -> None:
+        project_id = self._create_project_with_confirmed_directory_json()
+        project = store._require(project_id)
+        project["parse_result"]["structured"]["appendices"][0]["availableParseFields"] = [
+            {"id": "FIELD-POWER", "label": "单机容量", "value": "10MW", "sourceFile": "招标文件.docx"},
+            {"id": "FIELD-ROTOR", "label": "叶轮直径", "value": "220m", "sourceFile": "招标文件.docx"},
+        ]
+        store._persist_project(project)
+        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        self.assertEqual(detection_response.status_code, 200)
+        gap_plan = detection_response.json()["gapPlan"]
+        fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
+        gap_id = fill_item["id"]
+        fill_task_id = fill_item["fillTasks"][0]["id"]
+        fill_item["appendixTasks"][0]["recommendedMaterials"] = [
+            {
+                "id": "RAW-0001",
+                "name": "性能保证基准素材.docx",
+                "folderPath": "技术标/通用素材",
+                "materialTier": "standard",
+                "usage": "table_source",
+            }
+        ]
+        project = store._require(project_id)
+        project["gap_state"]["plan"] = gap_plan
+        store._persist_project(project)
+        manifests: list[dict] = []
+
+        def fake_run_table_filler(manifest_path, progress_callback=None):
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            manifests.append(manifest)
+            output_file = Path(manifest["outputFile"])
+            doc = Document()
+            doc.add_paragraph("性能保证附表")
+            doc.save(output_file)
+            return {
+                "schema_version": "bid-tech-table-fill-v1",
+                "outputFile": str(output_file),
+                "unfilledFields": [],
+                "evidenceRefs": [{"type": "material", "id": "RAW-0001"}],
+                "fillReport": {"filledFieldCount": 2, "referenceMaterialCount": 1},
+            }
+
+        with patch(
+            "app.services.gap_planning.run_table_filler_skill",
+            side_effect=fake_run_table_filler,
+        ):
+            response = self.client.post(
+                f"/api/projects/{project_id}/gaps/{gap_id}/ai-fill",
+                json={
+                    "fillTaskId": fill_task_id,
+                    "referenceMaterialIds": ["RAW-0001"],
+                    "parseFieldIds": ["APP-PERF", "FIELD-POWER"],
+                    "operator": "测试用户",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        manifest = manifests[0]
+        self.assertEqual(manifest["gapItem"]["id"], gap_id)
+        self.assertEqual(manifest["appendixTask"]["id"], "APP-PERF")
+        self.assertEqual(manifest["recommendedMaterials"][0]["id"], "RAW-0001")
+        self.assertEqual(manifest["referenceMaterials"][0]["id"], "RAW-0001")
+        self.assertEqual(manifest["parseFields"][0]["id"], "FIELD-POWER")
+        self.assertEqual(manifest["blankSource"]["id"], "APP-PERF")
+        artifact = response.json()["artifact"]
+        self.assertEqual(artifact["fillReport"]["filledFieldCount"], 2)
+        self.assertEqual(artifact["referenceMaterials"][0]["id"], "RAW-0001")
+
     def test_gap_upload_registers_real_project_artifact_for_s7(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
         detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
@@ -403,6 +472,210 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(matched["status"], "matched")
         self.assertEqual(matched["matchedMaterials"][0]["id"], "RAW-0001")
         self.assertEqual(matched["matchedMaterials"][0]["source"], "wiki")
+
+    def test_gap_detection_uses_one_chapter_master_for_wind_resource_chapter(self) -> None:
+        project_id = self._create_project_with_confirmed_directory_json()
+        project_dir = technical_workspace_dir(project_id)
+        toc_json = project_dir / "s2_toc_workdir" / "投标文件-总目录.json"
+        wind_candidates = [
+            {
+                "id": "RAW-0471",
+                "name": "定制-项目风资源评估与机组选型排布及发电量计算.docx",
+                "docx": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-专题方案要求/定制-项目风资源评估与机组选型排布及发电量计算.docx",
+                "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-专题方案要求",
+                "materialTier": "project",
+            },
+            {
+                "id": "RAW-0473",
+                "name": "定制-风资源评估与机位排布方案.docx",
+                "docx": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-风资源评估与机位排布方案/定制-风资源评估与机位排布方案.docx",
+                "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-风资源评估与机位排布方案",
+                "materialTier": "project",
+            },
+            {
+                "id": "RAW-0478",
+                "name": "风资源评估报告.docx",
+                "docx": "技术标/项目素材/MAT-HN-CHIFENG-001/风资源评估报告（解决方案部_风资源处：风资源流程传递）/风资源评估报告.docx",
+                "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/风资源评估报告（解决方案部_风资源处：风资源流程传递）",
+                "materialTier": "project",
+            },
+        ]
+        toc_json.write_text(
+            json.dumps(
+                {
+                    "schema_version": "bid-toc-json-v1",
+                    "items": [
+                        {
+                            "order": 1,
+                            "number": "第3章",
+                            "title": "风资源评估与机位排布方案",
+                            "level": 1,
+                            "annotation": "保留",
+                            "source": "template",
+                            "material_refs": wind_candidates,
+                        },
+                        *[
+                            {
+                                "order": index + 1,
+                                "number": f"3.{index}",
+                                "title": title,
+                                "level": 2,
+                                "annotation": "保留",
+                                "source": "template",
+                                "material_refs": wind_candidates if index in {4, 7} else [],
+                            }
+                            for index, title in enumerate(
+                                [
+                                    "总体方案概览",
+                                    "项目概况",
+                                    "风资源分析",
+                                    "机组选型",
+                                    "风机适应性分析",
+                                    "方案及发电量结果",
+                                    "不确定性分析",
+                                ],
+                                start=1,
+                            )
+                        ],
+                        {
+                            "order": 9,
+                            "number": "附表E.1",
+                            "title": "投标人风资源评估与机位排布方案",
+                            "level": 1,
+                            "annotation": "新增-附表空表",
+                            "source": "tender_appendix",
+                            "material_refs": [],
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        project = store._require(project_id)
+        project["materialProjectId"] = "MAT-HN-CHIFENG-001"
+        project["materialProjectCode"] = "MAT-HN-CHIFENG-001"
+        project["materialProjectMode"] = "library"
+        project["materialCustomerName"] = "华能集团"
+        project["parse_result"]["structured"] = {
+            "appendices": [
+                {
+                    "id": "APPX-0033",
+                    "title": "附表E.1 投标人风资源评估与机位排布方案",
+                    "sourceFile": "招标文件.docx",
+                    "workspacePath": "/data/documents/PRJ-0003/parse/appendices/APPX-0033.docx",
+                    "rowCount": 10,
+                    "blankTable": True,
+                }
+            ]
+        }
+        store._persist_project(project)
+
+        response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        plan = response.json()["gapPlan"]
+        self.assertFalse([item for item in plan["items"] if len(item.get("matchedMaterials") or []) > 1])
+        parent = next(item for item in plan["items"] if item["number"] == "第3章")
+        self.assertEqual(parent["decision"], "ready")
+        self.assertEqual(parent["status"], "matched")
+        self.assertEqual(parent["coverageRole"], "chapter_master")
+        self.assertEqual(parent["matchedMaterials"][0]["id"], "RAW-0473")
+        self.assertEqual(parent["matchedMaterials"][0]["usage"], "chapter_master")
+        self.assertGreaterEqual(len(parent["candidateMaterials"]), 2)
+        self.assertEqual(parent["appendixTasks"], [])
+        for number in [f"3.{index}" for index in range(1, 8)]:
+            child = next(item for item in plan["items"] if item["number"] == number)
+            self.assertEqual(child["decision"], "ready")
+            self.assertEqual(child["status"], "matched")
+            self.assertEqual(child["coverageRole"], "covered_by_parent")
+            self.assertEqual(child["coveredByParent"], parent["id"])
+            self.assertEqual(child["matchedMaterials"], [])
+            self.assertEqual(child["appendixTasks"], [])
+            self.assertEqual(child["fillTasks"], [])
+        appendix_item = next(item for item in plan["items"] if item["number"] == "附表E.1")
+        self.assertEqual(appendix_item["decision"], "fill_required")
+        self.assertEqual(appendix_item["status"], "needs_input")
+        self.assertEqual(appendix_item["matchedMaterials"], [])
+        self.assertEqual([task["id"] for task in appendix_item["appendixTasks"]], ["APPX-0033"])
+        self.assertIn(
+            "RAW-0473",
+            [item["id"] for item in appendix_item["appendixTasks"][0]["recommendedMaterials"]],
+        )
+        self.assertEqual(appendix_item["appendixTasks"][0]["recommendedMaterials"][0]["id"], "RAW-0473")
+
+    def test_gap_detection_manifest_contains_project_scoped_material_index(self) -> None:
+        project_id = self._create_project_with_confirmed_directory_json()
+        project = store._require(project_id)
+        project["customerName"] = "华能集团"
+        project["materialCustomerName"] = "华能集团"
+        project["materialProjectId"] = "MAT-HN-CHIFENG-001"
+        project["materialProjectCode"] = "MAT-HN-CHIFENG-001"
+        project["materialProjectMode"] = "library"
+        store._persist_project(project)
+        manifests: list[dict] = []
+
+        async def fake_raw_files(**kwargs):
+            folder_path = str(kwargs.get("folder_path") or "")
+            items = []
+            if folder_path.endswith("MAT-HN-CHIFENG-001"):
+                items.append(
+                    {
+                        "id": "RAW-0473",
+                        "name": "定制-风资源评估与机位排布方案.docx",
+                        "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-风资源评估与机位排布方案",
+                        "materialTier": "project",
+                        "hasCleanedWord": True,
+                        "cleanedFileName": "定制-风资源评估与机位排布方案.docx",
+                    }
+                )
+            return {"items": items, "total": len(items), "page": 1, "pageSize": 1000}
+
+        def fake_gap_planner(manifest_path):
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            manifests.append(manifest)
+            output_file = Path(manifest["outputFile"])
+            plan = {
+                "schemaVersion": "bid-tech-gap-plan-v1",
+                "projectId": project_id,
+                "status": "ready",
+                "summary": {
+                    "totalTocItems": 0,
+                    "matchedCount": 0,
+                    "missingCount": 0,
+                    "resolvedCount": 0,
+                    "ignoredCount": 0,
+                    "structuralCount": 0,
+                    "fillableTaskCount": 0,
+                    "blockingCount": 0,
+                },
+                "items": [],
+            }
+            output_file.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+            return {"schema_version": "bid-tech-gap-plan-v1", "outputFile": str(output_file)}
+
+        with patch("app.services.gap_planning.material_store.raw_files", side_effect=fake_raw_files), \
+            patch("app.services.gap_planning.run_gap_planner_skill", side_effect=fake_gap_planner):
+            response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        manifest = manifests[0]
+        self.assertEqual(
+            manifest["materialScope"]["paths"],
+            [
+                "技术标/通用素材",
+                "技术标/客户素材/华能集团",
+                "技术标/项目素材/MAT-HN-CHIFENG-001",
+            ],
+        )
+        self.assertEqual(manifest["materialIndex"][0]["id"], "RAW-0473")
+        self.assertTrue(
+            all(
+                item["folderPath"].startswith(tuple(manifest["materialScope"]["paths"]))
+                for item in manifest["materialIndex"]
+            )
+        )
 
     def test_gap_review_mock_flow_runs_from_s4_to_s6(self) -> None:
         project_id = self._create_project_with_confirmed_outline()

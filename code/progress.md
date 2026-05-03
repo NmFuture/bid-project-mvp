@@ -3072,3 +3072,113 @@ bid_workspace
 - `doc/README.md`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-04 00:09 S3 缺口识别前端决策展示改造
+
+改动目标：
+
+- 按用户确认的 S3 缺口识别技术路线，允许前端从旧 `status` 展示调整为新 `decision` 业务判断展示。
+- 先让用户在真实项目 `PRJ-0003` 的 Codex 样例 `gap_plan.json` 上审核业务判断，再封装第一个 OpenCode Skill。
+
+改动内容：
+
+- `GapRecognition.jsx` 新增四类缺口判断：`可直接合并 / 需填写空表 / 缺素材 / 需人工复核`。
+- 顶部统计卡改为展示四类决策和 AI 填写任务数。
+- 列表新增决策筛选，表格状态列优先展示 `decision`，并保留旧 `status` 兼容信息。
+- 详情侧栏新增“缺口判断”“素材边界与机型判断”“解析生成的空副表/Word”“识别依据”等区域。
+- 详情展示 `materialScope.allowedPaths / actualMatchedPaths`、`turbineCheck`、`appendixTasks`、`fillTasks`、`nextActions`、`evidenceRefs`。
+- 保留旧 gap payload 兼容：当接口没有 `decision` 字段时仍回退到原 `statusConfig` 展示。
+
+验证结果：
+
+- `npm run lint` 通过。
+- `npm run build` 通过；保留既有 Vite chunk size 提示。
+- `git diff --check` 通过。
+- 已重新构建并启动 `web`：`docker compose build web && docker compose up -d --force-recreate web`。
+- `http://127.0.0.1/projects/PRJ-0003/gaps` 返回 HTTP 200。
+- `GET /api/projects/PRJ-0003/gaps-detection` 返回样例统计：目录项 143，可直接合并 36，需填写空表 103，缺素材 1，需人工复核 3，AI 填写任务 101，空副表任务 101。
+
+### 2026-05-04 01:50 S3 缺口识别第三章整章覆盖修正
+
+改动目标：
+
+- 修正 S3 缺口识别里“一个目录项多份最终匹配素材”的问题。
+- 将 `第3章 风资源评估与机位排布方案` 按整章 Word 覆盖处理，避免 3.1-3.7 子节重复识别为独立缺口或独立素材匹配。
+- 将空副表填写任务与正文目录匹配隔离，尤其是 `附表E.1 投标人风资源评估与机位排布方案` 不再挂到第3章及其子节。
+
+改动内容：
+
+- `bid-tech-gap-planner` runner 增加 `candidateMaterials` 与 `appendixTasks[].recommendedMaterials`，`matchedMaterials` 只保留最终选中的一份素材。
+- 增加第3章特例：父章 `coverageRole=chapter_master`，最终素材选 `RAW-0473 定制-风资源评估与机位排布方案.docx`；3.1-3.7 标记 `covered_by_parent`。
+- 后端生成缺口识别 manifest 时加入 `materialScope` 和已按项目/客户/通用边界过滤的 `materialIndex`，供 OpenCode/Skill 判断使用。
+- 前端 S3 页面将“匹配素材”拆成“最终匹配素材”和“候选/参考素材”，列表显示“父章覆盖”。
+
+验证结果：
+
+- `python -m pytest tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_turbine_model_selection.py -q` 通过：19 passed。
+- `npm run lint` 通过。
+- `npm run build` 通过；保留既有 Vite chunk size 提示。
+- `python -m py_compile app/services/gap_planning.py opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py` 通过。
+- `git diff --check` 通过。
+- 已重新构建并启动 `fastapi / worker / opencode / web`。
+- 已重新触发 `POST /api/projects/PRJ-0003/gaps-detection/run`。
+- 运行态 `gap_plan.json` 检查：`multiMatchedCount=0`；第3章最终素材为 `RAW-0473`；`3.4` 等子节 `coveredByParent=GAP-0013`；`附表E.1` 为 `fill_required`，最终匹配素材为空，推荐素材首位为 `RAW-0473`。
+- 浏览器核对 `http://127.0.0.1/projects/PRJ-0003/gaps`：页面显示新统计、`1 份最终素材`、`父章覆盖`、`候选/参考素材`。
+
+### 2026-05-04 02:12 S3 缺口识别 OpenCode Skill 封装与实测
+
+改动目标：
+
+- 检查第一个 Skill（缺口识别）是否满足当前业务口径。
+- 将已验证的 S3 缺口识别逻辑写回 OpenCode runtime Skill，让 OpenCode 冷启动时按同一规则调用。
+- 更新本地 OpenCode 网关 API key 并进行真实 OpenCode 调用验证。
+
+改动内容：
+
+- `bid-tech-gap-planner/SKILL.md` 补齐输入边界、输出结构、判断规则、第3章整章覆盖规则和空副表规则。
+- 后端缺口识别 prompt 从历史 “S4 技术标缺口识别” 调整为当前 “S3 技术标缺口识别”，并明确 manifest 中包含项目/客户/通用素材边界、素材索引和投标机型。
+- 本地 `code/.env` 已更新 OpenCode 网关 key；该文件被 `.gitignore` 忽略，不进入 git diff。
+- 已重建并重启 `opencode`，确认容器内新版 Skill 文档生效。
+
+验证结果：
+
+- OpenCode 健康检查通过：`/global/health` 返回 healthy。
+- 容器内确认 `OPENCODE_PROVIDER_ID=mimo`、`OPENCODE_MODEL_ID=mimo-v2.5`、key 已设置。
+- 已真实触发 `POST /api/projects/PRJ-0003/gaps-detection/run`，返回 `opencodeOutput.providerId=mimo`、`modelId=mimo-v2.5`，不是 fallback 的 `local-skill`。
+- 运行态 `gapPlan` 检查：`itemCount=143`、`multiMatchedCount=0`；第3章 `coverageRole=chapter_master` 且最终素材为 `RAW-0473`；3.1-3.7 均 `covered_by_parent`；`附表E.1` 为 `fill_required`，最终素材为空，推荐素材首位 `RAW-0473`。
+- `python -m pytest tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_turbine_model_selection.py -q` 通过：19 passed。
+- `python -m py_compile app/services/gap_planning.py opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py` 通过。
+- `npm run lint` 通过。
+- `npm run build` 通过；保留既有 Vite chunk size 提示。
+- `git diff --check` 通过。
+
+### 2026-05-04 02:45 S3 空副表/Word 填写 OpenCode Skill 封装与实测
+
+改动目标：
+
+- 检查第二个 Skill（空副表/Word 填写）是否满足当前业务口径。
+- 将已验证的填表逻辑封装为 OpenCode Skill `bid-tech-table-filler`，让 S3 的 AI 填写必须经 OpenCode 调用。
+- 在前端 S3 页面展示填写产物、填充报告、参考素材、未填字段和 OnlyOffice 预览入口。
+
+改动内容：
+
+- 新增 `opencode/skill/bid-tech-table-filler/SKILL.md` 和 `scripts/run_from_manifest.py`。
+- 填写 Skill 只读取 manifest 中的 `blankSource`、`appendixTask`、`referenceMaterials`、`parseFields` 和 `projectTurbineModel`，禁止搜索全库或读取 manifest 外素材。
+- 后端 AI 填写 manifest 增加 `gapItem`、空表来源、参考素材、解析字段、推荐素材和投标机型。
+- 前端默认参考素材选择顺序为：人工已选素材、已匹配素材、空表推荐素材；并展示 AI 填写后的 `fillReport`、`referenceMaterials`、`unfilledFields` 和预览链接。
+- S3 页面左右区域改为固定响应式高度和独立滚动，避免目录列表过长时与右侧卡片高度不匹配。
+- 新增 `gapRecognitionHelpers.js` 和对应 node test，覆盖默认参考素材与解析字段选择逻辑。
+
+验证结果：
+
+- 容器内确认 `bid-tech-table-filler` Skill 已同步到 `/workspace/.opencode/skills/bid-tech-table-filler/`。
+- 已真实触发 `POST /api/projects/PRJ-0003/gaps/GAP-0090/ai-fill`，返回 `opencodeResult.providerId=mimo`、`modelId=mimo-v2.5`，不是本地 fallback。
+- 产物 `投标人风资源评估与机位排布方案_AI填写.docx` 已生成并挂回 `GAP-0090`，缺口状态为 `resolved`。
+- 运行态 `fillReport`：已填字段 6，未填字段 0，参考素材 1。
+- 浏览器 DOM 核对 `http://127.0.0.1/projects/PRJ-0003/gaps`：页面可见 `处理产物`、产物文件名、`已填字段`、`未填字段`、参考素材 `定制-风资源评估与机位排布方案.docx` 和 `OnlyOffice 预览`。
+- `python -m pytest tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_turbine_model_selection.py -q` 通过：20 passed。
+- `python -m py_compile app/services/gap_planning.py opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py` 通过。
+- `npm run lint` 通过。
+- `npm run build` 通过；保留既有 Vite chunk size 提示。
+- `node --test src/pages/gapRecognitionHelpers.test.mjs` 通过：3 tests。
+- `git diff --check` 通过。

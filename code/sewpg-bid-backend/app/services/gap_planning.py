@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import asyncio
 import json
 import re
 import shutil
 import subprocess
 import sys
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -14,6 +16,7 @@ from typing import Any, Callable
 from docx import Document
 
 from app.core.config import BASE_DIR, settings
+from app.services.identity import build_project_material_scope
 from app.services.material_store import material_store
 from app.services.minio_client import minio_client
 from app.services.opencode_client import OpencodeClient
@@ -65,6 +68,8 @@ def build_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
     manifest_path = work_dir / "s4_gap_input.json"
     wiki_dir = _resolve_wiki_dir(project, project_dir, work_dir)
     turbine_model = project_turbine_model(project)
+    material_scope = build_project_material_scope(project)
+    material_index = _allowed_material_index(material_scope, turbine_model)
     manifest = {
         "projectId": project_id,
         "projectName": str(project.get("name") or project_id),
@@ -74,6 +79,8 @@ def build_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
         "wikiDir": str(wiki_dir) if wiki_dir else "",
         "parseResultPath": str(parse_result_path),
         "projectIdentity": project.get("identity") or {},
+        "materialScope": material_scope,
+        "materialIndex": material_index,
         "projectTurbineModel": turbine_model,
         "existingSubmissions": list((project.get("gap_state") or {}).get("submissions") or []),
         "outputFile": str(output_file),
@@ -95,6 +102,220 @@ def build_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
         "parts": [{"type": "text", "text": json.dumps({"outputFile": str(plan_path)}, ensure_ascii=False)}],
     }
     return plan
+
+
+def _run_async(awaitable: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(awaitable)
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+
+    def runner() -> None:
+        try:
+            result["value"] = asyncio.run(awaitable)
+        except BaseException as exc:  # pragma: no cover - re-raised in caller
+            error["value"] = exc
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+    if error:
+        raise error["value"]
+    return result.get("value")
+
+
+def _allowed_material_index(material_scope: dict[str, Any], turbine_model: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for scope in material_scope.get("readableScopes") or []:
+        if not isinstance(scope, dict):
+            continue
+        folder_path = str(scope.get("path") or "").strip()
+        if not folder_path:
+            continue
+        payload = _run_async(
+            material_store.raw_files(
+                folder_path=folder_path,
+                bid_type=str(material_scope.get("bidType") or "技术标"),
+                material_tier=str(scope.get("materialTier") or ""),
+                turbine_model=turbine_model,
+                recursive=True,
+                page=1,
+                page_size=1000,
+            )
+        )
+        for raw in payload.get("items") or []:
+            if not isinstance(raw, dict):
+                continue
+            material_id = str(raw.get("id") or "")
+            if not material_id or material_id in seen:
+                continue
+            seen.add(material_id)
+            items.append(
+                {
+                    "id": material_id,
+                    "name": str(raw.get("name") or ""),
+                    "folderPath": str(raw.get("folderPath") or ""),
+                    "materialTier": str(raw.get("materialTier") or scope.get("materialTier") or ""),
+                    "hasCleanedWord": bool(raw.get("hasCleanedWord")),
+                    "cleanedFileName": str(raw.get("cleanedFileName") or ""),
+                    "cleanStatus": str(raw.get("cleanStatus") or ""),
+                    "turbineModelLabel": str(raw.get("turbineModelLabel") or ""),
+                    "updatedAt": str(raw.get("updatedAt") or ""),
+                }
+            )
+    return items
+
+
+def _object_items(value: Any) -> list[dict[str, Any]]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _string_items(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _material_key(material: dict[str, Any]) -> str:
+    return str(material.get("id") or material.get("materialId") or material.get("path") or material.get("docx") or "").strip()
+
+
+def _material_summary(material: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(material.get("id") or material.get("materialId") or ""),
+        "name": str(material.get("name") or material.get("title") or material.get("fileName") or ""),
+        "path": str(material.get("path") or material.get("docx") or ""),
+        "folderPath": str(material.get("folderPath") or ""),
+        "materialTier": str(material.get("materialTier") or material.get("materialScope") or ""),
+        "usage": str(material.get("usage") or ""),
+        "source": str(material.get("source") or ""),
+        "hasCleanedWord": bool(material.get("hasCleanedWord")),
+        "cleanedFileName": str(material.get("cleanedFileName") or ""),
+        "turbineModelLabel": str(material.get("turbineModelLabel") or ""),
+        "matchReason": str(material.get("matchReason") or ""),
+        "turbineFit": str(material.get("turbineFit") or ""),
+    }
+
+
+def _dedupe_material_summaries(materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for material in materials:
+        key = _material_key(material)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(_material_summary(material))
+    return result
+
+
+def _appendix_task_for_fill(item: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
+    blank_source = task.get("blankSource") if isinstance(task.get("blankSource"), dict) else {}
+    blank_id = str(blank_source.get("id") or "").strip()
+    appendix_tasks = _object_items(item.get("appendixTasks"))
+    for appendix_task in appendix_tasks:
+        if blank_id and str(appendix_task.get("id") or "") == blank_id:
+            return dict(appendix_task)
+    return dict(appendix_tasks[0]) if appendix_tasks else {}
+
+
+def _selected_reference_material_ids(
+    item: dict[str, Any],
+    appendix_task: dict[str, Any],
+    data: dict[str, Any],
+) -> list[str]:
+    requested = _string_items(data.get("referenceMaterialIds"))
+    if requested:
+        return requested
+
+    matched = [_material_key(material) for material in _object_items(item.get("matchedMaterials"))]
+    matched = [item for item in matched if item]
+    if matched:
+        return matched
+
+    recommended = [
+        _material_key(material)
+        for material in _object_items(appendix_task.get("recommendedMaterials"))[:1]
+    ]
+    return [item for item in recommended if item]
+
+
+def _reference_materials_for_fill(
+    item: dict[str, Any],
+    appendix_task: dict[str, Any],
+    data: dict[str, Any],
+    selected_ids: list[str],
+) -> list[dict[str, Any]]:
+    context = _dedupe_material_summaries(
+        _object_items(data.get("referenceMaterials"))
+        + _object_items(item.get("matchedMaterials"))
+        + _object_items(item.get("candidateMaterials"))
+        + _object_items(appendix_task.get("recommendedMaterials"))
+        + [
+            material
+            for task in _object_items(item.get("appendixTasks"))
+            for material in _object_items(task.get("recommendedMaterials"))
+        ]
+    )
+    by_id = {
+        str(material.get("id") or "").strip(): material
+        for material in context
+        if str(material.get("id") or "").strip()
+    }
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for material_id in selected_ids:
+        if material_id in seen:
+            continue
+        seen.add(material_id)
+        result.append(by_id.get(material_id) or {"id": material_id, "name": material_id})
+    return result
+
+
+def _field_key(field: dict[str, Any]) -> str:
+    return str(field.get("id") or field.get("key") or field.get("label") or field.get("title") or "").strip()
+
+
+def _field_summary(field: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(field.get("id") or field.get("key") or field.get("label") or ""),
+        "label": str(field.get("label") or field.get("title") or field.get("keyEntity") or field.get("id") or ""),
+        "value": str(field.get("value") or field.get("keyValue") or ""),
+        "sourceFile": str(field.get("sourceFile") or ""),
+        "evidence": str(field.get("evidence") or ""),
+        "evidenceLocation": str(field.get("evidenceLocation") or ""),
+    }
+
+
+def _parse_fields_for_fill(appendix_task: dict[str, Any], task: dict[str, Any], data: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = _object_items(appendix_task.get("availableParseFields")) + _object_items(appendix_task.get("fields"))
+    requested = _string_items(data.get("parseFieldIds"))
+    blank_source = task.get("blankSource") if isinstance(task.get("blankSource"), dict) else {}
+    blank_id = str(blank_source.get("id") or "").strip()
+    requested_field_ids = [item for item in requested if item != blank_id]
+    if not requested_field_ids:
+        return [_field_summary(field) for field in candidates]
+
+    by_key: dict[str, dict[str, Any]] = {}
+    for field in candidates:
+        key = _field_key(field)
+        if key:
+            by_key[key] = field
+    result: list[dict[str, Any]] = []
+    for field_id in requested_field_ids:
+        result.append(_field_summary(by_key.get(field_id) or {"id": field_id, "label": field_id}))
+    return result
 
 
 def run_gap_planner_skill(manifest_path: Path) -> dict[str, Any]:
@@ -157,6 +378,11 @@ def run_ai_fill_for_gap(
     if task is None:
         raise ValueError("当前缺口没有可执行的 AI 填写任务。")
 
+    appendix_task = _appendix_task_for_fill(item, task)
+    selected_reference_ids = _selected_reference_material_ids(item, appendix_task, data)
+    reference_materials = _reference_materials_for_fill(item, appendix_task, data, selected_reference_ids)
+    recommended_materials = _dedupe_material_summaries(_object_items(appendix_task.get("recommendedMaterials")))
+    parse_fields = _parse_fields_for_fill(appendix_task, task, data)
     work_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / gap_id
     work_dir.mkdir(parents=True, exist_ok=True)
     artifact_id = f"ART-{gap_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
@@ -170,9 +396,31 @@ def run_ai_fill_for_gap(
         "gapId": gap_id,
         "fillTaskId": str(task.get("id") or ""),
         "title": str(item.get("title") or ""),
+        "gapItem": {
+            "id": gap_id,
+            "number": str(item.get("number") or item.get("section") or ""),
+            "title": str(item.get("title") or ""),
+            "decision": str(item.get("decision") or ""),
+            "usage": str(item.get("usage") or ""),
+            "gapReason": str(item.get("gapReason") or item.get("reason") or ""),
+            "materialScope": item.get("materialScope") or {},
+            "turbineCheck": item.get("turbineCheck") or {},
+        },
+        "appendixTask": {
+            "id": str(appendix_task.get("id") or ""),
+            "title": str(appendix_task.get("title") or ""),
+            "sourceFile": str(appendix_task.get("sourceFile") or ""),
+            "docxPath": str(appendix_task.get("docxPath") or ""),
+            "workspacePath": str(appendix_task.get("workspacePath") or ""),
+            "rowCount": appendix_task.get("rowCount") or 0,
+            "availableParseFields": parse_fields,
+        },
         "blankSource": task.get("blankSource") or {},
-        "referenceMaterialIds": list(data.get("referenceMaterialIds") or []),
-        "parseFieldIds": list(data.get("parseFieldIds") or []),
+        "referenceMaterialIds": selected_reference_ids,
+        "referenceMaterials": reference_materials,
+        "recommendedMaterials": recommended_materials,
+        "parseFieldIds": _string_items(data.get("parseFieldIds")),
+        "parseFields": parse_fields,
         "constraints": str(data.get("constraints") or ""),
         "operator": str(data.get("operator") or "当前用户"),
         "outputFile": str(output_file),
@@ -195,6 +443,10 @@ def run_ai_fill_for_gap(
         "operator": str(data.get("operator") or "当前用户"),
         "unfilledFields": list(result.get("unfilledFields") or []),
         "evidenceRefs": list(result.get("evidenceRefs") or []),
+        "fillReport": result.get("fillReport") or {},
+        "referenceMaterials": reference_materials,
+        "recommendedMaterials": recommended_materials,
+        "parseFields": parse_fields,
         "manifestPath": str(manifest_path),
         "opencodeOutput": result.get("opencodeOutput") or {},
         "onlyoffice": _artifact_onlyoffice_payload(
@@ -625,7 +877,7 @@ def _build_gap_planner_prompt(manifest_path: Path) -> str:
     return f"""
 Use the {GAP_PLANNER_SKILL_NAME} skill.
 
-你现在在做 S4 技术标缺口识别。后端已经准备好 manifest，其中包含人工确认后的目录 JSON、招标解析结构化结果、S2 素材 Wiki 副本、项目身份信息、人工确认的投标机型信息和历史补料记录。
+你现在在做 S3 技术标缺口识别。后端已经准备好 manifest，其中包含人工确认后的目录 JSON、招标解析结构化结果、S2 素材 Wiki 副本、项目/客户/通用素材边界、素材索引、项目身份信息、人工确认的投标机型信息和历史补料记录。
 
 manifest：{manifest_path}
 
