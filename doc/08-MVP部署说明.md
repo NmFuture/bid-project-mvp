@@ -1,6 +1,7 @@
 # MVP 部署与运行方式说明
 
 > 用途：记录当前已经确认的部署口径，作为后续开发、联调、给客户部署时的统一说明。
+> 更新日期：2026-05-03
 
 ## 1. 交付形态
 
@@ -11,7 +12,7 @@
 也就是说：
 
 - 前端、FastAPI、`opencode`、OnlyOffice 都部署在客户内网服务器上
-- 客户单位员工不需要装本地客户端
+- 客户单位员工不需要安装本地客户端
 - 用户直接通过浏览器访问内网地址即可使用
 
 典型访问方式：
@@ -30,9 +31,7 @@
 
 这是当前最稳、最容易运维、也最适合 MVP 的方式。
 
-## 3. 当前 MVP 的 Compose 组成
-
-当前建议的核心组成是：
+## 3. 当前 Compose 组成
 
 ### 3.1 8 个服务容器
 
@@ -40,11 +39,10 @@
 - 负责对外提供 Web 入口
 - 承载前端静态页面
 - 通常也顺便做反向代理
-- 建议用 `nginx`
 
 2. `fastapi`
 - 业务后端
-- 负责项目、阶段、文件、解析、目录生成、正文拼装、素材覆盖校验、OnlyOffice 对接、下载
+- 负责项目、阶段、文件、解析、目录生成、缺口处理、正文拼装、素材覆盖诊断、OnlyOffice 对接和下载
 
 3. `worker`
 - Redis 队列消费者
@@ -52,95 +50,80 @@
 
 4. `opencode`
 - 运行 `opencode serve`
-- 供 FastAPI 调用目录生成能力；同时镜像内保留 S7 所需 skill 资产与 Python 依赖
+- 供 FastAPI 调用目录生成、缺口处理、AI 填写等 Skill 能力
+- 镜像内保留正文拼装所需本地 skill 资产与 Python 依赖
 
 5. `onlyoffice`
 - 运行 OnlyOffice Document Server
-- 提供在线文档编辑能力
+- 提供在线文档预览和编辑能力
 
 6. `postgres`
 - 项目主链路状态数据库
-- 素材库、Wiki、结构化素材的元数据数据库
+- 素材库、Wiki、结构化素材、设置和审计日志数据库
 
 7. `redis`
 - 后台任务队列、任务锁和结果缓存
 
 8. `minio`
-- 上传文件、素材文件、清洗后 Word、Wiki 附件等对象存储
+- 上传文件、素材文件、清洗后 Word、默认模板、Wiki 附件和生成文档对象存储
 
 ### 3.2 持久化数据
-
-当前 MVP 默认使用：
-
-- `PostgreSQL`
-- `MinIO`
-- `Redis`
-- 本地文件目录 / Docker volume
 
 最少建议保留这些持久化卷：
 
 - `postgres_data`
-  - 存项目、阶段、目录、文档记录、素材库元数据、Wiki 正文
+  - 存项目、阶段、目录、文档记录、素材库元数据、Wiki、设置和审计
 - `redis_data`
   - 存 Redis AOF 队列数据
 - `minio_data`
-  - 存素材原文件、清洗后 Word、Wiki 附件、生成文档对象
+  - 存素材原文件、清洗后 Word、Wiki 附件、默认模板和生成文档对象
 - `uploads`
-  - 存用户上传的招标文件
+  - 存用户上传的招标文件和项目模板
 - `documents`
-  - 存生成的 docx、OnlyOffice 保存回来的最新版文档
+  - 存生成的 docx、OnlyOffice 保存回来的最新版文档和项目工作区
 - `parsed`
-  - 存 `S1` 解析后的中间产物，例如 `combined.txt`
+  - 存 `S0` 解析运行期临时产物，例如 `combined.txt`
 
 一句话：
 
-> **当前 MVP 是多服务容器 + 明确的数据卷：PostgreSQL 管状态和元数据，MinIO 管文件本体，Redis 管后台任务。**
+> **当前 MVP 是多服务容器 + 明确的数据卷：PostgreSQL 管状态和元数据，MinIO 管对象，Redis 管后台任务。**
 
 ## 4. 用户怎么使用
 
-对客户单位员工来说，使用方式应当尽量简单：
+用户看到的主流程是：
+
+```text
+S0 解析 -> S1 模板与目录 -> S2 审核目录 -> S3 缺口处理 -> S4 生成标书 -> S5 共创 -> S6 导出
+```
+
+对客户单位员工来说：
 
 1. 在内网打开系统网址
-2. 进入项目列表
-3. 新建项目并上传招标文件
-4. 按页面流程操作
+2. 进入 `解析` 模块上传招标文件并做投标决策
+3. 决定参与后进入项目工作区
+4. 按 `S1-S6` 页面流程操作
 5. 在浏览器里打开 OnlyOffice 编辑文档
 6. 下载最终 Word
 
-也就是说，用户看到的是一个完整 Web 系统，而不是多个独立服务。
+## 5. 当前运行口径
 
-## 5. 当前 MVP 的运行口径
+当前主链路真实能力：
 
-前端展示流程仍保留：
+- `S0`：多招标文件解析、PDF/图片型文件无感识别、投标决策和项目信息补全
+- `S1`：模板上传或设置侧系统默认模板读取；调用 futurecode/opencode 执行 `s2toc` 生成目录，本地 Skill 脚本作为降级路径
+- `S2`：审核目录
+- `S3`：缺口识别、补料、AI 填写、OnlyOffice 预览和完整性确认
+- `S4`：调用 `bid-tech-assembler`，按目录 JSON、缺口计划、Wiki 和素材库拼装正文
+- `S5`：OnlyOffice 共创编辑
+- `S6`：下载最新版 Word
 
-```text
-S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
-```
+注意：
 
-但当前真正做成真实能力的主链路是：
-
-- `S0`：项目列表 / 新建项目
-- `S1`：解析招标文件
-- `S2`：FastAPI 调 futurecode/opencode 执行 `s2toc` 生成目录，本地 Skill 脚本作为降级路径
-- `S3`：审核目录
-- `S7`：调用 `bid-tech-assembler`，按 S2 目录 JSON 和素材库拼装正文
-- `S8`：根据拼装计划校验未拼上的素材和未匹配目录项
-- `S9`：OnlyOffice 共创编辑
-- `S10`：下载最新版 Word
-
-当前先由 FastAPI mock 的阶段：
-
-- `S4`
-- `S5`
-- `S6`
-
-这意味着：
-
-> **客户看到的流程是完整的，但当前 MVP 只把关键链路做成真实执行。**
+- 旧的 `S7/S8/S9/S10` 不再作为部署验收阶段。
+- `coverage` 仍保留为生成后/导出前的诊断能力，不是独立主流程节点。
+- 格式刷新、PDF 导出和评分点级覆盖审计是后续专项待办。
 
 ## 6. 服务之间的关系
-
-当前建议的关系如下：
 
 ```text
 浏览器
@@ -161,80 +144,24 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 
 ## 7. 当前需要记住的边界
 
-- 正式版产品语义不变：`S5` 补料，`S7` 拼接
-- 当前 MVP 已把 `S7` 调整为正文拼装，仍保留原 `fill-generation` 接口名以兼容前端
-- 当前 MVP 已接入 PostgreSQL、MinIO、Redis
-- 当前 MVP 已接入真实登录鉴权、持久化审计、设置页 LLM 与 PDF/图片识别模型配置、技术标/商务标系统默认模板和 PDF/图片型文件无感解析
-- 当前 MVP 暂不做完整审核流、评分点级覆盖审计和 SSO
+- 当前 MVP 已接入 PostgreSQL、MinIO、Redis。
+- 当前 MVP 已接入真实登录鉴权、持久化审计、设置页 LLM 与 PDF/图片识别模型配置、技术标/商务标系统默认模板和 PDF/图片型文件无感解析。
+- 设置页系统默认模板是项目未上传模板时的生成输入，不作为项目上传文件展示。
+- 当前暂不做 SSO、评分点级覆盖审计、完整 PDF 导出和全部导出前格式刷新。
 
-## 8. 一个前提提醒
+## 8. 模型访问前提
 
-如果 `opencode` 背后要访问外部模型 API，那么部署服务器需要满足以下条件之一：
+如果 `opencode` 背后要访问外部模型 API，部署服务器需要满足以下条件之一：
 
 - 可以访问外部模型服务
 - 可以访问客户内部的模型网关
 - 或后续切到客户可用的私有化模型
 
-这个不是前端问题，而是部署前必须确认的环境前提。
+这不是前端问题，而是部署前必须确认的环境前提。
 
-## 9. 当前离“可部署 MVP”还差的几件事
+## 9. 实际怎么部署
 
-从“本机联调可用”到“可交付部署”，当前还差的重点不是外围业务真逻辑，而是部署收口：
-
-1. 完整跑通一次最终 `docker compose`
-- 不是只验证单服务能起，而是验证 `web + fastapi + opencode + onlyoffice` 一起起来后，主链路能从浏览器走通
-
-2. 把运行配置统一成部署口径
-- 至少要把 `.env.example`、Compose、启动说明统一
-- 避免出现“代码支持环境变量，但部署文档没写”的情况
-
-3. 支持部署使用者自行配置 `opencode`
-- `baseUrl` 需要可自行配置
-- 外部模型 `apiKey` 需要可自行配置
-- 最终应让部署方不改代码，只改环境变量或配置文件即可切换
-
-一句话：
-
-> **当前离可部署 MVP 主要还差“最终 Compose 验收 + 配置口径收口”，而不是再补外围真业务。**
-
-补充：
-
-- 2026-04-20 已经在本机用 compose 重新验过一次：
-  - `PRJ-0010` 从 `S1` 跑到 `S10`
-  - `S9` OnlyOffice 不再空白
-  - `S10` 最终文档下载返回 `200`
-- 2026-04-27 已将 S7 更新为 `bid-tech-assembler` 正文拼装链路：
-  - `S7` 按 S2 目录 JSON、Wiki 卡片和素材库清洗后 Word 拼装正文
-  - `S8` 展示 S7 拼装计划对应的素材覆盖情况
-
-## 10. 实际怎么部署
-
-可以按下面顺序理解和操作。
-
-### 10.1 为什么是多服务容器
-
-不是为了“复杂”，而是为了把职责拆开：
-
-- `web`
-  - 只负责浏览器入口、静态前端、反向代理
-- `fastapi`
-  - 只负责业务接口和主链路状态
-- `worker`
-  - 只负责后台任务消费
-- `opencode`
-  - 负责目录生成，并承载 S7 本地 skill 资产
-- `onlyoffice`
-  - 只负责在线文档编辑
-- `postgres`
-  - 只负责业务状态和素材库元数据
-- `minio`
-  - 只负责文件本体
-- `redis`
-  - 只负责任务队列
-
-这样每个服务都能单独替换、排障、重启，但部署时仍然通过一个 `docker compose` 统一拉起。
-
-### 10.2 部署前准备
+### 9.1 部署前准备
 
 服务器至少需要准备：
 
@@ -243,43 +170,39 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 - 项目代码目录
 - 一个 `.env` 文件
 
-建议做法：
+建议：
 
-1. 复制 `code/.env.example` 为 `code/.env`
-2. 按部署环境填写配置
-3. 再执行 `docker compose up -d --build`
+```bash
+cd code
+cp .env.example .env
+```
 
-### 10.3 重点配置哪些环境变量
+按部署环境填写配置后执行：
 
-当前至少要关注这些变量：
+```bash
+docker compose up -d --build
+```
+
+### 9.2 重点配置哪些环境变量
 
 - `WEB_PORT`
   - 浏览器访问入口端口
 - `OPENCODE_BASE_URL`
-  - FastAPI 调用的 `opencode` 地址
-  - 默认是 Compose 内部地址：`http://opencode:4096`
-  - 如果后续切外部独立 `opencode`，就改这里
+  - FastAPI 调用的 `opencode` 地址，默认是 `http://opencode:4096`
 - `OPENCODE_PROVIDER_ID`
 - `OPENCODE_MODEL_ID`
 - `OPENCODE_TIMEOUT_SEC`
 - `OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY`
-  - `opencode` 背后调用外部模型时使用
 - `OPENCODE_AUTH_HOST_DIR`
-  - 如果要挂载宿主机上的 `auth.json`，就改这里
 - `AUTH_ADMIN_EMAIL / AUTH_ADMIN_PASSWORD / AUTH_ADMIN_NAME`
-  - 首次启动时初始化系统管理员
 - `DEFAULT_LLM_BASE_URL / DEFAULT_LLM_API_KEY / DEFAULT_LLM_MODEL`
-  - 设置页 LLM 模型配置的启动默认值，后续可在页面维护
 - `DEFAULT_OCR_BASE_URL / DEFAULT_OCR_API_KEY / DEFAULT_OCR_MODEL`
-  - 设置页 PDF/图片识别模型配置的启动默认值，后续可在页面维护
 - `ONLYOFFICE_INTERNAL_URL`
 - `ONLYOFFICE_BACKEND_BASE_URL`
 
 这里要特别注意：
 
 > `ONLYOFFICE_BACKEND_BASE_URL` 必须是“浏览器 + OnlyOffice 容器”都能访问到的共享地址。
-
-不要把它简单理解成 `fastapi` 的容器内网地址。
 
 推荐口径：
 
@@ -293,30 +216,28 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 - `http://127.0.0.1`
   - OnlyOffice 容器通常访问不到
 
-这里最重要的一点是：
-
-> **部署使用者需要能自己改 `opencode` 的 `baseUrl / apiKey`，而不是去改代码。**
-
-再补一句部署经验：
+部署经验：
 
 - 如果保留 compose 自带的 `opencode`，`OPENCODE_BASE_URL` 保持 `http://opencode:4096`
-- 如果切到外部 `opencode` 网关，只需要改 `OPENCODE_BASE_URL`
-- `OPENCODE_PROVIDER_ID / OPENCODE_MODEL_ID` 负责决定 FastAPI 调用哪个 provider/model
-- `OPENCODE_TIMEOUT_SEC` 默认建议先用 `600` 秒，超时后系统会回退到可继续审核的目录，避免页面长时间卡死
-- `OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY` 负责让 `opencode` 真正访问外部模型
+- 如果切到外部 `opencode` 网关，只改 `OPENCODE_BASE_URL`
+- `OPENCODE_PROVIDER_ID / OPENCODE_MODEL_ID` 决定 FastAPI 调用哪个 provider/model
+- `OPENCODE_TIMEOUT_SEC` 默认建议先用 `600` 秒，超时后系统会回退到可继续审核的目录
 
-补充：
+### 9.3 当前工作区路径
 
-- `S2` 优先由 FastAPI 调用 futurecode/opencode 执行 S2 Skill 的 `s2toc` 命令；命令完成后后端直接读取脚本产物，避免等待 futurecode 读取大 JSON。
-- 如果 futurecode/opencode 调用失败，系统会在 FastAPI 本地运行同一 S2 Skill 脚本降级生成目录，保证后续 `S3-S10` 可继续联调。
-- `S2` 新一轮运行会先写入 `s2_toc_workdir.new/`；成功后发布为 `s2_toc_workdir/`，旧成功目录归档到 `s2_toc_workdir.runs/`，便于失败排查和结果追溯。
-- `S7` 以本地 `bid-tech-assembler` skill 拼装正文为主；这一步依赖 S2 目录 JSON、Wiki 卡片和素材库清洗后的 Word 文件
+历史内部目录名仍保留以兼容代码和已有数据：
 
-### 10.4 启动方式
+- `parsed/{project_id}/`：`S0` 运行期临时解析缓存
+- `documents/{project_id}/technical-workspace/parse/`：进入项目后的解析产物
+- `documents/{project_id}/technical-workspace/s2_toc_workdir/`：当前 `S1` 目录生成产物
+- `documents/{project_id}/technical-workspace/s4_gap_workdir/`：当前 `S3` 缺口处理产物
+- `documents/{project_id}/technical-workspace/s7_assembly_workdir/`：当前 `S4` 正文拼装产物
+- `documents/{project_id}.docx`：当前 `S5/S6` 共创和导出文档
 
-在 `code/` 目录执行：
+### 9.4 启动方式
 
 ```bash
+cd code
 docker compose up -d --build
 ```
 
@@ -328,7 +249,7 @@ docker compose logs -f fastapi
 docker compose logs -f opencode
 ```
 
-### 10.5 启动后先检查什么
+### 9.5 启动后先检查什么
 
 建议先看这几层：
 
@@ -338,17 +259,17 @@ docker compose logs -f opencode
 4. OnlyOffice 页面资源和 `/healthcheck` 是否正常
 5. 浏览器里是否能走通：
    - 登录
-   - 新建项目
-   - S1 解析
-   - S2 目录生成
-   - S7 正文拼装
-   - S8 素材拼装覆盖校验
-   - S9 打开编辑器
-   - S10 下载
+   - `S0` 新建审核项目并解析
+   - `S1` 模板与目录
+   - `S2` 审核目录
+   - `S3` 缺口处理
+   - `S4` 生成标书
+   - `S5` 打开编辑器
+   - `S6` 下载
 6. 设置页能查看用户、默认模板、LLM、PDF/图片识别模型配置、备份和健康状态
 7. 审计页能看到登录、设置变更、模型测试、默认模板启用等真实操作记录
-8. OCR/视觉模型未配置时，图片或扫描件解析给出明确警告；配置后图片或图片型 PDF 自动进入原有解析链路，不需要单独 OCR 入口或候选字段确认
+8. OCR/视觉模型未配置时，图片或扫描件解析给出明确警告；配置后图片或图片型 PDF 自动进入原有解析链路
 
-## 11. 一句话总结
+## 10. 一句话总结
 
-> **当前 MVP 推荐部署方式就是：一台客户内网服务器，使用 Docker Compose 跑 `web + fastapi + worker + opencode + onlyoffice + postgres + redis + minio`，客户员工直接通过内网浏览器访问即可。**
+> **当前 MVP 推荐部署方式就是：一台客户内网服务器，使用 Docker Compose 跑 `web + fastapi + worker + opencode + onlyoffice + postgres + redis + minio`，客户员工直接通过内网浏览器访问 S0-S6 流程。**

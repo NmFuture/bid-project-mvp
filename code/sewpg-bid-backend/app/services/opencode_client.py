@@ -122,7 +122,7 @@ class OpencodeClient:
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        session = self.create_session("S7 正文拼装")
+        session = self.create_session("S4 生成标书")
         session_id = str(session.get("id") or "")
         if session_ready_callback:
             session_ready_callback(
@@ -149,7 +149,7 @@ class OpencodeClient:
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        session = self.create_session("S7 技术标正文拼装")
+        session = self.create_session("S4 技术标正文拼装")
         session_id = str(session.get("id") or "")
         if session_ready_callback:
             session_ready_callback(

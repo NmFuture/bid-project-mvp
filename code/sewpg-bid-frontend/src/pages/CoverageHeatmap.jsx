@@ -128,11 +128,11 @@ export default function CoverageHeatmap({ showToast }) {
   const handleGoEditor = async () => {
     setAdvancing(true)
     try {
-      await stagesAPI.update(id, 8, { status: 'completed' })
-      showToast('已进入 S9 人机共创编辑')
+      await stagesAPI.update(id, 4, { status: 'completed' })
+      showToast('已进入 S5 人机共创编辑')
       navigate(projectRoute(id, '/editor', workspaceSlug))
     } catch (e) {
-      showToast(e?.message || '进入 S9 失败', 'error')
+      showToast(e?.message || '进入 S5 失败', 'error')
     } finally {
       setAdvancing(false)
     }
@@ -143,7 +143,7 @@ export default function CoverageHeatmap({ showToast }) {
   if (error) {
     return (
       <div className="bg-error-container/20 border border-error/30 rounded-xl p-6 text-sm text-error">
-        <p className="font-semibold mb-2">S8 覆盖热力图加载失败</p>
+        <p className="font-semibold mb-2">覆盖诊断加载失败</p>
         <p>{error}</p>
         <button
           onClick={fetchCoverage}

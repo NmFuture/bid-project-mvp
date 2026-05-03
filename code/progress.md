@@ -10,6 +10,34 @@
 
 ## 进度记录
 
+### 2026-05-03 16:29 技术标阶段口径收口到 S0-S6
+
+改动目标：
+
+- 按用户要求把技术标步骤从旧 `S0-S10` 收口为当前 `S0-S6`。
+- 明确 `S0` 是全局解析/审核步骤，项目模块只展示 `S1 模板与目录 / S2 审核目录 / S3 缺口处理 / S4 生成标书 / S5 共创 / S6 导出`。
+- 清理活跃文档、API 说明、skill 说明和前端项目内路径中的旧阶段歧义。
+
+改动内容：
+
+- 后端项目阶段模型改为 `S1-S6`，并保留旧阶段号请求到当前阶段的兼容映射。
+- 前端阶段路由改为 `1..6`，项目内 `S1 模板与目录` 正式路径改为 `/template-directory`；历史 `/projects/:id/parse` 只做兼容跳转，全局 `/parse` 保持 `S0 解析`。
+- 根 README、`code/AGENT.md`、`doc/05/06/08/11/12/13/14/README`、API 极简版和后端 README 全部改为 `S0-S6` 口径。
+- `doc/13` 从旧 `S7/S8` 文件名改为 `13-S4生成标书与覆盖诊断说明.md`。
+- OpenCode skill 说明改为当前用户阶段，保留 `s1_parse_manifest.json`、`s2toc`、`s4_gap_workdir`、`s7_assembly_workdir` 等历史内部名的兼容解释。
+
+验证结果：
+
+- `git diff --check` 通过。
+- `PYTHONPATH=. .venv/bin/python -m py_compile app/services/store.py app/api/routes/projects.py app/api/routes/export.py app/services/draft_generation.py app/services/tech_assembly.py app/services/opencode_client.py app/api/routes/generation.py` 通过。
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_stage_progress.py tests/test_parse_pipeline.py tests/test_directory_generation.py tests/test_fill_generation.py tests/test_gap_review_flow.py -q` 通过：60 passed。
+- `npm run lint` 通过。
+- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的既有提示。
+- `PYTHONPATH=. .venv/bin/python -m pytest -q` 全量后端测试通过：106 passed，13 skipped。
+- 已重新构建并重启 `fastapi / worker / web`。
+- `/api/healthz` 返回 `status=ok`。
+- `/api/projects/PRJ-0001/stages` 返回 6 个节点：`模板与目录 / 审核目录 / 缺口处理 / 生成标书 / 共创 / 导出`，`routeStageId` 为 `1..6`。
+
 ### 2026-05-03 17:05 技术标模板兜底收口为设置侧系统默认模板
 
 改动目标：

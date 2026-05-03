@@ -165,7 +165,7 @@ python3 scripts/verify.py \
 
 ## Backend Manifest 模式
 
-在 `bid-project` 中，S7 后端会预先准备工作目录和 `s7_assembly_input.json`。收到这类任务时优先走 manifest：
+在 `bid-project` 中，当前 `S4 生成标书` 后端会预先准备历史工作目录 `s7_assembly_workdir` 和 `s7_assembly_input.json`。这些名字为兼容旧脚本保留；收到这类任务时优先走 manifest：
 
 ```bash
 python3 scripts/run_from_manifest.py \
@@ -174,8 +174,8 @@ python3 scripts/run_from_manifest.py \
 ```
 
 manifest 会指定：
-- `tocJsonPath`：S2 生成的目录 JSON 路径
-- `wikiDir`：S2 导出的当前数据库 Wiki 文件系统副本
+- `tocJsonPath`：当前 `S1 模板与目录` 生成的目录 JSON 路径
+- `wikiDir`：当前 `S1` 导出的数据库 Wiki 文件系统副本
 - `materialLibraryDir`：后端按 Wiki 卡片 `material_id / path / cleaned_file_name` 从当前素材库导出的 Word 文件根目录
 - `templateFile`：可选的投标正文模板，用于生成母版；没有时生成最小母版
 - `projectParams` / `projectParamsPath`：项目参数预填与占位符写入

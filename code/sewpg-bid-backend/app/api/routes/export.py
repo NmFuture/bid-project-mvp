@@ -99,7 +99,7 @@ async def export_document(
             },
         )
 
-    store.update_stage(project_id, 10, {"status": "completed"})
+    store.update_stage(project_id, 6, {"status": "completed"})
     return {
         "message": "Exported",
         "fileUrl": absolute_url(request, f"/api/projects/{project_id}/final-document/file"),

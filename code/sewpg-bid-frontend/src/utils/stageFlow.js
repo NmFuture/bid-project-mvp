@@ -1,16 +1,12 @@
 import { projectRoute } from './workspace'
 
 export const STAGE_ROUTE_BUILDERS = {
-  1: (projectId, workspaceSlug = '') => projectRoute(projectId, '/parse', workspaceSlug),
-  2: (projectId, workspaceSlug = '') => projectRoute(projectId, '/parse', workspaceSlug),
-  3: (projectId, workspaceSlug = '') => projectRoute(projectId, '/outline', workspaceSlug),
-  4: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps', workspaceSlug),
-  5: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps', workspaceSlug),
-  6: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps', workspaceSlug),
-  7: (projectId, workspaceSlug = '') => projectRoute(projectId, '/generate', workspaceSlug),
-  8: (projectId, workspaceSlug = '') => projectRoute(projectId, '/generate', workspaceSlug),
-  9: (projectId, workspaceSlug = '') => projectRoute(projectId, '/editor', workspaceSlug),
-  10: (projectId, workspaceSlug = '') => projectRoute(projectId, '/export', workspaceSlug),
+  1: (projectId, workspaceSlug = '') => projectRoute(projectId, '/template-directory', workspaceSlug),
+  2: (projectId, workspaceSlug = '') => projectRoute(projectId, '/outline', workspaceSlug),
+  3: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps', workspaceSlug),
+  4: (projectId, workspaceSlug = '') => projectRoute(projectId, '/generate', workspaceSlug),
+  5: (projectId, workspaceSlug = '') => projectRoute(projectId, '/editor', workspaceSlug),
+  6: (projectId, workspaceSlug = '') => projectRoute(projectId, '/export', workspaceSlug),
 }
 
 const toStageId = (value) => {
@@ -46,7 +42,7 @@ export const getActiveStageId = (stages = []) => {
   if (!completedIds.length) return 1
 
   const highestCompleted = Math.max(...completedIds)
-  return Math.min(10, Math.max(1, highestCompleted + 1))
+  return Math.min(6, Math.max(1, highestCompleted + 1))
 }
 
 export const getStrictStageLockReason = (stages = [], targetStageId) => {

@@ -147,9 +147,8 @@ export default function GenerateProgress({ showToast }) {
     }
     setAdvancing(true)
     try {
-      await stagesAPI.update(id, 7, { status: 'completed' })
-      await stagesAPI.update(id, 8, { status: 'completed' })
-      showToast?.('已进入共创')
+      await stagesAPI.update(id, 4, { status: 'completed' })
+      showToast?.('已进入 S5 共创')
       navigate(projectRoute(id, '/editor', workspaceSlug))
     } catch (e) {
       showToast?.(e?.message || '进入下一阶段失败', 'error')
@@ -158,8 +157,8 @@ export default function GenerateProgress({ showToast }) {
     }
   }
 
-  if (loading) return <PageLoading title="正在加载标书生成状态..." />
-  if (error) return <PageError title="标书生成状态加载失败" description={error} onRetry={loadData} />
+  if (loading) return <PageLoading title="正在加载 S4 生成标书状态..." />
+  if (error) return <PageError title="S4 生成标书状态加载失败" description={error} onRetry={loadData} />
 
   const taskStatusLabelMap = {
     pending: '待处理',

@@ -5,7 +5,9 @@ description: Parse one or more tender documents into structured bid requirements
 
 # Bid Tender Structured Parser
 
-Use this skill for S1 tender parsing when the backend provides an `s1_parse_manifest.json`.
+Use this skill for S0 tender parsing when the backend provides an `s1_parse_manifest.json`.
+
+`s1_parse_manifest.json` is a historical manifest filename kept for backend compatibility; the user-facing workflow step is now `S0 解析`.
 
 Run exactly:
 

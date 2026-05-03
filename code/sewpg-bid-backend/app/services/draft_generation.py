@@ -14,5 +14,5 @@ def generate_draft_for_project_with_progress(
     data: dict[str, Any] | None = None,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
-    """S7 now assembles the technical bid Word from S2 JSON and materials."""
+    """S4 now assembles the technical bid Word from the approved directory and materials."""
     return assemble_tech_bid_for_project_with_progress(project_id, data, progress_callback)

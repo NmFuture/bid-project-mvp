@@ -8,7 +8,7 @@ import { useWorkspaceSlug } from '../../utils/workspace'
 export default function ProjectStageProgress({
   projectId,
   showToast,
-  onStageTenClick,
+  onStageSixClick,
 }) {
   const navigate = useNavigate()
   const workspaceSlug = useWorkspaceSlug()
@@ -50,9 +50,9 @@ export default function ProjectStageProgress({
         return
       }
 
-      if (Number(stage.routeStageId || stage.id) === 10) {
-        if (typeof onStageTenClick === 'function') {
-          onStageTenClick()
+      if (Number(stage.routeStageId || stage.id) === 6) {
+        if (typeof onStageSixClick === 'function') {
+          onStageSixClick()
           return
         }
       }
@@ -64,7 +64,7 @@ export default function ProjectStageProgress({
       }
       navigate(route)
     },
-    [getStageLockReason, navigate, onStageTenClick, projectId, showToast, workspaceSlug],
+    [getStageLockReason, navigate, onStageSixClick, projectId, showToast, workspaceSlug],
   )
 
   if (loading) {

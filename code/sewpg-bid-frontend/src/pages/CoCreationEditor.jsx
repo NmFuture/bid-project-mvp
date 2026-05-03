@@ -38,7 +38,7 @@ export default function CoCreationEditor({ showToast }) {
       setFallbackContent(payload?.fallback?.content || '')
       setOnlyofficeError('')
     } catch (e) {
-      setError(e?.message || 'S9 文档加载失败')
+      setError(e?.message || 'S5 共创文档加载失败')
     } finally {
       setLoading(false)
     }
@@ -87,21 +87,21 @@ export default function CoCreationEditor({ showToast }) {
     }
   }
 
-  const handleFinishS9 = async () => {
+  const handleFinishCoCreation = async () => {
     setFinishingStage(true)
     try {
-      await stagesAPI.update(id, 9, { status: 'completed' })
-      showToast?.('S9 已完成，已进入 S10')
+      await stagesAPI.update(id, 5, { status: 'completed' })
+      showToast?.('S5 共创已完成，已进入 S6 导出')
       navigate(projectRoute(id, '/export', workspaceSlug))
     } catch (e) {
-      showToast?.(e?.message || 'S9 完成失败，请稍后重试', 'error')
+      showToast?.(e?.message || 'S5 共创完成失败，请稍后重试', 'error')
     } finally {
       setFinishingStage(false)
     }
   }
 
-  if (loading) return <PageLoading title="正在加载 S9 人机共创文档..." />
-  if (error) return <PageError title="S9 文档加载失败" description={error} onRetry={loadDocument} />
+  if (loading) return <PageLoading title="正在加载 S5 人机共创文档..." />
+  if (error) return <PageError title="S5 文档加载失败" description={error} onRetry={loadDocument} />
 
   return (
     <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
@@ -119,7 +119,7 @@ export default function CoCreationEditor({ showToast }) {
               刷新
             </button>
             <button
-              onClick={handleFinishS9}
+              onClick={handleFinishCoCreation}
               disabled={finishingStage}
               className="px-4 py-2.5 bg-secondary text-on-secondary text-sm font-medium rounded-lg hover:bg-secondary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >

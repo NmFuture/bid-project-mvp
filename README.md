@@ -1,36 +1,36 @@
 # Bid Project MVP
 
-这是一个已经收口到 **Docker Compose 可部署形态** 的标书智能体 MVP 仓库。
+这是一个已经收口到 **Docker Compose 可部署形态** 的标书智能体 MVP 仓库。当前目标不是把所有远期业务一次性做完，而是让主链路真实走通、外围能力有清晰边界，别人拿到仓库后可以按 README 在一台机器上启动整套系统。
 
-当前仓库的目标不是“所有业务都做成正式版”，而是：
+## 当前主流程
 
-- 主链路可以真实走通
-- 外围阶段可以完整演示
-- 别人拿到仓库后，按 README 就能在一台机器上把整套系统跑起来
+当前技术标流程统一为 `S0-S6`：
 
-当前已验证的主链路是：
+```text
+S0 解析（审核模块上传招标文件、结构化解析、投标决策）
+  -> S1 模板与目录
+  -> S2 审核目录
+  -> S3 缺口处理
+  -> S4 生成标书
+  -> S5 共创
+  -> S6 导出
+```
 
-`审核（上传招标文件并解析） -> 项目模块 S1 模板上传（可选） -> S2 目录生成 -> S3 目录审核 -> S4/S5/S6 承接 -> S7 技术标正文拼装 -> S8 素材拼装校验 -> S9 OnlyOffice 共创 -> S10 下载`
+其中 `S0` 是进入项目模块前的解析和投标决策步骤；项目模块只展示 `S1-S6` 六个节点。旧的 `S7/S8/S9/S10` 公共阶段号不再作为当前基线使用，后端只保留对旧阶段请求的兼容映射。
 
-其中：
+当前已验证的能力：
 
-- 真实执行阶段：`S0 / S1 / S2 / S3 / S7 / S8 / S9 / S10`
-- 承接 / mock-backed 阶段：`S4 / S5 / S6`
-
-当前仓库已经按 `docker compose` 做过一轮真实主链路验收：
-
-- 审核模块上传并解析成功
-- `S2` 目录生成成功
-- `S3` 目录审核页面支持左侧目录编辑 + 右侧招标文件 OnlyOffice 预览
-- `S6` 文档预览可用
-- `S7` 已按 S2 目录 JSON 调用 `bid-tech-assembler` 拼装技术标正文
-- `S8` 已基于拼装计划校验素材库中未拼上的材料
-- `S9` OnlyOffice 不再白屏
-- `S10` 最终文档下载接口返回 `200`
+- `S0` 支持多招标文件解析、PDF/图片型文件无感识别、投标决策和项目信息补全
+- `S1` 使用项目上传模板，或在项目未上传模板时使用设置侧启用的系统默认模板；同页触发目录生成
+- `S2` 审核并确认目录，右侧可预览招标文件
+- `S3` 读取真实目录、Wiki、素材库、补料和 AI 填写产物，形成缺口处理计划
+- `S4` 调用 `bid-tech-assembler` 拼装技术标正文，并保留覆盖诊断能力
+- `S5` 通过 OnlyOffice 共创编辑项目正文
+- `S6` 下载最终 Word；格式检查、PDF 导出和评分点级覆盖审计仍是后续专项
 
 ## 当前开发推进口径
 
-当前 README 说明的是已经跑通的 MVP 运行与验收方式。下一阶段开发不再从旧的临时计划发散，而是以这两份文档为准：
+下一阶段开发以这两份文档为准：
 
 - [甲方新增需求待办](./doc/14-甲方新增需求待办.md)
   - 当前统一待办池，按实施难度升序排列，并带有“完成情况”列
@@ -40,7 +40,7 @@
 推进规则：
 
 - 每完成一项待办，在 `doc/14-甲方新增需求待办.md` 的“完成情况”列勾选
-- 每完成或推进一项待办，同步记录到 [code/progress.md](./code/progress.md)
+- 每完成或推进一项，同步记录到 [code/progress.md](./code/progress.md)
 - 后续做待办时，默认每个待办开一个新会话；新会话先读 `doc/14`、`code/progress.md` 和 `code/AGENT.md`
 
 ## 目录说明
@@ -48,47 +48,38 @@
 - `code/`
   - 真正的可运行代码和 `docker-compose.yml`
 - `doc/`
-  - 规格、部署说明、接口说明
-  - 当前开发入口、运行基线和归档资料
+  - 规格、部署说明、接口说明、当前待办和归档资料
 
 ## 部署架构
 
 当前 compose 默认启动 8 个服务：
 
-- `web`
-  - 前端静态页面 + `/api` / `/ds` 反向代理
-- `fastapi`
-  - 唯一业务后端
-- `worker`
-  - Redis 队列消费者，负责目录生成、正文拼装、素材清洗等后台任务
-- `opencode`
-  - 目录生成，以及存放可被后端调用的本地 skill 资产
-- `onlyoffice`
-  - 在线文档预览和编辑
-- `postgres`
-  - 项目主链路状态、素材库元数据、Wiki 正文
-- `redis`
-  - 后台任务队列、任务锁和结果缓存
-- `minio`
-  - 上传文件、素材文件、清洗后 Word、Wiki 附件等对象存储
+- `web`：前端静态页面 + `/api` / `/ds` 反向代理
+- `fastapi`：唯一业务后端
+- `worker`：Redis 队列消费者，负责目录生成、正文拼装、素材清洗等后台任务
+- `opencode`：目录生成、缺口处理和 AI 填写等 Skill 能力的运行入口，同时保留本地 skill 资产
+- `onlyoffice`：在线文档预览和编辑
+- `postgres`：项目状态、素材库元数据、Wiki 正文、设置和审计日志
+- `redis`：后台任务队列、任务锁和结果缓存
+- `minio`：上传文件、素材文件、清洗后 Word、Wiki 附件、默认模板和生成文档对象
 
-当前 compose 还会保留这些数据卷：
+持久化卷：
 
-- `postgres_data`
-  - 项目状态、流程状态、素材库元数据、Wiki 正文
-- `redis_data`
-  - 后台任务队列持久化
-- `minio_data`
-  - 素材原文件、清洗后 Word、附件和生成文档对象
-- `uploads`
-  - 用户上传的招标文件
-- `documents`
-  - 生成后的 `.docx`
-  - 项目技术标长期工作区 `documents/{project_id}/technical-workspace/`
-- `parsed`
-  - S1 临时解析缓存，例如初始 `combined.txt` 和附表草稿
+- `postgres_data`：项目状态、流程状态、素材库元数据、Wiki、设置和审计
+- `redis_data`：后台任务队列持久化
+- `minio_data`：素材原文件、清洗后 Word、默认模板、附件和生成文档对象
+- `uploads`：用户上传的招标文件和项目模板
+- `documents`：生成后的 `.docx`、OnlyOffice 回写文档和项目长期工作区
+- `parsed`：`S0` 解析运行期临时缓存
 
-`documents` 和 `parsed` 都需要持久化。`parsed` 保存 S1 运行中的临时解析缓存；确认参与投标后，S1 解析结果会提升到 `documents/{project_id}/technical-workspace/parse/`，S2/S4/S7 的长期工作区都在同一个 `technical-workspace` 下。
+路径口径：
+
+- `parsed/{project_id}/` 只保存 `S0` 运行期临时解析缓存
+- `documents/{project_id}/technical-workspace/parse/` 保存进入技术标流程后的解析产物
+- `documents/{project_id}/technical-workspace/s2_toc_workdir/` 是历史内部目录名，对应当前 `S1 模板与目录` 的目录生成产物
+- `documents/{project_id}/technical-workspace/s4_gap_workdir/` 是历史内部目录名，对应当前 `S3 缺口处理` 的缺口计划和补料产物
+- `documents/{project_id}/technical-workspace/s7_assembly_workdir/` 是历史内部目录名，对应当前 `S4 生成标书` 的拼装 manifest、计划和报告
+- `documents/{project_id}.docx` 是 `S5/S6` 共创和导出的当前项目文档
 
 ## 快速启动
 
@@ -128,88 +119,51 @@ docker compose logs -f onlyoffice
 
 - `http://localhost`
 
-如果你修改了 `WEB_PORT`，就访问对应端口，例如 `http://localhost:8080`。
+如果修改了 `WEB_PORT`，访问对应端口，例如 `http://localhost:8080`。
 
 ## 健康检查
 
-启动后建议先检查这几个地址：
+启动后建议先检查：
 
 - `http://localhost/api/healthz`
 - `http://localhost/ds/healthcheck`
 - `http://localhost:4096/global/health`
 
-如果你修改了 `WEB_PORT` 或 `OPENCODE_HOST_PORT`，请把地址里的端口一起替换。
+如果修改了 `WEB_PORT` 或 `OPENCODE_HOST_PORT`，请同步替换端口。
 
-## 怎么切换大模型 URL / key / modelId
+## 怎么切换模型 URL / key / modelId
 
-这是当前部署里最重要的配置点。
-
-### 场景 A：继续使用 compose 里自带的 `opencode`
-
-这种情况下，`fastapi` 继续调用 compose 内部的 `opencode`：
+### 场景 A：使用 compose 自带 `opencode`
 
 ```env
 OPENCODE_BASE_URL=http://opencode:4096
-```
-
-你需要改的是：
-
-```env
 OPENCODE_PROVIDER_ID=<你的 providerID>
 OPENCODE_MODEL_ID=<你的 modelID>
 
-OPENAI_API_KEY=<如果你走 OpenAI / OpenAI-compatible>
-ANTHROPIC_API_KEY=<如果你走 Anthropic>
-GOOGLE_API_KEY=<如果你走 Google>
+OPENAI_API_KEY=<如果走 OpenAI / OpenAI-compatible>
+ANTHROPIC_API_KEY=<如果走 Anthropic>
+GOOGLE_API_KEY=<如果走 Google>
 ```
 
-要点：
-
-- `OPENCODE_PROVIDER_ID`
-  - 告诉 FastAPI 调 opencode 时使用哪个 provider
-- `OPENCODE_MODEL_ID`
-  - 告诉 FastAPI 用哪个模型
-- `OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY`
-  - 由 `opencode` 容器读取，用于真正访问外部模型
-
-### 场景 B：改成外部独立的 `opencode` 网关
-
-如果你们已经有单独部署好的 `opencode`，只改：
+### 场景 B：改成外部独立 `opencode` 网关
 
 ```env
 OPENCODE_BASE_URL=http://your-opencode-host:4096
-```
-
-同时继续设置：
-
-```env
 OPENCODE_PROVIDER_ID=<你的 providerID>
 OPENCODE_MODEL_ID=<你的 modelID>
 ```
 
-这时：
-
-- `fastapi` 会去调外部 `opencode`
-- compose 里的本地 `opencode` 可以继续保留但不被使用
-- 如果你不想浪费资源，也可以手动停掉 compose 里的 `opencode` 服务
+这时 FastAPI 会调用外部 `opencode`，compose 里的本地 `opencode` 可以继续保留或手动停掉。
 
 ### 场景 C：使用 `auth.json`
-
-如果你不是直接用环境变量 key，而是让 `opencode` 读宿主机认证文件，可以这样：
 
 ```env
 OPENCODE_AUTH_HOST_DIR=./opencode-auth
 ```
 
-把认证文件放到：
-
-- `code/opencode-auth/auth.json`
-
-compose 会把这个目录挂进 `opencode` 容器。
+认证文件放在 `code/opencode-auth/auth.json`，compose 会挂载进 `opencode` 容器。
 
 ## 当前最重要的环境变量
-
-`code/.env.example` 里已经列了最小配置项，重点如下：
 
 | 变量 | 作用 |
 |---|---|
@@ -223,16 +177,16 @@ compose 会把这个目录挂进 `opencode` 容器。
 | `OPENCODE_BASE_URL` | FastAPI 调用的 opencode 地址 |
 | `OPENCODE_PROVIDER_ID` | 调用 opencode 时的 provider |
 | `OPENCODE_MODEL_ID` | 调用 opencode 时的模型 ID |
-| `OPENCODE_TIMEOUT_SEC` | FastAPI 调用 opencode 的超时，默认建议 `600` 秒，超时会触发回退目录 |
+| `OPENCODE_TIMEOUT_SEC` | FastAPI 调用 opencode 的超时，默认建议 `600` 秒 |
 | `AUTH_ADMIN_EMAIL / AUTH_ADMIN_PASSWORD / AUTH_ADMIN_NAME` | 首次启动时初始化系统管理员 |
-| `DEFAULT_LLM_BASE_URL / DEFAULT_LLM_API_KEY / DEFAULT_LLM_MODEL` | 设置页 LLM 模型配置的启动默认值，后续可在设置页维护 |
-| `DEFAULT_OCR_BASE_URL / DEFAULT_OCR_API_KEY / DEFAULT_OCR_MODEL` | 设置页 PDF/图片识别模型配置的启动默认值，后续可在设置页维护 |
+| `DEFAULT_LLM_BASE_URL / DEFAULT_LLM_API_KEY / DEFAULT_LLM_MODEL` | 设置页 LLM 模型配置的启动默认值 |
+| `DEFAULT_OCR_BASE_URL / DEFAULT_OCR_API_KEY / DEFAULT_OCR_MODEL` | 设置页 PDF/图片识别模型配置的启动默认值 |
 | `OPENAI_API_KEY` | OpenAI / OpenAI-compatible 模型 key |
 | `ANTHROPIC_API_KEY` | Anthropic key |
 | `GOOGLE_API_KEY` | Google key |
 | `OPENCODE_AUTH_HOST_DIR` | 宿主机 `auth.json` 挂载目录 |
 | `ONLYOFFICE_INTERNAL_URL` | FastAPI 访问 OnlyOffice 的内部地址 |
-| `ONLYOFFICE_BACKEND_BASE_URL` | 浏览器与 OnlyOffice 容器都能访问的共享 Web 地址，用于文档下载和回调 |
+| `ONLYOFFICE_BACKEND_BASE_URL` | 浏览器与 OnlyOffice 容器都能访问的共享 Web 地址 |
 | `ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS` | 允许 OnlyOffice 访问内网地址 |
 
 ## 推荐验收步骤
@@ -240,33 +194,28 @@ compose 会把这个目录挂进 `opencode` 容器。
 部署后建议按这条线验：
 
 1. 登录系统
-2. 进入左侧 `审核` 模块，点击“新建审核项目”
-3. 上传一个小的 `docx/pdf` 招标文件并点击“上传并解析”
-4. 在审核模块做投标决策
-5. 选择“参与该项目并进入项目模块”后，补全项目基本信息
-6. 进入项目模块 `S1`（模板上传可选），点击“进入下一阶段”
-7. `S2` 点击“生成目录”
-8. `S3` 校核目录，并确认右侧 OnlyOffice 招标文件预览可用
-9. `S4/S5/S6` 继续走承接流程
-10. `S7` 点击“触发正文拼装”，观察进度、任务、事件和拼装输出
-11. `S8` 查看素材拼装覆盖树，确认未拼上的素材和未匹配目录项
-12. `S9` 确认 OnlyOffice 编辑器正常显示
-13. `S10` 下载最终版 Word
+2. 进入左侧 `解析` 模块，点击“新建审核项目”
+3. 上传一个或多个 `docx/pdf/图片` 招标文件并点击“上传并解析”
+4. 在解析/审核模块做投标决策，选择“参与该项目并进入工作区”
+5. 补全项目基本信息后进入 `S1 模板与目录`
+6. 可选择上传项目模板；不上传时确认系统默认模板可用
+7. 在 `S1` 点击“生成目录”，观察 Skill 进度和目录产物
+8. 进入 `S2 审核目录`，校核目录，并确认右侧 OnlyOffice 招标文件预览可用
+9. 进入 `S3 缺口处理`，识别缺口、补料、AI 填写并确认缺口计划
+10. 进入 `S4 生成标书`，触发正文拼装并查看覆盖诊断
+11. 进入 `S5 共创`，确认 OnlyOffice 编辑器正常显示
+12. 进入 `S6 导出`，下载最终版 Word
 
 补充说明：
 
 - 审核模块若选择“不参与该项目”，项目会在流程中终止，并从项目总览移除
-- 审核模块若选择“参与该项目”，会先要求补全项目信息，再进入项目模块
-- `S2` 由 FastAPI 调用 futurecode/opencode 执行 `bid-tech-outline-generator` 的 `s2toc` 命令；命令完成后后端会直接读取脚本产物，避免等待 futurecode 继续读取大 JSON。
-- 如果 futurecode/opencode 调用失败，FastAPI 会在本地运行同一 S2 Skill 脚本作为降级路径。
-- `S2` 每次先写入 `documents/{project_id}/technical-workspace/s2_toc_workdir.new/`；成功后发布为 `s2_toc_workdir/`，旧成功目录归档到 `s2_toc_workdir.runs/`。不再写 `parsed/{project_id}/s2.json` alias，`manifestPath` 与 `canonicalManifestPath` 都指向 `s2_toc_workdir/s2_input.json`。
-- `S7` 不再走自由初稿生成，而是使用 S2 目录 JSON、S2 Wiki 卡片和素材库清洗后 Word，通过 `bid-tech-assembler` 拼装正文
+- `S1` 目录生成优先经 futurecode/opencode 执行 `s2toc` 命令，本地 Skill 脚本作为调用失败时的降级路径
+- `S1` 每次目录生成先写入 `s2_toc_workdir.new/`；成功后发布为 `s2_toc_workdir/`，旧成功目录归档到 `s2_toc_workdir.runs/`
+- `S4` 生成标书使用 `bid-tech-assembler`，读取目录 JSON、Wiki 卡片、素材库清洗后 Word、缺口处理计划和补料/AI 填写产物
 
 ## OnlyOffice 地址说明
 
-`ONLYOFFICE_BACKEND_BASE_URL` 不是简单的“FastAPI 内部地址”。
-
-它必须同时满足两件事：
+`ONLYOFFICE_BACKEND_BASE_URL` 必须同时满足：
 
 - 浏览器能访问
 - `onlyoffice` 容器也能访问
@@ -278,82 +227,29 @@ compose 会把这个目录挂进 `opencode` 容器。
 
 不推荐直接写：
 
-- `http://fastapi:8000`
-  - 这个地址通常只对 Docker 内部容器可达，浏览器不可达
-- `http://127.0.0.1`
-  - 这个地址通常只对宿主机浏览器可达，`onlyoffice` 容器不可达
+- `http://fastapi:8000`：通常只对 Docker 内部容器可达，浏览器不可达
+- `http://127.0.0.1`：通常只对宿主机浏览器可达，`onlyoffice` 容器不可达
 
 ## 已知边界
 
-- `S4 / S5 / S6` 仍然是承接态，不是正式业务实现
-- `S8` 当前校验的是 S7 拼装计划与素材库的覆盖关系，还不是完整评分点覆盖审计
-- 当前默认已经接入 PostgreSQL、MinIO、Redis
-- 当前已接入真实登录鉴权、持久化审计、系统设置、默认模板管理和 PDF/图片型文件无感解析；SSO 尚未接入
-- `S2` 优先经 futurecode/opencode 执行 `s2toc`，本地 Skill 脚本只作为调用失败时的降级路径；`S7` 正文拼装仍取决于 S2 JSON、Wiki 卡片和素材库清洗后 Word 是否齐备
+- 当前已接入 PostgreSQL、MinIO、Redis、真实登录鉴权、持久化审计、系统设置、默认模板管理和 PDF/图片型文件无感解析；SSO 尚未接入
+- 覆盖诊断当前校验的是正文拼装计划与素材库的覆盖关系，不是完整评分点覆盖审计
+- `S6` 当前主要支持最终 Word 下载；导出前格式刷新、PDF 导出和一致性检查仍在后续待办中
+- 设置侧系统默认模板是项目未上传模板时的生成输入，不会混入项目上传模板列表
 
-## GitHub 协作提交（必须走分支 + PR 审核）
+## GitHub 协作提交
 
-不要直接在 `main` 分支开发或直接 push 到 `main`。推荐流程如下：
-
-1. 切回主分支并更新到最新
+不要直接在 `main` 分支开发或直接 push 到 `main`。推荐流程：
 
 ```bash
 git switch main
 git pull --ff-only origin main
-```
-
-2. 新建你的功能分支（示例）
-
-```bash
-git switch -c feat/ui-polish-v2
-```
-
-3. 本地开发并自测（建议至少保证前端可编译）
-
-```bash
+git switch -c feat/your-change
 cd code/sewpg-bid-frontend
 npm run build
-```
-
-4. 提交代码到你的分支
-
-```bash
 git add .
-git commit -m "feat(ui): 优化前端样式与审核流程交互"
-git push -u origin feat/ui-polish-v2
+git commit -m "feat: describe your change"
+git push -u origin feat/your-change
 ```
 
-5. 到 GitHub 页面发起 Pull Request
-
-- Base 分支选：`main`（或团队指定集成分支）
-- Compare 分支选：`feat/ui-polish-v2`
-- 填写改动说明、测试截图、影响范围
-- 指定 Reviewer，等待审核
-
-6. 收到审核意见后，在同一分支继续提交
-
-```bash
-git add .
-git commit -m "fix(ui): 根据 review 意见调整"
-git push
-```
-
-7. 审核通过后由有权限成员合并 PR
-
-- 合并完成后，你本地可清理分支：
-
-```bash
-git switch main
-git pull --ff-only origin main
-git branch -d feat/ui-polish-v2
-```
-
-## 相关文档
-
-- [MVP 主链路说明](./doc/05-MVP主链路说明.md)
-- [MVP 接口文档](./doc/06-MVP接口文档.md)
-- [MVP 部署说明](./doc/08-MVP部署说明.md)
-- [内网离线部署说明](./doc/11-内网离线部署说明.md)
-- [甲方新增需求待办](./doc/14-甲方新增需求待办.md)
-- [技术标与商务标需求整理](./doc/15-技术标与商务标需求整理.md)
-- [doc 目录说明](./doc/README.md)
+到 GitHub 页面发起 Pull Request，Base 选 `main` 或团队指定集成分支。

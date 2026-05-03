@@ -129,7 +129,7 @@ export default function ProjectCockpit({ showToast }) {
             showToast(lockReason, 'error')
             return
           }
-          if (Number(stage.routeStageId || stage.id) === 10) {
+          if (Number(stage.routeStageId || stage.id) === 6) {
             openExportWithGuard()
             return
           }

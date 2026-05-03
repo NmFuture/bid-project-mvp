@@ -27,76 +27,72 @@ from app.services.gap_planning import (
 from app.services.workspace_artifacts import cleanup_parse_temp_workspace, promote_parse_artifacts_to_workspace
 
 
+STAGE_SCHEME = "S0_S6"
+MAX_PROJECT_STAGE = 6
+
 STAGE_NAMES = {
     1: "模板与目录",
-    2: "模板与目录",
-    3: "审核目录",
-    4: "缺口处理",
-    5: "缺口处理",
-    6: "缺口处理",
-    7: "生成标书",
-    8: "生成标书",
-    9: "共创",
-    10: "导出",
+    2: "审核目录",
+    3: "缺口处理",
+    4: "生成标书",
+    5: "共创",
+    6: "导出",
 }
 
-STAGE_PROGRESS_NAMES = {
-    1: "模板与目录",
-    2: "模板与目录",
-    3: "审核目录",
-    4: "缺口处理",
-    5: "缺口处理",
-    6: "缺口处理",
-    7: "生成标书",
-    8: "生成标书",
-    9: "共创",
-    10: "导出",
-}
+STAGE_PROGRESS_NAMES = STAGE_NAMES
 
 STAGE_PROGRESS_GROUPS = [
     {
         "id": 1,
         "name": "模板与目录",
-        "stageIds": [1, 2],
         "routeStageId": 1,
         "isHuman": False,
     },
     {
-        "id": 3,
+        "id": 2,
         "name": "审核目录",
-        "stageIds": [3],
+        "routeStageId": 2,
+        "isHuman": True,
+    },
+    {
+        "id": 3,
+        "name": "缺口处理",
         "routeStageId": 3,
         "isHuman": True,
     },
     {
         "id": 4,
-        "name": "缺口处理",
-        "stageIds": [4, 5, 6],
-        "routeStageId": 4,
-        "isHuman": True,
-    },
-    {
-        "id": 7,
         "name": "生成标书",
-        "stageIds": [7, 8],
-        "routeStageId": 7,
+        "routeStageId": 4,
         "isHuman": False,
     },
     {
-        "id": 9,
+        "id": 5,
         "name": "共创",
-        "stageIds": [9],
-        "routeStageId": 9,
+        "routeStageId": 5,
         "isHuman": True,
     },
     {
-        "id": 10,
+        "id": 6,
         "name": "导出",
-        "stageIds": [10],
-        "routeStageId": 10,
+        "routeStageId": 6,
         "isHuman": False,
     },
 ]
+
+LEGACY_STAGE_TO_CURRENT = {
+    0: 1,
+    1: 1,
+    2: 1,
+    3: 2,
+    4: 3,
+    5: 3,
+    6: 3,
+    7: 4,
+    8: 4,
+    9: 5,
+    10: 6,
+}
 
 REVIEW_DECISION_LABELS = {
     "pending": "待审核",
@@ -207,6 +203,26 @@ class AppStore:
             return 0
         return int(match.group(1))
 
+    @staticmethod
+    def _normalize_stage_value(value: Any, *, scheme: str = "") -> int:
+        try:
+            raw_stage = int(value or 1)
+        except (TypeError, ValueError):
+            raw_stage = 1
+        if str(scheme or "") == STAGE_SCHEME:
+            return max(1, min(MAX_PROJECT_STAGE, raw_stage))
+        return LEGACY_STAGE_TO_CURRENT.get(raw_stage, max(1, min(MAX_PROJECT_STAGE, raw_stage)))
+
+    @staticmethod
+    def _normalize_stage_request(value: Any) -> int:
+        try:
+            raw_stage = int(value or 1)
+        except (TypeError, ValueError):
+            raw_stage = 1
+        if raw_stage > MAX_PROJECT_STAGE:
+            return LEGACY_STAGE_TO_CURRENT.get(raw_stage, MAX_PROJECT_STAGE)
+        return max(1, min(MAX_PROJECT_STAGE, raw_stage))
+
     def _next_project_number(self) -> int:
         max_id = max((self._parse_project_number(project_id) for project_id in self._projects), default=0)
         return max_id + 1
@@ -305,6 +321,11 @@ class AppStore:
     @staticmethod
     def _normalize_project_identity(project: dict[str, Any]) -> dict[str, Any]:
         project_id = str(project.get("id") or "")
+        project["currentStage"] = AppStore._normalize_stage_value(
+            project.get("currentStage"),
+            scheme=str(project.get("stageScheme") or ""),
+        )
+        project["stageScheme"] = STAGE_SCHEME
         project["projectCode"] = str(project.get("projectCode") or project_id)
         project["startDate"] = str(project.get("startDate") or "")
         project["endDate"] = str(project.get("endDate") or project.get("deadline") or "")
@@ -463,6 +484,7 @@ class AppStore:
                 "enabled": True,
                 "sourceId": "system-default",
             },
+            "stageScheme": STAGE_SCHEME,
             "currentStage": 1,
             "updatedAt": now_iso(),
             "parse_result": {
@@ -636,15 +658,13 @@ class AppStore:
 
     def get_stages(self, project_id: str) -> list[dict[str, Any]]:
         project = self._require(project_id)
-        current_stage = int(project["currentStage"] or 1)
+        current_stage = self._normalize_stage_value(project.get("currentStage"), scheme=STAGE_SCHEME)
         stages: list[dict[str, Any]] = []
         for group in STAGE_PROGRESS_GROUPS:
-            stage_ids = list(group["stageIds"])
-            first_stage = min(stage_ids)
-            last_stage = max(stage_ids)
-            if last_stage < current_stage:
+            stage_id = int(group["id"])
+            if stage_id < current_stage:
                 status = "completed"
-            elif first_stage <= current_stage <= last_stage:
+            elif stage_id == current_stage:
                 status = "active"
             else:
                 status = "pending"
@@ -654,7 +674,6 @@ class AppStore:
                     "name": group["name"],
                     "status": status,
                     "isHuman": bool(group["isHuman"]),
-                    "stageIds": stage_ids,
                     "routeStageId": group["routeStageId"],
                 }
             )
@@ -663,10 +682,12 @@ class AppStore:
     def update_stage(self, project_id: str, stage: int, data: dict[str, Any]) -> dict[str, Any]:
         project = self._require(project_id)
         status = str(data.get("status") or "").strip()
+        normalized_stage = self._normalize_stage_request(stage)
         if status == "completed":
-            project["currentStage"] = min(10, max(project["currentStage"], stage + 1))
+            project["currentStage"] = min(MAX_PROJECT_STAGE, max(project["currentStage"], normalized_stage + 1))
         elif status == "active":
-            project["currentStage"] = max(1, min(10, stage))
+            project["currentStage"] = max(1, min(MAX_PROJECT_STAGE, normalized_stage))
+        project["stageScheme"] = STAGE_SCHEME
         project["updatedAt"] = now_iso()
         self._persist_project(project)
         return {

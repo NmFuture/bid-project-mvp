@@ -44,7 +44,7 @@ class FillGenerationTests(unittest.TestCase):
         response = self.client.post(
             "/api/projects",
             json={
-                "name": "S7正文拼装项目",
+                "name": "S4生成标书项目",
                 "customerName": "测试业主",
             },
         )
@@ -218,9 +218,9 @@ class FillGenerationTests(unittest.TestCase):
                         "riskFlags": [],
                     },
                 ]
-            content = "# S7正文拼装项目 正文\n\n## 项目概况\n项目背景\n\n## 关键参数响应\n【待填写：关键参数实测值】"
+            content = "# S4生成标书项目 正文\n\n## 项目概况\n项目背景\n\n## 关键参数响应\n【待填写：关键参数实测值】"
             target = document_path(fake_project_id)
-            write_document(target, "S7正文拼装项目_正文.docx", content)
+            write_document(target, "S4生成标书项目_正文.docx", content)
             return store.save_fill_generation_result(
                 project_id=fake_project_id,
                 summary="技术标正文拼装完成。",
@@ -229,7 +229,7 @@ class FillGenerationTests(unittest.TestCase):
                 filled_at=now_iso(),
                 run_duration_sec=3,
                 file_size_bytes=target.stat().st_size,
-                file_name="S7正文拼装项目_正文.docx",
+                file_name="S4生成标书项目_正文.docx",
                 opencode_output={
                     "status": "received",
                     "sessionId": "/tmp/s7_assembly_input.json",
@@ -290,7 +290,7 @@ class FillGenerationTests(unittest.TestCase):
             from app.services.onlyoffice_documents import document_path, write_document
 
             target = document_path(fake_project_id)
-            write_document(target, "S7正文拼装项目_正文.docx", "# 正文\n\n已拼装。")
+            write_document(target, "S4生成标书项目_正文.docx", "# 正文\n\n已拼装。")
             return store.save_fill_generation_result(
                 project_id=fake_project_id,
                 summary="技术标正文拼装完成。",
@@ -299,7 +299,7 @@ class FillGenerationTests(unittest.TestCase):
                 filled_at=now_iso(),
                 run_duration_sec=2,
                 file_size_bytes=target.stat().st_size,
-                file_name="S7正文拼装项目_正文.docx",
+                file_name="S4生成标书项目_正文.docx",
                 coverage={
                     "percentage": 50,
                     "fullCover": 1,

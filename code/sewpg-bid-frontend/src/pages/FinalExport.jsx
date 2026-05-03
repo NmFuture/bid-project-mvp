@@ -27,7 +27,7 @@ export default function FinalExport({ showToast }) {
       const payload = await documentAPI.final(id)
       setData(payload)
     } catch (e) {
-      setError(e?.message || 'S10 最终文件加载失败')
+      setError(e?.message || 'S6 最终文件加载失败')
     } finally {
       setLoading(false)
     }
@@ -40,11 +40,11 @@ export default function FinalExport({ showToast }) {
     return () => clearTimeout(timer)
   }, [loadData])
 
-  if (loading) return <PageLoading title="正在加载 S10 最终文档..." />
-  if (error) return <PageError title="S10 最终文档加载失败" description={error} onRetry={loadData} />
+  if (loading) return <PageLoading title="正在加载 S6 最终文档..." />
+  if (error) return <PageError title="S6 最终文档加载失败" description={error} onRetry={loadData} />
 
   const downloadUrl = data?.fileUrl || '#'
-  const fileName = data?.fileName || 'S9_终版.docx'
+  const fileName = data?.fileName || '投标文件_终版.docx'
 
   return (
     <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">

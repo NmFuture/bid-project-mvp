@@ -8,7 +8,7 @@ import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 const resolveStage = (value) => {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return 1
-  return Math.max(1, Math.min(10, Math.floor(parsed)))
+  return Math.max(1, Math.min(6, Math.floor(parsed)))
 }
 
 export default function ProjectEntryRedirect() {
@@ -35,7 +35,7 @@ export default function ProjectEntryRedirect() {
         return
       }
       const stage = resolveStage(project?.currentStage)
-      const route = getStageRoute(id, stage, workspaceSlug) || projectRoute(id, '/parse', workspaceSlug)
+      const route = getStageRoute(id, stage, workspaceSlug) || projectRoute(id, '/template-directory', workspaceSlug)
       navigate(route, { replace: true })
     } catch (e) {
       setError(e?.message || '项目加载失败，请稍后重试。')

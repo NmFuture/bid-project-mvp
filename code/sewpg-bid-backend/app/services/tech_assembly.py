@@ -95,7 +95,7 @@ def assemble_tech_bid_for_project_with_progress(
     result = _run_assembler_manifest(manifest_path, progress_callback=progress_callback)
     assembled_path = Path(str(result.get("outputFile") or output_file))
     if not assembled_path.exists():
-        raise RuntimeError(f"S7 正文拼装未生成输出文件：{assembled_path}")
+        raise RuntimeError(f"S4 生成标书未生成输出文件：{assembled_path}")
 
     target_path = document_path(project_id)
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -347,7 +347,7 @@ def _build_project_params(project: dict[str, Any], toc_json_path: Path) -> dict[
 
 
 def _augment_wiki_with_material_cards(toc_json_path: Path, wiki_dir: Path, project: dict[str, Any]) -> int:
-    """S7 needs one filesystem card per source material.
+    """S4 bid assembly needs one filesystem card per source material.
 
     The platform Wiki API currently exports useful root pages plus aggregate
     card pages. The legacy assembler, however, matches `卡片/*.md` by
@@ -857,7 +857,7 @@ def _build_assembler_prompt(manifest_path: Path) -> str:
     return f"""
 Use the {ASSEMBLER_SKILL_NAME} skill.
 
-你现在在做 S7 技术标正文拼装。后端已经准备好 manifest、S2 目录 JSON、Wiki 文件系统副本、素材库导出目录和输出路径。
+你现在在做 S4 生成标书（技术标正文拼装）。后端已经准备好 manifest、S1 目录 JSON、Wiki 文件系统副本、素材库导出目录和输出路径。
 
 manifest：{manifest_path}
 

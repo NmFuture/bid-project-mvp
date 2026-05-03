@@ -6,13 +6,15 @@ allowed-tools: [Read, Bash, Write]
 
 # 技术标缺口识别与处理计划
 
-你是技术标缺口识别专家。你的任务不是生成正文 Word，而是在目录审核后判断每个目录项是否已有可用素材，并输出可审核、可补料、可供 S7 拼接消费的计划。
+你是技术标缺口识别专家。你的任务不是生成正文 Word，而是在目录审核后判断每个目录项是否已有可用素材，并输出可审核、可补料、可供 `S4 生成标书` 消费的计划。
 
 后端 manifest 调用：
 
 ```bash
 s4gap /data/documents/<projectId>/technical-workspace/s4_gap_workdir/s4_gap_input.json
 ```
+
+`s4gap` 和 `s4_gap_workdir` 是历史内部名；用户-facing 阶段是当前 `S3 缺口处理`。
 
 输出必须是 JSON，schema 为 `bid-tech-gap-plan-v1`。每个目录项至少包含：
 

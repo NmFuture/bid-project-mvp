@@ -24,7 +24,7 @@
 当前正式能力已经并入主链路：
 
 - FastAPI 负责 OnlyOffice 文档会话、回调和下载接口
-- 前端 S6/S9 通过正式 API 获取 OnlyOffice 配置
+- 前端 `S5 共创` 通过正式 API 获取 OnlyOffice 配置，`S6 导出` 读取同一项目文档
 - `code/docker-compose.yml` 统一拉起 `onlyoffice` 服务
 
 后续如果继续做 OnlyOffice 能力，直接修改：

@@ -86,8 +86,8 @@ async def project_cockpit(project_id: str) -> dict[str, Any]:
         "deadline": project.get("deadline") or "",
         "tasks": [
             {"id": "task-1", "label": "完成模板与目录", "status": "done" if project["currentStage"] > 1 else "pending"},
-            {"id": "task-2", "label": "完成目录审核", "status": "done" if project["currentStage"] > 3 else "pending"},
-            {"id": "task-3", "label": "完成生成标书", "status": "done" if project["currentStage"] > 7 else "pending"},
+            {"id": "task-2", "label": "完成目录审核", "status": "done" if project["currentStage"] > 2 else "pending"},
+            {"id": "task-3", "label": "完成生成标书", "status": "done" if project["currentStage"] > 4 else "pending"},
         ],
     }
 

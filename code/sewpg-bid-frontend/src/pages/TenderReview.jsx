@@ -982,7 +982,7 @@ export default function TenderReview({ showToast }) {
               item.id === updatedProject.id ? { ...item, ...updatedProject } : item
             )))
             showToast?.('已确认参与投标，正在进入对应工作区。')
-            navigate(projectRoute(updatedProject.id, '/parse', slugFromBidType(updatedProject.bidType)))
+            navigate(projectRoute(updatedProject.id, '/template-directory', slugFromBidType(updatedProject.bidType)))
           }}
         />
       )}

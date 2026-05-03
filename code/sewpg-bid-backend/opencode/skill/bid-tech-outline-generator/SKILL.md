@@ -1,11 +1,13 @@
 ---
 name: bid-tech-outline-generator
-description: This skill should be used when the user asks to "生成目录", "S2 目录生成", "技术标目录生成", "根据招标文件和投标模板生成目录", or needs bid outline JSON with tender evidence for review and OnlyOffice jump/highlight.
+description: This skill should be used when the user asks to "生成目录", "S1 模板与目录", "技术标目录生成", "根据招标文件和投标模板生成目录", or needs bid outline JSON with tender evidence for review and OnlyOffice jump/highlight.
 ---
 
 # 技术标目录生成
 
-用于 S2：根据投标文件模板、招标文件要求和招标附表/副表线索生成可审核目录 JSON。
+用于当前 `S1 模板与目录`：根据投标文件模板、招标文件要求和招标附表/副表线索生成可审核目录 JSON。
+
+命令名 `s2toc` 和工作区 `s2_toc_workdir` 是历史内部名，为兼容后端和已有产物保留，不代表当前用户阶段。
 
 ## 后端调用
 

@@ -246,9 +246,7 @@ export default function GapRecognition({ showToast }) {
       await gapsAPI.submitReview(id)
       await reviewAPI.prepareParse(id)
       await reviewAPI.confirm(id)
-      await stagesAPI.update(id, 4, { status: 'completed' })
-      await stagesAPI.update(id, 5, { status: 'completed' })
-      await stagesAPI.update(id, 6, { status: 'completed' })
+      await stagesAPI.update(id, 3, { status: 'completed' })
       const started = await generateAPI.run(id)
       navigate(projectRoute(id, '/generate', workspaceSlug))
       return started
@@ -256,12 +254,12 @@ export default function GapRecognition({ showToast }) {
     (payload) => payload?.message || '已通过缺口校验并开始生成标书。',
   )
 
-  if (loading) return <PageLoading title="正在加载缺口识别与处理..." />
-  if (error) return <PageError title="缺口识别与处理加载失败" description={error} onRetry={loadData} />
+  if (loading) return <PageLoading title="正在加载 S3 缺口处理..." />
+  if (error) return <PageError title="S3 缺口处理加载失败" description={error} onRetry={loadData} />
 
   return (
     <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
-      <StageBreadcrumb currentLabel="缺口识别与处理" />
+      <StageBreadcrumb currentLabel="S3 缺口处理" />
       <ProjectStageProgress projectId={id} showToast={showToast} />
 
       <PageHeader

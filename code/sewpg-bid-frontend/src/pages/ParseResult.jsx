@@ -273,7 +273,6 @@ export default function ParseResult({ showToast }) {
     try {
       await stagesAPI.update(id, 1, { status: 'completed' })
       if (isDirectoryCompleted) {
-        await stagesAPI.update(id, 2, { status: 'completed' })
         showToast?.('已进入目录审核')
         navigate(projectRoute(id, '/outline', workspaceSlug))
       } else {
@@ -305,8 +304,8 @@ export default function ParseResult({ showToast }) {
     }
   }
 
-  if (loading) return <PageLoading title="正在加载 S1 模板上传信息..." />
-  if (error) return <PageError title="S1 模板上传信息加载失败" description={error} onRetry={loadData} />
+  if (loading) return <PageLoading title="正在加载 S1 模板与目录..." />
+  if (error) return <PageError title="S1 模板与目录加载失败" description={error} onRetry={loadData} />
 
   return (
     <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">

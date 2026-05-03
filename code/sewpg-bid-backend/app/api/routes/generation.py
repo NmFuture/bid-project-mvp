@@ -141,7 +141,7 @@ def _handle_fill_progress(project_id: str, stage: str, details: dict[str, Any] |
         event_message: str | None = None
         if parts and not previous_parts:
             summary = "futurecode 已开始返回正文拼装片段。"
-            event_message = "futurecode 已开始返回 S7 原始片段。"
+            event_message = "futurecode 已开始返回 S4 生成标书原始片段。"
         elif len(parts) > len(previous_parts):
             summary = "futurecode 正在执行正文拼装，请稍候。"
 

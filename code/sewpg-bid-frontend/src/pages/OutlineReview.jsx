@@ -286,8 +286,8 @@ export default function OutlineReview({ showToast }) {
       }
 
       await outlineAPI.confirm(id)
-      await stagesAPI.update(id, 3, { status: 'completed' })
-      showToast?.('目录审核已完成，已进入 S4 素材缺口识别')
+      await stagesAPI.update(id, 2, { status: 'completed' })
+      showToast?.('目录审核已完成，已进入 S3 缺口处理')
       navigate(projectRoute(id, '/gaps', workspaceSlug))
     } catch (e) {
       showToast?.(e?.message || '目录确认失败，请稍后重试', 'error')

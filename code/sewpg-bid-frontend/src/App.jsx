@@ -140,8 +140,9 @@ export default function App() {
           <Route path="/workspace/:workspace/projects" element={<ProjectList showToast={showToast} />} />
           <Route path="/workspace/:workspace/flow" element={<WorkspaceRedirect />} />
           <Route path="/workspace/:workspace/projects/:id" element={<ProjectEntryRedirect />} />
-          <Route path="/workspace/:workspace/projects/:id/parse" element={<ParseResult showToast={showToast} />} />
-          <Route path="/workspace/:workspace/projects/:id/directory" element={<ProjectPathRedirect path="/parse" />} />
+          <Route path="/workspace/:workspace/projects/:id/template-directory" element={<ParseResult showToast={showToast} />} />
+          <Route path="/workspace/:workspace/projects/:id/parse" element={<ProjectPathRedirect path="/template-directory" />} />
+          <Route path="/workspace/:workspace/projects/:id/directory" element={<ProjectPathRedirect path="/template-directory" />} />
           <Route path="/workspace/:workspace/projects/:id/outline" element={<OutlineReview showToast={showToast} />} />
           <Route path="/workspace/:workspace/projects/:id/gaps" element={<GapRecognition showToast={showToast} />} />
           <Route path="/workspace/:workspace/projects/:id/gaps-fill" element={<ProjectPathRedirect path="/gaps" />} />
@@ -155,8 +156,9 @@ export default function App() {
           <Route path="/workspace/:workspace/logs" element={<AuditLog showToast={showToast} />} />
           <Route path="/projects" element={<ProjectList showToast={showToast} />} />
           <Route path="/projects/:id" element={<ProjectEntryRedirect />} />
-          <Route path="/projects/:id/parse" element={<ParseResult showToast={showToast} />} />
-          <Route path="/projects/:id/directory" element={<ProjectPathRedirect path="/parse" />} />
+          <Route path="/projects/:id/template-directory" element={<ParseResult showToast={showToast} />} />
+          <Route path="/projects/:id/parse" element={<ProjectPathRedirect path="/template-directory" />} />
+          <Route path="/projects/:id/directory" element={<ProjectPathRedirect path="/template-directory" />} />
           <Route path="/projects/:id/outline" element={<OutlineReview showToast={showToast} />} />
           <Route path="/projects/:id/gaps" element={<GapRecognition showToast={showToast} />} />
           <Route path="/projects/:id/gaps-fill" element={<ProjectPathRedirect path="/gaps" />} />
