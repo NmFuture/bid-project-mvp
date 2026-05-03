@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import os
 from pathlib import Path
 
+import pytest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -12,6 +14,9 @@ from app.main import app
 from app.services.store import store
 
 
+@unittest.skipUnless(os.getenv("BID_RUN_INTEGRATION") == "1", "requires PostgreSQL and MinIO")
+@pytest.mark.integration
+@pytest.mark.skipif(os.getenv("BID_RUN_INTEGRATION") != "1", reason="requires PostgreSQL and MinIO")
 class SecuritySettingsOcrRoutesTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -62,9 +67,25 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
         )
         self.assertEqual(upload.status_code, 200)
         template_id = upload.json()["item"]["id"]
+        self.assertTrue(upload.json()["item"]["isActive"])
         activate = self.client.post(f"/api/settings/default-templates/{template_id}/activate", headers=self.headers)
         self.assertEqual(activate.status_code, 200)
         self.assertTrue(activate.json()["item"]["isActive"])
+
+        second_upload = self.client.post(
+            "/api/settings/default-templates",
+            headers=self.headers,
+            data={"templateType": "technical", "version": "2026.05"},
+            files={"file": ("默认技术标模板-v2.docx", b"fake-docx-v2", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        )
+        self.assertEqual(second_upload.status_code, 200)
+        technical_items = [
+            item for item in second_upload.json()["items"]
+            if item["templateType"] == "technical"
+        ]
+        self.assertEqual(len(technical_items), 1)
+        self.assertTrue(technical_items[0]["isActive"])
+        self.assertEqual(technical_items[0]["name"], "默认技术标模板-v2.docx")
 
         update_llm = self.client.put(
             "/api/settings/llm-gateway",

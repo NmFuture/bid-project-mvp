@@ -287,10 +287,22 @@ class SystemSettingsService:
         url = f"{base_url.rstrip('/')}/chat/completions" if base_url.rstrip("/").endswith("/v1") else base_url.rstrip("/")
         payload: dict[str, Any]
         if kind == "ocr":
+            test_image = (
+                "data:image/png;base64,"
+                "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJklEQVR4nO3NMQ0AAAwDoPo33arYsQQMkB6LQCAQCAQCgUAg+BIMi1X0pjxKe0gAAAAASUVORK5CYII="
+            )
             payload = {
                 "model": model,
-                "messages": [{"role": "user", "content": "Free OCR."}],
-                "max_tokens": 8,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": test_image}},
+                            {"type": "text", "text": "Free OCR."},
+                        ],
+                    }
+                ],
+                "max_tokens": 64,
                 "stream": False,
             }
         else:
@@ -365,6 +377,7 @@ class SystemSettingsService:
                 await session.execute(
                     select(TemplateAsset)
                     .where(TemplateAsset.asset_type == "default_template")
+                    .where(TemplateAsset.is_active.is_(True))
                     .order_by(TemplateAsset.table_key, desc(TemplateAsset.created_at), desc(TemplateAsset.id))
                 )
             ).scalars().all()
@@ -411,6 +424,17 @@ class SystemSettingsService:
             key = ""
 
         async with async_session() as session:
+            existing_assets = (
+                await session.execute(
+                    select(TemplateAsset).where(
+                        TemplateAsset.asset_type == "default_template",
+                        TemplateAsset.table_key == template_type,
+                    )
+                )
+            ).scalars().all()
+            for existing in existing_assets:
+                existing.is_active = False
+
             asset = TemplateAsset(
                 asset_type="default_template",
                 table_key=template_type,
@@ -420,7 +444,7 @@ class SystemSettingsService:
                 minio_bucket=bucket,
                 size_bytes=size,
                 mime_type=resolved_type,
-                is_active=False,
+                is_active=True,
                 uploaded_by=str((user or {}).get("name") or "当前用户"),
             )
             session.add(asset)

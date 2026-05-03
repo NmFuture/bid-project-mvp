@@ -2504,3 +2504,34 @@ bid_workspace
 - `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-03 13:23:26 设置模型显示与审计导航收口
+
+提交摘要：Polish settings model display and audit navigation
+
+变更文件：
+
+- `code/docker-compose.yml`
+- `code/sewpg-bid-backend/app/core/config.py`
+- `code/sewpg-bid-backend/app/services/system_settings.py`
+- `code/sewpg-bid-backend/tests/test_security_settings_ocr_routes.py`
+- `code/sewpg-bid-frontend/src/components/layout/AppShell.jsx`
+- `code/sewpg-bid-frontend/src/pages/Settings.jsx`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-03 13:24:20 post-commit 6792424
+
+提交摘要：Polish settings model display and audit navigation
+
+变更文件：
+
+- `code/docker-compose.yml`
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/core/config.py`
+- `code/sewpg-bid-backend/app/services/system_settings.py`
+- `code/sewpg-bid-backend/tests/test_security_settings_ocr_routes.py`
+- `code/sewpg-bid-frontend/src/components/layout/AppShell.jsx`
+- `code/sewpg-bid-frontend/src/pages/Settings.jsx`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

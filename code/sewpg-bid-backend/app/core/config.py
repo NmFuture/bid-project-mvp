@@ -15,6 +15,14 @@ def _csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def _first_env(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value is not None and value.strip():
+            return value.strip()
+    return default
+
+
 def _int_env(name: str, default: int) -> int:
     value = os.getenv(name)
     if value is None or not value.strip():
@@ -179,12 +187,11 @@ settings = Settings(
     auth_admin_password=os.getenv("AUTH_ADMIN_PASSWORD", "123456").strip() or "123456",
     auth_admin_name=os.getenv("AUTH_ADMIN_NAME", "当前用户").strip() or "当前用户",
     auth_session_ttl_sec=_int_env("AUTH_SESSION_TTL_SEC", 24 * 60 * 60),
-    default_llm_base_url=os.getenv("DEFAULT_LLM_BASE_URL", os.getenv("INTERNAL_LLM_BASE_URL", "")).strip(),
-    default_llm_api_key=os.getenv("DEFAULT_LLM_API_KEY", os.getenv("INTERNAL_LLM_API_KEY", "")).strip(),
-    default_llm_model=os.getenv("DEFAULT_LLM_MODEL", os.getenv("OPENCODE_MODEL_ID", "big-pickle")).strip() or "big-pickle",
-    default_llm_provider_id=os.getenv("DEFAULT_LLM_PROVIDER_ID", os.getenv("OPENCODE_PROVIDER_ID", "opencode")).strip()
-    or "opencode",
-    default_ocr_base_url=os.getenv("DEFAULT_OCR_BASE_URL", "").strip(),
-    default_ocr_api_key=os.getenv("DEFAULT_OCR_API_KEY", "").strip(),
-    default_ocr_model=os.getenv("DEFAULT_OCR_MODEL", "deepseek-ai/DeepSeek-OCR").strip() or "deepseek-ai/DeepSeek-OCR",
+    default_llm_base_url=_first_env("DEFAULT_LLM_BASE_URL", "INTERNAL_LLM_BASE_URL"),
+    default_llm_api_key=_first_env("DEFAULT_LLM_API_KEY", "INTERNAL_LLM_API_KEY"),
+    default_llm_model=_first_env("DEFAULT_LLM_MODEL", "OPENCODE_MODEL_ID", default="big-pickle"),
+    default_llm_provider_id=_first_env("DEFAULT_LLM_PROVIDER_ID", "OPENCODE_PROVIDER_ID", default="opencode"),
+    default_ocr_base_url=_first_env("DEFAULT_OCR_BASE_URL"),
+    default_ocr_api_key=_first_env("DEFAULT_OCR_API_KEY"),
+    default_ocr_model=_first_env("DEFAULT_OCR_MODEL", default="deepseek-ai/DeepSeek-OCR"),
 )

@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { path: '/parse', icon: 'document_scanner', label: '解析', match: '/parse' },
   { path: '/workspace/tech/projects', icon: 'engineering', label: '技术标', match: '/workspace/tech' },
   { path: '/workspace/business/projects', icon: 'request_quote', label: '商务标', match: '/workspace/business' },
+  { path: '/audit', icon: 'history', label: '审计', match: '/audit' },
   { path: '/settings', icon: 'settings', label: '设置', match: '/settings' },
 ]
 

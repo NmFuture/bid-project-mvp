@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { settingsAPI } from '../api'
 import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
 
@@ -133,7 +132,6 @@ export default function Settings({ showToast = () => {} }) {
     { id: 'gateway', icon: 'hub', label: 'LLM 模型', group: '系统核心' },
     { id: 'ocr', icon: 'document_scanner', label: 'OCR 模型', group: '系统核心' },
     { id: 'users', icon: 'group', label: '用户', group: '系统核心' },
-    { id: 'audit', icon: 'history', label: '审计', group: '系统核心' },
     { id: 'health', icon: 'monitor_heart', label: '健康', group: '系统核心' },
   ]
 
@@ -315,7 +313,7 @@ export default function Settings({ showToast = () => {} }) {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-3">
         <div>
           <h1 className="text-3xl font-headline font-bold text-primary">系统设置</h1>
-          <p className="text-sm text-on-surface-variant mt-1">管理默认 Word 模板、LLM/OCR 模型、用户、审计与健康检查。</p>
+          <p className="text-sm text-on-surface-variant mt-1">管理默认 Word 模板、LLM/OCR 模型、用户与健康检查。</p>
           {refreshing && <p className="text-xs text-outline mt-1">正在刷新配置...</p>}
         </div>
         <button
@@ -420,9 +418,10 @@ export default function Settings({ showToast = () => {} }) {
                     type="password"
                     value={gatewayDraft.apiKey}
                     onChange={(event) => setGatewayDraft((prev) => ({ ...prev, apiKey: event.target.value }))}
-                    placeholder={gatewayDraft.apiKeyMasked ? '保持当前 Key 不变' : '输入 API Key'}
+                    placeholder={gatewayDraft.apiKeyMasked || '输入 API Key'}
                     className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
                   />
+                  <span className="mt-1 block text-xs text-outline">已保存 Key：{gatewayDraft.apiKeyMasked || '-'}</span>
                 </label>
                 <label className="text-sm text-on-surface-variant">
                   超时 (ms)
@@ -445,7 +444,7 @@ export default function Settings({ showToast = () => {} }) {
               </div>
 
               <div className="rounded-lg bg-surface-container-low p-3 text-xs text-outline">
-                当前生效：{gatewayDraft.providerId || '-'}/{gatewayDraft.model || '-'} · API Key：{gatewayDraft.apiKeyMasked || '-'} · 最近更新：{gateway?.updatedAt || '-'} / {gateway?.updatedBy || '-'}
+                当前生效：Provider ID {gatewayDraft.providerId || '-'} · Model ID {gatewayDraft.model || '-'} · Provider Base URL {gatewayDraft.baseUrl || '-'} · OpenCode Base URL {gatewayDraft.opencodeBaseUrl || '-'} · API Key {gatewayDraft.apiKeyMasked || '-'} · 最近更新：{gateway?.updatedAt || '-'} / {gateway?.updatedBy || '-'}
               </div>
 
               {gatewayTestResult && (
@@ -518,9 +517,10 @@ export default function Settings({ showToast = () => {} }) {
                     type="password"
                     value={ocrDraft.apiKey}
                     onChange={(event) => setOcrDraft((prev) => ({ ...prev, apiKey: event.target.value }))}
-                    placeholder={ocrDraft.apiKeyMasked ? '保持当前 Key 不变' : '输入 API Key'}
+                    placeholder={ocrDraft.apiKeyMasked || '输入 API Key'}
                     className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
                   />
+                  <span className="mt-1 block text-xs text-outline">已保存 Key：{ocrDraft.apiKeyMasked || '-'}</span>
                 </label>
                 <label className="text-sm text-on-surface-variant">
                   超时 (ms)
@@ -534,7 +534,7 @@ export default function Settings({ showToast = () => {} }) {
               </div>
 
               <div className="rounded-lg bg-surface-container-low p-3 text-xs text-outline">
-                API Key：{ocrDraft.apiKeyMasked || '-'} · 最近更新：{ocr?.updatedAt || '-'} / {ocr?.updatedBy || '-'}
+                Base URL：{ocrDraft.baseUrl || '-'} · 模型：{ocrDraft.model || '-'} · API Key：{ocrDraft.apiKeyMasked || '-'} · 最近更新：{ocr?.updatedAt || '-'} / {ocr?.updatedBy || '-'}
               </div>
 
               {ocrTestResult && (
@@ -634,11 +634,7 @@ export default function Settings({ showToast = () => {} }) {
                           <td className="px-3 py-3 font-mono text-xs">{item.version}</td>
                           <td className="px-3 py-3 text-xs text-outline">{item.uploadedBy} · {item.uploadedAt}</td>
                           <td className="px-3 py-3">
-                            {item.isActive ? (
-                              <span className="text-xs px-2 py-1 rounded bg-secondary-container text-on-secondary-container">默认生效</span>
-                            ) : (
-                              <span className="text-xs px-2 py-1 rounded bg-surface-container-high text-on-surface-variant">未生效</span>
-                            )}
+                            <span className="text-xs px-2 py-1 rounded bg-secondary-container text-on-secondary-container">默认生效</span>
                           </td>
                           <td className="px-3 py-3">
                             <button
@@ -695,26 +691,6 @@ export default function Settings({ showToast = () => {} }) {
                   ))}
                 </div>
               )}
-            </div>
-          )}
-
-          {activeSection === 'audit' && (
-            <div className="p-6 space-y-5">
-              <div>
-                <h2 className="text-lg font-headline font-bold text-on-surface">审计</h2>
-                <p className="text-sm text-on-surface-variant mt-1">查看登录、配置、OCR、素材和生成标书过程中的操作记录。</p>
-              </div>
-              <div className="rounded-xl border border-surface-container-high p-4 bg-surface-container-low">
-                <div className="text-sm font-semibold text-on-surface">审计日志</div>
-                <p className="text-xs text-on-surface-variant mt-1">日志页面支持按用户、模块、动作、状态和关键字筛选，并可查看 diff 与元数据。</p>
-                <Link
-                  to="/audit"
-                  className="inline-flex items-center gap-2 mt-4 px-4 py-2 text-sm font-medium text-on-primary bg-primary hover:bg-primary-container rounded-lg"
-                >
-                  <span className="material-symbols-outlined text-sm">open_in_new</span>
-                  打开审计日志
-                </Link>
-              </div>
             </div>
           )}
 
