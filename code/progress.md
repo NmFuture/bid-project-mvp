@@ -2879,3 +2879,23 @@ bid_workspace
 - `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-03 19:43:00 post-commit 559ff82
+
+提交摘要：feat(materials): promote library and scope project lookup
+
+变更文件：
+
+- `README.md`
+- `code/AGENT.md`
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/api/routes/projects.py`
+- `code/sewpg-bid-backend/app/services/identity.py`
+- `code/sewpg-bid-backend/tests/test_project_material_scope.py`
+- `code/sewpg-bid-backend/tests/test_store_persistence.py`
+- `code/sewpg-bid-frontend/src/components/layout/AppShell.jsx`
+- `code/sewpg-bid-frontend/src/pages/GapRecognition.jsx`
+- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
+- `doc/superpowers/plans/2026-05-03-material-library-top-level-scope.md`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
