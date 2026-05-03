@@ -2827,3 +2827,29 @@ bid_workspace
 - `doc/README.md`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-03 18:40:06 post-commit d74e7f2
+
+提交摘要：feat(materials): stabilize wiki builder workflow
+
+变更文件：
+
+- `README.md`
+- `code/AGENT.md`
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/services/opencode_client.py`
+- `code/sewpg-bid-backend/app/services/wiki_generation.py`
+- `code/sewpg-bid-backend/opencode/Dockerfile`
+- `code/sewpg-bid-backend/opencode/skill/bid-business-wiki-material-builder/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-business-wiki-material-builder/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-wiki-material-builder/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-wiki-material-builder/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_opencode_client.py`
+- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
+- `code/sewpg-bid-backend/tests/test_wiki_generation.py`
+- `code/sewpg-bid-frontend/src/pages/MaterialDB.jsx`
+- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
+- `"doc/11-\345\206\205\347\275\221\347\246\273\347\272\277\351\203\250\347\275\262\350\257\264\346\230\216.md"`
+- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
