@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.services.draft_generation import generate_draft_for_project_with_progress
+from app.services.audit_service import audit_service
+from app.services.auth_service import current_user
 from app.services.job_queue import enqueue_generation_job, is_generation_locked
 from app.services.store import store
 
@@ -19,6 +22,56 @@ def _fill_tasks(step1: str, step2: str, step3: str) -> list[dict[str, Any]]:
         {"id": "task-2", "label": "调用技术标正文拼装 skill", "status": step2},
         {"id": "task-3", "label": "写入 Word 正文", "status": step3},
     ]
+
+
+def _project_audit_metadata(project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    try:
+        project = store.get_project(project_id)
+    except Exception:
+        project = {"id": project_id}
+    return {
+        "projectId": project_id,
+        "projectName": str(project.get("name") or ""),
+        "projectCode": str(project.get("projectCode") or project_id),
+        "customerName": str(project.get("customerName") or ""),
+        "bidType": str(project.get("bidType") or ""),
+        "request": data or {},
+    }
+
+
+async def _record_generation_audit(
+    *,
+    project_id: str,
+    action: str,
+    status: str = "成功",
+    user: dict[str, Any] | None = None,
+    data: dict[str, Any] | None = None,
+    diff: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+    request: Request | None = None,
+) -> None:
+    meta = _project_audit_metadata(project_id, data)
+    meta.update(metadata or {})
+    await audit_service.record(
+        action=action,
+        action_type="generate",
+        module_id="generation",
+        module_label="生成标书",
+        target=str(meta.get("projectName") or project_id),
+        status=status,
+        user=user,
+        diff=diff or {"before": {}, "after": {}},
+        metadata=meta,
+        ip_address=str(request.client.host) if request and request.client else "",
+        user_agent=str(request.headers.get("user-agent") or "") if request else "",
+    )
+
+
+def _record_generation_audit_sync(**kwargs: Any) -> None:
+    try:
+        asyncio.run(_record_generation_audit(**kwargs))
+    except Exception:
+        return
 
 
 def _handle_fill_progress(project_id: str, stage: str, details: dict[str, Any] | None = None) -> None:
@@ -124,12 +177,31 @@ def _handle_fill_progress(project_id: str, stage: str, details: dict[str, Any] |
         )
 
 
-def _run_fill_generation_job(project_id: str, data: dict[str, Any]) -> None:
+def _run_fill_generation_job(project_id: str, data: dict[str, Any], user: dict[str, Any] | None = None) -> None:
     try:
         generate_draft_for_project_with_progress(
             project_id,
             data,
             progress_callback=lambda stage, details=None: _handle_fill_progress(project_id, stage, details),
+        )
+        state = store.get_fill_state(project_id)
+        _record_generation_audit_sync(
+            project_id=project_id,
+            action="生成标书完成",
+            user=user,
+            data=data,
+            diff={"before": {}, "after": {"status": state.get("status"), "output": state.get("output")}},
+            metadata={
+                "percentage": state.get("percentage"),
+                "sectionCount": len(state.get("sections") or []),
+                "coverage": state.get("coverage") or {},
+                "opencodeOutput": {
+                    "status": (state.get("opencodeOutput") or {}).get("status"),
+                    "sessionId": (state.get("opencodeOutput") or {}).get("sessionId"),
+                    "providerId": (state.get("opencodeOutput") or {}).get("providerId"),
+                    "modelId": (state.get("opencodeOutput") or {}).get("modelId"),
+                },
+            },
         )
     except ValueError as exc:
         store.fail_fill_generation(
@@ -137,28 +209,62 @@ def _run_fill_generation_job(project_id: str, data: dict[str, Any]) -> None:
             str(exc),
             tasks=_fill_tasks("failed", "pending", "pending"),
         )
+        _record_generation_audit_sync(
+            project_id=project_id,
+            action="生成标书失败",
+            status="失败",
+            user=user,
+            data=data,
+            diff={"before": {}, "after": {"error": str(exc)}},
+            metadata={"errorType": type(exc).__name__},
+        )
     except RuntimeError as exc:
         current = store.get_fill_state(project_id)
         tasks = _fill_tasks("done", "failed", "pending")
         if int(current.get("percentage") or 0) >= 85:
             tasks = _fill_tasks("done", "done", "failed")
         store.fail_fill_generation(project_id, str(exc), tasks=tasks)
+        _record_generation_audit_sync(
+            project_id=project_id,
+            action="生成标书失败",
+            status="失败",
+            user=user,
+            data=data,
+            diff={"before": {}, "after": {"error": str(exc)}},
+            metadata={"errorType": type(exc).__name__, "percentage": current.get("percentage")},
+        )
     except Exception as exc:  # pragma: no cover
         current = store.get_fill_state(project_id)
         tasks = _fill_tasks("done", "failed", "pending")
         if int(current.get("percentage") or 0) >= 85:
             tasks = _fill_tasks("done", "done", "failed")
         store.fail_fill_generation(project_id, f"正文拼装异常：{exc}", tasks=tasks)
+        _record_generation_audit_sync(
+            project_id=project_id,
+            action="生成标书失败",
+            status="失败",
+            user=user,
+            data=data,
+            diff={"before": {}, "after": {"error": str(exc)}},
+            metadata={"errorType": type(exc).__name__, "percentage": current.get("percentage")},
+        )
 
 
-def _schedule_fill_generation_job(project_id: str, data: dict[str, Any]) -> None:
-    queue_result = enqueue_generation_job("fill_generation", project_id, data)
+def _schedule_fill_generation_job(project_id: str, data: dict[str, Any], user: dict[str, Any] | None = None) -> None:
+    enqueue_data = dict(data or {})
+    if user:
+        enqueue_data["__auditUser"] = {
+            "id": str(user.get("id") or ""),
+            "name": str(user.get("name") or user.get("email") or ""),
+            "email": str(user.get("email") or ""),
+        }
+    queue_result = enqueue_generation_job("fill_generation", project_id, enqueue_data)
     if queue_result.queued or queue_result.locked:
         return
 
     worker = threading.Thread(
         target=_run_fill_generation_job,
-        args=(project_id, data),
+        args=(project_id, data, user),
         daemon=True,
         name=f"fill-generation-{project_id}",
     )
@@ -173,7 +279,9 @@ async def get_fill_generation(project_id: str) -> dict[str, Any]:
 @router.post("/api/projects/{project_id}/fill-generation/run")
 async def run_fill_generation(
     project_id: str,
+    request: Request,
     data: dict[str, Any] = Body(default_factory=dict),
+    user: dict[str, Any] = Depends(current_user),
 ) -> JSONResponse:
     current = store.get_fill_state(project_id)
     if current.get("status") == "running" or is_generation_locked("fill_generation", project_id):
@@ -189,7 +297,16 @@ async def run_fill_generation(
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    _schedule_fill_generation_job(project_id, data)
+    await _record_generation_audit(
+        project_id=project_id,
+        action="开始生成标书",
+        user=user,
+        data=data,
+        diff={"before": current, "after": {"status": payload.get("status"), "percentage": payload.get("percentage")}},
+        metadata={"taskCount": len(payload.get("tasks") or [])},
+        request=request,
+    )
+    _schedule_fill_generation_job(project_id, data, user)
     return JSONResponse(
         status_code=202,
         content={**payload, "message": "已开始拼装正文，请稍候。"},

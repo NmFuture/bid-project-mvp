@@ -8,7 +8,6 @@ from fastapi import APIRouter, Body, Depends, Request
 
 from app.services.auth_service import auth_service, current_user
 from app.services.system_settings import system_settings_service
-from app.services.template_store import template_store
 
 router = APIRouter()
 
@@ -41,6 +40,7 @@ async def settings_gateway_get(_: dict[str, Any] = Depends(current_user)) -> dic
     return {
         **payload,
         "endpoint": payload.get("baseUrl") or "",
+        "modelId": payload.get("modelId") or payload.get("model") or "",
     }
 
 
@@ -51,6 +51,7 @@ async def settings_gateway_update(
 ) -> dict[str, Any]:
     payload = await system_settings_service.update_model_config("llm", data, user=user)
     payload["config"]["endpoint"] = payload["config"].get("baseUrl") or ""
+    payload["config"]["modelId"] = payload["config"].get("modelId") or payload["config"].get("model") or ""
     return payload
 
 
@@ -94,74 +95,6 @@ def _decode_request_bytes(raw: Any) -> bytes | None:
     return base64.b64decode(text)
 
 
-@router.get("/api/settings/dotx-templates")
-async def settings_dotx_list(_: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    return await template_store.dotx_list()
-
-
-@router.post("/api/settings/dotx-templates")
-async def settings_dotx_upload(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    content_type = request.headers.get("content-type", "")
-    if "multipart/form-data" in content_type:
-        form = await request.form()
-        upload = form.get("file")
-        return await template_store.dotx_upload(
-            file_name=str(getattr(upload, "filename", "") or form.get("fileName") or ""),
-            file_size=form.get("fileSize"),
-            version=str(form.get("version") or "2026.04"),
-            upload=upload,
-            mime_type=str(getattr(upload, "content_type", "") or ""),
-        )
-
-    data = await request.json()
-    return await template_store.dotx_upload(
-        file_name=str(data.get("fileName") or ""),
-        file_size=data.get("fileSize"),
-        version=str(data.get("version") or "2026.04"),
-        data=_decode_request_bytes(data.get("data")),
-        mime_type=str(data.get("mimeType") or ""),
-    )
-
-
-@router.post("/api/settings/dotx-templates/{template_id}/activate")
-async def settings_dotx_activate(template_id: str, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    return await template_store.dotx_activate(template_id)
-
-
-@router.get("/api/settings/excel-templates")
-async def settings_excel_list(_: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    return await template_store.excel_list()
-
-
-@router.post("/api/settings/excel-templates")
-async def settings_excel_upload(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    content_type = request.headers.get("content-type", "")
-    if "multipart/form-data" in content_type:
-        form = await request.form()
-        upload = form.get("file")
-        return await template_store.excel_upload(
-            table_key=str(form.get("tableKey") or ""),
-            file_name=str(getattr(upload, "filename", "") or form.get("fileName") or ""),
-            version=str(form.get("version") or "2026.04"),
-            upload=upload,
-            mime_type=str(getattr(upload, "content_type", "") or ""),
-        )
-
-    data = await request.json()
-    return await template_store.excel_upload(
-        table_key=str(data.get("tableKey") or ""),
-        file_name=str(data.get("fileName") or ""),
-        version=str(data.get("version") or "2026.04"),
-        data=_decode_request_bytes(data.get("data")),
-        mime_type=str(data.get("mimeType") or ""),
-    )
-
-
-@router.post("/api/settings/excel-templates/{template_id}/activate")
-async def settings_excel_activate(template_id: str, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    return await template_store.excel_activate(template_id)
-
-
 @router.get("/api/settings/default-templates")
 async def settings_default_templates_list(_: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     return await system_settings_service.default_templates_list()
@@ -201,27 +134,6 @@ async def settings_default_templates_activate(
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     return await system_settings_service.default_template_activate(template_id, user=user)
-
-
-@router.get("/api/settings/backups")
-async def settings_backups_list(_: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    return await system_settings_service.backups_list()
-
-
-@router.post("/api/settings/backups/create")
-async def settings_backups_create(
-    data: dict[str, Any] = Body(default_factory=dict),
-    user: dict[str, Any] = Depends(current_user),
-) -> dict[str, Any]:
-    return await system_settings_service.create_backup(str(data.get("note") or ""), user=user)
-
-
-@router.post("/api/settings/backups/{backup_id}/restore")
-async def settings_backups_restore(
-    backup_id: str,
-    user: dict[str, Any] = Depends(current_user),
-) -> dict[str, Any]:
-    return await system_settings_service.restore_backup(backup_id, user=user)
 
 
 @router.get("/api/settings/health")

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { settingsAPI } from '../api'
 import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
 
@@ -9,7 +10,7 @@ const deepEqualByKeys = (left, right, keys) =>
   keys.every((key) => JSON.stringify(left?.[key]) === JSON.stringify(right?.[key]))
 
 export default function Settings({ showToast = () => {} }) {
-  const [activeSection, setActiveSection] = useState('gateway')
+  const [activeSection, setActiveSection] = useState('defaultTemplates')
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
@@ -18,9 +19,11 @@ export default function Settings({ showToast = () => {} }) {
   const [gateway, setGateway] = useState(null)
   const [gatewayDraft, setGatewayDraft] = useState({
     enabled: true,
-    endpoint: '',
+    providerId: '',
     baseUrl: '',
     model: '',
+    modelOptions: [],
+    opencodeBaseUrl: '',
     timeoutMs: 30000,
     maxTokens: 4096,
     apiKey: '',
@@ -51,27 +54,8 @@ export default function Settings({ showToast = () => {} }) {
   const [defaultTemplateUploading, setDefaultTemplateUploading] = useState(false)
   const [defaultTemplateActivatingId, setDefaultTemplateActivatingId] = useState('')
 
-  const [dotxTemplates, setDotxTemplates] = useState([])
-  const [dotxUploading, setDotxUploading] = useState(false)
-  const [dotxActivatingId, setDotxActivatingId] = useState('')
-
-  const [excelTemplates, setExcelTemplates] = useState([])
-  const [excelTableOptions, setExcelTableOptions] = useState([])
-  const [excelUploadTableKey, setExcelUploadTableKey] = useState('')
-  const [excelUploadVersion, setExcelUploadVersion] = useState('')
-  const [excelUploading, setExcelUploading] = useState(false)
-  const [excelActivatingId, setExcelActivatingId] = useState('')
-
-  const [backups, setBackups] = useState([])
-  const [backupNote, setBackupNote] = useState('')
-  const [backupCreating, setBackupCreating] = useState(false)
-  const [backupRestoringId, setBackupRestoringId] = useState('')
-  const [latestRestoreAt, setLatestRestoreAt] = useState('')
-
   const [health, setHealth] = useState([])
 
-  const dotxFileInputRef = useRef(null)
-  const excelFileInputRef = useRef(null)
   const defaultTemplateFileInputRef = useRef(null)
 
   const loadAll = useCallback(async (options = {}) => {
@@ -83,23 +67,22 @@ export default function Settings({ showToast = () => {} }) {
     setError('')
 
     try {
-      const [usersRes, gatewayRes, ocrRes, defaultTemplatesRes, dotxRes, excelRes, backupsRes, healthRes] = await Promise.all([
+      const [usersRes, gatewayRes, ocrRes, defaultTemplatesRes, healthRes] = await Promise.all([
         settingsAPI.users.list(),
         settingsAPI.gateway.get(),
         settingsAPI.ocr.get(),
         settingsAPI.defaultTemplates.list(),
-        settingsAPI.dotxTemplates.list(),
-        settingsAPI.excelTemplates.list(),
-        settingsAPI.backups.list(),
         settingsAPI.health(),
       ])
       setUsers(usersRes?.items || [])
       setGateway(gatewayRes || null)
       setGatewayDraft({
         enabled: Boolean(gatewayRes?.enabled),
-        endpoint: String(gatewayRes?.endpoint || gatewayRes?.baseUrl || ''),
+        providerId: String(gatewayRes?.providerId || ''),
         baseUrl: String(gatewayRes?.baseUrl || gatewayRes?.endpoint || ''),
         model: String(gatewayRes?.model || ''),
+        modelOptions: Array.isArray(gatewayRes?.modelOptions) ? gatewayRes.modelOptions : [],
+        opencodeBaseUrl: String(gatewayRes?.opencodeBaseUrl || ''),
         timeoutMs: Number(gatewayRes?.timeoutMs || 30000),
         maxTokens: Number(gatewayRes?.maxTokens || 4096),
         apiKey: '',
@@ -123,16 +106,6 @@ export default function Settings({ showToast = () => {} }) {
         if (prev && templateTypeOptions.some((item) => item.key === prev)) return prev
         return templateTypeOptions[0]?.key || 'technical'
       })
-      setDotxTemplates(dotxRes?.items || [])
-      setExcelTemplates(excelRes?.items || [])
-      const optionsList = excelRes?.tableOptions || []
-      setExcelTableOptions(optionsList)
-      setExcelUploadTableKey((prev) => {
-        if (prev && optionsList.some((item) => item.key === prev)) return prev
-        return optionsList[0]?.key || ''
-      })
-      setBackups(backupsRes?.items || [])
-      setLatestRestoreAt(backupsRes?.latestRestoreAt || '')
       setHealth(Array.isArray(healthRes) ? healthRes : [])
     } catch (e) {
       console.error(e)
@@ -156,19 +129,17 @@ export default function Settings({ showToast = () => {} }) {
   }, [loadAll])
 
   const sections = [
-    { id: 'gateway', icon: 'hub', label: 'LLM 网关', group: '系统核心' },
-    { id: 'defaultTemplates', icon: 'description', label: '默认模板', group: '系统核心' },
+    { id: 'defaultTemplates', icon: 'description', label: '默认 Word 模板', group: '系统核心' },
+    { id: 'gateway', icon: 'hub', label: 'LLM 模型', group: '系统核心' },
     { id: 'ocr', icon: 'document_scanner', label: 'OCR 模型', group: '系统核心' },
-    { id: 'dotx', icon: 'format_shapes', label: '.dotx 样式模板', group: '系统核心' },
-    { id: 'excel', icon: 'table_chart', label: 'Excel 模板版本', group: '系统核心' },
-    { id: 'backup', icon: 'database', label: '备份与恢复', group: '系统核心' },
-    { id: 'health', icon: 'monitor_heart', label: '系统健康', group: '系统核心' },
-    { id: 'users', icon: 'group', label: '用户与角色', group: '账户与权限' },
+    { id: 'users', icon: 'group', label: '用户', group: '系统核心' },
+    { id: 'audit', icon: 'history', label: '审计', group: '系统核心' },
+    { id: 'health', icon: 'monitor_heart', label: '健康', group: '系统核心' },
   ]
 
   const gatewayDirty = useMemo(() => {
     if (!gateway) return false
-    return !deepEqualByKeys(gatewayDraft, gateway, ['enabled', 'baseUrl', 'model', 'timeoutMs', 'maxTokens'])
+    return !deepEqualByKeys(gatewayDraft, gateway, ['enabled', 'providerId', 'baseUrl', 'model', 'opencodeBaseUrl', 'timeoutMs', 'maxTokens'])
       || Boolean(gatewayDraft.apiKey.trim())
   }, [gateway, gatewayDraft])
 
@@ -178,29 +149,17 @@ export default function Settings({ showToast = () => {} }) {
       || Boolean(ocrDraft.apiKey.trim())
   }, [ocr, ocrDraft])
 
-  const activeDotxId = useMemo(
-    () => dotxTemplates.find((item) => item.isActive)?.id || '',
-    [dotxTemplates],
-  )
-
-  const groupedExcelTemplates = useMemo(() => {
-    const grouped = {}
-    excelTemplates.forEach((item) => {
-      if (!grouped[item.tableKey]) grouped[item.tableKey] = []
-      grouped[item.tableKey].push(item)
-    })
-    return grouped
-  }, [excelTemplates])
-
   const handleSaveGateway = async () => {
     if (!gatewayDirty) return
     setGatewaySaving(true)
     try {
       const result = await settingsAPI.gateway.update({
         enabled: gatewayDraft.enabled,
-        baseUrl: (gatewayDraft.baseUrl || gatewayDraft.endpoint).trim(),
-        endpoint: (gatewayDraft.baseUrl || gatewayDraft.endpoint).trim(),
+        providerId: gatewayDraft.providerId.trim(),
+        baseUrl: gatewayDraft.baseUrl.trim(),
         model: gatewayDraft.model.trim(),
+        modelId: gatewayDraft.model.trim(),
+        opencodeBaseUrl: gatewayDraft.opencodeBaseUrl.trim(),
         timeoutMs: Number(gatewayDraft.timeoutMs || 0),
         maxTokens: Number(gatewayDraft.maxTokens || 0),
         ...(gatewayDraft.apiKey.trim() ? { apiKey: gatewayDraft.apiKey.trim() } : {}),
@@ -208,18 +167,20 @@ export default function Settings({ showToast = () => {} }) {
       setGateway(result.config)
       setGatewayDraft({
         enabled: Boolean(result.config?.enabled),
-        endpoint: String(result.config?.endpoint || result.config?.baseUrl || ''),
+        providerId: String(result.config?.providerId || ''),
         baseUrl: String(result.config?.baseUrl || result.config?.endpoint || ''),
         model: String(result.config?.model || ''),
+        modelOptions: Array.isArray(result.config?.modelOptions) ? result.config.modelOptions : [],
+        opencodeBaseUrl: String(result.config?.opencodeBaseUrl || ''),
         timeoutMs: Number(result.config?.timeoutMs || 30000),
         maxTokens: Number(result.config?.maxTokens || 4096),
         apiKey: '',
         apiKeyMasked: String(result.config?.apiKeyMasked || ''),
       })
-      showToast('LLM 网关配置已保存')
+      showToast('LLM 模型配置已保存')
     } catch (e) {
       console.error(e)
-      showToast(safeMessage(e, '网关配置保存失败'), 'error')
+      showToast(safeMessage(e, 'LLM 模型配置保存失败'), 'error')
     } finally {
       setGatewaySaving(false)
     }
@@ -230,18 +191,20 @@ export default function Settings({ showToast = () => {} }) {
     setGatewayTestResult(null)
     try {
       const result = await settingsAPI.gateway.test({
-        baseUrl: (gatewayDraft.baseUrl || gatewayDraft.endpoint).trim(),
-        endpoint: (gatewayDraft.baseUrl || gatewayDraft.endpoint).trim(),
+        providerId: gatewayDraft.providerId.trim(),
+        baseUrl: gatewayDraft.baseUrl.trim(),
         model: gatewayDraft.model.trim(),
+        modelId: gatewayDraft.model.trim(),
+        opencodeBaseUrl: gatewayDraft.opencodeBaseUrl.trim(),
         timeoutMs: Number(gatewayDraft.timeoutMs || 0),
         ...(gatewayDraft.apiKey.trim() ? { apiKey: gatewayDraft.apiKey.trim() } : {}),
       })
       setGatewayTestResult({ success: true, message: result.message, latencyMs: result.latencyMs })
-      showToast('网关连通性测试通过')
+      showToast('LLM 模型连通性测试通过')
     } catch (e) {
       console.error(e)
-      setGatewayTestResult({ success: false, message: safeMessage(e, '网关测试失败'), latencyMs: null })
-      showToast(safeMessage(e, '网关测试失败'), 'error')
+      setGatewayTestResult({ success: false, message: safeMessage(e, 'LLM 模型测试失败'), latencyMs: null })
+      showToast(safeMessage(e, 'LLM 模型测试失败'), 'error')
     } finally {
       setGatewayTesting(false)
     }
@@ -333,110 +296,6 @@ export default function Settings({ showToast = () => {} }) {
     }
   }
 
-  const handleUploadDotx = async (file) => {
-    if (!file) return
-    setDotxUploading(true)
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      formData.append('fileName', file.name)
-      formData.append('fileSize', String(file.size))
-      formData.append('version', excelUploadVersion || '2026.04')
-      const result = await settingsAPI.dotxTemplates.upload(formData)
-      setDotxTemplates(result.items || [])
-      showToast('dotx 模板上传成功')
-    } catch (e) {
-      console.error(e)
-      showToast(safeMessage(e, 'dotx 模板上传失败'), 'error')
-    } finally {
-      setDotxUploading(false)
-    }
-  }
-
-  const handleActivateDotx = async (id) => {
-    setDotxActivatingId(id)
-    try {
-      const result = await settingsAPI.dotxTemplates.activate(id)
-      setDotxTemplates(result.items || [])
-      showToast('已切换当前生效的 dotx 模板')
-    } catch (e) {
-      console.error(e)
-      showToast(safeMessage(e, 'dotx 模板激活失败'), 'error')
-    } finally {
-      setDotxActivatingId('')
-    }
-  }
-
-  const handleUploadExcelTemplate = async (file) => {
-    if (!file) return
-    if (!excelUploadTableKey) {
-      showToast('请先选择模板归属数据表', 'error')
-      return
-    }
-    setExcelUploading(true)
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      formData.append('tableKey', excelUploadTableKey)
-      formData.append('fileName', file.name)
-      if (excelUploadVersion.trim()) {
-        formData.append('version', excelUploadVersion.trim())
-      }
-      const result = await settingsAPI.excelTemplates.upload(formData)
-      setExcelTemplates(result.items || [])
-      showToast('Excel 模板版本上传成功')
-    } catch (e) {
-      console.error(e)
-      showToast(safeMessage(e, 'Excel 模板上传失败'), 'error')
-    } finally {
-      setExcelUploading(false)
-    }
-  }
-
-  const handleActivateExcelTemplate = async (id) => {
-    setExcelActivatingId(id)
-    try {
-      const result = await settingsAPI.excelTemplates.activate(id)
-      setExcelTemplates(result.items || [])
-      showToast('模板版本切换成功')
-    } catch (e) {
-      console.error(e)
-      showToast(safeMessage(e, '模板激活失败'), 'error')
-    } finally {
-      setExcelActivatingId('')
-    }
-  }
-
-  const handleCreateBackup = async () => {
-    setBackupCreating(true)
-    try {
-      const result = await settingsAPI.backups.create({ note: backupNote.trim() })
-      setBackups(result.items || [])
-      setBackupNote('')
-      showToast('备份创建成功')
-    } catch (e) {
-      console.error(e)
-      showToast(safeMessage(e, '创建备份失败'), 'error')
-    } finally {
-      setBackupCreating(false)
-    }
-  }
-
-  const handleRestoreBackup = async (id) => {
-    setBackupRestoringId(id)
-    try {
-      const result = await settingsAPI.backups.restore(id)
-      setBackups(result.items || [])
-      setLatestRestoreAt(result.item?.restoredAt || latestRestoreAt)
-      showToast('备份恢复完成')
-    } catch (e) {
-      console.error(e)
-      showToast(safeMessage(e, '恢复备份失败'), 'error')
-    } finally {
-      setBackupRestoringId('')
-    }
-  }
-
   if (loading && !gateway) {
     return <PageLoading title="正在加载设置中心..." description="正在同步系统核心配置。" />
   }
@@ -456,7 +315,7 @@ export default function Settings({ showToast = () => {} }) {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-3">
         <div>
           <h1 className="text-3xl font-headline font-bold text-primary">系统设置</h1>
-          <p className="text-sm text-on-surface-variant mt-1">已接入企业部署核心模块：网关、模板、备份、健康检查。</p>
+          <p className="text-sm text-on-surface-variant mt-1">管理默认 Word 模板、LLM/OCR 模型、用户、审计与健康检查。</p>
           {refreshing && <p className="text-xs text-outline mt-1">正在刷新配置...</p>}
         </div>
         <button
@@ -470,7 +329,7 @@ export default function Settings({ showToast = () => {} }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         <div className="bg-surface-container-lowest rounded-xl shadow-[0_8px_24px_-12px_rgba(0,62,111,0.06)] p-4">
-          {['系统核心', '账户与权限'].map((group) => (
+          {['系统核心'].map((group) => (
             <div key={group} className="mb-4">
               <h4 className="text-xs font-semibold text-outline uppercase tracking-wider px-3 mb-2">{group}</h4>
               {sections.filter((item) => item.group === group).map((item) => (
@@ -497,8 +356,8 @@ export default function Settings({ showToast = () => {} }) {
             <div className="p-6 space-y-6">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h2 className="text-lg font-headline font-bold text-on-surface">LLM 网关配置</h2>
-                  <p className="text-sm text-on-surface-variant mt-1">维护网关地址、默认模型与超时策略。</p>
+                  <h2 className="text-lg font-headline font-bold text-on-surface">LLM 模型配置</h2>
+                  <p className="text-sm text-on-surface-variant mt-1">维护 opencode 调用的 provider、model、Base URL 与 API Key。</p>
                 </div>
                 <label className="inline-flex items-center gap-2 text-sm text-on-surface-variant">
                   <input
@@ -506,34 +365,53 @@ export default function Settings({ showToast = () => {} }) {
                     checked={gatewayDraft.enabled}
                     onChange={(event) => setGatewayDraft((prev) => ({ ...prev, enabled: event.target.checked }))}
                   />
-                  启用网关
+                  启用 LLM
                 </label>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <label className="text-sm text-on-surface-variant">
-                  Base URL
+                  Provider ID
                   <input
-                    value={gatewayDraft.baseUrl || gatewayDraft.endpoint}
-                    onChange={(event) => setGatewayDraft((prev) => ({ ...prev, baseUrl: event.target.value, endpoint: event.target.value }))}
+                    value={gatewayDraft.providerId}
+                    onChange={(event) => setGatewayDraft((prev) => ({ ...prev, providerId: event.target.value }))}
                     className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
+                    placeholder="opencode provider，例如 mimo"
                   />
                 </label>
                 <label className="text-sm text-on-surface-variant">
-                  默认模型
+                  Model ID
                   <input
+                    list="llm-model-options"
                     value={gatewayDraft.model}
                     onChange={(event) => setGatewayDraft((prev) => ({ ...prev, model: event.target.value }))}
                     className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
+                    placeholder="opencode model，例如 mimo-v2.5"
+                  />
+                  <datalist id="llm-model-options">
+                    {(gatewayDraft.modelOptions || []).map((item) => (
+                      <option key={item.id || item.model || item} value={item.id || item.model || item}>
+                        {item.label || item.name || item.id || item.model || item}
+                      </option>
+                    ))}
+                  </datalist>
+                </label>
+                <label className="text-sm text-on-surface-variant">
+                  Provider Base URL
+                  <input
+                    value={gatewayDraft.baseUrl}
+                    onChange={(event) => setGatewayDraft((prev) => ({ ...prev, baseUrl: event.target.value }))}
+                    className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
+                    placeholder="OpenAI-compatible /v1 地址"
                   />
                 </label>
                 <label className="text-sm text-on-surface-variant">
-                  超时 (ms)
+                  OpenCode Base URL
                   <input
-                    type="number"
-                    value={gatewayDraft.timeoutMs}
-                    onChange={(event) => setGatewayDraft((prev) => ({ ...prev, timeoutMs: Number(event.target.value || 0) }))}
+                    value={gatewayDraft.opencodeBaseUrl}
+                    onChange={(event) => setGatewayDraft((prev) => ({ ...prev, opencodeBaseUrl: event.target.value }))}
                     className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
+                    placeholder="FastAPI 调用的 opencode 服务地址"
                   />
                 </label>
                 <label className="text-sm text-on-surface-variant">
@@ -543,6 +421,15 @@ export default function Settings({ showToast = () => {} }) {
                     value={gatewayDraft.apiKey}
                     onChange={(event) => setGatewayDraft((prev) => ({ ...prev, apiKey: event.target.value }))}
                     placeholder={gatewayDraft.apiKeyMasked ? '保持当前 Key 不变' : '输入 API Key'}
+                    className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
+                  />
+                </label>
+                <label className="text-sm text-on-surface-variant">
+                  超时 (ms)
+                  <input
+                    type="number"
+                    value={gatewayDraft.timeoutMs}
+                    onChange={(event) => setGatewayDraft((prev) => ({ ...prev, timeoutMs: Number(event.target.value || 0) }))}
                     className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
                   />
                 </label>
@@ -558,7 +445,7 @@ export default function Settings({ showToast = () => {} }) {
               </div>
 
               <div className="rounded-lg bg-surface-container-low p-3 text-xs text-outline">
-                API Key：{gatewayDraft.apiKeyMasked || '-'} · 最近更新：{gateway?.updatedAt || '-'} / {gateway?.updatedBy || '-'}
+                当前生效：{gatewayDraft.providerId || '-'}/{gatewayDraft.model || '-'} · API Key：{gatewayDraft.apiKeyMasked || '-'} · 最近更新：{gateway?.updatedAt || '-'} / {gateway?.updatedBy || '-'}
               </div>
 
               {gatewayTestResult && (
@@ -706,7 +593,7 @@ export default function Settings({ showToast = () => {} }) {
                   <input
                     ref={defaultTemplateFileInputRef}
                     type="file"
-                    accept=".docx,.dotx"
+                    accept=".docx"
                     className="hidden"
                     onChange={(event) => {
                       const file = event.target.files?.[0]
@@ -771,250 +658,6 @@ export default function Settings({ showToast = () => {} }) {
             </div>
           )}
 
-          {activeSection === 'dotx' && (
-            <div className="p-6 space-y-4">
-              <div className="flex justify-between items-center gap-3">
-                <div>
-                  <h2 className="text-lg font-headline font-bold text-on-surface">.dotx 样式模板</h2>
-                  <p className="text-sm text-on-surface-variant mt-1">管理导出格式标准模板，切换当前生效版本。</p>
-                </div>
-                <input
-                  ref={dotxFileInputRef}
-                  type="file"
-                  accept=".dotx"
-                  className="hidden"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0]
-                    if (file) handleUploadDotx(file)
-                    event.target.value = ''
-                  }}
-                />
-                <button
-                  onClick={() => dotxFileInputRef.current?.click()}
-                  disabled={dotxUploading}
-                  className="px-4 py-2 text-sm font-medium text-on-primary bg-primary hover:bg-primary-container rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {dotxUploading ? '上传中...' : '上传 dotx 模板'}
-                </button>
-              </div>
-
-              {!dotxTemplates.length ? (
-                <PageEmpty title="暂无 dotx 模板" description="请先上传模板文件。" />
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-surface-container-high">
-                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">模板名称</th>
-                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">版本</th>
-                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">上传信息</th>
-                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">状态</th>
-                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">操作</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {dotxTemplates.map((item) => (
-                        <tr key={item.id} className="border-b border-surface-container-high/50">
-                          <td className="px-3 py-3 text-on-surface">{item.name}</td>
-                          <td className="px-3 py-3 font-mono text-xs">{item.version}</td>
-                          <td className="px-3 py-3 text-xs text-outline">{item.uploadedBy} · {item.uploadedAt}</td>
-                          <td className="px-3 py-3">
-                            {item.isActive ? (
-                              <span className="text-xs px-2 py-1 rounded bg-secondary-container text-on-secondary-container">生效中</span>
-                            ) : (
-                              <span className="text-xs px-2 py-1 rounded bg-surface-container-high text-on-surface-variant">未生效</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-3">
-                            <button
-                              onClick={() => handleActivateDotx(item.id)}
-                              disabled={item.id === activeDotxId || dotxActivatingId === item.id}
-                              className="text-xs text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              {dotxActivatingId === item.id ? '切换中...' : item.id === activeDotxId ? '当前版本' : '设为生效'}
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeSection === 'excel' && (
-            <div className="p-6 space-y-5">
-              <div className="flex justify-between items-end gap-3">
-                <div>
-                  <h2 className="text-lg font-headline font-bold text-on-surface">Excel 模板版本管理</h2>
-                  <p className="text-sm text-on-surface-variant mt-1">按数据表管理导入模板版本，并支持激活切换。</p>
-                </div>
-                <div className="flex gap-2">
-                  <select
-                    value={excelUploadTableKey}
-                    onChange={(event) => setExcelUploadTableKey(event.target.value)}
-                    className="h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm"
-                  >
-                    {excelTableOptions.map((item) => (
-                      <option key={item.key} value={item.key}>{item.label}</option>
-                    ))}
-                  </select>
-                  <input
-                    value={excelUploadVersion}
-                    onChange={(event) => setExcelUploadVersion(event.target.value)}
-                    placeholder="版本号（可选）"
-                    className="h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm w-36"
-                  />
-                  <input
-                    ref={excelFileInputRef}
-                    type="file"
-                    accept=".xlsx,.xls,.csv"
-                    className="hidden"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0]
-                      if (file) handleUploadExcelTemplate(file)
-                      event.target.value = ''
-                    }}
-                  />
-                  <button
-                    onClick={() => excelFileInputRef.current?.click()}
-                    disabled={excelUploading}
-                    className="px-4 py-2 text-sm font-medium text-on-primary bg-primary hover:bg-primary-container rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {excelUploading ? '上传中...' : '上传模板版本'}
-                  </button>
-                </div>
-              </div>
-
-              {!excelTemplates.length ? (
-                <PageEmpty title="暂无 Excel 模板版本" description="请先上传模板版本文件。" />
-              ) : (
-                <div className="space-y-4">
-                  {Object.entries(groupedExcelTemplates).map(([tableKey, versions]) => (
-                    <div key={tableKey} className="rounded-xl border border-surface-container-high overflow-hidden">
-                      <div className="px-4 py-2 bg-surface-container-low text-sm font-semibold text-on-surface">
-                        {versions[0]?.tableLabel || tableKey}
-                      </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="border-b border-surface-container-high/60">
-                              <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">版本</th>
-                              <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">文件名</th>
-                              <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">上传信息</th>
-                              <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">状态</th>
-                              <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">操作</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {versions.map((item) => (
-                              <tr key={item.id} className="border-b border-surface-container-high/50">
-                                <td className="px-3 py-3 font-mono text-xs">{item.version}</td>
-                                <td className="px-3 py-3">{item.fileName}</td>
-                                <td className="px-3 py-3 text-xs text-outline">{item.uploadedBy} · {item.uploadedAt}</td>
-                                <td className="px-3 py-3">
-                                  {item.isActive ? (
-                                    <span className="text-xs px-2 py-1 rounded bg-secondary-container text-on-secondary-container">生效中</span>
-                                  ) : (
-                                    <span className="text-xs px-2 py-1 rounded bg-surface-container-high text-on-surface-variant">未生效</span>
-                                  )}
-                                </td>
-                                <td className="px-3 py-3">
-                                  <button
-                                    onClick={() => handleActivateExcelTemplate(item.id)}
-                                    disabled={item.isActive || excelActivatingId === item.id}
-                                    className="text-xs text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
-                                  >
-                                    {excelActivatingId === item.id ? '切换中...' : item.isActive ? '当前版本' : '设为生效'}
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeSection === 'backup' && (
-            <div className="p-6 space-y-5">
-              <div className="flex justify-between items-end gap-3">
-                <div>
-                  <h2 className="text-lg font-headline font-bold text-on-surface">备份与恢复</h2>
-                  <p className="text-sm text-on-surface-variant mt-1">支持手动快照与一键恢复。</p>
-                  {latestRestoreAt && <p className="text-xs text-outline mt-1">最近恢复时间：{latestRestoreAt}</p>}
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    value={backupNote}
-                    onChange={(event) => setBackupNote(event.target.value)}
-                    placeholder="备份备注（可选）"
-                    className="h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm w-56"
-                  />
-                  <button
-                    onClick={handleCreateBackup}
-                    disabled={backupCreating}
-                    className="px-4 py-2 text-sm font-medium text-on-primary bg-primary hover:bg-primary-container rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {backupCreating ? '创建中...' : '创建备份'}
-                  </button>
-                </div>
-              </div>
-
-              {!backups.length ? (
-                <PageEmpty title="暂无备份记录" description="可先创建一次手动备份。" />
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-surface-container-high">
-                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">备份 ID</th>
-                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">类型</th>
-                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">大小</th>
-                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">创建信息</th>
-                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">状态</th>
-                        <th className="px-3 py-2 text-left text-xs text-on-surface-variant uppercase">操作</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {backups.map((item) => (
-                        <tr key={item.id} className="border-b border-surface-container-high/50">
-                          <td className="px-3 py-3 font-mono text-xs">{item.id}</td>
-                          <td className="px-3 py-3">{item.type === 'manual' ? '手动' : '自动'}</td>
-                          <td className="px-3 py-3">{item.size}</td>
-                          <td className="px-3 py-3 text-xs text-outline">{item.createdBy} · {item.createdAt}</td>
-                          <td className="px-3 py-3">
-                            <span className={`text-xs px-2 py-1 rounded ${
-                              item.status === 'success'
-                                ? 'bg-secondary-container text-on-secondary-container'
-                                : 'bg-error-container text-on-error-container'
-                            }`}>
-                              {item.status === 'success' ? '可用' : '失败'}
-                            </span>
-                          </td>
-                          <td className="px-3 py-3">
-                            <button
-                              onClick={() => handleRestoreBackup(item.id)}
-                              disabled={backupRestoringId === item.id}
-                              className="text-xs text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              {backupRestoringId === item.id ? '恢复中...' : '恢复'}
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
-
           {activeSection === 'health' && (
             <div className="p-6 space-y-4">
               <div className="flex justify-between items-center">
@@ -1055,11 +698,31 @@ export default function Settings({ showToast = () => {} }) {
             </div>
           )}
 
+          {activeSection === 'audit' && (
+            <div className="p-6 space-y-5">
+              <div>
+                <h2 className="text-lg font-headline font-bold text-on-surface">审计</h2>
+                <p className="text-sm text-on-surface-variant mt-1">查看登录、配置、OCR、素材和生成标书过程中的操作记录。</p>
+              </div>
+              <div className="rounded-xl border border-surface-container-high p-4 bg-surface-container-low">
+                <div className="text-sm font-semibold text-on-surface">审计日志</div>
+                <p className="text-xs text-on-surface-variant mt-1">日志页面支持按用户、模块、动作、状态和关键字筛选，并可查看 diff 与元数据。</p>
+                <Link
+                  to="/audit"
+                  className="inline-flex items-center gap-2 mt-4 px-4 py-2 text-sm font-medium text-on-primary bg-primary hover:bg-primary-container rounded-lg"
+                >
+                  <span className="material-symbols-outlined text-sm">open_in_new</span>
+                  打开审计日志
+                </Link>
+              </div>
+            </div>
+          )}
+
           {activeSection === 'users' && (
             <div className="p-6 space-y-4">
               <div>
-                <h2 className="text-lg font-headline font-bold text-on-surface">用户与角色</h2>
-                <p className="text-sm text-on-surface-variant mt-1">当前保留基础用户视图，核心功能已聚焦系统模块治理。</p>
+                <h2 className="text-lg font-headline font-bold text-on-surface">用户</h2>
+                <p className="text-sm text-on-surface-variant mt-1">查看系统账户、部门、角色和状态。</p>
               </div>
               {!users.length ? (
                 <PageEmpty title="暂无用户数据" description="请检查用户同步接口。" />

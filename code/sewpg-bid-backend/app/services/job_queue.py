@@ -62,13 +62,21 @@ def enqueue_generation_job(job_type: str, project_id: str, data: dict[str, Any])
     job_id = uuid4().hex
     lock_key = generation_lock_key(job_type, project_id)
     created_at = _now_iso()
+    payload_data = dict(data or {})
+    job_user = payload_data.pop("__auditUser", None)
     job = {
         "id": job_id,
         "type": job_type,
         "projectId": project_id,
-        "data": data or {},
+        "data": payload_data,
         "createdAt": created_at,
     }
+    if isinstance(job_user, dict):
+        job["user"] = {
+            "id": str(job_user.get("id") or ""),
+            "name": str(job_user.get("name") or job_user.get("email") or ""),
+            "email": str(job_user.get("email") or ""),
+        }
 
     try:
         lock_acquired = client.set(

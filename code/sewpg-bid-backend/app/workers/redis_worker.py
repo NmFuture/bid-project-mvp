@@ -27,6 +27,7 @@ def _run_job(job: dict[str, Any]) -> None:
     job_type = str(job.get("type") or "")
     project_id = str(job.get("projectId") or "")
     data = job.get("data") if isinstance(job.get("data"), dict) else {}
+    user = job.get("user") if isinstance(job.get("user"), dict) else None
     final_state: dict[str, Any] = {}
 
     mark_job_status(job, "running")
@@ -41,7 +42,7 @@ def _run_job(job: dict[str, Any]) -> None:
             from app.api.routes.generation import _run_fill_generation_job
             from app.services.store import store
 
-            _run_fill_generation_job(project_id, data)
+            _run_fill_generation_job(project_id, data, user)
             final_state = store.get_fill_state(project_id)
         elif job_type == "material_cleaning":
             from app.services.material_cleaning import clean_material_file_sync

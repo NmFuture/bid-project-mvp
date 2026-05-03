@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
+import threading
 import time
 from datetime import datetime
 from pathlib import PurePosixPath
@@ -23,6 +25,13 @@ DEFAULT_TEMPLATE_TYPES = {
     "technical": "技术标",
     "business": "商务标",
 }
+
+DEFAULT_LLM_MODEL_OPTIONS = [
+    {"id": "mimo-v2.5", "label": "mimo-v2.5"},
+    {"id": "big-pickle", "label": "big-pickle"},
+    {"id": "deepseek-ai/DeepSeek-V3", "label": "deepseek-ai/DeepSeek-V3"},
+    {"id": "deepseek-ai/DeepSeek-R1", "label": "deepseek-ai/DeepSeek-R1"},
+]
 
 
 def now_display() -> str:
@@ -55,10 +64,14 @@ class SystemSettingsService:
             )
             defaults = {
                 "llm": {
-                    "enabled": bool(settings.default_llm_base_url or settings.default_llm_api_key or settings.default_llm_model),
+                    "enabled": bool(settings.default_llm_base_url or settings.default_llm_api_key),
+                    "providerId": settings.default_llm_provider_id,
+                    "opencodeBaseUrl": settings.opencode_base_url,
                     "baseUrl": settings.default_llm_base_url,
                     "apiKey": settings.default_llm_api_key,
-                    "model": settings.default_llm_model,
+                    "model": settings.default_llm_model or settings.opencode_model_id,
+                    "modelId": settings.default_llm_model or settings.opencode_model_id,
+                    "modelOptions": DEFAULT_LLM_MODEL_OPTIONS,
                     "timeoutMs": 30000,
                     "maxTokens": 4096,
                 },
@@ -80,7 +93,57 @@ class SystemSettingsService:
     def _public_model_config(config: dict[str, Any]) -> dict[str, Any]:
         payload = copy.deepcopy(config)
         payload["apiKeyMasked"] = mask_secret(str(payload.pop("apiKey", "") or ""))
+        if payload.get("modelId") and not payload.get("model"):
+            payload["model"] = payload["modelId"]
+        if payload.get("model") and not payload.get("modelId"):
+            payload["modelId"] = payload["model"]
+        if "modelOptions" in payload and not isinstance(payload["modelOptions"], list):
+            payload["modelOptions"] = []
         return payload
+
+    @staticmethod
+    def _model_options(config: dict[str, Any]) -> list[dict[str, str]]:
+        seen: set[str] = set()
+        options: list[dict[str, str]] = []
+
+        def add(value: Any, label: Any = "") -> None:
+            model_id = str(value or "").strip()
+            if not model_id or model_id in seen:
+                return
+            seen.add(model_id)
+            options.append({"id": model_id, "label": str(label or model_id)})
+
+        for item in config.get("modelOptions") or []:
+            if isinstance(item, dict):
+                add(item.get("id") or item.get("model") or item.get("modelId"), item.get("label") or item.get("name"))
+            else:
+                add(item)
+        add(config.get("modelId") or config.get("model"))
+        add(settings.opencode_model_id)
+        for item in DEFAULT_LLM_MODEL_OPTIONS:
+            add(item["id"], item["label"])
+        return options
+
+    def _normalize_model_config(self, kind: str, raw: dict[str, Any]) -> dict[str, Any]:
+        config = copy.deepcopy(raw or {})
+        if kind == "llm":
+            model_id = str(config.get("modelId") or config.get("model") or settings.opencode_model_id or "big-pickle").strip()
+            config["providerId"] = str(config.get("providerId") or settings.default_llm_provider_id or settings.opencode_provider_id or "opencode").strip()
+            config["opencodeBaseUrl"] = str(config.get("opencodeBaseUrl") or settings.opencode_base_url or "").strip()
+            config["baseUrl"] = str(config.get("baseUrl") or config.get("endpoint") or settings.default_llm_base_url or "").strip()
+            config["model"] = model_id
+            config["modelId"] = model_id
+            config["modelOptions"] = self._model_options(config)
+            config["timeoutMs"] = int(config.get("timeoutMs") or 30000)
+            config["maxTokens"] = int(config.get("maxTokens") or 4096)
+            config["enabled"] = bool(config.get("enabled"))
+            return config
+        config["baseUrl"] = str(config.get("baseUrl") or config.get("endpoint") or "").strip()
+        config["model"] = str(config.get("model") or settings.default_ocr_model or "").strip()
+        config["timeoutMs"] = int(config.get("timeoutMs") or 60000)
+        config["maxTokens"] = int(config.get("maxTokens") or 2048)
+        config["enabled"] = bool(config.get("enabled"))
+        return config
 
     async def get_model_config(self, kind: str) -> dict[str, Any]:
         await self._ensure_tables()
@@ -88,7 +151,7 @@ class SystemSettingsService:
             row = (await session.execute(select(SystemConfig).where(SystemConfig.key == kind))).scalar_one_or_none()
         if row is None:
             return self._public_model_config({})
-        payload = self._public_model_config(row.value or {})
+        payload = self._public_model_config(self._normalize_model_config(kind, row.value or {}))
         payload["updatedAt"] = row.updated_at.strftime("%Y-%m-%d %H:%M:%S") if row.updated_at else ""
         payload["updatedBy"] = row.updated_by or ""
         return payload
@@ -97,22 +160,76 @@ class SystemSettingsService:
         await self._ensure_tables()
         async with async_session() as session:
             row = (await session.execute(select(SystemConfig).where(SystemConfig.key == kind))).scalar_one_or_none()
-        return copy.deepcopy(row.value or {}) if row is not None else {}
+        return self._normalize_model_config(kind, copy.deepcopy(row.value or {}) if row is not None else {})
+
+    def get_opencode_model_config_sync(self) -> dict[str, Any]:
+        fallback = self._normalize_model_config(
+            "llm",
+            {
+                "enabled": bool(settings.default_llm_base_url or settings.default_llm_api_key),
+                "providerId": settings.default_llm_provider_id,
+                "opencodeBaseUrl": settings.opencode_base_url,
+                "baseUrl": settings.default_llm_base_url,
+                "apiKey": settings.default_llm_api_key,
+                "model": settings.default_llm_model or settings.opencode_model_id,
+                "modelId": settings.default_llm_model or settings.opencode_model_id,
+                "timeoutMs": 30000,
+                "maxTokens": 4096,
+            },
+        )
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                return asyncio.run(self.get_model_secret_config("llm"))
+            except Exception:
+                return fallback
+
+        result: dict[str, Any] = {}
+        error: BaseException | None = None
+
+        def run() -> None:
+            nonlocal result, error
+            try:
+                result = asyncio.run(self.get_model_secret_config("llm"))
+            except BaseException as exc:  # pragma: no cover - defensive fallback
+                error = exc
+
+        thread = threading.Thread(target=run, daemon=True, name="load-opencode-model-config")
+        thread.start()
+        thread.join(timeout=3)
+        if thread.is_alive() or error:
+            return fallback
+        return result or fallback
 
     async def update_model_config(self, kind: str, data: dict[str, Any], *, user: dict[str, Any] | None = None) -> dict[str, Any]:
         await self._ensure_tables()
         current = await self.get_model_secret_config(kind)
         before = self._public_model_config(current)
+        model_value = str(data.get("modelId") or data.get("model") or current.get("modelId") or current.get("model") or "").strip()
         next_config = {
             **current,
             "enabled": bool(data.get("enabled", current.get("enabled", False))),
             "baseUrl": str(data.get("baseUrl") or data.get("endpoint") or current.get("baseUrl") or "").strip(),
-            "model": str(data.get("model") or current.get("model") or "").strip(),
-            "timeoutMs": int(data.get("timeoutMs") or current.get("timeoutMs") or 30000),
-            "maxTokens": int(data.get("maxTokens") or current.get("maxTokens") or 2048),
+            "model": model_value,
+            "timeoutMs": int(data.get("timeoutMs") or current.get("timeoutMs") or (30000 if kind == "llm" else 60000)),
+            "maxTokens": int(data.get("maxTokens") or current.get("maxTokens") or (4096 if kind == "llm" else 2048)),
         }
+        if kind == "llm":
+            next_config.update(
+                {
+                    "providerId": str(data.get("providerId") or current.get("providerId") or settings.default_llm_provider_id or settings.opencode_provider_id).strip(),
+                    "modelId": model_value,
+                    "opencodeBaseUrl": str(data.get("opencodeBaseUrl") or current.get("opencodeBaseUrl") or settings.opencode_base_url).strip(),
+                }
+            )
+            if isinstance(data.get("modelOptions"), list):
+                next_config["modelOptions"] = data["modelOptions"]
+            else:
+                next_config["modelOptions"] = self._model_options(next_config)
         if "apiKey" in data and str(data.get("apiKey") or "").strip():
             next_config["apiKey"] = str(data.get("apiKey") or "").strip()
+        next_config = self._normalize_model_config(kind, next_config)
 
         async with async_session() as session:
             row = (await session.execute(select(SystemConfig).where(SystemConfig.key == kind))).scalar_one_or_none()
@@ -136,17 +253,31 @@ class SystemSettingsService:
         )
         return {"message": "Config updated", "config": await self.get_model_config(kind)}
 
-    async def test_model_config(self, kind: str, data: dict[str, Any] | None = None, *, user: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def test_model_config(
+        self,
+        kind: str,
+        data: dict[str, Any] | None = None,
+        *,
+        user: dict[str, Any] | None = None,
+        record_audit: bool = True,
+    ) -> dict[str, Any]:
         config = await self.get_model_secret_config(kind)
         if data:
             if data.get("baseUrl") or data.get("endpoint"):
                 config["baseUrl"] = str(data.get("baseUrl") or data.get("endpoint") or "").strip()
-            if data.get("model"):
-                config["model"] = str(data.get("model") or "").strip()
+            if kind == "llm" and data.get("providerId"):
+                config["providerId"] = str(data.get("providerId") or "").strip()
+            if kind == "llm" and data.get("opencodeBaseUrl"):
+                config["opencodeBaseUrl"] = str(data.get("opencodeBaseUrl") or "").strip()
+            if data.get("model") or data.get("modelId"):
+                model_value = str(data.get("modelId") or data.get("model") or "").strip()
+                config["model"] = model_value
+                config["modelId"] = model_value
             if data.get("apiKey"):
                 config["apiKey"] = str(data.get("apiKey") or "").strip()
             if data.get("timeoutMs"):
                 config["timeoutMs"] = int(data.get("timeoutMs") or config.get("timeoutMs") or 30000)
+        config = self._normalize_model_config(kind, config)
         base_url = str(config.get("baseUrl") or "").strip()
         model = str(config.get("model") or "").strip()
         if not base_url or not model:
@@ -186,21 +317,28 @@ class SystemSettingsService:
                     f"{kind.upper()}_TEST_FAILED",
                     {"responseText": response.text[:500]},
                 )
-            result = {"success": True, "latencyMs": latency_ms, "message": "连接测试成功。"}
+            result = {
+                "success": True,
+                "latencyMs": latency_ms,
+                "message": "连接测试成功。",
+                "providerId": str(config.get("providerId") or ""),
+                "model": model,
+            }
         except PeripheralError:
             raise
         except Exception as exc:
             raise PeripheralError(502, f"连接测试失败：{exc}", f"{kind.upper()}_TEST_FAILED") from exc
 
-        await audit_service.record(
-            action=f"测试{'LLM' if kind == 'llm' else 'OCR'}配置",
-            action_type="config",
-            module_id="settings",
-            module_label="系统设置",
-            target=base_url,
-            user=user,
-            diff={"before": {}, "after": {"success": True, "latencyMs": result["latencyMs"]}},
-        )
+        if record_audit:
+            await audit_service.record(
+                action=f"测试{'LLM' if kind == 'llm' else 'OCR'}配置",
+                action_type="config",
+                module_id="settings",
+                module_label="系统设置",
+                target=base_url,
+                user=user,
+                diff={"before": {}, "after": {"success": True, "latencyMs": result["latencyMs"]}},
+            )
         return result
 
     @staticmethod
@@ -253,8 +391,8 @@ class SystemSettingsService:
         if not clean_name:
             raise PeripheralError(400, "模板文件名不能为空", "DEFAULT_TEMPLATE_NAME_REQUIRED")
         suffix = PurePosixPath(clean_name).suffix.lower()
-        if suffix not in {".docx", ".dotx"}:
-            raise PeripheralError(400, "系统默认模板仅支持 .docx 或 .dotx", "DEFAULT_TEMPLATE_EXT_INVALID")
+        if suffix != ".docx":
+            raise PeripheralError(400, "系统默认 Word 模板仅支持 .docx", "DEFAULT_TEMPLATE_EXT_INVALID")
 
         bucket = settings.minio_buckets["templates"]
         key = f"templates/default/{template_type}/{uuid4().hex}-{clean_name}"
@@ -492,11 +630,27 @@ class SystemSettingsService:
     async def _check_configured_gateway(self, item_id: str, name: str, kind: str) -> dict[str, Any]:
         config = await self.get_model_secret_config(kind)
         base_url = str(config.get("baseUrl") or "").strip()
+        model = str(config.get("model") or config.get("modelId") or "").strip()
         if not bool(config.get("enabled")):
             return {"id": item_id, "name": name, "status": "offline", "latency": "-", "uptime": "-", "detail": "未启用。"}
-        if not base_url:
-            return {"id": item_id, "name": name, "status": "offline", "latency": "-", "uptime": "-", "detail": "未配置 Base URL。"}
-        return await self._check_http(item_id, name, base_url)
+        if not base_url or not model:
+            return {"id": item_id, "name": name, "status": "offline", "latency": "-", "uptime": "-", "detail": "未配置 Base URL 或模型。"}
+        try:
+            result = await self.test_model_config(
+                kind,
+                {"timeoutMs": min(int(config.get("timeoutMs") or 30000), 5000)},
+                record_audit=False,
+            )
+            return {
+                "id": item_id,
+                "name": name,
+                "status": "online",
+                "latency": f"{int(result.get('latencyMs') or 0)}ms",
+                "uptime": "-",
+                "detail": f"模型可用：{model}",
+            }
+        except Exception as exc:
+            return {"id": item_id, "name": name, "status": "offline", "latency": "-", "uptime": "-", "detail": str(exc)}
 
 
 system_settings_service = SystemSettingsService()

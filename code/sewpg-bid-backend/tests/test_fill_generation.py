@@ -30,6 +30,9 @@ class FillGenerationTests(unittest.TestCase):
             side_effect=RuntimeError("offline test fallback"),
         )
         self.gap_planner_patcher.start()
+        login = self.client.post("/api/auth/login", json={"email": "admin@sewpg.com", "password": "123456"})
+        self.assertEqual(login.status_code, 200)
+        self.headers = {"Authorization": f"Bearer {login.json()['token']}"}
 
     def tearDown(self) -> None:
         self.gap_planner_patcher.stop()
@@ -138,7 +141,7 @@ class FillGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_for_s7()
 
         with patch("app.api.routes.generation._schedule_fill_generation_job"):
-            response = self.client.post(f"/api/projects/{project_id}/fill-generation/run")
+            response = self.client.post(f"/api/projects/{project_id}/fill-generation/run", headers=self.headers)
 
         self.assertEqual(response.status_code, 202)
         payload = response.json()
@@ -148,6 +151,12 @@ class FillGenerationTests(unittest.TestCase):
         self.assertEqual(payload["tasks"][1]["status"], "pending")
         self.assertEqual(payload["events"][0]["step"], "bootstrap")
         self.assertEqual(payload["opencodeOutput"]["status"], "idle")
+        audit = self.client.get("/api/audit", headers=self.headers)
+        self.assertEqual(audit.status_code, 200)
+        generation_logs = [item for item in audit.json()["items"] if item["action"] == "开始生成标书"]
+        self.assertGreaterEqual(len(generation_logs), 1)
+        self.assertEqual(generation_logs[0]["actionType"], "generate")
+        self.assertEqual(generation_logs[0]["module"], "generation")
 
     def test_background_job_updates_running_state_then_writes_real_docx(self) -> None:
         from app.api.routes.generation import _handle_fill_progress, _run_fill_generation_job
@@ -254,6 +263,10 @@ class FillGenerationTests(unittest.TestCase):
         self.assertEqual(len(payload["sections"]), 3)
         self.assertEqual(payload["opencodeOutput"]["status"], "received")
         self.assertEqual(payload["opencodeOutput"]["parts"][0]["type"], "text")
+        audit = self.client.get("/api/audit", headers=self.headers)
+        self.assertEqual(audit.status_code, 200)
+        actions = [item["action"] for item in audit.json()["items"]]
+        self.assertIn("生成标书完成", actions)
 
         document_response = self.client.get(f"/api/projects/{project_id}/document/file")
         self.assertEqual(document_response.status_code, 200)

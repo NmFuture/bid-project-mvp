@@ -9,14 +9,17 @@ from typing import Any, Callable
 import httpx
 
 from app.core.config import settings
+from app.services.system_settings import system_settings_service
 
 
 class OpencodeClient:
     def __init__(self) -> None:
-        self.base_url = settings.opencode_base_url.rstrip("/")
-        self.provider_id = settings.opencode_provider_id
-        self.model_id = settings.opencode_model_id
-        self.timeout = httpx.Timeout(settings.opencode_timeout_sec, connect=10.0)
+        config = system_settings_service.get_opencode_model_config_sync()
+        self.base_url = str(config.get("opencodeBaseUrl") or settings.opencode_base_url).rstrip("/")
+        self.provider_id = str(config.get("providerId") or settings.opencode_provider_id)
+        self.model_id = str(config.get("modelId") or config.get("model") or settings.opencode_model_id)
+        timeout_sec = max(1.0, float(config.get("timeoutMs") or settings.opencode_timeout_sec * 1000) / 1000)
+        self.timeout = httpx.Timeout(timeout_sec, connect=10.0)
 
     def create_session(self, title: str) -> dict[str, Any]:
         try:

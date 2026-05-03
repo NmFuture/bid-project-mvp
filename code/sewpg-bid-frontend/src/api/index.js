@@ -467,32 +467,17 @@ export const settingsAPI = {
   gateway: {
     get: () => request('/settings/llm-gateway'),
     update: (data) => request('/settings/llm-gateway', { method: 'PUT', body: data }),
-    test: (data) => request('/settings/llm-gateway/test', { method: 'POST', body: data }),
+    test: (data) => request('/settings/llm-gateway/test', { method: 'POST', body: data, timeoutMs: 90 * 1000 }),
   },
   ocr: {
     get: () => request('/settings/ocr'),
     update: (data) => request('/settings/ocr', { method: 'PUT', body: data }),
-    test: (data) => request('/settings/ocr/test', { method: 'POST', body: data }),
+    test: (data) => request('/settings/ocr/test', { method: 'POST', body: data, timeoutMs: 90 * 1000 }),
   },
   defaultTemplates: {
     list: () => request('/settings/default-templates'),
     upload: (data) => request('/settings/default-templates', { method: 'POST', body: data }),
     activate: (id) => request(`/settings/default-templates/${id}/activate`, { method: 'POST' }),
-  },
-  dotxTemplates: {
-    list: () => request('/settings/dotx-templates'),
-    upload: (data) => request('/settings/dotx-templates', { method: 'POST', body: data }),
-    activate: (id) => request(`/settings/dotx-templates/${id}/activate`, { method: 'POST' }),
-  },
-  excelTemplates: {
-    list: () => request('/settings/excel-templates'),
-    upload: (data) => request('/settings/excel-templates', { method: 'POST', body: data }),
-    activate: (id) => request(`/settings/excel-templates/${id}/activate`, { method: 'POST' }),
-  },
-  backups: {
-    list: () => request('/settings/backups'),
-    create: (data = {}) => request('/settings/backups/create', { method: 'POST', body: data }),
-    restore: (id) => request(`/settings/backups/${id}/restore`, { method: 'POST' }),
   },
   health: () => request('/settings/health'),
 }

@@ -107,6 +107,7 @@ class Settings:
     default_llm_base_url: str
     default_llm_api_key: str
     default_llm_model: str
+    default_llm_provider_id: str
     default_ocr_base_url: str
     default_ocr_api_key: str
     default_ocr_model: str
@@ -181,6 +182,8 @@ settings = Settings(
     default_llm_base_url=os.getenv("DEFAULT_LLM_BASE_URL", os.getenv("INTERNAL_LLM_BASE_URL", "")).strip(),
     default_llm_api_key=os.getenv("DEFAULT_LLM_API_KEY", os.getenv("INTERNAL_LLM_API_KEY", "")).strip(),
     default_llm_model=os.getenv("DEFAULT_LLM_MODEL", os.getenv("OPENCODE_MODEL_ID", "big-pickle")).strip() or "big-pickle",
+    default_llm_provider_id=os.getenv("DEFAULT_LLM_PROVIDER_ID", os.getenv("OPENCODE_PROVIDER_ID", "opencode")).strip()
+    or "opencode",
     default_ocr_base_url=os.getenv("DEFAULT_OCR_BASE_URL", "").strip(),
     default_ocr_api_key=os.getenv("DEFAULT_OCR_API_KEY", "").strip(),
     default_ocr_model=os.getenv("DEFAULT_OCR_MODEL", "deepseek-ai/DeepSeek-OCR").strip() or "deepseek-ai/DeepSeek-OCR",

@@ -71,9 +71,11 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
             headers=self.headers,
             json={
                 "enabled": True,
+                "providerId": "mimo",
                 "baseUrl": "https://llm.example.com/v1/chat/completions",
                 "apiKey": "sk-test-secret",
                 "model": "demo-model",
+                "opencodeBaseUrl": "http://opencode:4096",
                 "timeoutMs": 12345,
                 "maxTokens": 99,
             },
@@ -81,7 +83,13 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
         self.assertEqual(update_llm.status_code, 200)
         payload_text = update_llm.text
         self.assertNotIn("sk-test-secret", payload_text)
-        self.assertIn("apiKeyMasked", update_llm.json()["config"])
+        llm_config = update_llm.json()["config"]
+        self.assertIn("apiKeyMasked", llm_config)
+        self.assertEqual(llm_config["providerId"], "mimo")
+        self.assertEqual(llm_config["model"], "demo-model")
+        self.assertEqual(llm_config["modelId"], "demo-model")
+        self.assertEqual(llm_config["opencodeBaseUrl"], "http://opencode:4096")
+        self.assertTrue(any(item["id"] == "demo-model" for item in llm_config["modelOptions"]))
 
         update_ocr = self.client.put(
             "/api/settings/ocr",

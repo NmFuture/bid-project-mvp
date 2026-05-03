@@ -1372,6 +1372,30 @@ bid_workspace
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
 
+### 2026-05-03 02:36 设置入口收敛、LLM opencode 语义与生成审计增强
+
+改动目标：
+
+- 系统设置只保留“默认 Word 模板、LLM 模型、OCR 模型、用户、审计、健康”。
+- 去掉 Excel/.dotx/备份旧入口，不再让默认模板上传 `.dotx`。
+- LLM 设置明确为 opencode 使用的 provider/model/baseUrl/apiKey 配置。
+- 审计日志补充生成标书过程中的开始、完成、失败记录。
+
+改动内容：
+
+- `Settings.jsx` 删除 Excel、dotx、备份三块 UI 和加载逻辑，新增审计入口，默认模板上传限制为 `.docx`。
+- `settingsAPI` 移除未使用的 Excel/dotx/backup 设置客户端入口。
+- `settings.py` 下线 `/api/settings/dotx-templates`、`/api/settings/excel-templates`、`/api/settings/backups*` 旧设置入口。
+- `system_settings.py` 增加 `providerId / modelId / opencodeBaseUrl / modelOptions`，健康检查会实际调用 LLM/OCR 模型测试。
+- `OpencodeClient` 读取系统设置中的 opencode provider/model/opencodeBaseUrl。
+- `generation.py` 在 S7 生成标书开始、完成、失败时写入审计日志，Redis worker 会携带触发用户快照。
+
+验证结果：
+
+- `python3 -m py_compile code/sewpg-bid-backend/app/services/system_settings.py code/sewpg-bid-backend/app/services/opencode_client.py code/sewpg-bid-backend/app/api/routes/generation.py code/sewpg-bid-backend/app/services/job_queue.py code/sewpg-bid-backend/app/workers/redis_worker.py code/sewpg-bid-backend/app/core/config.py` 通过。
+- `cd code/sewpg-bid-backend && .venv/bin/python -m pytest tests/test_security_settings_ocr_routes.py tests/test_fill_generation.py -q` 通过：12 passed。
+- `cd code/sewpg-bid-frontend && npm run build` 通过；仅保留 Vite chunk size warning。
+
 ### 2026-05-01 21:39 S1 解析进度与 3.1 字段增强
 
 变更摘要：
