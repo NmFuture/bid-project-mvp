@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { materialsAPI } from '../api'
 import MaterialsViewSwitch from '../components/shared/MaterialsViewSwitch'
@@ -127,8 +127,6 @@ const extOf = (name) => {
   return String(parts.pop() || '').toLowerCase()
 }
 
-const isMaterialRootPath = (path) => MATERIAL_ROOT_PATH_SET.has(String(path || '').replace(/^\/+|\/+$/g, ''))
-
 const materialTierFromRootPath = (path) => {
   const normalized = String(path || '').replace(/^\/+|\/+$/g, '')
   if (normalized === '通用素材') return 'standard'
@@ -181,15 +179,6 @@ const pathMatchesBidType = (path, bidType) => {
   const parts = normalized.split('/')
   return parts.includes(bidType)
 }
-
-const filterTreeByBidType = (nodes = [], bidType = '技术标') =>
-  (Array.isArray(nodes) ? nodes : []).flatMap((node) => {
-    const children = filterTreeByBidType(node.children || [], bidType)
-    if (isMaterialRootPath(node.path) || children.length || pathMatchesBidType(node.path, bidType)) {
-      return [{ ...node, children }]
-    }
-    return []
-  })
 
 const collectCollapsiblePaths = (nodes = []) => {
   const result = []
@@ -247,6 +236,24 @@ const pickDefaultFolder = (nodes = [], bidType = '技术标') => {
   if (scoped) return scoped
   return paths[0] || ''
 }
+
+const groupFilesByFolderPath = (items = []) => {
+  const byPath = new Map()
+  ;(Array.isArray(items) ? items : []).forEach((item) => {
+    const path = normalizePath(item?.folderPath)
+    if (!path) return
+    const existing = byPath.get(path) || []
+    existing.push(item)
+    byPath.set(path, existing)
+  })
+  byPath.forEach((folderItems) => {
+    folderItems.sort((left, right) => String(left?.name || '').localeCompare(String(right?.name || ''), 'zh-CN'))
+  })
+  return byPath
+}
+
+const getVisibleFileCount = (nodes = []) =>
+  (Array.isArray(nodes) ? nodes : []).reduce((sum, node) => sum + Number(node?.fileCount || 0), 0)
 
 const statusColor = (status) => {
   if (status === 'running') return 'bg-primary/10 text-primary'
@@ -362,12 +369,14 @@ const projectLabel = (option) => {
 function TreeNode({
   node,
   selectedPath,
+  selectedFileId,
   onSelect,
+  onFileSelect,
   level = 0,
   collapsedMap,
   onToggle,
   scale = 100,
-  renderSelectedContent,
+  filesByFolderPath,
 }) {
   const hasChildren = Array.isArray(node.children) && node.children.length > 0
   const directFileCount = Number(node.directFileCount || 0)
@@ -375,7 +384,9 @@ function TreeNode({
   const collapsed = canExpand ? Boolean(collapsedMap[node.path]) : false
   const selected = selectedPath === node.path
   const indent = (12 + level * 16) * (scale / 100)
-  const selectedContentInset = Math.min(68, 34 + level * 14) * (scale / 100)
+  const fileIndent = (34 + (level + 1) * 16) * (scale / 100)
+  const directFiles = filesByFolderPath?.get(normalizePath(node.path)) || []
+  const displayFileCount = directFiles.length || directFileCount
   return (
     <div>
       <button
@@ -409,8 +420,44 @@ function TreeNode({
           </span>
           <span className="truncate">{node.name}</span>
         </span>
-        <span className="text-xs text-outline shrink-0">{node.fileCount}</span>
+        <span className="text-xs text-outline shrink-0">
+          {displayFileCount ? `${displayFileCount}/${node.fileCount}` : node.fileCount}
+        </span>
       </button>
+      {!collapsed && directFiles.length > 0 && (
+        <div className="mt-0.5 space-y-0.5">
+          {directFiles.map((item) => {
+            const fileSelected = selectedFileId === item.id
+            const previewable = canPreviewCleaned(item)
+            const meta = cleanStatusMeta(item.cleanStatus)
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onFileSelect(item)}
+                title={previewable ? item.name || '' : cleanedPreviewBlockedMessage(item)}
+                style={{
+                  paddingLeft: `${fileIndent}px`,
+                  fontSize: `${Math.max(11, Math.min(14, 12.5 * (scale / 100)))}px`,
+                }}
+                className={`group flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left transition-colors ${
+                  fileSelected
+                    ? 'bg-secondary-container text-on-secondary-container'
+                    : 'text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface'
+                }`}
+              >
+                <span className={`material-symbols-outlined shrink-0 text-[17px] ${previewable ? 'text-secondary' : 'text-outline'}`}>
+                  {previewable ? 'description' : 'draft'}
+                </span>
+                <span className="min-w-0 flex-1 truncate">{item.name || '-'}</span>
+                <span className={`hidden shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex ${meta.className}`}>
+                  {meta.label}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
       {hasChildren && !collapsed && (
         <div className="mt-0.5">
           {node.children.map((child) => (
@@ -418,21 +465,18 @@ function TreeNode({
               key={child.id}
               node={child}
               selectedPath={selectedPath}
+              selectedFileId={selectedFileId}
               onSelect={onSelect}
+              onFileSelect={onFileSelect}
               level={level + 1}
               collapsedMap={collapsedMap}
               onToggle={onToggle}
               scale={scale}
-              renderSelectedContent={renderSelectedContent}
+              filesByFolderPath={filesByFolderPath}
             />
           ))}
         </div>
       )}
-      {selected && !collapsed && renderSelectedContent ? (
-        <div style={{ marginLeft: `${selectedContentInset}px` }} className="my-1">
-          {renderSelectedContent()}
-        </div>
-      ) : null}
     </div>
   )
 }
@@ -457,8 +501,6 @@ export default function MaterialDB({ showToast = () => {} }) {
     projectId: '',
     materialTier: '',
     cleanStatus: '',
-    page: 1,
-    pageSize: 20,
   })
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -494,9 +536,10 @@ export default function MaterialDB({ showToast = () => {} }) {
   const canCreateFolder = Boolean(selectedFolderPath) && canManageCurrentFolder
   const canDeleteFolder = Boolean(selectedFolderPath && selectedFolderPath.includes('/')) && canManageCurrentFolder
 
-  const fileItems = filesPayload?.items || []
+  const fileItems = useMemo(() => filesPayload?.items || [], [filesPayload?.items])
   const totalCount = Number(filesPayload?.total || 0)
-  const activeBidTypeMeta = bidTypeTabMeta(activeBidType)
+  const filesByFolderPath = useMemo(() => groupFilesByFolderPath(fileItems), [fileItems])
+  const visibleTreeFileCount = useMemo(() => getVisibleFileCount(tree), [tree])
   const previewTitle = previewSession?.fileName || previewItem?.cleanedFileName || previewItem?.name || '未选择清洗稿'
   const hasPreviewSession = Boolean(previewSession?.onlyoffice?.fileUrl) && !onlyofficePreviewError
   const previewModeLabel = previewLoading
@@ -521,7 +564,7 @@ export default function MaterialDB({ showToast = () => {} }) {
       const normalizedTree = ensureMaterialRootNodes(
         normalizeTreeNodes(treeResponse?.tree || treeResponse?.items || treeResponse?.nodes || [])
       )
-      const visibleTree = filterTreeByBidType(normalizedTree, activeBidType)
+      const visibleTree = normalizedTree
       setTree(visibleTree)
       const validPaths = new Set(flattenTreePaths(visibleTree))
       const effectiveFolder = validPaths.has(selectedFolderPath)
@@ -541,19 +584,20 @@ export default function MaterialDB({ showToast = () => {} }) {
         setSelectedFolderPath(effectiveFolder)
       }
 
+      const filePageSize = Math.max(1000, getVisibleFileCount(visibleTree) + 50)
       const payload = await materialsAPI.raw.files({
-        folderPath: effectiveFolder,
-        recursive: false,
+        folderPath: '',
+        recursive: true,
         keyword: filters.keyword.trim(),
         bidType: activeBidType,
         customerName: filters.customerName.trim(),
         projectId: filters.projectId.trim(),
         materialTier: filters.materialTier,
         cleanStatus: filters.cleanStatus,
-        page: filters.page,
-        pageSize: filters.pageSize,
+        page: 1,
+        pageSize: filePageSize,
       })
-      setFilesPayload(payload || { items: [], total: 0, page: 1, pageSize: filters.pageSize })
+      setFilesPayload(payload || { items: [], total: 0, page: 1, pageSize: filePageSize })
 
       if (filters.projectId.trim()) {
         try {
@@ -605,7 +649,6 @@ export default function MaterialDB({ showToast = () => {} }) {
       setUploadBidType(next)
       setSelectedFolderPath('')
       setParseStatus(null)
-      setFilters((prev) => ({ ...prev, page: 1 }))
     }, 0)
     return () => clearTimeout(timer)
   }, [lockedBidType])
@@ -837,88 +880,6 @@ export default function MaterialDB({ showToast = () => {} }) {
     }
   }
 
-  const handleRename = async (item) => {
-    if (!canManageCurrentFolder) {
-      showToast('请先选择一个目标目录。', 'error')
-      return
-    }
-    const nextName = window.prompt('请输入新文件名', item.name || '')
-    if (!nextName || nextName.trim() === item.name) return
-    try {
-      await materialsAPI.raw.updateFile(item.id, { name: nextName.trim() })
-      showToast('重命名成功')
-      await loadLibrary({ silent: true })
-    } catch (e) {
-      showToast(safeMessage(e, '重命名失败'), 'error')
-    }
-  }
-
-  const doMove = async (payload) => {
-    try {
-      await materialsAPI.raw.moveFile(payload)
-      showToast('文件移动成功')
-      await loadLibrary({ silent: true })
-      setConflictContext(null)
-    } catch (e) {
-      if (e?.status === 409 && e?.code === 'MATERIAL_CONFLICT') {
-        setConflictContext({ type: 'move', payload, detail: e?.payload?.conflict || null })
-      } else {
-        showToast(safeMessage(e, '文件移动失败'), 'error')
-      }
-    }
-  }
-
-  const handleMove = async (item) => {
-    if (!canManageCurrentFolder) {
-      showToast('请先选择一个目标目录。', 'error')
-      return
-    }
-    const targetPath = window.prompt('请输入目标目录路径', item.folderPath || selectedFolderPath)
-    if (!targetPath || targetPath.trim() === item.folderPath) return
-    await doMove({ fileId: item.id, targetPath: targetPath.trim() })
-  }
-
-  const handleDelete = async (item) => {
-    if (!canManageCurrentFolder) {
-      showToast('请先选择一个目标目录。', 'error')
-      return
-    }
-    if (!window.confirm(`确认删除文件：${item.name}？`)) return
-    try {
-      await materialsAPI.raw.deleteFile(item.id)
-      showToast('文件已删除')
-      await loadLibrary({ silent: true })
-    } catch (e) {
-      showToast(safeMessage(e, '删除失败'), 'error')
-    }
-  }
-
-  const handleDownload = async (item) => {
-    try {
-      const payload = await materialsAPI.raw.downloadFile(item.id)
-      const url = payload?.downloadUrl || payload?.fileUrl
-      if (url) {
-        window.open(url, '_blank', 'noopener,noreferrer')
-      }
-      showToast(payload?.message || '已触发下载')
-    } catch (e) {
-      showToast(safeMessage(e, '下载失败'), 'error')
-    }
-  }
-
-  const handleDownloadCleaned = async (item) => {
-    try {
-      const payload = await materialsAPI.raw.downloadCleanedFile(item.id)
-      const url = payload?.downloadUrl || item.cleanedDownloadUrl
-      if (url) {
-        window.open(url, '_blank', 'noopener,noreferrer')
-      }
-      showToast(payload?.message || '已触发 Word 下载')
-    } catch (e) {
-      showToast(safeMessage(e, '清洗后 Word 下载失败'), 'error')
-    }
-  }
-
   const handlePreviewCleaned = async (item) => {
     setPreviewItem(item)
     setPreviewSession(null)
@@ -940,16 +901,6 @@ export default function MaterialDB({ showToast = () => {} }) {
       setPreviewError(safeMessage(e, '清洗稿预览加载失败'))
     } finally {
       setPreviewLoading(false)
-    }
-  }
-
-  const handleRetryClean = async (item) => {
-    try {
-      const payload = await materialsAPI.raw.cleanFile(item.id)
-      showToast(payload?.message || '已重新触发清洗')
-      await loadLibrary({ silent: true })
-    } catch (e) {
-      showToast(safeMessage(e, '重新清洗失败'), 'error')
     }
   }
 
@@ -977,17 +928,11 @@ export default function MaterialDB({ showToast = () => {} }) {
     setActiveBidType(next)
     setSelectedFolderPath('')
     setParseStatus(null)
-    setFilters((prev) => ({ ...prev, page: 1 }))
   }
 
   const resolveConflict = async (action) => {
     if (conflictContext.type === 'upload') {
       await performUpload(action)
-      return
-    }
-    if (!conflictContext?.payload) return
-    if (conflictContext.type === 'move') {
-      await doMove({ ...conflictContext.payload, onConflict: action })
     }
   }
 
@@ -995,154 +940,8 @@ export default function MaterialDB({ showToast = () => {} }) {
     setFilters((prev) => ({
       ...prev,
       [key]: value,
-      page: key === 'page' ? value : 1,
     }))
   }
-
-  const directFileItems = fileItems.filter((item) => normalizePath(item.folderPath) === normalizePath(selectedFolderPath))
-  const directFileTotal = directFileItems.length === fileItems.length ? totalCount : directFileItems.length
-  const noDirectData = !directFileItems.length
-  const renderSelectedFolderFiles = () => (
-    <div className="space-y-1 border-l border-surface-container-high pl-2">
-      {noDirectData ? (
-        null
-      ) : (
-        <>
-          <div className="max-h-[520px] overflow-y-auto space-y-1 pr-1">
-            {directFileItems.map((item) => {
-              const selected = previewItem?.id === item.id
-              const previewable = canPreviewCleaned(item)
-              const meta = cleanStatusMeta(item.cleanStatus)
-              return (
-                <div key={item.id} className={`rounded-md px-2 py-2 transition-colors ${selected ? 'bg-primary/10' : 'hover:bg-surface-container-low'}`}>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handlePreviewCleaned(item)}
-                      disabled={!previewable}
-                      title={previewable ? '预览清洗稿' : cleanedPreviewBlockedMessage(item)}
-                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-primary transition-colors hover:bg-primary hover:text-on-primary disabled:cursor-not-allowed disabled:text-outline disabled:hover:bg-transparent"
-                    >
-                      <span className="material-symbols-outlined text-[18px]">
-                        {previewable ? 'description' : 'draft'}
-                      </span>
-                    </button>
-
-                    <div className="min-w-0 flex-1">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handlePreviewCleaned(item)}
-                          disabled={!previewable}
-                          className="min-w-0 flex-1 truncate text-left text-sm font-semibold text-on-surface hover:text-primary disabled:cursor-not-allowed disabled:hover:text-on-surface"
-                          title={item.name || ''}
-                        >
-                          {item.name || '-'}
-                        </button>
-                      </div>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-outline">
-                        <span>{item.ext || item.type || '-'}</span>
-                        <span>{item.sizeLabel || toSizeLabel(item.size)}</span>
-                        <span>v{item.version || 1}</span>
-                        {item.materialTierLabel || item.materialTier ? (
-                          <span>{item.materialTierLabel || materialTierMeta(item.materialTier).label}</span>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${meta.className}`}>
-                      {meta.label}
-                    </span>
-
-                    <div className="flex shrink-0 items-center gap-0.5">
-                      <button
-                        onClick={() => handlePreviewCleaned(item)}
-                        disabled={!previewable}
-                        title={previewable ? '预览清洗稿' : cleanedPreviewBlockedMessage(item)}
-                        className="flex h-7 w-7 items-center justify-center rounded text-primary hover:bg-surface-container-high disabled:cursor-not-allowed disabled:text-outline"
-                      >
-                        <span className="material-symbols-outlined text-[17px]">visibility</span>
-                      </button>
-                      <button
-                        onClick={() => handleDownload(item)}
-                        title="下载原始文件"
-                        className="flex h-7 w-7 items-center justify-center rounded text-on-surface-variant hover:bg-surface-container-high hover:text-primary"
-                      >
-                        <span className="material-symbols-outlined text-[17px]">file_download</span>
-                      </button>
-                      <button
-                        onClick={() => handleDownloadCleaned(item)}
-                        disabled={!item.hasCleanedWord}
-                        title="下载清洗后 Word"
-                        className="flex h-7 w-7 items-center justify-center rounded text-secondary hover:bg-secondary-container disabled:cursor-not-allowed disabled:text-outline disabled:hover:bg-transparent"
-                      >
-                        <span className="material-symbols-outlined text-[17px]">task</span>
-                      </button>
-                      {item.cleanStatus === 'failed' && (
-                        <button
-                          onClick={() => handleRetryClean(item)}
-                          title="重试清洗"
-                          className="flex h-7 w-7 items-center justify-center rounded text-on-surface-variant hover:bg-surface-container-high hover:text-primary"
-                        >
-                          <span className="material-symbols-outlined text-[17px]">refresh</span>
-                        </button>
-                      )}
-                      <button
-                        onClick={() => handleRename(item)}
-                        disabled={!canManageCurrentFolder}
-                        title="重命名"
-                        className="flex h-7 w-7 items-center justify-center rounded text-on-surface-variant hover:bg-surface-container-high hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <span className="material-symbols-outlined text-[17px]">edit</span>
-                      </button>
-                      <button
-                        onClick={() => handleMove(item)}
-                        disabled={!canManageCurrentFolder}
-                        title="移动"
-                        className="flex h-7 w-7 items-center justify-center rounded text-on-surface-variant hover:bg-surface-container-high hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <span className="material-symbols-outlined text-[17px]">drive_file_move</span>
-                      </button>
-                      <button
-                        onClick={() => handleDelete(item)}
-                        disabled={!canManageCurrentFolder}
-                        title="删除"
-                        className="flex h-7 w-7 items-center justify-center rounded text-error hover:bg-error-container/40 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <span className="material-symbols-outlined text-[17px]">delete</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-          <div className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs text-outline">
-            <span>本级 {directFileTotal} 个文件</span>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => updateFilter('page', Math.max(1, filters.page - 1))}
-                disabled={filters.page <= 1}
-                title="上一页"
-                className="flex h-7 w-7 items-center justify-center rounded border border-surface-container-high disabled:opacity-40"
-              >
-                <span className="material-symbols-outlined text-[17px]">chevron_left</span>
-              </button>
-              <span className="px-1">第 {filters.page} 页</span>
-              <button
-                onClick={() => updateFilter('page', filters.page + 1)}
-                disabled={filters.page * filters.pageSize >= directFileTotal}
-                title="下一页"
-                className="flex h-7 w-7 items-center justify-center rounded border border-surface-container-high disabled:opacity-40"
-              >
-                <span className="material-symbols-outlined text-[17px]">chevron_right</span>
-              </button>
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  )
 
   if (loading) {
     return (
@@ -1208,7 +1007,7 @@ export default function MaterialDB({ showToast = () => {} }) {
               当前目录 {selectedFolderPath || '-'}
             </span>
             <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
-              文件 {totalCount}
+              文件 {fileItems.length}/{visibleTreeFileCount || totalCount}
             </span>
             <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
               权限 可编辑
@@ -1275,7 +1074,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                 <p className="mt-1 truncate text-xs text-outline">{selectedFolderPath || '未选择目录'}</p>
               </div>
               <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant">
-                本级 {directFileTotal}
+                已加载 {fileItems.length}
               </span>
             </div>
 
@@ -1364,15 +1163,6 @@ export default function MaterialDB({ showToast = () => {} }) {
                         <option key={option.value} value={option.value}>{option.label}</option>
                       ))}
                     </select>
-                    <select
-                      value={filters.pageSize}
-                      onChange={(e) => updateFilter('pageSize', Number(e.target.value))}
-                      className="h-9 px-3 rounded-md bg-surface-container-highest border-none text-xs"
-                    >
-                      {[10, 20, 50].map((size) => (
-                        <option key={size} value={size}>每页 {size} 条</option>
-                      ))}
-                    </select>
                   </div>
                 </details>
               </div>
@@ -1384,11 +1174,16 @@ export default function MaterialDB({ showToast = () => {} }) {
                       key={node.id}
                       node={node}
                       selectedPath={selectedFolderPath}
+                      selectedFileId={previewItem?.id}
                       onSelect={(path) => setSelectedFolderPath(path)}
+                      onFileSelect={(item) => {
+                        setSelectedFolderPath(item.folderPath || selectedFolderPath)
+                        handlePreviewCleaned(item)
+                      }}
                       collapsedMap={collapsedMap}
                       onToggle={toggleNode}
                       scale={treeScale}
-                      renderSelectedContent={renderSelectedFolderFiles}
+                      filesByFolderPath={filesByFolderPath}
                     />
                   ))}
                 </div>
@@ -1468,7 +1263,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                     value={uploadPath}
                     onChange={(e) => setUploadPath(e.target.value)}
                     className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                    placeholder={`例如：${activeBidTypeMeta.rootPath}`}
+                    placeholder="例如：通用素材/技术标-专题方案要求"
                   />
                 </label>
               ) : (

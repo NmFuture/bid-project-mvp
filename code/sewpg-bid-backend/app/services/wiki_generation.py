@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import tempfile
 import zipfile
 from collections import Counter
 from io import BytesIO
@@ -13,6 +14,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.models import async_session
 from app.models.materials import RawFile
 from app.services.identity import canonical_customer, classify_material_path, material_identity
@@ -586,30 +588,29 @@ def _build_wiki_generation_prompt(reference: dict[str, Any], material_inventory:
 Use the {skill_name} skill.
 
 目标：
-基于当前 `{bid_type}` 原始素材清单和参考 wiki 摘要，生成一份“{bid_type} Wiki = {bid_type}装配规则库”的初始化蓝图。
+基于当前 `{bid_type}` 原始素材清单和参考 wiki 摘要，生成一份“{bid_type} Wiki = AI 看懂素材库的最小索引库”的初始化蓝图。
 
 业务要求：
 1. 本次只生成 `{bid_type}` Wiki；不要生成 `{opposite_bid_type}` 体系，也不要输出跨标类混合库。
 2. 必须优先使用 materialInventory.items 中的真实文件名和路径生成卡片节点。
-3. `{bid_type}` Wiki 要体现“素材卡片装配系统”，不是知识百科，也不是文件夹浏览器。
+3. `{bid_type}` Wiki 要服务三个后续任务：缺口识别、空表/待填写项选择来源并填写、标书正文拼接。
 4. `{bid_type}` 关注范围：{bid_focus}。
-5. 目录生成 skill 和正文拼装 skill 共读同一 `{bid_type}` Wiki，但节点内容中要写清 usage：
-   - directory：供目录生成读取，重点是 skeleton、章节类型、评分点映射和目录规则。
-   - assembly：供投标文件正文拼装读取，重点是卡片、原始 docx 路径、merge 信息和替换字段。
-   - both：两者都可读。
-   同时必须写清 AI 检索身份：
+5. Wiki 不是越复杂越好。只保留完成目标所需的最小结构：
+   - 01-素材总表
+   - 02-章节映射表
+   - 03-素材卡片
+   - 04-待填写清单
+   - 05-使用规则
+6. `03-素材卡片` 是按需加载入口。每个真实素材应形成一张卡或在卡中明确引用，不要把原文全文塞进 Wiki。
+7. 如果某个素材只适合拼接其中一段或用于填写某张表，必须在卡片和章节映射里标明“部分使用/填表来源”，不要默认为整篇拼接。
+8. `04-待填写清单` 只标记需要每个项目现场填写、AI 填写或用户确认的内容，不在 Wiki 里代填。
+9. 每张素材卡片必须写清 AI 检索身份：
    - identity_scope=general/customer/project
    - customer_id/customer_name/customer_aliases
    - project_id/project_code
    未命中项目身份的客户素材、项目素材，后续 skill 不得读取。
-6. 结果要适合落入当前系统的 wiki tree，每个节点都可以有 markdown 内容。
-7. 内容要尽量继承参考 wiki 的组织方式，尤其是：
-   - index = 卡片目录
-   - rules = 装配规则
-   - synonyms = 检索映射
-   - skeleton_section = 章节归属
-8. 不要生成过深的细枝末节，但“通用卡片/定制卡片”下必须能看到由真实素材文件推导出的卡片。
-9. 商务标没有真实素材时，只生成待补料框架和规则提醒，不要虚构商务卡片。
+10. 结果要适合落入当前系统的 wiki tree，每个节点都可以有 markdown 内容。
+11. 商务标没有真实素材时，只生成待补料框架和规则提醒，不要虚构商务卡片。
 
 输出要求：
 1. 只输出 JSON，不要解释，不要 Markdown 代码块。
@@ -627,23 +628,120 @@ Use the {skill_name} skill.
     }}
   ]
 }}
-3. 顶层至少包含这些分组，标题要保持稳定：
-   - 00-Wiki使用说明
-   - 01-{bid_type}素材速查索引
-   - 02-{bid_type}目录骨架 skeleton
-   - 03-{bid_type}装配规则 rules
-   - 04-{bid_type}同义词 synonyms
-   - 05-{bid_type}通用卡片
-   - 06-{bid_type}定制卡片
-   - 07-{bid_type}质量日志
-   - 08-共用规则
-4. “通用卡片/定制卡片”下按素材分类分组输出，每个真实 docx 素材至少形成一个卡片条目或在索引中出现。
-5. “共用规则”要明确字段替换、客户/业主同义词、项目参数映射、override / append / reference 规则。
-6. 每张素材卡片的 Merge 信息必须保留 identity_scope、customer_id、customer_name、project_id、project_code，供 AI 做素材过滤。
-7. 如果 materialInventory.items 为空，只生成 `{bid_type}` 的待补料框架、目录骨架和质量日志提醒，不要虚构素材卡片。
+3. nodes 第一层必须且只需要包含这些工作节点，标题要完全一致：
+   - 01-素材总表
+   - 02-章节映射表
+   - 03-素材卡片
+   - 04-待填写清单
+   - 05-使用规则
+4. `01-素材总表`：列真实文件、路径、素材层级、身份、清洗状态、推荐用途。
+5. `02-章节映射表`：列目录/章节需求到素材卡片的候选关系，并标明整篇拼接、部分摘取、填表来源、附件引用。
+6. `03-素材卡片`：按“通用素材/客户素材/项目素材”分组，再按主题分组；每张卡必须保留 path、material_id、cleaned_file_name、skeleton_section、attach_mode、identity_scope、customer_id、customer_name、project_id、project_code。
+7. `04-待填写清单`：列需要缺口处理页面确认/填写的内容，如项目参数、空表、保证值、客户定制字段、只可从素材中摘取的段落。
+8. `05-使用规则`：写清后续 Agent 的读取顺序、身份过滤、override/append/reference/exclude 规则和禁止编造事实。
+9. 如果 materialInventory.items 为空，只生成 `{bid_type}` 的待补料框架和使用规则，不要虚构素材卡片。
 
 输入摘要：
 {payload}
+""".strip()
+
+
+def _compact_material_for_manifest(material: dict[str, Any]) -> dict[str, Any]:
+    keys = [
+        "id",
+        "name",
+        "title",
+        "folderPath",
+        "path",
+        "ext",
+        "sourceExt",
+        "hasCleanedWord",
+        "cleanedFileName",
+        "bidType",
+        "scope",
+        "materialTier",
+        "identityScope",
+        "materialScope",
+        "identityDisplay",
+        "customerName",
+        "customerId",
+        "customerCanonicalName",
+        "customerAliases",
+        "projectId",
+        "projectCode",
+        "projectName",
+        "group",
+        "headings",
+        "paragraphs",
+        "tables",
+        "tableCount",
+        "parseError",
+        "headingCount",
+        "materialLevelRange",
+        "skeletonSection",
+        "keywords",
+    ]
+    compact = {key: material.get(key) for key in keys if key in material}
+    compact["headings"] = list(material.get("headings") or [])[:12]
+    compact["paragraphs"] = list(material.get("paragraphs") or [])[:4]
+    compact["tables"] = list(material.get("tables") or [])[:2]
+    return compact
+
+
+def _build_wiki_manifest(reference: dict[str, Any], material_inventory: dict[str, Any], bid_type: str) -> dict[str, Any]:
+    compact_inventory = dict(material_inventory)
+    compact_inventory["items"] = [
+        _compact_material_for_manifest(item)
+        for item in (material_inventory.get("items") or [])
+        if isinstance(item, dict)
+    ]
+    return {
+        "referenceWiki": {
+            "hasReference": bool(reference.get("hasReference")),
+            "commonCardGroups": reference.get("commonCardGroups") or [],
+            "customCardGroups": reference.get("customCardGroups") or [],
+        },
+        "materialInventory": compact_inventory,
+        "targetBidType": bid_type,
+        "targetSkill": _wiki_skill_name(bid_type),
+        "rootTitle": _wiki_root_title(bid_type),
+        "workDir": "",
+        "outputFile": "",
+    }
+
+
+def _write_wiki_manifest(reference: dict[str, Any], material_inventory: dict[str, Any], bid_type: str) -> Path:
+    shared_root = settings.parsed_dir / "_wiki_build"
+    shared_root.mkdir(parents=True, exist_ok=True)
+    target_dir = Path(tempfile.mkdtemp(prefix="bid-wiki-build-", dir=shared_root))
+    manifest_path = target_dir / "wiki_build_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                **_build_wiki_manifest(reference, material_inventory, bid_type),
+                "workDir": str(target_dir),
+                "outputFile": str(target_dir / "wiki_blueprint.json"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
+def _build_wiki_tool_prompt(skill_name: str, manifest_path: Path, bid_type: str) -> str:
+    return f"""
+Use the {skill_name} skill.
+
+请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径：
+
+```bash
+wikibuild {manifest_path}
+```
+
+命令会把完整 `{bid_type}` Wiki 写入 outputFile，并在 stdout 打印小型 JSON 摘要。不要读取、cat、head、tail、grep outputFile；完整文件由后端读取并导入。
+执行完成后，只返回该命令 stdout 中的 JSON，不要解释。
 """.strip()
 
 
@@ -1434,6 +1532,21 @@ def _normalize_blueprint(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _load_wiki_blueprint_result(result: dict[str, Any]) -> dict[str, Any]:
+    output_file = Path(str(result.get("outputFile") or "")).expanduser()
+    if not output_file.exists() or not output_file.is_file():
+        return result
+    try:
+        payload = json.loads(output_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Wiki Skill 生成的 outputFile 不是有效 JSON：{output_file}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("nodes"), list):
+        raise RuntimeError(f"Wiki Skill 生成的 outputFile 缺少 nodes：{output_file}")
+    if isinstance(result.get("opencodeOutput"), dict):
+        payload["opencodeOutput"] = result["opencodeOutput"]
+    return payload
+
+
 def _failed_opencode_output(exc: Exception) -> dict[str, Any]:
     return {
         "status": "failed",
@@ -1458,7 +1571,8 @@ async def generate_platform_wiki(
     reference = _summarize_reference_wiki(reference_root)
     full_inventory = await _summarize_material_inventory()
     material_inventory = _filter_inventory_for_bid_type(full_inventory, normalized_bid_type)
-    prompt = _build_wiki_generation_prompt(reference, material_inventory, normalized_bid_type)
+    manifest_path = _write_wiki_manifest(reference, material_inventory, normalized_bid_type)
+    prompt = _build_wiki_tool_prompt(skill_name, manifest_path, normalized_bid_type)
     generator = "opencode"
     fallback_used = False
 
@@ -1467,7 +1581,7 @@ async def generate_platform_wiki(
             OpencodeClient().generate_wiki_blueprint_with_trace,
             prompt,
         )
-        blueprint = _normalize_blueprint(opencode_result)
+        blueprint = _normalize_blueprint(_load_wiki_blueprint_result(opencode_result))
         blueprint["rootTitle"] = _wiki_root_title(normalized_bid_type)
         opencode_output: dict[str, Any] = opencode_result.get("opencodeOutput") or {}
     except Exception as exc:

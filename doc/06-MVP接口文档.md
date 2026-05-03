@@ -418,6 +418,32 @@ S0 解析 -> S1 模板与目录 -> S2 审核目录 -> S3 缺口处理 -> S4 生�
 
 > **返回结构与现有前端预期一致，保证页面不报错。**
 
+### 12.1 素材 Wiki 自动生成当前口径
+
+`POST /api/materials/wiki/bootstrap` 当前用于生成或覆盖指定标类 Wiki：
+
+```json
+{ "mode": "replace", "bidType": "技术标" }
+```
+
+后端内部会调用 OpenCode Skill：
+
+```bash
+wikibuild <wiki_build_manifest.json>
+```
+
+该命令只在 stdout 返回小摘要，完整 Wiki 蓝图写入共享 `outputFile`。FastAPI 再读取 `outputFile` 并导入 `wiki_nodes/wiki_docs`。这样可以避免大 JSON 被模型摘要或截断。
+
+自动生成的 Wiki 一级结构固定为：
+
+- `01-素材总表`
+- `02-章节映射表`
+- `03-素材卡片`
+- `04-待填写清单`
+- `05-使用规则`
+
+其中 `03-素材卡片` 按 `通用素材 / 客户素材 / 项目素材` 分层，供 `S3 缺口处理`、空表填写来源选择和 `S4 生成标书` 按需加载。
+
 ## 13. 一句话总结
 
 > **当前正式 API 文档服务于 S0-S6 MVP 落地；接口名可以兼容历史，用户阶段、返回标签和验收口径必须统一到 S0-S6。**

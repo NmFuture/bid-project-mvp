@@ -211,6 +211,8 @@ OPENCODE_AUTH_HOST_DIR=./opencode-auth
 - 审核模块若选择“不参与该项目”，项目会在流程中终止，并从项目总览移除
 - `S1` 目录生成优先经 futurecode/opencode 执行 `s2toc` 命令，本地 Skill 脚本作为调用失败时的降级路径
 - `S1` 每次目录生成先写入 `s2_toc_workdir.new/`；成功后发布为 `s2_toc_workdir/`，旧成功目录归档到 `s2_toc_workdir.runs/`
+- 素材 Wiki 重建经 futurecode/opencode 执行 `wikibuild <manifest>`；完整 Wiki 蓝图写入共享 `parsed/_wiki_build/*/wiki_blueprint.json`，stdout 只返回小摘要，后端再读取完整文件导入
+- 当前 Wiki 最小结构固定为 `01-素材总表 / 02-章节映射表 / 03-素材卡片 / 04-待填写清单 / 05-使用规则`；素材卡片按通用素材、客户素材、项目素材分层，供 S3 缺口处理、空表填写来源选择和 S4 拼装按需加载
 - `S4` 生成标书使用 `bid-tech-assembler`，读取目录 JSON、Wiki 卡片、素材库清洗后 Word、缺口处理计划和补料/AI 填写产物
 
 ## OnlyOffice 地址说明
@@ -236,6 +238,7 @@ OPENCODE_AUTH_HOST_DIR=./opencode-auth
 - 覆盖诊断当前校验的是正文拼装计划与素材库的覆盖关系，不是完整评分点覆盖审计
 - `S6` 当前主要支持最终 Word 下载；导出前格式刷新、PDF 导出和一致性检查仍在后续待办中
 - 设置侧系统默认模板是项目未上传模板时的生成输入，不会混入项目上传模板列表
+- 原始素材库页面采用三层素材入口：通用素材、客户素材、项目素材；左侧支持 Finder 列表式展开到文件，点击已清洗文件后在右侧 OnlyOffice 区域预览清洗稿
 
 ## GitHub 协作提交
 

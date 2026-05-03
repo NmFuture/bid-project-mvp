@@ -1,39 +1,33 @@
 ---
 name: bid-business-wiki-material-builder
-description: 根据商务标素材清单生成商务标 Wiki 初始化 JSON，面向目录生成和投标正文拼装共读的商务标函件、资质、业绩、报价、合同响应和合规证明素材库。
+description: Use when rebuilding the business-bid material Wiki from raw material inventory for gap handling, table filling, or bid assembly
 allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
 ---
 
-# 商务标 Wiki 素材库制作
+# Business Bid Material Wiki Builder
 
-你负责把商务标原始素材清单整理成可导入系统的 Wiki JSON。这个 Wiki 是“商务标装配规则库”，用于后续目录生成、商务响应正文拼装和附件缺口检查。
+## Overview
 
-## 使用边界
+Build the smallest useful business-bid Wiki that lets later agents understand which business materials exist, where they can be used, which forms or facts must be filled per project, and which source document proves each claim. Treat the Wiki as an AI-facing retrieval and compliance index, not as a prose knowledge base.
 
-- 只处理商务标素材，以及明确标为通用且可用于商务标的素材。
-- 不生成技术标体系，不把风资源、机型、子系统、技术标准等技术材料混入商务标 rules / skeleton。
-- 商务标强调事实准确和附件证明，不改写资质、业绩、报价、授权、保证金、合同条款等事实。
-- Wiki 是给 AI 检索和装配看的规则库，不是人工文件夹。每张卡片必须尽量写清 AI 身份字段，避免客户/项目商务素材串用。
-- 没有真实素材时，只生成待补料框架、字段规则和质量日志提醒，不虚构商务卡片。
+## When to Use
 
-## 必须输出
+Use for business-bid Wiki creation or rebuilds after raw materials change. Use when downstream tasks include gap handling, filling generated blank forms, selecting qualification/authorization/quotation sources, or assembling the business proposal.
 
-只输出 JSON，不要解释，不要 Markdown 代码块。根节点标题必须是：
+Do not use for technical-bid-only materials, technical方案 writing, or inventing missing commercial facts.
 
-```json
-"rootTitle": "商务标Wiki（自动生成）"
-```
+## Output Contract
 
-JSON 结构固定：
+Output JSON only. Do not wrap it in Markdown fences. Use this schema:
 
 ```json
 {
-  "summary": "一句简短总结",
+  "summary": "short result summary",
   "rootTitle": "商务标Wiki（自动生成）",
   "nodes": [
     {
-      "title": "节点标题",
-      "markdownContent": "# 标题\n\n正文",
+      "title": "node title",
+      "markdownContent": "# node title\n\ncontent",
       "tags": ["商务标"],
       "applicableTypes": ["商务标"],
       "children": []
@@ -42,56 +36,71 @@ JSON 结构固定：
 }
 ```
 
-## 顶层结构
+The root must contain exactly these five first-level work nodes, in this order:
 
-顶层标题保持稳定：
+1. `01-素材总表`
+2. `02-章节映射表`
+3. `03-素材卡片`
+4. `04-待填写清单`
+5. `05-使用规则`
 
-- 00-Wiki使用说明
-- 01-商务标素材速查索引
-- 02-商务标目录骨架 skeleton
-- 03-商务标装配规则 rules
-- 04-商务标同义词 synonyms
-- 05-商务标通用卡片
-- 06-商务标定制卡片
-- 07-商务标质量日志
-- 08-共用规则
+Extra nested children are allowed only under these five nodes. Avoid old large structures such as separate skeleton/rules/synonyms/card/log root folders.
 
-## 商务标关注点
+## Core Pattern
 
-优先围绕以下材料建索引和卡片：
+Generate from `materialInventory.items`. The backend has already read each available Word file enough to provide headings, paragraph excerpts, table previews, cleaned Word status, identity fields, and source paths.
 
-- 投标函、开标一览表、投标保证金
-- 法定代表人身份证明、授权委托书
-- 营业执照、资质证书、体系认证、信用证明
-- 财务报表、审计报告、银行资信
-- 业绩证明、合同证明、用户证明
-- 商务偏差表、合同条款响应、付款和质保响应
-- 报价表、分项报价、供货清单
-- 商务承诺函、廉洁承诺、服务承诺
+For every real business-bid material:
 
-## 节点内容规则
+- Include it once in `01-素材总表`.
+- Create or reference one card under `03-素材卡片`.
+- Preserve the source path and cleaned Word file name.
+- Preserve AI identity fields so later agents can filter general, customer, and project materials correctly.
+- Assign a recommended business chapter or mark `未明确`.
 
-- `01-商务标素材速查索引`：列出真实文件名、原始路径、推荐章节、表单/附件类型和用途。
-- `02-商务标目录骨架 skeleton`：按商务标常见章节归位，保留 `skeleton_section`、merge 层级、attach_mode。
-- `03-商务标装配规则 rules`：重点写字段替换边界、附件引用、证明材料复用、不得编造事实。
-- `04-商务标同义词 synonyms`：维护投标函/授权/资质/业绩/报价/合同条款等关键词映射。
-- `05/06` 卡片：按商务分类分组，每个真实 docx 至少出现在索引或卡片中。
-- `07-商务标质量日志`：列出缺证书、缺授权、缺报价、无 Heading、未归位、重名等风险。
-- `08-共用规则`：只写字段替换、客户/业主同义词、项目参数映射和通用 merge 关系。
+If there are no business-bid materials, output the five nodes as a待补料 framework and explicitly say no real business cards were found.
 
-## AI 身份字段
+## Node Responsibilities
 
-每个素材卡片的 `markdownContent` 中必须包含 `## AI 检索身份` 和 `## Merge 信息`，字段名保持英文小写，便于脚本解析：
+### 01-素材总表
 
-- `identity_scope`: `general` / `customer` / `project`
-- `material_scope`: 同上，表示素材归属层级
-- `bid_type`: 商务标
-- `customer_id`: 客户规范 ID，例如 `CUST-HUANENG`
-- `customer_name`: 客户标准名，例如 `华能集团`
-- `customer_aliases`: 客户同义词，用 `、` 分隔
-- `project_id`: 系统项目 ID
-- `project_code`: 业务项目编号
+Create a compact table for scanning. Include file name, source tier, identity, original path, cleaned Word status, detected headings/tables, business material type, recommended chapter, and usage hint.
 
-规则：通用素材可被所有商务标项目读取；客户素材只在客户 ID 或同义词命中时读取；项目素材只在项目 ID 或业务项目编号命中时读取。
+### 02-章节映射表
 
-商务标输出应偏保守：能引用则引用，能留待补料则留待补料，不用模型补事实。
+Map business sections to candidate material cards. Cover投标函、授权委托、资质证书、业绩证明、保证金、商务偏差、合同条款响应、报价与分项表 when materials exist. Include confidence and reason.
+
+### 03-素材卡片
+
+Create demand-load cards grouped by `通用素材`, `客户素材`, and `项目素材`, then by business topic. A card is an index record, not the full document. Each card must include:
+
+- source path and material id
+- content summary from headings/excerpts/tables
+- suitable sections and partial-use notes
+- AI identity fields: `identity_scope`, `material_scope`, `bid_type`, `customer_id`, `customer_name`, `customer_aliases`, `project_id`, `project_code`
+- merge fields: `path`, `cleaned_file_name`, `skeleton_section`, `attach_mode`, `shift`
+
+### 04-待填写清单
+
+List project-specific blanks that must be resolved during gap handling before assembly. Include报价、保证金、投标有效期、授权代表、项目名称、客户名称、合同条款响应值 and generated blank forms.
+
+Do not fill values in this Wiki. Mark the expected source document or source card that the S3 page should ask the user or agent to choose.
+
+### 05-使用规则
+
+State how downstream agents should use the Wiki:
+
+- Load `01-素材总表` first.
+- Load matching rows in `02-章节映射表`.
+- Load only necessary cards from `03-素材卡片`.
+- Resolve all `04-待填写清单` items before assembly.
+- Prefer project material over customer material over general material when identity matches.
+- Keep commercial facts conservative; cite or leave待填写 rather than invent.
+- Never use customer or project material when identity fields do not match.
+
+## Quality Rules
+
+- Do not invent报价、金额、证书编号、授权人、日期、业绩事实, or contract commitments.
+- Keep the Wiki minimal; add a node only when it helps retrieval, gap handling, filling, or assembly.
+- If a file has no headings, still create a card and mark the heading risk.
+- If a file is too large or could not be parsed, create a card from metadata and mark `needs_review`.

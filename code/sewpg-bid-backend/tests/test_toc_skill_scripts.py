@@ -30,6 +30,13 @@ OUTLINE_SCRIPT_DIR = (
     / "bid-tech-outline-generator"
     / "scripts"
 )
+WIKI_SCRIPT_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "opencode"
+    / "skill"
+    / "bid-tech-wiki-material-builder"
+    / "scripts"
+)
 
 
 def load_assembler_script(name: str):
@@ -51,11 +58,64 @@ def load_outline_script(name: str):
     return module
 
 
+def load_wiki_script(name: str):
+    module_name = f"wiki_{name}"
+    spec = importlib.util.spec_from_file_location(module_name, WIKI_SCRIPT_DIR / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def json_load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 class TocSkillScriptTests(unittest.TestCase):
+    def test_bid_wiki_builder_writes_full_blueprint_and_returns_small_summary(self) -> None:
+        wiki_runner = load_wiki_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "wiki_manifest.json"
+            output_file = root / "wiki_blueprint.json"
+            manifest = {
+                "targetBidType": "技术标",
+                "rootTitle": "技术标Wiki（自动生成）",
+                "workDir": str(root),
+                "outputFile": str(output_file),
+                "materialInventory": {
+                    "items": [
+                        {
+                            "id": "M1",
+                            "title": "总体方案",
+                            "name": "总体方案.docx",
+                            "path": "通用素材/总体方案.docx",
+                            "identityScope": "general",
+                            "materialTier": "general",
+                            "group": "总体方案",
+                            "headings": [{"title": "总体方案"}],
+                        }
+                    ]
+                },
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            response = wiki_runner.run_manifest(manifest, manifest_path)
+
+            self.assertEqual(response["outputFile"], str(output_file))
+            self.assertIn("nodeTitles", response)
+            self.assertLess(len(json.dumps(response, ensure_ascii=False)), 1000)
+            blueprint = json_load(output_file)
+            self.assertEqual(blueprint["rootTitle"], "技术标Wiki（自动生成）")
+            self.assertEqual(
+                [node["title"] for node in blueprint["nodes"]],
+                ["01-素材总表", "02-章节映射表", "03-素材卡片", "04-待填写清单", "05-使用规则"],
+            )
+            cards_node = next(node for node in blueprint["nodes"] if node["title"] == "03-素材卡片")
+            self.assertEqual(cards_node["children"][0]["children"][0]["children"][0]["title"], "总体方案")
+
     def test_bid_outline_generator_preserves_appendix_search_text_and_appends_last(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 

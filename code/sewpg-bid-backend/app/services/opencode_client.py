@@ -244,6 +244,7 @@ class OpencodeClient:
             session_id,
             prompt_text,
             stream_callback=stream_callback,
+            early_tool_command="wikibuild",
         )
         parsed = self._extract_wiki_blueprint_json(response)
         return {
@@ -312,7 +313,10 @@ class OpencodeClient:
             empty_message="futurecode 未返回 Wiki 蓝图内容。",
             repair_kind="wiki",
         )
-        if not isinstance(parsed, dict) or not isinstance(parsed.get("nodes"), list):
+        if not isinstance(parsed, dict) or (
+            not isinstance(parsed.get("nodes"), list)
+            and not isinstance(parsed.get("outputFile"), str)
+        ):
             raise RuntimeError("futurecode 返回的 Wiki 蓝图 JSON 结构不正确。")
         return parsed
 
@@ -459,6 +463,7 @@ class OpencodeClient:
                         output=tool_output,
                         trace_parts=trace_parts,
                     )
+                    early_response["_completionSource"] = early_tool_command
                     stream_callback(
                         {
                             "status": "received",
@@ -755,7 +760,7 @@ class OpencodeClient:
         }
         if response.get("_earlyCompletion"):
             output["earlyCompletion"] = True
-            output["completionSource"] = "s2toc"
+            output["completionSource"] = str(response.get("_completionSource") or "tool")
         return output
 
     @staticmethod

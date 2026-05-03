@@ -71,7 +71,15 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       'fi' \
       'exec python3 /workspace/.opencode/skills/bid-tech-table-filler/scripts/run_from_manifest.py --manifest "$1" --response summary' \
       > /usr/local/bin/s4fill \
-    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/s7assemble /usr/local/bin/s4gap /usr/local/bin/s4fill
+    && printf '%s\n' \
+      '#!/bin/sh' \
+      'if [ "$#" -ne 1 ]; then' \
+      '  echo "usage: wikibuild <manifest>" >&2' \
+      '  exit 64' \
+      'fi' \
+      'exec python3 /workspace/.opencode/skills/bid-tech-wiki-material-builder/scripts/run_from_manifest.py "$1"' \
+      > /usr/local/bin/wikibuild \
+    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/s7assemble /usr/local/bin/s4gap /usr/local/bin/s4fill /usr/local/bin/wikibuild
 
 EXPOSE 4096
 

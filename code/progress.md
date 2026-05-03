@@ -2668,6 +2668,53 @@ bid_workspace
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
 
+### 2026-05-03 18:37:20 素材库 Wiki Skill 与原始素材预览收口
+
+目标：
+
+- 将当前最小 Wiki 构建思路规范封装到运行时 OpenCode Skill。
+- 让 Wiki 生成避开大 JSON 直出导致的超时、摘要和截断问题。
+- 将原始素材库页面收敛为三层素材入口下的 Finder 列表模式，并支持点击已清洗文件在右侧 OnlyOffice 预览。
+- 同步文档口径，确保后续接手者知道 `wikibuild`、`_wiki_build` 工作区、5 节点 Wiki 结构和素材库页面行为。
+
+完成内容：
+
+- 重写技术标/商务标 Wiki 构建 Skill，统一为 `01-素材总表 / 02-章节映射表 / 03-素材卡片 / 04-待填写清单 / 05-使用规则` 最小结构。
+- 新增 `wikibuild` 容器命令，OpenCode 调用 `wikibuild <manifest>` 后只在 stdout 返回小摘要，完整 Wiki 蓝图写入共享 `parsed/_wiki_build/*/wiki_blueprint.json`。
+- 后端 Wiki 生成改为写共享 manifest，并在收到 `outputFile` 摘要后读取完整 `wiki_blueprint.json` 导入数据库。
+- 修复 OpenCode 早停 trace，使 `completionSource` 能按实际工具命令记录。
+- 原始素材库页面固定展示 `通用素材 / 客户素材 / 项目素材` 三层入口，目录可展开到文件，点击已清洗素材后在右侧 OnlyOffice 区域预览清洗稿。
+- 同步根 README、`code/AGENT.md`、`doc/06`、`doc/11`、`doc/12` 的运行口径。
+
+变更文件：
+
+- `README.md`
+- `code/AGENT.md`
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/services/opencode_client.py`
+- `code/sewpg-bid-backend/app/services/wiki_generation.py`
+- `code/sewpg-bid-backend/opencode/Dockerfile`
+- `code/sewpg-bid-backend/opencode/skill/bid-business-wiki-material-builder/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-business-wiki-material-builder/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-wiki-material-builder/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-wiki-material-builder/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_opencode_client.py`
+- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
+- `code/sewpg-bid-backend/tests/test_wiki_generation.py`
+- `code/sewpg-bid-frontend/src/pages/MaterialDB.jsx`
+- `doc/06-MVP接口文档.md`
+- `doc/11-内网离线部署说明.md`
+- `doc/12-数据存储与素材库数据说明.md`
+
+验证结果：
+
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_wiki_generation.py tests/test_opencode_client.py tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_wiki_builder_writes_full_blueprint_and_returns_small_summary -q`：20 passed。
+- `npm run check`：通过；Vite 保留大 chunk 体积警告。
+- `docker compose ps opencode fastapi worker web`：相关服务运行，`fastapi` 和 `opencode` healthy。
+- `curl -fsS http://127.0.0.1/api/healthz`：返回 ok。
+- `curl -fsS http://127.0.0.1:4096/global/health`：返回 healthy。
+- `POST /api/materials/wiki/bootstrap {"mode":"replace","bidType":"技术标"}`：成功重建技术标 Wiki；`03-素材卡片` 下共导入 93 张卡片，通用 63、客户 11、项目 19。
+
 ### 2026-05-03 14:16:48 post-commit 67af5e3
 
 提交摘要：Protect S2 workspace publishing

@@ -132,12 +132,49 @@ class OpencodeClientTests(unittest.TestCase):
             output='{"schema_version":"bid-toc-json-v1","outputFile":"/tmp/toc.json"}',
             trace_parts=[{"type": "text", "text": "s2toc 已完成"}],
         )
+        response["_completionSource"] = "s2toc"
 
         trace = client._build_output_trace("ses-test", response)
 
         self.assertTrue(trace["earlyCompletion"])
         self.assertEqual(trace["completionSource"], "s2toc")
         self.assertEqual(trace["parts"][0]["text"], "s2toc 已完成")
+
+    def test_build_output_trace_marks_early_wikibuild_completion(self) -> None:
+        client = OpencodeClient()
+        response = client._tool_output_response(
+            session_id="ses-wiki",
+            output='{"summary":"Wiki 已生成","nodes":[]}',
+            trace_parts=[{"type": "text", "text": "wikibuild 已完成"}],
+        )
+        response["_completionSource"] = "wikibuild"
+
+        trace = client._build_output_trace("ses-wiki", response)
+
+        self.assertTrue(trace["earlyCompletion"])
+        self.assertEqual(trace["completionSource"], "wikibuild")
+
+    def test_generate_wiki_blueprint_uses_wikibuild_early_completion(self) -> None:
+        client = OpencodeClient()
+
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-wiki"}),
+            patch.object(
+                client,
+                "_send_prompt_with_session_polling",
+                return_value={"parts": [{"type": "text", "text": '{"summary":"Wiki 已生成","nodes":[]}'}]},
+            ) as send_prompt,
+            patch.object(
+                client,
+                "_extract_wiki_blueprint_json",
+                return_value={"summary": "Wiki 已生成", "nodes": []},
+            ),
+            patch.object(client, "_build_output_trace", return_value={"status": "received"}),
+        ):
+            client.generate_wiki_blueprint_with_trace("prompt", stream_callback=lambda _: None)
+
+        send_prompt.assert_called_once()
+        self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "wikibuild")
 
     def test_early_s2_tool_output_does_not_repair_traceback_into_outline(self) -> None:
         client = OpencodeClient()
@@ -194,6 +231,26 @@ class OpencodeClientTests(unittest.TestCase):
 
         self.assertEqual(parsed["summary"], "Wiki 已生成")
         self.assertEqual(parsed["nodes"][0]["title"], "00-Wiki使用说明")
+
+    def test_extract_wiki_blueprint_json_accepts_output_file_summary(self) -> None:
+        client = OpencodeClient()
+        response = {
+            "parts": [
+                {
+                    "type": "text",
+                    "text": (
+                        '{"schema_version":"bid-wiki-blueprint-v1","outputFile":'
+                        '"/data/parsed/_wiki_build/run/wiki_blueprint.json",'
+                        '"summary":"Wiki 已生成","materialCount":93}'
+                    ),
+                }
+            ]
+        }
+
+        parsed = client._extract_wiki_blueprint_json(response)
+
+        self.assertEqual(parsed["summary"], "Wiki 已生成")
+        self.assertIn("wiki_blueprint.json", parsed["outputFile"])
 
     def test_extract_wiki_blueprint_json_repairs_invalid_json_once(self) -> None:
         client = OpencodeClient()

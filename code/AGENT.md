@@ -171,6 +171,7 @@ S0 解析
 - FastAPI 统一承接所有 `/api`
 - 调 futurecode/opencode 执行 `s2toc` 生成目录，并在调用失败时本地运行同一 Skill 脚本
 - 调缺口识别和 AI 填写 Skill
+- 调 futurecode/opencode 执行 `wikibuild` 生成素材 Wiki 蓝图，完整结果由脚本写入共享 `parsed/_wiki_build/*/wiki_blueprint.json` 后再由后端导入
 - 调本地 `bid-tech-assembler` skill 生成正文 docx
 - 管项目状态、设置、审计和素材库
 - 提供 OnlyOffice `config/meta/download/callback`
@@ -180,6 +181,7 @@ S0 解析
 - 最新成功目录产物固定在 `{DOCUMENTS_DIR}/{project_id}/technical-workspace/s2_toc_workdir/`。
 - 新一轮目录生成先写 `{DOCUMENTS_DIR}/{project_id}/technical-workspace/s2_toc_workdir.new/`，成功后再发布。
 - 旧成功目录归档到 `{DOCUMENTS_DIR}/{project_id}/technical-workspace/s2_toc_workdir.runs/`。
+- 素材 Wiki 重建 manifest 和完整蓝图位于 `{PARSED_DIR}/_wiki_build/bid-wiki-build-*/`，这是 `fastapi` 与 `opencode` 共享的运行期工作区。
 - 缺口处理产物位于 `{DOCUMENTS_DIR}/{project_id}/technical-workspace/s4_gap_workdir/`。
 - 生成标书产物位于 `{DOCUMENTS_DIR}/{project_id}/technical-workspace/s7_assembly_workdir/`。
 - 当前可编辑文档固定为 `{DOCUMENTS_DIR}/{project_id}.docx`。
