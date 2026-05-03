@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { materialsAPI } from '../api'
 import MaterialsViewSwitch from '../components/shared/MaterialsViewSwitch'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
@@ -517,9 +517,11 @@ function TreeNode({
 
 export default function MaterialDB({ showToast = () => {} }) {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const workspaceSlug = useWorkspaceSlug()
   const lockedBidType = bidTypeFromWorkspace(workspaceSlug)
   const materialsBasePath = workspaceSlug ? workspaceRoute(workspaceSlug, '/materials') : '/materials'
+  const queryBidType = normalizeBidTypeTab(searchParams.get('bidType') || '')
   const uploadPickerRef = useRef(null)
   const libraryLoadedRef = useRef(false)
   const [tree, setTree] = useState([])
@@ -528,7 +530,7 @@ export default function MaterialDB({ showToast = () => {} }) {
   const [filesPayload, setFilesPayload] = useState({ items: [], total: 0, page: 1, pageSize: 20 })
   const [parseStatus, setParseStatus] = useState(null)
   const [selectedFolderPath, setSelectedFolderPath] = useState('')
-  const [activeBidType, setActiveBidType] = useState(() => normalizeBidTypeTab(lockedBidType || '技术标'))
+  const [activeBidType, setActiveBidType] = useState(() => normalizeBidTypeTab(lockedBidType || queryBidType || '技术标'))
   const [filters, setFilters] = useState({
     keyword: '',
     customerName: '',
@@ -598,7 +600,7 @@ export default function MaterialDB({ showToast = () => {} }) {
       const normalizedTree = ensureMaterialRootNodes(
         normalizeTreeNodes(treeResponse?.tree || treeResponse?.items || treeResponse?.nodes || [])
       )
-      const visibleTree = normalizedTree
+      const visibleTree = normalizedTree.filter((node) => normalizePath(node.path) === activeBidType)
       setTree(visibleTree)
       const validPaths = new Set(flattenTreePaths(visibleTree))
       const effectiveFolder = validPaths.has(selectedFolderPath)
@@ -955,7 +957,7 @@ export default function MaterialDB({ showToast = () => {} }) {
     try {
       const payload = await materialsAPI.wiki.bootstrap({ mode, bidType: activeBidType })
       showToast(payload?.generation?.summary || payload?.message || `${activeBidType} Wiki 已处理`)
-      navigate(`${materialsBasePath}/wiki`)
+      navigate(`${materialsBasePath}/wiki?bidType=${encodeURIComponent(activeBidType)}`)
     } catch (e) {
       showToast(safeMessage(e, `${activeBidType} Wiki 处理失败`), 'error')
     } finally {
@@ -968,6 +970,7 @@ export default function MaterialDB({ showToast = () => {} }) {
     const next = normalizeBidTypeTab(value)
     if (next === activeBidType) return
     setActiveBidType(next)
+    setSearchParams({ bidType: next })
     setSelectedFolderPath('')
     setParseStatus(null)
   }
@@ -1008,6 +1011,9 @@ export default function MaterialDB({ showToast = () => {} }) {
     <div className="flex flex-col gap-6 animate-fade-in">
       <MaterialsViewSwitch
         active="structured"
+        activeBidType={activeBidType}
+        lockedBidType={lockedBidType}
+        onBidTypeChange={handleBidTypeChange}
         title="原始材料库"
         subtitle={refreshing || error ? (error || '正在刷新...') : (
           activeBidType === '技术标'
@@ -1063,29 +1069,6 @@ export default function MaterialDB({ showToast = () => {} }) {
         )}
         basePath={materialsBasePath}
       />
-
-      {!lockedBidType && (
-        <div className="inline-grid grid-cols-2 gap-1 rounded-xl border border-surface-container-high bg-surface-container-lowest p-1 w-full sm:w-fit">
-          {BID_TYPE_TABS.map((tab) => {
-            const selected = tab.value === activeBidType
-            return (
-              <button
-                key={tab.value}
-                type="button"
-                onClick={() => handleBidTypeChange(tab.value)}
-                className={`h-10 px-4 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition-colors ${
-                  selected
-                    ? 'bg-primary text-on-primary'
-                    : 'text-on-surface-variant hover:bg-surface-container-high'
-                }`}
-              >
-                <span className="material-symbols-outlined text-base">{tab.icon}</span>
-                <span>{tab.label}</span>
-              </button>
-            )
-          })}
-        </div>
-      )}
 
       {parseStatus && (
         <div className="rounded-xl border border-surface-container-high p-4 flex flex-wrap items-center justify-between gap-2">

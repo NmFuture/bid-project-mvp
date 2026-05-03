@@ -2940,3 +2940,18 @@ bid_workspace
 - `doc/superpowers/plans/2026-05-03-material-library-top-level-scope.md`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-03 20:59 素材库技术标/商务标分层与技术标 Wiki 重建收口
+
+- 素材库页面收口为 `技术标 / 商务标` 顶层切换，每个标类下仍是 `原始素材 / Wiki`；当前只启用技术标，商务标原始素材与 Wiki 均保留为空状态。
+- 技术标原始素材已按最新版下载目录导入运行库：`通用素材 63`、`客户素材 11`、`项目素材 19`，合计 `93` 个文件；商务标素材接口返回 `0`。
+- 技术标 Wiki 生成主路径改为 `fastapi` 直接执行 `bid-tech-wiki-material-builder/scripts/run_from_manifest.py`，不再依赖 OpenCode 会话中转调用，避免 93 份素材时 Wiki 构建超时。
+- 后端镜像已把 `scripts/` 与 `opencode/skill/` 一起打入 fastapi/worker，导入脚本和技术标 Wiki runner 均随镜像交付。
+- 已重新生成技术标 Wiki，根节点为 `技术标Wiki（自动生成）`，一级节点固定为 `01-素材总表 / 02-章节映射表 / 03-素材卡片 / 04-待填写清单 / 05-使用规则`；商务标 Wiki API 返回空树。
+- 同步更新 README、AGENT、接口文档、数据存储说明和离线部署说明，统一口径为“技术标 Wiki 由 FastAPI 直接运行技术标专用 Skill runner”。
+- 验证：`python -m py_compile code/sewpg-bid-backend/app/services/wiki_generation.py code/sewpg-bid-backend/scripts/import_technical_materials.py code/sewpg-bid-backend/opencode/skill/bid-tech-wiki-material-builder/scripts/run_from_manifest.py` 通过。
+- 验证：`.venv/bin/python -m unittest tests/test_wiki_generation.py` 通过，结果 `Ran 5 tests ... OK`。
+- 验证：`npm run lint` 通过；`npm run build` 通过，仅保留既有 Vite chunk size 提示。
+- 验证：`docker compose -f code/docker-compose.yml build fastapi worker web` 和 `up -d fastapi worker web` 成功；`/api/healthz` 返回 `ok`。
+- 验证：`/api/materials/raw/files?bidType=技术标&pageSize=1000` 返回 `total=93`、`standard=63`、`customer=11`、`project=19`；`/api/materials/raw/files?bidType=商务标&pageSize=1000` 返回 `total=0`。
+- 验证：`/api/materials/wiki?bidType=技术标` 返回技术标 Wiki 五节点结构；`/api/materials/wiki?bidType=商务标` 返回 `treeCount=0`。

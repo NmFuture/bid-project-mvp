@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import subprocess
+import sys
 import tempfile
 import zipfile
 from collections import Counter
+from datetime import UTC, datetime
 from io import BytesIO
 from xml.etree import ElementTree as ET
 from pathlib import Path
@@ -14,13 +17,12 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.core.config import settings
+from app.core.config import BASE_DIR, settings
 from app.models import async_session
 from app.models.materials import RawFile
 from app.services.identity import canonical_customer, classify_material_path, material_identity
 from app.services.minio_client import minio_client
 from app.services.material_store import material_store
-from app.services.opencode_client import OpencodeClient
 from app.services.peripheral import PeripheralError
 
 DEFAULT_REFERENCE_WIKI_PATH = Path(
@@ -113,6 +115,8 @@ MAX_CARD_HEADINGS = 80
 MAX_INDEX_ITEMS = 260
 MAX_SYNC_DOCX_BYTES = 30 * 1024 * 1024
 WIKI_BID_TYPES = {"技术标"}
+WIKI_SKILL_NAME = "bid-tech-wiki-material-builder"
+WIKI_SKILL_RUNNER = BASE_DIR / "opencode" / "skill" / WIKI_SKILL_NAME / "scripts" / "run_from_manifest.py"
 HEADING_STYLE_RE = re.compile(r"(?:Heading|标题)\s*([1-9])|Heading([1-9])", re.IGNORECASE)
 NUMBERED_HEADING_RE = re.compile(
     r"^(?:(第[一二三四五六七八九十百]+[章节篇])|([一二三四五六七八九十]+[、.．])|((?:\d+[.．、]){1,5}))\s*\S+"
@@ -185,7 +189,7 @@ def _normalize_wiki_bid_type(value: str = "") -> str:
 
 
 def _wiki_skill_name(bid_type: str) -> str:
-    return "bid-tech-wiki-material-builder"
+    return WIKI_SKILL_NAME
 
 
 def _wiki_root_title(bid_type: str) -> str:
@@ -1559,6 +1563,45 @@ def _failed_opencode_output(exc: Exception) -> dict[str, Any]:
     }
 
 
+def _now_iso() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _run_local_wiki_skill(manifest_path: Path) -> dict[str, Any]:
+    if not WIKI_SKILL_RUNNER.exists():
+        raise RuntimeError(f"技术标 Wiki Skill runner 不存在：{WIKI_SKILL_RUNNER}")
+
+    completed = subprocess.run(
+        [sys.executable, str(WIKI_SKILL_RUNNER), str(manifest_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=max(30, int(settings.opencode_timeout_sec)),
+    )
+    stdout = (completed.stdout or "").strip()
+    stderr = (completed.stderr or "").strip()
+    if completed.returncode != 0:
+        detail = "\n".join(part for part in (stdout, stderr) if part)
+        raise RuntimeError(f"技术标 Wiki Skill runner 执行失败（{completed.returncode}）：{detail}")
+
+    try:
+        result = json.loads(stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"技术标 Wiki Skill runner 返回内容不是有效 JSON：{stdout}") from exc
+
+    result.setdefault("schema_version", "bid-wiki-blueprint-v1")
+    result["opencodeOutput"] = {
+        "status": "received",
+        "sessionId": str(manifest_path),
+        "providerId": "local-skill",
+        "modelId": WIKI_SKILL_NAME,
+        "receivedAt": _now_iso(),
+        "parts": [{"type": "text", "text": stdout}],
+    }
+    return result
+
+
 async def generate_platform_wiki(
     reference_path: str = "",
     mode: str = "create",
@@ -1578,25 +1621,28 @@ async def generate_platform_wiki(
     full_inventory = await _summarize_material_inventory()
     material_inventory = _filter_inventory_for_bid_type(full_inventory, normalized_bid_type)
     manifest_path = _write_wiki_manifest(reference, material_inventory, normalized_bid_type)
-    prompt = _build_wiki_tool_prompt(skill_name, manifest_path, normalized_bid_type)
-    generator = "opencode"
+    generator = "local_skill"
     fallback_used = False
 
     try:
-        opencode_result = await asyncio.to_thread(
-            OpencodeClient().generate_wiki_blueprint_with_trace,
-            prompt,
-        )
-        blueprint = _normalize_blueprint(_load_wiki_blueprint_result(opencode_result))
+        skill_result = await asyncio.to_thread(_run_local_wiki_skill, manifest_path)
+        blueprint = _normalize_blueprint(_load_wiki_blueprint_result(skill_result))
         blueprint["rootTitle"] = _wiki_root_title(normalized_bid_type)
-        opencode_output: dict[str, Any] = opencode_result.get("opencodeOutput") or {}
+        opencode_output: dict[str, Any] = skill_result.get("opencodeOutput") or {}
     except Exception as exc:
-        failed_output = _failed_opencode_output(exc)
+        failed_output = {
+            "status": "failed",
+            "sessionId": str(manifest_path),
+            "providerId": "local-skill",
+            "modelId": skill_name,
+            "receivedAt": _now_iso(),
+            "parts": [{"type": "text", "text": f"执行技术标 Wiki Skill runner 失败：{exc}"}],
+        }
         if not fallback_to_deterministic:
             raise PeripheralError(
                 502,
-                f"创建 {normalized_bid_type} Wiki 调用 opencode 失败：{exc}",
-                "WIKI_OPENCODE_FAILED",
+                f"创建 {normalized_bid_type} Wiki 调用技术标 Wiki Skill 失败：{exc}",
+                "WIKI_SKILL_FAILED",
                 {"opencodeOutput": failed_output},
             ) from exc
         blueprint = _normalize_blueprint(_build_material_wiki_blueprint(reference, material_inventory, normalized_bid_type))

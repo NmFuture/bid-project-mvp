@@ -21,8 +21,8 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         settings.parsed_dir = self.original_parsed_dir
         self.temp_dir.cleanup()
 
-    async def test_generate_platform_wiki_uses_opencode_blueprint(self) -> None:
-        opencode_payload = {
+    async def test_generate_platform_wiki_uses_local_skill_blueprint(self) -> None:
+        skill_payload = {
             "summary": "Wiki 已由 skill 生成。",
             "rootTitle": "技术标Wiki（自动生成）",
             "nodes": [
@@ -36,9 +36,9 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
             ],
             "opencodeOutput": {
                 "status": "received",
-                "sessionId": "ses-wiki",
-                "providerId": "opencode",
-                "modelId": "big-pickle",
+                "sessionId": "manifest-wiki",
+                "providerId": "local-skill",
+                "modelId": "bid-tech-wiki-material-builder",
                 "parts": [{"type": "text", "text": "{\"summary\":\"Wiki 已由 skill 生成。\"}"}],
             },
         }
@@ -50,8 +50,8 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"total": 1, "docxTotal": 1, "parsedDocxTotal": 1, "groups": {}, "items": []},
             ),
             patch(
-                "app.services.wiki_generation.OpencodeClient.generate_wiki_blueprint_with_trace",
-                return_value=opencode_payload,
+                "app.services.wiki_generation._run_local_wiki_skill",
+                return_value=skill_payload,
             ) as generate,
             patch(
                 "app.services.wiki_generation.material_store.import_generated_wiki_blueprint",
@@ -62,18 +62,16 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
             result = await generate_platform_wiki(mode="replace")
 
         generate.assert_called_once()
-        prompt = generate.call_args.args[0]
-        self.assertIn("Use the bid-tech-wiki-material-builder skill.", prompt)
-        self.assertIn("wikibuild ", prompt)
-        self.assertIn(str(settings.parsed_dir / "_wiki_build"), prompt)
+        manifest_path = generate.call_args.args[0]
+        self.assertIn(str(settings.parsed_dir / "_wiki_build"), str(manifest_path))
         import_blueprint.assert_awaited_once()
         self.assertEqual(import_blueprint.call_args.kwargs["root_title"], "技术标Wiki（自动生成）")
         self.assertEqual(import_blueprint.call_args.kwargs["nodes"][0]["title"], "00-Wiki使用说明")
-        self.assertEqual(result["generation"]["generator"], "opencode")
+        self.assertEqual(result["generation"]["generator"], "local_skill")
         self.assertEqual(result["generation"]["bidType"], "技术标")
         self.assertEqual(result["generation"]["skill"], "bid-tech-wiki-material-builder")
         self.assertFalse(result["generation"]["fallbackUsed"])
-        self.assertEqual(result["generation"]["opencodeOutput"]["sessionId"], "ses-wiki")
+        self.assertEqual(result["generation"]["opencodeOutput"]["sessionId"], "manifest-wiki")
 
     async def test_generate_business_wiki_is_disabled_for_now(self) -> None:
         with self.assertRaises(PeripheralError) as ctx:
@@ -125,7 +123,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"total": 1, "docxTotal": 1, "parsedDocxTotal": 1, "groups": {}, "items": []},
             ),
             patch(
-                "app.services.wiki_generation.OpencodeClient.generate_wiki_blueprint_with_trace",
+                "app.services.wiki_generation._run_local_wiki_skill",
                 return_value=opencode_payload,
             ),
             patch(
@@ -149,8 +147,8 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"total": 0, "docxTotal": 0, "parsedDocxTotal": 0, "groups": {}, "items": []},
             ),
             patch(
-                "app.services.wiki_generation.OpencodeClient.generate_wiki_blueprint_with_trace",
-                side_effect=RuntimeError("opencode 不可用"),
+                "app.services.wiki_generation._run_local_wiki_skill",
+                side_effect=RuntimeError("skill 不可用"),
             ),
             patch(
                 "app.services.wiki_generation.material_store.import_generated_wiki_blueprint",
@@ -160,7 +158,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(PeripheralError) as context:
                 await generate_platform_wiki()
 
-        self.assertEqual(context.exception.code, "WIKI_OPENCODE_FAILED")
+        self.assertEqual(context.exception.code, "WIKI_SKILL_FAILED")
         import_blueprint.assert_not_awaited()
 
     async def test_generate_platform_wiki_can_use_explicit_deterministic_fallback(self) -> None:
@@ -171,8 +169,8 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"total": 0, "docxTotal": 0, "parsedDocxTotal": 0, "groups": {}, "items": []},
             ),
             patch(
-                "app.services.wiki_generation.OpencodeClient.generate_wiki_blueprint_with_trace",
-                side_effect=RuntimeError("opencode 不可用"),
+                "app.services.wiki_generation._run_local_wiki_skill",
+                side_effect=RuntimeError("skill 不可用"),
             ),
             patch(
                 "app.services.wiki_generation.material_store.import_generated_wiki_blueprint",

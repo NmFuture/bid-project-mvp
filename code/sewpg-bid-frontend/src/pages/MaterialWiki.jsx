@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { materialsAPI } from '../api'
 import MaterialsViewSwitch from '../components/shared/MaterialsViewSwitch'
 import MarkdownLite from '../components/shared/MarkdownLite'
@@ -17,6 +18,8 @@ const sameArray = (left, right) => {
 
 const safeMessage = (error, fallback) =>
   error?.payload?.detail || error?.message || fallback
+
+const normalizeBidTypeTab = (value) => (value === '商务标' ? '商务标' : '技术标')
 
 const normalizeNode = (node) => {
   if (!node) return null
@@ -42,9 +45,12 @@ const normalizeDraft = (node) => ({
 })
 
 export default function MaterialWiki({ showToast = () => {} }) {
+  const [searchParams, setSearchParams] = useSearchParams()
   const workspaceSlug = useWorkspaceSlug()
   const lockedBidType = bidTypeFromWorkspace(workspaceSlug)
   const materialsBasePath = workspaceSlug ? workspaceRoute(workspaceSlug, '/materials') : '/materials'
+  const queryBidType = normalizeBidTypeTab(searchParams.get('bidType') || '')
+  const [activeBidType, setActiveBidType] = useState(() => normalizeBidTypeTab(lockedBidType || queryBidType || '技术标'))
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -70,6 +76,15 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }, [])
 
   const loadData = useCallback(async (params = {}, options = {}) => {
+    if (activeBidType !== '技术标') {
+      setData({ tree: [], selectedNode: null, tagOptions: [], applicableTypeOptions: [] })
+      setDraft(normalizeDraft(null))
+      setError('')
+      setLoading(false)
+      setRefreshing(false)
+      return
+    }
+
     if (options.silent) {
       setRefreshing(true)
     } else {
@@ -79,7 +94,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
     try {
       const response = await materialsAPI.wiki.list({
         ...params,
-        bidType: lockedBidType || params.bidType || '',
+        bidType: '技术标',
       })
       applyPayload(response)
     } catch (e) {
@@ -96,7 +111,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
         setLoading(false)
       }
     }
-  }, [applyPayload, lockedBidType, showToast])
+  }, [activeBidType, applyPayload, showToast])
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -153,14 +168,28 @@ export default function MaterialWiki({ showToast = () => {} }) {
     await loadData({ nodeId }, { silent: true })
   }
 
+  const handleBidTypeChange = (value) => {
+    if (lockedBidType) return
+    const next = normalizeBidTypeTab(value)
+    if (next === activeBidType) return
+    setActiveBidType(next)
+    setSearchParams({ bidType: next })
+    setData(null)
+    setDraft(normalizeDraft(null))
+  }
+
   const handleCreateNode = async (isFolder = false) => {
+    if (activeBidType !== '技术标') {
+      showToast('商务标 Wiki 当前先保留为空，暂不启用。', 'error')
+      return
+    }
     setCreatingNode(true)
     try {
       const payload = await materialsAPI.wiki.create({
         parentId: selectedNodeId,
         title: isFolder ? '新建目录' : '新建节点',
         isFolder,
-        bidType: lockedBidType,
+        bidType: '技术标',
       })
       applyPayload(payload)
       showToast(isFolder ? '目录创建成功' : '节点创建成功')
@@ -173,6 +202,10 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   const handleSave = async () => {
+    if (activeBidType !== '技术标') {
+      showToast('商务标 Wiki 当前先保留为空，暂不保存。', 'error')
+      return
+    }
     if (!selectedNodeId) return
     const title = draft.title.trim()
     if (!title) {
@@ -187,7 +220,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
         markdownContent: draft.markdownContent,
         tags: draft.tags,
         applicableTypes: draft.applicableTypes,
-        bidType: lockedBidType,
+        bidType: '技术标',
       })
       applyPayload(payload)
       showToast('节点保存成功')
@@ -200,10 +233,11 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   const handleRefreshSummary = async () => {
+    if (activeBidType !== '技术标') return
     if (!selectedNodeId) return
     setRefreshingSummary(true)
     try {
-      const payload = await materialsAPI.wiki.refreshSummary(selectedNodeId, { bidType: lockedBidType })
+      const payload = await materialsAPI.wiki.refreshSummary(selectedNodeId, { bidType: '技术标' })
       applyPayload(payload)
       showToast('摘要已刷新')
     } catch (e) {
@@ -224,6 +258,10 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   const handleUploadAttachment = async (file) => {
+    if (activeBidType !== '技术标') {
+      showToast('商务标 Wiki 当前先保留为空，暂不上传附件。', 'error')
+      return
+    }
     if (!file || !selectedNodeId) return
 
     setUploadingAttachment(true)
@@ -232,7 +270,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
       formData.append('file', file)
       formData.append('fileName', file.name)
       formData.append('fileSize', String(file.size))
-      if (lockedBidType) formData.append('bidType', lockedBidType)
+      formData.append('bidType', '技术标')
       const payload = await materialsAPI.wiki.uploadAttachment(selectedNodeId, formData)
       applyPayload(payload)
       showToast('附件上传成功')
@@ -245,13 +283,14 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   const handleMoveNode = async (movingId, targetNode, mode) => {
+    if (activeBidType !== '技术标') return
     if (!movingId || !targetNode?.id || movingId === targetNode.id) return
     setMovingNode(true)
     try {
       const payload = await materialsAPI.wiki.move(movingId, {
         targetId: targetNode.id,
         mode,
-        bidType: lockedBidType,
+        bidType: '技术标',
       })
       applyPayload(payload)
       showToast(mode === 'inside' ? '节点已移动为子节点' : '节点顺序已更新')
@@ -363,6 +402,39 @@ export default function MaterialWiki({ showToast = () => {} }) {
     )
   }
 
+  if (activeBidType !== '技术标') {
+    return (
+      <div className="flex flex-col gap-6 animate-fade-in">
+        <MaterialsViewSwitch
+          active="wiki"
+          activeBidType={activeBidType}
+          lockedBidType={lockedBidType}
+          onBidTypeChange={handleBidTypeChange}
+          title="商务标 Wiki"
+          subtitle="商务标 Wiki 先保留为空，当前不生成、不展示业务内容。"
+          meta={(
+            <div className="flex w-full flex-wrap gap-2 text-xs xl:justify-end">
+              <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+                标类 商务标
+              </span>
+              <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+                状态 预留
+              </span>
+            </div>
+          )}
+          basePath={materialsBasePath}
+        />
+        <div className="rounded-xl border border-surface-container-high bg-surface-container-lowest px-6 py-12 text-center">
+          <span className="material-symbols-outlined text-4xl text-outline">request_quote</span>
+          <h2 className="mt-4 text-lg font-semibold text-on-surface">商务标 Wiki 暂不启用</h2>
+          <p className="mt-2 text-sm text-on-surface-variant">
+            当前只维护技术标原始素材和技术标 Wiki；商务标后续会使用独立 Skill 构建。
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   if (!selectedNode && !tree.length) {
     return (
       <PageEmpty
@@ -378,8 +450,11 @@ export default function MaterialWiki({ showToast = () => {} }) {
     <div className="flex flex-col gap-6 animate-fade-in">
       <MaterialsViewSwitch
         active="wiki"
-        title={`${lockedBidType || '素材'} Wiki`}
-        subtitle={selectedNode?.pathText || selectedNode?.title || `${lockedBidType || '平台级'} Wiki 内容维护`}
+        activeBidType={activeBidType}
+        lockedBidType={lockedBidType}
+        onBidTypeChange={handleBidTypeChange}
+        title="技术标 Wiki"
+        subtitle={selectedNode?.pathText || selectedNode?.title || '技术标 Wiki 内容维护'}
         actions={(
           <div className="flex flex-wrap gap-3">
             <button
@@ -408,7 +483,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
         meta={(
           <div className="flex w-full flex-wrap gap-2 text-xs xl:justify-end">
             <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
-              标类 {lockedBidType || '全部'}
+              标类 技术标
             </span>
             <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
               标签 {draft.tags.length}
@@ -515,12 +590,12 @@ export default function MaterialWiki({ showToast = () => {} }) {
             </div>
 
             <div className="flex flex-wrap items-center gap-1">
-                <button onClick={() => insertAroundSelection('**', '**')} className="p-2 hover:bg-surface-container-high rounded font-bold text-on-surface">B</button>
-                <button onClick={() => insertAroundSelection('*', '*')} className="p-2 hover:bg-surface-container-high rounded italic text-on-surface">I</button>
-                <button onClick={() => insertAroundSelection('\n## ', '')} className="p-2 hover:bg-surface-container-high rounded text-on-surface">H2</button>
-                <button onClick={() => insertAroundSelection('\n- ', '')} className="p-2 hover:bg-surface-container-high rounded">
-                  <span className="material-symbols-outlined text-lg text-outline">format_list_bulleted</span>
-                </button>
+              <button onClick={() => insertAroundSelection('**', '**')} className="p-2 hover:bg-surface-container-high rounded font-bold text-on-surface">B</button>
+              <button onClick={() => insertAroundSelection('*', '*')} className="p-2 hover:bg-surface-container-high rounded italic text-on-surface">I</button>
+              <button onClick={() => insertAroundSelection('\n## ', '')} className="p-2 hover:bg-surface-container-high rounded text-on-surface">H2</button>
+              <button onClick={() => insertAroundSelection('\n- ', '')} className="p-2 hover:bg-surface-container-high rounded">
+                <span className="material-symbols-outlined text-lg text-outline">format_list_bulleted</span>
+              </button>
             </div>
           </div>
 
@@ -528,19 +603,19 @@ export default function MaterialWiki({ showToast = () => {} }) {
             <div className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr),20rem] min-h-[520px]">
               <div className="grid grid-cols-1 xl:grid-cols-2 min-h-[520px]">
                 <div className="p-4 overflow-y-auto border-r-0 xl:border-r border-b xl:border-b-0 border-surface-container-high bg-surface-container-low min-h-[320px]">
-                <textarea
-                  ref={editorRef}
-                  value={draft.markdownContent}
-                  onChange={(event) => setDraft((prev) => ({ ...prev, markdownContent: event.target.value }))}
-                  className="w-full min-h-full h-full resize-none rounded-lg border border-surface-container-high bg-white p-4 text-sm text-on-surface font-mono leading-relaxed"
-                />
-              </div>
-              <div className="p-6 overflow-y-auto bg-white min-w-0">
-                <h1 className="text-xl font-headline font-bold text-on-surface mb-4 break-words">
-                  {draft.title || '未命名节点'}
-                </h1>
-                <MarkdownLite content={draft.markdownContent} />
-              </div>
+                  <textarea
+                    ref={editorRef}
+                    value={draft.markdownContent}
+                    onChange={(event) => setDraft((prev) => ({ ...prev, markdownContent: event.target.value }))}
+                    className="w-full min-h-full h-full resize-none rounded-lg border border-surface-container-high bg-white p-4 text-sm text-on-surface font-mono leading-relaxed"
+                  />
+                </div>
+                <div className="p-6 overflow-y-auto bg-white min-w-0">
+                  <h1 className="text-xl font-headline font-bold text-on-surface mb-4 break-words">
+                    {draft.title || '未命名节点'}
+                  </h1>
+                  <MarkdownLite content={draft.markdownContent} />
+                </div>
               </div>
 
               <div className="bg-surface-container-lowest border-t 2xl:border-t-0 2xl:border-l border-surface-container-high flex flex-col overflow-y-auto">

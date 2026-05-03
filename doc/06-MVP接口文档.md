@@ -426,13 +426,13 @@ S0 解析 -> S1 模板与目录 -> S2 审核目录 -> S3 缺口处理 -> S4 生�
 { "mode": "replace", "bidType": "技术标" }
 ```
 
-后端内部会调用 OpenCode Skill：
+后端内部会直接执行技术标专用 Wiki Skill runner：
 
 ```bash
-wikibuild <wiki_build_manifest.json>
+python opencode/skill/bid-tech-wiki-material-builder/scripts/run_from_manifest.py <wiki_build_manifest.json>
 ```
 
-该命令只在 stdout 返回小摘要，完整 Wiki 蓝图写入共享 `outputFile`。FastAPI 再读取 `outputFile` 并导入 `wiki_nodes/wiki_docs`。这样可以避免大 JSON 被模型摘要或截断。
+该命令只在 stdout 返回小摘要，完整 Wiki 蓝图写入共享 `outputFile`。FastAPI 再读取 `outputFile` 并导入 `wiki_nodes/wiki_docs`。这样可以避免大素材库经过 OpenCode 会话时超时，也避免大 JSON 被模型摘要或截断。
 
 自动生成的 Wiki 一级结构固定为：
 
