@@ -108,6 +108,8 @@ async def project_materials_path(project_id: str) -> dict[str, Any]:
         "materialProjectCode": material_project_code,
         "projectCode": material_project_code,
         "identity": identity,
+        "turbineModel": project.get("turbineModel") or {},
+        "turbineModelLabel": project.get("turbineModelLabel") or "",
         "path": f"技术标/项目素材/{material_project_id}",
         "bidType": scope["bidType"],
         "readableScopes": scope["readableScopes"],

@@ -26,6 +26,36 @@ const normalizeMaterialProjects = (list = []) =>
     }))
     .filter((item) => item.id && item.name)
 
+const normalizeTurbineModel = (value = null) => {
+  if (!value) return { model: '', platform: '', layout: '', ratedPowerKw: '', rotorDiameterM: '', status: '', statusLabel: '', source: '', aliases: [] }
+  const item = typeof value === 'string' ? { model: value } : value
+  return {
+    id: String(item?.id || item?.model || '').trim(),
+    model: String(item?.model || item?.turbineModel || item?.name || '').trim(),
+    platform: String(item?.platform || item?.turbinePlatform || '').trim(),
+    layout: String(item?.layout || '').trim(),
+    ratedPowerKw: item?.ratedPowerKw || '',
+    rotorDiameterM: item?.rotorDiameterM || '',
+    status: String(item?.status || '').trim(),
+    statusLabel: String(item?.statusLabel || '').trim(),
+    source: String(item?.source || '').trim(),
+    sourceFileId: String(item?.sourceFileId || '').trim(),
+    sourceFileName: String(item?.sourceFileName || '').trim(),
+    aliases: Array.isArray(item?.aliases) ? item.aliases : [],
+  }
+}
+
+const turbineModelLabel = (item = {}) => {
+  const parts = [
+    item.platform,
+    item.ratedPowerKw ? `${item.ratedPowerKw}kW` : '',
+    item.rotorDiameterM ? `叶轮${item.rotorDiameterM}m` : '',
+    item.layout,
+    item.statusLabel,
+  ].filter(Boolean)
+  return `${item.model}${parts.length ? `（${parts.join(' / ')}）` : ''}`
+}
+
 const buildInitialForm = (project = null, defaultBidType = '') => ({
   projectCode: String(project?.projectCode || ''),
   name: String(project?.name || ''),
@@ -35,6 +65,7 @@ const buildInitialForm = (project = null, defaultBidType = '') => ({
   materialProjectName: String(project?.materialProjectName || ''),
   manager: String(project?.manager || ''),
   bidType: String(project?.bidType || defaultBidType || '技术标'),
+  turbineModel: normalizeTurbineModel(project?.turbineModel || project?.selectedTurbineModel),
   startDate: String(project?.startDate || ''),
   endDate: String(project?.endDate || project?.deadline || ''),
 })
@@ -70,6 +101,10 @@ export default function ProjectWizardModal({
   )
   const [materialCustomers, setMaterialCustomers] = useState([])
   const [materialProjects, setMaterialProjects] = useState([])
+  const [turbineOptions, setTurbineOptions] = useState([])
+  const [turbineQuery, setTurbineQuery] = useState('')
+  const [loadingTurbines, setLoadingTurbines] = useState(false)
+  const [turbineError, setTurbineError] = useState('')
   const [selectedMaterialCustomerId, setSelectedMaterialCustomerId] = useState(
     String(project?.materialCustomerId || project?.customerId || project?.keyAccountId || ''),
   )
@@ -88,6 +123,21 @@ export default function ProjectWizardModal({
   const filteredMaterialProjects = materialProjects.filter((item) => {
     if (!effectiveCustomerId) return true
     return !item.customerId || item.customerId === effectiveCustomerId
+  })
+  const selectedTurbineId = form.turbineModel?.id || form.turbineModel?.model || ''
+  const filteredTurbineOptions = turbineOptions.filter((item) => {
+    const query = turbineQuery.trim().toLowerCase()
+    if (!query) return true
+    const text = [
+      item.model,
+      item.platform,
+      item.layout,
+      item.statusLabel,
+      item.ratedPowerKw,
+      item.rotorDiameterM,
+      ...(item.aliases || []),
+    ].join(' ').toLowerCase()
+    return text.includes(query)
   })
 
   useEffect(() => {
@@ -172,12 +222,47 @@ export default function ProjectWizardModal({
     }
   }, [form.bidType, isUpdateMode, project?.customerId, project?.customerName, project?.keyAccountId, project?.materialCustomerId, project?.materialProjectId, project?.materialProjectMode])
 
+  useEffect(() => {
+    let mounted = true
+    const loadTurbineOptions = async () => {
+      if (form.bidType !== '技术标') {
+        setTurbineOptions([])
+        setTurbineError('')
+        return
+      }
+      setLoadingTurbines(true)
+      setTurbineError('')
+      try {
+        const payload = await materialsAPI.turbineModelOptions({ bidType: form.bidType })
+        if (!mounted) return
+        const options = (Array.isArray(payload?.items) ? payload.items : []).map(normalizeTurbineModel).filter((item) => item.model)
+        setTurbineOptions(options)
+        setForm((prev) => {
+          if (prev.turbineModel?.model) return prev
+          const first = options.find((item) => item.status !== 'deprecated') || options[0]
+          return first ? { ...prev, turbineModel: first } : prev
+        })
+      } catch (e) {
+        if (!mounted) return
+        setTurbineOptions([])
+        setTurbineError(e?.message || '投标机型候选加载失败，可手工录入。')
+      } finally {
+        if (mounted) setLoadingTurbines(false)
+      }
+    }
+    loadTurbineOptions()
+    return () => {
+      mounted = false
+    }
+  }, [form.bidType])
+
   const canNextStep = useMemo(() => {
     if (step !== 0) return true
     if (!form.name.trim()) return false
     if (!form.customerName.trim()) return false
     if (customerMode === 'library' && !selectedMaterialCustomerId) return false
     if (materialProjectMode === 'library' && !selectedMaterialProjectId) return false
+    if (form.bidType === '技术标' && !String(form.turbineModel?.model || '').trim()) return false
     if (!form.manager.trim()) return false
     if (!form.startDate) return false
     if (!form.endDate) return false
@@ -210,6 +295,13 @@ export default function ProjectWizardModal({
         materialProjectId: materialProjectMode === 'library' ? selectedMaterialProject?.projectId || selectedMaterialProjectId : '',
         materialProjectCode: materialProjectMode === 'library' ? selectedMaterialProject?.projectCode || selectedMaterialProjectId : form.projectCode,
         materialProjectName: materialProjectMode === 'library' ? selectedMaterialProject?.name || selectedMaterialProjectId : (form.materialProjectName || form.name),
+        turbineModel: form.bidType === '技术标'
+          ? {
+              ...form.turbineModel,
+              model: String(form.turbineModel?.model || '').trim(),
+              source: form.turbineModel?.source || 'manual',
+            }
+          : {},
       }
       if (forceReviewDecision) payload.reviewDecision = forceReviewDecision
 
@@ -486,6 +578,81 @@ export default function ProjectWizardModal({
                   )}
                 </div>
               </div>
+              {form.bidType === '技术标' && (
+                <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+                  <div className="lg:col-span-3">
+                    <label className="block text-sm font-semibold text-on-surface mb-2">投标机型 *</label>
+                    <input
+                      className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                      list="turbine-model-options"
+                      placeholder={loadingTurbines ? '正在加载素材库机型...' : '搜索或输入投标机型，例如 EW10.0-220下置'}
+                      value={form.turbineModel?.model || ''}
+                      onChange={(e) => {
+                        const value = e.target.value
+                        const selected = turbineOptions.find((item) => item.model === value)
+                        updateForm('turbineModel', selected || normalizeTurbineModel({ model: value, source: 'manual', status: 'manual', statusLabel: '人工录入' }))
+                      }}
+                    />
+                    <datalist id="turbine-model-options">
+                      {turbineOptions.map((item) => (
+                        <option key={`${item.id || item.model}-${item.platform}-${item.layout}`} value={item.model}>
+                          {turbineModelLabel(item)}
+                        </option>
+                      ))}
+                    </datalist>
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        className="min-w-0 flex-1 h-8 px-3 bg-white border border-[#c2d0df] text-xs text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                        placeholder="筛选候选：功率、平台、上置/下置"
+                        value={turbineQuery}
+                        onChange={(e) => setTurbineQuery(e.target.value)}
+                      />
+                      <span className="h-8 px-2 inline-flex items-center text-xs text-outline border border-[#d5dee8] bg-white">
+                        {filteredTurbineOptions.length}/{turbineOptions.length || 0}
+                      </span>
+                    </div>
+                    {(turbineError || loadingTurbines) && (
+                      <p className={`text-xs mt-2 ${turbineError ? 'text-error' : 'text-outline'}`}>
+                        {turbineError || '正在从素材库参数表提取机型候选...'}
+                      </p>
+                    )}
+                    {filteredTurbineOptions.length > 0 && (
+                      <div className="mt-2 max-h-28 overflow-y-auto border border-[#d5dee8] bg-white">
+                        {filteredTurbineOptions.slice(0, 24).map((item) => {
+                          const checked = selectedTurbineId === (item.id || item.model)
+                            || form.turbineModel?.model === item.model
+                          return (
+                            <button
+                              key={`${item.id || item.model}-${item.platform}-${item.layout}`}
+                              type="button"
+                              onClick={() => updateForm('turbineModel', item)}
+                              className={`w-full text-left px-3 py-2 text-xs border-b last:border-b-0 border-[#e0e7ef] hover:bg-[#edf6ff] ${checked ? 'bg-[#e2f2ff] text-[#0068b7]' : 'text-on-surface'}`}
+                            >
+                              <span className="font-semibold">{item.model}</span>
+                              <span className="ml-2 text-outline">{[item.platform, item.ratedPowerKw ? `${item.ratedPowerKw}kW` : '', item.rotorDiameterM ? `${item.rotorDiameterM}m` : '', item.statusLabel].filter(Boolean).join(' / ')}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                  <div className="lg:col-span-2">
+                    <label className="block text-sm font-semibold text-on-surface mb-2">机型参数</label>
+                    <div className="min-h-[104px] border border-[#d2dce8] bg-[#f8fbfd] px-3 py-2 text-xs text-on-surface">
+                      {form.turbineModel?.model ? (
+                        <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                          <span className="text-outline">平台</span><span>{form.turbineModel.platform || '—'}</span>
+                          <span className="text-outline">功率</span><span>{form.turbineModel.ratedPowerKw ? `${form.turbineModel.ratedPowerKw} kW` : '—'}</span>
+                          <span className="text-outline">叶轮</span><span>{form.turbineModel.rotorDiameterM ? `${form.turbineModel.rotorDiameterM} m` : '—'}</span>
+                          <span className="text-outline">状态</span><span>{form.turbineModel.statusLabel || form.turbineModel.status || '—'}</span>
+                        </div>
+                      ) : (
+                        <span className="text-outline">选择或录入投标机型后，后续缺口处理和 AI 填写会自动带入。</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-semibold text-on-surface mb-2">起始日期 *</label>
@@ -523,6 +690,7 @@ export default function ProjectWizardModal({
 	                    ['客户来源', customerMode === 'library' ? '素材库客户' : '普通客户'],
 	                    ['素材库项目', materialProjectMode === 'library' ? selectedMaterialProject?.name || '—' : form.materialProjectName || form.name || '普通项目'],
 	                    ['素材项目ID', materialProjectMode === 'library' ? selectedMaterialProjectId || '—' : project?.materialProjectId || '创建后生成'],
+	                    ['投标机型', form.bidType === '技术标' ? turbineModelLabel(form.turbineModel) || '—' : '—'],
 	                    ['负责人', form.manager || '—'],
 	                    ['标书类型', form.bidType],
 	                    ['起始日期', form.startDate || '—'],

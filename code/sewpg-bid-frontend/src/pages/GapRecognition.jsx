@@ -115,6 +115,15 @@ export default function GapRecognition({ showToast }) {
     [readableScopes],
   )
   const scopeSummary = materialScope?.summary || scopePaths.join('；')
+  const projectTurbineModel = data?.gapPlan?.projectTurbineModel || data?.projectTurbineModel || materialScope?.turbineModel || null
+  const turbineModelLabel = projectTurbineModel?.model
+    ? [
+        projectTurbineModel.model,
+        projectTurbineModel.platform,
+        projectTurbineModel.ratedPowerKw ? `${projectTurbineModel.ratedPowerKw}kW` : '',
+        projectTurbineModel.rotorDiameterM ? `叶轮${projectTurbineModel.rotorDiameterM}m` : '',
+      ].filter(Boolean).join(' / ')
+    : ''
 
   const updatePayload = (payload) => {
     const next = payload?.payload || payload
@@ -151,6 +160,7 @@ export default function GapRecognition({ showToast }) {
         folderPath,
         keyword: materialKeyword,
         bidType: materialScope?.bidType || data?.bidType || '技术标',
+        turbineModel: projectTurbineModel?.model || '',
         pageSize: 12,
         recursive: true,
       })))
@@ -195,8 +205,10 @@ export default function GapRecognition({ showToast }) {
           name: item.name,
           folderPath: item.folderPath,
           materialTier: item.materialTier,
-          cleanedFileName: item.cleanedFileName,
-        })),
+                        cleanedFileName: item.cleanedFileName,
+                        turbineModel: item.turbineModel,
+                        turbineModelLabel: item.turbineModelLabel,
+                      })),
       }),
       () => '已选择已有素材并挂回缺口计划。',
     )
@@ -344,6 +356,9 @@ export default function GapRecognition({ showToast }) {
             <p className="text-xs text-on-surface-variant mt-1">
               识别时间：{formatDateTime(data?.recognizedAt)} · 校验状态：{integrity?.status === 'passed' ? '已通过' : '未通过或待检查'}
             </p>
+            {turbineModelLabel ? (
+              <p className="text-xs text-on-surface-variant mt-1">投标机型：{turbineModelLabel}</p>
+            ) : null}
           </div>
           <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${isCompleted ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
             {isCompleted ? '计划已生成' : '待识别'}
@@ -460,7 +475,7 @@ export default function GapRecognition({ showToast }) {
                     </div>
                     {scopeSummary ? (
                       <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-xs text-outline">
-                        当前读取范围：{scopeSummary}
+                        当前读取范围：{scopeSummary}{turbineModelLabel ? `；机型筛选：${turbineModelLabel}` : ''}
                       </div>
                     ) : null}
                     <div className="mt-3 space-y-2 max-h-44 overflow-y-auto">

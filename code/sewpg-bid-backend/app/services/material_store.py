@@ -36,6 +36,12 @@ from app.models.materials import (
 )
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
+from app.services.turbine_models import (
+    extract_turbine_model_options_from_xlsx_bytes,
+    material_model_fit,
+    normalize_project_turbine_model,
+    turbine_model_from_material_name,
+)
 from app.services.identity import (
     CUSTOMER_REGISTRY,
     canonical_customer,
@@ -638,6 +644,55 @@ class MaterialStore:
             "projects": sorted(projects.values(), key=sort_key),
         }
 
+    async def turbine_model_options(self, bid_type: str = "技术标") -> dict[str, Any]:
+        normalized_bid_type = bid_type if bid_type in {"技术标", "商务标"} else "技术标"
+        options: list[dict[str, Any]] = []
+        fallback_hints: list[dict[str, Any]] = []
+        async with async_session() as session:
+            stmt = select(RawFile).options(selectinload(RawFile.folder))
+            result = await session.execute(stmt)
+            items = result.scalars().all()
+            for item in items:
+                ext = item.ext_fields or {}
+                item_bid_type = str(ext.get("bidType") or (item.folder.bid_type if item.folder else "") or normalized_bid_type)
+                if normalized_bid_type in {"技术标", "商务标"} and item_bid_type not in {normalized_bid_type, "通用"}:
+                    continue
+                file_id = f"RAW-{item.id:04d}"
+                folder_path = item.folder.path if item.folder else ""
+                name = str(item.name or "")
+                if self._looks_like_turbine_parameter_sheet(name, folder_path):
+                    try:
+                        data = minio_client.get_object(str(item.minio_bucket), str(item.minio_key))
+                        options.extend(
+                            extract_turbine_model_options_from_xlsx_bytes(
+                                data,
+                                source_file_id=file_id,
+                                source_file_name=name,
+                                folder_path=folder_path,
+                            )
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to extract turbine model options from %s: %s", file_id, exc)
+                hint = turbine_model_from_material_name(name, source_file_id=file_id, folder_path=folder_path)
+                if hint:
+                    fallback_hints.append(
+                        {
+                            **hint,
+                            "id": f"{hint['model']}-{file_id}",
+                            "label": hint["model"],
+                            "evidence": [{"sourceFileId": file_id, "sourceFileName": name, "folderPath": folder_path}],
+                        }
+                    )
+        deduped = self._dedupe_turbine_options(options)
+        if not deduped:
+            deduped = self._dedupe_turbine_options(fallback_hints)
+        return {
+            "items": deduped,
+            "total": len(deduped),
+            "source": "material_library",
+            "bidType": normalized_bid_type,
+        }
+
     async def raw_files(
         self,
         *,
@@ -648,10 +703,12 @@ class MaterialStore:
         material_tier: str = "",
         clean_status: str = "",
         keyword: str = "",
+        turbine_model: dict[str, Any] | str | None = None,
         recursive: bool = True,
         page: int = 1,
         page_size: int = 20,
     ) -> dict[str, Any]:
+        selected_turbine = normalize_project_turbine_model(turbine_model)
         async with async_session() as session:
             stmt = select(RawFile).options(selectinload(RawFile.folder))
             normalized_folder_path = str(folder_path or "").strip().strip("/")
@@ -692,8 +749,15 @@ class MaterialStore:
                 if normalized_clean_status and normalized_clean_status != "all":
                     if str(ext.get("cleanStatus") or "") != normalized_clean_status:
                         continue
+                fit = material_model_fit(item.to_dict(), selected_turbine)
+                if selected_turbine and fit == "conflict":
+                    continue
                 filtered.append(item)
 
+            if selected_turbine:
+                filtered.sort(
+                    key=lambda item: 0 if material_model_fit(item.to_dict(), selected_turbine) == "match" else 1
+                )
             total = len(filtered)
             start = max(0, (page - 1) * page_size)
             end = start + page_size
@@ -1158,6 +1222,7 @@ class MaterialStore:
                 )
                 item_bid_type = str(location.get("bidType") or normalized_bid_type)
                 clean_status, clean_message = clean_status_for_new_file(file_name)
+                turbine_hint = turbine_model_from_material_name(file_name, folder_path=folder.path)
                 item_customer_name = (
                     customer_name
                     or str(location.get("customerName") or "")
@@ -1196,6 +1261,15 @@ class MaterialStore:
                     "cleanMessage": clean_message,
                     "cleanUpdatedAt": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
                 }
+                if turbine_hint:
+                    common_ext.update(
+                        {
+                            "turbineModel": turbine_hint.get("model") or "",
+                            "turbineModelLabel": turbine_hint.get("model") or "",
+                            "turbinePlatform": turbine_hint.get("platform") or "",
+                            "turbineAliases": turbine_hint.get("aliases") or [],
+                        }
+                    )
 
                 if upload is not None and hasattr(upload, "file"):
                     file_stream = upload.file
@@ -1288,6 +1362,53 @@ class MaterialStore:
                 "items": uploaded_items,
                 "cleaning": {"queued": sum(1 for job in clean_jobs if job.get("queued")), "jobs": clean_jobs},
             }
+
+    @staticmethod
+    def _looks_like_turbine_parameter_sheet(file_name: str, folder_path: str) -> bool:
+        text = f"{folder_path}/{file_name}"
+        return file_name.lower().endswith((".xlsx", ".xlsm", ".xls")) and (
+            "投标机型参数" in text
+            or "机型投标参数" in text
+            or "机组主参数" in text
+        )
+
+    @staticmethod
+    def _dedupe_turbine_options(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for option in options:
+            model = str(option.get("model") or "").strip()
+            if not model:
+                continue
+            key = "|".join(
+                [
+                    model,
+                    str(option.get("platform") or ""),
+                    str(option.get("layout") or ""),
+                ]
+            )
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = dict(option)
+                continue
+            evidence = list(existing.get("evidence") or [])
+            for item in option.get("evidence") or []:
+                if item not in evidence:
+                    evidence.append(item)
+            aliases = list(existing.get("aliases") or [])
+            for alias in option.get("aliases") or []:
+                if alias not in aliases:
+                    aliases.append(alias)
+            existing["evidence"] = evidence
+            existing["aliases"] = aliases
+        status_order = {"active": 0, "research": 1, "not_approved": 2, "deprecated": 3}
+        return sorted(
+            merged.values(),
+            key=lambda item: (
+                status_order.get(str(item.get("status") or ""), 9),
+                -float(item.get("ratedPowerKw") or 0),
+                str(item.get("model") or ""),
+            ),
+        )
 
     async def raw_update_file(self, file_id: str, name: str) -> dict[str, Any]:
         numeric_id = int(file_id.replace("RAW-", ""))

@@ -30,6 +30,11 @@ async def identity_options(bidType: str = "") -> dict[str, Any]:
     return await material_store.identity_options(bid_type=bidType)
 
 
+@router.get("/api/materials/turbine-model-options")
+async def turbine_model_options(bidType: str = "技术标") -> dict[str, Any]:
+    return await material_store.turbine_model_options(bid_type=bidType)
+
+
 @router.get("/api/materials/raw/files")
 async def raw_files(
     folderPath: str = "",
@@ -39,6 +44,7 @@ async def raw_files(
     materialTier: str = "",
     cleanStatus: str = "",
     keyword: str = "",
+    turbineModel: str = "",
     recursive: bool = True,
     page: int = 1,
     pageSize: int = 20,
@@ -51,6 +57,7 @@ async def raw_files(
         material_tier=materialTier,
         clean_status=cleanStatus,
         keyword=keyword,
+        turbine_model=turbineModel,
         recursive=recursive,
         page=page,
         page_size=pageSize,

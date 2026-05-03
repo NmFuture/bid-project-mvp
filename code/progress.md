@@ -2987,3 +2987,42 @@ bid_workspace
 - `doc/README.md`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-03 22:20 人工指定投标机型并延续到缺口处理/生成标书
+
+- 完成待办 4“人工指定机型后选择素材”：项目确认页新增技术标投标机型选择，候选来自素材库真实 `X2平台机型投标参数_20250106.xlsx`，并支持搜索、候选点击和人工录入兜底。
+- 新增机型候选提取服务，只识别 `EW/W/SE + 功率-叶轮直径` 形态的整机投标机型，并过滤证书号、日期、发电机/变流器/齿轮箱/供应商编号等非机型噪声。
+- 项目 payload 持久化 `turbineModel / selectedTurbineModel / turbineModelLabel`，并在项目列表、项目详情和项目素材读取范围接口返回。
+- 不改 S1 模板与目录生成；从 S3 缺口处理开始将 `projectTurbineModel` 写入 `s4_gap_input.json / gap_plan.json / table_fill_input.json`，并传给 S4 `s7_assembly_input.json / project_params.json`。
+- S3 选择已有素材时带上项目机型，素材搜索优先同机型并过滤明显冲突机型；通用素材不因没有机型字段而被排除。
+- 缺口页展示当前投标机型，AI 填写 fallback 产物会写入投标机型上下文，后续一致性审计可沿用同一结构化字段。
+- 验证：`PYTHONPATH=./app .venv/bin/python -m unittest tests/test_turbine_model_selection.py tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_project_material_scope.py tests/test_store_persistence.py tests/test_wiki_generation.py` 通过，结果 `26 tests OK`。
+- 验证：`PYTHONPATH=./app .venv/bin/python -m py_compile app/services/turbine_models.py app/services/material_store.py app/services/gap_planning.py app/services/tech_assembly.py app/services/store.py app/api/routes/materials.py app/api/routes/projects.py opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py` 通过。
+- 验证：`npm run lint` 通过；`npm run build` 通过，仅保留既有 Vite chunk size 提示。
+- 运行态：已执行 `docker compose -f code/docker-compose.yml build fastapi worker web` 与 `up -d fastapi worker web`；`/api/healthz` 返回 ok，首页返回 200。
+- 运行态：`/api/materials/turbine-model-options?bidType=技术标` 从真实素材库返回 26 个候选，噪声检查未发现证书号、日期或组件编号；真实 Postgres 项目创建/查询验证可保存并返回 `turbineModel`，验证后已删除临时项目。
+
+### 2026-05-03 22:23:40 post-commit db4ce1d
+
+提交摘要：feat(projects): carry selected turbine model through gaps
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/api/routes/materials.py`
+- `code/sewpg-bid-backend/app/api/routes/projects.py`
+- `code/sewpg-bid-backend/app/models/materials.py`
+- `code/sewpg-bid-backend/app/services/gap_planning.py`
+- `code/sewpg-bid-backend/app/services/material_store.py`
+- `code/sewpg-bid-backend/app/services/store.py`
+- `code/sewpg-bid-backend/app/services/tech_assembly.py`
+- `code/sewpg-bid-backend/app/services/turbine_models.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_turbine_model_selection.py`
+- `code/sewpg-bid-frontend/src/api/index.js`
+- `code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx`
+- `code/sewpg-bid-frontend/src/pages/GapRecognition.jsx`
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

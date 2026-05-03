@@ -15,6 +15,7 @@ from app.services.minio_client import minio_client
 from app.services.onlyoffice_documents import document_path
 from app.services.opencode_client import OpencodeClient
 from app.services.store import now_iso, store
+from app.services.turbine_models import project_turbine_model
 from app.services.workspace_artifacts import legacy_workspace_roots, technical_workspace_stage_dir
 from app.services.wiki_export import export_wiki
 
@@ -52,6 +53,7 @@ def assemble_tech_bid_for_project_with_progress(
     material_library_dir, material_cards = _export_material_library(wiki_dir, work_dir / "素材库")
     template_file = _select_template_file(template_file_records)
     project_params = _build_project_params(project, toc_json_path)
+    turbine_model = project_turbine_model(project)
 
     if progress_callback:
         progress_callback(
@@ -79,6 +81,7 @@ def assemble_tech_bid_for_project_with_progress(
         "templateFile": str(template_file) if template_file else "",
         "projectParamsPath": str(work_dir / "project_params.json"),
         "projectParams": project_params,
+        "projectTurbineModel": turbine_model,
         "outputFile": str(output_file),
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -338,11 +341,17 @@ def _build_project_params(project: dict[str, Any], toc_json_path: Path) -> dict[
     toc_project = data.get("project") if isinstance(data, dict) else {}
     if not isinstance(toc_project, dict):
         toc_project = {}
+    turbine = project_turbine_model(project)
     return {
         "project_name": str(toc_project.get("name") or project.get("name") or project.get("id") or ""),
         "project_short": str(project.get("name") or project.get("id") or "项目")[:24],
         "client_name": str(toc_project.get("owner") or project.get("customerName") or ""),
         "tender_no": str(toc_project.get("code") or project.get("projectCode") or ""),
+        "turbine_model": str(turbine.get("model") or ""),
+        "turbine_platform": str(turbine.get("platform") or ""),
+        "rated_power_kw": turbine.get("ratedPowerKw") or "",
+        "rotor_diameter_m": turbine.get("rotorDiameterM") or "",
+        "turbine_layout": str(turbine.get("layout") or ""),
     }
 
 

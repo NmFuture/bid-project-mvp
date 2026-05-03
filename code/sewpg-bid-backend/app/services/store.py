@@ -25,6 +25,7 @@ from app.services.gap_planning import (
     summarize_gap_plan,
 )
 from app.services.workspace_artifacts import cleanup_parse_temp_workspace, promote_parse_artifacts_to_workspace
+from app.services.turbine_models import normalize_project_turbine_model, project_turbine_model
 
 
 STAGE_SCHEME = "S0_S6"
@@ -340,6 +341,10 @@ class AppStore:
         project["materialProjectCode"] = identity.get("projectCode") or ""
         project["materialProjectName"] = identity.get("projectName") or ""
         project["materialProjectMode"] = identity.get("materialProjectMode") or project.get("materialProjectMode") or ""
+        turbine = project_turbine_model(project)
+        project["turbineModel"] = turbine
+        project["selectedTurbineModel"] = copy.deepcopy(turbine)
+        project["turbineModelLabel"] = str(turbine.get("model") or "")
         return project
 
     @staticmethod
@@ -386,6 +391,9 @@ class AppStore:
             "materialProjectCode": project.get("materialProjectCode") or identity.get("projectCode") or "",
             "materialProjectName": project.get("materialProjectName") or identity.get("projectName") or "",
             "materialProjectMode": project.get("materialProjectMode") or identity.get("materialProjectMode") or "",
+            "turbineModel": copy.deepcopy(project_turbine_model(project)),
+            "selectedTurbineModel": copy.deepcopy(project_turbine_model(project)),
+            "turbineModelLabel": str(project_turbine_model(project).get("model") or ""),
             "owner": project["owner"],
             "manager": project["manager"],
             "startDate": project.get("startDate") or "",
@@ -471,6 +479,9 @@ class AppStore:
             "endDate": str(data.get("endDate") or data.get("deadline") or ""),
             "deadline": str(data.get("deadline") or data.get("endDate") or ""),
             "bidType": str(data.get("bidType") or "技术标"),
+            "turbineModel": normalize_project_turbine_model(
+                data.get("turbineModel") or data.get("selectedTurbineModel") or data.get("machineModel")
+            ),
             "isKeyAccount": bool(data.get("isKeyAccount")),
             "keyAccountId": str(data.get("keyAccountId") or ""),
             "reviewDecision": review_decision,
@@ -622,6 +633,10 @@ class AppStore:
         ]:
             if field in data:
                 project[field] = str(data[field] or "") if field == "projectCode" else data[field]
+        if any(field in data for field in ("turbineModel", "selectedTurbineModel", "machineModel")):
+            project["turbineModel"] = normalize_project_turbine_model(
+                data.get("turbineModel") or data.get("selectedTurbineModel") or data.get("machineModel")
+            )
         if "endDate" in data and "deadline" not in data:
             project["deadline"] = str(data.get("endDate") or "")
         if "deadline" in data and "endDate" not in data:

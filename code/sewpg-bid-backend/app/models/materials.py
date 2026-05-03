@@ -119,6 +119,10 @@ class RawFile(Base):
             "cleanedAt": ext.get("cleanedAt") or "",
             "hasCleanedWord": bool(ext.get("cleanedMinioKey")),
             "cleanedDownloadUrl": f"/api/materials/raw/RAW-{self.id:04d}/cleaned/content" if ext.get("cleanedMinioKey") else "",
+            "turbineModel": ext.get("turbineModel") or "",
+            "turbineModelLabel": ext.get("turbineModelLabel") or ext.get("turbineModel") or "",
+            "turbinePlatform": ext.get("turbinePlatform") or "",
+            "turbineAliases": ext.get("turbineAliases") or [],
             "updatedAt": self.updated_at.isoformat() if self.updated_at else "",
         }
 

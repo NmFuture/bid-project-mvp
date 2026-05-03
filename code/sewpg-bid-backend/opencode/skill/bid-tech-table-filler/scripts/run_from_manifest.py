@@ -35,6 +35,15 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
     doc.add_heading(str(manifest.get("title") or "AI 填写产物"), level=1)
     doc.add_paragraph("本文件由 bid-tech-table-filler 根据人工指定参考素材和招标解析字段生成。")
     doc.add_paragraph(f"缺口项：{manifest.get('gapId') or ''}")
+    turbine = manifest.get("projectTurbineModel") if isinstance(manifest.get("projectTurbineModel"), dict) else {}
+    if turbine.get("model"):
+        turbine_parts = [
+            str(turbine.get("model") or ""),
+            str(turbine.get("platform") or ""),
+            f"{turbine.get('ratedPowerKw')}kW" if turbine.get("ratedPowerKw") else "",
+            f"叶轮{turbine.get('rotorDiameterM')}m" if turbine.get("rotorDiameterM") else "",
+        ]
+        doc.add_paragraph(f"投标机型：{' / '.join(part for part in turbine_parts if part)}")
     refs = manifest.get("referenceMaterialIds") if isinstance(manifest.get("referenceMaterialIds"), list) else []
     fields = manifest.get("parseFieldIds") if isinstance(manifest.get("parseFieldIds"), list) else []
     doc.add_paragraph(f"参考素材：{', '.join(str(item) for item in refs) if refs else '未指定'}")

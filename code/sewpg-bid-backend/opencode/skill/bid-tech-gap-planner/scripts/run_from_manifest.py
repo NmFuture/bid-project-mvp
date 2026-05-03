@@ -170,6 +170,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     appendices = appendices_from_parse(parse_result)
     raw_wiki_dir = str(manifest.get("wikiDir") or "").strip()
     wiki_index = wiki_cards_by_section(Path(raw_wiki_dir) if raw_wiki_dir else None)
+    project_turbine_model = manifest.get("projectTurbineModel") if isinstance(manifest.get("projectTurbineModel"), dict) else {}
     plan_items: list[dict[str, Any]] = []
     for index, item in enumerate(items, start=1):
         number = str(item.get("number") or "").strip()
@@ -217,6 +218,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 "resolvedArtifacts": [],
                 "reviewNotes": [],
                 "gapReason": gap_reason,
+                "projectTurbineModel": project_turbine_model,
             }
         )
 
@@ -226,6 +228,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         "projectId": str(manifest.get("projectId") or ""),
         "projectName": str(manifest.get("projectName") or ""),
         "bidType": str(manifest.get("bidType") or "技术标"),
+        "projectTurbineModel": project_turbine_model,
         "status": "ready",
         "createdAt": now_iso(),
         "updatedAt": now_iso(),

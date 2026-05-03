@@ -376,6 +376,10 @@ export const materialsAPI = {
     const qs = new URLSearchParams(cleanQuery(params)).toString()
     return request(`/materials/identity-options${qs ? `?${qs}` : ''}`)
   },
+  turbineModelOptions: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/materials/turbine-model-options${qs ? `?${qs}` : ''}`)
+  },
   raw: {
     permissions: (params = {}) => {
       const qs = new URLSearchParams(cleanQuery(params)).toString()

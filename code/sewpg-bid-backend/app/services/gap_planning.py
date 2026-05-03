@@ -17,6 +17,7 @@ from app.core.config import BASE_DIR, settings
 from app.services.material_store import material_store
 from app.services.minio_client import minio_client
 from app.services.opencode_client import OpencodeClient
+from app.services.turbine_models import project_turbine_model
 from app.services.workspace_artifacts import legacy_workspace_roots, technical_workspace_dir, technical_workspace_stage_dir
 
 
@@ -63,6 +64,7 @@ def build_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
     output_file = work_dir / "gap_plan.json"
     manifest_path = work_dir / "s4_gap_input.json"
     wiki_dir = _resolve_wiki_dir(project, project_dir, work_dir)
+    turbine_model = project_turbine_model(project)
     manifest = {
         "projectId": project_id,
         "projectName": str(project.get("name") or project_id),
@@ -72,6 +74,7 @@ def build_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
         "wikiDir": str(wiki_dir) if wiki_dir else "",
         "parseResultPath": str(parse_result_path),
         "projectIdentity": project.get("identity") or {},
+        "projectTurbineModel": turbine_model,
         "existingSubmissions": list((project.get("gap_state") or {}).get("submissions") or []),
         "outputFile": str(output_file),
     }
@@ -80,6 +83,7 @@ def build_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
     result = run_gap_planner_skill(manifest_path)
     plan_path = Path(str(result.get("outputFile") or output_file))
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan["projectTurbineModel"] = turbine_model
     plan["planFile"] = str(plan_path)
     plan["manifestPath"] = str(manifest_path)
     plan["opencodeOutput"] = result.get("opencodeOutput") or {
@@ -162,6 +166,7 @@ def run_ai_fill_for_gap(
         "schemaVersion": TABLE_FILL_SCHEMA_VERSION,
         "projectId": str(project.get("id") or ""),
         "projectName": str(project.get("name") or ""),
+        "projectTurbineModel": project_turbine_model(project),
         "gapId": gap_id,
         "fillTaskId": str(task.get("id") or ""),
         "title": str(item.get("title") or ""),
@@ -620,7 +625,7 @@ def _build_gap_planner_prompt(manifest_path: Path) -> str:
     return f"""
 Use the {GAP_PLANNER_SKILL_NAME} skill.
 
-你现在在做 S4 技术标缺口识别。后端已经准备好 manifest，其中包含人工确认后的目录 JSON、招标解析结构化结果、S2 素材 Wiki 副本、项目身份信息和历史补料记录。
+你现在在做 S4 技术标缺口识别。后端已经准备好 manifest，其中包含人工确认后的目录 JSON、招标解析结构化结果、S2 素材 Wiki 副本、项目身份信息、人工确认的投标机型信息和历史补料记录。
 
 manifest：{manifest_path}
 
