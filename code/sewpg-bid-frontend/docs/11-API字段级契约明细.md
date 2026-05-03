@@ -28,6 +28,12 @@
 | `customerName` | 客户名称 |
 | `manager` | 负责人 |
 | `bidType` | 当前标类，当前主要使用 `技术标` |
+| `projectCode` | 业务项目编号 |
+| `materialCustomerId / materialCustomerName` | 重要客户素材身份；普通客户可为空或由后端生成 |
+| `materialProjectMode` | `library` 表示已有项目，`ordinary` 表示普通项目 |
+| `materialProjectId / materialProjectCode / materialProjectName` | 项目素材身份和展示名称 |
+| `turbineModel` | 技术标投标机型结构化字段，来自素材库参数表候选或人工指定 |
+| `turbineModelLabel` | 投标机型展示名 |
 | `currentStage` | 项目内阶段，范围 `1-6` |
 | `stageLabel` | 当前阶段名称 |
 | `files` | 招标文件展示摘要 |
@@ -79,6 +85,14 @@ GET /api/projects/{project_id}/materials-path
 技术标/通用素材
 技术标/客户素材/{客户}
 技术标/项目素材/{素材项目ID}
+```
+
+项目信息页展示口径：
+
+```text
+客户来源：重要客户 / 普通客户
+项目来源：已有项目 / 普通项目
+投标机型：下拉候选来自 /api/materials/turbine-model-options，人工指定仅作兜底
 ```
 
 技术标 Wiki 由后端生成，一级结构固定为：

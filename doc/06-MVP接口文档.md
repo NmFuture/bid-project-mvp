@@ -141,6 +141,25 @@ S0 解析 -> S1 模板与目录 -> S2 审核目录 -> S3 缺口处理 -> S4 生�
 | `deadline` | string | 截止日期 |
 | `bidFiles` | file[] | 招标文件 |
 
+项目补全字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `projectCode` | string | 业务项目编号 |
+| `materialCustomerId` | string | 重要客户 ID；普通客户为空或由后端生成 |
+| `materialCustomerName` | string | 重要客户标准名称或普通客户名称 |
+| `materialProjectMode` | string | `library` 表示已有项目，`ordinary` 表示普通项目 |
+| `materialProjectId` | string | 已有项目或普通项目的素材项目 ID |
+| `materialProjectCode` | string | 已有项目或普通项目编号 |
+| `materialProjectName` | string | 已有项目或普通项目名称 |
+| `turbineModel` | object | 技术标投标机型结构化字段，包含 `model/platform/layout/ratedPowerKw/rotorDiameterM/status/source` 等 |
+
+说明：
+
+- 前端项目信息页的客户来源展示为 `重要客户 / 普通客户`；接口字段仍沿用 `materialCustomer*`，表示项目绑定的客户素材读取身份。
+- 前端项目信息页的项目来源展示为 `已有项目 / 普通项目`；接口字段仍沿用 `materialProject*`，表示项目绑定的项目素材读取身份。
+- 技术标项目创建或更新时应提交已确认的 `turbineModel`。备选机型不作为静态 JSON 保存；页面通过 `/api/materials/turbine-model-options` 实时读取素材库参数表解析结果，只有选中的机型随项目保存。
+
 ### `GET /api/projects/{id}`
 
 - 用途：项目详情
@@ -150,6 +169,8 @@ S0 解析 -> S1 模板与目录 -> S2 审核目录 -> S3 缺口处理 -> S4 生�
 
 - 用途：更新项目基础信息和 `S0` 投标决策
 - 是否真实：真实
+
+说明：可更新 `projectCode`、客户/项目素材身份、负责人、起止日期和 `turbineModel`。`turbineModel` 会规范化后写入项目 payload，并在项目详情、列表摘要、缺口处理和生成标书 manifest 中复用。
 
 ### `DELETE /api/projects/{id}`
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { materialsAPI, projectsAPI } from '../../api'
 
 const STEPS = ['基本信息', '确认创建']
+const MANUAL_TURBINE_VALUE = '__manual_turbine_model__'
 
 const normalizeCustomers = (list = []) =>
   (Array.isArray(list) ? list : [])
@@ -93,6 +94,10 @@ export default function ProjectWizardModal({
   const isUpdateMode = mode === 'update' && Boolean(project?.id)
   const [step, setStep] = useState(0)
   const [form, setForm] = useState(() => buildInitialForm(project, defaultBidType))
+  const [turbineEntryMode, setTurbineEntryMode] = useState(() => {
+    const initial = normalizeTurbineModel(project?.turbineModel || project?.selectedTurbineModel)
+    return initial.model && initial.source === 'manual' ? 'manual' : 'library'
+  })
   const [customerMode, setCustomerMode] = useState(
     project?.materialCustomerId || project?.customerId || project?.isKeyAccount ? 'library' : 'ordinary',
   )
@@ -102,7 +107,6 @@ export default function ProjectWizardModal({
   const [materialCustomers, setMaterialCustomers] = useState([])
   const [materialProjects, setMaterialProjects] = useState([])
   const [turbineOptions, setTurbineOptions] = useState([])
-  const [turbineQuery, setTurbineQuery] = useState('')
   const [loadingTurbines, setLoadingTurbines] = useState(false)
   const [turbineError, setTurbineError] = useState('')
   const [selectedMaterialCustomerId, setSelectedMaterialCustomerId] = useState(
@@ -125,20 +129,17 @@ export default function ProjectWizardModal({
     return !item.customerId || item.customerId === effectiveCustomerId
   })
   const selectedTurbineId = form.turbineModel?.id || form.turbineModel?.model || ''
-  const filteredTurbineOptions = turbineOptions.filter((item) => {
-    const query = turbineQuery.trim().toLowerCase()
-    if (!query) return true
-    const text = [
-      item.model,
-      item.platform,
-      item.layout,
-      item.statusLabel,
-      item.ratedPowerKw,
-      item.rotorDiameterM,
-      ...(item.aliases || []),
-    ].join(' ').toLowerCase()
-    return text.includes(query)
+  const selectedTurbineOption = turbineOptions.find((item) => {
+    const optionId = item.id || item.model
+    return optionId === selectedTurbineId || item.model === form.turbineModel?.model
   })
+  const turbineSelectValue = form.turbineModel?.model
+    ? turbineEntryMode === 'manual'
+      ? MANUAL_TURBINE_VALUE
+      : selectedTurbineOption?.id || selectedTurbineOption?.model || MANUAL_TURBINE_VALUE
+    : turbineEntryMode === 'manual'
+      ? MANUAL_TURBINE_VALUE
+      : ''
 
   useEffect(() => {
     if (isUpdateMode || !defaultBidType) return
@@ -211,7 +212,7 @@ export default function ProjectWizardModal({
         setMaterialCustomers([])
         setMaterialProjects([])
         if (!isUpdateMode) setCustomerMode('ordinary')
-        setIdentityError(e?.message || '素材库客户/项目加载失败，可选择普通客户或普通项目。')
+        setIdentityError(e?.message || '客户/项目候选加载失败，可选择普通客户或普通项目。')
       } finally {
         if (mounted) setLoadingIdentities(false)
       }
@@ -272,8 +273,8 @@ export default function ProjectWizardModal({
   const archivePathPreview = useMemo(() => {
     const customer = form.customerName.trim() || '客户名'
     const projectIdentity = materialProjectMode === 'library'
-      ? selectedMaterialProject?.projectId || selectedMaterialProjectId || '素材库项目ID'
-      : project?.materialProjectId || '系统生成素材项目ID'
+      ? selectedMaterialProject?.projectId || selectedMaterialProjectId || '项目ID'
+      : project?.materialProjectId || '系统生成项目ID'
     return `技术标/客户素材/${customer}；技术标/项目素材/${projectIdentity}`
   }, [form.customerName, materialProjectMode, project?.materialProjectId, selectedMaterialProject?.projectId, selectedMaterialProjectId])
 
@@ -398,16 +399,27 @@ export default function ProjectWizardModal({
                   />
                 </div>
               </div>
-              <div>
-                <label className="block text-sm font-semibold text-on-surface mb-2">业务项目编号</label>
-                <input
-                  className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                  placeholder="例如：招标编号、项目编号"
-                  value={form.projectCode}
-                  onChange={(e) => updateForm('projectCode', e.target.value)}
-                />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-semibold text-on-surface mb-2">业务项目编号</label>
+                  <input
+                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                    placeholder="例如：招标编号、项目编号"
+                    value={form.projectCode}
+                    onChange={(e) => updateForm('projectCode', e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-on-surface mb-2">负责人 *</label>
+                  <input
+                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                    placeholder="张建国"
+                    value={form.manager}
+                    onChange={(e) => updateForm('manager', e.target.value)}
+                  />
+                </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-semibold text-on-surface mb-2">客户来源</label>
                   <select
@@ -431,69 +443,60 @@ export default function ProjectWizardModal({
                     }}
                     disabled={loadingIdentities}
                   >
-                    <option value="library" disabled={!materialCustomers.length}>素材库客户</option>
+                    <option value="library" disabled={!materialCustomers.length}>重要客户</option>
                     <option value="ordinary">普通客户</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">负责人 *</label>
-                  <input
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                    placeholder="张建国"
-                    value={form.manager}
-                    onChange={(e) => updateForm('manager', e.target.value)}
-                  />
+                  <label className="block text-sm font-semibold text-on-surface mb-2">业主单位（客户） *</label>
+                  {customerMode === 'library' && materialCustomers.length > 0 ? (
+                    <select
+                      className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                      value={selectedMaterialCustomerId}
+                      onChange={(e) => {
+                        const nextId = e.target.value
+                        setSelectedMaterialCustomerId(nextId)
+                        const selected = materialCustomers.find((item) => item.id === nextId)
+                        if (selected) {
+                          setForm((prev) => ({
+                            ...prev,
+                            customerId: selected.customerId,
+                            customerCanonicalName: selected.name,
+                            customerName: selected.name,
+                          }))
+                          const currentProject = materialProjects.find((item) => item.id === selectedMaterialProjectId)
+                          if (currentProject?.customerId && currentProject.customerId !== selected.customerId) {
+                            setSelectedMaterialProjectId('')
+                          }
+                        }
+                      }}
+                    >
+                      {materialCustomers.map((item) => (
+                        <option key={item.id} value={item.id}>{customerLabel(item)}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                      placeholder="输入客户名称，例如：华能集团"
+                      value={form.customerName}
+                      onChange={(e) => {
+                        updateForm('customerName', e.target.value)
+                        updateForm('customerId', '')
+                        updateForm('customerCanonicalName', e.target.value)
+                      }}
+                    />
+                  )}
+                  {(identityError || loadingIdentities) && (
+                    <p className={`text-xs mt-2 ${identityError ? 'text-error' : 'text-outline'}`}>
+                      {identityError || '正在加载客户/项目...'}
+                    </p>
+                  )}
                 </div>
               </div>
-              <div>
-                <label className="block text-sm font-semibold text-on-surface mb-2">业主单位（客户） *</label>
-                {customerMode === 'library' && materialCustomers.length > 0 ? (
-                  <select
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
-                    value={selectedMaterialCustomerId}
-                    onChange={(e) => {
-                      const nextId = e.target.value
-                      setSelectedMaterialCustomerId(nextId)
-                      const selected = materialCustomers.find((item) => item.id === nextId)
-                      if (selected) {
-                        setForm((prev) => ({
-                          ...prev,
-                          customerId: selected.customerId,
-                          customerCanonicalName: selected.name,
-                          customerName: selected.name,
-                        }))
-                        const currentProject = materialProjects.find((item) => item.id === selectedMaterialProjectId)
-                        if (currentProject?.customerId && currentProject.customerId !== selected.customerId) {
-                          setSelectedMaterialProjectId('')
-                        }
-                      }
-                    }}
-                  >
-                    {materialCustomers.map((item) => (
-                      <option key={item.id} value={item.id}>{customerLabel(item)}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                    placeholder="输入客户名称，例如：华能集团"
-                    value={form.customerName}
-                    onChange={(e) => {
-                      updateForm('customerName', e.target.value)
-                      updateForm('customerId', '')
-                      updateForm('customerCanonicalName', e.target.value)
-                    }}
-                  />
-                )}
-                {(identityError || loadingIdentities) && (
-                  <p className={`text-xs mt-2 ${identityError ? 'text-error' : 'text-outline'}`}>
-                    {identityError || '正在加载素材库客户/项目...'}
-                  </p>
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">素材项目来源</label>
+                  <label className="block text-sm font-semibold text-on-surface mb-2">项目来源</label>
                   <select
                     className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
                     value={materialProjectMode}
@@ -527,12 +530,12 @@ export default function ProjectWizardModal({
                     }}
                     disabled={loadingIdentities}
                   >
-                    <option value="library" disabled={!filteredMaterialProjects.length}>素材库项目</option>
+                    <option value="library" disabled={!filteredMaterialProjects.length}>已有项目</option>
                     <option value="ordinary">普通项目</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">素材库项目 *</label>
+                  <label className="block text-sm font-semibold text-on-surface mb-2">项目 *</label>
                   {materialProjectMode === 'library' && filteredMaterialProjects.length > 0 ? (
                     <select
                       className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
@@ -541,29 +544,29 @@ export default function ProjectWizardModal({
                         const nextId = e.target.value
                         setSelectedMaterialProjectId(nextId)
                         const selected = materialProjects.find((item) => item.id === nextId)
-	                        if (selected) {
-	                          setForm((prev) => ({
-	                            ...prev,
-	                            materialProjectName: selected.name,
-	                            projectCode: prev.projectCode || selected.projectCode,
-	                          }))
-	                          if (selected.customerId) {
-	                            const customer = materialCustomers.find((item) => item.customerId === selected.customerId)
-	                            if (customer) {
-	                              setCustomerMode('library')
-	                              setSelectedMaterialCustomerId(customer.id)
-	                              setForm((prev) => ({
-	                                ...prev,
-	                                customerId: customer.customerId,
-	                                customerCanonicalName: customer.name,
-	                                customerName: customer.name,
-	                              }))
-	                            }
-	                          }
-	                        }
+                        if (selected) {
+                          setForm((prev) => ({
+                            ...prev,
+                            materialProjectName: selected.name,
+                            projectCode: prev.projectCode || selected.projectCode,
+                          }))
+                          if (selected.customerId) {
+                            const customer = materialCustomers.find((item) => item.customerId === selected.customerId)
+                            if (customer) {
+                              setCustomerMode('library')
+                              setSelectedMaterialCustomerId(customer.id)
+                              setForm((prev) => ({
+                                ...prev,
+                                customerId: customer.customerId,
+                                customerCanonicalName: customer.name,
+                                customerName: customer.name,
+                              }))
+                            }
+                          }
+                        }
                       }}
                     >
-                      <option value="">选择素材库项目</option>
+                      <option value="">选择项目</option>
                       {filteredMaterialProjects.map((item) => (
                         <option key={item.id} value={item.id}>{materialProjectLabel(item)}</option>
                       ))}
@@ -571,7 +574,7 @@ export default function ProjectWizardModal({
                   ) : (
                     <input
                       className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                      placeholder="普通项目名称，不填则使用投标项目名称"
+                      placeholder="项目名称，不填则使用投标项目名称"
                       value={form.materialProjectName}
                       onChange={(e) => updateForm('materialProjectName', e.target.value)}
                     />
@@ -582,58 +585,58 @@ export default function ProjectWizardModal({
                 <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
                   <div className="lg:col-span-3">
                     <label className="block text-sm font-semibold text-on-surface mb-2">投标机型 *</label>
-                    <input
-                      className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                      list="turbine-model-options"
-                      placeholder={loadingTurbines ? '正在加载素材库机型...' : '搜索或输入投标机型，例如 EW10.0-220下置'}
-                      value={form.turbineModel?.model || ''}
+                    <select
+                      className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                      value={turbineSelectValue}
                       onChange={(e) => {
                         const value = e.target.value
-                        const selected = turbineOptions.find((item) => item.model === value)
-                        updateForm('turbineModel', selected || normalizeTurbineModel({ model: value, source: 'manual', status: 'manual', statusLabel: '人工录入' }))
+                        if (!value) {
+                          setTurbineEntryMode('library')
+                          updateForm('turbineModel', normalizeTurbineModel())
+                          return
+                        }
+                        if (value === MANUAL_TURBINE_VALUE) {
+                          setTurbineEntryMode('manual')
+                          updateForm('turbineModel', normalizeTurbineModel({
+                            model: form.turbineModel?.model || '',
+                            source: 'manual',
+                            status: 'manual',
+                            statusLabel: '人工指定',
+                          }))
+                          return
+                        }
+                        const selected = turbineOptions.find((item) => (item.id || item.model) === value)
+                        setTurbineEntryMode('library')
+                        updateForm('turbineModel', selected || normalizeTurbineModel())
                       }}
-                    />
-                    <datalist id="turbine-model-options">
+                      disabled={loadingTurbines && turbineOptions.length === 0}
+                    >
+                      <option value="">{loadingTurbines ? '正在加载机型...' : '选择投标机型'}</option>
                       {turbineOptions.map((item) => (
-                        <option key={`${item.id || item.model}-${item.platform}-${item.layout}`} value={item.model}>
+                        <option key={`${item.id || item.model}-${item.platform}-${item.layout}`} value={item.id || item.model}>
                           {turbineModelLabel(item)}
                         </option>
                       ))}
-                    </datalist>
-                    <div className="mt-2 flex gap-2">
+                      <option value={MANUAL_TURBINE_VALUE}>人工指定机型</option>
+                    </select>
+                    {turbineSelectValue === MANUAL_TURBINE_VALUE && (
                       <input
-                        className="min-w-0 flex-1 h-8 px-3 bg-white border border-[#c2d0df] text-xs text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                        placeholder="筛选候选：功率、平台、上置/下置"
-                        value={turbineQuery}
-                        onChange={(e) => setTurbineQuery(e.target.value)}
+                        className="mt-2 w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                        placeholder="输入投标机型，例如 EW10.0-220下置"
+                        value={form.turbineModel?.model || ''}
+                        onChange={(e) => updateForm('turbineModel', normalizeTurbineModel({
+                          ...form.turbineModel,
+                          model: e.target.value,
+                          source: 'manual',
+                          status: 'manual',
+                          statusLabel: '人工指定',
+                        }))}
                       />
-                      <span className="h-8 px-2 inline-flex items-center text-xs text-outline border border-[#d5dee8] bg-white">
-                        {filteredTurbineOptions.length}/{turbineOptions.length || 0}
-                      </span>
-                    </div>
+                    )}
                     {(turbineError || loadingTurbines) && (
                       <p className={`text-xs mt-2 ${turbineError ? 'text-error' : 'text-outline'}`}>
-                        {turbineError || '正在从素材库参数表提取机型候选...'}
+                        {turbineError || '正在加载机型候选...'}
                       </p>
-                    )}
-                    {filteredTurbineOptions.length > 0 && (
-                      <div className="mt-2 max-h-28 overflow-y-auto border border-[#d5dee8] bg-white">
-                        {filteredTurbineOptions.slice(0, 24).map((item) => {
-                          const checked = selectedTurbineId === (item.id || item.model)
-                            || form.turbineModel?.model === item.model
-                          return (
-                            <button
-                              key={`${item.id || item.model}-${item.platform}-${item.layout}`}
-                              type="button"
-                              onClick={() => updateForm('turbineModel', item)}
-                              className={`w-full text-left px-3 py-2 text-xs border-b last:border-b-0 border-[#e0e7ef] hover:bg-[#edf6ff] ${checked ? 'bg-[#e2f2ff] text-[#0068b7]' : 'text-on-surface'}`}
-                            >
-                              <span className="font-semibold">{item.model}</span>
-                              <span className="ml-2 text-outline">{[item.platform, item.ratedPowerKw ? `${item.ratedPowerKw}kW` : '', item.rotorDiameterM ? `${item.rotorDiameterM}m` : '', item.statusLabel].filter(Boolean).join(' / ')}</span>
-                            </button>
-                          )
-                        })}
-                      </div>
                     )}
                   </div>
                   <div className="lg:col-span-2">
@@ -687,9 +690,9 @@ export default function ProjectWizardModal({
 	                    ['项目名称', form.name || '—'],
 	                    ['业务项目编号', form.projectCode || (project?.id || '创建后生成')],
 	                    ['业主单位', form.customerName || '—'],
-	                    ['客户来源', customerMode === 'library' ? '素材库客户' : '普通客户'],
-	                    ['素材库项目', materialProjectMode === 'library' ? selectedMaterialProject?.name || '—' : form.materialProjectName || form.name || '普通项目'],
-	                    ['素材项目ID', materialProjectMode === 'library' ? selectedMaterialProjectId || '—' : project?.materialProjectId || '创建后生成'],
+	                    ['客户来源', customerMode === 'library' ? '重要客户' : '普通客户'],
+	                    ['项目', materialProjectMode === 'library' ? selectedMaterialProject?.name || '—' : form.materialProjectName || form.name || '普通项目'],
+	                    ['项目ID', materialProjectMode === 'library' ? selectedMaterialProjectId || '—' : project?.materialProjectId || '创建后生成'],
 	                    ['投标机型', form.bidType === '技术标' ? turbineModelLabel(form.turbineModel) || '—' : '—'],
 	                    ['负责人', form.manager || '—'],
 	                    ['标书类型', form.bidType],

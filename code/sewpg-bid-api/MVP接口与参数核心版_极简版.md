@@ -13,6 +13,8 @@
 - `fill-generation`、`coverage` 等接口名是历史兼容名，不代表旧独立阶段
 - 项目内历史 URL `/projects/:id/parse` 兼容跳转到 `/projects/:id/template-directory`
 - `S0` 上传必须是真文件上传：`multipart/form-data`，不能只传文件名或文件元数据
+- 项目信息补全页使用业务文案：`客户来源 = 重要客户 / 普通客户`，`项目来源 = 已有项目 / 普通项目`
+- 技术标项目必须确认 `投标机型`；候选来自素材库参数表动态解析，只有用户选中的 `turbineModel` 随项目保存并传给 `S3/S4`
 
 ## 2. 项目与阶段
 
@@ -31,6 +33,10 @@
     "manager": "张建国",
     "deadline": "2026-05-01",
     "bidType": "技术标",
+    "projectCode": "HN-GS-2026-001",
+    "materialCustomerName": "华能集团",
+    "materialProjectName": "甘肃华能100MW风电项目",
+    "turbineModelLabel": "EW10.0-220下置",
     "currentStage": 1,
     "stageLabel": "模板与目录",
     "updatedAt": "2026-04-19T10:00:00.000Z"
@@ -51,11 +57,31 @@
   "manager": "张建国",
   "deadline": "2026-05-01",
   "bidType": "技术标",
-  "owner": "华能集团",
-  "isKeyAccount": true,
-  "keyAccountId": "KA-HN"
+  "projectCode": "HN-GS-2026-001",
+  "materialCustomerId": "CUST-HUANENG",
+  "materialCustomerName": "华能集团",
+  "materialProjectMode": "library",
+  "materialProjectId": "1",
+  "materialProjectCode": "MAT-GS-001",
+  "materialProjectName": "甘肃华能100MW风电项目",
+  "turbineModel": {
+    "model": "EW10.0-220下置",
+    "platform": "X2E-2",
+    "layout": "变压器下置",
+    "ratedPowerKw": 10000,
+    "rotorDiameterM": 220,
+    "status": "active",
+    "statusLabel": "可投标",
+    "source": "parameter_sheet"
+  }
 }
 ```
+
+说明：
+
+- 前端展示的“重要客户”对应接口里的 `materialCustomer*`，用于绑定客户素材读取范围。
+- 前端展示的“已有项目”对应接口里的 `materialProject*`，用于绑定项目素材读取范围。
+- 备选机型不保存为静态 JSON；前端通过 `/api/materials/turbine-model-options` 读取动态候选，项目只保存已确认的 `turbineModel`。
 
 返回最少字段：
 
@@ -67,6 +93,10 @@
   "manager": "张建国",
   "deadline": "2026-05-01",
   "bidType": "技术标",
+  "projectCode": "HN-GS-2026-001",
+  "materialCustomerName": "华能集团",
+  "materialProjectName": "甘肃华能100MW风电项目",
+  "turbineModelLabel": "EW10.0-220下置",
   "files": [],
   "templateFiles": [],
   "currentStage": 1,
@@ -88,6 +118,24 @@
   "manager": "张建国",
   "deadline": "2026-05-01",
   "bidType": "技术标",
+  "projectCode": "HN-GS-2026-001",
+  "materialCustomerId": "CUST-HUANENG",
+  "materialCustomerName": "华能集团",
+  "materialProjectMode": "library",
+  "materialProjectId": "1",
+  "materialProjectCode": "MAT-GS-001",
+  "materialProjectName": "甘肃华能100MW风电项目",
+  "turbineModel": {
+    "model": "EW10.0-220下置",
+    "platform": "X2E-2",
+    "layout": "变压器下置",
+    "ratedPowerKw": 10000,
+    "rotorDiameterM": 220,
+    "status": "active",
+    "statusLabel": "可投标",
+    "source": "parameter_sheet"
+  },
+  "turbineModelLabel": "EW10.0-220下置",
   "files": ["招标文件.pdf"],
   "templateFiles": [
     {

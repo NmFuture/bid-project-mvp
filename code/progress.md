@@ -2990,7 +2990,7 @@ bid_workspace
 
 ### 2026-05-03 22:20 人工指定投标机型并延续到缺口处理/生成标书
 
-- 完成待办 4“人工指定机型后选择素材”：项目确认页新增技术标投标机型选择，候选来自素材库真实 `X2平台机型投标参数_20250106.xlsx`，并支持搜索、候选点击和人工录入兜底。
+- 完成待办 4“人工指定机型后选择素材”：项目确认页新增技术标投标机型选择，候选来自素材库真实 `X2平台机型投标参数_20250106.xlsx`，并支持候选选择和人工录入兜底。
 - 新增机型候选提取服务，只识别 `EW/W/SE + 功率-叶轮直径` 形态的整机投标机型，并过滤证书号、日期、发电机/变流器/齿轮箱/供应商编号等非机型噪声。
 - 项目 payload 持久化 `turbineModel / selectedTurbineModel / turbineModelLabel`，并在项目列表、项目详情和项目素材读取范围接口返回。
 - 不改 S1 模板与目录生成；从 S3 缺口处理开始将 `projectTurbineModel` 写入 `s4_gap_input.json / gap_plan.json / table_fill_input.json`，并传给 S4 `s7_assembly_input.json / project_params.json`。
@@ -3026,3 +3026,28 @@ bid_workspace
 - `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-03 22:55 项目信息页文案与机型选择 UI 收口
+
+改动目标：
+
+- 按用户要求优化“完善项目信息”页面布局和字段文案。
+- 将当前页面口径与文档口径统一，避免后续继续使用“素材库客户 / 素材库项目”描述项目信息页。
+- 明确机型候选和选中机型的存储边界。
+
+改动内容：
+
+- `ProjectWizardModal.jsx` 中，`业务项目编号` 与 `负责人` 并列，`客户来源` 与 `业主单位（客户）` 并列。
+- `素材项目来源 / 素材库项目` 改为 `项目来源 / 项目`，下拉选项使用 `已有项目 / 普通项目`。
+- `客户来源` 的 `素材库客户` 改为 `重要客户`，确认页摘要同步展示 `重要客户 / 普通客户`。
+- `投标机型` 从输入框、筛选框和候选按钮改为下拉菜单；候选来自 `/api/materials/turbine-model-options`，仍保留 `人工指定机型` 兜底。
+- 机型参数继续在右侧展示平台、功率、叶轮和状态。
+- 同步 README、`code/AGENT.md`、`doc/05`、`doc/06`、`doc/12`、`doc/13`、`doc/14`、`doc/README.md`、`code/sewpg-bid-api` 和前端字段索引：候选机型从素材库 Excel 动态解析，不单独保存静态 JSON；只有用户选中的 `turbineModel` 随项目 payload JSONB 保存并延续到 S3/S4。
+
+验证结果：
+
+- `npm run lint` 通过。
+- `npm run build` 通过；保留既有 Vite chunk size 提示。
+- `git diff --check` 通过。
+- 已重新构建并启动 `web`：`docker compose -f code/docker-compose.yml build web && docker compose -f code/docker-compose.yml up -d web`。
+- `http://127.0.0.1/` 返回 HTTP 200；构建后的前端包中能搜索到 `重要客户`。
