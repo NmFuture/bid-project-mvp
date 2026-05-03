@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Promote 素材库 to a top-level preparation module and make project-scoped material lookup explicit for S3/S4.
+**Goal:** Promote 素材库 to a top-level preparation module and make technical-bid project-scoped material lookup explicit for S3/S4.
 
-**Architecture:** Keep the platform material/Wiki library global, but store each bid project's selected customer and material-project identity. Expose a small backend material-scope payload so frontend search and later Agent manifests consistently use `通用素材 + 当前客户素材 + 当前项目素材`.
+**Architecture:** Keep the platform material/Wiki library global. Its top level is `技术标 / 商务标`; only `技术标` is active now, and it contains `通用素材 / 客户素材 / 项目素材`. Expose a small backend material-scope payload so frontend search and later Agent manifests consistently use `技术标/通用素材 + 技术标/客户素材/{客户} + 技术标/项目素材/{项目}`. `商务标` remains an empty reserved root.
 
 **Tech Stack:** React/Vite frontend, FastAPI backend, PostgreSQL/MinIO material store, existing project JSON state.
 
@@ -50,9 +50,9 @@ Return the legacy fields plus `readableScopes`, `paths`, and `summary`, so the f
 Add a test proving a project with selected `materialCustomerId` and `materialProjectId` produces:
 
 ```text
-通用素材/技术标
-客户素材/华能集团/技术标
-项目素材/MAT-HN-001/技术标
+技术标/通用素材
+技术标/客户素材/华能集团
+技术标/项目素材/MAT-HN-001
 ```
 
 - [x] **Step 4: Run targeted backend test**

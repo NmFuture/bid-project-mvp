@@ -89,7 +89,7 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
 
         create_folder = await self.client.post(
             "/api/materials/raw/folders",
-            json={"parentPath": f"项目素材/PRJ-TEST-{self.run_id}/技术标", "folderName": f"补充资料-{self.run_id}"},
+            json={"parentPath": f"技术标/项目素材/PRJ-TEST-{self.run_id}", "folderName": f"补充资料-{self.run_id}"},
         )
         self.assertEqual(create_folder.status_code, 200)
         folder_path = create_folder.json()["folderPath"]
@@ -130,7 +130,7 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
     async def test_raw_material_library_supports_folder_upload(self) -> None:
         create_folder = await self.client.post(
             "/api/materials/raw/folders",
-            json={"parentPath": "通用素材/技术标", "folderName": f"目录上传测试-{self.run_id}"},
+            json={"parentPath": "技术标/通用素材", "folderName": f"目录上传测试-{self.run_id}"},
         )
         self.assertEqual(create_folder.status_code, 200)
         folder_path = create_folder.json()["folderPath"]

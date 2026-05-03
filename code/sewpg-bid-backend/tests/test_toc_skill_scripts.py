@@ -91,7 +91,7 @@ class TocSkillScriptTests(unittest.TestCase):
                             "id": "M1",
                             "title": "总体方案",
                             "name": "总体方案.docx",
-                            "path": "通用素材/总体方案.docx",
+                            "path": "技术标/通用素材/总体方案.docx",
                             "identityScope": "general",
                             "materialTier": "general",
                             "group": "总体方案",

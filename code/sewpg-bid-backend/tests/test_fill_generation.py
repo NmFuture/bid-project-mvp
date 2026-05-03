@@ -340,7 +340,7 @@ class FillGenerationTests(unittest.TestCase):
             {
                 "name": "技术标-投标项目塔筒专题.docx",
                 "cleanedFileName": "技术标-投标项目塔筒专题.docx",
-                "folderPath": "通用素材/技术标/技术标-专题方案要求",
+                "folderPath": "技术标/通用素材/技术标-专题方案要求",
             },
             [
                 {"section": "5", "title": "专题方案要求"},
@@ -383,7 +383,7 @@ class FillGenerationTests(unittest.TestCase):
                     "number": "1.1",
                     "title": "项目背景",
                     "status": "matched",
-                    "matchedMaterials": [{"id": "RAW-0001", "path": "通用素材/技术标/项目背景.docx"}],
+                    "matchedMaterials": [{"id": "RAW-0001", "path": "技术标/通用素材/项目背景.docx"}],
                     "resolvedArtifacts": [],
                 }
             ],
@@ -402,7 +402,7 @@ class FillGenerationTests(unittest.TestCase):
             (cards_dir / "项目背景.md").write_text(
                 "---\n"
                 "name: 项目背景\n"
-                "path: 通用素材/技术标/项目背景.docx\n"
+                "path: 技术标/通用素材/项目背景.docx\n"
                 "scope: 通用\n"
                 "category: 技术标\n"
                 "material_id: RAW-0001\n"
@@ -415,7 +415,7 @@ class FillGenerationTests(unittest.TestCase):
 
         def fake_export_material_library(wiki_dir, library_dir):
             library_dir.mkdir(parents=True, exist_ok=True)
-            return library_dir, [{"id": "RAW-0001", "path": "通用素材/技术标/项目背景.docx", "available": True}]
+            return library_dir, [{"id": "RAW-0001", "path": "技术标/通用素材/项目背景.docx", "available": True}]
 
         def fake_run_assembler_manifest(manifest_path, progress_callback=None):
             manifest_payloads.append(json.loads(Path(manifest_path).read_text(encoding="utf-8")))
@@ -433,7 +433,7 @@ class FillGenerationTests(unittest.TestCase):
                             "level": 1,
                             "title": "项目背景",
                             "status": "MATCHED",
-                            "paths": ["通用素材/技术标/项目背景.docx"],
+                            "paths": ["技术标/通用素材/项目背景.docx"],
                         }
                     ],
                     ensure_ascii=False,

@@ -189,8 +189,8 @@ export default function ProjectWizardModal({
     const projectIdentity = materialProjectMode === 'library'
       ? selectedMaterialProject?.projectId || selectedMaterialProjectId || '素材库项目ID'
       : project?.materialProjectId || '系统生成素材项目ID'
-    return `客户素材/${customer}/${form.bidType}；项目素材/${projectIdentity}/${form.bidType}`
-  }, [form.customerName, form.bidType, materialProjectMode, project?.materialProjectId, selectedMaterialProject?.projectId, selectedMaterialProjectId])
+    return `技术标/客户素材/${customer}；技术标/项目素材/${projectIdentity}`
+  }, [form.customerName, materialProjectMode, project?.materialProjectId, selectedMaterialProject?.projectId, selectedMaterialProjectId])
 
   const handleCreate = async () => {
     setCreating(true)

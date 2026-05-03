@@ -112,7 +112,7 @@ MAX_CARD_EXCERPT_PARAGRAPHS = 10
 MAX_CARD_HEADINGS = 80
 MAX_INDEX_ITEMS = 260
 MAX_SYNC_DOCX_BYTES = 30 * 1024 * 1024
-WIKI_BID_TYPES = {"技术标", "商务标"}
+WIKI_BID_TYPES = {"技术标"}
 HEADING_STYLE_RE = re.compile(r"(?:Heading|标题)\s*([1-9])|Heading([1-9])", re.IGNORECASE)
 NUMBERED_HEADING_RE = re.compile(
     r"^(?:(第[一二三四五六七八九十百]+[章节篇])|([一二三四五六七八九十]+[、.．])|((?:\d+[.．、]){1,5}))\s*\S+"
@@ -185,7 +185,7 @@ def _normalize_wiki_bid_type(value: str = "") -> str:
 
 
 def _wiki_skill_name(bid_type: str) -> str:
-    return "bid-business-wiki-material-builder" if bid_type == "商务标" else "bid-tech-wiki-material-builder"
+    return "bid-tech-wiki-material-builder"
 
 
 def _wiki_root_title(bid_type: str) -> str:
@@ -1565,6 +1565,12 @@ async def generate_platform_wiki(
     bid_type: str = "技术标",
     fallback_to_deterministic: bool = False,
 ) -> dict[str, Any]:
+    if str(bid_type or "").strip() == "商务标":
+        raise PeripheralError(
+            400,
+            "当前只开放技术标 Wiki 构建；商务标素材库先保留为空，暂不生成商务标 Wiki。",
+            "BUSINESS_WIKI_DISABLED",
+        )
     normalized_bid_type = _normalize_wiki_bid_type(bid_type)
     skill_name = _wiki_skill_name(normalized_bid_type)
     reference_root = Path(reference_path).expanduser().resolve() if reference_path else DEFAULT_REFERENCE_WIKI_PATH

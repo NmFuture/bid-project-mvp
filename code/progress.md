@@ -2880,6 +2880,18 @@ bid_workspace
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
 
+### 2026-05-03 20:08 素材库层级纠偏：技术标顶层启用，商务标保留为空
+
+- 修正素材库目录口径：顶层为 `技术标 / 商务标`；当前只启用 `技术标`，其下分为 `通用素材 / 客户素材 / 项目素材` 三档。
+- `/api/projects/{id}/materials-path` 改为返回 `技术标/通用素材`、`技术标/客户素材/{客户}`、`技术标/项目素材/{素材项目ID}`。
+- 原始素材上传、项目骨架初始化、S3 缺口素材搜索统一使用技术标新路径；旧路径仅保留读取兼容，不再作为新数据生成口径。
+- 商务标素材库暂时只保留空根目录：不上传商务标素材，不生成商务标 Wiki；Wiki 构建当前只开放 `bid-tech-wiki-material-builder`。
+- 前端素材库树改为 Finder 式顶层 `技术标 / 商务标`，技术标下可展开三档素材并点击文件在右侧 OnlyOffice 预览清洗稿。
+- 同步修正 README、AGENT 说明、数据存储说明和本次 superpowers 执行计划里的路径口径。
+- 验证：`pytest tests/test_project_material_scope.py tests/test_store_persistence.py tests/test_wiki_generation.py tests/test_toc_skill_scripts.py tests/test_fill_generation.py tests/test_gap_review_flow.py -q` 通过，结果 `37 passed, 2 skipped`。
+- 验证：`npm run check` 通过，仅保留 Vite chunk size 提示。
+- 运行态：已重建并启动 `fastapi/web`；`/api/healthz` 和首页返回 200；`/api/materials/raw/tree` 返回顶层 `技术标 / 商务标`，`技术标` 下三档，`商务标` 空；临时项目 `/materials-path` 返回 `技术标/通用素材`、`技术标/客户素材/华能集团`、`技术标/项目素材/MAT-HN-RUNTIME`。
+
 ### 2026-05-03 19:43:00 post-commit 559ff82
 
 提交摘要：feat(materials): promote library and scope project lookup

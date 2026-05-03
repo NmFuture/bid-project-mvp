@@ -92,11 +92,30 @@ MATERIAL_TIER_LABELS = {
 }
 CLEANABLE_MATERIAL_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm", ".docx", ".doc"}
 RAW_MATERIAL_ROOTS = (
-    {"name": "通用素材", "tier": "standard", "sort_order": 1},
+    {"name": "技术标", "tier": "standard", "bid_type": "技术标", "sort_order": 1},
+    {"name": "商务标", "tier": "standard", "bid_type": "商务标", "sort_order": 2},
+)
+RAW_MATERIAL_ROOT_TIERS = {str(item["name"]): str(item["tier"]) for item in RAW_MATERIAL_ROOTS}
+TECHNICAL_TIER_FOLDERS = (
+    {"name": "通用素材", "tier": "standard", "sort_order": 1, "customer_name": "平台标准"},
     {"name": "客户素材", "tier": "customer", "sort_order": 2},
     {"name": "项目素材", "tier": "project", "sort_order": 3},
 )
-RAW_MATERIAL_ROOT_TIERS = {str(item["name"]): str(item["tier"]) for item in RAW_MATERIAL_ROOTS}
+
+
+def canonical_technical_material_path(path: str) -> str:
+    parts = [part for part in str(path or "").replace("\\", "/").strip("/").split("/") if part]
+    if not parts:
+        return ""
+    if parts[0] == "技术标":
+        return "/".join(parts)
+    if len(parts) >= 2 and parts[0] in {"通用素材", "标准模板"} and parts[1] == "技术标":
+        return "/".join(["技术标", "通用素材", *parts[2:]])
+    if len(parts) >= 3 and parts[0] in {"客户素材", "客户定制"} and parts[2] == "技术标":
+        return "/".join(["技术标", "客户素材", parts[1], *parts[3:]])
+    if len(parts) >= 3 and parts[0] in {"项目素材", "项目定制"} and parts[2] == "技术标":
+        return "/".join(["技术标", "项目素材", parts[1], *parts[3:]])
+    return "/".join(parts)
 
 
 def normalize_material_tier(value: str) -> str:
@@ -344,9 +363,9 @@ class MaterialStore:
         if tier:
             return tier
         path = str(folder.path or "")
-        if path.startswith(("通用素材", "标准模板")):
+        if path.startswith(("技术标/通用素材", "通用素材", "标准模板")):
             return "standard"
-        if path.startswith(("客户素材", "客户定制")):
+        if path.startswith(("技术标/客户素材", "客户素材", "客户定制")):
             return "customer"
         return "project"
 
@@ -438,9 +457,8 @@ class MaterialStore:
         return {
             "role": normalized,
             "rules": [
-                {"pathPrefix": "通用素材", "label": "通用素材", "actions": editable_actions},
-                {"pathPrefix": "客户素材", "label": "客户素材", "actions": editable_actions},
-                {"pathPrefix": "项目素材", "label": "项目素材", "actions": editable_actions},
+                {"pathPrefix": "技术标", "label": "技术标素材", "actions": editable_actions},
+                {"pathPrefix": "商务标", "label": "商务标素材", "actions": editable_actions},
             ],
         }
 
@@ -690,18 +708,38 @@ class MaterialStore:
         clean_id = safe_segment(project_id, "")
         if not clean_id:
             raise PeripheralError(400, "projectId 不能为空。", "PROJECT_ID_REQUIRED")
-        root_path = f"项目素材/{clean_id}/{bid_type or '技术标'}"
+        normalized_bid_type = "技术标"
+        root_path = f"{normalized_bid_type}/项目素材/{clean_id}"
 
         async with async_session() as session:
+            await self._ensure_raw_material_roots(session)
             # Check if exists
             result = await session.execute(select(RawFolder).where(RawFolder.path == root_path))
             if result.scalar_one_or_none():
                 return {"message": "项目目录骨架已存在。", "payload": {"projectId": clean_id, "path": root_path}}
 
             # Find or create parent chain
-            parent = await self._ensure_folder_path(session, "项目素材", None, "project", None, None, 0)
-            project_folder = await self._ensure_folder_path(session, clean_id, parent.id, "project", None, clean_id, 0)
-            await self._ensure_folder_path(session, bid_type or "技术标", project_folder.id, "project", bid_type, clean_id, 0)
+            parent = await self._find_folder(session, f"{normalized_bid_type}/项目素材")
+            if parent is None:
+                tech_root = await self._ensure_folder_path(
+                    session,
+                    normalized_bid_type,
+                    None,
+                    "standard",
+                    normalized_bid_type,
+                    None,
+                    1,
+                )
+                parent = await self._ensure_folder_path(
+                    session,
+                    "项目素材",
+                    tech_root.id,
+                    "project",
+                    normalized_bid_type,
+                    None,
+                    3,
+                )
+            await self._ensure_folder_path(session, clean_id, parent.id, "project", normalized_bid_type, clean_id, 0)
             await session.commit()
 
         return {"message": "项目目录骨架初始化完成。", "payload": {"projectId": clean_id, "path": root_path}}
@@ -716,14 +754,14 @@ class MaterialStore:
         project_id: str = "",
     ) -> RawFolder:
         tier = normalize_material_tier(material_tier) or "project"
-        normalized_bid_type = bid_type if bid_type in {"技术标", "商务标", "通用"} else "技术标"
+        normalized_bid_type = "技术标"
+        tech_root = await self._ensure_folder_path(session, normalized_bid_type, None, "standard", normalized_bid_type, None, 1)
 
         if tier == "standard":
-            root = await self._ensure_folder_path(session, "通用素材", None, "standard", None, None, 1)
             return await self._ensure_folder_path(
                 session,
-                normalized_bid_type,
-                root.id,
+                "通用素材",
+                tech_root.id,
                 "standard",
                 normalized_bid_type,
                 None,
@@ -735,45 +773,27 @@ class MaterialStore:
             clean_customer = safe_segment(customer_name, "")
             if not clean_customer:
                 raise PeripheralError(400, "客户素材必须填写客户名称。", "CUSTOMER_NAME_REQUIRED")
-            root = await self._ensure_folder_path(session, "客户素材", None, "customer", None, None, 2)
+            root = await self._ensure_folder_path(session, "客户素材", tech_root.id, "customer", normalized_bid_type, None, 2)
             customer = await self._ensure_folder_path(
                 session,
                 clean_customer,
                 root.id,
                 "customer",
-                None,
-                None,
-                0,
-                customer_name=clean_customer,
-            )
-            return await self._ensure_folder_path(
-                session,
-                normalized_bid_type,
-                customer.id,
-                "customer",
                 normalized_bid_type,
                 None,
                 0,
                 customer_name=clean_customer,
             )
+            return customer
 
         clean_project_id = safe_segment(project_id, "")
         if not clean_project_id:
             raise PeripheralError(400, "项目素材必须填写项目 ID。", "PROJECT_ID_REQUIRED")
-        root = await self._ensure_folder_path(session, "项目素材", None, "project", None, None, 3)
-        project = await self._ensure_folder_path(
+        root = await self._ensure_folder_path(session, "项目素材", tech_root.id, "project", normalized_bid_type, None, 3)
+        return await self._ensure_folder_path(
             session,
             clean_project_id,
             root.id,
-            "project",
-            None,
-            clean_project_id,
-            0,
-        )
-        return await self._ensure_folder_path(
-            session,
-            normalized_bid_type,
-            project.id,
             "project",
             normalized_bid_type,
             clean_project_id,
@@ -783,18 +803,119 @@ class MaterialStore:
     async def _ensure_raw_material_roots(self, session: Any) -> list[RawFolder]:
         roots: list[RawFolder] = []
         for spec in RAW_MATERIAL_ROOTS:
-            roots.append(
+            root = await self._ensure_folder_path(
+                session,
+                str(spec["name"]),
+                None,
+                str(spec["tier"]),
+                str(spec.get("bid_type") or "") or None,
+                None,
+                int(spec["sort_order"]),
+            )
+            roots.append(root)
+            if str(spec["name"]) != "技术标":
+                continue
+            for child in TECHNICAL_TIER_FOLDERS:
                 await self._ensure_folder_path(
                     session,
-                    str(spec["name"]),
+                    str(child["name"]),
+                    root.id,
+                    str(child["tier"]),
+                    "技术标",
                     None,
-                    str(spec["tier"]),
-                    None,
-                    None,
-                    int(spec["sort_order"]),
+                    int(child["sort_order"]),
+                    customer_name=str(child.get("customer_name") or "") or None,
                 )
-            )
+        await self._migrate_legacy_technical_folders(session)
         return roots
+
+    async def _find_folder(self, session: Any, folder_path: str) -> RawFolder | None:
+        result = await session.execute(select(RawFolder).where(RawFolder.path == folder_path))
+        return result.scalar_one_or_none()
+
+    async def _ensure_canonical_folder(self, session: Any, folder_path: str) -> RawFolder:
+        normalized = str(folder_path or "").strip().strip("/")
+        existing = await self._find_folder(session, normalized)
+        if existing is not None:
+            return existing
+        parent = None
+        parent_path = "/".join(normalized.split("/")[:-1])
+        if parent_path:
+            parent = await self._ensure_canonical_folder(session, parent_path)
+        location = classify_material_path(normalized, "技术标")
+        parts = [part for part in normalized.split("/") if part]
+        if normalized == "技术标":
+            tier = "standard"
+            bid_type = "技术标"
+            project_id = None
+            customer_name = None
+            sort_order = 1
+        elif normalized == "商务标":
+            tier = "standard"
+            bid_type = "商务标"
+            project_id = None
+            customer_name = None
+            sort_order = 2
+        else:
+            tier = normalize_material_tier(str(location.get("materialTier") or "")) or "project"
+            bid_type = str(location.get("bidType") or "技术标")
+            project_id = str(location.get("projectId") or "") or None
+            customer_name = str(location.get("customerName") or "") or None
+            sort_order = 0
+            if len(parts) == 2 and parts[0] == "技术标":
+                sort_order = {"通用素材": 1, "客户素材": 2, "项目素材": 3}.get(parts[1], 0)
+        return await self._ensure_folder_path(
+            session,
+            parts[-1],
+            parent.id if parent else None,
+            tier,
+            bid_type,
+            project_id,
+            sort_order,
+            customer_name=customer_name,
+        )
+
+    async def _migrate_legacy_technical_folders(self, session: Any) -> None:
+        folders = (await session.execute(select(RawFolder))).scalars().all()
+        legacy_folders = [
+            folder
+            for folder in folders
+            if (canonical_technical_material_path(str(folder.path or "")) != str(folder.path or "").strip("/"))
+            and canonical_technical_material_path(str(folder.path or "")).startswith("技术标/")
+        ]
+        legacy_folders.sort(key=lambda folder: len(str(folder.path or "").split("/")))
+
+        for folder in legacy_folders:
+            old_path = str(folder.path or "").strip("/")
+            new_path = canonical_technical_material_path(old_path)
+            if not new_path or new_path == old_path:
+                continue
+            target = await self._find_folder(session, new_path)
+            if target is not None and target.id != folder.id:
+                files = (await session.execute(select(RawFile).where(RawFile.folder_id == folder.id))).scalars().all()
+                for item in files:
+                    item.folder_id = target.id
+                continue
+
+            parent_path = "/".join(new_path.split("/")[:-1])
+            parent = await self._ensure_canonical_folder(session, parent_path) if parent_path else None
+            location = classify_material_path(new_path, "技术标")
+            folder.parent_id = parent.id if parent else None
+            folder.name = new_path.split("/")[-1]
+            folder.path = new_path
+            folder.tier = normalize_material_tier(str(location.get("materialTier") or "")) or folder.tier
+            folder.bid_type = str(location.get("bidType") or folder.bid_type or "技术标")
+            folder.customer_name = str(location.get("customerName") or folder.customer_name or "") or None
+            folder.project_id = str(location.get("projectId") or folder.project_id or "") or None
+
+        for folder in sorted(legacy_folders, key=lambda item: len(str(item.path or "").split("/")), reverse=True):
+            fresh = await session.get(RawFolder, folder.id)
+            if fresh is None:
+                continue
+            has_files = bool((await session.execute(select(RawFile.id).where(RawFile.folder_id == fresh.id))).first())
+            has_children = bool((await session.execute(select(RawFolder.id).where(RawFolder.parent_id == fresh.id))).first())
+            if not has_files and not has_children and not str(fresh.path or "").startswith(("技术标", "商务标")):
+                await session.delete(fresh)
 
     async def _ensure_folder_path(
         self,
@@ -920,6 +1041,8 @@ class MaterialStore:
         if not file_inputs:
             raise PeripheralError(400, "请至少上传一个文件。", "RAW_UPLOAD_FILES_REQUIRED")
         normalized_bid_type = bid_type if bid_type in {"技术标", "商务标", "通用"} else "技术标"
+        if normalized_bid_type != "技术标":
+            raise PeripheralError(400, "商务标素材库当前仅保留空目录，暂不支持上传。", "BUSINESS_MATERIAL_DISABLED")
         normalized_tier = normalize_material_tier(material_tier)
         auto_target = not bool(target_path)
 
@@ -938,21 +1061,28 @@ class MaterialStore:
             else:
                 target_path = str(target_path or "").strip().strip("/")
                 target_parts = [part for part in target_path.split("/") if part]
-                inferred_target_tier = RAW_MATERIAL_ROOT_TIERS.get(target_path)
+                location = classify_material_path(target_path, normalized_bid_type)
+                inferred_target_tier = normalize_material_tier(str(location.get("materialTier") or ""))
                 inferred_customer_name = customer_name
                 inferred_project_id = project_id
-                if inferred_target_tier and len(target_parts) == 1:
+                if target_parts and target_parts[0] == "商务标":
+                    raise PeripheralError(400, "商务标素材库当前仅保留空目录，暂不支持上传。", "BUSINESS_MATERIAL_DISABLED")
+                if inferred_target_tier == "standard":
+                    inferred_customer_name = inferred_customer_name or "平台标准"
+                if inferred_target_tier == "customer":
+                    inferred_customer_name = inferred_customer_name or str(location.get("customerName") or "")
+                if inferred_target_tier == "project":
+                    inferred_project_id = inferred_project_id or str(location.get("projectId") or "")
+                if inferred_target_tier and len(target_parts) <= 2:
                     result = await session.execute(select(RawFolder).where(RawFolder.path == target_path))
                     base_folder = result.scalar_one_or_none()
                     if base_folder is None:
-                        base_folder = await self._ensure_folder_path(
+                        base_folder = await self._ensure_material_target_folder(
                             session,
-                            target_path,
-                            None,
-                            inferred_target_tier,
-                            None,
-                            None,
-                            0,
+                            material_tier=inferred_target_tier,
+                            bid_type=normalized_bid_type,
+                            customer_name=inferred_customer_name,
+                            project_id=inferred_project_id,
                         )
                     normalized_tier = normalized_tier or inferred_target_tier
                     target_path = base_folder.path
@@ -963,17 +1093,32 @@ class MaterialStore:
                     if not inferred_target_tier and len(target_parts) == 2 and target_parts[0] == "项目素材":
                         inferred_target_tier = "project"
                         inferred_project_id = inferred_project_id or target_parts[1]
+                    if inferred_target_tier == "customer" and not inferred_customer_name:
+                        raise PeripheralError(400, "客户素材必须填写客户名称。", "CUSTOMER_NAME_REQUIRED")
+                    if inferred_target_tier == "project" and not inferred_project_id:
+                        raise PeripheralError(400, "项目素材必须填写项目 ID。", "PROJECT_ID_REQUIRED")
 
                     if inferred_target_tier:
                         normalized_tier = normalized_tier or inferred_target_tier
-                        base_folder = await self._ensure_material_target_folder(
-                            session,
-                            material_tier=normalized_tier,
-                            bid_type=normalized_bid_type,
-                            customer_name=inferred_customer_name,
-                            project_id=inferred_project_id,
-                        )
-                        target_path = base_folder.path
+                        result = await session.execute(select(RawFolder).where(RawFolder.path == target_path))
+                        base_folder = result.scalar_one_or_none()
+                        if base_folder is None:
+                            requested_path = "/".join(target_parts)
+                            canonical_folder = await self._ensure_material_target_folder(
+                                session,
+                                material_tier=normalized_tier,
+                                bid_type=normalized_bid_type,
+                                customer_name=inferred_customer_name,
+                                project_id=inferred_project_id,
+                            )
+                            if requested_path.startswith(f"{canonical_folder.path}/"):
+                                relative_dir = requested_path.removeprefix(f"{canonical_folder.path}/")
+                                base_folder = await self._ensure_nested_folder(session, canonical_folder, relative_dir)
+                            elif requested_path == canonical_folder.path or target_parts[0] != "技术标":
+                                base_folder = canonical_folder
+                            else:
+                                raise PeripheralError(404, "目标目录不存在。", "RAW_FOLDER_NOT_FOUND")
+                            target_path = base_folder.path
                     else:
                         result = await session.execute(select(RawFolder).where(RawFolder.path == target_path))
                         base_folder = result.scalar_one_or_none()

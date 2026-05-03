@@ -41,6 +41,9 @@ ROOT_TIER_ALIASES = {
     "项目定制": "project",
 }
 
+TECHNICAL_MATERIAL_ROOT = "技术标"
+BUSINESS_MATERIAL_ROOT = "商务标"
+
 
 def normalize_identity_text(value: Any) -> str:
     text = str(value or "").strip().lower()
@@ -116,25 +119,38 @@ def classify_material_path(folder_path: Any, default_bid_type: str = "技术标"
     path = str(folder_path or "").replace("\\", "/").strip("/")
     parts = [part for part in path.split("/") if part]
     root = parts[0] if parts else ""
-    tier = ROOT_TIER_ALIASES.get(root, "")
+    tier = ""
     bid_type = normalize_bid_type(default_bid_type)
     customer_name = ""
     project_id = ""
 
-    if tier == "standard":
-        if len(parts) >= 2 and parts[1] in BID_TYPES:
-            bid_type = parts[1]
-        customer_name = "平台标准"
-    elif tier == "customer":
-        if len(parts) >= 2:
-            customer_name = parts[1]
-        if len(parts) >= 3 and parts[2] in BID_TYPES:
-            bid_type = parts[2]
-    elif tier == "project":
-        if len(parts) >= 2:
-            project_id = parts[1]
-        if len(parts) >= 3 and parts[2] in BID_TYPES:
-            bid_type = parts[2]
+    if root in {TECHNICAL_MATERIAL_ROOT, BUSINESS_MATERIAL_ROOT}:
+        bid_type = root
+        tier_root = parts[1] if len(parts) >= 2 else ""
+        tier = ROOT_TIER_ALIASES.get(tier_root, "")
+        if tier == "standard":
+            customer_name = "平台标准"
+        elif tier == "customer" and len(parts) >= 3:
+            customer_name = parts[2]
+        elif tier == "project" and len(parts) >= 3:
+            project_id = parts[2]
+    else:
+        # Compatibility for legacy folders created before bid type became the top-level root.
+        tier = ROOT_TIER_ALIASES.get(root, "")
+        if tier == "standard":
+            if len(parts) >= 2 and parts[1] in BID_TYPES:
+                bid_type = parts[1]
+            customer_name = "平台标准"
+        elif tier == "customer":
+            if len(parts) >= 2:
+                customer_name = parts[1]
+            if len(parts) >= 3 and parts[2] in BID_TYPES:
+                bid_type = parts[2]
+        elif tier == "project":
+            if len(parts) >= 2:
+                project_id = parts[1]
+            if len(parts) >= 3 and parts[2] in BID_TYPES:
+                bid_type = parts[2]
 
     return {
         "folderPath": path,
@@ -231,6 +247,8 @@ def build_project_identity(project: dict[str, Any]) -> dict[str, Any]:
 def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
     identity = build_project_identity(project)
     bid_type = normalize_bid_type(identity.get("bidType") or project.get("bidType"), "技术标")
+    if bid_type != "技术标":
+        bid_type = "技术标"
     customer_name = str(identity.get("customerCanonicalName") or identity.get("customerName") or "").strip()
     project_id = str(identity.get("projectId") or identity.get("bidProjectId") or project.get("id") or "").strip()
     scopes: list[dict[str, Any]] = [
@@ -238,7 +256,7 @@ def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
             "key": "standard",
             "label": "通用素材",
             "materialTier": "standard",
-            "path": f"通用素材/{bid_type}",
+            "path": f"{bid_type}/通用素材",
             "identityMatchedBy": "bidType",
         }
     ]
@@ -248,7 +266,7 @@ def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
                 "key": "customer",
                 "label": "客户素材",
                 "materialTier": "customer",
-                "path": f"客户素材/{customer_name}/{bid_type}",
+                "path": f"{bid_type}/客户素材/{customer_name}",
                 "customerId": str(identity.get("customerId") or ""),
                 "customerName": customer_name,
                 "identityMatchedBy": "customer",
@@ -260,7 +278,7 @@ def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
                 "key": "project",
                 "label": "项目素材",
                 "materialTier": "project",
-                "path": f"项目素材/{project_id}/{bid_type}",
+                "path": f"{bid_type}/项目素材/{project_id}",
                 "projectId": project_id,
                 "projectCode": str(identity.get("projectCode") or ""),
                 "projectName": str(identity.get("projectName") or ""),

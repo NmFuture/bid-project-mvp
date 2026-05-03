@@ -1415,7 +1415,7 @@ class AppStore:
                 "missingId": missing_id,
                 "fileId": f"raw-{project_id}-{len(gap_state['submissions']) + index}",
                 "fileName": file_name,
-                "storedPath": f"项目素材/{project_id}/{str(data.get('bidType') or item.get('bidType') or '技术标')}",
+                "storedPath": f"技术标/项目素材/{project_id}",
                 "action": "upload",
                 "operator": str(data.get('operator') or "当前用户"),
                 "submittedAt": timestamp,

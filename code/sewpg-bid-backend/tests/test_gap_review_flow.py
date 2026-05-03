@@ -117,7 +117,7 @@ class GapReviewFlowTests(unittest.TestCase):
                             "material_refs": [
                                 {
                                     "id": "RAW-0001",
-                                    "docx": "通用素材/技术标/技术评分标准索引表.docx",
+                                    "docx": "技术标/通用素材/技术评分标准索引表.docx",
                                     "usage": "both",
                                 }
                             ],
@@ -334,7 +334,7 @@ class GapReviewFlowTests(unittest.TestCase):
                     "materialName": "素材库既有性能保证",
                     "fileName": prepared_docx.name,
                     "path": str(prepared_docx),
-                    "folderPath": "通用素材/技术标",
+                    "folderPath": "技术标/通用素材",
                     "materialTier": "standard",
                     "sourceKind": "cleaned",
                 }
@@ -351,7 +351,7 @@ class GapReviewFlowTests(unittest.TestCase):
                         {
                             "id": "RAW-0099",
                             "name": "素材库既有性能保证",
-                            "folderPath": "通用素材/技术标",
+                            "folderPath": "技术标/通用素材",
                             "materialTier": "standard",
                         }
                     ],
@@ -385,7 +385,7 @@ class GapReviewFlowTests(unittest.TestCase):
         (wiki_cards / "技术评分标准索引表.md").write_text(
             "---\n"
             "name: 技术评分标准索引表\n"
-            "path: 通用素材/技术标/技术评分标准索引表.docx\n"
+            "path: 技术标/通用素材/技术评分标准索引表.docx\n"
             "scope: 通用\n"
             "category: 技术标\n"
             "material_id: RAW-0001\n"

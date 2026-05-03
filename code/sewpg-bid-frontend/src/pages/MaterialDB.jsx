@@ -37,22 +37,26 @@ const BID_TYPE_TABS = [
     value: '技术标',
     label: '技术标',
     icon: 'engineering',
-    rootPath: '通用素材/技术标',
+    rootPath: '技术标/通用素材',
   },
   {
     value: '商务标',
     label: '商务标',
     icon: 'request_quote',
-    rootPath: '通用素材/商务标',
+    rootPath: '商务标',
   },
 ]
 const ALLOWED_EXTENSIONS = new Set([
   'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm',
 ])
-const MATERIAL_ROOT_PATHS = ['通用素材', '客户素材', '项目素材']
-const MATERIAL_ROOT_PATH_SET = new Set(MATERIAL_ROOT_PATHS)
+const MATERIAL_ROOT_PATHS = ['技术标', '商务标']
 
 const MATERIAL_ROOT_LABELS = {
+  技术标: '技术标',
+  商务标: '商务标',
+  '技术标/通用素材': '通用素材',
+  '技术标/客户素材': '客户素材',
+  '技术标/项目素材': '项目素材',
   通用素材: '通用素材',
   客户素材: '客户素材',
   项目素材: '项目素材',
@@ -129,9 +133,12 @@ const extOf = (name) => {
 
 const materialTierFromRootPath = (path) => {
   const normalized = String(path || '').replace(/^\/+|\/+$/g, '')
-  if (normalized === '通用素材') return 'standard'
-  if (normalized === '客户素材') return 'customer'
-  if (normalized === '项目素材') return 'project'
+  const parts = normalized.split('/').filter(Boolean)
+  if (parts[0] === '商务标') return 'business'
+  const tierName = parts[0] === '技术标' ? parts[1] : parts[0]
+  if (tierName === '通用素材') return 'standard'
+  if (tierName === '客户素材') return 'customer'
+  if (tierName === '项目素材') return 'project'
   return ''
 }
 
@@ -151,14 +158,41 @@ const ensureMaterialRootNodes = (nodes = []) => {
     const path = String(node?.path || node?.name || '').replace(/^\/+|\/+$/g, '')
     if (path) byPath.set(path, node)
   })
-  return MATERIAL_ROOT_PATHS.map((path) => byPath.get(path) || ({
+  const technicalNode = byPath.get('技术标') || {
+    id: '技术标',
+    name: '技术标',
+    path: '技术标',
+    directFileCount: 0,
+    fileCount: 0,
+    children: [],
+  }
+  const techChildrenByPath = new Map((technicalNode.children || []).map((child) => [normalizePath(child.path), child]))
+  const techChildren = ['技术标/通用素材', '技术标/客户素材', '技术标/项目素材'].map((path) => techChildrenByPath.get(path) || ({
     id: path,
-    name: path,
+    name: path.split('/').pop(),
     path,
     directFileCount: 0,
     fileCount: 0,
     children: [],
   }))
+  const normalizedTechnical = {
+    ...technicalNode,
+    name: '技术标',
+    path: '技术标',
+    children: techChildren,
+    fileCount: Number(technicalNode.fileCount || 0) || techChildren.reduce((sum, child) => sum + Number(child.fileCount || 0), 0),
+  }
+  return [
+    normalizedTechnical,
+    byPath.get('商务标') || {
+      id: '商务标',
+      name: '商务标',
+      path: '商务标',
+      directFileCount: 0,
+      fileCount: 0,
+      children: [],
+    },
+  ]
 }
 
 const flattenTreePaths = (nodes = []) => {
@@ -177,7 +211,7 @@ const pathMatchesBidType = (path, bidType) => {
   const normalized = String(path || '').replace(/^\/+|\/+$/g, '')
   if (!normalized) return false
   const parts = normalized.split('/')
-  return parts.includes(bidType)
+  return parts[0] === bidType
 }
 
 const collectCollapsiblePaths = (nodes = []) => {
@@ -532,9 +566,9 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   const [conflictContext, setConflictContext] = useState(null)
 
-  const canManageCurrentFolder = Boolean(selectedFolderPath)
+  const canManageCurrentFolder = Boolean(selectedFolderPath) && !selectedFolderPath.startsWith('商务标')
   const canCreateFolder = Boolean(selectedFolderPath) && canManageCurrentFolder
-  const canDeleteFolder = Boolean(selectedFolderPath && selectedFolderPath.includes('/')) && canManageCurrentFolder
+  const canDeleteFolder = Boolean(selectedFolderPath && selectedFolderPath.includes('/') && selectedFolderPath.split('/').length > 2) && canManageCurrentFolder
 
   const fileItems = useMemo(() => filesPayload?.items || [], [filesPayload?.items])
   const totalCount = Number(filesPayload?.total || 0)
@@ -699,7 +733,11 @@ export default function MaterialDB({ showToast = () => {} }) {
   const openUploadModal = (options = {}) => {
     const targetPath = options.targetPath || selectedFolderPath
     const rootTier = materialTierFromRootPath(targetPath)
-    const mode = rootTier ? 'tier' : (options.mode || 'tier')
+    if (rootTier === 'business' || activeBidType !== '技术标') {
+      showToast('商务标素材库当前先保留为空，暂不支持上传。', 'error')
+      return
+    }
+    const mode = options.mode || (rootTier ? 'tier' : 'tier')
     const nextTier = options.materialTier || rootTier || (filters.projectId.trim() ? 'project' : 'standard')
     setShowUploadModal(true)
     setUploadKind(options.kind || 'files')
@@ -905,6 +943,10 @@ export default function MaterialDB({ showToast = () => {} }) {
   }
 
   const runWikiBootstrap = async (mode = 'update') => {
+    if (activeBidType !== '技术标') {
+      showToast('当前只开放技术标 Wiki 构建；商务标先保留为空。', 'error')
+      return
+    }
     if (mode === 'replace') {
       const ok = window.confirm(`确认重建${activeBidType} Wiki？现有自动生成根树会被重新生成。`)
       if (!ok) return
@@ -967,19 +1009,23 @@ export default function MaterialDB({ showToast = () => {} }) {
       <MaterialsViewSwitch
         active="structured"
         title="原始材料库"
-        subtitle={refreshing || error ? (error || '正在刷新...') : `管理${activeBidType}素材、上传文件与创建${activeBidType} Wiki。`}
+        subtitle={refreshing || error ? (error || '正在刷新...') : (
+          activeBidType === '技术标'
+            ? '管理技术标通用、客户、项目三档素材，并创建技术标 Wiki。'
+            : '商务标素材库先保留为空，当前不上传素材、不生成 Wiki。'
+        )}
         actions={(
           <div className="flex flex-wrap gap-3">
             <button
               onClick={() => runWikiBootstrap('update')}
-              disabled={creatingWiki}
+              disabled={creatingWiki || activeBidType !== '技术标'}
               className="px-4 py-2 text-sm font-medium rounded-lg bg-secondary-container text-on-secondary-container hover:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {creatingWiki ? '处理中...' : `生成/更新${activeBidType}Wiki`}
             </button>
             <button
               onClick={() => runWikiBootstrap('replace')}
-              disabled={creatingWiki}
+              disabled={creatingWiki || activeBidType !== '技术标'}
               className="px-4 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               重建Wiki
@@ -992,6 +1038,7 @@ export default function MaterialDB({ showToast = () => {} }) {
             </button>
             <button
               onClick={() => openUploadModal({ mode: 'tier' })}
+              disabled={activeBidType !== '技术标'}
               className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               上传文件
@@ -1251,7 +1298,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                     className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
                   >
                     <option value="技术标">技术标</option>
-                    <option value="商务标">商务标</option>
+                    <option value="商务标" disabled>商务标（暂不启用）</option>
                   </select>
                 </label>
               </div>
@@ -1263,7 +1310,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                     value={uploadPath}
                     onChange={(e) => setUploadPath(e.target.value)}
                     className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                    placeholder="例如：通用素材/技术标-专题方案要求"
+                    placeholder="例如：技术标/通用素材/专题方案要求"
                   />
                 </label>
               ) : (

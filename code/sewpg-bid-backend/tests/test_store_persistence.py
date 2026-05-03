@@ -31,9 +31,9 @@ class ProjectMaterialScopeTests(unittest.TestCase):
         self.assertEqual(
             scope["paths"],
             [
-                "通用素材/技术标",
-                "客户素材/华能集团/技术标",
-                "项目素材/MAT-HN-001/技术标",
+                "技术标/通用素材",
+                "技术标/客户素材/华能集团",
+                "技术标/项目素材/MAT-HN-001",
             ],
         )
         self.assertEqual(scope["identity"]["customerId"], "CUST-HUANENG")
