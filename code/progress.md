@@ -2658,3 +2658,46 @@ bid_workspace
 - `doc/README.md`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-03 16:02:40 post-commit c8fda2f
+
+提交摘要：Use settings default templates for bid generation
+
+变更文件：
+
+- `README.md`
+- `code/.env.example`
+- `code/AGENT.md`
+- `code/docker-compose.yml`
+- `code/progress.md`
+- `"code/sewpg-bid-api/MVP\346\216\245\345\217\243\344\270\216\345\217\202\346\225\260\346\240\270\345\277\203\347\211\210_\346\236\201\347\256\200\347\211\210.md"`
+- `code/sewpg-bid-backend/app/api/routes/parse.py`
+- `code/sewpg-bid-backend/app/core/config.py`
+- `code/sewpg-bid-backend/app/services/gap_planning.py`
+- `code/sewpg-bid-backend/app/services/ocr_service.py`
+- `code/sewpg-bid-backend/app/services/opencode_client.py`
+- `code/sewpg-bid-backend/app/services/outline_generation.py`
+- `code/sewpg-bid-backend/app/services/parsing.py`
+- `code/sewpg-bid-backend/app/services/system_settings.py`
+- `code/sewpg-bid-backend/app/services/tech_assembly.py`
+- `code/sewpg-bid-backend/app/services/template_store.py`
+- `code/sewpg-bid-backend/app/services/workspace_artifacts.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-gap-planner/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skill/bid-tech-table-filler/SKILL.md`
+- `code/sewpg-bid-backend/tests/test_directory_generation.py`
+- `code/sewpg-bid-backend/tests/test_fill_generation.py`
+- `code/sewpg-bid-backend/tests/test_gap_review_flow.py`
+- `code/sewpg-bid-backend/tests/test_opencode_client.py`
+- `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
+- `code/sewpg-bid-backend/tests/test_security_settings_ocr_routes.py`
+- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
+- `code/sewpg-bid-frontend/src/pages/Settings.jsx`
+- `"doc/05-MVP\344\270\273\351\223\276\350\267\257\350\257\264\346\230\216.md"`
+- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
+- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
+- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+- `doc/README.md`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
