@@ -79,7 +79,7 @@ class OpencodeClientTests(unittest.TestCase):
                     "type": "text",
                     "text": (
                         '{"schema_version":"bid-toc-json-v1","outputFile":'
-                        '"/data/parsed/PRJ-0001/s2_toc_workdir/投标文件-总目录.json",'
+                        '"/data/documents/PRJ-0001/technical-workspace/s2_toc_workdir/投标文件-总目录.json",'
                         '"summary":{"total_items":659},"itemCount":659}'
                     ),
                 }
@@ -139,6 +139,42 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(trace["completionSource"], "s2toc")
         self.assertEqual(trace["parts"][0]["text"], "s2toc 已完成")
 
+    def test_early_s2_tool_output_does_not_repair_traceback_into_outline(self) -> None:
+        client = OpencodeClient()
+        response = client._tool_output_response(
+            session_id="ses-test",
+            output='Traceback (most recent call last):\nzipfile.BadZipFile: File is not a zip file',
+            trace_parts=[{"type": "text", "text": "s2toc failed"}],
+        )
+
+        with patch.object(client, "_repair_json_payload") as repair:
+            with self.assertRaisesRegex(RuntimeError, "工具输出不是有效 JSON"):
+                client._extract_outline_json(response)
+
+        repair.assert_not_called()
+
+    def test_completed_s2_tool_output_must_be_json(self) -> None:
+        messages = [
+            {
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "s2toc /tmp/s2_input.json"},
+                            "exit": None,
+                            "output": "Traceback (most recent call last):\nzipfile.BadZipFile: File is not a zip file",
+                        },
+                    }
+                ]
+            }
+        ]
+
+        output = OpencodeClient._find_completed_bash_tool_output(messages, "s2toc")
+
+        self.assertEqual(output, "")
+
     def test_extract_wiki_blueprint_json_accepts_valid_payload(self) -> None:
         client = OpencodeClient()
         response = {
@@ -188,7 +224,7 @@ class OpencodeClientTests(unittest.TestCase):
                     "type": "text",
                     "text": (
                         '{"schema_version":"bid-tech-gap-plan-v1","outputFile":'
-                        '"/data/parsed/PRJ-0001/s4_gap_workdir/gap_plan.json",'
+                        '"/data/documents/PRJ-0001/technical-workspace/s4_gap_workdir/gap_plan.json",'
                         '"summary":{"totalTocItems":3,"matchedCount":1,"missingCount":1,'
                         '"resolvedCount":0,"ignoredCount":0,"structuralCount":1,'
                         '"fillableTaskCount":1,"blockingCount":1},"itemCount":3}'

@@ -220,6 +220,59 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(payload["sourceFiles"][0]["type"], "MD")
         self.assertIn("Markdown 招标说明", payload["summary"]["textPreview"])
 
+    def test_upload_and_parse_image_uses_visual_recognition_without_manual_ocr_flow(self) -> None:
+        project_id = self.create_project()
+
+        fake_response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "项目名称：图片型招标文件\n招标编号：IMG-2026-001\n投标截止日期：2026年8月20日"
+                    }
+                }
+            ]
+        }
+
+        async def fake_post(*_args, **_kwargs):
+            class Response:
+                status_code = 200
+
+                @staticmethod
+                def json():
+                    return fake_response
+
+            return Response()
+
+        with patch("app.services.system_settings.system_settings_service.get_model_secret_config") as config, patch(
+            "httpx.AsyncClient.post",
+            side_effect=fake_post,
+        ):
+            config.return_value = {
+                "enabled": True,
+                "baseUrl": "https://ocr.example.com/v1",
+                "apiKey": "ocr-secret-key",
+                "model": "deepseek-ai/DeepSeek-OCR",
+                "timeoutMs": 60000,
+                "maxTokens": 2048,
+            }
+            response = self.client.post(
+                f"/api/projects/{project_id}/parse-results/upload-and-run",
+                files=[
+                    (
+                        "tenderFiles",
+                        ("图片型招标文件.png", b"\x89PNG\r\n\x1a\nfake", "image/png"),
+                    )
+                ],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "completed")
+        self.assertIn("图片型招标文件", payload["summary"]["textPreview"])
+        self.assertIn("图片文件已通过 OCR/视觉模型转为可解析文本。", payload["summary"]["warnings"])
+        self.assertNotIn("ocrConfirmedFields", payload["structured"])
+        self.assertEqual(payload["structured"]["projectDates"]["endDate"], "2026-08-20")
+
     def test_upload_and_parse_multiple_tenders_extracts_structured_requirements_and_dates(self) -> None:
         project_id = self.create_project()
         main_tender = "\n".join(
@@ -749,7 +802,8 @@ class ParsePipelineTests(unittest.TestCase):
 
         project = store._require(project_id)
         parse_storage = project["parse_storage"]
-        self.assertEqual(Path(parse_storage["projectDir"]), workspace_parse_dir)
+        self.assertEqual(Path(parse_storage["projectDir"]), settings.documents_dir / project_id / "technical-workspace")
+        self.assertEqual(Path(parse_storage["parseDir"]), workspace_parse_dir)
         self.assertEqual(Path(parse_storage["combinedTextPath"]), workspace_parse_dir / "combined.txt")
         self.assertEqual(Path(parse_storage["structuredResultPath"]), workspace_parse_dir / "s1_structured_result.json")
         self.assertEqual(Path(parse_storage["manifestPath"]), workspace_parse_dir / "manifest.json")
@@ -953,7 +1007,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(len(payload["project"]["templateFiles"]), 1)
         self.assertEqual(payload["project"]["templateFiles"][0]["name"], "投标模板.docx")
 
-    def test_parse_inputs_use_fallback_template_when_project_has_no_template(self) -> None:
+    def test_parse_inputs_do_not_use_legacy_template_when_project_has_no_template(self) -> None:
         project_id = self.create_project()
         tender_bytes = build_docx_bytes("招标文件正文", "项目概况", "项目没有单独上传投标模板。")
         response = self.client.post(
@@ -967,30 +1021,51 @@ class ParsePipelineTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
-        fallback_path = settings.uploads_dir / project_id / "fallback-template" / "投标文件-模板.docx"
-        fallback_path.parent.mkdir(parents=True, exist_ok=True)
-        fallback_path.write_bytes(build_docx_bytes("Fallback 投标模板", "第一章 模板章节"))
-        fallback_record = {
-            "id": "FBT-DEFAULT",
-            "name": "投标文件-模板.docx",
-            "stored_name": "投标文件-模板.docx",
-            "size_bytes": fallback_path.stat().st_size,
-            "size_label": store.format_size(fallback_path.stat().st_size),
+        with patch("app.services.template_store.resolve_system_default_bid_template_file", return_value=None):
+            _, template_files = store.get_parse_inputs(project_id)
+
+        self.assertEqual(template_files, [])
+
+    def test_parse_inputs_use_settings_default_template_when_project_has_no_template(self) -> None:
+        project_id = self.create_project()
+        tender_bytes = build_docx_bytes("招标文件正文", "项目概况", "项目没有单独上传投标模板。")
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    ("招标文件.docx", tender_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+                )
+            ],
+        )
+        self.assertEqual(response.status_code, 200)
+
+        default_path = settings.uploads_dir / project_id / "system-default-template" / "默认技术标模板.docx"
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        default_path.write_bytes(build_docx_bytes("默认技术标模板", "第一章 模板章节"))
+        default_record = {
+            "id": "TPL-0001",
+            "name": "默认技术标模板.docx",
+            "stored_name": "默认技术标模板.docx",
+            "size_bytes": default_path.stat().st_size,
+            "size_label": store.format_size(default_path.stat().st_size),
             "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "path": str(fallback_path),
-            "source": "fallback",
+            "path": str(default_path),
+            "source": "system-default",
             "isFallback": True,
+            "templateType": "technical",
+            "templateTypeLabel": "技术标",
             "minioBucket": "bid-templates",
-            "minioKey": "templates/fallback/technical/投标文件-模板.docx",
+            "minioKey": "templates/default/technical/default-template.docx",
         }
 
-        with patch("app.services.template_store.resolve_fallback_bid_template_file", return_value=fallback_record):
+        with patch("app.services.template_store.resolve_system_default_bid_template_file", return_value=default_record):
             _, template_files = store.get_parse_inputs(project_id)
 
         self.assertEqual(len(template_files), 1)
-        self.assertEqual(template_files[0]["name"], "投标文件-模板.docx")
-        self.assertTrue(template_files[0]["isFallback"])
-        self.assertEqual(template_files[0]["minioKey"], "templates/fallback/technical/投标文件-模板.docx")
+        self.assertEqual(template_files[0]["name"], "默认技术标模板.docx")
+        self.assertEqual(template_files[0]["source"], "system-default")
+        self.assertEqual(template_files[0]["templateType"], "technical")
 
     def test_project_template_overrides_fallback_template(self) -> None:
         project_id = self.create_project()
@@ -1011,19 +1086,19 @@ class ParsePipelineTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
-        fallback_record = {
-            "id": "FBT-DEFAULT",
-            "name": "投标文件-模板.docx",
-            "path": "/tmp/fallback.docx",
-            "source": "fallback",
+        default_record = {
+            "id": "TPL-0001",
+            "name": "默认技术标模板.docx",
+            "path": "/tmp/default-template.docx",
+            "source": "system-default",
             "isFallback": True,
         }
-        with patch("app.services.template_store.resolve_fallback_bid_template_file", return_value=fallback_record):
+        with patch("app.services.template_store.resolve_system_default_bid_template_file", return_value=default_record):
             _, template_files = store.get_parse_inputs(project_id)
 
         self.assertEqual(len(template_files), 1)
         self.assertEqual(template_files[0]["name"], "项目模板.docx")
-        self.assertNotEqual(template_files[0].get("source"), "fallback")
+        self.assertNotEqual(template_files[0].get("source"), "system-default")
 
 
 if __name__ == "__main__":

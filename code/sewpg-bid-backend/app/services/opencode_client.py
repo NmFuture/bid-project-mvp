@@ -386,6 +386,14 @@ class OpencodeClient:
         try:
             return self._parse_json_payload(content)
         except RuntimeError as exc:
+            if response.get("_earlyCompletion"):
+                snippet = self._shorten_text(content, limit=420)
+                raise RuntimeError(
+                    f"futurecode 工具输出不是有效 JSON，已停止目录生成：{snippet}。"
+                ) from exc
+            if self._looks_like_tool_failure(content):
+                snippet = self._shorten_text(content, limit=420)
+                raise RuntimeError(f"futurecode 工具执行失败：{snippet}。") from exc
             try:
                 repaired = self._repair_json_payload(content, repair_kind)
                 return self._parse_json_payload(repaired)
@@ -574,7 +582,7 @@ class OpencodeClient:
                 if exit_code not in (None, 0):
                     continue
                 output = str(state.get("output") or "").strip()
-                if output:
+                if output and OpencodeClient._looks_like_json_object(output):
                     return output
         return ""
 
@@ -621,6 +629,27 @@ class OpencodeClient:
                 raise RuntimeError("futurecode 返回的 JSON 无法解析。") from exc
 
     @staticmethod
+    def _looks_like_json_object(content: str) -> bool:
+        text = str(content or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", text)
+            text = re.sub(r"\n?```$", "", text).strip()
+        return text.startswith("{") and "}" in text
+
+    @staticmethod
+    def _looks_like_tool_failure(content: str) -> bool:
+        text = str(content or "")
+        failure_markers = (
+            "Traceback (most recent call last):",
+            "zipfile.BadZipFile",
+            "File is not a zip file",
+            "SystemExit",
+            "Error:",
+            "Exception:",
+        )
+        return any(marker in text for marker in failure_markers) and not OpencodeClient._looks_like_json_object(text)
+
+    @staticmethod
     def _short_http_error(exc: Exception) -> str:
         detail = str(exc).replace("\n", " ").strip()
         return detail or "服务调用异常。"
@@ -639,7 +668,7 @@ class OpencodeClient:
                 '"annotation_counts":{"保留":1,"适配":0,"新增-招标要求":0,"新增-素材库建议":0,'
                 '"删除建议":0,"素材内置标题":0}},"items":[{"order":1,"number":"第一章",'
                 '"title":"一级标题","level":1,"annotation":"保留","source":"template","reason":""}],'
-                '"outputFile":"/data/parsed/PRJ-0001/s2_toc_workdir/投标文件-总目录.json"}'
+                '"outputFile":"/data/documents/PRJ-0001/technical-workspace/s2_toc_workdir/投标文件-总目录.json"}'
             )
         elif repair_kind == "wiki":
             schema_hint = (
@@ -650,16 +679,16 @@ class OpencodeClient:
         elif repair_kind == "assembly":
             schema_hint = (
                 '{"schema_version":"bid-tech-assembly-v1","outputFile":'
-                '"/data/parsed/PRJ-0001/s7_assembly_workdir/投标文件-正文.docx",'
-                '"assemblyReport":"/data/parsed/PRJ-0001/s7_assembly_workdir/assembly_report.md",'
-                '"needsReview":"/data/parsed/PRJ-0001/s7_assembly_workdir/needs_review.md",'
-                '"planFile":"/data/parsed/PRJ-0001/s7_assembly_workdir/assembly_plan.json",'
+                '"/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/投标文件-正文.docx",'
+                '"assemblyReport":"/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/assembly_report.md",'
+                '"needsReview":"/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/needs_review.md",'
+                '"planFile":"/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/assembly_plan.json",'
                 '"summary":{"total":1,"byStatus":{"MATCHED":1},"usedPathCount":1}}'
             )
         elif repair_kind == "gap_plan":
             schema_hint = (
                 '{"schema_version":"bid-tech-gap-plan-v1","outputFile":'
-                '"/data/parsed/PRJ-0001/s4_gap_workdir/gap_plan.json",'
+                '"/data/documents/PRJ-0001/technical-workspace/s4_gap_workdir/gap_plan.json",'
                 '"summary":{"totalTocItems":1,"matchedCount":0,"missingCount":1,'
                 '"resolvedCount":0,"ignoredCount":0,"structuralCount":0,'
                 '"fillableTaskCount":1,"blockingCount":1},"itemCount":1}'
@@ -677,7 +706,7 @@ class OpencodeClient:
         elif repair_kind == "table_fill":
             schema_hint = (
                 '{"schema_version":"bid-tech-table-fill-v1","outputFile":'
-                '"/data/parsed/PRJ-0001/s4_gap_workdir/ai_fill/GAP-0001/AI填写.docx",'
+                '"/data/documents/PRJ-0001/technical-workspace/s4_gap_workdir/ai_fill/GAP-0001/AI填写.docx",'
                 '"unfilledFields":[],"evidenceRefs":[{"type":"material","id":"RAW-0001"}]}'
             )
         else:

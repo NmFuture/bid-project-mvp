@@ -454,9 +454,9 @@
   },
   "assembly": {
     "skill": "bid-tech-assembler",
-    "manifestPath": "/data/parsed/PRJ-001/s7_assembly_workdir/s7_assembly_input.json",
-    "assemblyReport": "/data/parsed/PRJ-001/s7_assembly_workdir/assembly_report.md",
-    "needsReview": "/data/parsed/PRJ-001/s7_assembly_workdir/needs_review.md"
+    "manifestPath": "/data/documents/PRJ-001/technical-workspace/s7_assembly_workdir/s7_assembly_input.json",
+    "assemblyReport": "/data/documents/PRJ-001/technical-workspace/s7_assembly_workdir/assembly_report.md",
+    "needsReview": "/data/documents/PRJ-001/technical-workspace/s7_assembly_workdir/needs_review.md"
   },
   "message": "正文拼装完成"
 }

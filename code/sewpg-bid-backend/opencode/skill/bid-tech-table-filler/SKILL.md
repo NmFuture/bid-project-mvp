@@ -11,7 +11,7 @@ allowed-tools: [Read, Bash, Write]
 后端 manifest 调用：
 
 ```bash
-s4fill /data/parsed/<projectId>/s4_gap_workdir/ai_fill/<gapId>/table_fill_input.json
+s4fill /data/documents/<projectId>/technical-workspace/s4_gap_workdir/ai_fill/<gapId>/table_fill_input.json
 ```
 
 输出必须是 JSON，schema 为 `bid-tech-table-fill-v1`，并把填好的 Word 写到 manifest 的 `outputFile`。

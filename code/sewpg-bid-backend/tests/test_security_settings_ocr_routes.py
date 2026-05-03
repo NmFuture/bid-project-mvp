@@ -3,15 +3,26 @@ from __future__ import annotations
 import tempfile
 import unittest
 import os
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 from unittest.mock import patch
 
+from docx import Document
 from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.main import app
 from app.services.store import store
+
+
+def build_docx_bytes(*lines: str) -> bytes:
+    file_obj = BytesIO()
+    doc = Document()
+    for line in lines:
+        doc.add_paragraph(line)
+    doc.save(file_obj)
+    return file_obj.getvalue()
 
 
 @unittest.skipUnless(os.getenv("BID_RUN_INTEGRATION") == "1", "requires PostgreSQL and MinIO")
@@ -63,7 +74,13 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
             "/api/settings/default-templates",
             headers=self.headers,
             data={"templateType": "technical", "version": "2026.05"},
-            files={"file": ("默认技术标模板.docx", b"fake-docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+            files={
+                "file": (
+                    "默认技术标模板.docx",
+                    build_docx_bytes("默认技术标模板", "第一章 技术响应"),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
         )
         self.assertEqual(upload.status_code, 200)
         template_id = upload.json()["item"]["id"]
@@ -76,7 +93,13 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
             "/api/settings/default-templates",
             headers=self.headers,
             data={"templateType": "technical", "version": "2026.05"},
-            files={"file": ("默认技术标模板-v2.docx", b"fake-docx-v2", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+            files={
+                "file": (
+                    "默认技术标模板-v2.docx",
+                    build_docx_bytes("默认技术标模板 v2", "第一章 技术响应"),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
         )
         self.assertEqual(second_upload.status_code, 200)
         technical_items = [
@@ -139,7 +162,13 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
             "/api/settings/default-templates",
             headers=self.headers,
             data={"templateType": "business", "version": "2026.05"},
-            files={"file": ("默认商务标模板.docx", b"business-template", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+            files={
+                "file": (
+                    "默认商务标模板.docx",
+                    build_docx_bytes("默认商务标模板", "第一章 商务响应"),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
         )
         self.assertEqual(upload.status_code, 200)
         template_id = upload.json()["item"]["id"]
@@ -183,6 +212,23 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
         self.assertEqual(len(template_files), 1)
         self.assertEqual(template_files[0]["source"], "system-default")
         self.assertEqual(template_files[0]["templateType"], "business")
+
+    def test_invalid_default_template_upload_is_rejected(self) -> None:
+        upload = self.client.post(
+            "/api/settings/default-templates",
+            headers=self.headers,
+            data={"templateType": "technical", "version": "2026.05"},
+            files={
+                "file": (
+                    "默认技术标模板.docx",
+                    b"fake-docx",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+        self.assertEqual(upload.status_code, 400)
+        self.assertIn("有效 DOCX", upload.text)
 
     def test_audit_records_real_operations(self) -> None:
         email = f"audit-user-{id(self)}@example.com"

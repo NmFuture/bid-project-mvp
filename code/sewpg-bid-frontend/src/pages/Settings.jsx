@@ -130,7 +130,7 @@ export default function Settings({ showToast = () => {} }) {
   const sections = [
     { id: 'defaultTemplates', icon: 'description', label: '默认 Word 模板', group: '系统核心' },
     { id: 'gateway', icon: 'hub', label: 'LLM 模型', group: '系统核心' },
-    { id: 'ocr', icon: 'document_scanner', label: 'OCR 模型', group: '系统核心' },
+    { id: 'ocr', icon: 'document_scanner', label: 'PDF/图片识别', group: '系统核心' },
     { id: 'users', icon: 'group', label: '用户', group: '系统核心' },
     { id: 'health', icon: 'monitor_heart', label: '健康', group: '系统核心' },
   ]
@@ -230,10 +230,10 @@ export default function Settings({ showToast = () => {} }) {
         apiKey: '',
         apiKeyMasked: String(result.config?.apiKeyMasked || ''),
       })
-      showToast('OCR 模型配置已保存')
+      showToast('PDF/图片识别模型配置已保存')
     } catch (e) {
       console.error(e)
-      showToast(safeMessage(e, 'OCR 配置保存失败'), 'error')
+      showToast(safeMessage(e, 'PDF/图片识别配置保存失败'), 'error')
     } finally {
       setOcrSaving(false)
     }
@@ -250,11 +250,11 @@ export default function Settings({ showToast = () => {} }) {
         ...(ocrDraft.apiKey.trim() ? { apiKey: ocrDraft.apiKey.trim() } : {}),
       })
       setOcrTestResult({ success: true, message: result.message, latencyMs: result.latencyMs })
-      showToast('OCR 连通性测试通过')
+      showToast('PDF/图片识别模型连通性测试通过')
     } catch (e) {
       console.error(e)
-      setOcrTestResult({ success: false, message: safeMessage(e, 'OCR 测试失败'), latencyMs: null })
-      showToast(safeMessage(e, 'OCR 测试失败'), 'error')
+      setOcrTestResult({ success: false, message: safeMessage(e, 'PDF/图片识别模型测试失败'), latencyMs: null })
+      showToast(safeMessage(e, 'PDF/图片识别模型测试失败'), 'error')
     } finally {
       setOcrTesting(false)
     }
@@ -313,7 +313,7 @@ export default function Settings({ showToast = () => {} }) {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-3">
         <div>
           <h1 className="text-3xl font-headline font-bold text-primary">系统设置</h1>
-          <p className="text-sm text-on-surface-variant mt-1">管理默认 Word 模板、LLM/OCR 模型、用户与健康检查。</p>
+          <p className="text-sm text-on-surface-variant mt-1">管理默认 Word 模板、LLM、PDF/图片识别模型、用户与健康检查。</p>
           {refreshing && <p className="text-xs text-outline mt-1">正在刷新配置...</p>}
         </div>
         <button
@@ -481,8 +481,8 @@ export default function Settings({ showToast = () => {} }) {
             <div className="p-6 space-y-6">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h2 className="text-lg font-headline font-bold text-on-surface">OCR 模型配置</h2>
-                  <p className="text-sm text-on-surface-variant mt-1">维护图片型 PDF 和图片识别所用模型。</p>
+                  <h2 className="text-lg font-headline font-bold text-on-surface">PDF/图片识别模型配置</h2>
+                  <p className="text-sm text-on-surface-variant mt-1">维护扫描件、图片型 PDF 和图片识别所用模型。</p>
                 </div>
                 <label className="inline-flex items-center gap-2 text-sm text-on-surface-variant">
                   <input
@@ -490,7 +490,7 @@ export default function Settings({ showToast = () => {} }) {
                     checked={ocrDraft.enabled}
                     onChange={(event) => setOcrDraft((prev) => ({ ...prev, enabled: event.target.checked }))}
                   />
-                  启用 OCR
+                  启用识别模型
                 </label>
               </div>
 

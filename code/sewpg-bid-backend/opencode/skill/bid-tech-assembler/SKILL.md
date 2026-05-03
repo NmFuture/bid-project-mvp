@@ -169,7 +169,7 @@ python3 scripts/verify.py \
 
 ```bash
 python3 scripts/run_from_manifest.py \
-  --manifest /data/parsed/<projectId>/s7_assembly_workdir/s7_assembly_input.json \
+  --manifest /data/documents/<projectId>/technical-workspace/s7_assembly_workdir/s7_assembly_input.json \
   --response summary
 ```
 

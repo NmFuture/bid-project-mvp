@@ -10,6 +10,61 @@
 
 ## 进度记录
 
+### 2026-05-03 17:05 技术标模板兜底收口为设置侧系统默认模板
+
+改动目标：
+
+- 按用户确认收口技术标模板来源：只需要项目上传模板和设置侧启用的系统默认模板，不再保留第二层 legacy fallback。
+- 避免 `templates/fallback/technical/...` 继续被自动 seed 或静默用于 S2/S7 生成。
+
+改动内容：
+
+- `template_store.py` 移除 legacy fallback 对象查询、下载、seed 成默认模板的生成入口；`resolve_fallback_bid_template_file()` 现在只解析设置侧系统默认模板。
+- `system_settings.py` 启动初始化不再调用 legacy fallback seed。
+- `docker-compose.yml` 和 `.env.example` 移除 `BID_FALLBACK_TEMPLATE_*` 环境变量，避免部署继续配置第二层兜底。
+- S1 模板页 toast 文案去掉 fallback 表达；S2 模板无效错误只区分“项目投标模板”和“系统默认模板”。
+- 测试口径改为：没有项目模板且没有设置侧有效默认模板时，不再返回 legacy 模板；设置侧默认模板存在时才进入有效生成输入。
+- 数据存储说明和待办文档更新为单一设置侧默认模板规划。
+
+验证结果：
+
+- `git diff --check` 通过。
+- `PYTHONPATH=. .venv/bin/python -m py_compile app/services/template_store.py app/services/system_settings.py app/services/outline_generation.py` 通过。
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_directory_generation.py tests/test_security_settings_ocr_routes.py -q` 通过：42 passed，7 skipped。
+- 代码残留搜索确认运行路径中不再存在 legacy fallback 查询、下载、seed 或 `BID_FALLBACK_TEMPLATE_*` 配置。
+- MinIO/PostgreSQL 整理：停用 9B 技术标坏默认模板和 17B 商务标坏默认模板；把 190.53 MB 的真实技术标模板复制到 `bid-templates/templates/default/technical/7609394a-18ad-47b4-a4aa-2e526751d204-投标文件-模板.docx`，并设为技术标 active 系统默认模板。
+- 重新构建并重启 `fastapi / worker / web`；`/api/projects/PRJ-0001/template-fallback` 返回 `source=system-default`、`available=true`、`sizeLabel=190.53 MB`，且不再返回 `legacyFallbackTemplate` 字段。
+
+### 2026-05-03 14:49 OCR 入口收口为无感解析能力
+
+改动目标：
+
+- 按产品口径撤掉前端独立 OCR 入口和候选字段确认区。
+- 让图片、扫描型 PDF 等格式差异在后端解析链路中消化，用户只感知正常的上传、解析和目录生成。
+
+改动内容：
+
+- `ParseResult.jsx` 删除 OCR 任务加载、候选字段展示和确认/忽略交互，模板与目录页不再出现 OCR 工作台。
+- S1 上传白名单补齐图片格式；招标文件解析遇到图片或扫描型 PDF 时按需调用 OCR/视觉模型，把识别文本直接交给原有 LLM/Skill 解析。
+- 模板上传允许 PDF 和图片格式，并记录为后续目录/正文生成可按需视觉解析的模板输入。
+- S2 目录生成输入层补齐非 DOCX 兜底：招标文件使用 S1 combined text 生成内部 Word，PDF/图片模板经视觉识别后生成内部 Word，再交给目录 Skill。
+- `doc/14-甲方新增需求待办.md` 将待办 22 口径从“OCR 候选字段人工复核”改为“PDF / 图片型文件无感解析”。
+- 同步 README、接口文档、部署说明和 doc 索引，把 OCR 候选字段/人工确认旧口径改为业务页无感解析。
+
+验证结果：
+
+- `git diff --check` 通过。
+- `PYTHONPATH=. .venv/bin/python -m py_compile app/services/parsing.py app/services/outline_generation.py app/services/ocr_service.py app/api/routes/parse.py app/core/config.py` 通过。
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py::ParsePipelineTests::test_upload_and_parse_image_uses_visual_recognition_without_manual_ocr_flow -q` 通过：1 passed。
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_directory_generation.py::DirectoryGenerationTests::test_generate_outline_uses_s1_text_and_visual_template_for_non_docx_inputs -q` 通过：1 passed。
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_directory_generation.py tests/test_security_settings_ocr_routes.py -q` 通过：40 passed，6 skipped。
+- `npm run lint` 通过。
+- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的既有体积提示。
+
+遗留问题：
+
+- PDF/图片模板当前通过识别文本生成内部 Word 参与目录生成；复杂版式模板的层级还需要结合真实样本继续调优。
+
 ### 2026-05-03 14:12 S2 工作目录发布保护收尾
 
 改动目标：
@@ -640,7 +695,7 @@
 
 根因：
 
-- `bid-toc-wiki-driven-v2` 已经成功生成完整目录 JSON：`/data/parsed/PRJ-0022/s2_toc_workdir/投标文件-总目录.json`。
+- `bid-toc-wiki-driven-v2` 已经成功生成完整目录 JSON；当前路径口径已收口到 `/data/documents/{project_id}/technical-workspace/s2_toc_workdir/投标文件-总目录.json`。
 - 本次完整 JSON 有 659 条目录项，约 158KB。
 - OpenCode 在 Bash 命令完成后尝试把完整 JSON 再读回模型上下文，读到 50KB 截断后继续调用 `Glob` 检查输出文件。
 - 这个 `Glob` 工具调用长期处于 running，导致 worker 一直等待 OpenCode 最终响应，页面流式输出不再更新。

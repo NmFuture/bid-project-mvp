@@ -38,10 +38,10 @@
   - 主链路口径；已补充 6 节点当前口径，历史 S0-S10 描述仅作为内部兼容背景
 
 - [06-MVP接口文档.md](/Users/wlb/Agent/bid-project/doc/06-MVP接口文档.md)
-  - 当前 `Web -> FastAPI` 接口基线；已补充真实登录鉴权、设置、审计、默认模板和 OCR 候选字段接口；接口名保留 S 段兼容，页面主路径按 6 节点理解
+  - 当前 `Web -> FastAPI` 接口基线；已补充真实登录鉴权、设置、审计、默认模板和 OCR/视觉模型配置；接口名保留 S 段兼容，页面主路径按 6 节点理解
 
 - [08-MVP部署说明.md](/Users/wlb/Agent/bid-project/doc/08-MVP部署说明.md)
-  - Docker Compose 部署口径和环境变量说明；包含认证管理员、默认 LLM/OCR 配置和设置/审计/OCR 验收提示
+  - Docker Compose 部署口径和环境变量说明；包含认证管理员、默认 LLM、PDF/图片识别模型配置和设置/审计/识别验收提示
 
 - [11-内网离线部署说明.md](/Users/wlb/Agent/bid-project/doc/11-内网离线部署说明.md)
   - 内网离线交付、镜像打包和现场部署步骤

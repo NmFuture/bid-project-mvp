@@ -11,7 +11,7 @@ allowed-tools: [Read, Bash, Write]
 后端 manifest 调用：
 
 ```bash
-s4gap /data/parsed/<projectId>/s4_gap_workdir/s4_gap_input.json
+s4gap /data/documents/<projectId>/technical-workspace/s4_gap_workdir/s4_gap_input.json
 ```
 
 输出必须是 JSON，schema 为 `bid-tech-gap-plan-v1`。每个目录项至少包含：

@@ -20,6 +20,7 @@ from app.services.audit_service import audit_service
 from app.services.material_store import material_store, safe_segment, size_label
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
+from app.services.template_store import is_valid_docx_bytes, is_valid_docx_stream
 
 DEFAULT_TEMPLATE_TYPES = {
     "technical": "技术标",
@@ -53,9 +54,6 @@ class SystemSettingsService:
             await material_store._ensure_runtime_tables(session)
             await session.commit()
         await self._ensure_model_defaults()
-        from app.services.template_store import seed_legacy_fallback_as_system_default
-
-        await seed_legacy_fallback_as_system_default()
 
     async def _ensure_model_defaults(self) -> None:
         async with async_session() as session:
@@ -413,11 +411,15 @@ class SystemSettingsService:
         size = 0
         if upload is not None and hasattr(upload, "file"):
             stream = upload.file
+            if not is_valid_docx_stream(stream):
+                raise PeripheralError(400, "系统默认模板不是有效 DOCX 文件", "DEFAULT_TEMPLATE_DOCX_INVALID")
             stream.seek(0, 2)
             size = stream.tell()
             stream.seek(0)
             minio_client.put_object_stream(bucket, key, stream, size, content_type=resolved_type)
         elif data is not None:
+            if not is_valid_docx_bytes(data):
+                raise PeripheralError(400, "系统默认模板不是有效 DOCX 文件", "DEFAULT_TEMPLATE_DOCX_INVALID")
             size = len(data)
             minio_client.put_object(bucket, key, data, content_type=resolved_type)
         else:

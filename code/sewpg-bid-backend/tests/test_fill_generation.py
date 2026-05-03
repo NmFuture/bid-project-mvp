@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.config import settings
 from app.services.store import now_iso, store
+from app.services.workspace_artifacts import technical_workspace_dir
 
 
 class FillGenerationTests(unittest.TestCase):
@@ -50,7 +51,7 @@ class FillGenerationTests(unittest.TestCase):
         response.raise_for_status()
         project_id = response.json()["id"]
 
-        project_dir = settings.parsed_dir / project_id
+        project_dir = technical_workspace_dir(project_id) / "parse"
         project_dir.mkdir(parents=True, exist_ok=True)
         combined_text_path = project_dir / "combined.txt"
         combined_text_path.write_text(

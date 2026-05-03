@@ -21,6 +21,30 @@ def technical_workspace_parse_dir(project_id: str) -> Path:
     return technical_workspace_dir(project_id) / "parse"
 
 
+def technical_workspace_stage_dir(project_id: str, stage_name: str) -> Path:
+    return technical_workspace_dir(project_id) / stage_name
+
+
+def legacy_workspace_roots(project_id: str, parse_storage: dict[str, Any] | None = None) -> list[Path]:
+    roots: list[Path] = []
+    raw_project_dir = str((parse_storage or {}).get("projectDir") or "").strip()
+    if raw_project_dir:
+        roots.append(Path(raw_project_dir).expanduser())
+    roots.append(technical_workspace_dir(project_id))
+    roots.append(settings.parsed_dir / project_id)
+    roots.append(technical_workspace_parse_dir(project_id))
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(root)
+    return unique
+
+
 def parse_temp_workspace_dir(project_id: str) -> Path:
     return settings.parsed_dir / project_id
 
@@ -196,7 +220,8 @@ def promote_parse_artifacts_to_workspace(
     workspace_storage = copy.deepcopy(parse_storage)
     workspace_storage.update(
         {
-            "projectDir": str(parse_dir),
+            "projectDir": str(workspace_root),
+            "parseDir": str(parse_dir),
             "combinedTextPath": str(combined_text_path),
             "manifestPath": str(manifest_path),
             "structuredResultPath": str(structured_result_path),

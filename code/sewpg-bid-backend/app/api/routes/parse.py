@@ -11,7 +11,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from app.api.utils import absolute_url, onlyoffice_backend_base_url
 from app.core.config import settings
 from app.services.onlyoffice_documents import WORD_MEDIA_TYPE, build_editor_session_key
-from app.services.parsing import materialize_appendix_docx, materialize_parse_appendix_docx_assets, parse_tender_documents
+from app.services.parsing import (
+    IMAGE_SUFFIXES,
+    extract_docx_text,
+    materialize_appendix_docx,
+    materialize_parse_appendix_docx_assets,
+    parse_tender_documents,
+)
 from app.services.store import store
 
 router = APIRouter()
@@ -112,6 +118,29 @@ async def _save_one_upload(
         "content_type": upload.content_type or "",
         "path": str(path),
     }
+
+
+def _docx_has_extractable_text(path: Path) -> bool:
+    try:
+        return bool(extract_docx_text(path).strip())
+    except Exception:
+        return False
+
+
+def _mark_deferred_ocr_for_templates(template_files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for item in template_files:
+        path = Path(str(item.get("path") or ""))
+        if path.suffix.lower() in {".pdf", *IMAGE_SUFFIXES}:
+            item["visualParsing"] = {
+                "status": "deferred",
+                "message": "模板文件为图片或 PDF，后续解析或目录生成将按需使用视觉模型读取。",
+            }
+        elif path.suffix.lower() == ".docx" and not _docx_has_extractable_text(path):
+            item["visualParsing"] = {
+                "status": "deferred",
+                "message": "模板 DOCX 未提取到可用文本，后续解析或目录生成将按需使用视觉模型读取。",
+            }
+    return template_files
 
 
 async def save_uploads(project_id: str, folder: str, files: list[UploadFile]) -> list[dict[str, Any]]:
@@ -386,7 +415,7 @@ async def upload_and_parse(
             template_files,
             start_index=len(existing_template) + 1,
         )
-        merged_template = [*existing_template, *saved_template]
+        merged_template = [*existing_template, *_mark_deferred_ocr_for_templates(saved_template)]
     else:
         merged_template = existing_template
 
@@ -444,7 +473,7 @@ async def upload_template_files(
         files,
         start_index=len(existing_template) + 1,
     )
-    merged_template = [*existing_template, *saved_template]
+    merged_template = [*existing_template, *_mark_deferred_ocr_for_templates(saved_template)]
     payload = store.update_template_files(project_id, merged_template)
     return {
         **payload,

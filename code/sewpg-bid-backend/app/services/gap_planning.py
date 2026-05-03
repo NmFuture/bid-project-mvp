@@ -17,6 +17,7 @@ from app.core.config import BASE_DIR, settings
 from app.services.material_store import material_store
 from app.services.minio_client import minio_client
 from app.services.opencode_client import OpencodeClient
+from app.services.workspace_artifacts import legacy_workspace_roots, technical_workspace_dir, technical_workspace_stage_dir
 
 
 GAP_PLAN_SCHEMA_VERSION = "bid-tech-gap-plan-v1"
@@ -48,7 +49,7 @@ def build_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
 
     project_id = str(project.get("id") or "")
     project_dir = _project_dir(project)
-    work_dir = project_dir / "s4_gap_workdir"
+    work_dir = technical_workspace_stage_dir(project_id, "s4_gap_workdir")
     if work_dir.exists():
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -493,10 +494,8 @@ def check_gap_integrity(plan: dict[str, Any]) -> dict[str, Any]:
 
 
 def _project_dir(project: dict[str, Any]) -> Path:
-    parse_storage = project.get("parse_storage") or {}
-    raw_project_dir = str(parse_storage.get("projectDir") or "").strip()
     project_id = str(project.get("id") or "")
-    project_dir = Path(raw_project_dir).expanduser() if raw_project_dir else settings.parsed_dir / project_id
+    project_dir = technical_workspace_dir(project_id)
     project_dir.mkdir(parents=True, exist_ok=True)
     return project_dir
 
@@ -509,9 +508,8 @@ def _resolve_toc_json(project: dict[str, Any], work_dir: Path) -> Path:
     for value in (directory_output.get("tocJsonPath"), directory_output.get("outputFile")):
         if value:
             candidates.append(Path(str(value)))
-    raw_project_dir = str(parse_storage.get("projectDir") or "").strip()
-    if raw_project_dir:
-        s2_work_dir = Path(raw_project_dir) / "s2_toc_workdir"
+    for root in legacy_workspace_roots(project_id, parse_storage):
+        s2_work_dir = root / "s2_toc_workdir"
         candidates.extend(path for path in sorted(s2_work_dir.glob("*.json")) if "evidence" not in path.name.lower())
     for candidate in candidates:
         if candidate.exists() and candidate.suffix.lower() == ".json":
@@ -536,7 +534,9 @@ def _resolve_toc_json(project: dict[str, Any], work_dir: Path) -> Path:
 
 
 def _resolve_wiki_dir(project: dict[str, Any], project_dir: Path, work_dir: Path) -> Path | None:
-    candidates = [project_dir / "s2_toc_workdir" / "wiki"]
+    project_id = str(project.get("id") or "")
+    parse_storage = project.get("parse_storage") or {}
+    candidates = [root / "s2_toc_workdir" / "wiki" for root in legacy_workspace_roots(project_id, parse_storage)]
     for candidate in candidates:
         if (candidate / "卡片").exists():
             target = work_dir / "wiki"
@@ -632,7 +632,7 @@ s4gap {manifest_path}
 返回格式必须是：
 {{
   "schema_version": "{GAP_PLAN_SCHEMA_VERSION}",
-  "outputFile": "/data/parsed/PRJ-0001/s4_gap_workdir/gap_plan.json",
+  "outputFile": "/data/documents/PRJ-0001/technical-workspace/s4_gap_workdir/gap_plan.json",
   "summary": {{"totalTocItems": 0, "matchedCount": 0, "missingCount": 0, "resolvedCount": 0, "ignoredCount": 0, "structuralCount": 0, "fillableTaskCount": 0, "blockingCount": 0}},
   "itemCount": 0
 }}

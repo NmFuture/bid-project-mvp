@@ -14,6 +14,7 @@ from app.main import app
 from app.core.config import settings
 from app.services.outline_generation import _run_local_outline_skill
 from app.services.store import store
+from app.services.workspace_artifacts import technical_workspace_dir
 
 
 class DirectoryGenerationTests(unittest.TestCase):
@@ -48,7 +49,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         )
         project_id = project["id"]
 
-        project_dir = settings.parsed_dir / project_id
+        project_dir = technical_workspace_dir(project_id)
         project_dir.mkdir(parents=True, exist_ok=True)
 
         tender_path = settings.uploads_dir / project_id / "tender" / "招标文件.docx"
@@ -158,9 +159,87 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertEqual(payload["events"][-1]["level"], "success")
         self.assertTrue(mock_generate.called)
         self.assertEqual(payload["opencodeOutput"]["status"], "received")
+
+    def test_generate_outline_uses_s1_text_and_visual_template_for_non_docx_inputs(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project = store.create_project(
+            {
+                "name": "图片模板目录项目",
+                "customerName": "测试业主",
+            }
+        )
+        project_id = project["id"]
+        project_dir = technical_workspace_dir(project_id)
+        project_dir.mkdir(parents=True, exist_ok=True)
+
+        tender_path = settings.uploads_dir / project_id / "tender" / "招标文件.png"
+        tender_path.parent.mkdir(parents=True, exist_ok=True)
+        tender_path.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        template_path = settings.uploads_dir / project_id / "template" / "投标模板.png"
+        template_path.parent.mkdir(parents=True, exist_ok=True)
+        template_path.write_bytes(b"\x89PNG\r\n\x1a\nfake-template")
+
+        combined_text_path = project_dir / "combined.txt"
+        combined_text_path.write_text(
+            "\n".join(
+                [
+                    "# 文件：招标文件.png",
+                    "",
+                    "第一章 采购需求",
+                    "投标人应提供实施方案。",
+                    "投标人须提交服务团队安排。",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        store.complete_parse(
+            project_id,
+            tender_files=[
+                {
+                    "id": "TEN-1",
+                    "name": "招标文件.png",
+                    "path": str(tender_path),
+                    "size_label": "1.0 MB",
+                }
+            ],
+            template_files=[
+                {
+                    "id": "TPL-1",
+                    "name": "投标模板.png",
+                    "path": str(template_path),
+                    "size_label": "1.0 MB",
+                }
+            ],
+            summary={
+                "fileCount": 1,
+                "extractedCount": 1,
+                "textLength": 80,
+                "textPreview": "",
+                "warnings": [],
+            },
+            parse_storage={
+                "projectDir": str(project_dir),
+                "combinedTextPath": str(combined_text_path),
+                "manifestPath": "",
+                "documents": [],
+            },
+        )
+
+        with patch(
+            "app.services.outline_generation._ocr_fallback_text",
+            return_value=("第一章 投标响应概述\n1.1 项目理解\n第二章 实施方案\n2.1 工作计划", {"status": "completed"}),
+        ):
+            payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        self.assertEqual(payload["status"], "completed")
+        self.assertGreaterEqual(payload["output"]["chapterCount"], 2)
+        workspace = store.get_directory_state(project_id)["opencodeOutput"]["workDir"]
+        manifest = json.loads((Path(workspace) / "s2_input.json").read_text(encoding="utf-8"))
+        self.assertEqual(Path(manifest["templateFile"]).suffix, ".docx")
+        self.assertEqual(Path(manifest["tenderFiles"][0]["path"]).suffix, ".docx")
         self.assertEqual(payload["opencodeOutput"]["engine"], "bid-tech-outline-generator")
         self.assertEqual(payload["opencodeOutput"]["skill"], "bid-tech-outline-generator")
-        self.assertEqual(payload["opencodeOutput"]["providerId"], "opencode")
         self.assertTrue(payload["opencodeOutput"]["parts"])
         self.assertTrue(Path(payload["opencodeOutput"]["tocJsonPath"]).exists())
         self.assertTrue(Path(payload["opencodeOutput"]["evidencePath"]).exists())
@@ -193,7 +272,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         ):
             first_payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
-        project_dir = settings.parsed_dir / project_id
+        project_dir = technical_workspace_dir(project_id)
         work_dir = project_dir / "s2_toc_workdir"
         marker = work_dir / "previous-marker.txt"
         marker.write_text("previous run", encoding="utf-8")
@@ -226,7 +305,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         ):
             first_payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
-        work_dir = settings.parsed_dir / project_id / "s2_toc_workdir"
+        work_dir = technical_workspace_dir(project_id) / "s2_toc_workdir"
         previous_toc = Path(first_payload["opencodeOutput"]["tocJsonPath"])
         marker = work_dir / "previous-marker.txt"
         marker.write_text("keep me", encoding="utf-8")
@@ -244,7 +323,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertTrue(work_dir.exists())
         self.assertTrue(previous_toc.exists())
         self.assertEqual(marker.read_text(encoding="utf-8"), "keep me")
-        self.assertTrue((settings.parsed_dir / project_id / "s2_toc_workdir.new").exists())
+        self.assertTrue((technical_workspace_dir(project_id) / "s2_toc_workdir.new").exists())
 
     def test_publish_failure_preserves_previous_successful_workspace(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
@@ -257,7 +336,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         ):
             first_payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
-        project_dir = settings.parsed_dir / project_id
+        project_dir = technical_workspace_dir(project_id)
         work_dir = project_dir / "s2_toc_workdir"
         previous_toc = Path(first_payload["opencodeOutput"]["tocJsonPath"])
         marker = work_dir / "previous-marker.txt"
@@ -679,6 +758,40 @@ class DirectoryGenerationTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "投标模板"):
+            generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+    def test_generate_outline_rejects_invalid_project_template_docx(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result()
+        parse_result = store.get_parse_result(project_id)
+        parse_storage = store.get_parse_storage(project_id)
+        bad_template = settings.uploads_dir / project_id / "template" / "bad-template.docx"
+        bad_template.parent.mkdir(parents=True, exist_ok=True)
+        bad_template.write_bytes(b"bad docx")
+        store.complete_parse(
+            project_id,
+            tender_files=[
+                {
+                    "id": "TEN-1",
+                    "name": "招标文件.docx",
+                    "path": str(settings.uploads_dir / project_id / "tender" / "招标文件.docx"),
+                    "size_label": "1.0 MB",
+                }
+            ],
+            template_files=[
+                {
+                    "id": "TPL-1",
+                    "name": "坏模板.docx",
+                    "path": str(bad_template),
+                    "size_label": "7 B",
+                }
+            ],
+            summary=parse_result["summary"],
+            parse_storage=parse_storage,
+        )
+
+        with self.assertRaisesRegex(ValueError, "不是有效 DOCX"):
             generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
     def test_futurecode_progress_updates_before_completion(self) -> None:

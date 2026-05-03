@@ -84,12 +84,11 @@
   - 用户上传的招标文件
 - `documents`
   - 生成后的 `.docx`
+  - 项目技术标长期工作区 `documents/{project_id}/technical-workspace/`
 - `parsed`
-  - 审核模块解析产物，例如 `combined.txt`
-  - S2 最新成功目录工作区 `s2_toc_workdir/`，以及历史归档 `s2_toc_workdir.runs/`
+  - S1 临时解析缓存，例如初始 `combined.txt` 和附表草稿
 
-`parsed` 很重要。
-如果它不持久化，`fastapi` 容器重建后，`S2 / S7` 会因为找不到解析结果、目录 JSON、Wiki 或拼装工作目录而断链。
+`documents` 和 `parsed` 都需要持久化。`parsed` 保存 S1 运行中的临时解析缓存；确认参与投标后，S1 解析结果会提升到 `documents/{project_id}/technical-workspace/parse/`，S2/S4/S7 的长期工作区都在同一个 `technical-workspace` 下。
 
 ## 快速启动
 
@@ -227,7 +226,7 @@ compose 会把这个目录挂进 `opencode` 容器。
 | `OPENCODE_TIMEOUT_SEC` | FastAPI 调用 opencode 的超时，默认建议 `600` 秒，超时会触发回退目录 |
 | `AUTH_ADMIN_EMAIL / AUTH_ADMIN_PASSWORD / AUTH_ADMIN_NAME` | 首次启动时初始化系统管理员 |
 | `DEFAULT_LLM_BASE_URL / DEFAULT_LLM_API_KEY / DEFAULT_LLM_MODEL` | 设置页 LLM 模型配置的启动默认值，后续可在设置页维护 |
-| `DEFAULT_OCR_BASE_URL / DEFAULT_OCR_API_KEY / DEFAULT_OCR_MODEL` | 设置页 OCR 模型配置的启动默认值，后续可在设置页维护 |
+| `DEFAULT_OCR_BASE_URL / DEFAULT_OCR_API_KEY / DEFAULT_OCR_MODEL` | 设置页 PDF/图片识别模型配置的启动默认值，后续可在设置页维护 |
 | `OPENAI_API_KEY` | OpenAI / OpenAI-compatible 模型 key |
 | `ANTHROPIC_API_KEY` | Anthropic key |
 | `GOOGLE_API_KEY` | Google key |
@@ -260,7 +259,7 @@ compose 会把这个目录挂进 `opencode` 容器。
 - 审核模块若选择“参与该项目”，会先要求补全项目信息，再进入项目模块
 - `S2` 由 FastAPI 调用 futurecode/opencode 执行 `bid-tech-outline-generator` 的 `s2toc` 命令；命令完成后后端会直接读取脚本产物，避免等待 futurecode 继续读取大 JSON。
 - 如果 futurecode/opencode 调用失败，FastAPI 会在本地运行同一 S2 Skill 脚本作为降级路径。
-- `S2` 每次先写入 `parsed/{project_id}/s2_toc_workdir.new/`；成功后发布为 `s2_toc_workdir/`，旧成功目录归档到 `s2_toc_workdir.runs/`。不再写 `parsed/{project_id}/s2.json` alias，`manifestPath` 与 `canonicalManifestPath` 都指向 `s2_toc_workdir/s2_input.json`。
+- `S2` 每次先写入 `documents/{project_id}/technical-workspace/s2_toc_workdir.new/`；成功后发布为 `s2_toc_workdir/`，旧成功目录归档到 `s2_toc_workdir.runs/`。不再写 `parsed/{project_id}/s2.json` alias，`manifestPath` 与 `canonicalManifestPath` 都指向 `s2_toc_workdir/s2_input.json`。
 - `S7` 不再走自由初稿生成，而是使用 S2 目录 JSON、S2 Wiki 卡片和素材库清洗后 Word，通过 `bid-tech-assembler` 拼装正文
 
 ## OnlyOffice 地址说明
@@ -289,7 +288,7 @@ compose 会把这个目录挂进 `opencode` 容器。
 - `S4 / S5 / S6` 仍然是承接态，不是正式业务实现
 - `S8` 当前校验的是 S7 拼装计划与素材库的覆盖关系，还不是完整评分点覆盖审计
 - 当前默认已经接入 PostgreSQL、MinIO、Redis
-- 当前已接入真实登录鉴权、持久化审计、系统设置、默认模板管理和 OCR 候选字段人工复核；SSO 尚未接入
+- 当前已接入真实登录鉴权、持久化审计、系统设置、默认模板管理和 PDF/图片型文件无感解析；SSO 尚未接入
 - `S2` 优先经 futurecode/opencode 执行 `s2toc`，本地 Skill 脚本只作为调用失败时的降级路径；`S7` 正文拼装仍取决于 S2 JSON、Wiki 卡片和素材库清洗后 Word 是否齐备
 
 ## GitHub 协作提交（必须走分支 + PR 审核）

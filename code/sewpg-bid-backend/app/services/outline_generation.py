@@ -10,9 +10,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from docx import Document
+
 from app.core.config import BASE_DIR, settings
 from app.services.opencode_client import OpencodeClient
+from app.services.parsing import IMAGE_SUFFIXES, _ocr_fallback_text
 from app.services.store import build_directory_opencode_output, now_iso, store
+from app.services.template_store import is_valid_docx_file
+from app.services.workspace_artifacts import technical_workspace_dir
 
 OUTLINE_SKILL_NAME = "bid-tech-outline-generator"
 OUTLINE_SKILL_COMMAND = "s2toc"
@@ -468,8 +473,7 @@ def _prepare_toc_skill_workspace(
     tender_file_records: list[dict[str, Any]],
     template_file_records: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    raw_project_dir = str(parse_storage.get("projectDir") or "").strip()
-    project_dir = Path(raw_project_dir).expanduser() if raw_project_dir else settings.parsed_dir / project_id
+    project_dir = technical_workspace_dir(project_id)
     project_dir.mkdir(parents=True, exist_ok=True)
 
     published_work_dir = project_dir / "s2_toc_workdir"
@@ -479,8 +483,8 @@ def _prepare_toc_skill_workspace(
     staging_work_dir.mkdir(parents=True, exist_ok=True)
     _remove_manifest_alias(project_dir)
 
-    tender_inputs = _copy_tender_inputs(tender_file_records, staging_work_dir)
-    template_path, attach_path = _copy_template_inputs(template_file_records, staging_work_dir)
+    tender_inputs = _copy_tender_inputs(tender_file_records, staging_work_dir, parse_storage)
+    template_path, attach_path = _copy_template_inputs(template_file_records, staging_work_dir, project_id)
     if template_path is None:
         raise ValueError("投标模板不存在，请先上传可读取的投标模板文件。")
     bid_type = _normalize_bid_type(str(project.get("bidType") or "投标文件"))
@@ -620,7 +624,30 @@ def _remap_workspace_paths(value: Any, replacements: dict[str, str]) -> Any:
     return value
 
 
-def _copy_tender_inputs(file_records: list[dict[str, Any]], work_dir: Path) -> list[dict[str, str]]:
+def _heading_style_for_line(line: str) -> str | None:
+    text = str(line or "").strip()
+    if re.match(r"^第[一二三四五六七八九十百千万零〇两0-9]+章", text):
+        return "Heading 1"
+    match = re.match(r"^(?P<number>\d+(?:\.\d+)*)(?:[\s　:：、.-]+)", text)
+    if not match:
+        return None
+    level = min(match.group("number").count(".") + 1, 4)
+    return f"Heading {level}"
+
+
+def _write_text_docx(path: Path, title: str, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = Document()
+    document.add_paragraph(title)
+    for line in str(text or "").splitlines():
+        if line.strip():
+            style = _heading_style_for_line(line)
+            document.add_paragraph(line.strip(), style=style) if style else document.add_paragraph(line.strip())
+    document.save(path)
+    return path
+
+
+def _copy_tender_inputs(file_records: list[dict[str, Any]], work_dir: Path, parse_storage: dict[str, Any]) -> list[dict[str, str]]:
     copied: list[dict[str, str]] = []
     for index, record in enumerate(file_records, start=1):
         source = Path(str(record.get("path") or "")).expanduser()
@@ -637,10 +664,23 @@ def _copy_tender_inputs(file_records: list[dict[str, Any]], work_dir: Path) -> l
                 "originalPath": str(source),
             }
         )
+    if not copied:
+        combined_text_path = Path(str(parse_storage.get("combinedTextPath") or "")).expanduser()
+        if combined_text_path.exists():
+            text = combined_text_path.read_text(encoding="utf-8", errors="replace")
+            generated_path = _write_text_docx(work_dir / "tender-from-s1-text.docx", "招标文件解析文本", text)
+            copied.append(
+                {
+                    "id": "TEN-S1-TEXT",
+                    "name": "招标文件解析文本.docx",
+                    "path": str(generated_path),
+                    "originalPath": str(combined_text_path),
+                }
+            )
     return copied
 
 
-def _copy_template_inputs(file_records: list[dict[str, Any]], work_dir: Path) -> tuple[Path | None, Path | None]:
+def _copy_template_inputs(file_records: list[dict[str, Any]], work_dir: Path, project_id: str) -> tuple[Path | None, Path | None]:
     docx_records = [
         record
         for record in file_records
@@ -659,11 +699,11 @@ def _copy_template_inputs(file_records: list[dict[str, Any]], work_dir: Path) ->
     if template_record is None and docx_records:
         template_record = docx_records[0]
 
-    template_path = (
-        _copy_single_template(template_record, work_dir / "template-main.docx")
-        if template_record is not None
-        else None
-    )
+    template_path = None
+    if template_record is not None:
+        template_path = _copy_single_template(template_record, work_dir / "template-main.docx")
+    elif file_records:
+        template_path = _copy_visual_template_input(project_id, file_records[0], work_dir / "template-main.docx")
     attach_path = (
         _copy_single_template(attach_record, work_dir / "template-attachment.docx")
         if attach_record is not None and attach_record is not template_record
@@ -682,9 +722,23 @@ def _looks_like_attachment_template(record: dict[str, Any]) -> bool:
 
 def _copy_single_template(record: dict[str, Any], destination: Path) -> Path:
     source = Path(str(record.get("path") or "")).expanduser()
+    if source.suffix.lower() == ".docx" and not is_valid_docx_file(source):
+        source_label = "系统默认模板" if str(record.get("source") or "") == "system-default" else "投标模板"
+        raise ValueError(f"{source_label}不是有效 DOCX 文件，请重新上传或更换默认模板。")
     resolved_destination = destination.with_suffix(source.suffix.lower() or ".docx")
     shutil.copy2(source, resolved_destination)
     return resolved_destination
+
+
+def _copy_visual_template_input(project_id: str, record: dict[str, Any], destination: Path) -> Path | None:
+    source = Path(str(record.get("path") or "")).expanduser()
+    if not source.exists() or source.suffix.lower() not in {".pdf", *IMAGE_SUFFIXES}:
+        return None
+    text, meta = _ocr_fallback_text(project_id, record, source)
+    if not text:
+        message = meta.get("message") if isinstance(meta, dict) else ""
+        raise ValueError(f"投标模板为图片或 PDF，但视觉模型未能读取：{message or '未知错误'}")
+    return _write_text_docx(destination, str(record.get("name") or source.name), text)
 
 
 def _safe_file_name(value: str, fallback: str) -> str:

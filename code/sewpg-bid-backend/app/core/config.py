@@ -53,7 +53,10 @@ def _bool_env(name: str, default: bool) -> bool:
 
 
 def _upload_extensions() -> tuple[str, ...]:
-    raw = _csv_env("ALLOWED_UPLOAD_EXTENSIONS", (".pdf", ".docx", ".md"))
+    raw = _csv_env(
+        "ALLOWED_UPLOAD_EXTENSIONS",
+        (".pdf", ".docx", ".md", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"),
+    )
     normalized: list[str] = []
     for item in raw:
         ext = item.lower().strip()

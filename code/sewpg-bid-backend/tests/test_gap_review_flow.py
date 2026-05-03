@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.config import settings
 from app.services.store import now_iso, store
+from app.services.workspace_artifacts import technical_workspace_dir
 
 
 class GapReviewFlowTests(unittest.TestCase):
@@ -80,7 +81,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def _create_project_with_confirmed_directory_json(self) -> str:
         project_id = self._create_project_with_confirmed_outline()
-        project_dir = settings.parsed_dir / project_id
+        project_dir = technical_workspace_dir(project_id)
         work_dir = project_dir / "s2_toc_workdir"
         work_dir.mkdir(parents=True, exist_ok=True)
         toc_json = work_dir / "投标文件-总目录.json"
@@ -373,7 +374,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_gap_detection_matches_material_from_s2_wiki_cards_when_toc_has_no_refs(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        project_dir = settings.parsed_dir / project_id
+        project_dir = technical_workspace_dir(project_id)
         toc_json = project_dir / "s2_toc_workdir" / "投标文件-总目录.json"
         toc_data = json.loads(toc_json.read_text(encoding="utf-8"))
         for item in toc_data["items"]:

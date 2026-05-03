@@ -66,6 +66,36 @@ class OcrService:
             await material_store._ensure_runtime_tables(session)
             await session.commit()
 
+    async def recognize_text_for_parse(
+        self,
+        *,
+        file_name: str,
+        content: bytes,
+        mime_type: str = "",
+    ) -> tuple[str, dict[str, Any]]:
+        config = await system_settings_service.get_model_secret_config("ocr")
+        if not bool(config.get("enabled")) or not str(config.get("baseUrl") or "").strip():
+            raise PeripheralError(400, "请先在系统设置中启用并配置 OCR 模型。", "OCR_CONFIG_REQUIRED")
+
+        suffix = Path(file_name).suffix.lower()
+        if suffix == ".pdf":
+            text, raw_response, page_count = await self._ocr_pdf(content, config)
+        elif suffix in IMAGE_SUFFIXES:
+            text, raw_response = await self._ocr_image(
+                content,
+                mime_type or mimetypes.guess_type(file_name)[0] or "image/png",
+                config,
+            )
+            page_count = 1
+        else:
+            raise PeripheralError(400, "OCR 仅支持图片或图片型 PDF。", "OCR_FILE_TYPE_INVALID")
+
+        return text, {
+            "status": "completed",
+            "pageCount": page_count,
+            "rawResponse": raw_response,
+        }
+
     async def list_tasks(self, project_id: str) -> dict[str, Any]:
         await self._ensure_tables()
         async with async_session() as session:

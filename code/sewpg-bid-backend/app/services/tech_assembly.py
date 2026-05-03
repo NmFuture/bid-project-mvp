@@ -15,6 +15,7 @@ from app.services.minio_client import minio_client
 from app.services.onlyoffice_documents import document_path
 from app.services.opencode_client import OpencodeClient
 from app.services.store import now_iso, store
+from app.services.workspace_artifacts import legacy_workspace_roots, technical_workspace_stage_dir
 from app.services.wiki_export import export_wiki
 
 
@@ -188,10 +189,7 @@ def assemble_tech_bid_for_project_with_progress(
 
 
 def _prepare_work_dir(project_id: str, parse_storage: dict[str, Any]) -> Path:
-    raw_project_dir = str(parse_storage.get("projectDir") or "").strip()
-    project_dir = Path(raw_project_dir).expanduser() if raw_project_dir else settings.parsed_dir / project_id
-    project_dir.mkdir(parents=True, exist_ok=True)
-    work_dir = project_dir / "s7_assembly_workdir"
+    work_dir = technical_workspace_stage_dir(project_id, "s7_assembly_workdir")
     if work_dir.exists():
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -204,6 +202,14 @@ def _runtime_path(path_text: str) -> Path:
         return path
     if path_text.startswith("/data/parsed/"):
         mapped = settings.parsed_dir / path_text.removeprefix("/data/parsed/")
+        if mapped.exists():
+            return mapped
+        project_id, _, suffix = path_text.removeprefix("/data/parsed/").partition("/")
+        remapped = settings.documents_dir / project_id / "technical-workspace" / suffix
+        if remapped.exists():
+            return remapped
+    if path_text.startswith("/data/documents/"):
+        mapped = settings.documents_dir / path_text.removeprefix("/data/documents/")
         if mapped.exists():
             return mapped
     if path_text.startswith("/data/uploads/"):
@@ -226,9 +232,8 @@ def _prepare_toc_json(
         str(opencode_output.get("tocJsonPath") or ""),
         str(opencode_output.get("outputFile") or ""),
     ]
-    raw_project_dir = str(parse_storage.get("projectDir") or "").strip()
-    if raw_project_dir:
-        s2_work_dir = Path(raw_project_dir) / "s2_toc_workdir"
+    for root in legacy_workspace_roots(project_id, parse_storage):
+        s2_work_dir = root / "s2_toc_workdir"
         candidates.extend(str(path) for path in sorted(s2_work_dir.glob("*.json")) if "evidence" not in path.name.lower())
 
     for candidate in candidates:
@@ -298,10 +303,8 @@ def _outline_nodes_to_toc_items(nodes: list[dict[str, Any]], prefix: str = "", l
 
 def _prepare_wiki_dir(project: dict[str, Any], parse_storage: dict[str, Any], work_dir: Path) -> Path:
     target = work_dir / "wiki"
-    raw_project_dir = str(parse_storage.get("projectDir") or "").strip()
-    candidates = []
-    if raw_project_dir:
-        candidates.append(_runtime_path(str(Path(raw_project_dir) / "s2_toc_workdir" / "wiki")))
+    project_id = str(project.get("id") or "")
+    candidates = [_runtime_path(str(root / "s2_toc_workdir" / "wiki")) for root in legacy_workspace_roots(project_id, parse_storage)]
     for candidate in candidates:
         if (candidate / "卡片").exists():
             shutil.copytree(candidate, target, dirs_exist_ok=True)
@@ -866,10 +869,10 @@ manifest：{manifest_path}
 返回格式必须是：
 {{
   "schema_version": "bid-tech-assembly-v1",
-  "outputFile": "/data/parsed/PRJ-0001/s7_assembly_workdir/投标文件-正文.docx",
-  "assemblyReport": "/data/parsed/PRJ-0001/s7_assembly_workdir/assembly_report.md",
-  "needsReview": "/data/parsed/PRJ-0001/s7_assembly_workdir/needs_review.md",
-  "planFile": "/data/parsed/PRJ-0001/s7_assembly_workdir/assembly_plan.json",
+  "outputFile": "/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/投标文件-正文.docx",
+  "assemblyReport": "/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/assembly_report.md",
+  "needsReview": "/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/needs_review.md",
+  "planFile": "/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/assembly_plan.json",
   "summary": {{"total": 0, "byStatus": {{}}, "usedPathCount": 0}}
 }}
 """.strip()

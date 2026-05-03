@@ -44,7 +44,7 @@
 
 S7 的输入是：
 
-- S2 最新成功工作区中的目录 JSON，默认在 `parsed/{project_id}/s2_toc_workdir/toc.json`
+- S2 最新成功工作区中的目录 JSON，默认在 `documents/{project_id}/technical-workspace/s2_toc_workdir/toc.json`
 - S2 导出的 `wiki/卡片/*.md`
 - 当前素材库中的清洗后 Word 文件
 - 项目参数和可选模板

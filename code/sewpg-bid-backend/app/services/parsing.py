@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import copy
+import asyncio
+import mimetypes
 import re
 import shutil
 import sys
+import threading
 import zipfile
 from dataclasses import dataclass
 from datetime import date
@@ -15,7 +18,9 @@ from xml.etree import ElementTree as ET
 from docx import Document
 
 from app.core.config import settings
+from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.opencode_client import OpencodeClient
+from app.services.peripheral import PeripheralError
 
 PARSE_SKILL_NAME = "bid-tender-structured-parser"
 PARSER_CORE_DIR = Path(__file__).resolve().parents[2] / "opencode" / "skill" / PARSE_SKILL_NAME / "scripts"
@@ -227,14 +232,67 @@ def extract_pdf_text(path: Path) -> tuple[str, dict[str, Any]]:
 
     warnings: list[str] = []
     if page_count and empty_pages == page_count:
-        warnings.append("PDF 未提取到文本，疑似扫描件。当前 MVP 暂不支持 OCR。")
+        warnings.append("PDF 未提取到文本，疑似扫描件，已进入 OCR 兜底识别。")
     elif empty_pages:
         warnings.append(f"PDF 有 {empty_pages} 页未提取到文本。")
 
     return _normalize_text("\n\n".join(page_texts)), {
         "pageCount": page_count,
         "warnings": warnings,
+        "requiresOcr": bool(page_count and empty_pages == page_count),
     }
+
+
+def _run_async_ocr(coro: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: Any = None
+    error: BaseException | None = None
+
+    def run() -> None:
+        nonlocal result, error
+        try:
+            result = asyncio.run(coro)
+        except BaseException as exc:  # pragma: no cover - defensive bridge
+            error = exc
+
+    thread = threading.Thread(target=run, daemon=True, name="parse-visual-recognition")
+    thread.start()
+    thread.join()
+    if error:
+        raise error
+    return result
+
+
+def _ocr_fallback_text(project_id: str, file_record: dict[str, Any], file_path: Path) -> tuple[str, dict[str, Any]]:
+    _ = project_id
+    try:
+        text, raw = _run_async_ocr(
+            ocr_service.recognize_text_for_parse(
+                file_name=str(file_record.get("name") or file_path.name),
+                content=file_path.read_bytes(),
+                mime_type=str(file_record.get("content_type") or mimetypes.guess_type(file_path.name)[0] or ""),
+            )
+        )
+        return _normalize_text(text), {
+            "status": "completed",
+            "pageCount": raw.get("pageCount") or "-",
+        }
+    except PeripheralError as exc:
+        return "", {
+            "status": "failed",
+            "code": exc.code,
+            "message": exc.detail,
+        }
+    except Exception as exc:
+        return "", {
+            "status": "failed",
+            "code": "OCR_PARSE_FALLBACK_FAILED",
+            "message": str(exc),
+        }
 
 
 def _normalize_date_match(match: re.Match[str]) -> str:
@@ -945,6 +1003,7 @@ def parse_tender_documents(
         extension = file_path.suffix.lower()
         page_count: int | str = "-"
         file_warnings: list[str] = []
+        ocr_meta: dict[str, Any] | None = None
         if progress_callback:
             progress_callback("extracting_file", {"fileName": file_record.get("name") or file_path.name})
 
@@ -956,6 +1015,28 @@ def parse_tender_documents(
             text, pdf_meta = extract_pdf_text(file_path)
             page_count = pdf_meta["pageCount"]
             file_warnings.extend(pdf_meta["warnings"])
+            if pdf_meta.get("requiresOcr"):
+                ocr_text, ocr_meta = _ocr_fallback_text(project_id, file_record, file_path)
+                if ocr_text:
+                    text = ocr_text
+                    page_count = ocr_meta.get("pageCount") or page_count
+                    file_warnings.append("扫描型 PDF 已通过 OCR/视觉模型转为可解析文本。")
+                else:
+                    file_warnings.append(
+                        f"OCR 兜底识别未完成：{ocr_meta.get('message') if ocr_meta else '未知错误'}"
+                    )
+        elif extension in IMAGE_SUFFIXES:
+            ocr_text, ocr_meta = _ocr_fallback_text(project_id, file_record, file_path)
+            if ocr_text:
+                text = ocr_text
+                page_count = ocr_meta.get("pageCount") or 1
+                file_warnings.append("图片文件已通过 OCR/视觉模型转为可解析文本。")
+            else:
+                text = ""
+                page_count = 1
+                file_warnings.append(
+                    f"图片文件需要 OCR 识别，但兜底识别未完成：{ocr_meta.get('message') if ocr_meta else '未知错误'}"
+                )
         else:
             text = ""
             file_warnings.append(f"当前 MVP 暂不解析 {extension or '未知'} 类型文件。")
@@ -965,7 +1046,7 @@ def parse_tender_documents(
         text_path = project_dir / f"{file_record['id']}.txt"
         text_path.write_text(text, encoding="utf-8")
 
-        metadata = {
+        metadata: dict[str, Any] = {
             "id": file_record["id"],
             "name": file_record["name"],
             "sourcePath": str(file_path),
@@ -974,6 +1055,8 @@ def parse_tender_documents(
             "pageCount": page_count,
             "warnings": file_warnings,
         }
+        if ocr_meta:
+            metadata["ocr"] = ocr_meta
         documents.append(metadata)
         texts_by_id[str(file_record["id"])] = text
         warnings.extend(file_warnings)

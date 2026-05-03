@@ -19,7 +19,7 @@
 补充说明：
 
 - 登录鉴权已真实化：`/api/auth/login` 校验系统用户密码并签发服务端会话 token，`/api/auth/me` 按 bearer token 返回当前用户。
-- 设置、审计、OCR 等关键接口依赖当前用户；无 token 或伪造 token 应返回 401。
+- 设置、审计、OCR/视觉模型配置等关键接口依赖当前用户；无 token 或伪造 token 应返回 401。
 
 关键边界：
 
@@ -40,7 +40,7 @@
 
 ## 3. 正式接口范围
 
-## 3.0 认证、设置、审计和 OCR
+## 3.0 认证、设置、审计和 OCR/视觉模型配置
 
 ### `POST /api/auth/login`
 
@@ -94,7 +94,7 @@
 
 ### `GET /api/settings/ocr` / `PUT /api/settings/ocr` / `POST /api/settings/ocr/test`
 
-- 用途：维护和测试 OCR Base URL、API Key、模型和超时
+- 用途：维护和测试 OCR/视觉模型 Base URL、API Key、模型和超时；供招标文件解析、模板读取等后端链路按需使用
 - 是否真实：真实；API Key 不向前端回传明文
 
 ### `GET /api/settings/backups` / `POST /api/settings/backups/create` / `POST /api/settings/backups/{backup_id}/restore`
@@ -104,7 +104,7 @@
 
 ### `GET /api/settings/health`
 
-- 用途：探测 FastAPI、Postgres、Redis、MinIO、OnlyOffice、OpenCode、LLM 网关和 OCR 网关
+- 用途：探测 FastAPI、Postgres、Redis、MinIO、OnlyOffice、OpenCode、LLM 网关和 OCR/视觉模型网关
 - 是否真实：真实探测
 
 ### `GET /api/audit` / `GET /api/audit/{audit_id}` / `GET /api/audit/export`
@@ -112,25 +112,7 @@
 - 用途：查询、查看和导出真实审计日志
 - 是否真实：真实持久化日志
 
-### `GET /api/projects/{id}/ocr/tasks`
-
-- 用途：读取项目 OCR 任务
-- 是否真实：真实
-
-### `POST /api/projects/{id}/ocr/tasks`
-
-- 用途：上传图片或图片型 PDF 并执行 OCR
-- 是否真实：真实；配置缺失、失败和超时会返回明确错误
-
-### `GET /api/projects/{id}/ocr/tasks/{task_id}`
-
-- 用途：读取 OCR 任务详情、页级文本和候选字段
-- 是否真实：真实
-
-### `POST /api/projects/{id}/ocr/candidates/{candidate_id}/confirm`
-
-- 用途：人工确认 OCR 候选字段后写入技术标/商务标业务字段
-- 是否真实：真实，确认过程写入审计日志
+说明：`/api/projects/{id}/ocr/*` 这组项目级 OCR 调试接口仍保留用于兼容和排障，但不作为前端主流程入口。用户在解析页或模板与目录页上传 PDF、扫描件、图片后，由后端自动调用 OCR/视觉模型并把识别文本交给原有 LLM/Skill 解析链路。
 
 ## 3.1 项目与阶段
 
@@ -224,7 +206,7 @@
 
 - FastAPI 内部优先调用 futurecode/opencode 执行 S2 Skill 的 `s2toc` 命令；命令完成后后端直接读取 `toc.json` 和 `toc_evidence.json`，并把路径写入 `opencodeOutput`。
 - futurecode/opencode 调用失败时，FastAPI 会本地运行同一 S2 Skill 脚本作为降级路径。
-- 最新成功产物位于 `parsed/{project_id}/s2_toc_workdir/`；新一轮先写入 `s2_toc_workdir.new/`，成功后发布，旧目录归档到 `s2_toc_workdir.runs/`。
+- 最新成功产物位于 `documents/{project_id}/technical-workspace/s2_toc_workdir/`；新一轮先写入 `s2_toc_workdir.new/`，成功后发布，旧目录归档到 `s2_toc_workdir.runs/`。
 - 接口返回的 `manifestPath` 与 `canonicalManifestPath` 均指向 `s2_toc_workdir/s2_input.json`；不再生成 `parsed/{project_id}/s2.json` alias。
 
 ## 3.4 S3 目录审核

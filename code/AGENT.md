@@ -190,9 +190,9 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 
 ### 5.4 S2 工作目录约定
 
-- 最新成功 S2 产物固定在 `{PARSED_DIR}/{project_id}/s2_toc_workdir/`。
-- 新一轮先写 `{PARSED_DIR}/{project_id}/s2_toc_workdir.new/`，成功后再发布，避免失败时破坏上一轮成功目录。
-- 旧成功目录归档到 `{PARSED_DIR}/{project_id}/s2_toc_workdir.runs/`。
+- 最新成功 S2 产物固定在 `{DOCUMENTS_DIR}/{project_id}/technical-workspace/s2_toc_workdir/`。
+- 新一轮先写 `{DOCUMENTS_DIR}/{project_id}/technical-workspace/s2_toc_workdir.new/`，成功后再发布，避免失败时破坏上一轮成功目录。
+- 旧成功目录归档到 `{DOCUMENTS_DIR}/{project_id}/technical-workspace/s2_toc_workdir.runs/`。
 - 不再写 `{PARSED_DIR}/{project_id}/s2.json` alias；`manifestPath` 与 `canonicalManifestPath` 都应指向 `s2_toc_workdir/s2_input.json`。
 
 ## 6. 本机运行目标
