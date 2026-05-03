@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body
 
+from app.services.identity import build_project_material_scope
 from app.services.store import store
 from app.services.template_store import template_fallback_payload
 
@@ -95,7 +96,8 @@ async def project_cockpit(project_id: str) -> dict[str, Any]:
 @router.get("/api/projects/{project_id}/materials-path")
 async def project_materials_path(project_id: str) -> dict[str, Any]:
     project = store.get_project(project_id)
-    identity = project.get("identity") or {}
+    scope = build_project_material_scope(project)
+    identity = scope["identity"]
     material_project_code = str(identity.get("projectCode") or project.get("projectCode") or project["id"])
     material_project_id = str(identity.get("projectId") or project["id"])
     return {
@@ -107,6 +109,10 @@ async def project_materials_path(project_id: str) -> dict[str, Any]:
         "projectCode": material_project_code,
         "identity": identity,
         "path": f"项目素材/{material_project_id}/{project['bidType']}",
+        "bidType": scope["bidType"],
+        "readableScopes": scope["readableScopes"],
+        "paths": scope["paths"],
+        "summary": scope["summary"],
     }
 
 

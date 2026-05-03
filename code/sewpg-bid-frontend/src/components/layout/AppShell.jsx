@@ -5,6 +5,7 @@ import { WORKSPACE_TYPES, workspaceFromPathname, workspaceRoute } from '../../ut
 
 const NAV_ITEMS = [
   { path: '/parse', icon: 'document_scanner', label: '解析', match: '/parse' },
+  { path: '/materials/structured', icon: 'database', label: '素材库', match: '/materials' },
   { path: '/workspace/tech/projects', icon: 'engineering', label: '技术标', match: '/workspace/tech' },
   { path: '/workspace/business/projects', icon: 'request_quote', label: '商务标', match: '/workspace/business' },
   { path: '/audit', icon: 'history', label: '审计', match: '/audit' },
@@ -13,7 +14,6 @@ const NAV_ITEMS = [
 
 const WORKSPACE_NAV_ITEMS = [
   { key: 'projects', path: '/projects', icon: 'folder_open', label: '项目' },
-  { key: 'materials', path: '/materials/structured', icon: 'database', label: '素材库' },
   { key: 'logs', path: '/logs', icon: 'history_edu', label: '日志' },
 ]
 
@@ -31,9 +31,6 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
     const target = workspaceRoute(workspaceSlug, item.path)
     if (item.key === 'projects') {
       return location.pathname === target || /^\/workspace\/[^/]+\/projects(\/|$)/.test(location.pathname)
-    }
-    if (item.key === 'materials') {
-      return /^\/workspace\/[^/]+\/materials(\/|$)/.test(location.pathname)
     }
     return location.pathname.startsWith(target)
   }

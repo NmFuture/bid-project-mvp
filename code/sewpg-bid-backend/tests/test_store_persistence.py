@@ -5,7 +5,39 @@ import unittest
 
 import pytest
 
+from app.services.identity import build_project_material_scope
 from app.services.store import AppStore
+
+
+class ProjectMaterialScopeTests(unittest.TestCase):
+    def test_project_material_scope_uses_selected_customer_and_material_project(self) -> None:
+        store = AppStore(storage_backend="memory")
+        project = store.create_project(
+            {
+                "name": "华能项目素材范围验证",
+                "customerName": "华能集团",
+                "bidType": "技术标",
+                "materialCustomerId": "CUST-HUANENG",
+                "materialCustomerName": "华能集团",
+                "materialProjectMode": "library",
+                "materialProjectId": "MAT-HN-001",
+                "materialProjectCode": "HN-001",
+                "materialProjectName": "华能素材项目",
+            }
+        )
+
+        scope = build_project_material_scope(project)
+
+        self.assertEqual(
+            scope["paths"],
+            [
+                "通用素材/技术标",
+                "客户素材/华能集团/技术标",
+                "项目素材/MAT-HN-001/技术标",
+            ],
+        )
+        self.assertEqual(scope["identity"]["customerId"], "CUST-HUANENG")
+        self.assertEqual(scope["identity"]["projectId"], "MAT-HN-001")
 
 
 @pytest.mark.integration

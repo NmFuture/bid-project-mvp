@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { gapsAPI, generateAPI, materialsAPI, reviewAPI, stagesAPI } from '../api'
+import { gapsAPI, generateAPI, materialsAPI, projectsAPI, reviewAPI, stagesAPI } from '../api'
 import { PageLoading, PageError } from '../components/states/PageState'
 import PageHeader from '../components/shared/PageHeader'
 import DataCard from '../components/shared/DataCard'
@@ -62,6 +62,7 @@ export default function GapRecognition({ showToast }) {
   const [materialSearch, setMaterialSearch] = useState({ items: [], total: 0 })
   const [materialLoading, setMaterialLoading] = useState(false)
   const [selectedMaterialIds, setSelectedMaterialIds] = useState([])
+  const [materialScope, setMaterialScope] = useState(null)
   const fileInputRef = useRef(null)
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
@@ -70,9 +71,13 @@ export default function GapRecognition({ showToast }) {
       setError('')
     }
     try {
-      const payload = await gapsAPI.detectionStatus(id)
+      const [payload, scopePayload] = await Promise.all([
+        gapsAPI.detectionStatus(id),
+        projectsAPI.materialsPath(id),
+      ])
       const items = normalizeItems(payload)
       setData(payload)
+      setMaterialScope(scopePayload)
       setSelectedId((prev) => (items.some((item) => item.id === prev) ? prev : items[0]?.id || ''))
     } catch (e) {
       if (!silent) setError(e?.message || '缺口识别与处理加载失败')
@@ -101,6 +106,15 @@ export default function GapRecognition({ showToast }) {
   const integrity = data?.gapPlan?.integrity || data?.integrity || {}
   const isCompleted = data?.status === 'completed'
   const canGenerate = isCompleted && (integrity?.status === 'passed' || Number(summary?.blockingCount || 0) === 0)
+  const readableScopes = useMemo(
+    () => (Array.isArray(materialScope?.readableScopes) ? materialScope.readableScopes : []),
+    [materialScope],
+  )
+  const scopePaths = useMemo(
+    () => readableScopes.map((scope) => String(scope?.path || '')).filter(Boolean),
+    [readableScopes],
+  )
+  const scopeSummary = materialScope?.summary || scopePaths.join('；')
 
   const updatePayload = (payload) => {
     const next = payload?.payload || payload
@@ -132,17 +146,27 @@ export default function GapRecognition({ showToast }) {
   const handleSearchMaterials = async () => {
     setMaterialLoading(true)
     try {
-      const payload = await materialsAPI.raw.files({
+      const targetPaths = scopePaths.length ? scopePaths : ['']
+      const payloads = await Promise.all(targetPaths.map((folderPath) => materialsAPI.raw.files({
+        folderPath,
         keyword: materialKeyword,
-        bidType: '技术标',
+        bidType: materialScope?.bidType || data?.bidType || '技术标',
         pageSize: 12,
         recursive: true,
-      })
+      })))
+      const seen = new Set()
+      const items = payloads.flatMap((payload) => (Array.isArray(payload?.items) ? payload.items : []))
+        .filter((item) => {
+          const key = item?.id || `${item?.folderPath || ''}/${item?.name || ''}`
+          if (!key || seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
       setMaterialSearch({
-        items: Array.isArray(payload?.items) ? payload.items : [],
-        total: Number(payload?.total || 0),
+        items,
+        total: items.length,
       })
-      setSelectedMaterialIds((prev) => prev.filter((id) => (payload?.items || []).some((item) => item.id === id)))
+      setSelectedMaterialIds((prev) => prev.filter((id) => items.some((item) => item.id === id)))
     } catch (e) {
       showToast?.(e?.message || '查询素材失败', 'error')
     } finally {
@@ -434,6 +458,11 @@ export default function GapRecognition({ showToast }) {
                         {materialLoading ? '查询中...' : '查询'}
                       </button>
                     </div>
+                    {scopeSummary ? (
+                      <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-xs text-outline">
+                        当前读取范围：{scopeSummary}
+                      </div>
+                    ) : null}
                     <div className="mt-3 space-y-2 max-h-44 overflow-y-auto">
                       {materialSearch.items.length ? materialSearch.items.map((item) => {
                         const checked = selectedMaterialIds.includes(item.id)

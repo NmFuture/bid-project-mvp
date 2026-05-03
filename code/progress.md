@@ -1485,6 +1485,32 @@ bid_workspace
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
 
+### 2026-05-03 19:34 素材库提升为一级准备模块并绑定项目读取范围
+
+改动目标：
+
+- 将素材库从技术标/商务标工作区二级入口提升为一级母菜单，作为解析前的资料准备模块。
+- 在项目确认参与并补全信息后，明确项目后续读取的素材范围：通用素材、当前客户素材、当前项目素材。
+- 让 S3 缺口处理选择已有素材时按项目范围搜索，避免跨客户、跨项目误选素材。
+
+改动内容：
+
+- 前端左侧一级菜单新增 `素材库`，工作区二级菜单移除素材库入口；旧 `/workspace/:workspace/materials/*` 路由继续保留兼容。
+- 后端新增项目素材范围 helper，并在 `/api/projects/{project_id}/materials-path` 返回 `readableScopes / paths / summary`。
+- S3 缺口处理页面加载项目素材范围，搜索已有素材时按 `通用素材/{标书类型}`、`客户素材/{客户}/{标书类型}`、`项目素材/{素材项目ID}/{标书类型}` 分别查询并合并。
+- 根 README、`code/AGENT.md` 和 `doc/12-数据存储与素材库数据说明.md` 同步更新当前口径。
+- 新增 Superpowers 实施计划文件 `doc/superpowers/plans/2026-05-03-material-library-top-level-scope.md`。
+
+验证结果：
+
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_store_persistence.py -q` 通过：1 passed，2 skipped。
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_store_persistence.py tests/test_project_material_scope.py -q` 通过：2 passed，2 skipped。
+- `npm run check` 通过；保留 Vite 主 chunk 超过 500KB 的既有提示。
+- `docker compose build web && docker compose up -d web` 通过，`web` 已重建并启动。
+- 后端也涉及接口变更，补充执行 `docker compose build fastapi && docker compose up -d fastapi web`，`fastapi` healthy。
+- `curl -I http://127.0.0.1/` 返回 HTTP 200。
+- `curl http://127.0.0.1/api/projects/PRJ-0012/materials-path` 已返回 `readableScopes / paths / summary`。
+
 ### 2026-05-03 02:36 设置入口收敛、LLM opencode 语义与生成审计增强
 
 改动目标：

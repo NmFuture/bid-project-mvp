@@ -228,6 +228,54 @@ def build_project_identity(project: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
+    identity = build_project_identity(project)
+    bid_type = normalize_bid_type(identity.get("bidType") or project.get("bidType"), "技术标")
+    customer_name = str(identity.get("customerCanonicalName") or identity.get("customerName") or "").strip()
+    project_id = str(identity.get("projectId") or identity.get("bidProjectId") or project.get("id") or "").strip()
+    scopes: list[dict[str, Any]] = [
+        {
+            "key": "standard",
+            "label": "通用素材",
+            "materialTier": "standard",
+            "path": f"通用素材/{bid_type}",
+            "identityMatchedBy": "bidType",
+        }
+    ]
+    if customer_name:
+        scopes.append(
+            {
+                "key": "customer",
+                "label": "客户素材",
+                "materialTier": "customer",
+                "path": f"客户素材/{customer_name}/{bid_type}",
+                "customerId": str(identity.get("customerId") or ""),
+                "customerName": customer_name,
+                "identityMatchedBy": "customer",
+            }
+        )
+    if project_id:
+        scopes.append(
+            {
+                "key": "project",
+                "label": "项目素材",
+                "materialTier": "project",
+                "path": f"项目素材/{project_id}/{bid_type}",
+                "projectId": project_id,
+                "projectCode": str(identity.get("projectCode") or ""),
+                "projectName": str(identity.get("projectName") or ""),
+                "identityMatchedBy": "project",
+            }
+        )
+    return {
+        "bidType": bid_type,
+        "identity": identity,
+        "readableScopes": scopes,
+        "paths": [scope["path"] for scope in scopes],
+        "summary": "；".join(scope["path"] for scope in scopes),
+    }
+
+
 def material_identity(
     *,
     material_tier: Any,
