@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -77,6 +78,8 @@ def generate_outline_for_project_with_progress(
         Path(str(skill_workspace["canonicalManifestPath"])),
         progress_callback=progress_callback,
     )
+    publish_info = _publish_toc_skill_workspace(skill_workspace, toc_result)
+    toc_result = publish_info["result"]
     nodes = _nodes_from_generation_result(toc_result)
     summary = _summary_from_generation_result(toc_result)
     opencode_output = toc_result.get("opencodeOutput") if isinstance(toc_result.get("opencodeOutput"), dict) else {}
@@ -86,11 +89,13 @@ def generate_outline_for_project_with_progress(
         {
             "engine": OUTLINE_SKILL_NAME,
             "skill": OUTLINE_SKILL_NAME,
-            "workDir": skill_workspace["workDir"],
-            "manifestPath": skill_workspace["manifestPath"],
-            "canonicalManifestPath": skill_workspace["canonicalManifestPath"],
-            "tocJsonPath": str(toc_result.get("outputFile") or skill_workspace["outputFile"]),
-            "evidencePath": str(toc_result.get("evidenceFile") or skill_workspace["evidenceFile"]),
+            "workDir": publish_info["workDir"],
+            "manifestPath": publish_info["manifestPath"],
+            "canonicalManifestPath": publish_info["canonicalManifestPath"],
+            "stagingWorkDir": publish_info["stagingWorkDir"],
+            "archiveRoot": publish_info["archiveRoot"],
+            "tocJsonPath": str(toc_result.get("outputFile") or publish_info["outputFile"]),
+            "evidencePath": str(toc_result.get("evidenceFile") or publish_info["evidenceFile"]),
         }
     )
     if progress_callback:
@@ -467,26 +472,27 @@ def _prepare_toc_skill_workspace(
     project_dir = Path(raw_project_dir).expanduser() if raw_project_dir else settings.parsed_dir / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
 
-    work_dir = project_dir / "s2_toc_workdir"
-    if work_dir.exists():
-        shutil.rmtree(work_dir)
-    work_dir.mkdir(parents=True, exist_ok=True)
+    published_work_dir = project_dir / "s2_toc_workdir"
+    staging_work_dir = project_dir / "s2_toc_workdir.new"
+    archive_root = project_dir / "s2_toc_workdir.runs"
+    _archive_workspace_if_exists(staging_work_dir, archive_root, "stale")
+    staging_work_dir.mkdir(parents=True, exist_ok=True)
+    _remove_manifest_alias(project_dir)
 
-    tender_inputs = _copy_tender_inputs(tender_file_records, work_dir)
-    template_path, attach_path = _copy_template_inputs(template_file_records, work_dir)
+    tender_inputs = _copy_tender_inputs(tender_file_records, staging_work_dir)
+    template_path, attach_path = _copy_template_inputs(template_file_records, staging_work_dir)
     if template_path is None:
         raise ValueError("投标模板不存在，请先上传可读取的投标模板文件。")
     bid_type = _normalize_bid_type(str(project.get("bidType") or "投标文件"))
-    output_file = work_dir / _safe_file_name(settings.s2_toc_output_file_name, "toc.json")
-    evidence_file = work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json")
-    manifest_path = work_dir / "s2_input.json"
-    manifest_alias_path = project_dir / "s2.json"
+    output_file = staging_work_dir / _safe_file_name(settings.s2_toc_output_file_name, "toc.json")
+    evidence_file = staging_work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json")
+    manifest_path = staging_work_dir / "s2_input.json"
     manifest = {
         "projectId": project_id,
         "projectCode": str(project.get("projectCode") or project_id),
         "projectName": str(project.get("name") or project_id),
         "bidType": bid_type,
-        "workDir": str(work_dir),
+        "workDir": str(staging_work_dir),
         "tenderFiles": tender_inputs,
         "templateFile": str(template_path) if template_path else "",
         "attachFile": str(attach_path) if attach_path else "",
@@ -496,15 +502,122 @@ def _prepare_toc_skill_workspace(
     }
     manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2)
     manifest_path.write_text(manifest_text, encoding="utf-8")
-    manifest_alias_path.write_text(manifest_text, encoding="utf-8")
     return {
         **manifest,
-        "manifestPath": str(manifest_alias_path),
+        "manifestPath": str(manifest_path),
         "canonicalManifestPath": str(manifest_path),
+        "publishedWorkDir": str(published_work_dir),
+        "stagingWorkDir": str(staging_work_dir),
+        "archiveRoot": str(archive_root),
         "tenderFileCount": len(tender_inputs),
         "templateFileCount": 1 if template_path else 0,
         "hasAttachFile": bool(attach_path),
     }
+
+
+def _publish_toc_skill_workspace(skill_workspace: dict[str, Any], toc_result: dict[str, Any]) -> dict[str, Any]:
+    staging_work_dir = Path(str(skill_workspace.get("stagingWorkDir") or skill_workspace.get("workDir") or "")).expanduser()
+    published_work_dir = Path(str(skill_workspace.get("publishedWorkDir") or skill_workspace.get("workDir") or "")).expanduser()
+    archive_root = Path(str(skill_workspace.get("archiveRoot") or published_work_dir.with_name("s2_toc_workdir.runs"))).expanduser()
+    if not staging_work_dir.exists():
+        raise RuntimeError(f"S2 staging 工作目录不存在：{staging_work_dir}")
+
+    replacements = {str(staging_work_dir): str(published_work_dir)}
+    staging_manifest_path = staging_work_dir / "s2_input.json"
+    manifest = _load_json_dict(staging_manifest_path)
+    staging_output_file = Path(
+        str(manifest.get("outputFile") or staging_work_dir / _safe_file_name(settings.s2_toc_output_file_name, "toc.json"))
+    ).expanduser()
+    staging_evidence_file = Path(
+        str(manifest.get("evidenceFile") or staging_work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json"))
+    ).expanduser()
+    manifest = _remap_workspace_paths(manifest, replacements)
+    manifest_path = published_work_dir / "s2_input.json"
+    output_file = Path(
+        str(manifest.get("outputFile") or published_work_dir / _safe_file_name(settings.s2_toc_output_file_name, "toc.json"))
+    ).expanduser()
+    evidence_file = Path(
+        str(manifest.get("evidenceFile") or published_work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json"))
+    ).expanduser()
+    manifest["workDir"] = str(published_work_dir)
+    manifest["outputFile"] = str(output_file)
+    manifest["evidenceFile"] = str(evidence_file)
+    staging_manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    _remap_json_file(staging_output_file, replacements, {"outputFile": str(output_file), "evidenceFile": str(evidence_file)})
+    _remap_json_file(staging_evidence_file, replacements)
+    _remap_json_file(staging_work_dir / "agent_review_input.json", replacements)
+
+    result = _remap_workspace_paths(toc_result, replacements)
+    result["outputFile"] = str(output_file)
+    result["evidenceFile"] = str(evidence_file)
+    if isinstance(result.get("opencodeOutput"), dict):
+        result["opencodeOutput"]["workDir"] = str(published_work_dir)
+        result["opencodeOutput"]["manifestPath"] = str(manifest_path)
+        result["opencodeOutput"]["canonicalManifestPath"] = str(manifest_path)
+        result["opencodeOutput"]["tocJsonPath"] = str(output_file)
+        result["opencodeOutput"]["evidencePath"] = str(evidence_file)
+
+    previous_archive = ""
+    try:
+        previous_archive = _archive_workspace_if_exists(published_work_dir, archive_root, "previous")
+        published_work_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(staging_work_dir), str(published_work_dir))
+    except Exception:
+        previous_archive_path = Path(previous_archive) if previous_archive else None
+        if previous_archive_path and previous_archive_path.exists() and not published_work_dir.exists():
+            shutil.move(str(previous_archive_path), str(published_work_dir))
+        raise
+
+    return {
+        "result": result,
+        "workDir": str(published_work_dir),
+        "stagingWorkDir": str(staging_work_dir),
+        "archiveRoot": str(archive_root),
+        "previousArchive": previous_archive,
+        "manifestPath": str(manifest_path),
+        "canonicalManifestPath": str(manifest_path),
+        "outputFile": str(output_file),
+        "evidenceFile": str(evidence_file),
+    }
+
+
+def _archive_workspace_if_exists(target: Path, archive_root: Path, label: str) -> str:
+    if not target.exists():
+        return ""
+    archive_root.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive_path = _unique_path(archive_root / f"{timestamp}-{label}-{target.name}")
+    shutil.move(str(target), str(archive_path))
+    return str(archive_path)
+
+
+def _remove_manifest_alias(project_dir: Path) -> None:
+    alias_path = project_dir / "s2.json"
+    if alias_path.exists():
+        alias_path.unlink()
+
+
+def _remap_json_file(path: Path, replacements: dict[str, str], updates: dict[str, Any] | None = None) -> None:
+    if not path.exists():
+        return
+    payload = _remap_workspace_paths(_load_json_dict(path), replacements)
+    if updates:
+        payload.update(updates)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _remap_workspace_paths(value: Any, replacements: dict[str, str]) -> Any:
+    if isinstance(value, str):
+        result = value
+        for old, new in replacements.items():
+            result = result.replace(old, new)
+        return result
+    if isinstance(value, list):
+        return [_remap_workspace_paths(item, replacements) for item in value]
+    if isinstance(value, dict):
+        return {key: _remap_workspace_paths(item, replacements) for key, item in value.items()}
+    return value
 
 
 def _copy_tender_inputs(file_records: list[dict[str, Any]], work_dir: Path) -> list[dict[str, str]]:

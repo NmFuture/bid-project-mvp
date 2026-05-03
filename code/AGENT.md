@@ -134,7 +134,7 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 
 - `S0`：项目列表 / 新建项目
 - `S1`：解析招标文件
-- `S2`：调用 `opencode skill` 生成目录
+- `S2`：FastAPI 调 futurecode/opencode 执行 `bid-tech-outline-generator` 的 `s2toc` 命令生成目录；futurecode/opencode 不可用时，本地运行同一 Skill 脚本降级生成
 - `S3`：审核目录
 - `S7`：调用 `bid-tech-assembler`，按 S2 目录 JSON 和素材库拼装正文
 - `S8`：基于拼装计划校验未拼上的素材和未匹配目录项
@@ -182,11 +182,18 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 ### 5.3 后端做什么
 
 - FastAPI 统一承接所有 `/api`
-- 调 `opencode serve` 生成目录
+- 调 futurecode/opencode 执行 `s2toc` 生成 S2 目录，并在调用失败时本地运行同一 Skill 脚本
 - 调本地 `bid-tech-assembler` skill 生成正文 docx
 - 管项目状态
 - 提供 OnlyOffice `config/meta/download/callback`
 - 为非 MVP 阶段返回 mock 数据
+
+### 5.4 S2 工作目录约定
+
+- 最新成功 S2 产物固定在 `{PARSED_DIR}/{project_id}/s2_toc_workdir/`。
+- 新一轮先写 `{PARSED_DIR}/{project_id}/s2_toc_workdir.new/`，成功后再发布，避免失败时破坏上一轮成功目录。
+- 旧成功目录归档到 `{PARSED_DIR}/{project_id}/s2_toc_workdir.runs/`。
+- 不再写 `{PARSED_DIR}/{project_id}/s2.json` alias；`manifestPath` 与 `canonicalManifestPath` 都应指向 `s2_toc_workdir/s2_input.json`。
 
 ## 6. 本机运行目标
 

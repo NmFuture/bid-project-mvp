@@ -33,7 +33,7 @@
 
 当前真实打通的主链路：
 
-- `模板与目录`：上传/回退模板，解析招标文件，由本地规则引擎输出目录 JSON 和证据决策。
+- `模板与目录`：上传/回退模板，解析招标文件，由 FastAPI 调 futurecode/opencode 执行 S2 Skill 的 `s2toc` 命令，输出目录 JSON 和证据决策；futurecode/opencode 不可用时，本地运行同一 Skill 脚本降级生成。
 - `审核目录`：人工审核并确认目录。
 - `缺口处理`：调用缺口识别 skill，读取素材库 Wiki、真实素材、解析结果和已有补料记录；支持上传、选择素材、AI 填写、重新检查和确认。
 - `生成标书`：调用 `bid-tech-assembler`，按目录 JSON、Wiki、素材库、缺口处理计划和补料产物拼装正文。
@@ -44,7 +44,7 @@
 
 S7 的输入是：
 
-- S2 生成的目录 JSON（路径由后端 manifest 指定）
+- S2 最新成功工作区中的目录 JSON，默认在 `parsed/{project_id}/s2_toc_workdir/toc.json`
 - S2 导出的 `wiki/卡片/*.md`
 - 当前素材库中的清洗后 Word 文件
 - 项目参数和可选模板

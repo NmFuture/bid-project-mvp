@@ -121,7 +121,7 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 
 - `S0`：项目列表 / 新建项目
 - `S1`：解析招标文件
-- `S2`：FastAPI 本地规则引擎生成目录
+- `S2`：FastAPI 调 futurecode/opencode 执行 `s2toc` 生成目录，本地 Skill 脚本作为降级路径
 - `S3`：审核目录
 - `S7`：调用 `bid-tech-assembler`，按 S2 目录 JSON 和素材库拼装正文
 - `S8`：根据拼装计划校验未拼上的素材和未匹配目录项
@@ -307,8 +307,9 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 
 补充：
 
-- `S2` 由 FastAPI 直接运行本地规则引擎生成目录，不再调用 `opencode` 或 `s2toc`
-- 如果 `opencode` 在超时内没有返回可解析 JSON，系统会自动生成一版回退目录，保证后续 `S3-S10` 可继续联调
+- `S2` 优先由 FastAPI 调用 futurecode/opencode 执行 S2 Skill 的 `s2toc` 命令；命令完成后后端直接读取脚本产物，避免等待 futurecode 读取大 JSON。
+- 如果 futurecode/opencode 调用失败，系统会在 FastAPI 本地运行同一 S2 Skill 脚本降级生成目录，保证后续 `S3-S10` 可继续联调。
+- `S2` 新一轮运行会先写入 `s2_toc_workdir.new/`；成功后发布为 `s2_toc_workdir/`，旧成功目录归档到 `s2_toc_workdir.runs/`，便于失败排查和结果追溯。
 - `S7` 以本地 `bid-tech-assembler` skill 拼装正文为主；这一步依赖 S2 目录 JSON、Wiki 卡片和素材库清洗后的 Word 文件
 
 ### 10.4 启动方式

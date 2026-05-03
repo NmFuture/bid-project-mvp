@@ -47,7 +47,7 @@
   - 内网离线交付、镜像打包和现场部署步骤
 
 - [12-数据存储与素材库数据说明.md](/Users/wlb/Agent/bid-project/doc/12-数据存储与素材库数据说明.md)
-  - PostgreSQL、MinIO、本地文件目录和素材库数据落点；缺口处理产物已进入项目级真实文件状态，是否沉淀为全局可复用素材库仍需单独设计
+  - PostgreSQL、MinIO、本地文件目录和素材库数据落点；包含 S2 `s2_toc_workdir.new -> s2_toc_workdir` 发布和 `s2_toc_workdir.runs` 归档规则；缺口处理产物已进入项目级真实文件状态，是否沉淀为全局可复用素材库仍需单独设计
 
 - [13-S7技术标正文拼装与S8素材校验说明.md](/Users/wlb/Agent/bid-project/doc/13-S7技术标正文拼装与S8素材校验说明.md)
   - 生成标书与覆盖诊断实现口径；S8 覆盖页保留为诊断/导出检查能力，不再是主进度节点

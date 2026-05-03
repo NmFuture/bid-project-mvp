@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -163,6 +164,13 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertTrue(payload["opencodeOutput"]["parts"])
         self.assertTrue(Path(payload["opencodeOutput"]["tocJsonPath"]).exists())
         self.assertTrue(Path(payload["opencodeOutput"]["evidencePath"]).exists())
+        self.assertEqual(
+            payload["opencodeOutput"]["manifestPath"],
+            payload["opencodeOutput"]["canonicalManifestPath"],
+        )
+        self.assertTrue(Path(payload["opencodeOutput"]["canonicalManifestPath"]).exists())
+        self.assertFalse((settings.parsed_dir / project_id / "s2.json").exists())
+        self.assertEqual(Path(payload["opencodeOutput"]["workDir"]).name, "s2_toc_workdir")
 
         outline = store.get_outline_state(project_id)
         self.assertEqual(outline["reviewStatus"], "draft")
@@ -173,6 +181,102 @@ class DirectoryGenerationTests(unittest.TestCase):
             any(child["title"] == "服务团队安排" for child in outline["nodes"][1]["children"])
         )
         self.assertEqual(outline["summary"]["totalNodeCount"], 4)
+
+    def test_generate_outline_archives_previous_successful_workspace_on_success(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result()
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_futurecode_outline,
+        ):
+            first_payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        project_dir = settings.parsed_dir / project_id
+        work_dir = project_dir / "s2_toc_workdir"
+        marker = work_dir / "previous-marker.txt"
+        marker.write_text("previous run", encoding="utf-8")
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_futurecode_outline,
+        ):
+            second_payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        self.assertTrue(Path(first_payload["opencodeOutput"]["tocJsonPath"]).exists())
+        self.assertTrue(Path(second_payload["opencodeOutput"]["tocJsonPath"]).exists())
+        self.assertFalse(marker.exists())
+        archive_root = project_dir / "s2_toc_workdir.runs"
+        archived_markers = list(archive_root.glob("*/previous-marker.txt"))
+        self.assertEqual(len(archived_markers), 1)
+
+        manifest = json.loads(Path(second_payload["opencodeOutput"]["canonicalManifestPath"]).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["workDir"], str(work_dir))
+        self.assertFalse(any(".new" in str(value) for value in manifest.values() if isinstance(value, str)))
+
+    def test_generate_outline_failure_preserves_previous_successful_workspace(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result()
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_futurecode_outline,
+        ):
+            first_payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        work_dir = settings.parsed_dir / project_id / "s2_toc_workdir"
+        previous_toc = Path(first_payload["opencodeOutput"]["tocJsonPath"])
+        marker = work_dir / "previous-marker.txt"
+        marker.write_text("keep me", encoding="utf-8")
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=RuntimeError("futurecode down"),
+        ), patch(
+            "app.services.outline_generation._run_local_outline_skill",
+            side_effect=RuntimeError("local fallback down"),
+        ):
+            with self.assertRaises(RuntimeError):
+                generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        self.assertTrue(work_dir.exists())
+        self.assertTrue(previous_toc.exists())
+        self.assertEqual(marker.read_text(encoding="utf-8"), "keep me")
+        self.assertTrue((settings.parsed_dir / project_id / "s2_toc_workdir.new").exists())
+
+    def test_publish_failure_preserves_previous_successful_workspace(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result()
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_futurecode_outline,
+        ):
+            first_payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        project_dir = settings.parsed_dir / project_id
+        work_dir = project_dir / "s2_toc_workdir"
+        previous_toc = Path(first_payload["opencodeOutput"]["tocJsonPath"])
+        marker = work_dir / "previous-marker.txt"
+        marker.write_text("keep me", encoding="utf-8")
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_futurecode_outline,
+        ), patch(
+            "app.services.outline_generation._remap_json_file",
+            side_effect=RuntimeError("remap failed"),
+        ):
+            with self.assertRaises(RuntimeError):
+                generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        self.assertTrue(work_dir.exists())
+        self.assertTrue(previous_toc.exists())
+        self.assertEqual(marker.read_text(encoding="utf-8"), "keep me")
+        self.assertTrue((project_dir / "s2_toc_workdir.new").exists())
 
     def test_generate_outline_outputs_template_and_tender_evidence_only(self) -> None:
         from app.services.outline_generation import generate_outline_for_project

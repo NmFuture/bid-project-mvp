@@ -222,7 +222,10 @@
 
 说明：
 
-- FastAPI 内部调用本地规则引擎生成目录，不走 `opencode`
+- FastAPI 内部优先调用 futurecode/opencode 执行 S2 Skill 的 `s2toc` 命令；命令完成后后端直接读取 `toc.json` 和 `toc_evidence.json`，并把路径写入 `opencodeOutput`。
+- futurecode/opencode 调用失败时，FastAPI 会本地运行同一 S2 Skill 脚本作为降级路径。
+- 最新成功产物位于 `parsed/{project_id}/s2_toc_workdir/`；新一轮先写入 `s2_toc_workdir.new/`，成功后发布，旧目录归档到 `s2_toc_workdir.runs/`。
+- 接口返回的 `manifestPath` 与 `canonicalManifestPath` 均指向 `s2_toc_workdir/s2_input.json`；不再生成 `parsed/{project_id}/s2.json` alias。
 
 ## 3.4 S3 目录审核
 

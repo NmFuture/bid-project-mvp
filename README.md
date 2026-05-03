@@ -86,6 +86,7 @@
   - 生成后的 `.docx`
 - `parsed`
   - 审核模块解析产物，例如 `combined.txt`
+  - S2 最新成功目录工作区 `s2_toc_workdir/`，以及历史归档 `s2_toc_workdir.runs/`
 
 `parsed` 很重要。
 如果它不持久化，`fastapi` 容器重建后，`S2 / S7` 会因为找不到解析结果、目录 JSON、Wiki 或拼装工作目录而断链。
@@ -257,8 +258,9 @@ compose 会把这个目录挂进 `opencode` 容器。
 
 - 审核模块若选择“不参与该项目”，项目会在流程中终止，并从项目总览移除
 - 审核模块若选择“参与该项目”，会先要求补全项目信息，再进入项目模块
-- `S2` 由 FastAPI 直接运行本地规则引擎生成目录，不再调用 `opencode` 或 `s2toc`
-- 如果 `opencode` 在 `OPENCODE_TIMEOUT_SEC` 内没有返回可用 JSON，系统会自动生成一版“可继续审核的回退目录”
+- `S2` 由 FastAPI 调用 futurecode/opencode 执行 `bid-tech-outline-generator` 的 `s2toc` 命令；命令完成后后端会直接读取脚本产物，避免等待 futurecode 继续读取大 JSON。
+- 如果 futurecode/opencode 调用失败，FastAPI 会在本地运行同一 S2 Skill 脚本作为降级路径。
+- `S2` 每次先写入 `parsed/{project_id}/s2_toc_workdir.new/`；成功后发布为 `s2_toc_workdir/`，旧成功目录归档到 `s2_toc_workdir.runs/`。不再写 `parsed/{project_id}/s2.json` alias，`manifestPath` 与 `canonicalManifestPath` 都指向 `s2_toc_workdir/s2_input.json`。
 - `S7` 不再走自由初稿生成，而是使用 S2 目录 JSON、S2 Wiki 卡片和素材库清洗后 Word，通过 `bid-tech-assembler` 拼装正文
 
 ## OnlyOffice 地址说明
@@ -288,7 +290,7 @@ compose 会把这个目录挂进 `opencode` 容器。
 - `S8` 当前校验的是 S7 拼装计划与素材库的覆盖关系，还不是完整评分点覆盖审计
 - 当前默认已经接入 PostgreSQL、MinIO、Redis
 - 当前已接入真实登录鉴权、持久化审计、系统设置、默认模板管理和 OCR 候选字段人工复核；SSO 尚未接入
-- `S2` 目录生成不依赖 `opencode`；`S7` 正文拼装仍取决于 S2 JSON、Wiki 卡片和素材库清洗后 Word 是否齐备
+- `S2` 优先经 futurecode/opencode 执行 `s2toc`，本地 Skill 脚本只作为调用失败时的降级路径；`S7` 正文拼装仍取决于 S2 JSON、Wiki 卡片和素材库清洗后 Word 是否齐备
 
 ## GitHub 协作提交（必须走分支 + PR 审核）
 

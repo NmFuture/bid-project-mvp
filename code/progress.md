@@ -10,6 +10,36 @@
 
 ## 进度记录
 
+### 2026-05-03 14:12 S2 工作目录发布保护收尾
+
+改动目标：
+
+- 收尾当前未提交的 S2 工作目录 staging/发布/归档改动。
+- 确保 S2 新一轮发布失败时不会破坏上一轮成功的 `s2_toc_workdir/`。
+- 将 S2 工作目录、canonical manifest 和文档口径收敛到同一套路径规则。
+
+改动内容：
+
+- `outline_generation.py` 将 S2 工作区改为先写 `s2_toc_workdir.new/`，成功后发布为 `s2_toc_workdir/`，旧成功目录归档到 `s2_toc_workdir.runs/`。
+- 发布前先在 staging 中回写 manifest、toc、evidence 和 agent review 输入中的路径，再切换目录，减少发布中途失败对旧成功目录的影响。
+- 删除旧的 `parsed/{project_id}/s2.json` alias，`manifestPath` 与 `canonicalManifestPath` 都指向最新成功工作区中的 `s2_input.json`。
+- 补充目录生成回归测试，覆盖 alias 删除、成功归档旧工作区、生成失败保留旧工作区、发布前路径回写失败时保留旧工作区。
+- 同步根 README、`code/AGENT.md`、MVP 主链路、接口、部署、数据存储和 doc 索引中的 S2 运行口径。
+
+验证结果：
+
+- `git diff --check` 通过。
+- `PYTHONPATH=. python3 -m py_compile app/services/outline_generation.py` 通过。
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_directory_generation.py -q` 通过：18 passed。
+- `PYTHONPATH=. .venv/bin/python -m pytest -q` 通过：98 passed，12 skipped。
+- `docker compose build fastapi worker && docker compose up -d --force-recreate fastapi worker` 通过。
+- `docker compose ps fastapi worker` 显示 `fastapi` healthy，`worker` running。
+- `curl -fsS http://127.0.0.1/api/healthz` 返回 `status=ok`。
+
+遗留问题：
+
+- S2 任务展示中的部分文案仍偏向“futurecode 语义审核”旧表达，后续如要统一任务事件文案可另起小改。
+
 ### 2026-05-03 10:19 待办 6/7/11/22 完成核验与文档口径同步
 
 改动目标：
@@ -2533,5 +2563,43 @@ bid_workspace
 - `code/sewpg-bid-backend/tests/test_security_settings_ocr_routes.py`
 - `code/sewpg-bid-frontend/src/components/layout/AppShell.jsx`
 - `code/sewpg-bid-frontend/src/pages/Settings.jsx`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-03 14:16:07 post-commit ce45939
+
+提交摘要：Protect S2 workspace publishing
+
+变更文件：
+
+- `README.md`
+- `code/AGENT.md`
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/services/outline_generation.py`
+- `code/sewpg-bid-backend/tests/test_directory_generation.py`
+- `"doc/05-MVP\344\270\273\351\223\276\350\267\257\350\257\264\346\230\216.md"`
+- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
+- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
+- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
+- `doc/README.md`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-03 14:16:48 post-commit 67af5e3
+
+提交摘要：Protect S2 workspace publishing
+
+变更文件：
+
+- `README.md`
+- `code/AGENT.md`
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/services/outline_generation.py`
+- `code/sewpg-bid-backend/tests/test_directory_generation.py`
+- `"doc/05-MVP\344\270\273\351\223\276\350\267\257\350\257\264\346\230\216.md"`
+- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
+- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
+- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
+- `doc/README.md`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
