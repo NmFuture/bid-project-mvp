@@ -164,7 +164,8 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
 - 正式版产品语义不变：`S5` 补料，`S7` 拼接
 - 当前 MVP 已把 `S7` 调整为正文拼装，仍保留原 `fill-generation` 接口名以兼容前端
 - 当前 MVP 已接入 PostgreSQL、MinIO、Redis
-- 当前 MVP 不做 OCR、完整审核流、评分点级覆盖审计、SSO
+- 当前 MVP 已接入真实登录鉴权、持久化审计、设置页 LLM/OCR 配置、技术标/商务标系统默认模板和 OCR 候选字段人工复核
+- 当前 MVP 暂不做完整审核流、评分点级覆盖审计和 SSO
 
 ## 8. 一个前提提醒
 
@@ -265,6 +266,12 @@ S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6 -> S7 -> S8 -> S9 -> S10
   - `opencode` 背后调用外部模型时使用
 - `OPENCODE_AUTH_HOST_DIR`
   - 如果要挂载宿主机上的 `auth.json`，就改这里
+- `AUTH_ADMIN_EMAIL / AUTH_ADMIN_PASSWORD / AUTH_ADMIN_NAME`
+  - 首次启动时初始化系统管理员
+- `DEFAULT_LLM_BASE_URL / DEFAULT_LLM_API_KEY / DEFAULT_LLM_MODEL`
+  - 设置页 LLM 模型配置的启动默认值，后续可在页面维护
+- `DEFAULT_OCR_BASE_URL / DEFAULT_OCR_API_KEY / DEFAULT_OCR_MODEL`
+  - 设置页 OCR 模型配置的启动默认值，后续可在页面维护
 - `ONLYOFFICE_INTERNAL_URL`
 - `ONLYOFFICE_BACKEND_BASE_URL`
 
@@ -337,6 +344,9 @@ docker compose logs -f opencode
    - S8 素材拼装覆盖校验
    - S9 打开编辑器
    - S10 下载
+6. 设置页能查看用户、默认模板、LLM/OCR 配置、备份和健康状态
+7. 审计页能看到登录、设置变更、模型测试、默认模板启用和 OCR 确认等真实操作记录
+8. OCR 未配置时业务页给出明确提示；配置后图片或图片型 PDF 先生成候选字段，人工确认后才写入业务字段
 
 ## 11. 一句话总结
 

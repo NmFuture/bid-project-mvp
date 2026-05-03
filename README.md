@@ -224,6 +224,9 @@ compose 会把这个目录挂进 `opencode` 容器。
 | `OPENCODE_PROVIDER_ID` | 调用 opencode 时的 provider |
 | `OPENCODE_MODEL_ID` | 调用 opencode 时的模型 ID |
 | `OPENCODE_TIMEOUT_SEC` | FastAPI 调用 opencode 的超时，默认建议 `600` 秒，超时会触发回退目录 |
+| `AUTH_ADMIN_EMAIL / AUTH_ADMIN_PASSWORD / AUTH_ADMIN_NAME` | 首次启动时初始化系统管理员 |
+| `DEFAULT_LLM_BASE_URL / DEFAULT_LLM_API_KEY / DEFAULT_LLM_MODEL` | 设置页 LLM 模型配置的启动默认值，后续可在设置页维护 |
+| `DEFAULT_OCR_BASE_URL / DEFAULT_OCR_API_KEY / DEFAULT_OCR_MODEL` | 设置页 OCR 模型配置的启动默认值，后续可在设置页维护 |
 | `OPENAI_API_KEY` | OpenAI / OpenAI-compatible 模型 key |
 | `ANTHROPIC_API_KEY` | Anthropic key |
 | `GOOGLE_API_KEY` | Google key |
@@ -284,7 +287,7 @@ compose 会把这个目录挂进 `opencode` 容器。
 - `S4 / S5 / S6` 仍然是承接态，不是正式业务实现
 - `S8` 当前校验的是 S7 拼装计划与素材库的覆盖关系，还不是完整评分点覆盖审计
 - 当前默认已经接入 PostgreSQL、MinIO、Redis
-- 当前默认没有接入 SSO、OCR
+- 当前已接入真实登录鉴权、持久化审计、系统设置、默认模板管理和 OCR 候选字段人工复核；SSO 尚未接入
 - `S2` 目录生成不依赖 `opencode`；`S7` 正文拼装仍取决于 S2 JSON、Wiki 卡片和素材库清洗后 Word 是否齐备
 
 ## GitHub 协作提交（必须走分支 + PR 审核）

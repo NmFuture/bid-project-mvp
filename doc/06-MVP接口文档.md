@@ -18,7 +18,8 @@
 
 补充说明：
 
-- 登录鉴权本轮先不纳入 MVP，可先保留空实现或 mock
+- 登录鉴权已真实化：`/api/auth/login` 校验系统用户密码并签发服务端会话 token，`/api/auth/me` 按 bearer token 返回当前用户。
+- 设置、审计、OCR 等关键接口依赖当前用户；无 token 或伪造 token 应返回 401。
 
 关键边界：
 
@@ -38,6 +39,98 @@
 - 当前接口优先兼容现有 React 前端；用户主路径以 6 个合并节点展示
 
 ## 3. 正式接口范围
+
+## 3.0 认证、设置、审计和 OCR
+
+### `POST /api/auth/login`
+
+- 用途：真实账号密码登录
+- 是否真实：真实
+
+### `GET /api/auth/me`
+
+- 用途：按 bearer token 获取当前用户
+- 是否真实：真实
+
+### `POST /api/auth/logout`
+
+- 用途：退出登录并注销当前会话
+- 是否真实：真实
+
+### `GET /api/settings/users`
+
+- 用途：读取系统用户列表
+- 是否真实：真实
+
+### `POST /api/settings/users`
+
+- 用途：新增系统用户
+- 是否真实：真实，写入审计日志
+
+### `PUT /api/settings/users/{user_id}`
+
+- 用途：更新用户资料、状态或密码
+- 是否真实：真实，密码只保存哈希，审计日志不记录明文密码
+
+### `GET /api/settings/default-templates`
+
+- 用途：读取技术标/商务标系统默认模板
+- 是否真实：真实
+
+### `POST /api/settings/default-templates`
+
+- 用途：上传技术标/商务标系统默认模板
+- 是否真实：真实，写入 MinIO 或本地模板存储，并写审计日志
+
+### `POST /api/settings/default-templates/{template_id}/activate`
+
+- 用途：启用指定系统默认模板
+- 是否真实：真实；项目上传模板优先，项目未上传时才使用系统默认模板
+
+### `GET /api/settings/llm-gateway` / `PUT /api/settings/llm-gateway` / `POST /api/settings/llm-gateway/test`
+
+- 用途：维护和测试 LLM Base URL、API Key、模型和超时
+- 是否真实：真实；API Key 不向前端回传明文
+
+### `GET /api/settings/ocr` / `PUT /api/settings/ocr` / `POST /api/settings/ocr/test`
+
+- 用途：维护和测试 OCR Base URL、API Key、模型和超时
+- 是否真实：真实；API Key 不向前端回传明文
+
+### `GET /api/settings/backups` / `POST /api/settings/backups/create` / `POST /api/settings/backups/{backup_id}/restore`
+
+- 用途：管理备份记录和恢复操作
+- 是否真实：真实，写入审计日志
+
+### `GET /api/settings/health`
+
+- 用途：探测 FastAPI、Postgres、Redis、MinIO、OnlyOffice、OpenCode、LLM 网关和 OCR 网关
+- 是否真实：真实探测
+
+### `GET /api/audit` / `GET /api/audit/{audit_id}` / `GET /api/audit/export`
+
+- 用途：查询、查看和导出真实审计日志
+- 是否真实：真实持久化日志
+
+### `GET /api/projects/{id}/ocr/tasks`
+
+- 用途：读取项目 OCR 任务
+- 是否真实：真实
+
+### `POST /api/projects/{id}/ocr/tasks`
+
+- 用途：上传图片或图片型 PDF 并执行 OCR
+- 是否真实：真实；配置缺失、失败和超时会返回明确错误
+
+### `GET /api/projects/{id}/ocr/tasks/{task_id}`
+
+- 用途：读取 OCR 任务详情、页级文本和候选字段
+- 是否真实：真实
+
+### `POST /api/projects/{id}/ocr/candidates/{candidate_id}/confirm`
+
+- 用途：人工确认 OCR 候选字段后写入技术标/商务标业务字段
+- 是否真实：真实，确认过程写入审计日志
 
 ## 3.1 项目与阶段
 
@@ -285,8 +378,6 @@
 - `/api/materials/raw/*`
 - `/api/materials/structured/*`
 - `/api/materials/wiki/*`
-- `/api/audit/*`
-- `/api/settings/*`
 
 要求只有一个：
 
