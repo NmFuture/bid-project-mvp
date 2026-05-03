@@ -6,36 +6,33 @@
 - 前端：`React + Vite`
 - 后端（唯一正式入口）：`../sewpg-bid-backend/app/main.py`（FastAPI）
 - 数据交互：统一通过 `src/api/index.js` 发起 HTTP API 调用
-- 文档编辑：S6/S9 阶段支持 `OnlyOffice` 在线挂载（预览/编辑）
+- 文档编辑：`S5 共创` 支持 `OnlyOffice` 在线挂载，素材清洗稿和缺口处理预览也可按场景使用 OnlyOffice 预览
 - 旧 `fastapi-mock / mock-server / smoke` 资产已移除，当前只保留正式 FastAPI 联调路径
 
 当前仓库已进入“**主链路真实 + 外围模块正式承接**”阶段：
 
-- 主链路真实阶段：`S0 / S1 / S2 / S3 / S7 / S8 / S9 / S10`
-- 过渡 mock / 承接阶段：`S4 / S5 / S6`
-- 外围模块已由正式 FastAPI 承接：原始材料库、结构化素材库、Wiki 素材库、审计日志、系统设置、导出校验
-- `S8` 当前是 S7 拼装计划与素材库覆盖关系校验，还不是完整评分点覆盖审计
+- 主链路当前统一为：`S0 解析 / S1 模板与目录 / S2 审核目录 / S3 缺口处理 / S4 生成标书 / S5 共创 / S6 导出`
+- `S0` 是全局解析/审核模块，项目阶段条只展示 `S1-S6`
+- 外围模块已由正式 FastAPI 承接：技术标素材库、技术标 Wiki、审计日志、系统设置、导出校验
+- 覆盖诊断当前是生成后/导出前的诊断能力，不是独立主流程节点
 
 一句话：
 
 > **前端现在默认对接正式 FastAPI，而不是历史 mock 网关。**
 
 ## 2. 当前阶段能力
-### 2.1 主链路（S1-S10）
-- S1：上传招标文件并自动解析（招标文件必选、模板文件可选）
-- S2：目录生成（触发后端生成目录 docx）
-- S3：目录审核（增删改、排序、确认）
-- S4：素材缺口识别（触发识别、展示缺失项）
-- S5：备料补交（上传、冲突处理、补料回执）
-- S6：审核备料（已补录/未补录及原因）
-- S7：填充（触发填充、展示输出文件）
-- S8：覆盖校验（目录响应树、问题清单）
-- S9：人机共创（OnlyOffice 编辑 + 回写）
-- S10：导出（下载最终 Word）
+### 2.1 主链路（S0-S6）
+- S0：解析/审核模块上传招标文件，结构化解析，做投标决策并补全项目信息
+- S1：模板与目录，上传项目模板或读取系统默认模板，并触发目录生成
+- S2：审核目录，增删改、排序并确认目录
+- S3：缺口处理，识别缺口、上传补料、选择素材、AI 填写并确认缺口计划
+- S4：生成标书，按目录、Wiki、素材库和缺口计划拼装正文
+- S5：共创，OnlyOffice 编辑 + 回写
+- S6：导出，下载最终 Word
 
 ### 2.2 配套模块
 - 项目管理（创建、删除、阶段跳转）
-- 原始素材库（树形目录、上传、移动、重命名、删除、下载）
+- 原始素材库（`技术标 / 商务标` 顶层；当前技术标下按通用素材、客户素材、项目素材展示，商务标为空）
 - 结构化素材导入链路（模板下载、预检、确认入库）
 - Wiki 素材库（节点编辑、拖拽移动、附件）
 - 审计日志（筛选、详情、CSV 导出）
@@ -45,7 +42,7 @@
 说明：
 
 - 上述外围模块当前已经由正式 FastAPI 提供可用承接
-- 其中部分数据仍属于 `fixture/mock-backed` 形态，用于支撑当前前端页面和联调，不代表正式版最终业务模型
+- 结构化素材导入仍是 MVP 形态；素材库原始文件、技术标 Wiki、审计、设置和认证已走正式 FastAPI 链路
 
 ## 3. 前后端分离架构
 ## 3.1 前端职责
@@ -79,7 +76,7 @@ sewpg-bid-frontend/
 │   ├── api/                 # API 客户端封装
 │   ├── components/          # 布局、共享组件、弹窗
 │   ├── config/              # 环境变量与 OnlyOffice 配置
-│   ├── pages/               # 页面（S1-S10 + 素材/审计/设置）
+│   ├── pages/               # 页面（S0-S6 + 素材/审计/设置）
 │   └── utils/               # 阶段流转等工具
 ├── docs/
 │   ├── 10-API接口总览与契约说明.md
@@ -154,21 +151,21 @@ npm run check
 | `VITE_ONLYOFFICE_DOCUMENT_SERVER_URL` | OnlyOffice 服务地址 | `http://localhost:8080` |
 | `VITE_ONLYOFFICE_HEALTHCHECK_PATH` | OnlyOffice 健康检查路径 | `/healthcheck` |
 
-## 8. OnlyOffice 嵌入与挂载（S6/S9）
+## 8. OnlyOffice 嵌入与挂载（S5）
 ## 8.1 前置条件
 - 后端可访问 `OnlyOffice Document Server`
 - 前端可加载脚本：
   - `${VITE_ONLYOFFICE_DOCUMENT_SERVER_URL}/web-apps/apps/api/documents/api.js`
-- 项目已进入 S6 或 S9（阶段门禁）
+- 项目已进入 `S5 共创`，或当前页面需要预览素材清洗稿/缺口处理文档
 
 ## 8.2 前端挂载流程（已实现）
-1. S6 审核备料文档预览：
-   - 打开 S6 页面后调用 `GET /api/projects/:id/review-items/document`
+1. 缺口处理确认预览：
+   - 打开缺口处理预览后调用 `GET /api/projects/:id/review-items/document`
    - 回写接口：`PUT /api/projects/:id/review-items/document/save`
    - 强制保存：`POST /api/projects/:id/review-items/document/force-save`
    - 回调入口：`POST /api/projects/:id/review-items/document/callback`
-2. S9 人机共创编辑：
-   - 打开 S9 页面后调用 `GET /api/projects/:id/document`
+2. S5 人机共创编辑：
+   - 打开 S5 页面后调用 `GET /api/projects/:id/document`
    - 回写接口：`PUT /api/projects/:id/document/save`
    - 强制保存：`POST /api/projects/:id/document/force-save`
    - 回调入口：`POST /api/projects/:id/document/callback`
@@ -180,11 +177,11 @@ npm run check
    - `user`
 4. 前端动态加载 OnlyOffice API 脚本
 5. 前端用 `new DocsAPI.DocEditor(containerId, config)` 挂载编辑器
-6. S10 下载最终文件：`GET /api/projects/:id/final-document`
+6. S6 下载最终文件：`GET /api/projects/:id/final-document`
 
 ## 8.3 回写链路说明
-- S6 回调入口：`POST /api/projects/:id/review-items/document/callback`
-- S9 回调入口：`POST /api/projects/:id/document/callback`
+- 缺口处理预览回调入口：`POST /api/projects/:id/review-items/document/callback`
+- S5 回调入口：`POST /api/projects/:id/document/callback`
 - 当前正式 FastAPI 中，当 `status` 为 `2/6/7` 时会更新文档版本与保存时间
 - 回调成功返回：`{ "error": 0 }`
 
@@ -194,10 +191,10 @@ npm run check
 - 前后端跨域时，需确保网关/CORS 策略允许 Document Server 回调。
 
 ## 8.5 兜底策略
-- 前端会先做健康检查；若 OnlyOffice 不可达，S6/S9 自动切换文本编辑兜底模式。
+- 前端会先做健康检查；若 OnlyOffice 不可达，缺口处理预览和 S5 自动切换文本编辑兜底模式。
 - 兜底模式回写接口：
-  - S6：`PUT /api/projects/:id/review-items/document/save`
-  - S9：`PUT /api/projects/:id/document/save`
+  - 缺口处理预览：`PUT /api/projects/:id/review-items/document/save`
+  - S5：`PUT /api/projects/:id/document/save`
 
 ## 9. API 客户端能力说明
 `src/api/index.js` 已内建：
@@ -229,6 +226,6 @@ npm run check
 ## 12. 已知约定
 - 当前仓库保持 JavaScript，不做全量 TypeScript 迁移。
 - 当前已默认切到正式 FastAPI 联调入口。
-- 外围模块当前已由正式 FastAPI 承接，但其中部分数据仍是 fixture/mock 语义。
+- 外围模块当前已由正式 FastAPI 承接；结构化素材导入仍保留 MVP 形态。
 - API 文档总览：`docs/10-API接口总览与契约说明.md`
 - API 字段级明细：`docs/11-API字段级契约明细.md`

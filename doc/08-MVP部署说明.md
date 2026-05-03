@@ -221,7 +221,7 @@ docker compose up -d --build
 - 如果保留 compose 自带的 `opencode`，`OPENCODE_BASE_URL` 保持 `http://opencode:4096`
 - 如果切到外部 `opencode` 网关，只改 `OPENCODE_BASE_URL`
 - `OPENCODE_PROVIDER_ID / OPENCODE_MODEL_ID` 决定 FastAPI 调用哪个 provider/model
-- `OPENCODE_TIMEOUT_SEC` 默认建议先用 `600` 秒，超时后系统会回退到可继续审核的目录
+- `OPENCODE_TIMEOUT_SEC` compose 默认 `1800` 秒；目录生成、缺口处理、正文拼装等长任务都按这个长超时口径部署
 
 ### 9.3 当前工作区路径
 

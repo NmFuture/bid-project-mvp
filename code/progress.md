@@ -2955,3 +2955,35 @@ bid_workspace
 - 验证：`docker compose -f code/docker-compose.yml build fastapi worker web` 和 `up -d fastapi worker web` 成功；`/api/healthz` 返回 `ok`。
 - 验证：`/api/materials/raw/files?bidType=技术标&pageSize=1000` 返回 `total=93`、`standard=63`、`customer=11`、`project=19`；`/api/materials/raw/files?bidType=商务标&pageSize=1000` 返回 `total=0`。
 - 验证：`/api/materials/wiki?bidType=技术标` 返回技术标 Wiki 五节点结构；`/api/materials/wiki?bidType=商务标` 返回 `treeCount=0`。
+
+### 2026-05-03 21:20:04 文档口径收口：素材库/Wiki 与 S0-S6 阶段统一
+
+- 按 neat-freak 流程整理现阶段文档，清理会误导接手者的旧 S1-S10、S7/S8/S9/S10、600 秒超时和 main-only Git 口径。
+- README 验收步骤补充“先维护素材库和技术标 Wiki”，并把 `OPENCODE_TIMEOUT_SEC` 统一为 compose 默认 `1800` 秒。
+- 前端 README 和前端 docs 下两份旧接口长文改为当前 `S0-S6` 索引，正式接口细节统一指向根目录 `doc/06-MVP接口文档.md` 和 `code/sewpg-bid-api/MVP接口与参数核心版_极简版.md`。
+- `doc/GIT_WORKFLOW.md` 统一为当前 `wlb -> Dev -> main` 协作口径；`doc/13` 同步 S4 素材导出范围为技术标通用、客户、项目三档。
+- 补充 `code/AGENT.md`、后端 README、`doc/README.md`、`doc/14`、`doc/15`，明确技术标 Wiki 由 FastAPI 直接执行技术标专用 runner，商务标素材/Wiki 当前为空。
+- 验证：旧阶段与超时口径扫描通过，剩余旧词仅出现在历史说明或需求原文映射中。
+- 验证：`git diff --check` 通过。
+
+### 2026-05-03 21:20:57 post-commit 7359d7e
+
+提交摘要：docs(repo): align material library docs
+
+变更文件：
+
+- `README.md`
+- `code/AGENT.md`
+- `code/progress.md`
+- `code/sewpg-bid-backend/README.md`
+- `code/sewpg-bid-frontend/README.md`
+- `"code/sewpg-bid-frontend/docs/10-API\346\216\245\345\217\243\346\200\273\350\247\210\344\270\216\345\245\221\347\272\246\350\257\264\346\230\216.md"`
+- `"code/sewpg-bid-frontend/docs/11-API\345\255\227\346\256\265\347\272\247\345\245\221\347\272\246\346\230\216\347\273\206.md"`
+- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
+- `"doc/13-S4\347\224\237\346\210\220\346\240\207\344\271\246\344\270\216\350\246\206\347\233\226\350\257\212\346\226\255\350\257\264\346\230\216.md"`
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+- `"doc/15-\346\212\200\346\234\257\346\240\207\344\270\216\345\225\206\345\212\241\346\240\207\351\234\200\346\261\202\346\225\264\347\220\206.md"`
+- `doc/GIT_WORKFLOW.md`
+- `doc/README.md`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

@@ -179,7 +179,7 @@ OPENCODE_AUTH_HOST_DIR=./opencode-auth
 | `OPENCODE_BASE_URL` | FastAPI 调用的 opencode 地址 |
 | `OPENCODE_PROVIDER_ID` | 调用 opencode 时的 provider |
 | `OPENCODE_MODEL_ID` | 调用 opencode 时的模型 ID |
-| `OPENCODE_TIMEOUT_SEC` | FastAPI 调用 opencode 的超时，默认建议 `600` 秒 |
+| `OPENCODE_TIMEOUT_SEC` | FastAPI 调用 opencode 的超时，compose 默认 `1800` 秒 |
 | `AUTH_ADMIN_EMAIL / AUTH_ADMIN_PASSWORD / AUTH_ADMIN_NAME` | 首次启动时初始化系统管理员 |
 | `DEFAULT_LLM_BASE_URL / DEFAULT_LLM_API_KEY / DEFAULT_LLM_MODEL` | 设置页 LLM 模型配置的启动默认值 |
 | `DEFAULT_OCR_BASE_URL / DEFAULT_OCR_API_KEY / DEFAULT_OCR_MODEL` | 设置页 PDF/图片识别模型配置的启动默认值 |
@@ -196,17 +196,18 @@ OPENCODE_AUTH_HOST_DIR=./opencode-auth
 部署后建议按这条线验：
 
 1. 登录系统
-2. 进入左侧 `解析` 模块，点击“新建审核项目”
-3. 上传一个或多个 `docx/pdf/图片` 招标文件并点击“上传并解析”
-4. 在解析/审核模块做投标决策，选择“参与该项目并进入工作区”
-5. 补全项目基本信息后进入 `S1 模板与目录`
-6. 可选择上传项目模板；不上传时确认系统默认模板可用
-7. 在 `S1` 点击“生成目录”，观察 Skill 进度和目录产物
-8. 进入 `S2 审核目录`，校核目录，并确认右侧 OnlyOffice 招标文件预览可用
-9. 进入 `S3 缺口处理`，识别缺口、补料、AI 填写并确认缺口计划
-10. 进入 `S4 生成标书`，触发正文拼装并查看覆盖诊断
-11. 进入 `S5 共创`，确认 OnlyOffice 编辑器正常显示
-12. 进入 `S6 导出`，下载最终版 Word
+2. 进入左侧 `素材库`，确认 `技术标` 原始素材可展开、已生成技术标 Wiki，`商务标` 当前为空状态
+3. 进入左侧 `解析` 模块，点击“新建审核项目”
+4. 上传一个或多个 `docx/pdf/图片` 招标文件并点击“上传并解析”
+5. 在解析/审核模块做投标决策，选择“参与该项目并进入工作区”
+6. 补全项目基本信息后进入 `S1 模板与目录`
+7. 可选择上传项目模板；不上传时确认系统默认模板可用
+8. 在 `S1` 点击“生成目录”，观察 Skill 进度和目录产物
+9. 进入 `S2 审核目录`，校核目录，并确认右侧 OnlyOffice 招标文件预览可用
+10. 进入 `S3 缺口处理`，识别缺口、补料、AI 填写并确认缺口计划
+11. 进入 `S4 生成标书`，触发正文拼装并查看覆盖诊断
+12. 进入 `S5 共创`，确认 OnlyOffice 编辑器正常显示
+13. 进入 `S6 导出`，下载最终版 Word
 
 补充说明：
 

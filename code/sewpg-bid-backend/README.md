@@ -9,7 +9,7 @@ sewpg-bid-backend/
   app/                # 正式 FastAPI 运行时代码
     api/              # 路由层
     core/             # 配置与基础设施
-    services/         # 当前服务层与内存态 store
+    services/         # 当前服务层与项目状态 store
   onlyoffice/         # OnlyOffice Document Server entrypoint
   opencode/           # opencode 镜像、配置与 skill 相关资产
   .localdata/         # 本机联调数据目录
@@ -31,11 +31,13 @@ sewpg-bid-backend/
   - 按接口域拆分路由
   - 当前包含：主链路路由 + 外围模块路由
 - `app/services/store.py`
-  - 主链路状态、解析、目录、正文拼装、覆盖、文档状态
+  - 主链路状态、解析、目录、正文拼装、覆盖、文档状态；部署默认由 PostgreSQL 持久化
 - `app/services/outline_generation.py`
   - 准备 `S1 模板与目录` 的目录 manifest，并由 FastAPI 本地规则引擎或 Skill 生成目录 JSON；`s2_toc_workdir` 是历史内部目录名
 - `app/services/tech_assembly.py`
   - 准备目录 JSON、缺口计划、Wiki、素材库导出，并调用 `bid-tech-assembler` 拼装 `S4` 正文
+- `app/services/wiki_generation.py`
+  - 直接执行技术标 Wiki Skill runner，把技术标素材索引生成为五节点 Wiki 蓝图后导入数据库
 - `app/services/draft_generation.py`
   - 兼容旧 `fill-generation` 服务名，实际转发到 `S4 生成标书` 服务
 - `app/services/peripheral.py`
