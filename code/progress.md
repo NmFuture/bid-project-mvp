@@ -1485,6 +1485,35 @@ bid_workspace
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
 
+### 2026-05-04 S3 缺口识别实现收口
+
+改动目标：
+
+- 收住当前 S3 交付边界：本轮只交付并强化 `bid-tech-gap-planner` 第一阶段缺口识别，不把 `bid-tech-table-filler` 或 `bid-tech-gap-reviewer` 写成已验收能力。
+- 让缺口识别必须覆盖 S2 已确认目录全集，避免 Skill 只返回匹配项或问题项导致页面误判。
+- S3 页面改为以识别结果、素材边界、父章覆盖、待填写对象和 Office 预览为主，先方便人工检查第一步识别质量。
+
+实现摘要：
+
+- `bid-tech-gap-planner` 增加目录覆盖校验、素材范围过滤、通用父章整章覆盖识别、待填写 Word/空副表识别和四类 `decision` 统计。
+- OpenCode 调用缺口识别时使用 `s4gap` 早完成结果，减少等待完整对话结束的时间。
+- 后端重新生成缺口识别时清空旧填写产物/复查状态，只保留第一步纯识别计划；若 Skill 输出目录项数量不完整则返回 400。
+- S3 页面改为三栏：目录项列表、识别细节、OnlyOffice 预览；支持查看匹配素材、父章覆盖素材、空副表/待填写 Word 和限定范围内素材查询。
+- OnlyOffice artifact URL 改为区分浏览器可达 URL 与 Document Server 可达 URL，文件名做 URL 编码，避免带中文或空格的缺口产物预览失败。
+
+当前未纳入验收：
+
+- `bid-tech-table-filler` 仍只作为后续填写任务候选 Skill 名称和历史实验痕迹，不作为本轮已交付能力。
+- `bid-tech-gap-reviewer` 路径已从当前实现口径撤下，后续等填写产物结构稳定后再重新设计。
+
+验证结果：
+
+- `PYTHONPATH=. python -m pytest tests/test_opencode_client.py tests/test_toc_skill_scripts.py tests/test_gap_review_flow.py -q` 通过：54 passed。
+- `node --test src/pages/gapRecognitionHelpers.test.mjs` 通过：8 tests。
+- `npm run lint` 通过。
+- `npm run build` 通过；保留既有 Vite chunk size 提示。
+- `git diff --check` 通过。
+
 ### 2026-05-03 19:34 素材库提升为一级准备模块并绑定项目读取范围
 
 改动目标：

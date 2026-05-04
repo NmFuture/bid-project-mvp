@@ -16,6 +16,7 @@ from psycopg.types.json import Jsonb
 from app.core.config import settings
 from app.services.identity import build_project_identity
 from app.services.gap_planning import (
+    _artifact_onlyoffice_payload,
     build_gap_plan_for_project,
     check_gap_integrity,
     prepare_existing_gap_material_files,
@@ -1249,9 +1250,8 @@ class AppStore:
         plan = build_gap_plan_for_project(project)
         items = self._legacy_gap_items_from_plan(plan)
         recognized_at = now_iso()
-        integrity = check_gap_integrity(plan)
         plan["summary"] = summarize_gap_plan(plan)
-        plan["integrity"] = integrity
+        plan["integrity"] = {}
         gap_state.update(
             {
                 "recognitionStatus": "completed",
@@ -1260,10 +1260,9 @@ class AppStore:
                 "reviewConfirmed": False,
                 "reviewedAt": "",
                 "items": items,
-                "submissions": list(gap_state.get("submissions") or []),
                 "plan": plan,
                 "planFile": str(plan.get("planFile") or ""),
-                "integrity": integrity,
+                "integrity": {},
             }
         )
         project["review_document_state"] = self._default_review_document_state(project)
@@ -1271,18 +1270,31 @@ class AppStore:
         self._persist_project(project)
         return self._build_gap_detection_payload(project, gap_state)
 
-    def get_gap_filling(self, project_id: str) -> dict[str, Any]:
+    def get_gap_filling(
+        self,
+        project_id: str,
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
         project = self._require(project_id)
         gap_state = self._ensure_gap_state(project)
         if gap_state["recognitionStatus"] != "completed":
             raise ValueError("请先触发缺口识别后再进入缺口处理。")
+        gap_plan = copy.deepcopy(gap_state.get("plan") or {})
+        self._refresh_gap_plan_artifact_urls(
+            project_id,
+            gap_plan,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+        )
         return {
             "status": "ready",
             "recognizedAt": gap_state["recognizedAt"],
             "submittedForReview": bool(gap_state["submittedForReview"]),
             "items": copy.deepcopy(gap_state["items"]),
             "submissions": copy.deepcopy(gap_state["submissions"]),
-            "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
+            "gapPlan": gap_plan,
             "integrity": copy.deepcopy(gap_state.get("integrity") or {}),
         }
 
@@ -2126,6 +2138,37 @@ class AppStore:
                 "projectName": project["name"],
             },
         }
+
+    @staticmethod
+    def _refresh_gap_plan_artifact_urls(
+        project_id: str,
+        gap_plan: dict[str, Any],
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> None:
+        if not isinstance(gap_plan, dict):
+            return
+        for item in gap_plan.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            for artifact in item.get("resolvedArtifacts") or []:
+                if not isinstance(artifact, dict):
+                    continue
+                artifact_id = str(artifact.get("id") or "")
+                file_name = str(artifact.get("fileName") or Path(str(artifact.get("path") or "")).name)
+                if not artifact_id or not file_name:
+                    continue
+                artifact["onlyoffice"] = {
+                    **(artifact.get("onlyoffice") if isinstance(artifact.get("onlyoffice"), dict) else {}),
+                    **_artifact_onlyoffice_payload(
+                        project_id=project_id,
+                        artifact_id=artifact_id,
+                        file_name=file_name,
+                        browser_base_url=browser_base_url,
+                        onlyoffice_base_url=onlyoffice_base_url,
+                    ),
+                }
 
     def _find_gap_item(self, gap_state: dict[str, Any], gap_id: str) -> dict[str, Any]:
         for item in gap_state["items"]:

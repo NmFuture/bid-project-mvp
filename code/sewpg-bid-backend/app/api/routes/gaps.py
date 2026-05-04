@@ -25,17 +25,24 @@ async def get_gap_detection(project_id: str) -> dict[str, Any]:
 
 @router.post("/api/projects/{project_id}/gaps-detection/run")
 async def run_gap_detection(project_id: str) -> dict[str, Any]:
-    payload = store.run_gap_detection(project_id)
+    try:
+        payload = store.run_gap_detection(project_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         **payload,
-        "message": f"识别完成，发现 {payload['summary']['totalMissing']} 项缺失素材。",
+        "message": f"缺口识别完成，共识别 {payload['summary']['totalTocItems']} 个目录项。",
     }
 
 
 @router.get("/api/projects/{project_id}/gaps")
-async def get_gaps(project_id: str) -> dict[str, Any]:
+async def get_gaps(project_id: str, request: Request) -> dict[str, Any]:
     try:
-        return store.get_gap_filling(project_id)
+        return store.get_gap_filling(
+            project_id,
+            browser_base_url=str(request.base_url).rstrip("/"),
+            onlyoffice_base_url=onlyoffice_backend_base_url(request),
+        )
     except ValueError as exc:
         raise _value_error(exc) from exc
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import unittest
 from unittest.mock import patch
 
@@ -175,6 +176,84 @@ class OpencodeClientTests(unittest.TestCase):
 
         send_prompt.assert_called_once()
         self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "wikibuild")
+
+    def test_gap_planner_uses_s4gap_early_completion(self) -> None:
+        client = OpencodeClient()
+
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-gap"}),
+            patch.object(
+                client,
+                "_send_prompt_with_session_polling",
+                return_value={
+                    "parts": [
+                        {
+                            "type": "text",
+                            "text": (
+                                '{"schema_version":"bid-tech-gap-plan-v1",'
+                                '"outputFile":"/tmp/gap_plan.json","summary":{},"itemCount":0}'
+                            ),
+                        }
+                    ]
+                },
+            ) as send_prompt,
+            patch.object(
+                client,
+                "_extract_gap_plan_json",
+                return_value={
+                    "schema_version": "bid-tech-gap-plan-v1",
+                    "outputFile": "/tmp/gap_plan.json",
+                },
+            ),
+            patch.object(client, "_build_output_trace", return_value={"status": "received"}),
+        ):
+            client.run_bid_tech_gap_planner_with_trace("prompt")
+
+        send_prompt.assert_called_once()
+        self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "s4gap")
+
+    def test_polling_can_early_complete_without_stream_callback(self) -> None:
+        client = OpencodeClient()
+
+        def slow_send_prompt(session_id: str, prompt_text: str) -> dict:
+            time.sleep(2)
+            return {"parts": [{"type": "text", "text": '{"late":true}'}]}
+
+        messages = [
+            {
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "s4gap /tmp/s4_gap_input.json"},
+                            "exit": 0,
+                            "output": (
+                                '{"schema_version":"bid-tech-gap-plan-v1",'
+                                '"outputFile":"/tmp/gap_plan.json","summary":{},"itemCount":0}'
+                            ),
+                        },
+                    }
+                ]
+            }
+        ]
+
+        with (
+            patch.object(client, "send_prompt", side_effect=slow_send_prompt),
+            patch.object(client, "list_session_messages", return_value=messages),
+        ):
+            started_at = time.monotonic()
+            response = client._send_prompt_with_session_polling(
+                "ses-gap",
+                "prompt",
+                early_tool_command="s4gap",
+            )
+
+        self.assertLess(time.monotonic() - started_at, 1.5)
+        self.assertTrue(response["_earlyCompletion"])
+        self.assertEqual(response["_completionSource"], "s4gap")
+        self.assertIn("bid-tech-gap-plan-v1", response["parts"][0]["text"])
 
     def test_early_s2_tool_output_does_not_repair_traceback_into_outline(self) -> None:
         client = OpencodeClient()

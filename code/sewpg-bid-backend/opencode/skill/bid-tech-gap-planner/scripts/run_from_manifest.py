@@ -208,6 +208,11 @@ def material_index_from_manifest(manifest: dict[str, Any]) -> list[dict[str, Any
                 "materialTier": str(raw.get("materialTier") or ""),
                 "cleanedFileName": str(raw.get("cleanedFileName") or ""),
                 "hasCleanedWord": bool(raw.get("hasCleanedWord") or raw.get("cleanedFileName")),
+                "requiresFill": bool(raw.get("requiresFill")),
+                "placeholderCount": int(raw.get("placeholderCount") or 0),
+                "placeholderLabels": list(raw.get("placeholderLabels") or []),
+                "placeholderSamples": list(raw.get("placeholderSamples") or []),
+                "fillProfile": raw.get("fillProfile") if isinstance(raw.get("fillProfile"), dict) else {},
                 "usage": "section_merge",
                 "matchReason": "允许素材范围内的素材索引候选",
                 "confidence": 0.74,
@@ -216,6 +221,130 @@ def material_index_from_manifest(manifest: dict[str, Any]) -> list[dict[str, Any
             }
         )
     return output
+
+
+def material_scope_paths(manifest: dict[str, Any]) -> list[str]:
+    scope = manifest.get("materialScope") if isinstance(manifest.get("materialScope"), dict) else {}
+    raw_paths = scope.get("paths")
+    if not isinstance(raw_paths, list):
+        raw_paths = [
+            item.get("path")
+            for item in scope.get("readableScopes") or []
+            if isinstance(item, dict)
+        ]
+    return [
+        normalize_key(path)
+        for path in raw_paths
+        if normalize_key(path)
+    ]
+
+
+def material_within_scope(material: dict[str, Any], allowed_paths: list[str]) -> bool:
+    if not allowed_paths:
+        return True
+    text = normalize_key(
+        " ".join(
+            str(material.get(key) or "")
+            for key in ("path", "docx", "folderPath", "cleanedPath")
+        )
+    )
+    if not text:
+        return False
+    return any(text.startswith(path) or path in text for path in allowed_paths)
+
+
+def material_lookup_keys(material: dict[str, Any]) -> list[str]:
+    values = [
+        material.get("id"),
+        material.get("materialId"),
+        material.get("path"),
+        material.get("docx"),
+        material.get("cleanedPath"),
+        material.get("cleanedFileName"),
+        material.get("name"),
+    ]
+    path = str(material.get("path") or material.get("docx") or "").strip()
+    if path:
+        values.append(PurePosixPath(path).name)
+    return [normalize_key(value) for value in values if normalize_key(value)]
+
+
+def material_path_key(material: dict[str, Any]) -> str:
+    return normalize_key(
+        material.get("path")
+        or material.get("docx")
+        or (
+            f"{material.get('folderPath')}/{material.get('name')}"
+            if material.get("folderPath") and material.get("name")
+            else ""
+        )
+    )
+
+
+def merge_hint_with_index_material(hint: dict[str, Any], indexed: dict[str, Any]) -> dict[str, Any]:
+    material = dict(indexed)
+    for key in ("usage", "matchReason", "confidence", "source"):
+        if hint.get(key):
+            material[key] = hint[key]
+    if not material.get("path") and hint.get("path"):
+        material["path"] = hint["path"]
+    return material
+
+
+def resolve_material_hints(
+    hints: list[dict[str, Any]],
+    indexed_materials: list[dict[str, Any]],
+    allowed_paths: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve TOC/Wiki hints against the manifest's allowed material index.
+
+    In production the backend pre-filters materialIndex by project, customer,
+    bid type, and turbine model. A TOC/Wiki reference is therefore only usable
+    when it can be resolved back into that allowed index. Unit tests and
+    offline fixtures may provide no materialIndex, so the hints remain usable
+    as a deterministic fallback there.
+    """
+
+    if not indexed_materials:
+        return dedupe_materials(
+            [hint for hint in hints if material_within_scope(hint, allowed_paths or [])]
+        )
+
+    by_key: dict[str, dict[str, Any]] = {}
+    by_path: dict[str, dict[str, Any]] = {}
+    for material in indexed_materials:
+        for key in material_lookup_keys(material):
+            by_key.setdefault(key, material)
+        path_key = material_path_key(material)
+        if path_key:
+            by_path.setdefault(path_key, material)
+
+    resolved: list[dict[str, Any]] = []
+    for hint in hints:
+        match: dict[str, Any] | None = None
+        for key in material_lookup_keys(hint):
+            match = by_key.get(key)
+            if match:
+                break
+        if not match:
+            hint_path = material_path_key(hint)
+            match = by_path.get(hint_path) if hint_path else None
+        if not match:
+            hint_name = normalize_key(hint.get("name") or PurePosixPath(str(hint.get("path") or "")).name)
+            if hint_name:
+                match = next(
+                    (
+                        material
+                        for material in indexed_materials
+                        if hint_name in normalize_key(material_text(material))
+                    ),
+                    None,
+                )
+        if match:
+            resolved.append(merge_hint_with_index_material(hint, match))
+        elif material_within_scope(hint, allowed_paths or []):
+            resolved.append(hint)
+    return dedupe_materials(resolved)
 
 
 def dedupe_materials(materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -235,8 +364,31 @@ def dedupe_materials(materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def material_text(material: dict[str, Any]) -> str:
     return " ".join(
         str(material.get(key) or "")
-        for key in ("name", "path", "folderPath", "cleanedFileName", "matchReason")
+        for key in ("name", "path", "docx", "cleanedPath", "folderPath", "cleanedFileName", "matchReason")
     )
+
+
+def material_file_text(material: dict[str, Any]) -> str:
+    path = str(material.get("path") or material.get("docx") or "").strip()
+    return " ".join(
+        str(value or "")
+        for value in (
+            material.get("name"),
+            material.get("cleanedFileName"),
+            PurePosixPath(path).name if path else "",
+        )
+    )
+
+
+def material_requires_fill(material: dict[str, Any] | None) -> bool:
+    if not material:
+        return False
+    if bool(material.get("requiresFill")):
+        return True
+    if int(material.get("placeholderCount") or 0) > 0:
+        return True
+    text = material_text(material)
+    return any(marker in text for marker in ("待填写", "待补充", "待确认"))
 
 
 def material_score(material: dict[str, Any], title: str) -> float:
@@ -261,21 +413,69 @@ def material_score(material: dict[str, Any], title: str) -> float:
     return score
 
 
-def wind_master_score(material: dict[str, Any]) -> float:
+def title_terms(title: str) -> list[str]:
+    text = re.sub(r"附表\s*[A-Za-z]?\s*\.?\s*\d+(?:\.\d+)*", " ", str(title or ""))
+    text = re.sub(r"第\s*[一二三四五六七八九十百千万0-9]+\s*章", " ", text)
+    text = re.sub(r"\b\d+(?:\.\d+)*\b", " ", text)
+    parts = re.split(r"[\s　,，、.。:：;；()（）\[\]【】{}<>《》\"'`·_\-—/\\|与及和]+", text)
+    stop_words = {"", "目录", "章节", "内容", "说明", "要求", "材料", "文件", "技术标", "投标文件"}
+    prefixes = ("投标人", "投标方", "投标", "本项目", "项目", "技术标")
+    terms: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        key = normalize_key(part)
+        for prefix in prefixes:
+            prefix_key = normalize_key(prefix)
+            if key.startswith(prefix_key) and len(key) - len(prefix_key) >= 2:
+                key = key[len(prefix_key):]
+                break
+        if len(key) < 2 or key in stop_words or key in seen:
+            continue
+        seen.add(key)
+        terms.append(key)
+    return terms
+
+
+def chapter_title_matches_file(material: dict[str, Any], title: str) -> bool:
+    file_text = normalize_key(material_file_text(material))
+    title_key = normalize_key(title)
+    if not file_text or not title_key:
+        return False
+    if title_key in file_text:
+        return True
+    terms = title_terms(title)
+    if len(terms) < 2:
+        return False
+    matched_terms = sum(1 for term in terms if term in file_text)
+    return matched_terms == len(terms)
+
+
+def chapter_master_score(material: dict[str, Any], title: str, child_titles: list[str] | None = None) -> float:
+    score = material_score(material, title)
     text = normalize_key(material_text(material))
-    score = material_score(material, "风资源评估与机位排布方案")
-    if "风资源评估与机位排布方案" in material_text(material):
-        score += 500
-    if "技术标风资源评估与机位排布方案" in text:
-        score += 220
-    if "定制风资源评估与机位排布方案" in text:
+    file_text = normalize_key(material_file_text(material))
+    title_key = normalize_key(title)
+    if title_key and title_key in file_text:
+        score += 520
+    elif chapter_title_matches_file(material, title):
+        score += 430
+    elif title_key and title_key in text:
         score += 180
-    if "风资源评估报告" in text:
-        score -= 180
-    if "发电量担保" in text:
-        score -= 260
-    if "承诺保证值" in text or "承诺考核值" in text:
-        score -= 180
+    for term in title_terms(title):
+        if term in file_text:
+            score += 58
+        elif term in text:
+            score += 22
+    child_matches = 0
+    for child_title in child_titles or []:
+        child_key = normalize_key(child_title)
+        if child_key and len(child_key) >= 3 and child_key in text:
+            child_matches += 1
+    score += child_matches * 70
+    if str(material.get("materialTier") or "").lower() == "project":
+        score += 30
+    if str(material.get("materialTier") or "").lower() == "standard":
+        score += 12
     return score
 
 
@@ -290,14 +490,22 @@ def pick_material(candidates: list[dict[str, Any]], title: str, *, usage: str = 
     return selected, alternatives
 
 
-def pick_wind_master_material(candidates: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+def pick_chapter_master_material(
+    candidates: list[dict[str, Any]],
+    title: str,
+    child_titles: list[str] | None = None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     materials = dedupe_materials(candidates)
     if not materials:
         return None, []
-    ranked = sorted(materials, key=wind_master_score, reverse=True)
+    ranked = sorted(
+        materials,
+        key=lambda material: chapter_master_score(material, title, child_titles),
+        reverse=True,
+    )
     selected = dict(ranked[0])
     selected["usage"] = "chapter_master"
-    selected["matchReason"] = "整章素材覆盖第3章“风资源评估与机位排布方案”。"
+    selected["matchReason"] = f"整章素材覆盖“{title}”及其子节。"
     alternatives = [dict(item) for item in ranked[1:]]
     return selected, alternatives
 
@@ -313,15 +521,59 @@ def matching_materials_for_title(materials: list[dict[str, Any]], title: str) ->
     ]
 
 
-def wind_material_candidates(materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def chapter_children(item: dict[str, Any], all_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    number_key = toc_number_key(item.get("number"))
+    if not number_key or "." in number_key:
+        return []
+    prefix = f"{number_key}."
     return [
-        material
-        for material in materials
-        if "风资源" in material_text(material) or "机位排布" in material_text(material) or "机组选型排布" in material_text(material)
+        other
+        for other in all_items
+        if str(toc_number_key(other.get("number"))).startswith(prefix)
     ]
 
 
-def matching_appendices(item: dict[str, Any], appendices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def chapter_master_candidates(materials: list[dict[str, Any]], title: str) -> list[dict[str, Any]]:
+    title_key = normalize_key(title)
+    if not title_key:
+        return []
+    result: list[dict[str, Any]] = []
+    for material in materials:
+        text = normalize_key(material_text(material))
+        if title_key and title_key in text:
+            result.append(material)
+    return result
+
+
+def strong_chapter_master_candidates(
+    materials: list[dict[str, Any]],
+    title: str,
+    child_titles: list[str],
+) -> list[dict[str, Any]]:
+    title_key = normalize_key(title)
+    child_keys = [
+        normalize_key(child_title)
+        for child_title in child_titles
+        if len(normalize_key(child_title)) >= 3
+    ]
+    result: list[dict[str, Any]] = []
+    for material in materials:
+        full_text = normalize_key(material_text(material))
+        if title_key and chapter_title_matches_file(material, title):
+            result.append(material)
+            continue
+        child_match_count = sum(1 for child_key in child_keys if child_key in full_text)
+        if len(child_keys) >= 2 and child_match_count >= 2:
+            result.append(material)
+    return result
+
+
+def matching_appendices(
+    item: dict[str, Any],
+    appendices: list[dict[str, Any]],
+    *,
+    allow_title_match: bool = True,
+) -> list[dict[str, Any]]:
     title = str(item.get("title") or "")
     number = str(item.get("number") or "")
     item_code = appendix_code(number) or appendix_code(title)
@@ -336,7 +588,7 @@ def matching_appendices(item: dict[str, Any], appendices: list[dict[str, Any]]) 
         if item_code and app_code and item_code == app_code:
             matches.append(appendix)
             continue
-        if item_is_appendix:
+        if item_is_appendix or not allow_title_match:
             continue
         if title_key and len(title_key) >= 3 and (title_key in appendix_key or appendix_key in title_key):
             matches.append(appendix)
@@ -348,15 +600,16 @@ def appendix_material_score(material: dict[str, Any], appendix: dict[str, Any]) 
     score = material_score(material, title)
     title_key = normalize_key(title)
     text = normalize_key(material_text(material))
-    if "风资源评估与机位排布方案" in title_key:
-        score += wind_master_score(material)
-    if "发电量" in title_key:
-        if "发电量" in text:
-            score += 120
-        if "担保" in text:
-            score += 40
-    if "机位" in title_key and "机位" in text:
-        score += 80
+    file_text = normalize_key(material_file_text(material))
+    if title_key and title_key in file_text:
+        score += 260
+    elif title_key and title_key in text:
+        score += 120
+    for term in title_terms(title):
+        if term in file_text:
+            score += 85
+        elif term in text:
+            score += 45
     return score
 
 
@@ -409,6 +662,36 @@ def build_fill_task(item: dict[str, Any], appendix: dict[str, Any], gap_id: str)
     }
 
 
+def build_material_fill_task(item: dict[str, Any], material: dict[str, Any], gap_id: str) -> dict[str, Any]:
+    material_id = str(material.get("id") or material.get("materialId") or "MAT-UNKNOWN")
+    title = str(item.get("title") or material.get("name") or "待填写 Word")
+    placeholder_labels = [
+        str(label)
+        for label in (material.get("placeholderLabels") or [])
+        if str(label or "").strip()
+    ]
+    return {
+        "id": f"FILL-{gap_id}-{material_id}",
+        "skill": "bid-tech-table-filler",
+        "status": "pending",
+        "title": f"填写{title}",
+        "blankSource": {
+            "id": material_id,
+            "title": str(material.get("name") or title),
+            "sourceFile": str(material.get("name") or ""),
+            "materialId": material_id,
+            "folderPath": str(material.get("folderPath") or ""),
+            "path": str(material.get("path") or ""),
+            "cleanedFileName": str(material.get("cleanedFileName") or ""),
+            "placeholderCount": int(material.get("placeholderCount") or 0),
+            "placeholderLabels": placeholder_labels,
+            "placeholderSamples": list(material.get("placeholderSamples") or []),
+            "sourceType": "material_fill_template",
+        },
+        "requiredReferences": ["素材库文件", "招标解析字段", "项目投标机型"],
+    }
+
+
 def material_scope_payload(manifest: dict[str, Any], materials: list[dict[str, Any]]) -> dict[str, Any]:
     scope = manifest.get("materialScope") if isinstance(manifest.get("materialScope"), dict) else {}
     paths = scope.get("paths") or [
@@ -458,10 +741,6 @@ def evidence_refs(materials: list[dict[str, Any]], appendices: list[dict[str, An
     return refs
 
 
-def is_wind_master_item(item: dict[str, Any]) -> bool:
-    return toc_number_key(item.get("number")) == "3" and "风资源评估" in str(item.get("title") or "") and "机位排布" in str(item.get("title") or "")
-
-
 def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     toc = load_json(Path(str(manifest["tocJsonPath"])))
     parse_result_path = Path(str(manifest.get("parseResultPath") or ""))
@@ -472,10 +751,10 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     wiki_index = wiki_cards_by_section(Path(raw_wiki_dir) if raw_wiki_dir else None)
     project_turbine_model = manifest.get("projectTurbineModel") if isinstance(manifest.get("projectTurbineModel"), dict) else {}
     indexed_materials = material_index_from_manifest(manifest)
+    allowed_paths = material_scope_paths(manifest)
     toc_materials_all: list[dict[str, Any]] = []
     for toc_item in items:
         toc_materials_all.extend(normalize_material_refs(toc_item))
-    all_wind_materials = wind_material_candidates(dedupe_materials(indexed_materials + toc_materials_all))
     parent_coverages: dict[str, dict[str, Any]] = {}
     plan_items: list[dict[str, Any]] = []
     for index, item in enumerate(items, start=1):
@@ -483,8 +762,8 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         number_key = toc_number_key(number)
         title = str(item.get("title") or "").strip() or f"目录项-{index}"
         gap_id = f"GAP-{index:04d}"
-        toc_materials = normalize_material_refs(item)
-        wiki_materials = list(wiki_index.get(number) or [])
+        toc_materials = resolve_material_hints(normalize_material_refs(item), indexed_materials, allowed_paths)
+        wiki_materials = resolve_material_hints(list(wiki_index.get(number) or []), indexed_materials, allowed_paths)
         index_materials = matching_materials_for_title(indexed_materials, title)
         candidate_materials = dedupe_materials(toc_materials + wiki_materials + index_materials)
         matched_material: dict[str, Any] | None = None
@@ -492,7 +771,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         structural = is_structural(item, items)
         fill_tasks: list[dict[str, Any]] = []
         required_inputs: list[dict[str, Any]] = []
-        appendix_matches = matching_appendices(item, appendices)
+        appendix_matches = matching_appendices(item, appendices, allow_title_match=not structural)
         appendix_tasks: list[dict[str, Any]] = []
         decision = ""
         next_actions: list[str] = []
@@ -503,38 +782,19 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         parent_key = number_key.split(".")[0] if "." in number_key else ""
         parent_coverage = parent_coverages.get(parent_key) if parent_key else None
         if parent_coverage:
-            status = "matched"
-            decision = "ready"
+            parent_decision = str(parent_coverage.get("decision") or "ready")
+            status = "needs_input" if parent_decision == "fill_required" else "matched"
+            decision = parent_decision
             usage = "covered_by_parent"
             coverage_role = "covered_by_parent"
             covered_by_parent = str(parent_coverage.get("id") or "")
             matched_materials = []
             gap_reason = f"已由父章节“{parent_coverage.get('title') or parent_key}”整章素材覆盖。"
-            next_actions = ["s4_merge_material"]
-        elif is_wind_master_item(item):
-            wind_candidates = dedupe_materials(candidate_materials + all_wind_materials)
-            matched_material, alternative_materials = pick_wind_master_material(wind_candidates)
-            if matched_material:
-                status = "matched"
-                decision = "ready"
-                usage = "chapter_master"
-                coverage_role = "chapter_master"
-                matched_materials = [matched_material]
-                gap_reason = "整章素材可覆盖第3章及其子节。"
-                next_actions = ["s4_merge_material"]
-                parent_coverages[number_key] = {"id": gap_id, "title": title, "material": matched_material}
-            else:
-                status = "missing"
-                decision = "material_required"
-                usage = ""
-                matched_materials = []
-                gap_reason = "第3章需要整章风资源评估与机位排布方案 Word，但允许范围内未找到可用素材。"
-                required_inputs.append({"type": "upload", "label": "上传第3章整章方案 Word 或选择已有素材"})
-                next_actions = ["manual_upload", "select_material", "ignore"]
+            next_actions = ["ai_fill_word"] if parent_decision == "fill_required" else ["s4_merge_material"]
         elif appendix_matches:
-            recommended_materials = dedupe_materials(candidate_materials + all_wind_materials)
+            recommended_pool = dedupe_materials(candidate_materials + indexed_materials + toc_materials_all)
             appendix_tasks = [
-                build_appendix_task(appendix, recommended_materials_for_appendix(appendix, recommended_materials))
+                build_appendix_task(appendix, recommended_materials_for_appendix(appendix, recommended_pool))
                 for appendix in appendix_matches
             ]
             fill_tasks = [build_fill_task(item, appendix, gap_id) for appendix in appendix_matches]
@@ -543,24 +803,78 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
             decision = "fill_required"
             usage = "appendix_fill"
             matched_materials = []
-            alternative_materials = recommended_materials
+            alternative_materials = dedupe_materials(
+                [
+                    material
+                    for appendix in appendix_matches
+                    for material in recommended_materials_for_appendix(appendix, recommended_pool)[:5]
+                ]
+            )
             gap_reason = "解析阶段已生成空副表/Word，需要进入 S3 发起填写任务。"
             next_actions = ["ai_fill_appendix", "select_reference_material", "manual_upload"]
         elif structural:
-            status = "structural"
-            decision = "ready"
-            usage = "structural"
-            matched_materials = []
-            gap_reason = "结构性目录项，不直接要求素材。"
-            next_actions = ["s4_merge_material"]
+            children = chapter_children(item, items)
+            child_titles = [str(child.get("title") or "") for child in children]
+            chapter_candidates = strong_chapter_master_candidates(
+                dedupe_materials(candidate_materials + indexed_materials + toc_materials_all),
+                title,
+                child_titles,
+            )
+            matched_material, alternative_materials = pick_chapter_master_material(
+                chapter_candidates,
+                title,
+                child_titles,
+            )
+            if matched_material:
+                coverage_role = "chapter_master"
+                matched_materials = [matched_material]
+                parent_fill_required = material_requires_fill(matched_material)
+                if parent_fill_required:
+                    fill_tasks = [build_material_fill_task(item, matched_material, gap_id)]
+                    required_inputs.append({"type": "ai_fill", "label": "填写整章 Word 后覆盖子目录"})
+                    status = "needs_input"
+                    decision = "fill_required"
+                    usage = "chapter_fill"
+                    gap_reason = "已匹配到整章待填写 Word，可填写后覆盖本章及其子节。"
+                    next_actions = ["ai_fill_word", "select_reference_material", "manual_upload"]
+                else:
+                    status = "matched"
+                    decision = "ready"
+                    usage = "chapter_master"
+                    gap_reason = "允许范围内已有整章 Word，可覆盖本章及其子节。"
+                    next_actions = ["s4_merge_material"]
+                parent_coverages[number_key] = {
+                    "id": gap_id,
+                    "title": title,
+                    "material": matched_material,
+                    "decision": decision,
+                }
+            else:
+                status = "structural"
+                decision = "ready"
+                usage = "structural"
+                matched_materials = []
+                gap_reason = "结构性目录项，不直接要求素材。"
+                next_actions = ["s4_merge_material"]
         elif candidate_materials:
             matched_material, alternative_materials = pick_material(candidate_materials, title)
-            status = "matched"
-            decision = "ready"
-            usage = str((matched_material or {}).get("usage") or "section_merge")
-            matched_materials = [matched_material] if matched_material else []
-            gap_reason = "允许范围内已有可用素材。"
-            next_actions = ["s4_merge_material"]
+            if material_requires_fill(matched_material):
+                fill_tasks = [build_material_fill_task(item, matched_material, gap_id)] if matched_material else []
+                required_inputs.append({"type": "ai_fill", "label": "选择参考素材并填写待填写 Word"})
+                status = "needs_input"
+                decision = "fill_required"
+                usage = "section_fill"
+                matched_materials = []
+                alternative_materials = dedupe_materials(([matched_material] if matched_material else []) + alternative_materials)
+                gap_reason = "已匹配到待填写 Word 模板，需要先由 AI 填写后再进入 S4 合并。"
+                next_actions = ["ai_fill_word", "select_reference_material", "manual_upload"]
+            else:
+                status = "matched"
+                decision = "ready"
+                usage = str((matched_material or {}).get("usage") or "section_merge")
+                matched_materials = [matched_material] if matched_material else []
+                gap_reason = "允许范围内已有可用素材。"
+                next_actions = ["s4_merge_material"]
         else:
             status = "missing"
             decision = "material_required"
@@ -604,6 +918,12 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         )
 
     summary = summarize(plan_items)
+    integrity = coverage_integrity(items, plan_items, summary)
+    if integrity["coverageStatus"] != "passed":
+        raise RuntimeError(
+            "gap planner did not produce one result per confirmed TOC item: "
+            f"expected {integrity['expectedTocItems']}, got {integrity['actualPlanItems']}"
+        )
     return {
         "schemaVersion": SCHEMA_VERSION,
         "projectId": str(manifest.get("projectId") or ""),
@@ -615,11 +935,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         "updatedAt": now_iso(),
         "summary": summary,
         "items": plan_items,
-        "integrity": {
-            "status": "passed" if summary["blockingCount"] == 0 else "blocked",
-            "blockingCount": summary["blockingCount"],
-            "checkedAt": now_iso(),
-        },
+        "integrity": integrity,
     }
 
 
@@ -640,6 +956,38 @@ def summarize(items: list[dict[str, Any]]) -> dict[str, int]:
         "materialRequiredCount": decision_counts.get("material_required", 0),
         "reviewRequiredCount": decision_counts.get("review_required", 0),
         "appendixTaskCount": sum(len(item.get("appendixTasks") or []) for item in items),
+    }
+
+
+def coverage_identity(item: dict[str, Any], index: int) -> str:
+    number = str(item.get("number") or "").strip()
+    title = str(item.get("title") or "").strip()
+    return f"{index}:{number}:{title}"
+
+
+def coverage_integrity(
+    toc_entries: list[dict[str, Any]],
+    plan_items: list[dict[str, Any]],
+    summary: dict[str, int],
+) -> dict[str, Any]:
+    expected = [coverage_identity(item, index) for index, item in enumerate(toc_entries, start=1)]
+    actual = [coverage_identity(item, index) for index, item in enumerate(plan_items, start=1)]
+    expected_set = set(expected)
+    actual_set = set(actual)
+    duplicate_actual = sorted({item for item in actual if actual.count(item) > 1})
+    missing = [item for item in expected if item not in actual_set]
+    extra = [item for item in actual if item not in expected_set]
+    coverage_status = "passed" if expected == actual and not duplicate_actual else "failed"
+    return {
+        "status": "passed" if summary["blockingCount"] == 0 else "blocked",
+        "blockingCount": summary["blockingCount"],
+        "coverageStatus": coverage_status,
+        "expectedTocItems": len(expected),
+        "actualPlanItems": len(actual),
+        "missingTocItems": missing,
+        "extraPlanItems": extra,
+        "duplicatePlanItems": duplicate_actual,
+        "checkedAt": now_iso(),
     }
 
 
@@ -675,7 +1023,9 @@ def main() -> None:
                     "schema_version": SCHEMA_VERSION,
                     "outputFile": str(output_file),
                     "summary": plan["summary"],
+                    "tocItemCount": plan["integrity"]["expectedTocItems"],
                     "itemCount": len(plan["items"]),
+                    "coverageStatus": plan["integrity"]["coverageStatus"],
                 },
                 ensure_ascii=False,
                 indent=2,

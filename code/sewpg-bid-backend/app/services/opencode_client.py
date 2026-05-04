@@ -176,7 +176,7 @@ class OpencodeClient:
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        session = self.create_session("S4 技术标缺口识别")
+        session = self.create_session("S3 技术标缺口识别")
         session_id = str(session.get("id") or "")
         if session_ready_callback:
             session_ready_callback(
@@ -190,6 +190,7 @@ class OpencodeClient:
             session_id,
             prompt_text,
             stream_callback=stream_callback,
+            early_tool_command="s4gap",
         )
         parsed = self._extract_gap_plan_json(response)
         return {
@@ -414,7 +415,7 @@ class OpencodeClient:
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
         early_tool_command: str = "",
     ) -> dict[str, Any]:
-        if stream_callback is None:
+        if stream_callback is None and not early_tool_command:
             return self.send_prompt(session_id, prompt_text)
 
         response_holder: dict[str, Any] = {}
@@ -438,11 +439,12 @@ class OpencodeClient:
 
         last_signature: tuple[str, tuple[tuple[str, str], ...]] | None = None
         while not finished.wait(0.5):
-            last_signature = self._emit_session_output_delta(
-                session_id,
-                stream_callback,
-                last_signature,
-            )
+            if stream_callback is not None:
+                last_signature = self._emit_session_output_delta(
+                    session_id,
+                    stream_callback,
+                    last_signature,
+                )
             if early_tool_command:
                 messages = self.list_session_messages(session_id)
                 tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
@@ -464,25 +466,27 @@ class OpencodeClient:
                         trace_parts=trace_parts,
                     )
                     early_response["_completionSource"] = early_tool_command
-                    stream_callback(
-                        {
-                            "status": "received",
-                            "sessionId": session_id,
-                            "providerId": self.provider_id,
-                            "modelId": self.model_id,
-                            "receivedAt": early_response["_traceReceivedAt"],
-                            "parts": self._normalize_output_parts(trace_parts),
-                            "earlyCompletion": True,
-                            "completionSource": early_tool_command,
-                        }
-                    )
+                    if stream_callback is not None:
+                        stream_callback(
+                            {
+                                "status": "received",
+                                "sessionId": session_id,
+                                "providerId": self.provider_id,
+                                "modelId": self.model_id,
+                                "receivedAt": early_response["_traceReceivedAt"],
+                                "parts": self._normalize_output_parts(trace_parts),
+                                "earlyCompletion": True,
+                                "completionSource": early_tool_command,
+                            }
+                        )
                     return early_response
 
-        last_signature = self._emit_session_output_delta(
-            session_id,
-            stream_callback,
-            last_signature,
-        )
+        if stream_callback is not None:
+            last_signature = self._emit_session_output_delta(
+                session_id,
+                stream_callback,
+                last_signature,
+            )
         thread.join()
         if error_holder.get("error"):
             raise error_holder["error"]

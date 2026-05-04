@@ -17,7 +17,7 @@ const OnlyOfficeEmbed = forwardRef(function OnlyOfficeEmbed({
   const iframeRef = useRef(null)
 
   const iframeSrc = useMemo(() => {
-    const fileUrl = session?.fileUrl || session?.browserFileUrl
+    const fileUrl = session?.documentServerFileUrl || session?.fileUrl || session?.browserFileUrl
     const probeUrl = session?.browserFileUrl || session?.fileUrl
     const config = ONLYOFFICE_CONFIG.getEditorConfig({
       documentKey: session?.documentKey,

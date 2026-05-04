@@ -37,6 +37,13 @@ WIKI_SCRIPT_DIR = (
     / "bid-tech-wiki-material-builder"
     / "scripts"
 )
+GAP_PLANNER_SCRIPT_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "opencode"
+    / "skill"
+    / "bid-tech-gap-planner"
+    / "scripts"
+)
 
 
 def load_assembler_script(name: str):
@@ -68,11 +75,494 @@ def load_wiki_script(name: str):
     return module
 
 
+def load_gap_planner_script(name: str):
+    module_name = f"gap_planner_{name}"
+    spec = importlib.util.spec_from_file_location(module_name, GAP_PLANNER_SCRIPT_DIR / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def json_load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 class TocSkillScriptTests(unittest.TestCase):
+    def test_bid_gap_planner_routes_fill_template_material_to_ai_fill(self) -> None:
+        gap_runner = load_gap_planner_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse.json"
+            toc_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {"number": "第1章", "title": "标前概述", "level": 1},
+                            {"number": "1.1", "title": "技术评分标准索引表", "level": 2},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            parse_path.write_text(json.dumps({"structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest = {
+                "projectId": "PRJ-TEST",
+                "projectName": "测试项目",
+                "bidType": "技术标",
+                "tocJsonPath": str(toc_path),
+                "parseResultPath": str(parse_path),
+                "materialScope": {"paths": ["技术标/客户素材/华能集团"]},
+                "projectTurbineModel": {"model": "EW10.0-220上置"},
+                "materialIndex": [
+                    {
+                        "id": "RAW-0453",
+                        "name": "待填写-技术评分标准索引表.docx",
+                        "folderPath": "技术标/客户素材/华能集团/技术标-标前概述",
+                        "materialTier": "customer",
+                        "hasCleanedWord": True,
+                        "cleanedFileName": "待填写-技术评分标准索引表.docx",
+                        "requiresFill": True,
+                        "placeholderCount": 3,
+                        "placeholderLabels": ["投标机型", "投标方案", "章节索引"],
+                    }
+                ],
+            }
+
+            plan = gap_runner.build_gap_plan(manifest)
+
+        item = next(entry for entry in plan["items"] if entry["number"] == "1.1")
+        self.assertEqual(item["decision"], "fill_required")
+        self.assertEqual(item["status"], "needs_input")
+        self.assertEqual(item["usage"], "section_fill")
+        self.assertEqual(item["matchedMaterials"], [])
+        self.assertEqual(item["fillTasks"][0]["skill"], "bid-tech-table-filler")
+        self.assertEqual(item["fillTasks"][0]["blankSource"]["id"], "RAW-0453")
+        self.assertEqual(item["fillTasks"][0]["blankSource"]["placeholderCount"], 3)
+        self.assertEqual(item["candidateMaterials"][0]["id"], "RAW-0453")
+
+    def test_bid_gap_planner_requires_one_result_per_confirmed_toc_item(self) -> None:
+        gap_runner = load_gap_planner_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse.json"
+            toc_items = [
+                {"number": "第1章", "title": "标前概述", "level": 1},
+                {"number": "1.1", "title": "技术评分标准索引表", "level": 2},
+                {"number": "1.2", "title": "与华能集团签署的战略合作协议", "level": 2},
+                {"number": "1.3", "title": "缺失专题", "level": 2},
+            ]
+            toc_path.write_text(json.dumps({"items": toc_items}, ensure_ascii=False), encoding="utf-8")
+            parse_path.write_text(json.dumps({"structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest = {
+                "projectId": "PRJ-TEST",
+                "projectName": "测试项目",
+                "bidType": "技术标",
+                "tocJsonPath": str(toc_path),
+                "parseResultPath": str(parse_path),
+                "materialScope": {"paths": ["技术标/客户素材/华能集团"]},
+                "projectTurbineModel": {"model": "EW10.0-220上置"},
+                "materialIndex": [
+                    {
+                        "id": "RAW-0453",
+                        "name": "待填写-技术评分标准索引表.docx",
+                        "folderPath": "技术标/客户素材/华能集团/技术标-标前概述",
+                        "materialTier": "customer",
+                        "requiresFill": True,
+                        "placeholderCount": 2,
+                    },
+                    {
+                        "id": "RAW-0454",
+                        "name": "固定-与华能集团签署的战略合作协议.docx",
+                        "folderPath": "技术标/客户素材/华能集团/技术标-标前概述",
+                        "materialTier": "customer",
+                    },
+                ],
+            }
+
+            plan = gap_runner.build_gap_plan(manifest)
+
+        self.assertEqual(plan["summary"]["totalTocItems"], len(toc_items))
+        self.assertEqual(len(plan["items"]), len(toc_items))
+        self.assertEqual([item["number"] for item in plan["items"]], [item["number"] for item in toc_items])
+        self.assertEqual(plan["integrity"]["coverageStatus"], "passed")
+        self.assertEqual(plan["items"][1]["decision"], "fill_required")
+        self.assertEqual(plan["items"][2]["decision"], "ready")
+        self.assertEqual(plan["items"][3]["decision"], "material_required")
+
+    def test_bid_gap_planner_summary_stdout_exposes_coverage_counts(self) -> None:
+        gap_runner = load_gap_planner_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse.json"
+            manifest_path = root / "s4_gap_input.json"
+            output_path = root / "gap_plan.json"
+            toc_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {"number": "第1章", "title": "标前概述", "level": 1},
+                            {"number": "1.1", "title": "技术评分标准索引表", "level": 2},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            parse_path.write_text(json.dumps({"structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-TEST",
+                        "projectName": "测试项目",
+                        "bidType": "技术标",
+                        "tocJsonPath": str(toc_path),
+                        "parseResultPath": str(parse_path),
+                        "materialScope": {"paths": ["技术标/客户素材/华能集团"]},
+                        "projectTurbineModel": {"model": "EW10.0-220上置"},
+                        "materialIndex": [],
+                        "outputFile": str(output_path),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(sys, "argv", ["run_from_manifest.py", "--manifest", str(manifest_path)]), \
+                patch("builtins.print") as mocked_print:
+                gap_runner.main()
+
+            response = json.loads(mocked_print.call_args.args[0])
+
+        self.assertEqual(response["tocItemCount"], 2)
+        self.assertEqual(response["itemCount"], 2)
+        self.assertEqual(response["coverageStatus"], "passed")
+
+    def test_bid_gap_planner_uses_project_commitment_chapter_word_for_chapter_four_children(self) -> None:
+        gap_runner = load_gap_planner_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse.json"
+            toc_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {"number": "第4章", "title": "项目技术承诺函", "level": 1},
+                            {"number": "4.1", "title": "发电小时数承诺函", "level": 2},
+                            {"number": "4.2", "title": "投标机组可利用率承诺", "level": 2},
+                            {"number": "4.3", "title": "投标机组功率曲线保证率承诺", "level": 2},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            parse_path.write_text(json.dumps({"structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest = {
+                "projectId": "PRJ-TEST",
+                "projectName": "测试项目",
+                "bidType": "技术标",
+                "tocJsonPath": str(toc_path),
+                "parseResultPath": str(parse_path),
+                "materialScope": {"paths": ["技术标/项目素材/MAT-HN-CHIFENG-001"]},
+                "projectTurbineModel": {"model": "EW10.0-220上置"},
+                "materialIndex": [
+                    {
+                        "id": "RAW-0472",
+                        "name": "定制-项目技术承诺函.docx",
+                        "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-项目技术承诺函",
+                        "materialTier": "project",
+                        "hasCleanedWord": True,
+                        "cleanedFileName": "定制-项目技术承诺函.docx",
+                        "requiresFill": True,
+                        "placeholderCount": 1,
+                        "placeholderLabels": ["项目承诺函"],
+                    }
+                ],
+            }
+
+            plan = gap_runner.build_gap_plan(manifest)
+
+        parent = next(item for item in plan["items"] if item["number"] == "第4章")
+        self.assertEqual(parent["decision"], "fill_required")
+        self.assertEqual(parent["status"], "needs_input")
+        self.assertEqual(parent["usage"], "chapter_fill")
+        self.assertEqual(parent["coverageRole"], "chapter_master")
+        self.assertEqual(parent["fillTasks"][0]["blankSource"]["id"], "RAW-0472")
+        for number in ["4.1", "4.2", "4.3"]:
+            child = next(item for item in plan["items"] if item["number"] == number)
+            self.assertEqual(child["decision"], "fill_required")
+            self.assertEqual(child["status"], "needs_input")
+            self.assertEqual(child["usage"], "covered_by_parent")
+            self.assertEqual(child["coverageRole"], "covered_by_parent")
+            self.assertEqual(child["coveredByParent"], parent["id"])
+            self.assertEqual(child["matchedMaterials"], [])
+            self.assertEqual(child["fillTasks"], [])
+
+    def test_bid_gap_planner_uses_standard_delivery_acceptance_word_for_chapter_six_children(self) -> None:
+        gap_runner = load_gap_planner_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse.json"
+            toc_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {"number": "第6章", "title": "产品交付、考核及验收", "level": 1},
+                            {"number": "6.1", "title": "技术资料和交付进度", "level": 2},
+                            {"number": "6.2", "title": "试验、检验和监造", "level": 2},
+                            {"number": "6.3", "title": "设备安装、调试与试运行", "level": 2},
+                            {"number": "6.4", "title": "考核指标", "level": 2},
+                            {"number": "6.5", "title": "项目验收", "level": 2},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            parse_path.write_text(json.dumps({"structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest = {
+                "projectId": "PRJ-TEST",
+                "projectName": "测试项目",
+                "bidType": "技术标",
+                "tocJsonPath": str(toc_path),
+                "parseResultPath": str(parse_path),
+                "materialScope": {"paths": ["技术标/通用素材"]},
+                "projectTurbineModel": {"model": "EW10.0-220上置"},
+                "materialIndex": [
+                    {
+                        "id": "RAW-0429",
+                        "name": "待填写-产品交付、考核及验收.docx",
+                        "folderPath": "技术标/通用素材/技术标-产品交付、考核及验收",
+                        "materialTier": "standard",
+                        "hasCleanedWord": True,
+                        "cleanedFileName": "待填写-产品交付、考核及验收.docx",
+                        "requiresFill": True,
+                        "placeholderCount": 1,
+                        "placeholderLabels": ["招标要求"],
+                    }
+                ],
+            }
+
+            plan = gap_runner.build_gap_plan(manifest)
+
+        parent = next(item for item in plan["items"] if item["number"] == "第6章")
+        self.assertEqual(parent["decision"], "fill_required")
+        self.assertEqual(parent["status"], "needs_input")
+        self.assertEqual(parent["usage"], "chapter_fill")
+        self.assertEqual(parent["coverageRole"], "chapter_master")
+        self.assertEqual(parent["fillTasks"][0]["blankSource"]["id"], "RAW-0429")
+        for number in ["6.1", "6.2", "6.3", "6.4", "6.5"]:
+            child = next(item for item in plan["items"] if item["number"] == number)
+            self.assertEqual(child["decision"], "fill_required")
+            self.assertEqual(child["status"], "needs_input")
+            self.assertEqual(child["usage"], "covered_by_parent")
+            self.assertEqual(child["coverageRole"], "covered_by_parent")
+            self.assertEqual(child["coveredByParent"], parent["id"])
+            self.assertEqual(child["matchedMaterials"], [])
+            self.assertEqual(child["fillTasks"], [])
+
+    def test_bid_gap_planner_generically_uses_parent_chapter_word_for_any_chapter_children(self) -> None:
+        gap_runner = load_gap_planner_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse.json"
+            toc_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {"number": "第8章", "title": "运输安装与验收方案", "level": 1},
+                            {"number": "8.1", "title": "运输组织方案", "level": 2},
+                            {"number": "8.2", "title": "安装调试计划", "level": 2},
+                            {"number": "8.3", "title": "验收交付安排", "level": 2},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            parse_path.write_text(json.dumps({"structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest = {
+                "projectId": "PRJ-TEST",
+                "projectName": "测试项目",
+                "bidType": "技术标",
+                "tocJsonPath": str(toc_path),
+                "parseResultPath": str(parse_path),
+                "materialScope": {"paths": ["技术标/项目素材/MAT-TEST"]},
+                "projectTurbineModel": {"model": "EW10.0-220上置"},
+                "materialIndex": [
+                    {
+                        "id": "RAW-0800",
+                        "name": "定制-运输安装与验收方案.docx",
+                        "folderPath": "技术标/项目素材/MAT-TEST/技术标-运输安装与验收方案",
+                        "materialTier": "project",
+                        "hasCleanedWord": True,
+                        "cleanedFileName": "定制-运输安装与验收方案.docx",
+                    },
+                    {
+                        "id": "RAW-0801",
+                        "name": "固定-运输组织方案.docx",
+                        "folderPath": "技术标/项目素材/MAT-TEST/技术标-运输安装与验收方案/子节",
+                        "materialTier": "project",
+                    },
+                ],
+            }
+
+            plan = gap_runner.build_gap_plan(manifest)
+
+        parent = next(item for item in plan["items"] if item["number"] == "第8章")
+        self.assertEqual(parent["decision"], "ready")
+        self.assertEqual(parent["status"], "matched")
+        self.assertEqual(parent["usage"], "chapter_master")
+        self.assertEqual(parent["coverageRole"], "chapter_master")
+        self.assertEqual(parent["matchedMaterials"][0]["id"], "RAW-0800")
+        for number in ["8.1", "8.2", "8.3"]:
+            child = next(item for item in plan["items"] if item["number"] == number)
+            self.assertEqual(child["decision"], "ready")
+            self.assertEqual(child["status"], "matched")
+            self.assertEqual(child["usage"], "covered_by_parent")
+            self.assertEqual(child["coverageRole"], "covered_by_parent")
+            self.assertEqual(child["coveredByParent"], parent["id"])
+            self.assertEqual(child["matchedMaterials"], [])
+            self.assertEqual(child["fillTasks"], [])
+
+    def test_bid_gap_planner_uses_generic_chapter_title_match_for_wind_resource_chapter(self) -> None:
+        gap_runner = load_gap_planner_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse.json"
+            toc_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {"number": "第3章", "title": "风资源评估与机位排布方案", "level": 1},
+                            {"number": "3.1", "title": "项目概况", "level": 2},
+                            {"number": "3.2", "title": "风资源分析", "level": 2},
+                            {"number": "3.3", "title": "机组选型", "level": 2},
+                            {"number": "3.4", "title": "方案及发电量结果", "level": 2},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            parse_path.write_text(json.dumps({"structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest = {
+                "projectId": "PRJ-TEST",
+                "projectName": "测试项目",
+                "bidType": "技术标",
+                "tocJsonPath": str(toc_path),
+                "parseResultPath": str(parse_path),
+                "materialScope": {"paths": ["技术标/项目素材/MAT-HN-CHIFENG-001"]},
+                "projectTurbineModel": {"model": "EW10.0-220上置"},
+                "materialIndex": [
+                    {
+                        "id": "RAW-0471",
+                        "name": "定制-项目风资源评估与机组选型排布及发电量计算.docx",
+                        "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-专题方案要求",
+                        "materialTier": "project",
+                    },
+                    {
+                        "id": "RAW-0473",
+                        "name": "定制-风资源评估与机位排布方案.docx",
+                        "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-风资源评估与机位排布方案",
+                        "materialTier": "project",
+                        "hasCleanedWord": True,
+                        "cleanedFileName": "定制-风资源评估与机位排布方案.docx",
+                    },
+                    {
+                        "id": "RAW-0478",
+                        "name": "风资源评估报告.docx",
+                        "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/风资源评估报告",
+                        "materialTier": "project",
+                    },
+                ],
+            }
+
+            plan = gap_runner.build_gap_plan(manifest)
+
+        parent = next(item for item in plan["items"] if item["number"] == "第3章")
+        self.assertEqual(parent["decision"], "ready")
+        self.assertEqual(parent["status"], "matched")
+        self.assertEqual(parent["coverageRole"], "chapter_master")
+        self.assertEqual(parent["matchedMaterials"][0]["id"], "RAW-0473")
+        self.assertNotIn("RAW-0478", [item["id"] for item in parent["matchedMaterials"]])
+        for number in ["3.1", "3.2", "3.3", "3.4"]:
+            child = next(item for item in plan["items"] if item["number"] == number)
+            self.assertEqual(child["coverageRole"], "covered_by_parent")
+            self.assertEqual(child["coveredByParent"], parent["id"])
+            self.assertEqual(child["matchedMaterials"], [])
+
+    def test_bid_gap_planner_filters_toc_refs_by_allowed_material_index(self) -> None:
+        gap_runner = load_gap_planner_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse.json"
+            toc_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "number": "1.2",
+                                "title": "与华能集团签署的战略合作协议",
+                                "level": 2,
+                                "material_refs": [
+                                    {
+                                        "id": "RAW-OUTSIDE",
+                                        "docx": "技术标/客户素材/其他客户/战略合作协议.docx",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            parse_path.write_text(json.dumps({"structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest = {
+                "projectId": "PRJ-TEST",
+                "projectName": "测试项目",
+                "bidType": "技术标",
+                "tocJsonPath": str(toc_path),
+                "parseResultPath": str(parse_path),
+                "materialScope": {"paths": ["技术标/客户素材/华能集团"]},
+                "projectTurbineModel": {"model": "EW10.0-220上置"},
+                "materialIndex": [
+                    {
+                        "id": "RAW-ALLOWED",
+                        "name": "固定-其他资料.docx",
+                        "folderPath": "技术标/客户素材/华能集团/其他",
+                        "materialTier": "customer",
+                    }
+                ],
+            }
+
+            plan = gap_runner.build_gap_plan(manifest)
+
+        item = plan["items"][0]
+        self.assertEqual(item["decision"], "material_required")
+        self.assertEqual(item["status"], "missing")
+        self.assertEqual(item["matchedMaterials"], [])
+
     def test_bid_wiki_builder_writes_full_blueprint_and_returns_small_summary(self) -> None:
         wiki_runner = load_wiki_script("run_from_manifest")
 

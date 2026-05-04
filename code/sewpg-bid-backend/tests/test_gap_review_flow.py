@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 from unittest.mock import patch
 
 from docx import Document
@@ -14,6 +15,43 @@ from app.main import app
 from app.core.config import settings
 from app.services.store import now_iso, store
 from app.services.workspace_artifacts import technical_workspace_dir
+
+
+def minimal_gap_plan_from_manifest(manifest: dict) -> dict:
+    toc = json.loads(Path(manifest["tocJsonPath"]).read_text(encoding="utf-8"))
+    items = [
+        {
+            "id": f"GAP-{index:04d}",
+            "number": str(item.get("number") or ""),
+            "title": str(item.get("title") or f"目录项-{index}"),
+            "level": int(item.get("level") or 1),
+            "status": "missing",
+            "decision": "material_required",
+            "matchedMaterials": [],
+            "candidateMaterials": [],
+            "fillTasks": [],
+            "resolvedArtifacts": [],
+        }
+        for index, item in enumerate(toc.get("items") or [], start=1)
+        if isinstance(item, dict)
+    ]
+    count = len(items)
+    return {
+        "schemaVersion": "bid-tech-gap-plan-v1",
+        "projectId": str(manifest.get("projectId") or ""),
+        "status": "ready",
+        "summary": {
+            "totalTocItems": count,
+            "matchedCount": 0,
+            "missingCount": count,
+            "resolvedCount": 0,
+            "ignoredCount": 0,
+            "structuralCount": 0,
+            "fillableTaskCount": 0,
+            "blockingCount": count,
+        },
+        "items": items,
+    }
 
 
 class GapReviewFlowTests(unittest.TestCase):
@@ -181,6 +219,91 @@ class GapReviewFlowTests(unittest.TestCase):
         planner_prompt = self.gap_planner_mock.call_args.args[0]
         self.assertIn("Use the bid-tech-gap-planner skill", planner_prompt)
         self.assertIn("s4gap", planner_prompt)
+        self.assertNotIn("历史补料记录", planner_prompt)
+
+    def test_gap_detection_rejects_shrunken_skill_output(self) -> None:
+        project_id = self._create_project_with_confirmed_directory_json()
+
+        def fake_gap_planner(manifest_path):
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            output_file = Path(manifest["outputFile"])
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            plan = {
+                "schemaVersion": "bid-tech-gap-plan-v1",
+                "projectId": project_id,
+                "status": "ready",
+                "summary": {
+                    "totalTocItems": 1,
+                    "matchedCount": 1,
+                    "missingCount": 0,
+                    "resolvedCount": 0,
+                    "ignoredCount": 0,
+                    "structuralCount": 0,
+                    "fillableTaskCount": 0,
+                    "blockingCount": 0,
+                },
+                "items": [
+                    {
+                        "id": "GAP-0001",
+                        "number": "1",
+                        "title": "标前概述",
+                        "level": 1,
+                        "status": "matched",
+                        "decision": "ready",
+                        "matchedMaterials": [],
+                        "candidateMaterials": [],
+                        "fillTasks": [],
+                        "resolvedArtifacts": [],
+                    }
+                ],
+            }
+            output_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+            return {"schema_version": "bid-tech-gap-plan-v1", "outputFile": str(output_file)}
+
+        with patch("app.services.gap_planning.run_gap_planner_skill", side_effect=fake_gap_planner):
+            response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("缺口识别结果不完整", response.json()["detail"])
+
+    def test_gap_detection_rerun_returns_clean_first_step_plan(self) -> None:
+        project_id = self._create_project_with_confirmed_directory_json()
+        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        self.assertEqual(detection_response.status_code, 200)
+        gap_plan = detection_response.json()["gapPlan"]
+        fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
+        fill_item["fillTasks"][0]["status"] = "completed"
+        fill_item["fillTasks"][0]["outputArtifactId"] = "ART-OLD"
+        fill_item["resolvedArtifacts"] = [
+            {
+                "id": "ART-OLD",
+                "source": "ai_fill",
+                "skill": "bid-tech-table-filler",
+                "fileName": "旧填写产物.docx",
+                "s7Ready": True,
+            }
+        ]
+        project = store._require(project_id)
+        project["gap_state"]["plan"] = gap_plan
+        project["gap_state"]["integrity"] = {
+            "status": "passed",
+        }
+        project["gap_state"]["submissions"] = [{"id": "SUB-OLD"}]
+        store._persist_project(project)
+        self.gap_planner_mock.reset_mock()
+
+        response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        next_plan = payload["gapPlan"]
+        self.assertEqual(next_plan.get("phase"), "gap_detection")
+        self.assertEqual(next_plan.get("integrity"), {})
+        next_fill_item = next(item for item in next_plan["items"] if item["id"] == fill_item["id"])
+        self.assertEqual(next_fill_item["resolvedArtifacts"], [])
+        self.assertEqual(next_fill_item["fillTasks"][0]["status"], "pending")
+        self.assertNotIn("outputArtifactId", next_fill_item["fillTasks"][0])
+        self.assertEqual(payload["integrity"], {})
 
     def test_gap_ai_fill_calls_opencode_skill_and_registers_resolved_artifact(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
@@ -233,8 +356,19 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(payload["item"]["status"], "resolved")
         self.assertEqual(payload["artifact"]["source"], "ai_fill")
         self.assertEqual(payload["artifact"]["skill"], "bid-tech-table-filler")
+        self.assertIn("AI 填写仍有未填字段：1 项", payload["item"]["reviewNotes"])
         self.assertTrue(Path(payload["artifact"]["path"]).exists())
         self.assertIn("onlyoffice", payload["artifact"])
+        encoded_name = quote(payload["artifact"]["fileName"])
+        self.assertIn(encoded_name, payload["artifact"]["onlyoffice"]["fileUrl"])
+        self.assertIn(encoded_name, payload["artifact"]["onlyoffice"]["browserFileUrl"])
+        self.assertIn(encoded_name, payload["artifact"]["onlyoffice"]["documentServerFileUrl"])
+        self.assertNotIn(payload["artifact"]["fileName"], payload["artifact"]["onlyoffice"]["fileUrl"])
+        self.assertEqual(
+            payload["artifact"]["onlyoffice"]["fileUrl"],
+            payload["artifact"]["onlyoffice"]["documentServerFileUrl"],
+        )
+        self.assertTrue(payload["artifact"]["onlyoffice"]["browserFileUrl"].startswith("http://127.0.0.1:8000/"))
         updated_gap = self.client.get(f"/api/projects/{project_id}/gaps").json()["gapPlan"]
         updated_item = next(item for item in updated_gap["items"] if item["id"] == gap_id)
         self.assertEqual(updated_item["resolvedArtifacts"][0]["source"], "ai_fill")
@@ -473,7 +607,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(matched["matchedMaterials"][0]["id"], "RAW-0001")
         self.assertEqual(matched["matchedMaterials"][0]["source"], "wiki")
 
-    def test_gap_detection_uses_one_chapter_master_for_wind_resource_chapter(self) -> None:
+    def test_gap_detection_uses_one_parent_chapter_material_for_wind_resource_chapter(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
         project_dir = technical_workspace_dir(project_id)
         toc_json = project_dir / "s2_toc_workdir" / "投标文件-总目录.json"
@@ -581,9 +715,10 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(parent["decision"], "ready")
         self.assertEqual(parent["status"], "matched")
         self.assertEqual(parent["coverageRole"], "chapter_master")
+        self.assertEqual(parent["usage"], "chapter_master")
         self.assertEqual(parent["matchedMaterials"][0]["id"], "RAW-0473")
         self.assertEqual(parent["matchedMaterials"][0]["usage"], "chapter_master")
-        self.assertGreaterEqual(len(parent["candidateMaterials"]), 2)
+        self.assertEqual(parent["fillTasks"], [])
         self.assertEqual(parent["appendixTasks"], [])
         for number in [f"3.{index}" for index in range(1, 8)]:
             child = next(item for item in plan["items"] if item["number"] == number)
@@ -636,22 +771,7 @@ class GapReviewFlowTests(unittest.TestCase):
             manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
             manifests.append(manifest)
             output_file = Path(manifest["outputFile"])
-            plan = {
-                "schemaVersion": "bid-tech-gap-plan-v1",
-                "projectId": project_id,
-                "status": "ready",
-                "summary": {
-                    "totalTocItems": 0,
-                    "matchedCount": 0,
-                    "missingCount": 0,
-                    "resolvedCount": 0,
-                    "ignoredCount": 0,
-                    "structuralCount": 0,
-                    "fillableTaskCount": 0,
-                    "blockingCount": 0,
-                },
-                "items": [],
-            }
+            plan = minimal_gap_plan_from_manifest(manifest)
             output_file.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
             return {"schema_version": "bid-tech-gap-plan-v1", "outputFile": str(output_file)}
 
@@ -777,6 +897,44 @@ class GapReviewFlowTests(unittest.TestCase):
         review_items_response = self.client.get(f"/api/projects/{project_id}/review-items")
         self.assertEqual(review_items_response.status_code, 200)
         self.assertEqual(review_items_response.json()["summary"]["pendingCount"], 0)
+
+    def test_gap_recheck_passes_when_all_items_are_resolved_or_ignored_with_s4_ready_artifacts(self) -> None:
+        project_id = self._create_project_with_confirmed_directory_json()
+        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        self.assertEqual(detection_response.status_code, 200)
+        gap_plan = detection_response.json()["gapPlan"]
+        for item in gap_plan["items"]:
+            status = item.get("status")
+            if status in {"matched", "structural"}:
+                continue
+            if item.get("fillTasks"):
+                item["status"] = "resolved"
+                item["resolvedArtifacts"] = [
+                    {
+                        "id": f"ART-{item['id']}",
+                        "source": "ai_fill",
+                        "skill": "bid-tech-table-filler",
+                        "fileName": f"{item['id']}.docx",
+                        "s7Ready": True,
+                        "unfilledFields": [],
+                        "fillReport": {"filledFieldCount": 2, "unfilledFieldCount": 0},
+                        "evidenceRefs": [{"type": "material", "id": "RAW-0001"}],
+                    }
+                ]
+            else:
+                item["status"] = "ignored"
+                item["skipReason"] = "测试中人工确认不适用"
+        project = store._require(project_id)
+        project["gap_state"]["plan"] = gap_plan
+        store._persist_project(project)
+
+        response = self.client.post(f"/api/projects/{project_id}/gaps/recheck")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        integrity = response.json()["integrity"]
+        self.assertEqual(integrity["status"], "passed")
+        self.assertEqual(integrity["blockingCount"], 0)
+        self.assertEqual(integrity["blockingItems"], [])
 
 
 if __name__ == "__main__":

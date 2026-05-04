@@ -12,6 +12,7 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 from docx import Document
 
@@ -82,7 +83,6 @@ def build_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
         "materialScope": material_scope,
         "materialIndex": material_index,
         "projectTurbineModel": turbine_model,
-        "existingSubmissions": list((project.get("gap_state") or {}).get("submissions") or []),
         "outputFile": str(output_file),
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -90,9 +90,12 @@ def build_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
     result = run_gap_planner_skill(manifest_path)
     plan_path = Path(str(result.get("outputFile") or output_file))
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    _validate_gap_plan_toc_coverage(plan, toc_json_path)
     plan["projectTurbineModel"] = turbine_model
     plan["planFile"] = str(plan_path)
     plan["manifestPath"] = str(manifest_path)
+    plan["phase"] = "gap_detection"
+    plan["scopeBoundary"] = material_scope
     plan["opencodeOutput"] = result.get("opencodeOutput") or {
         "status": "received",
         "sessionId": str(manifest_path),
@@ -102,6 +105,27 @@ def build_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
         "parts": [{"type": "text", "text": json.dumps({"outputFile": str(plan_path)}, ensure_ascii=False)}],
     }
     return plan
+
+
+def _validate_gap_plan_toc_coverage(plan: dict[str, Any], toc_json_path: Path) -> None:
+    try:
+        toc = json.loads(toc_json_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # pragma: no cover - malformed workspace input
+        raise RuntimeError(f"缺口识别无法读取审核目录：{toc_json_path}") from exc
+    toc_items = _object_items(toc.get("items"))
+    plan_items = _object_items(plan.get("items"))
+    expected_count = len(toc_items)
+    actual_count = len(plan_items)
+    summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else {}
+    summary_count = int(summary.get("totalTocItems") or 0)
+    if expected_count == actual_count and (summary_count in (0, expected_count)):
+        return
+    raise RuntimeError(
+        "缺口识别结果不完整："
+        f"S2 审核目录有 {expected_count} 个目录项，"
+        f"Skill 输出 {actual_count} 个目录项，"
+        f"summary.totalTocItems={summary_count}。请重新运行 bid-tech-gap-planner。"
+    )
 
 
 def _run_async(awaitable: Any) -> Any:
@@ -479,7 +503,6 @@ def run_ai_fill_for_gap(
     gap_state["reviewedAt"] = ""
     return {"item": item, "artifact": artifact, "gapPlan": plan}
 
-
 def register_manual_gap_upload(
     project: dict[str, Any],
     gap_id: str,
@@ -717,6 +740,11 @@ async def _downloadable_material_payload(material_id: str) -> tuple[dict[str, An
 
 def summarize_gap_plan(plan: dict[str, Any]) -> dict[str, Any]:
     items = [item for item in plan.get("items") or [] if isinstance(item, dict)]
+    decision_counts: dict[str, int] = {}
+    for item in items:
+        decision = str(item.get("decision") or "")
+        if decision:
+            decision_counts[decision] = decision_counts.get(decision, 0) + 1
     return {
         "totalTocItems": len(items),
         "matchedCount": sum(1 for item in items if item.get("status") == "matched"),
@@ -726,6 +754,11 @@ def summarize_gap_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "structuralCount": sum(1 for item in items if item.get("status") == "structural"),
         "fillableTaskCount": sum(len(item.get("fillTasks") or []) for item in items),
         "blockingCount": sum(1 for item in items if item.get("status") in {"missing", "needs_input", "filling"}),
+        "readyCount": decision_counts.get("ready", 0),
+        "fillRequiredCount": decision_counts.get("fill_required", 0),
+        "materialRequiredCount": decision_counts.get("material_required", 0),
+        "reviewRequiredCount": decision_counts.get("review_required", 0),
+        "appendixTaskCount": sum(len(item.get("appendixTasks") or []) for item in items),
     }
 
 
@@ -877,7 +910,7 @@ def _build_gap_planner_prompt(manifest_path: Path) -> str:
     return f"""
 Use the {GAP_PLANNER_SKILL_NAME} skill.
 
-你现在在做 S3 技术标缺口识别。后端已经准备好 manifest，其中包含人工确认后的目录 JSON、招标解析结构化结果、S2 素材 Wiki 副本、项目/客户/通用素材边界、素材索引、项目身份信息、人工确认的投标机型信息和历史补料记录。
+你现在在做 S3 技术标缺口识别。后端已经准备好 manifest，其中包含人工确认后的目录 JSON、招标解析结构化结果、S2 素材 Wiki 副本、项目/客户/通用素材边界、素材索引、项目身份信息和人工确认的投标机型信息。
 
 manifest：{manifest_path}
 
@@ -904,13 +937,18 @@ def _artifact_onlyoffice_payload(
     browser_base_url: str = "",
     onlyoffice_base_url: str = "",
 ) -> dict[str, Any]:
-    file_url = f"/api/projects/{project_id}/gaps/artifacts/{artifact_id}/content/{file_name}"
-    browser_url = f"{browser_base_url}{file_url}" if browser_base_url else file_url
-    document_server_url = f"{onlyoffice_base_url}{file_url}" if onlyoffice_base_url else file_url
+    file_url = f"/api/projects/{project_id}/gaps/artifacts/{artifact_id}/content/{quote(file_name)}"
+    browser_url = f"{browser_base_url.rstrip('/')}{file_url}" if browser_base_url else file_url
+    document_server_url = (
+        f"{onlyoffice_base_url.rstrip('/')}{file_url}"
+        if onlyoffice_base_url
+        else browser_url
+    )
     return {
         "status": "ready",
         "mode": "view",
-        "fileUrl": browser_url,
+        "fileUrl": document_server_url,
+        "browserFileUrl": browser_url,
         "documentServerFileUrl": document_server_url,
         "documentKey": f"{project_id}-{artifact_id}",
         "title": file_name,
