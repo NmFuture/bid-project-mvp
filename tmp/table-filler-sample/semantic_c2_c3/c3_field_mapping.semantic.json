@@ -1,0 +1,1174 @@
+{
+  "schema": "bid-tech-table-field-mapping-v1.codex-semantic-sample",
+  "appendixId": "APPX-0019",
+  "title": "附表C.3 机械传动部件技术参数",
+  "targetFile": "APPX-0019-附表C.3 机械传动部件技术参数.docx",
+  "referenceMaterial": "X2平台机型投标参数_20250106.xlsx",
+  "summary": {
+    "fill": 21,
+    "manual": 36,
+    "total": 57
+  },
+  "decisions": [
+    {
+      "targetFieldId": "C3-R01",
+      "rowIndex": 1,
+      "field": "传动结构形式",
+      "action": "manual",
+      "value": "[待人工补充：传动结构形式]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R03",
+      "rowIndex": 3,
+      "field": "前主机座形式",
+      "action": "manual",
+      "value": "[待人工补充：前主机座形式]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R04",
+      "rowIndex": 4,
+      "field": "前主机座材料牌号",
+      "action": "manual",
+      "value": "[待人工补充：前主机座材料牌号]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R05",
+      "rowIndex": 5,
+      "field": "前主机座重量",
+      "action": "manual",
+      "value": "[待人工补充：前主机座重量]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [
+        {
+          "factId": "F0165",
+          "label": "主机座重量",
+          "value": "~14",
+          "unit": "t",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 197,
+          "score": 0.713,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "有相近候选，但不可直接使用或置信度不足：主机座重量=~14，score=0.713"
+    },
+    {
+      "targetFieldId": "C3-R06",
+      "rowIndex": 6,
+      "field": "后主机座形式",
+      "action": "manual",
+      "value": "[待人工补充：后主机座形式]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R07",
+      "rowIndex": 7,
+      "field": "后主机座材料牌号",
+      "action": "manual",
+      "value": "[待人工补充：后主机座材料牌号]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R08",
+      "rowIndex": 8,
+      "field": "后主机座重量",
+      "action": "manual",
+      "value": "[待人工补充：后主机座重量]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [
+        {
+          "factId": "F0165",
+          "label": "主机座重量",
+          "value": "~14",
+          "unit": "t",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 197,
+          "score": 0.615,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "有相近候选，但不可直接使用或置信度不足：主机座重量=~14，score=0.615"
+    },
+    {
+      "targetFieldId": "C3-R10",
+      "rowIndex": 10,
+      "field": "主轴形式",
+      "action": "fill",
+      "value": "铸件",
+      "unit": "",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0167",
+        "label": "主轴形式",
+        "value": "铸件",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 199,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0050",
+          "label": "主轴制造厂家/型号",
+          "value": "见商务部分",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 58,
+          "score": 0.549,
+          "usable": false,
+          "derivation": null
+        },
+        {
+          "factId": "F0051",
+          "label": "主轴承制造厂家/型号",
+          "value": "见商务部分",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 59,
+          "score": 0.549,
+          "usable": false,
+          "derivation": null
+        },
+        {
+          "factId": "F0052",
+          "label": "主轴承制润滑方式",
+          "value": "自动润滑",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 60,
+          "score": 0.549,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R11",
+      "rowIndex": 11,
+      "field": "主轴材料牌号",
+      "action": "manual",
+      "value": "[待人工补充：主轴材料牌号]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [
+        {
+          "factId": "F0050",
+          "label": "主轴制造厂家/型号",
+          "value": "见商务部分",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 58,
+          "score": 0.648,
+          "usable": false,
+          "derivation": null
+        },
+        {
+          "factId": "F0051",
+          "label": "主轴承制造厂家/型号",
+          "value": "见商务部分",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 59,
+          "score": 0.648,
+          "usable": false,
+          "derivation": null
+        },
+        {
+          "factId": "F0166",
+          "label": "主轴制造商",
+          "value": "见商务报价表",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 198,
+          "score": 0.648,
+          "usable": false,
+          "derivation": null
+        }
+      ],
+      "reason": "有相近候选，但不可直接使用或置信度不足：主轴制造厂家/型号=见商务部分，score=0.648"
+    },
+    {
+      "targetFieldId": "C3-R12",
+      "rowIndex": 12,
+      "field": "主轴重量",
+      "action": "manual",
+      "value": "[待人工补充：主轴重量]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R13",
+      "rowIndex": 13,
+      "field": "主轴轴承类型及数量",
+      "action": "manual",
+      "value": "[待人工补充：主轴轴承类型及数量]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [
+        {
+          "factId": "F0169",
+          "label": "轴承类型",
+          "value": "TRB+TRB",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 201,
+          "score": 0.615,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0050",
+          "label": "主轴制造厂家/型号",
+          "value": "见商务部分",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 58,
+          "score": 0.549,
+          "usable": false,
+          "derivation": null
+        },
+        {
+          "factId": "F0051",
+          "label": "主轴承制造厂家/型号",
+          "value": "见商务部分",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 59,
+          "score": 0.549,
+          "usable": false,
+          "derivation": null
+        },
+        {
+          "factId": "F0052",
+          "label": "主轴承制润滑方式",
+          "value": "自动润滑",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 60,
+          "score": 0.549,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "有相近候选，但不可直接使用或置信度不足：轴承类型=TRB+TRB，score=0.615"
+    },
+    {
+      "targetFieldId": "C3-R15",
+      "rowIndex": 15,
+      "field": "齿轮箱形式（结构）",
+      "action": "fill",
+      "value": "3级行星1级平行轴",
+      "unit": "",
+      "confidence": 0.713,
+      "selectedFact": {
+        "factId": "F0172",
+        "label": "齿轮箱形式",
+        "value": "3级行星1级平行轴",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 204,
+        "score": 0.713,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R16",
+      "rowIndex": 16,
+      "field": "齿轮箱速比",
+      "action": "fill",
+      "value": "210",
+      "unit": "",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0173",
+        "label": "齿轮箱速比",
+        "value": "210",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 205,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0036",
+          "label": "齿轮传动比率(标称设计值)",
+          "value": "210",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 42,
+          "score": 0.648,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R17",
+      "rowIndex": 17,
+      "field": "齿轮箱设计额定功率",
+      "action": "manual",
+      "value": "[待人工补充：齿轮箱设计额定功率]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R18",
+      "rowIndex": 18,
+      "field": "齿轮箱额定输入/输出转速",
+      "action": "manual",
+      "value": "[待人工补充：齿轮箱额定输入/输出转速]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R19",
+      "rowIndex": 19,
+      "field": "齿轮箱重量",
+      "action": "fill",
+      "value": "52±5%",
+      "unit": "t",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0178",
+        "label": "齿轮箱重量",
+        "value": "52±5%",
+        "unit": "t",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 210,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R20",
+      "rowIndex": 20,
+      "field": "齿轮箱设计额定扭矩/功率密度",
+      "action": "fill",
+      "value": "13000",
+      "unit": "kNm",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0037",
+        "label": "额定转矩(标称设计值)",
+        "value": "13000",
+        "unit": "kNm",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 43,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R21",
+      "rowIndex": 21,
+      "field": "齿轮箱传动效率",
+      "action": "manual",
+      "value": "[待人工补充：齿轮箱传动效率]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R22",
+      "rowIndex": 22,
+      "field": "齿轮箱润滑型式",
+      "action": "fill",
+      "value": "飞溅+强制润滑",
+      "unit": "",
+      "confidence": 0.713,
+      "selectedFact": {
+        "factId": "F0174",
+        "label": "齿轮箱润滑",
+        "value": "飞溅+强制润滑",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 206,
+        "score": 0.713,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R23",
+      "rowIndex": 23,
+      "field": "润滑油加注量",
+      "action": "manual",
+      "value": "[待人工补充：润滑油加注量]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R24",
+      "rowIndex": 24,
+      "field": "齿轮箱润滑油加热器（如有）个数及功率",
+      "action": "manual",
+      "value": "[待人工补充：齿轮箱润滑油加热器（如有）个数及功率]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [
+        {
+          "factId": "F0174",
+          "label": "齿轮箱润滑",
+          "value": "飞溅+强制润滑",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 206,
+          "score": 0.615,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "有相近候选，但不可直接使用或置信度不足：齿轮箱润滑=飞溅+强制润滑，score=0.615"
+    },
+    {
+      "targetFieldId": "C3-R25",
+      "rowIndex": 25,
+      "field": "齿轮箱润滑油过滤精度",
+      "action": "manual",
+      "value": "[待人工补充：齿轮箱润滑油过滤精度]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [
+        {
+          "factId": "F0174",
+          "label": "齿轮箱润滑",
+          "value": "飞溅+强制润滑",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 206,
+          "score": 0.615,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "有相近候选，但不可直接使用或置信度不足：齿轮箱润滑=飞溅+强制润滑，score=0.615"
+    },
+    {
+      "targetFieldId": "C3-R26",
+      "rowIndex": 26,
+      "field": "齿轮箱离线过滤器（如有）过滤精度",
+      "action": "manual",
+      "value": "[待人工补充：齿轮箱离线过滤器（如有）过滤精度]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R27",
+      "rowIndex": 27,
+      "field": "齿轮箱润滑冷却形式",
+      "action": "manual",
+      "value": "[待人工补充：齿轮箱润滑冷却形式]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [
+        {
+          "factId": "F0174",
+          "label": "齿轮箱润滑",
+          "value": "飞溅+强制润滑",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 206,
+          "score": 0.615,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0175",
+          "label": "齿轮箱冷却",
+          "value": "油空冷",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 207,
+          "score": 0.549,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "有相近候选，但不可直接使用或置信度不足：齿轮箱润滑=飞溅+强制润滑，score=0.615"
+    },
+    {
+      "targetFieldId": "C3-R28",
+      "rowIndex": 28,
+      "field": "是否使用",
+      "action": "manual",
+      "value": "[待人工补充：是否使用]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R29",
+      "rowIndex": 29,
+      "field": "使用部位",
+      "action": "manual",
+      "value": "[待人工补充：使用部位]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R30",
+      "rowIndex": 30,
+      "field": "滑轴制造型式",
+      "action": "manual",
+      "value": "[待人工补充：滑轴制造型式]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R31",
+      "rowIndex": 31,
+      "field": "齿轮箱尺寸",
+      "action": "fill",
+      "value": "3.6*2.6*2.5",
+      "unit": "m",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0177",
+        "label": "齿轮箱尺寸",
+        "value": "3.6*2.6*2.5",
+        "unit": "m",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 209,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R32",
+      "rowIndex": 32,
+      "field": "主轴-齿轮箱连接型式",
+      "action": "fill",
+      "value": "法兰螺栓连接",
+      "unit": "",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0181",
+        "label": "主轴-齿轮箱连接型式",
+        "value": "法兰螺栓连接",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 215,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0050",
+          "label": "主轴制造厂家/型号",
+          "value": "见商务部分",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 58,
+          "score": 0.549,
+          "usable": false,
+          "derivation": null
+        },
+        {
+          "factId": "F0051",
+          "label": "主轴承制造厂家/型号",
+          "value": "见商务部分",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 59,
+          "score": 0.549,
+          "usable": false,
+          "derivation": null
+        },
+        {
+          "factId": "F0052",
+          "label": "主轴承制润滑方式",
+          "value": "自动润滑",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 60,
+          "score": 0.549,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R33",
+      "rowIndex": 33,
+      "field": "齿轮箱-发电机连接型式",
+      "action": "fill",
+      "value": "联轴器",
+      "unit": "",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0182",
+        "label": "齿轮箱-发电机连接型式",
+        "value": "联轴器",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 216,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R34",
+      "rowIndex": 34,
+      "field": "齿轮箱防腐等级",
+      "action": "fill",
+      "value": "C3（陆上）",
+      "unit": "",
+      "confidence": 0.713,
+      "selectedFact": {
+        "factId": "F0247",
+        "label": "防腐等级",
+        "value": "C3（陆上）",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 293,
+        "score": 0.713,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R36",
+      "rowIndex": 36,
+      "field": "液压系统泵容量",
+      "action": "fill",
+      "value": "约7",
+      "unit": "L",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0183",
+        "label": "液压系统容量",
+        "value": "约7",
+        "unit": "L",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 217,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R37",
+      "rowIndex": 37,
+      "field": "液压系统电机规格参数",
+      "action": "fill",
+      "value": "0.55kW，400V/50Hz",
+      "unit": "",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0184",
+        "label": "液压系统电机规格参数",
+        "value": "0.55kW，400V/50Hz",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 218,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R38",
+      "rowIndex": 38,
+      "field": "液压系统最大压力",
+      "action": "fill",
+      "value": "85",
+      "unit": "bar",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0185",
+        "label": "液压系统最大压力",
+        "value": "85",
+        "unit": "bar",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 219,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R39",
+      "rowIndex": 39,
+      "field": "液压系统制动压力",
+      "action": "manual",
+      "value": "[待人工补充：液压系统制动压力]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R40",
+      "rowIndex": 40,
+      "field": "液压系统供压范围（高速刹车/偏航系统）",
+      "action": "manual",
+      "value": "[待人工补充：液压系统供压范围（高速刹车/偏航系统）]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R42",
+      "rowIndex": 42,
+      "field": "刹车系统形式",
+      "action": "fill",
+      "value": "气动制动+高速轴机械刹车",
+      "unit": "",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0190",
+        "label": "制动系统形式",
+        "value": "气动制动+高速轴机械刹车",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 224,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R43",
+      "rowIndex": 43,
+      "field": "刹车盘直径",
+      "action": "fill",
+      "value": "1104",
+      "unit": "mm",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0191",
+        "label": "制动盘直径",
+        "value": "1104",
+        "unit": "mm",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 225,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R44",
+      "rowIndex": 44,
+      "field": "刹车盘材料",
+      "action": "fill",
+      "value": "Q390D",
+      "unit": "",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0192",
+        "label": "制动盘材料",
+        "value": "Q390D",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 226,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R45",
+      "rowIndex": 45,
+      "field": "高速刹车磨损报警",
+      "action": "manual",
+      "value": "[待人工补充：高速刹车磨损报警]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R47",
+      "rowIndex": 47,
+      "field": "偏航轴承型式",
+      "action": "fill",
+      "value": "滑动轴承偏航",
+      "unit": "",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0195",
+        "label": "偏航系统型式",
+        "value": "滑动轴承偏航",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 229,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0196",
+          "label": "偏航轴承类型",
+          "value": "滑动",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 230,
+          "score": 0.648,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R48",
+      "rowIndex": 48,
+      "field": "偏航系统驱动方式",
+      "action": "fill",
+      "value": "齿轮",
+      "unit": "",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0198",
+        "label": "偏航系统传动方式",
+        "value": "齿轮",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 232,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R49",
+      "rowIndex": 49,
+      "field": "偏航系统制动方式",
+      "action": "fill",
+      "value": "偏航电机电磁制动",
+      "unit": "",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0200",
+        "label": "偏航系统制动方式",
+        "value": "偏航电机电磁制动",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 234,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R50",
+      "rowIndex": 50,
+      "field": "偏航速度",
+      "action": "fill",
+      "value": "0.241",
+      "unit": "°/s",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0070",
+        "label": "偏航速度",
+        "value": "0.241",
+        "unit": "°/s",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 81,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0201",
+          "label": "偏航速度",
+          "value": "0.241",
+          "unit": "°/s",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 235,
+          "score": 0.812,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R51",
+      "rowIndex": 51,
+      "field": "偏航电机功率/台数",
+      "action": "manual",
+      "value": "[待人工补充：偏航电机功率/台数]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [
+        {
+          "factId": "F0202",
+          "label": "偏航驱动功率/数量",
+          "value": "2.5kW/项目定制",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 236,
+          "score": 0.648,
+          "usable": false,
+          "derivation": null
+        }
+      ],
+      "reason": "有相近候选，但不可直接使用或置信度不足：偏航驱动功率/数量=2.5kW/项目定制，score=0.648"
+    },
+    {
+      "targetFieldId": "C3-R52",
+      "rowIndex": 52,
+      "field": "偏航电机最大扭矩/单台",
+      "action": "manual",
+      "value": "[待人工补充：偏航电机最大扭矩/单台]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R53",
+      "rowIndex": 53,
+      "field": "偏航电机额定扭矩/单台",
+      "action": "manual",
+      "value": "[待人工补充：偏航电机额定扭矩/单台]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R54",
+      "rowIndex": 54,
+      "field": "偏航电机制动扭矩/单台",
+      "action": "manual",
+      "value": "[待人工补充：偏航电机制动扭矩/单台]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R55",
+      "rowIndex": 55,
+      "field": "偏航制动器个数",
+      "action": "manual",
+      "value": "[待人工补充：偏航制动器个数]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R56",
+      "rowIndex": 56,
+      "field": "偏航运行时制动器提供的扭矩/单台",
+      "action": "manual",
+      "value": "[待人工补充：偏航运行时制动器提供的扭矩/单台]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R57",
+      "rowIndex": 57,
+      "field": "偏航静止时制动器提供的扭矩/单台",
+      "action": "manual",
+      "value": "[待人工补充：偏航静止时制动器提供的扭矩/单台]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R58",
+      "rowIndex": 58,
+      "field": "偏航齿轮箱输出最大扭矩/单台",
+      "action": "manual",
+      "value": "[待人工补充：偏航齿轮箱输出最大扭矩/单台]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R59",
+      "rowIndex": 59,
+      "field": "偏航齿轮箱输出额定扭矩/单台",
+      "action": "manual",
+      "value": "[待人工补充：偏航齿轮箱输出额定扭矩/单台]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R60",
+      "rowIndex": 60,
+      "field": "偏航齿轮箱输出制动扭矩/单台",
+      "action": "manual",
+      "value": "[待人工补充：偏航齿轮箱输出制动扭矩/单台]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R62",
+      "rowIndex": 62,
+      "field": "机舱罩材质",
+      "action": "fill",
+      "value": "GFRP",
+      "unit": "",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0160",
+        "label": "机舱罩材料",
+        "value": "GFRP",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 188,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C3-R63",
+      "rowIndex": 63,
+      "field": "机舱罩是否有金属接闪网格",
+      "action": "manual",
+      "value": "[待人工补充：机舱罩是否有金属接闪网格]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C3-R64",
+      "rowIndex": 64,
+      "field": "非金属机舱罩金属接闪网格尺寸",
+      "action": "manual",
+      "value": "[待人工补充：非金属机舱罩金属接闪网格尺寸]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    }
+  ]
+}

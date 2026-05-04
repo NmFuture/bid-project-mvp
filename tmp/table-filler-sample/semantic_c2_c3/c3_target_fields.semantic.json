@@ -1,0 +1,637 @@
+[
+  {
+    "id": "C3-R01",
+    "rowIndex": 1,
+    "group": "",
+    "field": "传动结构形式",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "drive_train_form"
+    ]
+  },
+  {
+    "id": "C3-R03",
+    "rowIndex": 3,
+    "group": "主机座",
+    "field": "前主机座形式",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "front_bedplate_form"
+    ]
+  },
+  {
+    "id": "C3-R04",
+    "rowIndex": 4,
+    "group": "主机座",
+    "field": "前主机座材料牌号",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "front_bedplate_material"
+    ]
+  },
+  {
+    "id": "C3-R05",
+    "rowIndex": 5,
+    "group": "主机座",
+    "field": "前主机座重量",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "front_bedplate_weight"
+    ]
+  },
+  {
+    "id": "C3-R06",
+    "rowIndex": 6,
+    "group": "主机座",
+    "field": "后主机座形式",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "rear_bedplate_form"
+    ]
+  },
+  {
+    "id": "C3-R07",
+    "rowIndex": 7,
+    "group": "主机座",
+    "field": "后主机座材料牌号",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "rear_bedplate_material"
+    ]
+  },
+  {
+    "id": "C3-R08",
+    "rowIndex": 8,
+    "group": "主机座",
+    "field": "后主机座重量",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "front_bedplate_weight",
+      "rear_bedplate_weight"
+    ]
+  },
+  {
+    "id": "C3-R10",
+    "rowIndex": 10,
+    "group": "主轴与主轴承",
+    "field": "主轴形式",
+    "unit": "",
+    "remark": "锻造、铸造等",
+    "concepts": [
+      "main_shaft_form",
+      "main_shaft_material"
+    ]
+  },
+  {
+    "id": "C3-R11",
+    "rowIndex": 11,
+    "group": "主轴与主轴承",
+    "field": "主轴材料牌号",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "main_shaft_material"
+    ]
+  },
+  {
+    "id": "C3-R12",
+    "rowIndex": 12,
+    "group": "主轴与主轴承",
+    "field": "主轴重量",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "main_shaft_material",
+      "main_shaft_weight"
+    ]
+  },
+  {
+    "id": "C3-R13",
+    "rowIndex": 13,
+    "group": "主轴与主轴承",
+    "field": "主轴轴承类型及数量",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "main_shaft_material",
+      "main_bearing_type_count"
+    ]
+  },
+  {
+    "id": "C3-R15",
+    "rowIndex": 15,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱形式（结构）",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "gearbox_form"
+    ]
+  },
+  {
+    "id": "C3-R16",
+    "rowIndex": 16,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱速比",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "gearbox_ratio"
+    ]
+  },
+  {
+    "id": "C3-R17",
+    "rowIndex": 17,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱设计额定功率",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "gearbox_power"
+    ]
+  },
+  {
+    "id": "C3-R18",
+    "rowIndex": 18,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱额定输入/输出转速",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "gearbox_speed"
+    ]
+  },
+  {
+    "id": "C3-R19",
+    "rowIndex": 19,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱重量",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "gearbox_weight"
+    ]
+  },
+  {
+    "id": "C3-R20",
+    "rowIndex": 20,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱设计额定扭矩/功率密度",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "gearbox_torque_density"
+    ]
+  },
+  {
+    "id": "C3-R21",
+    "rowIndex": 21,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱传动效率",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "gearbox_efficiency"
+    ]
+  },
+  {
+    "id": "C3-R22",
+    "rowIndex": 22,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱润滑型式",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "gearbox_lubrication"
+    ]
+  },
+  {
+    "id": "C3-R23",
+    "rowIndex": 23,
+    "group": "齿轮箱（如有）",
+    "field": "润滑油加注量",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "gearbox_oil_volume"
+    ]
+  },
+  {
+    "id": "C3-R24",
+    "rowIndex": 24,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱润滑油加热器（如有）个数及功率",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "gearbox_lubrication",
+      "gearbox_heater"
+    ]
+  },
+  {
+    "id": "C3-R25",
+    "rowIndex": 25,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱润滑油过滤精度",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "gearbox_lubrication",
+      "gearbox_filter_accuracy"
+    ]
+  },
+  {
+    "id": "C3-R26",
+    "rowIndex": 26,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱离线过滤器（如有）过滤精度",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "gearbox_offline_filter"
+    ]
+  },
+  {
+    "id": "C3-R27",
+    "rowIndex": 27,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱润滑冷却形式",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "gearbox_lubrication",
+      "gearbox_cooling"
+    ]
+  },
+  {
+    "id": "C3-R28",
+    "rowIndex": 28,
+    "group": "齿轮箱（如有）",
+    "field": "是否使用",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "sliding_bearing_used"
+    ]
+  },
+  {
+    "id": "C3-R29",
+    "rowIndex": 29,
+    "group": "齿轮箱（如有）",
+    "field": "使用部位",
+    "unit": "",
+    "remark": "明确滑轴使用部位",
+    "concepts": [
+      "sliding_bearing_position"
+    ]
+  },
+  {
+    "id": "C3-R30",
+    "rowIndex": 30,
+    "group": "齿轮箱（如有）",
+    "field": "滑轴制造型式",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "sliding_bearing_form"
+    ]
+  },
+  {
+    "id": "C3-R31",
+    "rowIndex": 31,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱尺寸",
+    "unit": "",
+    "remark": "长×宽×高",
+    "concepts": [
+      "gearbox_dimension"
+    ]
+  },
+  {
+    "id": "C3-R32",
+    "rowIndex": 32,
+    "group": "齿轮箱（如有）",
+    "field": "主轴-齿轮箱连接型式",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "main_shaft_material",
+      "shaft_gearbox_connection"
+    ]
+  },
+  {
+    "id": "C3-R33",
+    "rowIndex": 33,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱-发电机连接型式",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "gearbox_generator_connection"
+    ]
+  },
+  {
+    "id": "C3-R34",
+    "rowIndex": 34,
+    "group": "齿轮箱（如有）",
+    "field": "齿轮箱防腐等级",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "corrosion_level"
+    ]
+  },
+  {
+    "id": "C3-R36",
+    "rowIndex": 36,
+    "group": "液压系统",
+    "field": "液压系统泵容量",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "hydraulic_capacity"
+    ]
+  },
+  {
+    "id": "C3-R37",
+    "rowIndex": 37,
+    "group": "液压系统",
+    "field": "液压系统电机规格参数",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "hydraulic_motor"
+    ]
+  },
+  {
+    "id": "C3-R38",
+    "rowIndex": 38,
+    "group": "液压系统",
+    "field": "液压系统最大压力",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "hydraulic_max_pressure"
+    ]
+  },
+  {
+    "id": "C3-R39",
+    "rowIndex": 39,
+    "group": "液压系统",
+    "field": "液压系统制动压力",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "hydraulic_brake_pressure"
+    ]
+  },
+  {
+    "id": "C3-R40",
+    "rowIndex": 40,
+    "group": "液压系统",
+    "field": "液压系统供压范围（高速刹车/偏航系统）",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "hydraulic_pressure_range"
+    ]
+  },
+  {
+    "id": "C3-R42",
+    "rowIndex": 42,
+    "group": "刹车系统",
+    "field": "刹车系统形式",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "brake_form"
+    ]
+  },
+  {
+    "id": "C3-R43",
+    "rowIndex": 43,
+    "group": "刹车系统",
+    "field": "刹车盘直径",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "brake_disc_diameter"
+    ]
+  },
+  {
+    "id": "C3-R44",
+    "rowIndex": 44,
+    "group": "刹车系统",
+    "field": "刹车盘材料",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "brake_disc_material"
+    ]
+  },
+  {
+    "id": "C3-R45",
+    "rowIndex": 45,
+    "group": "刹车系统",
+    "field": "高速刹车磨损报警",
+    "unit": "",
+    "remark": "响应/不响应",
+    "concepts": [
+      "brake_wear_alarm"
+    ]
+  },
+  {
+    "id": "C3-R47",
+    "rowIndex": 47,
+    "group": "偏航系统",
+    "field": "偏航轴承型式",
+    "unit": "",
+    "remark": "滑动偏航或滚动偏航",
+    "concepts": [
+      "yaw_bearing_form"
+    ]
+  },
+  {
+    "id": "C3-R48",
+    "rowIndex": 48,
+    "group": "偏航系统",
+    "field": "偏航系统驱动方式",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "yaw_drive"
+    ]
+  },
+  {
+    "id": "C3-R49",
+    "rowIndex": 49,
+    "group": "偏航系统",
+    "field": "偏航系统制动方式",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "yaw_brake"
+    ]
+  },
+  {
+    "id": "C3-R50",
+    "rowIndex": 50,
+    "group": "偏航系统",
+    "field": "偏航速度",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "yaw_speed"
+    ]
+  },
+  {
+    "id": "C3-R51",
+    "rowIndex": 51,
+    "group": "偏航系统",
+    "field": "偏航电机功率/台数",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "yaw_motor_power_count"
+    ]
+  },
+  {
+    "id": "C3-R52",
+    "rowIndex": 52,
+    "group": "偏航系统",
+    "field": "偏航电机最大扭矩/单台",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "yaw_motor_max_torque"
+    ]
+  },
+  {
+    "id": "C3-R53",
+    "rowIndex": 53,
+    "group": "偏航系统",
+    "field": "偏航电机额定扭矩/单台",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "yaw_motor_rated_torque"
+    ]
+  },
+  {
+    "id": "C3-R54",
+    "rowIndex": 54,
+    "group": "偏航系统",
+    "field": "偏航电机制动扭矩/单台",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "yaw_motor_brake_torque"
+    ]
+  },
+  {
+    "id": "C3-R55",
+    "rowIndex": 55,
+    "group": "偏航系统",
+    "field": "偏航制动器个数",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "yaw_brake_count"
+    ]
+  },
+  {
+    "id": "C3-R56",
+    "rowIndex": 56,
+    "group": "偏航系统",
+    "field": "偏航运行时制动器提供的扭矩/单台",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "yaw_running_brake_torque"
+    ]
+  },
+  {
+    "id": "C3-R57",
+    "rowIndex": 57,
+    "group": "偏航系统",
+    "field": "偏航静止时制动器提供的扭矩/单台",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "yaw_static_brake_torque"
+    ]
+  },
+  {
+    "id": "C3-R58",
+    "rowIndex": 58,
+    "group": "偏航系统",
+    "field": "偏航齿轮箱输出最大扭矩/单台",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "yaw_gearbox_max_torque"
+    ]
+  },
+  {
+    "id": "C3-R59",
+    "rowIndex": 59,
+    "group": "偏航系统",
+    "field": "偏航齿轮箱输出额定扭矩/单台",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "yaw_gearbox_rated_torque"
+    ]
+  },
+  {
+    "id": "C3-R60",
+    "rowIndex": 60,
+    "group": "偏航系统",
+    "field": "偏航齿轮箱输出制动扭矩/单台",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "yaw_gearbox_brake_torque"
+    ]
+  },
+  {
+    "id": "C3-R62",
+    "rowIndex": 62,
+    "group": "机舱罩",
+    "field": "机舱罩材质",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "nacelle_cover_material"
+    ]
+  },
+  {
+    "id": "C3-R63",
+    "rowIndex": 63,
+    "group": "机舱罩",
+    "field": "机舱罩是否有金属接闪网格",
+    "unit": "",
+    "remark": "有/无",
+    "concepts": [
+      "nacelle_lightning_mesh"
+    ]
+  },
+  {
+    "id": "C3-R64",
+    "rowIndex": 64,
+    "group": "机舱罩",
+    "field": "非金属机舱罩金属接闪网格尺寸",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "nacelle_mesh_size"
+    ]
+  }
+]
