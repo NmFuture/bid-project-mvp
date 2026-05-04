@@ -123,11 +123,6 @@ export default function ProjectWizardModal({
   const updateForm = (key, val) => setForm((prev) => ({ ...prev, [key]: val }))
   const selectedMaterialCustomer = materialCustomers.find((item) => item.id === selectedMaterialCustomerId)
   const selectedMaterialProject = materialProjects.find((item) => item.id === selectedMaterialProjectId)
-  const effectiveCustomerId = customerMode === 'library' ? selectedMaterialCustomer?.customerId || selectedMaterialCustomerId : form.customerId
-  const filteredMaterialProjects = materialProjects.filter((item) => {
-    if (!effectiveCustomerId) return true
-    return !item.customerId || item.customerId === effectiveCustomerId
-  })
   const selectedTurbineId = form.turbineModel?.id || form.turbineModel?.model || ''
   const selectedTurbineOption = turbineOptions.find((item) => {
     const optionId = item.id || item.model
@@ -196,7 +191,7 @@ export default function ProjectWizardModal({
             customerCanonicalName: defaultCustomer.name,
             customerName: defaultCustomer.name,
           }))
-          const defaultProject = projects.find((item) => !item.customerId || item.customerId === defaultCustomer.customerId)
+          const defaultProject = projects[0]
           if (defaultProject) {
             setMaterialProjectMode('library')
             setSelectedMaterialProjectId(defaultProject.id)
@@ -443,12 +438,14 @@ export default function ProjectWizardModal({
                     }}
                     disabled={loadingIdentities}
                   >
-                    <option value="library" disabled={!materialCustomers.length}>重要客户</option>
+                    <option value="library" disabled={!materialCustomers.length}>重点客户</option>
                     <option value="ordinary">普通客户</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">业主单位（客户） *</label>
+                  <label className="block text-sm font-semibold text-on-surface mb-2">
+                    {customerMode === 'library' ? '重点客户 *' : '普通客户 *'}
+                  </label>
                   {customerMode === 'library' && materialCustomers.length > 0 ? (
                     <select
                       className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
@@ -464,10 +461,6 @@ export default function ProjectWizardModal({
                             customerCanonicalName: selected.name,
                             customerName: selected.name,
                           }))
-                          const currentProject = materialProjects.find((item) => item.id === selectedMaterialProjectId)
-                          if (currentProject?.customerId && currentProject.customerId !== selected.customerId) {
-                            setSelectedMaterialProjectId('')
-                          }
                         }
                       }}
                     >
@@ -504,7 +497,7 @@ export default function ProjectWizardModal({
                       const nextMode = e.target.value
                       setMaterialProjectMode(nextMode)
                       if (nextMode === 'library') {
-                        const selected = filteredMaterialProjects.find((item) => item.id === selectedMaterialProjectId) || filteredMaterialProjects[0]
+                        const selected = materialProjects.find((item) => item.id === selectedMaterialProjectId) || materialProjects[0]
                         if (selected) {
                           setSelectedMaterialProjectId(selected.id)
                           setForm((prev) => ({
@@ -512,31 +505,20 @@ export default function ProjectWizardModal({
                             materialProjectName: selected.name,
                             projectCode: prev.projectCode || selected.projectCode,
                           }))
-                          if (selected.customerId) {
-                            const customer = materialCustomers.find((item) => item.customerId === selected.customerId)
-                            if (customer) {
-                              setCustomerMode('library')
-                              setSelectedMaterialCustomerId(customer.id)
-                              setForm((prev) => ({
-                                ...prev,
-                                customerId: customer.customerId,
-                                customerCanonicalName: customer.name,
-                                customerName: customer.name,
-                              }))
-                            }
-                          }
                         }
                       }
                     }}
                     disabled={loadingIdentities}
                   >
-                    <option value="library" disabled={!filteredMaterialProjects.length}>已有项目</option>
+                    <option value="library" disabled={!materialProjects.length}>重点项目</option>
                     <option value="ordinary">普通项目</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">项目 *</label>
-                  {materialProjectMode === 'library' && filteredMaterialProjects.length > 0 ? (
+                  <label className="block text-sm font-semibold text-on-surface mb-2">
+                    {materialProjectMode === 'library' ? '重点项目 *' : '普通项目 *'}
+                  </label>
+                  {materialProjectMode === 'library' && materialProjects.length > 0 ? (
                     <select
                       className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
                       value={selectedMaterialProjectId}
@@ -550,24 +532,11 @@ export default function ProjectWizardModal({
                             materialProjectName: selected.name,
                             projectCode: prev.projectCode || selected.projectCode,
                           }))
-                          if (selected.customerId) {
-                            const customer = materialCustomers.find((item) => item.customerId === selected.customerId)
-                            if (customer) {
-                              setCustomerMode('library')
-                              setSelectedMaterialCustomerId(customer.id)
-                              setForm((prev) => ({
-                                ...prev,
-                                customerId: customer.customerId,
-                                customerCanonicalName: customer.name,
-                                customerName: customer.name,
-                              }))
-                            }
-                          }
                         }
                       }}
                     >
                       <option value="">选择项目</option>
-                      {filteredMaterialProjects.map((item) => (
+                      {materialProjects.map((item) => (
                         <option key={item.id} value={item.id}>{materialProjectLabel(item)}</option>
                       ))}
                     </select>
@@ -690,7 +659,7 @@ export default function ProjectWizardModal({
 	                    ['项目名称', form.name || '—'],
 	                    ['业务项目编号', form.projectCode || (project?.id || '创建后生成')],
 	                    ['业主单位', form.customerName || '—'],
-	                    ['客户来源', customerMode === 'library' ? '重要客户' : '普通客户'],
+	                    ['客户来源', customerMode === 'library' ? '重点客户' : '普通客户'],
 	                    ['项目', materialProjectMode === 'library' ? selectedMaterialProject?.name || '—' : form.materialProjectName || form.name || '普通项目'],
 	                    ['项目ID', materialProjectMode === 'library' ? selectedMaterialProjectId || '—' : project?.materialProjectId || '创建后生成'],
 	                    ['投标机型', form.bidType === '技术标' ? turbineModelLabel(form.turbineModel) || '—' : '—'],

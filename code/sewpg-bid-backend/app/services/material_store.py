@@ -43,7 +43,6 @@ from app.services.turbine_models import (
     turbine_model_from_material_name,
 )
 from app.services.identity import (
-    CUSTOMER_REGISTRY,
     canonical_customer,
     classify_material_path,
     customer_matches,
@@ -590,16 +589,6 @@ class MaterialStore:
                 "bidType": item_bid_type or existing.get("bidType") or "",
                 "source": source if not existing.get("source") else existing["source"],
             }
-
-        for item in CUSTOMER_REGISTRY:
-            if item["customerId"] == "CUST-SEWPG":
-                continue
-            add_customer(
-                customer_id=str(item["customerId"]),
-                name=str(item["customerCanonicalName"]),
-                aliases=list(item["customerAliases"]),
-                source="registry",
-            )
 
         async with async_session() as session:
             await self._ensure_runtime_tables(session)
