@@ -27,7 +27,7 @@ S0 解析 -> S1 模板与目录 -> S2 审核目录 -> S3 缺口处理 -> S4 生�
 关键边界：
 
 - `S1 模板与目录`：FastAPI 读取招标文件、项目模板或设置侧系统默认模板，调用目录 Skill 生成目录。
-- `S3 缺口处理`：调用缺口识别 Skill 和 AI 填写 Skill，读取真实素材库、Wiki、解析结果和项目补料产物。
+- `S3 缺口处理`：当前已认可缺口识别 Skill，读取真实素材库、Wiki、解析结果、项目身份和投标机型；AI 填写 Skill 仍待重新规划验收。
 - `S4 生成标书`：调用本地 `bid-tech-assembler` Skill，按目录 JSON、缺口处理计划和素材库拼装正文。
 - 覆盖诊断：读取正文拼装计划，校验未拼上的素材和未匹配目录项；保留为诊断/导出检查能力。
 - `S5 共创`：由 FastAPI 对接 OnlyOffice。
@@ -37,7 +37,7 @@ S0 解析 -> S1 模板与目录 -> S2 审核目录 -> S3 缺口处理 -> S4 生�
 
 - 前端只调用 FastAPI，不直接调用 `opencode`。
 - FastAPI 是唯一 `/api` 后端，同时承担真实执行和兼容返回。
-- 目录生成、缺口识别、AI 填写、标书生成均由 FastAPI 内部调用 OpenCode/Skill 或对应本地 runner。
+- 目录生成、缺口识别、标书生成均由 FastAPI 内部调用 OpenCode/Skill 或对应本地 runner；AI 填写仍待后续验收收口。
 - 项目列表和项目状态持久化，MVP 统一使用 `PostgreSQL + 本地文件目录 + MinIO`。
 - 用户主路径以 `S0-S6` 展示。
 
@@ -333,12 +333,12 @@ S0 解析 -> S1 模板与目录 -> S2 审核目录 -> S3 缺口处理 -> S4 生�
 ### `POST /api/projects/{id}/gaps/{gap_id}/ai-fill`
 
 - 用途：调用 AI 填写 Skill，按人工指定的空表/Word 和参考素材补齐缺口
-- 是否真实：真实
+- 是否真实：实验中，尚未作为当前 S3 已验收能力
 
 ### `POST /api/projects/{id}/gaps/recheck`
 
 - 用途：重新检查缺口完整性
-- 是否真实：真实
+- 是否真实：待重新规划，尚未作为当前 S3 已验收能力
 
 ### `POST /api/projects/{id}/gaps/submit-review`
 

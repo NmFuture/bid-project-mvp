@@ -3202,3 +3202,36 @@ bid_workspace
 - `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-04 14:02:30 post-commit 78c419d
+
+提交摘要：fix: align project identity options with material library
+
+变更文件：
+
+- `code/sewpg-bid-backend/app/services/material_store.py`
+- `code/sewpg-bid-backend/tests/test_material_identity_options.py`
+- `code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-04 S3 缺口识别 Skill 验收口径收口
+
+改动目标：
+
+- 按用户明确反馈修正文档口径：S3 当前满意并认可的只有第一个 Skill `bid-tech-gap-planner`。
+- 防止后续会话把第二个空副表/Word 填写 Skill、第三个审阅/完整性复查 Skill 当成已验收能力继续扩展。
+- 保留第一个 Skill 的当前技术路线：OpenCode 只调用 `s4gap <manifest>`，确定性脚本根据 S2 已确认目录、Wiki、素材边界、投标机型和素材索引生成完整 `gap_plan.json`。
+
+文档同步：
+
+- 根 `README.md`：S3 当前验收步骤改为先验收缺口识别结果。
+- `doc/README.md`：新增 2026-05-04 S3 收口口径。
+- `code/AGENT.md`：提醒后续智能体不要把第二、第三个 Skill 写成已验收。
+- `doc/05-MVP主链路说明.md`、`doc/06-MVP接口文档.md`、`doc/08-MVP部署说明.md`、`doc/12-数据存储与素材库数据说明.md`、`doc/13-S4生成标书与覆盖诊断说明.md`：统一调整为“当前只认可缺口识别，补料/填写/复查待后续收口”。
+- `doc/14-甲方新增需求待办.md`：将 S3 三 Skill 计划改为第一个已认可，第二、第三个待重新规划。
+
+当前未纳入验收：
+
+- `bid-tech-table-filler` 的现有实验结果不作为已验收能力。
+- `bid-tech-gap-reviewer` 的现有实验结果不作为已验收能力。
