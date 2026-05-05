@@ -5,7 +5,7 @@
 
 ## 0. 当前推进规则
 
-从 2026-05-01 起，下一阶段工作以这两份文档为准：
+当前下一阶段工作以这三份文档为准：
 
 - `/Users/wlb/Agent/bid-project/doc/14-甲方新增需求待办.md`
   - 当前统一待办池
@@ -13,6 +13,9 @@
   - 每条待办都有“完成情况”
 - `/Users/wlb/Agent/bid-project/doc/15-技术标与商务标需求整理.md`
   - 技术标、商务标需求来源和讨论依据
+- `/Users/wlb/Agent/bid-project/doc/16-目标一与目标二最终目标.md`
+  - 附表填写与素材库待填写内容生成的验收基准
+  - 自动结果必须达到人工版本至少 85%，低于 85% 时继续诊断、修复、再评测
 
 执行规则：
 
@@ -21,7 +24,7 @@
 - 每完成或推进一项，同步在 `/Users/wlb/Agent/bid-project/code/progress.md` 写进度记录。
 - 每完成一项待办后，必须重新部署相关服务给用户检查；涉及前端展示的改动至少执行 `docker compose build web && docker compose up -d web`。
 - 每完成一项待办后，同步创建一次 git commit，提交前确认工作树只包含本项相关改动。
-- 新会话开工时先读 `doc/14-甲方新增需求待办.md`、`code/progress.md` 和本文件，再看具体代码。
+- 新会话开工时先读 `doc/14-甲方新增需求待办.md`、`code/progress.md` 和本文件，再看具体代码；涉及附表填写、待填写 Word、85% 人工基准验收时，同时先读 `doc/16-目标一与目标二最终目标.md`。
 - 用户明确说“先更新待办文档，不需要直接做”时，只改文档，不实现功能。
 
 当前重要口径：
@@ -249,6 +252,7 @@ docker compose up
 - `/Users/wlb/Agent/bid-project/doc/13-S4生成标书与覆盖诊断说明.md`
 - `/Users/wlb/Agent/bid-project/doc/14-甲方新增需求待办.md`
 - `/Users/wlb/Agent/bid-project/doc/15-技术标与商务标需求整理.md`
+- `/Users/wlb/Agent/bid-project/doc/16-目标一与目标二最终目标.md`
 
 ### 7.3 优先打通闭环
 
