@@ -73,7 +73,7 @@ test('covered child resolves preview material from parent chapter', () => {
   assert.equal(match.material.id, 'RAW-0473')
 })
 
-test('preview choices expose only the current resolved artifact when it exists', () => {
+test('preview choices prefer the filled artifact while keeping blank and material previews available', () => {
   const selected = {
     resolvedArtifacts: [{ id: 'ART-1', fileName: '填写结果.docx', onlyoffice: { fileUrl: '/artifact.docx' } }],
     fillTasks: [{ blankSource: { id: 'APPX-1', title: '空表' } }],
@@ -82,7 +82,7 @@ test('preview choices expose only the current resolved artifact when it exists',
 
   assert.deepEqual(
     previewChoicesForItem(selected).map((choice) => choice.kind),
-    ['artifact'],
+    ['artifact', 'appendix', 'material'],
   )
 })
 
@@ -94,7 +94,48 @@ test('preview choices use blank appendix before AI fill result exists', () => {
 
   assert.deepEqual(
     previewChoicesForItem(selected).map((choice) => choice.kind),
-    ['appendix'],
+    ['appendix', 'material'],
+  )
+})
+
+test('result summary labels AI-filled items as filled', () => {
+  assert.deepEqual(
+    resultSummaryForItem({
+      decision: 'fill_required',
+      resolvedArtifacts: [{ id: 'ART-1', source: 'ai_fill', fileName: '填写结果.docx' }],
+    }),
+    { label: 'AI已填写', tone: 'resolved' },
+  )
+})
+
+test('result summary exposes strict AI fill quality state when available', () => {
+  assert.deepEqual(
+    resultSummaryForItem({
+      decision: 'fill_required',
+      resolvedArtifacts: [
+        {
+          id: 'ART-1',
+          source: 'ai_fill',
+          fileName: '填写结果.docx',
+          qualityReport: { status: 'passed' },
+        },
+      ],
+    }),
+    { label: 'AI已填写 · 验收通过', tone: 'resolved' },
+  )
+  assert.deepEqual(
+    resultSummaryForItem({
+      decision: 'fill_required',
+      resolvedArtifacts: [
+        {
+          id: 'ART-2',
+          source: 'ai_fill',
+          fileName: '填写结果.docx',
+          qualityReport: { status: 'needs_review' },
+        },
+      ],
+    }),
+    { label: 'AI已填写 · 待复核', tone: 'fill' },
   )
 })
 

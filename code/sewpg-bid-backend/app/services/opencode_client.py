@@ -203,6 +203,7 @@ class OpencodeClient:
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
+        early_tool_command: str = "",
     ) -> dict[str, Any]:
         session = self.create_session("S4 技术标缺口 AI 填写")
         session_id = str(session.get("id") or "")
@@ -218,6 +219,7 @@ class OpencodeClient:
             session_id,
             prompt_text,
             stream_callback=stream_callback,
+            early_tool_command=early_tool_command,
         )
         parsed = self._extract_table_fill_json(response)
         return {

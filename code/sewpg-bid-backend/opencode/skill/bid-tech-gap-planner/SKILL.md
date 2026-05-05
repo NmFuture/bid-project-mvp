@@ -71,8 +71,8 @@ s4gap /data/documents/<projectId>/technical-workspace/s4_gap_workdir/s4_gap_inpu
 4. 结构性父目录如果只是目录骨架，不需要素材时标记 `decision=ready`、`usage=structural`。
 5. 父章目录必须先尝试匹配整章 Word。若父章标题与允许范围内素材名/路径/cleanedFileName 匹配，例如 `项目技术承诺函`、`产品交付、考核及验收`，父章应作为 `coverageRole=chapter_master`，子节作为 `coverageRole=covered_by_parent`，不要把子节误判成缺素材。
 6. 有可直接合并正文素材时标记 `decision=ready`，并在 `nextActions` 放 `s4_merge_material`。
-7. 整章 Word 如果是待填写模板，父章标记 `decision=fill_required`、`status=needs_input`、`usage=chapter_fill`，子节继承 `decision=fill_required`、`usage=covered_by_parent`，但子节不重复创建填写任务。
-8. 文件名、素材索引或 Word 正文显示 `待填写` / `待补充` / `待确认` / `placeholderCount>0` 的素材不是可直接合并素材；应标记 `decision=fill_required`、`status=needs_input`、`usage=section_fill`，把该素材放入 `fillTasks[].blankSource` 作为填写前 Word。
+7. 整章 Word 如果是待填写模板，父章标记 `decision=fill_required`、`status=needs_input`、`usage=chapter_fill`，子节继承 `decision=fill_required`、`usage=covered_by_parent`，但子节不重复创建填写任务，并创建 `bid-tech-word-placeholder-filler` 的 `fillTasks`。
+8. 文件名、素材索引或 Word 正文显示 `待填写` / `待补充` / `待确认` / `placeholderCount>0` 的素材不是可直接合并素材；应标记 `decision=fill_required`、`status=needs_input`、`usage=section_fill`，把该素材放入 `fillTasks[].blankSource` 作为填写前 Word，并使用 `bid-tech-word-placeholder-filler`。
 9. 解析阶段已生成空副表/Word，且当前目录项对应附表时，标记 `decision=fill_required`、`status=needs_input`、`usage=appendix_fill`，并创建 `bid-tech-table-filler` 的 `fillTasks`。
 10. 找不到可用素材也无法通过空表填写处理时，标记 `decision=material_required`，要求上传或选择素材。
 11. 如果投标机型明显冲突，必须进入 `review_required` 或在 `turbineCheck` 中标出冲突，不能直接合并。

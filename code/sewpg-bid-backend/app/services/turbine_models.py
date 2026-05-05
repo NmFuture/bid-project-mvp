@@ -53,6 +53,7 @@ def normalize_project_turbine_model(value: Any) -> dict[str, Any]:
         "layout": str(raw.get("layout") or raw.get("transformerLayout") or "").strip(),
         "ratedPowerKw": _number_or_empty(raw.get("ratedPowerKw") or raw.get("rated_power_kw")),
         "rotorDiameterM": _number_or_empty(raw.get("rotorDiameterM") or raw.get("rotor_diameter_m")),
+        "hubHeightM": _number_or_empty(raw.get("hubHeightM") or raw.get("hub_height_m") or raw.get("hubHeight")),
         "status": str(raw.get("status") or "manual").strip() or "manual",
         "statusLabel": str(raw.get("statusLabel") or raw.get("statusText") or "").strip(),
         "source": str(raw.get("source") or "manual").strip() or "manual",

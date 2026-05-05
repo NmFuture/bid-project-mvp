@@ -55,6 +55,47 @@ async def submit_gap_review(project_id: str) -> dict[str, Any]:
         raise _value_error(exc) from exc
 
 
+@router.get("/api/projects/{project_id}/gaps/facts")
+async def get_gap_project_facts(project_id: str) -> dict[str, Any]:
+    return store.get_gap_fact_table(project_id)
+
+
+@router.post("/api/projects/{project_id}/gaps/facts/build")
+async def build_gap_project_facts(project_id: str) -> dict[str, Any]:
+    try:
+        return store.build_gap_fact_table(project_id)
+    except ValueError as exc:
+        raise _value_error(exc) from exc
+
+
+@router.put("/api/projects/{project_id}/gaps/facts")
+async def save_gap_project_facts(
+    project_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    try:
+        return store.save_gap_fact_table(project_id, data)
+    except ValueError as exc:
+        raise _value_error(exc) from exc
+
+
+@router.post("/api/projects/{project_id}/gaps/ai-fill-all")
+async def ai_fill_all_gap_materials(
+    project_id: str,
+    request: Request,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    try:
+        return store.run_gap_ai_fill_all(
+            project_id,
+            data,
+            browser_base_url=str(request.base_url).rstrip("/"),
+            onlyoffice_base_url=onlyoffice_backend_base_url(request),
+        )
+    except ValueError as exc:
+        raise _value_error(exc) from exc
+
+
 @router.put("/api/projects/{project_id}/gaps/{gap_id}")
 async def update_gap(
     project_id: str,

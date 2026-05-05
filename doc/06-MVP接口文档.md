@@ -332,8 +332,29 @@ S0 解析 -> S1 模板与目录 -> S2 审核目录 -> S3 缺口处理 -> S4 生�
 
 ### `POST /api/projects/{id}/gaps/{gap_id}/ai-fill`
 
-- 用途：调用 AI 填写 Skill，按人工指定的空表/Word 和参考素材补齐缺口
-- 是否真实：实验中，尚未作为当前 S3 已验收能力
+- 用途：调用 AI 填写 Skill，按人工确认后的项目事实表、空表/Word、素材库/Wiki 参考材料补齐单个缺口
+- 是否真实：真实，执行前要求 `projectFactTable.status=confirmed`；产物写入 `gapPlan.resolvedArtifacts`
+- 质量结果：返回 `artifact.qualityReport`，包含 `coverageRate`、`correctnessRate`、`completenessRate`，默认门槛均为 `0.85`
+
+### `GET /api/projects/{id}/gaps/facts`
+
+- 用途：读取 S3 项目事实表
+- 是否真实：真实，返回 `projectFactTable`
+
+### `POST /api/projects/{id}/gaps/facts/build`
+
+- 用途：从项目身份、投标机型、解析字段、目录缺口占位符生成项目事实表候选字段
+- 是否真实：真实，写入 `gap_state.projectFactTable`
+
+### `PUT /api/projects/{id}/gaps/facts`
+
+- 用途：保存人工维护后的项目事实表；`confirm=true` 后允许 AI 填写
+- 是否真实：真实
+
+### `POST /api/projects/{id}/gaps/ai-fill-all`
+
+- 用途：一键填写所有待填 Word 和副表/空表，执行顺序为待填写 Word 优先、表格/副表随后
+- 是否真实：真实，仍通过对应 OpenCode Skill 执行；返回批量 `qualityReport` 和逐项结果
 
 ### `POST /api/projects/{id}/gaps/recheck`
 

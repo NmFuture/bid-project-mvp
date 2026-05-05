@@ -14,6 +14,7 @@ from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from openpyxl import Workbook
 
 
 ASSEMBLER_SCRIPT_DIR = (
@@ -42,6 +43,20 @@ GAP_PLANNER_SCRIPT_DIR = (
     / "opencode"
     / "skill"
     / "bid-tech-gap-planner"
+    / "scripts"
+)
+TABLE_FILLER_SCRIPT_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "opencode"
+    / "skill"
+    / "bid-tech-table-filler"
+    / "scripts"
+)
+WORD_FILLER_SCRIPT_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "opencode"
+    / "skill"
+    / "bid-tech-word-placeholder-filler"
     / "scripts"
 )
 
@@ -78,6 +93,26 @@ def load_wiki_script(name: str):
 def load_gap_planner_script(name: str):
     module_name = f"gap_planner_{name}"
     spec = importlib.util.spec_from_file_location(module_name, GAP_PLANNER_SCRIPT_DIR / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_table_filler_script(name: str):
+    module_name = f"table_filler_{name}"
+    spec = importlib.util.spec_from_file_location(module_name, TABLE_FILLER_SCRIPT_DIR / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_word_filler_script(name: str):
+    module_name = f"word_filler_{name}"
+    spec = importlib.util.spec_from_file_location(module_name, WORD_FILLER_SCRIPT_DIR / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
     sys.modules[module_name] = module
@@ -140,7 +175,7 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(item["status"], "needs_input")
         self.assertEqual(item["usage"], "section_fill")
         self.assertEqual(item["matchedMaterials"], [])
-        self.assertEqual(item["fillTasks"][0]["skill"], "bid-tech-table-filler")
+        self.assertEqual(item["fillTasks"][0]["skill"], "bid-tech-word-placeholder-filler")
         self.assertEqual(item["fillTasks"][0]["blankSource"]["id"], "RAW-0453")
         self.assertEqual(item["fillTasks"][0]["blankSource"]["placeholderCount"], 3)
         self.assertEqual(item["candidateMaterials"][0]["id"], "RAW-0453")
@@ -195,6 +230,71 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(plan["items"][1]["decision"], "fill_required")
         self.assertEqual(plan["items"][2]["decision"], "ready")
         self.assertEqual(plan["items"][3]["decision"], "material_required")
+
+    def test_bid_gap_planner_carries_parse_fields_to_appendix_tasks(self) -> None:
+        gap_runner = load_gap_planner_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse.json"
+            appendix_doc = root / "APPX-A1.docx"
+            Document().save(appendix_doc)
+            toc_path.write_text(
+                json.dumps({"items": [{"number": "附表A.1", "title": "附表A.1 投标机型总方案信息表", "level": 2}]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            parse_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            *[
+                                {
+                                    "id": f"REQ-NOISE-{idx}",
+                                    "type": "项目基础信息",
+                                    "title": "招标人",
+                                    "value": f"噪声字段{idx}",
+                                    "sourceFile": "招标文件.docx",
+                                }
+                                for idx in range(180)
+                            ],
+                            {
+                                "id": "REQ-SCALE",
+                                "type": "项目基础信息",
+                                "title": "标段规模",
+                                "value": "600MW",
+                                "sourceFile": "招标文件.docx",
+                            }
+                        ],
+                        "structured": {
+                            "appendices": [
+                                {
+                                    "id": "APPX-A1",
+                                    "title": "附表A.1 投标机型总方案信息表",
+                                    "docxPath": str(appendix_doc),
+                                }
+                            ]
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            plan = gap_runner.build_gap_plan(
+                {
+                    "projectId": "PRJ-TEST",
+                    "projectName": "测试项目",
+                    "tocJsonPath": str(toc_path),
+                    "parseResultPath": str(parse_path),
+                    "materialIndex": [],
+                }
+            )
+
+        task = plan["items"][0]["appendixTasks"][0]
+        self.assertEqual(task["availableParseFields"][0]["id"], "REQ-SCALE")
+        self.assertEqual(task["availableParseFields"][0]["label"], "标段规模")
+        self.assertGreater(len(task["availableParseFields"]), 160)
 
     def test_bid_gap_planner_summary_stdout_exposes_coverage_counts(self) -> None:
         gap_runner = load_gap_planner_script("run_from_manifest")
@@ -804,6 +904,1160 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(entries[0]["title"], "项目概况")
         self.assertEqual(entries[1]["tag"], "适配")
         self.assertEqual(entries[2]["title"], "附表")
+
+    def test_bid_table_filler_preserves_generic_appendix_and_highlights_manual_cells(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blank = tmp_path / "附表A.1 投标机型总方案信息表.docx"
+            doc = Document()
+            table = doc.add_table(rows=1, cols=4)
+            table.style = "Table Grid"
+            for index, text in enumerate(["序号", "项目", "投标响应", "备注"]):
+                table.cell(0, index).text = text
+            for row in (
+                ["1", "投标机型", "", ""],
+                ["2", "叶轮直径", "", "m"],
+                ["3", "项目业主", "", ""],
+                ["4", "场址空气密度", "", ""],
+            ):
+                cells = table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            doc.save(blank)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "appendixTask": {
+                            "id": "APPX-A1",
+                            "title": "附表A.1 投标机型总方案信息表",
+                            "docxPath": str(blank),
+                        },
+                        "projectTurbineModel": {
+                            "model": "EW10.0-220上置",
+                            "ratedPowerKw": 10000,
+                            "rotorDiameterM": 220,
+                        },
+                        "parseFields": [{"id": "OWNER", "label": "项目业主", "value": "测试业主"}],
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["schema_version"], "bid-tech-table-fill-v1")
+            self.assertTrue(output.exists())
+            self.assertEqual(result["fillReport"]["filledFieldCount"], 3)
+            self.assertEqual(result["fillReport"]["unfilledFieldCount"], 1)
+            filled_doc = Document(str(output))
+            rows = filled_doc.tables[0].rows
+            self.assertEqual(rows[1].cells[2].text, "EW10.0-220上置")
+            self.assertEqual(rows[2].cells[2].text, "220")
+            self.assertEqual(rows[3].cells[2].text, "测试业主")
+            self.assertEqual(rows[4].cells[2].text, "[待人工补充：场址空气密度]")
+            shd = rows[4].cells[2]._tc.tcPr.find(qn("w:shd"))
+            self.assertIsNotNone(shd)
+            self.assertEqual(shd.get(qn("w:fill")), "FFF2CC")
+
+    def test_bid_word_placeholder_filler_replaces_parse_and_project_placeholders(self) -> None:
+        word_filler = load_word_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            template = tmp_path / "待填写-投标说明函.docx"
+            doc = Document()
+            doc.add_paragraph("投标机型：[投标机型，待填写]")
+            doc.add_paragraph("项目要求：[招标要求，待填写]")
+            table = doc.add_table(rows=1, cols=2)
+            table.style = "Table Grid"
+            table.cell(0, 0).text = "项目名称"
+            table.cell(0, 1).text = "[项目名称，待填写]"
+            doc.save(template)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-word-placeholder-fill-v1",
+                        "projectName": "测试风电项目",
+                        "projectTurbineModel": {"model": "EW10.0-220上置"},
+                        "blankSource": {
+                            "id": "RAW-TEMPLATE",
+                            "title": "待填写-投标说明函.docx",
+                            "docxPath": str(template),
+                            "placeholderCount": 3,
+                        },
+                        "parseFields": [
+                            {
+                                "id": "REQ-001",
+                                "label": "招标要求",
+                                "value": "满足招标文件所有技术要求",
+                                "sourceFile": "招标文件.docx",
+                            }
+                        ],
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = word_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["schema_version"], "bid-tech-word-placeholder-fill-v1")
+            self.assertEqual(result["fillReport"]["placeholderCount"], 3)
+            self.assertEqual(result["fillReport"]["filledPlaceholderCount"], 3)
+            self.assertEqual(result["unfilledFields"], [])
+            filled_doc = Document(str(output))
+            self.assertEqual(filled_doc.paragraphs[0].text, "投标机型：EW10.0-220上置")
+            self.assertEqual(filled_doc.paragraphs[1].text, "项目要求：满足招标文件所有技术要求")
+            self.assertEqual(filled_doc.tables[0].cell(0, 1).text, "测试风电项目")
+
+    def test_bid_word_placeholder_filler_uses_project_identity_for_owner_placeholders(self) -> None:
+        word_filler = load_word_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            template = tmp_path / "固定-风电机组自主可控推广应用的承诺.docx"
+            doc = Document()
+            doc.add_paragraph("招标方：[招标方，待填写]")
+            doc.add_paragraph("日期：[日期，待填写]")
+            doc.save(template)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-word-placeholder-fill-v1",
+                        "projectName": "测试风电项目",
+                        "projectIdentity": {
+                            "owner": "华能集团",
+                            "customerName": "华能集团",
+                        },
+                        "blankSource": {
+                            "id": "RAW-0452",
+                            "title": "固定-风电机组自主可控推广应用的承诺.docx",
+                            "docxPath": str(template),
+                            "placeholderCount": 2,
+                        },
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = word_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["fillReport"]["placeholderCount"], 2)
+            self.assertEqual(result["fillReport"]["filledPlaceholderCount"], 2)
+            self.assertEqual(result["unfilledFields"], [])
+            filled_text = "\n".join(paragraph.text for paragraph in Document(str(output)).paragraphs)
+            self.assertIn("招标方：华能集团", filled_text)
+            self.assertNotIn("待填写", filled_text)
+
+    def test_bid_word_placeholder_filler_uses_manufacturing_base_intro_from_materials(self) -> None:
+        word_filler = load_word_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            template = tmp_path / "待填写-供货保障能力.docx"
+            doc = Document()
+            doc.add_paragraph("本项目主机供货制造基地-[基地名称，待填写]")
+            doc.add_paragraph("[基地介绍，待填写]生产基地情况详见5.11.1 本项目主机供货制造基地")
+            doc.add_paragraph("本项目叶片供货制造基地-[基地名称，待填写]")
+            doc.add_paragraph("[基地介绍，待填写]生产基地情况详见5.11.2 本项目叶片供货制造基地")
+            doc.save(template)
+
+            material = tmp_path / "固定-上海电气生产能力介绍.docx"
+            source_doc = Document()
+            source_doc.add_paragraph("上海电气生产能力介绍")
+            source_doc.add_paragraph(
+                "上海电气风电(张掖)叶片科技有限公司作为上海电气风电集团股份有限公司子公司成立于2021年12月24日，"
+                "公司位于高台县南华镇工业园区。公司主要生产5XMW及以上风力发电机组和叶片，配套年产能500台机组、500套叶片。"
+            )
+            source_doc.add_paragraph(
+                "上海电气高台生产基地于2023年6月投入生产运营，产品订单覆盖西北五省，目前已经累计生产5MW及上风力发电机组100台套。"
+            )
+            source_doc.save(material)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-word-placeholder-fill-v1",
+                        "blankSource": {
+                            "id": "RAW-SUPPLY",
+                            "title": template.name,
+                            "docxPath": str(template),
+                            "placeholderCount": 4,
+                        },
+                        "referenceMaterials": [
+                            {"id": "RAW-PROD", "name": material.name, "path": str(material), "materialTier": "standard"}
+                        ],
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = word_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["unfilledFields"], [])
+            filled_text = "\n".join(paragraph.text for paragraph in Document(str(output)).paragraphs)
+            self.assertIn("本项目主机供货制造基地-上海电气高台生产基地", filled_text)
+            self.assertIn("上海电气高台生产基地于2023年6月投入生产运营", filled_text)
+            self.assertIn("本项目叶片供货制造基地-上海电气风电（张掖）叶片科技有限公司", filled_text)
+            self.assertIn("配套年产能500台机组、500套叶片", filled_text)
+            self.assertNotIn("待人工补充", filled_text)
+
+    def test_bid_word_placeholder_filler_summarizes_wind_resource_report_from_project_facts(self) -> None:
+        word_filler = load_word_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            template = tmp_path / "风资源评估与机位排布方案.docx"
+            doc = Document()
+            doc.add_paragraph("风资源概况：[风资源报告，待填写]")
+            doc.save(template)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-word-placeholder-fill-v1",
+                        "blankSource": {
+                            "id": "RAW-WIND",
+                            "title": "风资源评估与机位排布方案.docx",
+                            "docxPath": str(template),
+                            "placeholderCount": 1,
+                        },
+                        "projectFactTable": {
+                            "status": "confirmed",
+                            "fields": [
+                                {"label": "轮毂高度", "value": "125", "unit": "m"},
+                                {"label": "年平均风速", "value": "7.22", "unit": "m/s"},
+                                {"label": "空气密度", "value": "1.16", "unit": "kg/m3"},
+                                {"label": "湍流强度", "value": "0.1"},
+                                {"label": "风剪切", "value": "0.1"},
+                                {"label": "极端风速", "value": "53.51", "unit": "m/s"},
+                                {"label": "安全等级", "value": "IEC S"},
+                            ],
+                        },
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = word_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["fillReport"]["filledPlaceholderCount"], 1)
+            self.assertEqual(result["unfilledFields"], [])
+            filled_text = "\n".join(paragraph.text for paragraph in Document(str(output)).paragraphs)
+            self.assertIn("7.22", filled_text)
+            self.assertIn("1.16", filled_text)
+            self.assertIn("IEC S", filled_text)
+            self.assertNotIn("待填写", filled_text)
+
+    def test_bid_word_placeholder_filler_uses_table_row_label_before_model_column_header(self) -> None:
+        word_filler = load_word_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            template = tmp_path / "待填写-投标关键数据一览表.docx"
+            doc = Document()
+            table = doc.add_table(rows=1, cols=3)
+            table.style = "Table Grid"
+            for index, text in enumerate(["项目名称", "[项目名称，待填写]", "[项目名称，待填写]"]):
+                table.cell(0, index).text = text
+            for row in (
+                ["承诺方式", "[投标方案，待填写]", "[投标方案，待填写]"],
+                ["方案", "[投标方案，待填写]", "[投标方案，待填写]"],
+                ["机型", "[投标方案，待填写]", "[投标方案，待填写]"],
+                ["轮毂高度（m）", "[投标方案，待填写]", "[投标方案，待填写]"],
+                ["台数", "[投标方案，待填写]", "[投标方案，待填写]"],
+                ["容量（MW）", "[投标方案，待填写]", "[投标方案，待填写]"],
+                ["净发电量（MWh/y）", "[投标方案，待填写]", "[投标方案，待填写]"],
+                ["有效小时数（h）", "[投标方案，待填写]", "[投标方案，待填写]"],
+            ):
+                cells = table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            guarantee = doc.add_table(rows=1, cols=2)
+            guarantee.style = "Table Grid"
+            guarantee.cell(0, 0).text = "保证项"
+            guarantee.cell(0, 1).text = "保证率"
+            for row in (
+                ["单台机组功率曲线保证率（%）", "[投标方案，待填写]"],
+                ["单台机组时间可利用率保证值（%）", "[投标方案，待填写]"],
+                ["全场机组时间可利用率保证值）（%）", "[投标方案，待填写]"],
+            ):
+                cells = guarantee.add_row().cells
+                cells[0].text, cells[1].text = row
+            doc.save(template)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-word-placeholder-fill-v1",
+                        "projectName": "测试项目",
+                        "blankSource": {
+                            "id": "RAW-KEY-DATA",
+                            "title": "待填写-投标关键数据一览表.docx",
+                            "docxPath": str(template),
+                            "placeholderCount": 18,
+                        },
+                        "projectFactTable": {
+                            "status": "confirmed",
+                            "fields": [
+                                {"label": "项目名称", "value": "测试项目"},
+                                {"label": "投标方案", "value": "EW10.0-220-125"},
+                                {"label": "投标机型", "value": "EW10.0-220上置"},
+                                {"label": "轮毂高度", "value": "125", "unit": "m"},
+                                {"label": "机组台数", "value": "60", "unit": "台"},
+                                {"label": "总装机容量", "value": "600", "unit": "MW"},
+                                {"label": "保证发电量", "value": "1701601", "unit": "MWh"},
+                                {"label": "保证有效小时数", "value": "2836", "unit": "h"},
+                                {"label": "功率曲线保证率", "value": "97%", "unit": "%"},
+                                {"label": "单台可利用率", "value": "95%", "unit": "%"},
+                                {"label": "全场可利用率", "value": "98%", "unit": "%"},
+                            ],
+                        },
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = word_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["unfilledFields"], [])
+            filled_doc = Document(str(output))
+            rows = filled_doc.tables[0].rows
+            self.assertEqual(rows[1].cells[1].text, "承诺保证值（75%折减）")
+            self.assertEqual(rows[2].cells[1].text, "EW10.0-220-125")
+            self.assertEqual(rows[3].cells[1].text, "EW10.0-220-125")
+            self.assertEqual(rows[4].cells[1].text, "125")
+            self.assertEqual(rows[5].cells[1].text, "60")
+            self.assertEqual(rows[6].cells[1].text, "600")
+            self.assertEqual(rows[7].cells[1].text, "1701601")
+            self.assertEqual(rows[8].cells[1].text, "2836")
+            guarantee_rows = filled_doc.tables[1].rows
+            self.assertEqual(guarantee_rows[1].cells[1].text, "97%")
+            self.assertEqual(guarantee_rows[2].cells[1].text, "95%")
+            self.assertEqual(guarantee_rows[3].cells[1].text, "98%")
+            self.assertEqual(result["fillReport"]["semanticCheckCount"], 21)
+            self.assertEqual(result["fillReport"]["semanticFailedCount"], 0)
+            self.assertEqual(result["fillReport"]["semanticValidationRate"], 1.0)
+
+    def test_bid_table_filler_uses_first_empty_response_column_for_multi_model_tables(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blank = tmp_path / "附表A.1 投标机型总方案信息表.docx"
+            blank_doc = Document()
+            table = blank_doc.add_table(rows=1, cols=6)
+            table.style = "Table Grid"
+            for index, text in enumerate(["编号", "项目", "项目", "投标机型1", "投标机型2", "备注"]):
+                table.cell(0, index).text = text
+            for row in (
+                ["1", "投标机型", "投标机型", "", "", ""],
+                ["2", "机组台数", "机组台数", "", "", ""],
+            ):
+                cells = table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            blank_doc.save(blank)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "appendixTask": {
+                            "id": "APPX-A1",
+                            "title": "附表A.1 投标机型总方案信息表",
+                            "docxPath": str(blank),
+                        },
+                        "projectTurbineModel": {"model": "EW10.0-220上置", "ratedPowerKw": 10000},
+                        "parseFields": [{"id": "REQ-SCALE", "label": "标段规模", "value": "600MW"}],
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            table_filler.run_from_manifest(manifest_path)
+
+            filled_doc = Document(str(output))
+            rows = filled_doc.tables[0].rows
+            self.assertEqual(rows[1].cells[3].text, "EW10.0-220上置")
+            self.assertEqual(rows[1].cells[4].text, "")
+            self.assertEqual(rows[2].cells[3].text, "60")
+
+    def test_bid_table_filler_uses_bidder_response_column_and_requirement_fallback(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blank = tmp_path / "附表E.2 风电场折减系数表.docx"
+            blank_doc = Document()
+            table = blank_doc.add_table(rows=1, cols=3)
+            table.style = "Table Grid"
+            for index, text in enumerate(["风电场折减项目", "招标人要求值", "投标人响应值"]):
+                table.cell(0, index).text = text
+            for row in (
+                ["尾流折减", "97%", ""],
+                ["空气密度折减", "根据各厂家测算结果确定", ""],
+            ):
+                cells = table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            blank_doc.save(blank)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "appendixTask": {
+                            "id": "APPX-E2",
+                            "title": "附表E.2 风电场折减系数表",
+                            "docxPath": str(blank),
+                        },
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["fillReport"]["targetFieldCount"], 2)
+            self.assertEqual(result["fillReport"]["filledFieldCount"], 1)
+            self.assertEqual(result["fillReport"]["unfilledFieldCount"], 1)
+            filled_doc = Document(str(output))
+            rows = filled_doc.tables[0].rows
+            self.assertEqual(rows[1].cells[2].text, "97%")
+            self.assertEqual(rows[2].cells[2].text, "[待人工补充：空气密度折减]")
+            shd = rows[2].cells[2]._tc.tcPr.find(qn("w:shd"))
+            self.assertIsNotNone(shd)
+
+    def test_bid_table_filler_counts_only_empty_or_placeholder_response_cells(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blank = tmp_path / "附表A.1 投标机型总方案信息表.docx"
+            blank_doc = Document()
+            table = blank_doc.add_table(rows=1, cols=3)
+            table.style = "Table Grid"
+            for index, text in enumerate(["编号", "项目", "投标响应"]):
+                table.cell(0, index).text = text
+            for row in (
+                ["1", "投标机型", "已填写机型"],
+                ["2", "轮毂高度", ""],
+            ):
+                cells = table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            blank_doc.save(blank)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "appendixTask": {
+                            "id": "APPX-A1",
+                            "title": "附表A.1 投标机型总方案信息表",
+                            "docxPath": str(blank),
+                        },
+                        "projectFactTable": {
+                            "status": "confirmed",
+                            "fields": [
+                                {"label": "轮毂高度", "value": "125", "unit": "m"},
+                                {"label": "投标机型", "value": "EW10.0-220上置"},
+                            ],
+                        },
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["fillReport"]["targetFieldCount"], 1)
+            self.assertEqual(result["fillReport"]["filledFieldCount"], 1)
+            filled_doc = Document(str(output))
+            rows = filled_doc.tables[0].rows
+            self.assertEqual(rows[1].cells[2].text, "已填写机型")
+            self.assertEqual(rows[2].cells[2].text, "125")
+
+    def test_bid_table_filler_auto_selects_non_c_appendix_sources_from_material_index(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blank = tmp_path / "附表B.2 供货范围响应表.docx"
+            blank_doc = Document()
+            table = blank_doc.add_table(rows=1, cols=4)
+            table.style = "Table Grid"
+            for index, text in enumerate(["序号", "项目", "投标响应", "备注"]):
+                table.cell(0, index).text = text
+            for row in (
+                ["1", "风力发电机组", "", ""],
+                ["2", "塔筒", "", ""],
+                ["3", "专用工具", "", ""],
+            ):
+                cells = table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            blank_doc.save(blank)
+
+            supply = tmp_path / "固定-供货范围清单.docx"
+            supply_doc = Document()
+            source_table = supply_doc.add_table(rows=1, cols=2)
+            source_table.style = "Table Grid"
+            source_table.cell(0, 0).text = "项目"
+            source_table.cell(0, 1).text = "投标响应"
+            for row in (
+                ["风力发电机组", "提供 EW10.0-220 风力发电机组"],
+                ["塔筒", "包含配套钢塔筒"],
+                ["专用工具", "提供安装维护专用工具一套"],
+            ):
+                cells = source_table.add_row().cells
+                cells[0].text = row[0]
+                cells[1].text = row[1]
+            supply_doc.save(supply)
+
+            wrong = tmp_path / "固定-风资源评估报告.docx"
+            wrong_doc = Document()
+            wrong_doc.add_paragraph("平均风速：7.2m/s")
+            wrong_doc.save(wrong)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "appendixTask": {
+                            "id": "APPX-B2",
+                            "title": "附表B.2 供货范围响应表",
+                            "docxPath": str(blank),
+                        },
+                        "materialIndex": [
+                            {
+                                "id": "RAW-WIND",
+                                "name": "固定-风资源评估报告.docx",
+                                "folderPath": "技术标/项目素材/风资源评估",
+                                "path": str(wrong),
+                                "materialTier": "project",
+                            },
+                            {
+                                "id": "RAW-SUPPLY",
+                                "name": "固定-供货范围清单.docx",
+                                "folderPath": "技术标/通用素材/供货范围",
+                                "path": str(supply),
+                                "materialTier": "standard",
+                            },
+                        ],
+                        "recommendedMaterials": [
+                            {
+                                "id": "RAW-WIND",
+                                "name": "固定-风资源评估报告.docx",
+                                "path": str(wrong),
+                            }
+                        ],
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["fillReport"]["filledFieldCount"], 3)
+            selected_ids = [item["id"] for item in result["fillReport"]["sourceSelection"]["selected"]]
+            self.assertIn("RAW-SUPPLY", selected_ids)
+            self.assertEqual(result["fillReport"]["referenceSources"][0]["id"], "RAW-SUPPLY")
+            self.assertEqual(result["fillReport"]["referenceSources"][0]["route"], "Wiki/materialIndex 自动选材")
+            filled_doc = Document(str(output))
+            rows = filled_doc.tables[0].rows
+            self.assertEqual(rows[1].cells[2].text, "提供 EW10.0-220 风力发电机组")
+            self.assertEqual(rows[2].cells[2].text, "包含配套钢塔筒")
+            self.assertEqual(rows[3].cells[2].text, "提供安装维护专用工具一套")
+
+    def test_bid_table_filler_uses_parse_fields_and_project_materials_for_project_specific_values(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blank = tmp_path / "附表A.1 投标机型总方案信息表.docx"
+            blank_doc = Document()
+            table = blank_doc.add_table(rows=1, cols=4)
+            table.style = "Table Grid"
+            for index, text in enumerate(["序号", "项目", "投标响应", "备注"]):
+                table.cell(0, index).text = text
+            for row in (
+                ["1", "机组台数", "", ""],
+                ["2", "总容量（MW）", "", ""],
+                ["3", "场址空气密度", "", ""],
+                ["4", "基础混凝土（m3）", "", ""],
+                ["5", "基础钢筋（t）", "", ""],
+                ["6", "箱变位置", "", ""],
+            ):
+                cells = table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            blank_doc.save(blank)
+
+            foundation = tmp_path / "基础弯矩表.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "基础工程量"
+            ws.append(["基础混凝土用量（m3）", "789.482"])
+            ws.append(["垫层混凝土用量（m3）", "57.353"])
+            ws.append(["基础钢筋用量（kg）", "85787.635"])
+            wb.save(foundation)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "appendixTask": {
+                            "id": "APPX-A1",
+                            "title": "附表A.1 投标机型总方案信息表",
+                            "docxPath": str(blank),
+                        },
+                        "projectTurbineModel": {
+                            "model": "EW10.0-220上置",
+                            "layout": "变压器上置",
+                        },
+                        "parseFields": [
+                            {"id": "REQ-NOISE-COUNT", "label": "项目基础信息", "value": "故障率≥10%，不足3台按3台计算"},
+                            {"id": "REQ-NOISE-DENSITY", "label": "空气密度", "value": "湿度均有相应变化，相同风速蕴含的风能也会发生变化"},
+                            {"id": "REQ-COUNT", "label": "项目概况", "value": "本工程计划安装60台单机容量10MW风力发电机组"},
+                            {"id": "REQ-SCALE", "label": "标段规模", "value": "600MW"},
+                            {"id": "REQ-DENSITY", "label": "空气密度", "value": "1.154 kg/m³"},
+                        ],
+                        "materialIndex": [
+                            {
+                                "id": "RAW-FOUNDATION",
+                                "name": "基础弯矩表.xlsx",
+                                "folderPath": "技术标/项目素材/基础弯矩表",
+                                "path": str(foundation),
+                                "materialTier": "project",
+                            }
+                        ],
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["fillReport"]["unfilledFieldCount"], 0)
+            filled_doc = Document(str(output))
+            rows = filled_doc.tables[0].rows
+            self.assertEqual(rows[1].cells[2].text, "60")
+            self.assertEqual(rows[2].cells[2].text, "600MW")
+            self.assertEqual(rows[3].cells[2].text, "1.154 kg/m³")
+            self.assertEqual(rows[4].cells[2].text, "789.482")
+            self.assertEqual(rows[5].cells[2].text, "85.788")
+            self.assertEqual(rows[6].cells[2].text, "塔上上置机型")
+
+    def test_bid_table_filler_copies_power_curve_matrix_from_project_excels(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blank = tmp_path / "附表D.1 标准及风电场空气密度功率曲线.docx"
+            doc = Document()
+            table = doc.add_table(rows=1, cols=4)
+            table.style = "Table Grid"
+            for index, text in enumerate(["风速区间（m/s）", "区间平均风速（m/s）", "标准空气密度下功率（kW）", "风电场空气密度下功率（kW）"]):
+                table.cell(0, index).text = text
+            for row in (
+                ["0.00-0.25", "0", "", ""],
+                ["2.75-3.25", "3.0", "", ""],
+                ["3.25-3.75", "3.5", "", ""],
+            ):
+                cells = table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            doc.save(blank)
+
+            standard = tmp_path / "W10.0-220_空气密度1.225_功率曲线.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "功率曲线与发电量"
+            ws.append(["风速(m/s)", "修正功率(kW)(Ce_max=0.45)", "Ct"])
+            ws.append([3.0, 210, 0.91])
+            ws.append([3.5, 350, 0.87])
+            wb.save(standard)
+
+            site = tmp_path / "W10.0-220_空气密度1.16_功率曲线.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "功率曲线与发电量"
+            ws.append(["风速(m/s)", "修正功率(kW)(Ce_max=0.45)", "Ct"])
+            ws.append([3.0, 204, 0.9])
+            ws.append([3.5, 345.4, 0.86])
+            wb.save(site)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "appendixTask": {
+                            "id": "APPX-D1",
+                            "title": "附表D.1 标准及风电场空气密度功率曲线",
+                            "docxPath": str(blank),
+                        },
+                        "materialIndex": [
+                            {"id": "STD", "name": standard.name, "path": str(standard), "materialTier": "project"},
+                            {"id": "SITE", "name": site.name, "path": str(site), "materialTier": "project"},
+                        ],
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["fillReport"]["filledFieldCount"], 6)
+            filled_doc = Document(str(output))
+            rows = filled_doc.tables[0].rows
+            self.assertEqual(rows[1].cells[2].text, "0")
+            self.assertEqual(rows[1].cells[3].text, "0")
+            self.assertEqual(rows[2].cells[2].text, "210")
+            self.assertEqual(rows[2].cells[3].text, "204")
+            self.assertEqual(rows[3].cells[2].text, "350")
+            self.assertEqual(rows[3].cells[3].text, "345.4")
+
+    def test_bid_table_filler_selects_curve_excels_for_blank_ct_curve_matrix(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blank = tmp_path / "附表D.2 标准及风电场空气密度下推力系数曲线.docx"
+            doc = Document()
+            table = doc.add_table(rows=1, cols=3)
+            table.style = "Table Grid"
+            for index, text in enumerate(["风速（m/s）", "标准空气密度下推力系数 Ct", "风电场空气密度下推力系数 Ct"]):
+                table.cell(0, index).text = text
+            for _ in range(3):
+                table.add_row()
+            doc.save(blank)
+
+            params = tmp_path / "X2平台机型投标参数_20250106.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "主参数"
+            ws.append(["对象", "项目", "参数名称", "单位", "W10.0-220"])
+            ws.append(["", "", "叶轮直径", "m", 220])
+            wb.save(params)
+
+            standard = tmp_path / "RAW-0460-W10.0-220_空气密度1.225_功率曲线.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "功率曲线与发电量"
+            ws.append(["风速(m/s)", "修正功率(kW)", "Ct"])
+            ws.append([3.0, 210, 0.91])
+            ws.append([3.5, 350, 0.87])
+            ws.append([4.0, 510, 0.83])
+            wb.save(standard)
+
+            site = tmp_path / "RAW-0461-W10.0-220_空气密度1.16_功率曲线.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "功率曲线与发电量"
+            ws.append(["风速(m/s)", "修正功率(kW)", "Ct"])
+            ws.append([3.0, 204, 0.9])
+            ws.append([3.5, 345.4, 0.86])
+            ws.append([4.0, 500.2, 0.82])
+            wb.save(site)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "appendixTask": {
+                            "id": "APPX-D2",
+                            "title": "附表D.2 标准及风电场空气密度下推力系数曲线",
+                            "docxPath": str(blank),
+                        },
+                        "materialIndex": [
+                            {"id": "PARAM", "name": params.name, "path": str(params), "materialTier": "project"},
+                            {"id": "STD", "name": standard.name, "path": str(standard), "materialTier": "project"},
+                            {"id": "SITE", "name": site.name, "path": str(site), "materialTier": "project"},
+                        ],
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            selected_names = [item["name"] for item in result["fillReport"]["sourceSelection"]["selected"]]
+            self.assertIn(standard.name, selected_names)
+            self.assertIn(site.name, selected_names)
+            self.assertEqual(result["fillReport"]["filledFieldCount"], 9)
+            filled_doc = Document(str(output))
+            rows = filled_doc.tables[0].rows
+            self.assertEqual(rows[1].cells[0].text, "3")
+            self.assertEqual(rows[1].cells[1].text, "0.91")
+            self.assertEqual(rows[1].cells[2].text, "0.9")
+            self.assertEqual(rows[3].cells[0].text, "4")
+            self.assertEqual(rows[3].cells[1].text, "0.83")
+            self.assertEqual(rows[3].cells[2].text, "0.82")
+
+    def test_bid_table_filler_transplants_matching_structured_source_table(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blank = tmp_path / "附表E.1 投标人风资源评估与机位排布方案.docx"
+            doc = Document()
+            table = doc.add_table(rows=1, cols=6)
+            table.style = "Table Grid"
+            for index, text in enumerate(["机位编号", "坐标", "海拔高度（m）", "韦布尔参数A", "平均风速（m/s）", "机型"]):
+                table.cell(0, index).text = text
+            for row in (["", "", "", "", "", ""], ["…", "", "", "", "", ""], ["平均值", "", "", "", "", ""]):
+                cells = table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            doc.save(blank)
+
+            source_docx = tmp_path / "风资源评估报告.docx"
+            doc = Document()
+            table = doc.add_table(rows=1, cols=6)
+            table.style = "Table Grid"
+            for index, text in enumerate(["风机/编号", "X/(m)", "Z/(m)", "韦布尔参数A", "平均风速(m/s)", "机型"]):
+                table.cell(0, index).text = text
+            for index in range(1, 12):
+                cells = table.add_row().cells
+                values = [f"A{index:03d}", f"40416{index}", str(700 + index), f"8.{index:02d}", f"7.{index:02d}", "EW10.0-220-125"]
+                for col, value in enumerate(values):
+                    cells[col].text = value
+            doc.save(source_docx)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "appendixTask": {
+                            "id": "APPX-E1",
+                            "title": "附表E.1 投标人风资源评估与机位排布方案",
+                            "docxPath": str(blank),
+                        },
+                        "referenceMaterials": [
+                            {"id": "WIND", "name": source_docx.name, "path": str(source_docx), "materialTier": "project"}
+                        ],
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            self.assertGreater(result["fillReport"]["filledFieldCount"], 60)
+            filled_doc = Document(str(output))
+            rows = filled_doc.tables[0].rows
+            self.assertEqual(len(rows), 12)
+            self.assertEqual(rows[0].cells[0].text, "风机/编号")
+            self.assertEqual(rows[1].cells[0].text, "A001")
+            self.assertEqual(rows[11].cells[5].text, "EW10.0-220-125")
+            self.assertEqual(result["unfilledFields"], [])
+
+    def test_bid_table_filler_generates_load_wind_parameter_group_from_position_table(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blank = tmp_path / "附表G.2.2 投标人对招标项目场址载荷计算选取风参数结果.docx"
+            doc = Document()
+            table = doc.add_table(rows=1, cols=5)
+            table.style = "Table Grid"
+            for col in range(5):
+                table.cell(0, col).text = "载荷计算风参数分组1"
+            for row in (
+                ["序号", "机位编号", "机组坐标", "机组坐标", "投标机型"],
+                ["序号", "机位编号", "X", "Y", "投标机型"],
+                ["1", "1", "", "", ""],
+                ["……", "", "", "", ""],
+                ["备注：如采用全场包络，只需填写分组1。"] * 5,
+            ):
+                cells = table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            doc.save(blank)
+
+            source_docx = tmp_path / "风资源评估报告.docx"
+            doc = Document()
+            table = doc.add_table(rows=1, cols=4)
+            table.style = "Table Grid"
+            for index, text in enumerate(["机位编号", "X", "Y", "机型"]):
+                table.cell(0, index).text = text
+            for row in (
+                ["北区", "北区", "北区", "北区"],
+                ["A001", "40416757.857", "4786181.802", "EW10.0-220-125"],
+                ["A002", "40416633.400", "4785238.500", "EW10.0-220-125"],
+                ["A044", "40431040.541", "4780184.646", "EW10.0-220-125"],
+                ["A34", "40425746.863", "4776165.318", "EW10.0-220-125"],
+                ["南区", "南区", "南区", "南区"],
+                ["BX01", "40436771.920", "4779768.358", "备选"],
+            ):
+                cells = table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            doc.save(source_docx)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "appendixTask": {
+                            "id": "APPX-G22",
+                            "title": "附表G.2.2 投标人对招标项目场址载荷计算选取风参数结果",
+                            "docxPath": str(blank),
+                        },
+                        "referenceMaterials": [
+                            {"id": "WIND", "name": source_docx.name, "path": str(source_docx), "materialTier": "project"}
+                        ],
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["unfilledFields"], [])
+            filled_doc = Document(str(output))
+            rows = filled_doc.tables[0].rows
+            self.assertEqual(len(rows), 8)
+            self.assertEqual([cell.text for cell in rows[3].cells], ["1", "A001", "40416758", "4786182", "EW10.0-220-125"])
+            self.assertEqual([cell.text for cell in rows[4].cells], ["2", "A002", "40416633", "4785239", "EW10.0-220-125"])
+            self.assertEqual([cell.text for cell in rows[5].cells], ["3", "A34", "40425747", "4776165", "EW10.0-220-125"])
+            self.assertEqual([cell.text for cell in rows[6].cells], ["4", "A044", "40431041", "4780185", "EW10.0-220-125"])
+            self.assertEqual(rows[7].cells[0].text, "备注：如采用全场包络，只需填写分组1。")
+
+    def test_bid_table_filler_generates_spare_parts_table_from_quote_xlsx(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blank = tmp_path / "附表B.2 质量保证期备品备件、消耗品清单.docx"
+            doc = Document()
+            table = doc.add_table(rows=1, cols=8)
+            table.style = "Table Grid"
+            for index, text in enumerate(["序号", "名称", "型号和规格", "单位", "数量", "备注", "更换周期", "国内替代产品型号"]):
+                table.cell(0, index).text = text
+            table.add_row()
+            doc.save(blank)
+
+            quote = tmp_path / "项目报价文件.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "E 推荐备品备件（如果有）的分项报价"
+            ws.append([""] * 10)
+            ws.append(["表2 E"] + [""] * 9)
+            ws.append(["单位：人民币万元"] + [""] * 9)
+            ws.append(["序号", "名称", "规格型号", "单位", "数量", "价格", "总价", "产地", "生产厂家", "备注"])
+            ws.append(["一、备品备件部分"] + [""] * 9)
+            ws.append([1, "变桨限位开关_FD 2031_S1", "EW10.0-220-125", "EA", 12, "", "", "中国", "上海电气合供", ""])
+            ws.append([2, "避雷器DXH06_FCS/3+1R40", "EW10.0-220-125", "EA", 12, "", "", "中国", "上海电气合供", ""])
+            ws.append([None, "合计(单台机组)（万元）"] + [""] * 8)
+            wb.save(quote)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "appendixTask": {
+                            "id": "APPX-B2",
+                            "title": "附表B.2 质量保证期备品备件、消耗品清单",
+                            "docxPath": str(blank),
+                        },
+                        "referenceMaterials": [
+                            {"id": "QUOTE", "name": quote.name, "path": str(quote), "materialTier": "project"}
+                        ],
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            filled_doc = Document(str(output))
+            rows = filled_doc.tables[0].rows
+            self.assertEqual(len(rows), 4)
+            self.assertEqual([cell.text for cell in rows[1].cells], ["一、备品备件部分"] * 8)
+            self.assertEqual([cell.text for cell in rows[2].cells], ["1", "变桨限位开关_FD 2031_S1", "EW10.0-220-125", "EA", "12", "\\", "\\", "\\"])
+            self.assertEqual(result["unfilledFields"], [])
+
+    def test_bid_table_filler_batch_output_names_include_appendix_id_to_avoid_collisions(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blanks = []
+            for index, appendix_id in enumerate(("APPX-0014", "APPX-0080", "APPX-0014"), start=1):
+                blank = tmp_path / f"{index}-{appendix_id}.docx"
+                doc = Document()
+                table = doc.add_table(rows=1, cols=3)
+                table.style = "Table Grid"
+                for index, text in enumerate(["序号", "项目", "投标响应"]):
+                    table.cell(0, index).text = text
+                cells = table.add_row().cells
+                cells[0].text = "1"
+                cells[1].text = "投标机型"
+                cells[2].text = ""
+                doc.save(blank)
+                blanks.append((appendix_id, blank))
+
+            manifest_path = tmp_path / "manifest.json"
+            output_dir = tmp_path / "outputs"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "projectTurbineModel": {"model": "EW10.0-220上置"},
+                        "outputDir": str(output_dir),
+                        "targets": [
+                            {
+                                "id": appendix_id,
+                                "title": "附表B.8 出质保后备品备件服务 无",
+                                "docxPath": str(blank),
+                            }
+                            for appendix_id, blank in blanks
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            output_files = [Path(item) for item in result["outputFiles"]]
+            self.assertEqual(len(output_files), 3)
+            self.assertEqual(len({item.name for item in output_files}), 3)
+            self.assertTrue(any("APPX-0014" in item.name for item in output_files))
+            self.assertTrue(any("APPX-0080" in item.name for item in output_files))
+
+    def test_bid_table_filler_copies_no_table_appendix_without_failing_batch(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            no_table = tmp_path / "附表B.8 出质保后备品备件服务 无.docx"
+            no_table_doc = Document()
+            no_table_doc.add_paragraph("附表B.8 出质保后备品备件服务 无")
+            no_table_doc.save(no_table)
+
+            normal = tmp_path / "附表A.1 投标机型总方案信息表.docx"
+            normal_doc = Document()
+            table = normal_doc.add_table(rows=1, cols=3)
+            table.style = "Table Grid"
+            for index, text in enumerate(["序号", "项目", "投标响应"]):
+                table.cell(0, index).text = text
+            cells = table.add_row().cells
+            cells[0].text = "1"
+            cells[1].text = "投标机型"
+            cells[2].text = ""
+            normal_doc.save(normal)
+
+            manifest_path = tmp_path / "manifest.json"
+            output_dir = tmp_path / "outputs"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "projectTurbineModel": {"model": "EW10.0-220上置"},
+                        "outputDir": str(output_dir),
+                        "targets": [
+                            {
+                                "id": "APPX-B8",
+                                "title": "附表B.8 出质保后备品备件服务 无",
+                                "docxPath": str(no_table),
+                            },
+                            {
+                                "id": "APPX-A1",
+                                "title": "附表A.1 投标机型总方案信息表",
+                                "docxPath": str(normal),
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["fillReport"]["targetCount"], 2)
+            self.assertEqual(result["fillReport"]["failedTargetCount"], 0)
+            self.assertEqual(result["fillReport"]["successfulTargetCount"], 2)
+            self.assertEqual(len(result["outputFiles"]), 2)
+            no_table_result = result["targetResults"][0]
+            self.assertEqual(no_table_result["fillReport"]["targetFieldCount"], 0)
+            self.assertTrue(Path(no_table_result["outputFile"]).exists())
+            copied_doc = Document(no_table_result["outputFile"])
+            self.assertEqual(copied_doc.paragraphs[0].text, "附表B.8 出质保后备品备件服务 无")
 
     def test_bid_assembler_inject_prefix_collapses_heading_level_gaps(self) -> None:
         numbering_fixer = load_assembler_script("numbering_fixer")

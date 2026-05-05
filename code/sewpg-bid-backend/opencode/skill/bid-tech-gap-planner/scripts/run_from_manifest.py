@@ -50,6 +50,72 @@ def appendices_from_parse(parse_result: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def parse_fields_from_parse(parse_result: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_items = parse_result.get("items")
+    structured = parse_result.get("structured") if isinstance(parse_result.get("structured"), dict) else {}
+    if not isinstance(raw_items, list):
+        raw_items = structured.get("items") if isinstance(structured.get("items"), list) else []
+    allowed_types = {"项目基础信息", "风机核心参数", "性能保证指标", "环境适应性要求", "环境适应性"}
+    fields: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    priority_terms = (
+        "标段规模",
+        "总装机容量",
+        "总容量",
+        "机组数量",
+        "机组台数",
+        "风机数量",
+        "单机容量",
+        "空气密度",
+        "湍流强度",
+        "风剪切",
+        "年平均风速",
+        "参考风速",
+        "极端风速",
+    )
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or item.get("category") or "")
+        if allowed_types and item_type and item_type not in allowed_types:
+            continue
+        label = str(item.get("keyEntity") or item.get("title") or item.get("label") or item.get("fieldKey") or "").strip()
+        value = str(item.get("keyValue") or item.get("value") or "").strip()
+        if not label or not value or len(value) > 240:
+            continue
+        key = f"{label}::{value}"
+        if key in seen:
+            continue
+        seen.add(key)
+        value_text = str(value)
+        evidence = str(item.get("evidence") or "")
+        evidence_location = str(item.get("evidenceLocation") or "")
+        priority = 0
+        if any(term in label for term in priority_terms):
+            priority += 100
+        if re.search(r"\d+(?:\.\d+)?\s*(MW|kW|万千瓦|kg/?m[³3]|台|m/s|%)", value_text + " " + evidence, flags=re.I):
+            priority += 30
+        if evidence_location.startswith("B"):
+            priority += 20
+        if len(value_text) > 120:
+            priority -= 15
+        fields.append(
+            {
+                "id": str(item.get("id") or item.get("fieldKey") or label),
+                "label": label,
+                "value": value,
+                "sourceFile": str(item.get("sourceFile") or ""),
+                "evidence": evidence,
+                "evidenceLocation": evidence_location,
+                "_priority": priority,
+            }
+        )
+    fields.sort(key=lambda field: (field.get("_priority") or 0, field.get("id") or ""), reverse=True)
+    for field in fields:
+        field.pop("_priority", None)
+    return fields[:320]
+
+
 def wiki_cards_by_section(wiki_dir: Path | None) -> dict[str, list[dict[str, Any]]]:
     if not wiki_dir or not (wiki_dir / "卡片").exists():
         return {}
@@ -624,10 +690,24 @@ def recommended_materials_for_appendix(
     )
 
 
-def build_appendix_task(appendix: dict[str, Any], recommended_materials: list[dict[str, Any]]) -> dict[str, Any]:
+def build_appendix_task(
+    appendix: dict[str, Any],
+    recommended_materials: list[dict[str, Any]],
+    parse_fields: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     fields = appendix.get("availableParseFields") or appendix.get("fields") or []
     if not isinstance(fields, list):
         fields = []
+    merged_fields: list[dict[str, Any]] = []
+    seen_fields: set[str] = set()
+    for field in list(fields) + list(parse_fields or []):
+        if not isinstance(field, dict):
+            continue
+        key = str(field.get("id") or field.get("label") or field.get("title") or field.get("key") or "").strip()
+        if not key or key in seen_fields:
+            continue
+        seen_fields.add(key)
+        merged_fields.append(field)
     return {
         "id": str(appendix.get("id") or appendix.get("title") or "APP-UNKNOWN"),
         "title": str(appendix.get("title") or "招标附表空表"),
@@ -635,7 +715,7 @@ def build_appendix_task(appendix: dict[str, Any], recommended_materials: list[di
         "docxPath": str(appendix.get("docxPath") or appendix.get("docx_path") or ""),
         "workspacePath": str(appendix.get("workspacePath") or appendix.get("workspace_path") or ""),
         "rowCount": appendix.get("rowCount") or appendix.get("row_count") or 0,
-        "availableParseFields": fields,
+        "availableParseFields": merged_fields,
         "recommendedMaterials": [
             {**dict(material), "usage": "table_source"}
             for material in recommended_materials[:5]
@@ -672,7 +752,7 @@ def build_material_fill_task(item: dict[str, Any], material: dict[str, Any], gap
     ]
     return {
         "id": f"FILL-{gap_id}-{material_id}",
-        "skill": "bid-tech-table-filler",
+        "skill": "bid-tech-word-placeholder-filler",
         "status": "pending",
         "title": f"填写{title}",
         "blankSource": {
@@ -747,6 +827,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     parse_result = load_json(parse_result_path) if parse_result_path.exists() else {}
     items = toc_items(toc)
     appendices = appendices_from_parse(parse_result)
+    parse_fields = parse_fields_from_parse(parse_result)
     raw_wiki_dir = str(manifest.get("wikiDir") or "").strip()
     wiki_index = wiki_cards_by_section(Path(raw_wiki_dir) if raw_wiki_dir else None)
     project_turbine_model = manifest.get("projectTurbineModel") if isinstance(manifest.get("projectTurbineModel"), dict) else {}
@@ -794,7 +875,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         elif appendix_matches:
             recommended_pool = dedupe_materials(candidate_materials + indexed_materials + toc_materials_all)
             appendix_tasks = [
-                build_appendix_task(appendix, recommended_materials_for_appendix(appendix, recommended_pool))
+                build_appendix_task(appendix, recommended_materials_for_appendix(appendix, recommended_pool), parse_fields)
                 for appendix in appendix_matches
             ]
             fill_tasks = [build_fill_task(item, appendix, gap_id) for appendix in appendix_matches]

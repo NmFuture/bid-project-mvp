@@ -10,15 +10,22 @@ from pathlib import Path
 from typing import Any
 
 import psycopg
+from docx import Document
+from openpyxl import load_workbook
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.core.config import settings
-from app.services.identity import build_project_identity
+from app.services.identity import build_project_identity, build_project_material_scope
 from app.services.gap_planning import (
+    TABLE_FILL_SKILL_NAME,
+    WORD_FILL_SKILL_NAME,
     _artifact_onlyoffice_payload,
+    _allowed_material_index,
     build_gap_plan_for_project,
     check_gap_integrity,
+    normalize_gap_plan_fill_task_skills,
+    _prepare_material_index_files,
     prepare_existing_gap_material_files,
     register_manual_gap_upload,
     register_existing_gap_material,
@@ -81,6 +88,61 @@ STAGE_PROGRESS_GROUPS = [
         "isHuman": False,
     },
 ]
+
+PROJECT_FACT_TABLE_SCHEMA_VERSION = "bid-project-fact-table-v1"
+PROJECT_FACT_CONFIRMED_STATUSES = {"confirmed"}
+FACT_TABLE_HEADER_WORDS = {
+    "编号",
+    "序号",
+    "项目",
+    "名称",
+    "内容",
+    "备注",
+    "说明",
+    "单位",
+    "计量单位",
+    "技术参数与规格",
+    "主要项目",
+    "投标机型1",
+    "投标机型2",
+    "保证值",
+    "授权人签名",
+}
+COMMON_PROJECT_FACT_LABELS = {
+    "项目名称",
+    "招标编号",
+    "招标人",
+    "招标方",
+    "客户名称",
+    "投标方案",
+    "投标机型",
+    "机组类型",
+    "机组台数",
+    "总装机容量",
+    "单机容量",
+    "叶轮直径",
+    "轮毂高度",
+    "扫风面积",
+    "比功率",
+    "安全等级",
+    "设计寿命",
+    "空气密度",
+    "湍流强度",
+    "极端风速",
+    "年平均风速",
+    "风剪切",
+    "保证发电量",
+    "保证有效小时数",
+    "功率曲线保证率",
+    "全场可利用率",
+    "单台可利用率",
+    "主要部件更换率",
+}
+FACT_MATERIAL_SOURCE_PRIORITIES = {
+    "project": 300,
+    "customer": 200,
+    "standard": 100,
+}
 
 LEGACY_STAGE_TO_CURRENT = {
     0: 1,
@@ -589,6 +651,7 @@ class AppStore:
                 "plan": {},
                 "planFile": "",
                 "integrity": {},
+                "projectFactTable": {},
             },
             "review_document_state": {
                 "parseStatus": "idle",
@@ -1242,6 +1305,9 @@ class AppStore:
     def get_gap_detection(self, project_id: str) -> dict[str, Any]:
         project = self._require(project_id)
         gap_state = self._ensure_gap_state(project)
+        if self._repair_gap_state_fill_task_skills(gap_state):
+            project["updatedAt"] = now_iso()
+            self._persist_project(project)
         return self._build_gap_detection_payload(project, gap_state)
 
     def run_gap_detection(self, project_id: str) -> dict[str, Any]:
@@ -1281,6 +1347,9 @@ class AppStore:
         gap_state = self._ensure_gap_state(project)
         if gap_state["recognitionStatus"] != "completed":
             raise ValueError("请先触发缺口识别后再进入缺口处理。")
+        if self._repair_gap_state_fill_task_skills(gap_state):
+            project["updatedAt"] = now_iso()
+            self._persist_project(project)
         gap_plan = copy.deepcopy(gap_state.get("plan") or {})
         self._refresh_gap_plan_artifact_urls(
             project_id,
@@ -1296,7 +1365,60 @@ class AppStore:
             "submissions": copy.deepcopy(gap_state["submissions"]),
             "gapPlan": gap_plan,
             "integrity": copy.deepcopy(gap_state.get("integrity") or {}),
+            "projectFactTable": copy.deepcopy(gap_state.get("projectFactTable") or {}),
         }
+
+    def get_gap_fact_table(self, project_id: str) -> dict[str, Any]:
+        project = self._require(project_id)
+        gap_state = self._ensure_gap_state(project)
+        table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
+        if table.get("schemaVersion") == PROJECT_FACT_TABLE_SCHEMA_VERSION:
+            return copy.deepcopy(table)
+        return self._empty_project_fact_table(project_id)
+
+    def build_gap_fact_table(self, project_id: str) -> dict[str, Any]:
+        project = self._require(project_id)
+        gap_state = self._ensure_gap_state(project)
+        if gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先完成缺口识别，再维护项目事实表。")
+        table = self._build_project_fact_table(project, gap_state)
+        gap_state["projectFactTable"] = table
+        project["updatedAt"] = now_iso()
+        self._persist_project(project)
+        return copy.deepcopy(table)
+
+    def save_gap_fact_table(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        project = self._require(project_id)
+        gap_state = self._ensure_gap_state(project)
+        if gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先完成缺口识别，再维护项目事实表。")
+        current = gap_state.get("projectFactTable")
+        if not isinstance(current, dict) or current.get("schemaVersion") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
+            current = self._build_project_fact_table(project, gap_state)
+        incoming_fields = data.get("fields") if isinstance(data.get("fields"), list) else current.get("fields") or []
+        confirm = bool(data.get("confirm") or data.get("confirmed"))
+        operator = str(data.get("operator") or "当前用户")
+        saved_at = now_iso()
+        fields = [
+            self._normalize_project_fact_field(field, index=index, confirm=confirm, operator=operator, saved_at=saved_at)
+            for index, field in enumerate(incoming_fields, start=1)
+            if isinstance(field, dict)
+        ]
+        table = {
+            "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+            "projectId": project_id,
+            "status": "confirmed" if confirm else "draft",
+            "builtAt": str(current.get("builtAt") or saved_at),
+            "updatedAt": saved_at,
+            "confirmedAt": saved_at if confirm else str(current.get("confirmedAt") or ""),
+            "confirmedBy": operator if confirm else str(current.get("confirmedBy") or ""),
+            "fields": fields,
+            "summary": self._summarize_project_fact_fields(fields),
+        }
+        gap_state["projectFactTable"] = table
+        project["updatedAt"] = saved_at
+        self._persist_project(project)
+        return copy.deepcopy(table)
 
     def run_gap_ai_fill(
         self,
@@ -1311,6 +1433,10 @@ class AppStore:
         gap_state = self._ensure_gap_state(project)
         if gap_state["recognitionStatus"] != "completed":
             raise ValueError("请先完成缺口识别。")
+        if self._repair_gap_state_fill_task_skills(gap_state):
+            project["updatedAt"] = now_iso()
+            self._persist_project(project)
+        self._require_confirmed_project_fact_table(gap_state)
         result = run_ai_fill_for_gap(
             project,
             gap_id,
@@ -1326,6 +1452,99 @@ class AppStore:
         project["updatedAt"] = now_iso()
         self._persist_project(project)
         return copy.deepcopy(result)
+
+    def run_gap_ai_fill_all(
+        self,
+        project_id: str,
+        data: dict[str, Any],
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        gap_state = self._ensure_gap_state(project)
+        if gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先完成缺口识别。")
+        if self._repair_gap_state_fill_task_skills(gap_state):
+            project["updatedAt"] = now_iso()
+            self._persist_project(project)
+        self._require_confirmed_project_fact_table(gap_state)
+        plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+        requested_gap_ids = {
+            str(item or "").strip()
+            for item in (data.get("gapIds") if isinstance(data.get("gapIds"), list) else [])
+            if str(item or "").strip()
+        }
+        tasks: list[tuple[int, int, int, str, str]] = []
+        for index, item in enumerate(plan.get("items") or [], start=1):
+            if not isinstance(item, dict):
+                continue
+            gap_id = str(item.get("id") or "")
+            if requested_gap_ids and gap_id not in requested_gap_ids:
+                continue
+            if str(item.get("decision") or "") != "fill_required":
+                continue
+            for task_index, task in enumerate(item.get("fillTasks") or [], start=1):
+                if not isinstance(task, dict):
+                    continue
+                if str(task.get("status") or "pending") == "completed" and not data.get("rerun"):
+                    continue
+                skill = str(task.get("skill") or TABLE_FILL_SKILL_NAME)
+                rank = 0 if skill == WORD_FILL_SKILL_NAME else 1
+                tasks.append((rank, index, task_index, gap_id, str(task.get("id") or "")))
+        tasks.sort(key=lambda item: (item[0], item[1], item[2]))
+        base_data = {
+            key: value
+            for key, value in data.items()
+            if key not in {"fillTaskId", "gapIds", "rerun"}
+        }
+        results: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        for _, _, _, gap_id, fill_task_id in tasks:
+            try:
+                result = run_ai_fill_for_gap(
+                    project,
+                    gap_id,
+                    {**base_data, "fillTaskId": fill_task_id, "operator": str(data.get("operator") or "当前用户")},
+                    browser_base_url=browser_base_url,
+                    onlyoffice_base_url=onlyoffice_base_url,
+                )
+                artifact = result.get("artifact") if isinstance(result.get("artifact"), dict) else {}
+                results.append(
+                    {
+                        "gapId": gap_id,
+                        "artifactId": str(artifact.get("id") or ""),
+                        "skill": str(artifact.get("skill") or ""),
+                        "fileName": str(artifact.get("fileName") or ""),
+                        "qualityReport": copy.deepcopy(artifact.get("qualityReport") or {}),
+                    }
+                )
+                project["updatedAt"] = now_iso()
+                self._persist_project(project)
+            except Exception as exc:  # pragma: no cover - batch must report failures instead of hiding progress
+                errors.append({"gapId": gap_id, "message": str(exc)})
+        gap_state = self._ensure_gap_state(project)
+        gap_state["integrity"] = check_gap_integrity(gap_state.get("plan") or {})
+        if isinstance(gap_state.get("plan"), dict):
+            gap_state["plan"]["integrity"] = gap_state["integrity"]
+            gap_state["plan"]["summary"] = summarize_gap_plan(gap_state["plan"])
+        project["updatedAt"] = now_iso()
+        self._persist_project(project)
+        aggregate = self._aggregate_gap_fill_quality(results, errors)
+        return {
+            "status": "completed" if not errors else "needs_review",
+            "summary": {
+                "total": len(results) + len(errors),
+                "passed": sum(1 for result in results if result.get("qualityReport", {}).get("status") == "passed"),
+                "needsReview": sum(1 for result in results if result.get("qualityReport", {}).get("status") != "passed"),
+                "failed": len(errors),
+            },
+            "qualityReport": aggregate,
+            "results": results,
+            "errors": errors,
+            "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
+            "projectFactTable": copy.deepcopy(gap_state.get("projectFactTable") or {}),
+        }
 
     def upload_gap_artifact(
         self,
@@ -1984,6 +2203,1211 @@ class AppStore:
             "version": state["version"],
         }
 
+    @staticmethod
+    def _fact_label_key(label: Any) -> str:
+        return re.sub(r"\s+", "", AppStore._canonical_fact_label(label)).lower()
+
+    @staticmethod
+    def _canonical_fact_label(label: Any) -> str:
+        raw = str(label or "").strip()
+        if not raw:
+            return ""
+        text = re.sub(r"\s+", "", raw)
+        text = re.sub(r"[（(]\s*(?:MW|kW|m|m2/kW|m²/kW|%|h|MWh/y|MWh/a|台)\s*[）)]", "", text, flags=re.I)
+        text = text.strip("：:；;，,、")
+        aliases = {
+            "方案": "投标方案",
+            "项目方案": "投标方案",
+            "机型": "投标方案",
+            "建设容量": "总装机容量",
+            "标段规模": "总装机容量",
+            "机组数量": "机组台数",
+            "风机数量": "机组台数",
+            "台数": "机组台数",
+            "总容量": "总装机容量",
+            "容量": "总装机容量",
+            "单机容量": "单机容量",
+            "机组额定功率": "单机容量",
+            "轮毂中心高度": "轮毂高度",
+            "轮毂高度": "轮毂高度",
+            "风轮直径": "叶轮直径",
+            "叶轮直径": "叶轮直径",
+            "发电小时数承诺": "保证有效小时数",
+            "保证有效小时": "保证有效小时数",
+            "风电机组设备年平均可利用率保证值": "全场可利用率",
+            "适用等级": "安全等级",
+        }
+        if text in aliases:
+            return aliases[text]
+        if "总装机容量" in text or text.startswith("总容量"):
+            return "总装机容量"
+        if (
+            "年平均风速" in text
+            or "代表年风速" in text
+            or ("平均风速" in text and ("机位" in text or "尾流" in text or "轮毂" in text))
+        ):
+            return "年平均风速"
+        if "轮毂" in text and "高度" in text:
+            return "轮毂高度"
+        if "叶轮直径" in text or "风轮直径" in text:
+            return "叶轮直径"
+        if ("机组" in text or "风机" in text) and ("台数" in text or "数量" in text):
+            return "机组台数"
+        if "单机容量" in text or "额定功率" in text:
+            return "单机容量"
+        if "安全等级" in text or ("安全" in text and "等级" in text):
+            return "安全等级"
+        if "设计寿命" in text:
+            return "设计寿命"
+        if "单位千瓦扫风面积" in text:
+            return "单位千瓦扫风面积"
+        if "空气密度" in text and not re.search(r"参数|系数", text):
+            return "空气密度"
+        if "湍流强度" in text:
+            return "湍流强度"
+        if "极端风速" in text or "极大风速" in text:
+            return "极端风速"
+        if "风剪切" in text or "风切变" in text or "风剪切指数" in text:
+            return "风剪切"
+        if "功率曲线" in text and ("保证" in text or "保证率" in text):
+            return "功率曲线保证率"
+        if "单台" in text and "可利用率" in text:
+            return "单台可利用率"
+        if ("全场" in text or "风电场" in text or "年平均" in text) and "可利用率" in text:
+            return "全场可利用率"
+        if "发电量" in text and ("保证" in text or "承诺" in text):
+            return "保证发电量"
+        if "有效小时" in text or "发电小时" in text or "等效利用小时" in text:
+            return "保证有效小时数"
+        return text
+
+    @staticmethod
+    def _empty_project_fact_table(project_id: str) -> dict[str, Any]:
+        return {
+            "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+            "projectId": project_id,
+            "status": "empty",
+            "builtAt": "",
+            "updatedAt": "",
+            "confirmedAt": "",
+            "confirmedBy": "",
+            "fields": [],
+            "summary": {
+                "totalCount": 0,
+                "requiredCount": 0,
+                "confirmedCount": 0,
+                "candidateCount": 0,
+                "missingCount": 0,
+                "conflictCount": 0,
+            },
+        }
+
+    @staticmethod
+    def _summarize_project_fact_fields(fields: list[dict[str, Any]]) -> dict[str, int]:
+        return {
+            "totalCount": len(fields),
+            "requiredCount": sum(1 for field in fields if field.get("required", True)),
+            "confirmedCount": sum(1 for field in fields if str(field.get("status") or "") == "confirmed"),
+            "candidateCount": sum(1 for field in fields if str(field.get("status") or "") == "candidate"),
+            "missingCount": sum(1 for field in fields if str(field.get("status") or "") == "missing"),
+            "conflictCount": sum(1 for field in fields if str(field.get("status") or "") == "conflict"),
+        }
+
+    @staticmethod
+    def _fact_source_ref_priority(ref: dict[str, Any]) -> int:
+        source_type = str(ref.get("type") or "").strip()
+        if source_type in {"project", "projectIdentity", "projectTurbineModel", "derived"}:
+            return 320
+        if source_type in {"materialFact", "derivedMaterialFact"}:
+            tier = str(ref.get("materialTier") or "").strip() or "standard"
+            return FACT_MATERIAL_SOURCE_PRIORITIES.get(tier, 50)
+        return 0
+
+    @classmethod
+    def _normalize_fact_source_refs(cls, refs: Any) -> list[dict[str, Any]]:
+        normalized: list[tuple[int, int, dict[str, Any]]] = []
+        seen: set[str] = set()
+        for index, ref in enumerate(refs if isinstance(refs, list) else []):
+            if not isinstance(ref, dict):
+                continue
+            item = copy.deepcopy(ref)
+            key = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append((cls._fact_source_ref_priority(item), index, item))
+        normalized.sort(key=lambda item: (-item[0], item[1]))
+        return [item for _, _, item in normalized]
+
+    @staticmethod
+    def _normalize_project_fact_field(
+        field: dict[str, Any],
+        *,
+        index: int,
+        confirm: bool,
+        operator: str,
+        saved_at: str,
+    ) -> dict[str, Any]:
+        value = str(field.get("value") or "").strip()
+        status = str(field.get("status") or ("candidate" if value else "missing")).strip()
+        if confirm:
+            status = "confirmed" if value else "missing"
+        source_refs = AppStore._normalize_fact_source_refs(field.get("sourceRefs"))
+        source_priority = int(field.get("sourcePriority") or 0)
+        if source_refs:
+            source_priority = max(source_priority, AppStore._fact_source_ref_priority(source_refs[0]))
+        normalized = {
+            "id": str(field.get("id") or f"FACT-{index:04d}"),
+            "key": str(field.get("key") or AppStore._fact_label_key(field.get("label")) or f"fact-{index}"),
+            "label": str(field.get("label") or ""),
+            "category": str(field.get("category") or "项目事实"),
+            "value": value,
+            "unit": str(field.get("unit") or ""),
+            "required": bool(field.get("required", True)),
+            "status": status if status in {"candidate", "confirmed", "missing", "conflict"} else "candidate",
+            "confidence": float(field.get("confidence") or 0),
+            "sourcePriority": source_priority,
+            "sourceRefs": source_refs,
+            "alternatives": copy.deepcopy(field.get("alternatives") if isinstance(field.get("alternatives"), list) else []),
+            "notes": str(field.get("notes") or ""),
+            "updatedAt": saved_at,
+            "updatedBy": operator,
+        }
+        if normalized["status"] == "confirmed":
+            normalized["confirmedAt"] = saved_at
+            normalized["confirmedBy"] = operator
+        else:
+            normalized["confirmedAt"] = str(field.get("confirmedAt") or "")
+            normalized["confirmedBy"] = str(field.get("confirmedBy") or "")
+        return normalized
+
+    def _build_project_fact_table(self, project: dict[str, Any], gap_state: dict[str, Any]) -> dict[str, Any]:
+        built_at = now_iso()
+        existing_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
+        existing_by_key = {
+            self._fact_label_key(field.get("label")): field
+            for field in (existing_table.get("fields") if isinstance(existing_table.get("fields"), list) else [])
+            if isinstance(field, dict) and self._fact_label_key(field.get("label"))
+        }
+        fields_by_key: dict[str, dict[str, Any]] = {}
+
+        def is_material_fact_ref(ref: dict[str, Any]) -> bool:
+            return str(ref.get("type") or "") in {"materialFact", "derivedMaterialFact"}
+
+        def add_candidate(
+            label: str,
+            value: Any,
+            *,
+            category: str,
+            source_ref: dict[str, Any],
+            confidence: float = 0.8,
+            required: bool = True,
+            unit: str = "",
+            source_priority: int = 0,
+        ) -> None:
+            label_text = self._canonical_fact_label(label)
+            if not label_text:
+                return
+            key = self._fact_label_key(label_text)
+            value_text = str(value or "").strip()
+            existing = existing_by_key.get(key)
+            preserve_existing = bool(
+                existing
+                and str(existing.get("status") or "") == "confirmed"
+                and str(existing.get("value") or "").strip()
+            )
+            if preserve_existing:
+                value_text = str(existing.get("value") or "").strip()
+            field = fields_by_key.get(key)
+            incoming_priority = int(source_priority or 0)
+            if not field:
+                field = {
+                    "id": str((existing or {}).get("id") or f"FACT-{len(fields_by_key) + 1:04d}"),
+                    "key": key,
+                    "label": label_text,
+                    "category": category,
+                    "value": value_text,
+                    "unit": str(((existing or {}).get("unit") if preserve_existing else unit) or ""),
+                    "required": bool((existing or {}).get("required", required)),
+                    "status": "confirmed" if preserve_existing else ("candidate" if value_text else "missing"),
+                    "confidence": float(((existing or {}).get("confidence") if preserve_existing else None) or (confidence if value_text else 0) or 0),
+                    "sourcePriority": int((existing or {}).get("sourcePriority") if preserve_existing else (incoming_priority if value_text else 0)),
+                    "sourceRefs": [],
+                    "alternatives": copy.deepcopy(
+                        (existing or {}).get("alternatives")
+                        if preserve_existing and isinstance((existing or {}).get("alternatives"), list)
+                        else []
+                    ),
+                    "notes": str((existing or {}).get("notes") if preserve_existing else ""),
+                    "updatedAt": str((existing or {}).get("updatedAt") if preserve_existing else built_at),
+                    "updatedBy": str((existing or {}).get("updatedBy") if preserve_existing else ""),
+                    "confirmedAt": str((existing or {}).get("confirmedAt") if preserve_existing else ""),
+                    "confirmedBy": str((existing or {}).get("confirmedBy") if preserve_existing else ""),
+                }
+                fields_by_key[key] = field
+            elif value_text and field.get("value") and value_text != field["value"]:
+                alternatives = field.setdefault("alternatives", [])
+                existing_rank = (int(field.get("sourcePriority") or 0), float(field.get("confidence") or 0))
+                incoming_rank = (incoming_priority, float(confidence or 0))
+                if incoming_rank > existing_rank and str(field.get("status") or "") != "confirmed":
+                    old_value = str(field.get("value") or "")
+                    if old_value and old_value not in [str(item.get("value") or "") for item in alternatives if isinstance(item, dict)]:
+                        alternatives.append({"value": old_value, "source": (field.get("sourceRefs") or [{}])[0]})
+                    field["value"] = value_text
+                    field["unit"] = str(unit or field.get("unit") or "")
+                    field["category"] = category
+                    field["status"] = "candidate"
+                    field["confidence"] = float(confidence or 0)
+                    field["sourcePriority"] = incoming_priority
+                    if source_ref:
+                        field["sourceRefs"] = [source_ref] + list(field.get("sourceRefs") or [])
+                        source_ref = {}
+                elif incoming_rank == existing_rank and str(field.get("status") or "") != "confirmed":
+                    existing_material = any(
+                        is_material_fact_ref(ref)
+                        for ref in (field.get("sourceRefs") if isinstance(field.get("sourceRefs"), list) else [])
+                        if isinstance(ref, dict)
+                    )
+                    if not (existing_material and is_material_fact_ref(source_ref)):
+                        field["status"] = "conflict"
+                    if value_text not in [str(item.get("value") or "") for item in alternatives if isinstance(item, dict)]:
+                        alternatives.append({"value": value_text, "source": source_ref})
+                elif value_text not in [str(item.get("value") or "") for item in alternatives if isinstance(item, dict)]:
+                    alternatives.append({"value": value_text, "source": source_ref})
+            elif value_text and field.get("value") and value_text == field.get("value"):
+                existing_rank = (int(field.get("sourcePriority") or 0), float(field.get("confidence") or 0))
+                incoming_rank = (incoming_priority, float(confidence or 0))
+                if incoming_rank > existing_rank and str(field.get("status") or "") != "confirmed":
+                    field["unit"] = str(unit or field.get("unit") or "")
+                    field["category"] = category
+                    field["confidence"] = float(confidence or 0)
+                    field["sourcePriority"] = incoming_priority
+                    if source_ref:
+                        field["sourceRefs"] = [source_ref] + list(field.get("sourceRefs") or [])
+                        source_ref = {}
+            elif value_text and not field.get("value"):
+                field["value"] = value_text
+                field["status"] = "candidate"
+                field["unit"] = str(unit or field.get("unit") or "")
+                field["confidence"] = max(float(field.get("confidence") or 0), float(confidence or 0))
+                field["sourcePriority"] = incoming_priority
+                field["category"] = category
+                if source_ref:
+                    field["sourceRefs"] = [source_ref] + list(field.get("sourceRefs") or [])
+                    source_ref = {}
+            if source_ref:
+                field.setdefault("sourceRefs", []).append(source_ref)
+            if preserve_existing and value_text:
+                field["status"] = "confirmed"
+
+        trusted_parse_facts = self._trusted_parse_fact_fields(project.get("parse_result"))
+        first_parse_value = {
+            self._fact_label_key(fact.get("label")): fact.get("value")
+            for fact in trusted_parse_facts
+            if fact.get("value")
+        }
+        identity = project.get("identity") if isinstance(project.get("identity"), dict) else {}
+        owner = identity.get("owner") or identity.get("customerCanonicalName") or identity.get("customerName") or project.get("owner") or project.get("customerName")
+        project_name = first_parse_value.get(self._fact_label_key("项目名称")) or project.get("name")
+        add_candidate("项目名称", project_name, category="项目基础信息", source_ref={"type": "project", "field": "name", "title": "项目名称"}, confidence=0.86, source_priority=320)
+        add_candidate("招标方", owner, category="项目基础信息", source_ref={"type": "projectIdentity", "field": "owner", "title": "招标方"}, confidence=0.92, source_priority=320)
+        add_candidate("招标人", owner, category="项目基础信息", source_ref={"type": "projectIdentity", "field": "owner", "title": "招标人"}, confidence=0.92, source_priority=320)
+        add_candidate("客户名称", project.get("customerName"), category="项目基础信息", source_ref={"type": "project", "field": "customerName", "title": "客户名称"}, confidence=0.9, source_priority=320)
+        add_candidate("日期", datetime.now(UTC).strftime("%Y年%m月%d日"), category="系统字段", source_ref={"type": "system", "field": "currentDate", "title": "当前日期"}, confidence=0.62)
+
+        turbine = project_turbine_model(project)
+        model = turbine.get("model") or turbine.get("turbineModel")
+        hub_height = turbine.get("hubHeightM")
+        add_candidate("投标机型", model, category="机型参数", source_ref={"type": "projectTurbineModel", "field": "model", "title": "投标机型"}, confidence=0.98, source_priority=320)
+        rated_kw = turbine.get("ratedPowerKw")
+        rated_mw = ""
+        if isinstance(rated_kw, (int, float)):
+            rated_mw = f"{rated_kw / 1000:g}"
+        add_candidate("单机容量", rated_mw or rated_kw, category="机型参数", source_ref={"type": "projectTurbineModel", "field": "ratedPowerKw", "title": "单机容量"}, confidence=0.9, unit="MW" if rated_mw else "", source_priority=320)
+        add_candidate("叶轮直径", turbine.get("rotorDiameterM"), category="机型参数", source_ref={"type": "projectTurbineModel", "field": "rotorDiameterM", "title": "叶轮直径"}, confidence=0.9, unit="m", source_priority=320)
+        add_candidate("轮毂高度", hub_height, category="机型参数", source_ref={"type": "projectTurbineModel", "field": "hubHeightM", "title": "轮毂高度"}, confidence=0.86, unit="m", source_priority=320)
+        if model and hub_height:
+            add_candidate("投标方案", f"{model}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "投标方案"}, confidence=0.78, source_priority=320)
+            add_candidate("方案", f"{model}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "方案"}, confidence=0.78, source_priority=320)
+        elif model:
+            add_candidate("投标方案", model, category="方案口径", source_ref={"type": "derived", "field": "model", "title": "投标方案"}, confidence=0.64, source_priority=80)
+
+        for fact in trusted_parse_facts:
+            add_candidate(
+                str(fact.get("label") or ""),
+                fact.get("value"),
+                category=str(fact.get("category") or "招标解析字段"),
+                source_ref=copy.deepcopy(fact.get("sourceRef") or {}),
+                confidence=float(fact.get("confidence") or 0.82),
+                required=bool(fact.get("required", False)),
+                unit=str(fact.get("unit") or ""),
+                source_priority=260,
+            )
+
+        for fact in self._project_material_fact_fields(project, gap_state):
+            if fact.get("internal"):
+                continue
+            add_candidate(
+                str(fact.get("label") or ""),
+                fact.get("value"),
+                category=str(fact.get("category") or "素材库事实"),
+                source_ref=copy.deepcopy(fact.get("sourceRef") or {}),
+                confidence=float(fact.get("confidence") or 0.78),
+                required=bool(fact.get("required", False)),
+                unit=str(fact.get("unit") or ""),
+                source_priority=int(fact.get("sourcePriority") or 0),
+            )
+
+        plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+        for item in plan.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            for task in item.get("fillTasks") or []:
+                if not isinstance(task, dict):
+                    continue
+                blank = task.get("blankSource") if isinstance(task.get("blankSource"), dict) else {}
+                for label in blank.get("placeholderLabels") or []:
+                    add_candidate(
+                        str(label),
+                        "",
+                        category="待填写Word字段",
+                        source_ref={
+                            "type": "gapPlaceholder",
+                            "gapId": str(item.get("id") or ""),
+                            "title": str(item.get("title") or ""),
+                            "field": str(label),
+                        },
+                        confidence=0.0,
+                    )
+                for label in self._fillable_table_labels_from_blank_source(blank):
+                    add_candidate(
+                        label,
+                        "",
+                        category="待填写表格字段",
+                        source_ref={
+                            "type": "gapTableField",
+                            "gapId": str(item.get("id") or ""),
+                            "title": str(item.get("title") or ""),
+                            "field": label,
+                            "blankSourceId": str(blank.get("id") or ""),
+                        },
+                        confidence=0.0,
+                    )
+
+        fields = list(fields_by_key.values())
+        for field in fields:
+            source_refs = self._normalize_fact_source_refs(field.get("sourceRefs"))
+            field["sourceRefs"] = source_refs
+            if source_refs:
+                field["sourcePriority"] = max(
+                    int(field.get("sourcePriority") or 0),
+                    self._fact_source_ref_priority(source_refs[0]),
+                )
+        category_order = {
+            "项目基础信息": 0,
+            "机型参数": 1,
+            "方案口径": 2,
+            "系统字段": 3,
+            "招标解析字段": 4,
+            "素材库事实": 5,
+            "性能保证": 6,
+            "待填写Word字段": 7,
+            "待填写表格字段": 8,
+        }
+        fields.sort(
+            key=lambda field: (
+                category_order.get(str(field.get("category") or ""), 9),
+                0 if field.get("required") else 1,
+                field.get("label") or "",
+            )
+        )
+        for index, field in enumerate(fields, start=1):
+            field["id"] = field.get("id") or f"FACT-{index:04d}"
+        return {
+            "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+            "projectId": str(project.get("id") or ""),
+            "status": "draft",
+            "builtAt": built_at,
+            "updatedAt": built_at,
+            "confirmedAt": "",
+            "confirmedBy": "",
+            "fields": fields,
+            "summary": self._summarize_project_fact_fields(fields),
+        }
+
+    @classmethod
+    def _iter_parse_fact_fields(cls, value: Any) -> list[dict[str, Any]]:
+        fields: list[dict[str, Any]] = []
+
+        def visit(node: Any) -> None:
+            if len(fields) >= 200:
+                return
+            if isinstance(node, dict):
+                has_label = any(key in node for key in ("label", "title", "key", "id"))
+                has_value = any(key in node for key in ("value", "keyValue", "evidence"))
+                if has_label and has_value:
+                    fields.append(node)
+                for child in node.values():
+                    visit(child)
+            elif isinstance(node, list):
+                for child in node:
+                    visit(child)
+
+        visit(value)
+        return fields
+
+    @classmethod
+    def _trusted_parse_fact_fields(cls, parse_result: Any) -> list[dict[str, Any]]:
+        fields: dict[str, dict[str, Any]] = {}
+
+        def add(
+            label: str,
+            value: Any,
+            *,
+            category: str,
+            source_field: dict[str, Any],
+            confidence: float,
+            required: bool = False,
+            unit: str = "",
+        ) -> None:
+            label_text = cls._canonical_fact_label(label)
+            value_text = str(value or "").strip()
+            if not label_text or not value_text:
+                return
+            key = cls._fact_label_key(label_text)
+            current = fields.get(key)
+            fact = {
+                "label": label_text,
+                "value": value_text,
+                "category": category,
+                "confidence": confidence,
+                "required": required,
+                "unit": unit,
+                "sourceRef": {
+                    "type": "parseField",
+                    "field": str(source_field.get("id") or source_field.get("fieldKey") or source_field.get("title") or ""),
+                    "fieldKey": str(source_field.get("fieldKey") or ""),
+                    "title": str(source_field.get("title") or source_field.get("label") or label_text),
+                    "sourceFile": str(source_field.get("sourceFile") or ""),
+                },
+            }
+            if current is None or confidence > float(current.get("confidence") or 0):
+                fields[key] = fact
+
+        for field in cls._iter_parse_fact_fields(parse_result):
+            field_key = str(field.get("fieldKey") or "").strip()
+            label = str(field.get("title") or field.get("label") or field.get("key") or field.get("id") or "").strip()
+            value = str(field.get("value") or field.get("keyValue") or "").strip()
+            evidence = str(field.get("evidence") or "").strip()
+            text = "。".join(part for part in (label, value, evidence) if part)
+
+            if field_key == "projectName" or cls._fact_label_key(label) == cls._fact_label_key("项目名称"):
+                if cls._looks_like_project_name(value):
+                    add("项目名称", value, category="项目基础信息", source_field=field, confidence=0.95, required=True)
+            elif field_key == "tenderNo" or cls._fact_label_key(label) == cls._fact_label_key("招标编号"):
+                if cls._looks_like_tender_no(value):
+                    add("招标编号", value, category="项目基础信息", source_field=field, confidence=0.94, required=True)
+            elif field_key in {"tenderer", "owner", "customerName"} or cls._fact_label_key(label) in {
+                cls._fact_label_key("招标人"),
+                cls._fact_label_key("招标方"),
+                cls._fact_label_key("客户名称"),
+            }:
+                if cls._looks_like_party_name(value):
+                    add("招标人", value, category="项目基础信息", source_field=field, confidence=0.84, required=False)
+
+            cls._add_performance_facts_from_parse_text(text, field, add)
+
+        return list(fields.values())
+
+    @staticmethod
+    def _looks_like_project_name(value: Any) -> bool:
+        text = str(value or "").strip()
+        if not text or len(text) > 160:
+            return False
+        if re.search(r"投标人|招标人|应当|必须|不得|标准|规范|条款|认可|提供", text):
+            return False
+        return "项目" in text or "工程" in text
+
+    @staticmethod
+    def _looks_like_tender_no(value: Any) -> bool:
+        text = str(value or "").strip()
+        return bool(text and len(text) <= 80 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_\-./]+", text))
+
+    @staticmethod
+    def _looks_like_party_name(value: Any) -> bool:
+        text = str(value or "").strip()
+        if not text or len(text) > 80:
+            return False
+        if re.search(r"[。；;]|投标人|应|必须|不得|标准|规范|条款|认可|提供|要求|报告|测试|审查", text):
+            return False
+        return bool(re.search(r"公司|集团|有限|招标|业主|电力|能源|华能|国电|大唐|华电", text))
+
+    @classmethod
+    def _add_performance_facts_from_parse_text(
+        cls,
+        text: str,
+        source_field: dict[str, Any],
+        add: Any,
+    ) -> None:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        if not normalized:
+            return
+
+        patterns = [
+            (r"功率曲线[^。；;]{0,24}(?:不低于|≥|>=)(?:保证值的)?([0-9]+(?:\.[0-9]+)?%)", "功率曲线保证率"),
+            (r"风电场机组年平均可利用率(?:≥|>=|不低于)([0-9]+(?:\.[0-9]+)?%)", "全场可利用率"),
+            (r"(?:全部机组|全场).*?平均可利用率(?:≥|>=|不低于)([0-9]+(?:\.[0-9]+)?%)", "全场可利用率"),
+            (r"单台机组年平均可利用率(?:≥|>=|不低于)([0-9]+(?:\.[0-9]+)?%)", "单台可利用率"),
+            (r"主要部件更换率(?:低于|不高于|≤|<=)([0-9]+(?:\.[0-9]+)?%)", "主要部件更换率"),
+        ]
+        for pattern, label in patterns:
+            match = re.search(pattern, normalized)
+            if match:
+                add(
+                    label,
+                    match.group(1),
+                    category="性能保证",
+                    source_field=source_field,
+                    confidence=0.86,
+                    required=False,
+                    unit="%",
+                )
+
+    @classmethod
+    def _fillable_table_labels_from_blank_source(cls, blank: dict[str, Any]) -> list[str]:
+        path = cls._blank_source_docx_path(blank)
+        if path is None:
+            return []
+        try:
+            document = Document(str(path))
+        except Exception:
+            return []
+
+        labels: list[str] = []
+        seen: set[str] = set()
+        for table in document.tables:
+            for row in table.rows:
+                cells = [cls._clean_table_cell_text(cell.text) for cell in row.cells]
+                label = cls._table_field_label_from_row(cells)
+                if not label:
+                    continue
+                key = cls._fact_label_key(label)
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                labels.append(label)
+        return labels
+
+    @staticmethod
+    def _blank_source_docx_path(blank: dict[str, Any]) -> Path | None:
+        for key in ("docxPath", "path", "workspacePath"):
+            value = str(blank.get(key) or "").strip()
+            if not value:
+                continue
+            path = Path(value)
+            if path.exists():
+                return path
+        return None
+
+    @staticmethod
+    def _clean_table_cell_text(value: Any) -> str:
+        return re.sub(r"\s+", "", str(value or "")).strip()
+
+    @classmethod
+    def _table_field_label_from_row(cls, cells: list[str]) -> str:
+        if not cells:
+            return ""
+        fill_positions = [
+            index
+            for index, text in enumerate(cells)
+            if not text or re.search(r"待(?:人工)?(?:补充|填写|解析)|未填写|待确认", text)
+        ]
+        if not fill_positions:
+            return ""
+        candidates = cells[: fill_positions[0]]
+        for candidate in reversed(candidates):
+            label = cls._canonical_fact_label(candidate)
+            if cls._looks_like_table_field_label(label):
+                return label
+        return ""
+
+    @staticmethod
+    def _looks_like_table_field_label(label: str) -> bool:
+        text = str(label or "").strip()
+        if not text or len(text) < 2 or len(text) > 80:
+            return False
+        if text in FACT_TABLE_HEADER_WORDS:
+            return False
+        if re.fullmatch(r"[\d一二三四五六七八九十]+[.、]?", text):
+            return False
+        if re.search(r"待(?:人工)?(?:补充|填写|解析)|未填写|授权人签名|日期", text):
+            return False
+        if re.search(r"同等质量|知名品牌|件套|厂家|品牌|Fluke|FLUKE|SKYLOTEC|DEHN|ABB|西门子|施耐德", text, flags=re.I):
+            return False
+        if re.search(r"参数|方法|折减|系数", text):
+            return False
+        if re.fullmatch(r"[A-Z]{1,8}[-A-Z0-9（）()\"'.—]+", text):
+            return False
+        if re.match(r"^\d", text) and not re.search(r"风速|年|容量|功率|高度|直径|小时|电量|温度", text):
+            return False
+        if text in COMMON_PROJECT_FACT_LABELS:
+            return True
+        return bool(
+            re.search(
+                r"投标机型|机组类型|机组台数|风机台数|单机容量|总装机容量|叶轮直径|风轮直径|轮毂.*高度|"
+                r"扫风面积|比功率|安全等级|设计寿命|功率曲线|可利用率|保证电量|保证发电量|发电小时|"
+                r"有效小时|等效利用小时|平均风速|空气密度|湍流|风切变|风剪切|极端风速|极大风速|"
+                r"低温|高温|海拔|覆冰|盐雾|沙尘|雷电",
+                text,
+            )
+        )
+
+    def _project_material_fact_fields(self, project: dict[str, Any], gap_state: dict[str, Any]) -> list[dict[str, Any]]:
+        materials = self._project_fact_material_index(project, gap_state)
+        if not materials:
+            return []
+        prepared = self._prepare_project_fact_materials(project, materials)
+        facts: list[dict[str, Any]] = []
+        for material in prepared:
+            if not isinstance(material, dict):
+                continue
+            facts.extend(self._facts_from_material_name(material))
+            path_text = str(material.get("path") or material.get("docx") or "").strip()
+            if not path_text:
+                continue
+            path = Path(path_text)
+            if not path.exists():
+                continue
+            suffix = path.suffix.lower()
+            if suffix in {".docx", ".doc"}:
+                facts.extend(self._facts_from_docx_material(path, material))
+            elif suffix in {".xlsx", ".xlsm"}:
+                facts.extend(self._facts_from_xlsx_material(path, material, project))
+        facts.extend(self._derived_material_fact_fields(project, facts))
+        return facts
+
+    def _project_fact_material_index(self, project: dict[str, Any], gap_state: dict[str, Any]) -> list[dict[str, Any]]:
+        plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+        materials = [
+            dict(item)
+            for item in (plan.get("materialIndex") if isinstance(plan.get("materialIndex"), list) else [])
+            if isinstance(item, dict)
+        ]
+        if not materials:
+            try:
+                materials = _allowed_material_index(build_project_material_scope(project), project_turbine_model(project))
+            except Exception:
+                materials = []
+        return [item for item in materials if self._material_is_fact_relevant(item)]
+
+    @staticmethod
+    def _material_is_fact_relevant(material: dict[str, Any]) -> bool:
+        tier = str(material.get("materialTier") or "").strip()
+        if tier == "project":
+            return True
+        text = " ".join(
+            str(material.get(key) or "")
+            for key in ("name", "cleanedFileName", "folderPath", "path")
+        )
+        return bool(
+            re.search(
+                r"参数|机型|功率曲线|风资源|发电量|报价|容量|安全|场址|载荷|工程量|技术承诺|投标关键数据",
+                text,
+            )
+        )
+
+    @staticmethod
+    def _prepare_project_fact_materials(project: dict[str, Any], materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        path_materials = [item for item in materials if item.get("path")]
+        if path_materials and len(path_materials) == len(materials) and all(
+            Path(str(item.get("path") or "")).exists() for item in path_materials
+        ):
+            return materials
+        project_id = str(project.get("id") or "project")
+        work_dir = settings.documents_dir / project_id / "technical-workspace" / "s4_gap_workdir" / "fact_table_materials"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            return _prepare_material_index_files(materials, work_dir, limit=120)
+        except Exception:
+            return materials
+
+    @classmethod
+    def _facts_from_material_name(cls, material: dict[str, Any]) -> list[dict[str, Any]]:
+        text = str(material.get("name") or material.get("cleanedFileName") or "")
+        facts: list[dict[str, Any]] = []
+        for pattern, label, unit in [
+            (r"空气密度\s*([0-9]+(?:\.[0-9]+)?)", "空气密度", "kg/m3"),
+            (r"湍流强度\s*([0-9]+(?:\.[0-9]+)?)", "湍流强度", ""),
+            (r"风(?:剪切|切变)(?:指数)?\s*([0-9]+(?:\.[0-9]+)?)", "风剪切", ""),
+        ]:
+            match = re.search(pattern, text, flags=re.I)
+            if match:
+                facts.append(cls._material_fact(label, match.group(1), material, unit=unit, confidence=0.9))
+        return facts
+
+    @classmethod
+    def _facts_from_docx_material(cls, path: Path, material: dict[str, Any]) -> list[dict[str, Any]]:
+        facts: list[dict[str, Any]] = []
+        try:
+            document = Document(str(path))
+        except Exception:
+            return facts
+        text_parts = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+        for para_idx, paragraph in enumerate(document.paragraphs, start=1):
+            text = cls._clean_fact_text(paragraph.text)
+            if not text or len(text) > 180:
+                continue
+            match = re.match(r"^([^:：]{2,40})[:：]\s*(.{1,100})$", text)
+            if match:
+                fact = cls._material_fact_from_label_value(match.group(1), match.group(2), material, location=f"P{para_idx}", confidence=0.78)
+                if fact:
+                    facts.append(fact)
+        for table_idx, table in enumerate(document.tables, start=1):
+            facts.extend(cls._facts_from_guarantee_table(table, material, table_idx=table_idx))
+            for row_idx, row in enumerate(table.rows, start=1):
+                cells = [cls._clean_fact_text(cell.text) for cell in row.cells]
+                text_parts.append(" | ".join(cell for cell in cells if cell))
+                facts.extend(cls._facts_from_table_cells(cells, material, location=f"T{table_idx}/R{row_idx}"))
+        facts.extend(cls._facts_from_free_text("\n".join(text_parts), material))
+        return facts
+
+    @classmethod
+    def _facts_from_guarantee_table(cls, table: Any, material: dict[str, Any], *, table_idx: int) -> list[dict[str, Any]]:
+        if not getattr(table, "rows", None) or len(table.rows) < 2:
+            return []
+        header = " ".join(cls._clean_fact_text(cell.text) for cell in table.rows[0].cells)
+        if not ("年平均风速" in header and "保证年上网电量" in header and "满负荷小时" in header):
+            return []
+        facts: list[dict[str, Any]] = []
+        for row_idx, row in enumerate(table.rows[1:], start=2):
+            cells = [cls._clean_fact_text(cell.text) for cell in row.cells]
+            if len(cells) < 3:
+                continue
+            wind_speed = cls._clean_fact_value("年平均风速", cells[0])
+            energy = cls._clean_fact_value("保证发电量", cells[1])
+            hours = cls._clean_fact_value("保证有效小时数", cells[2])
+            if not (wind_speed and energy and hours):
+                continue
+            matrix_fact = cls._material_fact(
+                "__guaranteeMatrixRow",
+                {"windSpeed": wind_speed, "energyMwh": energy, "hours": hours},
+                material,
+                location=f"T{table_idx}/R{row_idx}",
+                confidence=0.82,
+            )
+            matrix_fact["internal"] = True
+            facts.append(matrix_fact)
+        return facts
+
+    @classmethod
+    def _facts_from_xlsx_material(cls, path: Path, material: dict[str, Any], project: dict[str, Any]) -> list[dict[str, Any]]:
+        facts: list[dict[str, Any]] = []
+        try:
+            workbook = load_workbook(path, data_only=True, read_only=True)
+        except Exception:
+            return facts
+        project_model = str((project_turbine_model(project) or {}).get("model") or "")
+        model_key = re.sub(r"(上置|下置|内置|外置|塔上|塔下)", "", project_model)
+        for worksheet in workbook.worksheets:
+            selected_col = cls._xlsx_model_column(worksheet, model_key)
+            for row_idx, row in enumerate(worksheet.iter_rows(values_only=True), start=1):
+                cells = [cls._clean_fact_text(cell) for cell in row]
+                if selected_col is not None and selected_col < len(cells):
+                    for label_idx in (2, 1, 0):
+                        if label_idx < len(cells):
+                            fact = cls._material_fact_from_label_value(
+                                cells[label_idx],
+                                cells[selected_col],
+                                material,
+                                unit=cells[3] if len(cells) > 3 else "",
+                                location=f"{worksheet.title}!R{row_idx}",
+                                confidence=0.82,
+                            )
+                            if fact:
+                                facts.append(fact)
+                                break
+                facts.extend(cls._facts_from_table_cells(cells, material, location=f"{worksheet.title}!R{row_idx}"))
+                if len(facts) >= 800:
+                    return facts
+        return facts
+
+    @staticmethod
+    def _xlsx_model_column(worksheet: Any, model_key: str) -> int | None:
+        if not model_key:
+            return None
+        normalized_model = re.sub(r"\s+", "", model_key)
+        for row in worksheet.iter_rows(min_row=1, max_row=min(12, worksheet.max_row), values_only=True):
+            for index, value in enumerate(row):
+                text = re.sub(r"\s+", "", str(value or ""))
+                if normalized_model and normalized_model in text:
+                    return index
+        return None
+
+    @classmethod
+    def _facts_from_table_cells(cls, cells: list[str], material: dict[str, Any], *, location: str) -> list[dict[str, Any]]:
+        facts: list[dict[str, Any]] = []
+        nonempty = [(index, value) for index, value in enumerate(cells) if value]
+        if len(nonempty) < 2:
+            return facts
+        # Common project tables often use: category | label | unit | value.
+        if len(cells) >= 4:
+            fact = cls._material_fact_from_label_value(cells[1], cells[3], material, unit=cells[2], location=location, confidence=0.88)
+            if fact:
+                facts.append(fact)
+        for first, second in zip(nonempty, nonempty[1:]):
+            fact = cls._material_fact_from_label_value(first[1], second[1], material, location=location, confidence=0.76)
+            if fact:
+                facts.append(fact)
+                break
+        # Wind-resource matrix rows use: label | unit | tower1 | tower2...
+        if len(cells) >= 3 and cells[0]:
+            wind_fact = cls._material_fact_from_label_value(cells[0], cells[2], material, unit=cells[1], location=location, confidence=0.84)
+            if wind_fact:
+                facts.append(wind_fact)
+        return facts
+
+    @classmethod
+    def _material_fact_from_label_value(
+        cls,
+        label: Any,
+        value: Any,
+        material: dict[str, Any],
+        *,
+        unit: str = "",
+        location: str = "",
+        confidence: float = 0.78,
+    ) -> dict[str, Any] | None:
+        label_text = cls._canonical_fact_label(label)
+        value_text = cls._clean_fact_value(label_text, value)
+        if not label_text or not value_text:
+            return None
+        if label_text not in COMMON_PROJECT_FACT_LABELS and not cls._looks_like_table_field_label(label_text):
+            return None
+        unit_text = cls._clean_fact_unit(unit)
+        raw_label = str(label or "")
+        raw_value = str(value or "")
+        if not unit_text:
+            raw_context = f"{raw_label}{raw_value}"
+            if label_text in {"轮毂高度", "叶轮直径"} and re.search(r"(?:m|米)", raw_context, flags=re.I):
+                unit_text = "m"
+            elif label_text in {"极端风速", "年平均风速"} and re.search(r"m/?s|米/秒", raw_context, flags=re.I):
+                unit_text = "m/s"
+            elif label_text == "空气密度" and re.search(r"kg/?m|kg/m3|kg/m³", raw_context, flags=re.I):
+                unit_text = "kg/m3"
+            elif label_text == "机组台数" and "台" in raw_value:
+                unit_text = "台"
+        if not unit_text:
+            if label_text in {"轮毂高度", "叶轮直径"}:
+                unit_text = "m"
+            elif label_text in {"极端风速", "年平均风速"}:
+                unit_text = "m/s"
+            elif label_text == "空气密度":
+                unit_text = "kg/m3"
+            elif label_text == "机组台数":
+                unit_text = "台"
+        return cls._material_fact(label_text, value_text, material, unit=unit_text, location=location, confidence=confidence)
+
+    @classmethod
+    def _facts_from_free_text(cls, text: str, material: dict[str, Any]) -> list[dict[str, Any]]:
+        compact = cls._clean_fact_text(text)
+        facts: list[dict[str, Any]] = []
+        patterns = [
+            (r"(?:总装机容量|建设容量|标段规模|总容量)[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?\s*(?:MW|万千瓦|kW)?)", "总装机容量", ""),
+            (r"(?:机组台数|机组数量|风机台数|风机数量|安装)[^0-9]{0,12}([0-9]+)\s*台", "机组台数", "台"),
+            (r"轮毂(?:中心)?高度[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?\s*m?)", "轮毂高度", "m"),
+            (r"(?:安全等级|适用等级|设计等级)[^A-Za-z0-9]{0,12}((?:IEC\s*)?[A-Z0-9][A-Z0-9/ .-]{0,20})", "安全等级", ""),
+            (r"空气密度[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?)", "空气密度", "kg/m3"),
+            (r"湍流强度[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?)", "湍流强度", ""),
+            (r"(?:极端风速|极大风速|Ve50)[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?\s*m/s?)", "极端风速", "m/s"),
+            (r"年平均风速[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?\s*m/s?)", "年平均风速", "m/s"),
+        ]
+        for pattern, label, unit in patterns:
+            match = re.search(pattern, compact, flags=re.I)
+            if match:
+                value = cls._clean_fact_value(label, match.group(1))
+                if value:
+                    facts.append(cls._material_fact(label, value, material, unit=unit, confidence=0.78))
+        return facts
+
+    @staticmethod
+    def _clean_fact_text(value: Any) -> str:
+        return re.sub(r"\s+", "", str(value or "")).strip()
+
+    @staticmethod
+    def _clean_fact_unit(value: Any) -> str:
+        text = re.sub(r"\s+", "", str(value or "")).strip()
+        text = text.strip("：:；;，,、")
+        if text in {"", "-", "/", "—", "NA", "N/A", "字段", "值", "年份", "参数内容", "结果", "说明", "备注", "机型", "型号"}:
+            return ""
+        text = text.replace("m³", "m3")
+        text = re.sub(r"kg/?m3", "kg/m3", text, flags=re.I)
+        text = re.sub(r"m/?s", "m/s", text, flags=re.I)
+        return text
+
+    @classmethod
+    def _clean_fact_value(cls, label: str, value: Any) -> str:
+        text = str(value or "").strip()
+        text = re.sub(r"\s+", "", text)
+        text = text.strip("：:；;，,、")
+        if not text or len(text) > 120:
+            return ""
+        if any(token in text for token in ("待填写", "待人工", "未填写")):
+            return ""
+        if text in {"-", "/", "—", "无", "暂无", "值", "结果", "参数内容", "单位", "年份"}:
+            return ""
+        numeric_ranges = {
+            "机组台数": (1, 1000),
+            "轮毂高度": (40, 250),
+            "叶轮直径": (50, 350),
+            "空气密度": (0.7, 1.5),
+            "湍流强度": (0, 1),
+            "风剪切": (0, 1),
+            "极端风速": (20, 100),
+            "年平均风速": (2, 15),
+        }
+        numeric_noise = (
+            "年份",
+            "各年",
+            "版本",
+            "编制",
+            "校核",
+            "审核",
+            "批准",
+            "日期",
+            "参数内容",
+            "结果结果",
+            "场址空气密度下",
+        )
+        if label in numeric_ranges and (
+            any(token in text for token in numeric_noise)
+            or re.search(r"\d{4}[-/年]\d{1,2}", text)
+        ):
+            return ""
+        if label in {"总装机容量", "单机容量"}:
+            match = re.search(r"([0-9]+(?:\.[0-9]+)?)(万千瓦|MW|kW)?", text, flags=re.I)
+            if match:
+                return f"{match.group(1)}{match.group(2) or ''}".strip()
+        if label in {"机组台数"}:
+            match = re.search(r"([0-9]+)", text)
+            if not match:
+                return ""
+            number = float(match.group(1))
+            low, high = numeric_ranges[label]
+            return match.group(1) if low <= number <= high else ""
+        if label in {"保证发电量", "保证有效小时数"}:
+            if re.search(r"风电场|保证年上网电量|满负荷小时|字段|单位", text):
+                return ""
+            match = re.search(r"([0-9]+(?:\.[0-9]+)?)", text)
+            if not match:
+                return ""
+            number = float(match.group(1))
+            if label == "保证发电量" and not (1 <= number <= 10000000):
+                return ""
+            if label == "保证有效小时数" and not (1 <= number <= 8760):
+                return ""
+            return match.group(1)
+        if label in {"极端风速", "年平均风速"}:
+            match = re.search(r"([0-9]+(?:\.[0-9]+)?)", text)
+            if match:
+                number = float(match.group(1))
+                low, high = numeric_ranges[label]
+                if not (low <= number <= high):
+                    return ""
+                return f"{match.group(1)}m/s" if re.search(r"m/?s|米/秒", text, flags=re.I) else match.group(1)
+        if label in {"轮毂高度", "叶轮直径", "空气密度", "湍流强度", "风剪切"}:
+            match = re.search(r"([0-9]+(?:\.[0-9]+)?)", text)
+            if match:
+                number = float(match.group(1))
+                low, high = numeric_ranges[label]
+                if not (low <= number <= high):
+                    return ""
+                return match.group(1)
+        if label in {"投标方案", "投标机型", "机组类型"}:
+            if text in {"机型", "投标机型", "方案", "投标方案"}:
+                return ""
+            model_match = re.search(r"([A-Z]{1,6}\d+(?:\.\d+)?[-—]\d+(?:[-—]\d+)?)", text, flags=re.I)
+            if model_match:
+                return model_match.group(1).replace("—", "-")
+        if label == "安全等级":
+            text = re.sub(r"^IEC\s*", "IEC ", text, flags=re.I).strip()
+        return text
+
+    @classmethod
+    def _material_fact(
+        cls,
+        label: str,
+        value: Any,
+        material: dict[str, Any],
+        *,
+        unit: str = "",
+        location: str = "",
+        confidence: float = 0.78,
+    ) -> dict[str, Any]:
+        tier = str(material.get("materialTier") or "").strip() or "standard"
+        return {
+            "label": cls._canonical_fact_label(label),
+            "value": value,
+            "category": "素材库事实",
+            "unit": cls._clean_fact_unit(unit),
+            "confidence": confidence,
+            "sourcePriority": FACT_MATERIAL_SOURCE_PRIORITIES.get(tier, 50),
+            "sourceRef": {
+                "type": "materialFact",
+                "materialId": str(material.get("id") or material.get("materialId") or ""),
+                "materialTier": tier,
+                "name": str(material.get("name") or material.get("fileName") or material.get("cleanedFileName") or ""),
+                "folderPath": str(material.get("folderPath") or ""),
+                "path": str(material.get("path") or ""),
+                "location": location,
+            },
+        }
+
+    @classmethod
+    def _derived_material_fact_fields(cls, project: dict[str, Any], facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        by_label: dict[str, dict[str, Any]] = {}
+        guarantee_matrix_rows: list[dict[str, Any]] = []
+        for fact in facts:
+            if fact.get("label") == "__guaranteeMatrixRow":
+                guarantee_matrix_rows.append(fact)
+                continue
+            label = cls._canonical_fact_label(fact.get("label"))
+            if not label or not fact.get("value"):
+                continue
+            current = by_label.get(label)
+            rank = (int(fact.get("sourcePriority") or 0), float(fact.get("confidence") or 0))
+            if current is None or rank > (int(current.get("sourcePriority") or 0), float(current.get("confidence") or 0)):
+                by_label[label] = fact
+        rated_kw = project_turbine_model(project).get("ratedPowerKw")
+        rated_mw = float(rated_kw) / 1000 if isinstance(rated_kw, (int, float)) and rated_kw else 0
+        result: list[dict[str, Any]] = []
+        total = cls._number_from_fact(by_label.get("总装机容量"))
+        count = cls._number_from_fact(by_label.get("机组台数"))
+        source = by_label.get("总装机容量") or by_label.get("机组台数") or {}
+        material_ref = copy.deepcopy(source.get("sourceRef") if isinstance(source.get("sourceRef"), dict) else {})
+        if total and rated_mw and not count:
+            derived_count = total / rated_mw
+            rounded = round(derived_count)
+            if abs(derived_count - rounded) < 0.01:
+                result.append(
+                    {
+                        "label": "机组台数",
+                        "value": str(rounded),
+                        "category": "素材库事实",
+                        "unit": "台",
+                        "confidence": 0.86,
+                        "sourcePriority": int(source.get("sourcePriority") or 0),
+                        "sourceRef": {**material_ref, "type": "derivedMaterialFact", "field": "总装机容量/单机容量"},
+                    }
+                )
+        if count and rated_mw and not total:
+            result.append(
+                {
+                    "label": "总装机容量",
+                    "value": f"{count * rated_mw:g}MW",
+                    "category": "素材库事实",
+                    "unit": "MW",
+                    "confidence": 0.82,
+                    "sourcePriority": int(source.get("sourcePriority") or 0),
+                    "sourceRef": {**material_ref, "type": "derivedMaterialFact", "field": "机组台数/单机容量"},
+                }
+            )
+        year_avg = cls._number_from_fact(by_label.get("年平均风速"))
+        if year_avg and guarantee_matrix_rows:
+            def matrix_distance(row: dict[str, Any]) -> float:
+                value = row.get("value") if isinstance(row.get("value"), dict) else {}
+                wind = cls._number_from_fact({"value": value.get("windSpeed")})
+                return abs(float(wind or 0) - year_avg) if wind else 9999
+
+            selected = min(guarantee_matrix_rows, key=matrix_distance)
+            if matrix_distance(selected) <= 0.08:
+                selected_value = selected.get("value") if isinstance(selected.get("value"), dict) else {}
+                selected_ref = copy.deepcopy(selected.get("sourceRef") if isinstance(selected.get("sourceRef"), dict) else {})
+                wind_speed = str(selected_value.get("windSpeed") or "")
+                if selected_value.get("energyMwh"):
+                    result.append(
+                        {
+                            "label": "保证发电量",
+                            "value": str(selected_value.get("energyMwh")),
+                            "category": "性能保证",
+                            "unit": "MWh",
+                            "confidence": 0.86,
+                            "sourcePriority": int(selected.get("sourcePriority") or 0),
+                            "sourceRef": {**selected_ref, "type": "derivedMaterialFact", "field": f"发电量保证矩阵/{wind_speed}m/s"},
+                        }
+                    )
+                if selected_value.get("hours"):
+                    result.append(
+                        {
+                            "label": "保证有效小时数",
+                            "value": str(selected_value.get("hours")),
+                            "category": "性能保证",
+                            "unit": "h",
+                            "confidence": 0.86,
+                            "sourcePriority": int(selected.get("sourcePriority") or 0),
+                            "sourceRef": {**selected_ref, "type": "derivedMaterialFact", "field": f"发电量保证矩阵/{wind_speed}m/s"},
+                        }
+                    )
+        return result
+
+    @staticmethod
+    def _number_from_fact(fact: dict[str, Any] | None) -> float | None:
+        if not isinstance(fact, dict):
+            return None
+        match = re.search(r"([0-9]+(?:\.[0-9]+)?)", str(fact.get("value") or ""))
+        return float(match.group(1)) if match else None
+
+    @staticmethod
+    def _require_confirmed_project_fact_table(gap_state: dict[str, Any]) -> dict[str, Any]:
+        table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
+        if table.get("status") not in PROJECT_FACT_CONFIRMED_STATUSES:
+            raise ValueError("请先维护并确认项目事实表，再执行 AI 填写。")
+        return table
+
+    @staticmethod
+    def _aggregate_gap_fill_quality(results: list[dict[str, Any]], errors: list[dict[str, str]]) -> dict[str, Any]:
+        reports = [result.get("qualityReport") for result in results if isinstance(result.get("qualityReport"), dict)]
+        if not reports:
+            return {
+                "status": "failed" if errors else "empty",
+                "coverageRate": 0.0,
+                "correctnessRate": 0.0,
+                "completenessRate": 0.0,
+                "thresholds": {"coverageRate": 0.85, "correctnessRate": 0.85, "completenessRate": 0.85},
+            }
+        expected = sum(int(report.get("expectedFieldCount") or 0) for report in reports)
+        filled = sum(int(report.get("filledFieldCount") or 0) for report in reports)
+        unfilled = sum(int(report.get("unfilledFieldCount") or 0) for report in reports)
+        evidence = sum(int(report.get("evidenceRefCount") or 0) for report in reports)
+        if expected > 0:
+            coverage = filled / expected
+            correctness = min(1.0, evidence / max(1, filled)) if filled else 0.0
+            completeness = max(0.0, (expected - unfilled) / expected)
+        else:
+            coverage = sum(float(report.get("coverageRate") or 0) for report in reports) / len(reports)
+            correctness = sum(float(report.get("correctnessRate") or 0) for report in reports) / len(reports)
+            completeness = sum(float(report.get("completenessRate") or 0) for report in reports) / len(reports)
+        thresholds = {"coverageRate": 0.85, "correctnessRate": 0.85, "completenessRate": 0.85}
+        passed = (
+            not errors
+            and coverage >= thresholds["coverageRate"]
+            and correctness >= thresholds["correctnessRate"]
+            and completeness >= thresholds["completenessRate"]
+        )
+        return {
+            "status": "passed" if passed else "needs_review",
+            "coverageRate": round(coverage, 4),
+            "correctnessRate": round(correctness, 4),
+            "completenessRate": round(completeness, 4),
+            "expectedFieldCount": expected,
+            "filledFieldCount": filled,
+            "unfilledFieldCount": unfilled,
+            "evidenceRefCount": evidence,
+            "taskCount": len(reports),
+            "passedTaskCount": sum(1 for report in reports if report.get("status") == "passed"),
+            "needsReviewTaskCount": sum(1 for report in reports if report.get("status") != "passed"),
+            "thresholds": thresholds,
+        }
+
     def _ensure_gap_state(self, project: dict[str, Any]) -> dict[str, Any]:
         gap_state = project.get("gap_state")
         if not isinstance(gap_state, dict):
@@ -1999,7 +3423,19 @@ class AppStore:
         gap_state.setdefault("plan", {})
         gap_state.setdefault("planFile", "")
         gap_state.setdefault("integrity", {})
+        gap_state.setdefault("projectFactTable", {})
         return gap_state
+
+    def _repair_gap_state_fill_task_skills(self, gap_state: dict[str, Any]) -> bool:
+        plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+        repaired = normalize_gap_plan_fill_task_skills(plan)
+        if not repaired:
+            return False
+        gap_state["plan"] = plan
+        gap_state["items"] = self._legacy_gap_items_from_plan(plan)
+        gap_state["integrity"] = check_gap_integrity(plan)
+        plan["integrity"] = gap_state["integrity"]
+        return True
 
     @staticmethod
     def _legacy_gap_items_from_plan(plan: dict[str, Any]) -> list[dict[str, Any]]:

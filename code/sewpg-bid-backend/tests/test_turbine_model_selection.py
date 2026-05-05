@@ -214,6 +214,13 @@ class TurbineModelSelectionTests(unittest.TestCase):
         self.assertEqual(detection.status_code, 200, detection.text)
         self.assertEqual(gap_manifests[0]["projectTurbineModel"]["model"], "EW10.0-220下置")
         self.assertEqual(detection.json()["gapPlan"]["projectTurbineModel"]["platform"], "X2E-2")
+        facts = self.client.post(f"/api/projects/{project_id}/gaps/facts/build")
+        self.assertEqual(facts.status_code, 200, facts.text)
+        confirm_facts = self.client.put(
+            f"/api/projects/{project_id}/gaps/facts",
+            json={"fields": facts.json()["fields"], "confirm": True, "operator": "测试用户"},
+        )
+        self.assertEqual(confirm_facts.status_code, 200, confirm_facts.text)
 
         fill_manifests: list[dict] = []
 

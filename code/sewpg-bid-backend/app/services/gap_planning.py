@@ -27,10 +27,13 @@ from app.services.workspace_artifacts import legacy_workspace_roots, technical_w
 
 GAP_PLAN_SCHEMA_VERSION = "bid-tech-gap-plan-v1"
 TABLE_FILL_SCHEMA_VERSION = "bid-tech-table-fill-v1"
+WORD_FILL_SCHEMA_VERSION = "bid-tech-word-placeholder-fill-v1"
 GAP_PLANNER_SKILL_NAME = "bid-tech-gap-planner"
 TABLE_FILL_SKILL_NAME = "bid-tech-table-filler"
+WORD_FILL_SKILL_NAME = "bid-tech-word-placeholder-filler"
 GAP_PLANNER_RUNNER = BASE_DIR / "opencode" / "skill" / GAP_PLANNER_SKILL_NAME / "scripts" / "run_from_manifest.py"
 TABLE_FILL_RUNNER = BASE_DIR / "opencode" / "skill" / TABLE_FILL_SKILL_NAME / "scripts" / "run_from_manifest.py"
+WORD_FILL_RUNNER = BASE_DIR / "opencode" / "skill" / WORD_FILL_SKILL_NAME / "scripts" / "run_from_manifest.py"
 
 
 def now_iso() -> str:
@@ -96,6 +99,7 @@ def build_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
     plan["manifestPath"] = str(manifest_path)
     plan["phase"] = "gap_detection"
     plan["scopeBoundary"] = material_scope
+    normalize_gap_plan_fill_task_skills(plan)
     plan["opencodeOutput"] = result.get("opencodeOutput") or {
         "status": "received",
         "sessionId": str(manifest_path),
@@ -105,6 +109,42 @@ def build_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
         "parts": [{"type": "text", "text": json.dumps({"outputFile": str(plan_path)}, ensure_ascii=False)}],
     }
     return plan
+
+
+def _is_material_word_fill_task(item: dict[str, Any], task: dict[str, Any]) -> bool:
+    blank = task.get("blankSource") if isinstance(task.get("blankSource"), dict) else {}
+    source_type = str(blank.get("sourceType") or "")
+    usage = str(item.get("usage") or "")
+    try:
+        placeholder_count = int(blank.get("placeholderCount") or 0)
+    except (TypeError, ValueError):
+        placeholder_count = 0
+    material_id = str(blank.get("materialId") or blank.get("id") or "")
+    return (
+        source_type == "material_fill_template"
+        or (
+            usage in {"section_fill", "chapter_fill"}
+            and placeholder_count > 0
+            and material_id.startswith("RAW-")
+        )
+    )
+
+
+def normalize_gap_plan_fill_task_skills(plan: dict[str, Any]) -> int:
+    """Repair stale gap plans whose material Word fill tasks still use table filler."""
+
+    repaired = 0
+    for item in _object_items(plan.get("items")):
+        for task in _object_items(item.get("fillTasks")):
+            current = str(task.get("skill") or "")
+            expected = WORD_FILL_SKILL_NAME if _is_material_word_fill_task(item, task) else ""
+            if not expected or current == expected:
+                continue
+            task["skill"] = expected
+            repaired += 1
+    if repaired:
+        plan["summary"] = summarize_gap_plan(plan)
+    return repaired
 
 
 def _validate_gap_plan_toc_coverage(plan: dict[str, Any], toc_json_path: Path) -> None:
@@ -307,6 +347,63 @@ def _reference_materials_for_fill(
     return result
 
 
+def _material_index_for_fill(project: dict[str, Any], plan: dict[str, Any], item: dict[str, Any]) -> list[dict[str, Any]]:
+    item_candidates = _dedupe_material_summaries(
+        _object_items(plan.get("materialIndex"))
+        + _object_items(item.get("candidateMaterials"))
+        + _object_items(item.get("matchedMaterials"))
+        + [
+            material
+            for task in _object_items(item.get("appendixTasks"))
+            for material in _object_items(task.get("recommendedMaterials"))
+        ]
+    )
+
+    material_scope = plan.get("scopeBoundary") if isinstance(plan.get("scopeBoundary"), dict) else {}
+    if not material_scope:
+        material_scope = build_project_material_scope(project)
+    scoped_index = _allowed_material_index(material_scope, project_turbine_model(project))
+    return _dedupe_material_summaries(item_candidates + scoped_index)
+
+
+def _prepare_material_index_files(
+    material_index: list[dict[str, Any]],
+    work_dir: Path,
+    *,
+    cache_dir: Path | None = None,
+    limit: int = 80,
+) -> list[dict[str, Any]]:
+    prepared: list[dict[str, Any]] = []
+    cache_dir = cache_dir or (work_dir / "material_index")
+    for material in material_index[:limit]:
+        item = dict(material)
+        material_id = str(item.get("id") or item.get("materialId") or "").strip()
+        if not material_id:
+            prepared.append(item)
+            continue
+        try:
+            payload, source_kind = _run_async(_downloadable_fill_source_payload(material_id))
+        except Exception:
+            prepared.append(item)
+            continue
+        file_name = safe_filename(
+            str(item.get("cleanedFileName") or payload.get("fileName") or item.get("name") or f"{material_id}.docx"),
+            f"{material_id}.docx",
+        )
+        target_path = cache_dir / f"{material_id}-{file_name}"
+        if not target_path.exists():
+            minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
+        item.update(
+            {
+                "path": str(target_path),
+                "sourceKind": source_kind,
+                "fileName": target_path.name,
+            }
+        )
+        prepared.append(item)
+    return prepared
+
+
 def _field_key(field: dict[str, Any]) -> str:
     return str(field.get("id") or field.get("key") or field.get("label") or field.get("title") or "").strip()
 
@@ -366,12 +463,145 @@ def run_table_filler_skill(
                 if progress_callback
                 else None
             ),
+            early_tool_command="s4fill",
         )
         return result
     except Exception:
         # Keep the feature usable in offline test/deploy environments. The
         # fallback executes the same skill runner and records local-skill trace.
         return _run_local_skill_runner(TABLE_FILL_RUNNER, manifest_path, TABLE_FILL_SCHEMA_VERSION)
+
+
+def run_word_placeholder_filler_skill(
+    manifest_path: Path,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
+    prompt = _build_word_placeholder_filler_prompt(manifest_path)
+    try:
+        result = OpencodeClient().run_bid_tech_table_filler_with_trace(
+            prompt,
+            stream_callback=(
+                (lambda details: progress_callback("word_filler_delta", details))
+                if progress_callback
+                else None
+            ),
+            early_tool_command="s4wordfill",
+        )
+        return result
+    except Exception:
+        return _run_local_skill_runner(WORD_FILL_RUNNER, manifest_path, WORD_FILL_SCHEMA_VERSION)
+
+
+def _numeric_report_value(report: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = report.get(key)
+        if isinstance(value, (int, float)):
+            return max(0, int(value))
+        if isinstance(value, str) and value.strip().isdigit():
+            return max(0, int(value.strip()))
+    return 0
+
+
+def _merge_fill_sidecar_report(result: dict[str, Any], output_file: Path) -> dict[str, Any]:
+    sidecar = output_file.with_suffix(".fill_report.json")
+    if not sidecar.exists():
+        return result
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+    except Exception:
+        return result
+    if not isinstance(data, dict):
+        return result
+    merged = dict(result)
+    for key in ("evidenceRefs", "filledFieldDetails", "unfilledFieldDetails", "unfilledFields"):
+        sidecar_value = data.get(key)
+        current_value = merged.get(key)
+        if isinstance(sidecar_value, list) and (
+            not isinstance(current_value, list) or len(sidecar_value) > len(current_value)
+        ):
+            merged[key] = sidecar_value
+    sidecar_report = data.get("fillReport")
+    if isinstance(sidecar_report, dict):
+        current_report = merged.get("fillReport") if isinstance(merged.get("fillReport"), dict) else {}
+        merged["fillReport"] = {**current_report, **sidecar_report}
+    return merged
+
+
+def _build_fill_quality_report(result: dict[str, Any], *, output_exists: bool) -> dict[str, Any]:
+    report = result.get("fillReport") if isinstance(result.get("fillReport"), dict) else {}
+    unfilled_fields = result.get("unfilledFields") if isinstance(result.get("unfilledFields"), list) else []
+    evidence_refs = result.get("evidenceRefs") if isinstance(result.get("evidenceRefs"), list) else []
+    filled_count = _numeric_report_value(
+        report,
+        "filledFieldCount",
+        "filledPlaceholderCount",
+        "filledCellCount",
+    )
+    unfilled_count = max(
+        _numeric_report_value(
+            report,
+            "unfilledFieldCount",
+            "unfilledPlaceholderCount",
+            "unfilledCellCount",
+            "residualPlaceholderCount",
+        ),
+        len(unfilled_fields),
+    )
+    expected_count = _numeric_report_value(
+        report,
+        "targetFieldCount",
+        "targetPlaceholderCount",
+        "fieldCount",
+        "placeholderCount",
+        "totalFieldCount",
+    )
+    if expected_count <= 0:
+        expected_count = filled_count + unfilled_count
+    coverage_rate = filled_count / expected_count if expected_count else 0.0
+    evidence_chain_rate = min(1.0, len(evidence_refs) / filled_count) if filled_count else 0.0
+    semantic_check_count = _numeric_report_value(report, "semanticCheckCount")
+    semantic_failed_count = _numeric_report_value(report, "semanticFailedCount")
+    semantic_rate_value = report.get("semanticValidationRate")
+    try:
+        semantic_validation_rate = float(semantic_rate_value) if semantic_rate_value is not None else None
+    except (TypeError, ValueError):
+        semantic_validation_rate = None
+    correctness_rate = (
+        min(evidence_chain_rate, semantic_validation_rate)
+        if semantic_check_count > 0 and semantic_validation_rate is not None
+        else evidence_chain_rate
+    )
+    completeness_rate = 1.0 if output_exists and unfilled_count == 0 and coverage_rate >= 0.85 else min(coverage_rate, 1.0 if output_exists else 0.0)
+    thresholds = {
+        "coverageRate": 0.85,
+        "correctnessRate": 0.85,
+        "completenessRate": 0.85,
+    }
+    status = "passed" if (
+        coverage_rate >= thresholds["coverageRate"]
+        and correctness_rate >= thresholds["correctnessRate"]
+        and completeness_rate >= thresholds["completenessRate"]
+        and unfilled_count == 0
+        and semantic_failed_count == 0
+        and output_exists
+    ) else "needs_review"
+    return {
+        "schemaVersion": "bid-fill-quality-report-v1",
+        "status": status,
+        "coverageRate": round(coverage_rate, 4),
+        "correctnessRate": round(correctness_rate, 4),
+        "completenessRate": round(completeness_rate, 4),
+        "evidenceChainRate": round(evidence_chain_rate, 4),
+        "expectedFieldCount": expected_count,
+        "filledFieldCount": filled_count,
+        "unfilledFieldCount": unfilled_count,
+        "evidenceRefCount": len(evidence_refs),
+        "residualPlaceholderCount": unfilled_count,
+        "semanticCheckCount": semantic_check_count,
+        "semanticFailedCount": semantic_failed_count,
+        "semanticValidationRate": round(semantic_validation_rate, 4) if semantic_validation_rate is not None else None,
+        "thresholds": thresholds,
+    }
 
 
 def run_ai_fill_for_gap(
@@ -384,6 +614,8 @@ def run_ai_fill_for_gap(
 ) -> dict[str, Any]:
     gap_state = project.get("gap_state") or {}
     plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+    project_fact_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
+    normalize_gap_plan_fill_task_skills(plan)
     items = plan.get("items") if isinstance(plan.get("items"), list) else []
     item = next((entry for entry in items if str(entry.get("id") or "") == gap_id), None)
     if item is None:
@@ -402,20 +634,44 @@ def run_ai_fill_for_gap(
     if task is None:
         raise ValueError("当前缺口没有可执行的 AI 填写任务。")
 
+    skill_name = str(task.get("skill") or TABLE_FILL_SKILL_NAME)
     appendix_task = _appendix_task_for_fill(item, task)
+    blank_source = dict(task.get("blankSource") or {}) if isinstance(task.get("blankSource"), dict) else {}
     selected_reference_ids = _selected_reference_material_ids(item, appendix_task, data)
     reference_materials = _reference_materials_for_fill(item, appendix_task, data, selected_reference_ids)
+    blank_source_id = str(blank_source.get("id") or blank_source.get("materialId") or "").strip()
+    reference_materials = [
+        material
+        for material in reference_materials
+        if str(material.get("id") or material.get("materialId") or "").strip() != blank_source_id
+    ]
     recommended_materials = _dedupe_material_summaries(_object_items(appendix_task.get("recommendedMaterials")))
+    material_index = _material_index_for_fill(project, plan, item)
     parse_fields = _parse_fields_for_fill(appendix_task, task, data)
     work_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / gap_id
     work_dir.mkdir(parents=True, exist_ok=True)
-    artifact_id = f"ART-{gap_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
-    output_file = work_dir / f"{safe_filename(str(item.get('title') or gap_id), gap_id)}_AI填写.docx"
-    manifest_path = work_dir / "table_fill_input.json"
+    material_index = _prepare_material_index_files(
+        material_index,
+        work_dir,
+        cache_dir=_project_dir(project) / "s4_gap_workdir" / "ai_fill" / "_material_index_cache",
+    )
+    artifact_task_id = safe_filename(str(task.get("id") or "task"), "task")
+    artifact_id = f"ART-{gap_id}-{artifact_task_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
+    output_stem = safe_filename(str(item.get("title") or gap_id), gap_id)
+    if len(fill_tasks) > 1:
+        output_suffix = safe_filename(str(task.get("id") or blank_source_id or "task"), "task")
+        output_file = work_dir / f"{output_stem}_{output_suffix}_AI填写.docx"
+    else:
+        output_file = work_dir / f"{output_stem}_AI填写.docx"
+    manifest_path = work_dir / ("word_fill_input.json" if skill_name == WORD_FILL_SKILL_NAME else "table_fill_input.json")
+    if skill_name == WORD_FILL_SKILL_NAME:
+        blank_source = _prepare_word_blank_source(blank_source, work_dir)
     manifest = {
-        "schemaVersion": TABLE_FILL_SCHEMA_VERSION,
+        "schemaVersion": WORD_FILL_SCHEMA_VERSION if skill_name == WORD_FILL_SKILL_NAME else TABLE_FILL_SCHEMA_VERSION,
         "projectId": str(project.get("id") or ""),
         "projectName": str(project.get("name") or ""),
+        "projectIdentity": project.get("identity") or {},
+        "customerName": str(project.get("customerName") or ""),
         "projectTurbineModel": project_turbine_model(project),
         "gapId": gap_id,
         "fillTaskId": str(task.get("id") or ""),
@@ -439,9 +695,11 @@ def run_ai_fill_for_gap(
             "rowCount": appendix_task.get("rowCount") or 0,
             "availableParseFields": parse_fields,
         },
-        "blankSource": task.get("blankSource") or {},
+        "blankSource": blank_source,
         "referenceMaterialIds": selected_reference_ids,
         "referenceMaterials": reference_materials,
+        "projectFactTable": project_fact_table,
+        "materialIndex": material_index,
         "recommendedMaterials": recommended_materials,
         "parseFieldIds": _string_items(data.get("parseFieldIds")),
         "parseFields": parse_fields,
@@ -451,15 +709,22 @@ def run_ai_fill_for_gap(
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    result = run_table_filler_skill(manifest_path)
+    if skill_name == WORD_FILL_SKILL_NAME:
+        result = run_word_placeholder_filler_skill(manifest_path)
+    else:
+        result = run_table_filler_skill(manifest_path)
     resolved_output = Path(str(result.get("outputFile") or output_file))
     if not resolved_output.exists():
         raise RuntimeError(f"AI 填写未生成输出文件：{resolved_output}")
+    result = _merge_fill_sidecar_report(result, resolved_output)
+    quality_report = _build_fill_quality_report(result, output_exists=True)
 
     artifact = {
         "id": artifact_id,
         "source": "ai_fill",
-        "skill": TABLE_FILL_SKILL_NAME,
+        "skill": skill_name,
+        "gapId": gap_id,
+        "fillTaskId": str(task.get("id") or ""),
         "title": str(item.get("title") or resolved_output.stem),
         "fileName": resolved_output.name,
         "path": str(resolved_output),
@@ -468,6 +733,7 @@ def run_ai_fill_for_gap(
         "unfilledFields": list(result.get("unfilledFields") or []),
         "evidenceRefs": list(result.get("evidenceRefs") or []),
         "fillReport": result.get("fillReport") or {},
+        "qualityReport": quality_report,
         "referenceMaterials": reference_materials,
         "recommendedMaterials": recommended_materials,
         "parseFields": parse_fields,
@@ -487,12 +753,22 @@ def run_ai_fill_for_gap(
     task["outputArtifactId"] = artifact_id
     task["completedAt"] = artifact["createdAt"]
     item["status"] = "resolved"
-    item.setdefault("resolvedArtifacts", []).append(artifact)
+    item["qualityStatus"] = quality_report["status"]
+    item["qualityReport"] = quality_report
+    item["resolvedArtifacts"] = _replace_resolved_artifact(
+        item.get("resolvedArtifacts"),
+        artifact,
+        fill_task_id=str(task.get("id") or ""),
+        skill_name=skill_name,
+        file_name=resolved_output.name,
+    )
     item["resolvedAt"] = artifact["createdAt"]
     item["resolvedSource"] = artifact["fileName"]
     item["reviewNotes"] = list(item.get("reviewNotes") or [])
     if artifact["unfilledFields"]:
         item["reviewNotes"].append(f"AI 填写仍有未填字段：{len(artifact['unfilledFields'])} 项")
+    if quality_report["status"] != "passed":
+        item["reviewNotes"].append("AI 填写质量验收未达标，请人工复核或补充事实表后重填。")
 
     plan["updatedAt"] = artifact["createdAt"]
     plan["summary"] = summarize_gap_plan(plan)
@@ -502,6 +778,53 @@ def run_ai_fill_for_gap(
     gap_state["reviewConfirmed"] = False
     gap_state["reviewedAt"] = ""
     return {"item": item, "artifact": artifact, "gapPlan": plan}
+
+
+def _compact_resolved_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": artifact.get("id"),
+        "source": artifact.get("source"),
+        "skill": artifact.get("skill"),
+        "gapId": artifact.get("gapId"),
+        "fillTaskId": artifact.get("fillTaskId"),
+        "title": artifact.get("title"),
+        "fileName": artifact.get("fileName"),
+        "path": artifact.get("path"),
+        "createdAt": artifact.get("createdAt"),
+        "operator": artifact.get("operator"),
+        "unfilledFields": list(artifact.get("unfilledFields") or []),
+        "evidenceRefs": list(artifact.get("evidenceRefs") or []),
+        "fillReport": artifact.get("fillReport") or {},
+        "qualityReport": artifact.get("qualityReport") or {},
+        "manifestPath": artifact.get("manifestPath"),
+        "onlyoffice": artifact.get("onlyoffice") or {},
+        "s7Ready": artifact.get("s7Ready", True),
+        "referenceMaterialCount": len(artifact.get("referenceMaterials") or []),
+        "recommendedMaterialCount": len(artifact.get("recommendedMaterials") or []),
+    }
+
+
+def _replace_resolved_artifact(
+    current: Any,
+    artifact: dict[str, Any],
+    *,
+    fill_task_id: str,
+    skill_name: str,
+    file_name: str,
+) -> list[dict[str, Any]]:
+    def compact_key(value: Any) -> str:
+        return str(value or "").strip()
+
+    compact = _compact_resolved_artifact(artifact)
+    kept: list[dict[str, Any]] = []
+    for item in _object_items(current):
+        if fill_task_id and compact_key(item.get("fillTaskId")) == fill_task_id:
+            continue
+        if not item.get("fillTaskId") and compact_key(item.get("skill")) == skill_name and compact_key(item.get("fileName")) == file_name:
+            continue
+        kept.append(_compact_resolved_artifact(item))
+    kept.append(compact)
+    return kept[-12:]
 
 def register_manual_gap_upload(
     project: dict[str, Any],
@@ -738,6 +1061,57 @@ async def _downloadable_material_payload(material_id: str) -> tuple[dict[str, An
     return payload, "raw"
 
 
+async def _downloadable_fill_source_payload(material_id: str) -> tuple[dict[str, Any], str]:
+    try:
+        payload = await material_store.raw_download_cleaned_content(material_id)
+        return payload, "cleaned"
+    except Exception:
+        payload = await material_store.raw_download_content(material_id)
+    mime_type = str(payload.get("mimeType") or "")
+    file_name = str(payload.get("fileName") or "").lower()
+    allowed_ext = file_name.endswith((".docx", ".xlsx", ".xlsm"))
+    allowed_mime = (
+        "wordprocessingml" in mime_type
+        or "spreadsheetml" in mime_type
+        or "ms-excel" in mime_type
+    )
+    if not allowed_ext and not allowed_mime:
+        raise ValueError(f"素材 {material_id} 不是填写 Skill 可读取的 Word/Excel。")
+    return payload, "raw"
+
+
+def _prepare_word_blank_source(blank_source: dict[str, Any], work_dir: Path) -> dict[str, Any]:
+    source = dict(blank_source)
+    for key in ("docxPath", "path", "workspacePath"):
+        candidate = Path(str(source.get(key) or ""))
+        if candidate.exists() and candidate.suffix.lower() == ".docx":
+            source["docxPath"] = str(candidate)
+            return source
+
+    material_id = str(source.get("materialId") or source.get("id") or "").strip()
+    if not material_id:
+        raise ValueError("待填写 Word 缺少 materialId/docxPath，无法准备模板。")
+    payload, source_kind = _run_async(_downloadable_material_payload(material_id))
+    file_name = safe_filename(
+        str(source.get("cleanedFileName") or payload.get("fileName") or source.get("title") or f"{material_id}.docx"),
+        f"{material_id}.docx",
+    )
+    if not file_name.lower().endswith(".docx"):
+        file_name = f"{Path(file_name).stem}.docx"
+    target_path = work_dir / "blank_source" / f"{material_id}-{file_name}"
+    if not target_path.exists():
+        minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
+    source.update(
+        {
+            "docxPath": str(target_path),
+            "path": str(target_path),
+            "sourceKind": source_kind,
+            "fileName": target_path.name,
+        }
+    )
+    return source
+
+
 def summarize_gap_plan(plan: dict[str, Any]) -> dict[str, Any]:
     items = [item for item in plan.get("items") or [] if isinstance(item, dict)]
     decision_counts: dict[str, int] = {}
@@ -901,6 +1275,22 @@ manifest：{manifest_path}
 请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径：
 
 s4fill {manifest_path}
+
+只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
+""".strip()
+
+
+def _build_word_placeholder_filler_prompt(manifest_path: Path) -> str:
+    return f"""
+Use the {WORD_FILL_SKILL_NAME} skill.
+
+你现在在做技术标素材库待填写 Word 的 AI 填写。后端已经准备好 manifest，其中包含待填写 Word、人工指定参考素材、解析字段、项目投标机型和输出路径。
+
+manifest：{manifest_path}
+
+请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径：
+
+s4wordfill {manifest_path}
 
 只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
 """.strip()

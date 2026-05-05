@@ -10,6 +10,205 @@
 
 ## 进度记录
 
+### 2026-05-05 10:18 收敛 S3 项目事实表生成口径
+
+改动目标：
+
+- 修复项目事实表把解析噪声、品牌名、工具型号等内容当成事实字段的问题。
+- 事实表先吃 S0/S1 解析里可信的项目基础字段，再从每个 AI 待填写 Word/副表中沉淀通用、项目定制、常用字段。
+- 重新构建事实表时不再继承旧草稿里的错误冲突值，仅保留人工已确认字段。
+
+改动内容：
+
+- `store.py` 为解析字段增加可信白名单：当前仅自动采纳项目名称、招标编号、可信招标人，以及可从文本中明确抽出的性能保证值。
+- `store.py` 读取待填写 DOCX 表格行，抽取机型、容量、台数、风资源、性能保证等常用事实字段，并过滤品牌、工具型号、参数/方法/折减类噪声。
+- 项目事实字段增加规范化映射：总容量/机组数量/安全等级/空气密度/湍流强度/极端风速/单位千瓦扫风面积等会合并到稳定字段名。
+- `投标方案` 在有轮毂高度时用 `机型-轮毂高度`，否则先用投标机型作为候选，交由人工确认。
+- 增加回归测试覆盖：噪声解析项不进入事实表，表格待填字段能被抽取，且招标人不再因解析噪声进入 conflict。
+
+验证结果：
+
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_turbine_model_selection.py tests/test_toc_skill_scripts.py -q` 通过：61 passed。
+- `.venv/bin/python -m py_compile app/services/store.py` 通过。
+- 已重建并重启 `fastapi / worker`，`/api/healthz` 返回 ok，`fastapi` healthy。
+- live `PRJ-0003` 重新构建事实表后：`totalCount=36`、`candidateCount=13`、`missingCount=23`、`conflictCount=0`；已预填项目名称、招标编号、招标方、投标机型、单机容量、叶轮直径、功率曲线保证率、全场/单台可利用率等。
+
+遗留问题：
+
+- `总装机容量、机组台数、轮毂高度、安全等级、风资源数据` 等无法从当前可信来源唯一确定，保留为待人工确认字段。
+- 事实表只沉淀跨 Word/副表复用的项目事实；品牌配置、工具清单、载荷细项等表格专项内容仍应由填写 Skill 结合 Wiki/素材库逐表处理。
+
+### 2026-05-05 09:39 S3 增加项目事实表确认、批量 AI 填写和三率验收
+
+改动目标：
+
+- 按用户确认的顺序调整 S3：先维护项目事实表并人工确认，再逐项或一键执行 Word/副表填写。
+- AI 填写不能只依赖事实表，manifest 仍携带素材库/Wiki/解析字段参考材料；确认后的事实表作为高优先级项目事实传给 Word/table 两个 Skill。
+- 填写结果必须给出覆盖率、正确率、完整率，不再用“生成了文档”或残留占位符数量作为唯一验收信号。
+
+改动内容：
+
+- 后端新增 `GET/POST/PUT /api/projects/{id}/gaps/facts` 事实表接口，事实表从项目身份、投标机型、解析字段和缺口占位符生成，支持人工编辑后 `confirm=true`。
+- `POST /api/projects/{id}/gaps/{gap_id}/ai-fill` 增加事实表确认门禁，并在 manifest 中写入 `projectFactTable`。
+- 新增 `POST /api/projects/{id}/gaps/ai-fill-all`，批量填写时按 Word filler 优先、table filler 随后执行。
+- `gap_planning.py` 为每个 AI 填写 artifact 生成 `qualityReport`，包含 `coverageRate/correctnessRate/completenessRate` 与 `0.85` 门槛。
+- `bid-tech-word-placeholder-filler` 和 `bid-tech-table-filler` 都读取 `projectFactTable` 中已确认/候选事实，并优先用于字段匹配。
+- 前端 S3 页面新增“项目事实表维护”弹窗、一键 AI 填写按钮、填写前事实表确认提示、目录项质量状态和三率展示。
+- 接口文档补充事实表、单项填写、批量填写和三率验收口径。
+
+验证结果：
+
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_turbine_model_selection.py tests/test_toc_skill_scripts.py -q` 通过：60 passed。
+- `.venv/bin/python -m py_compile app/services/gap_planning.py app/services/store.py app/api/routes/gaps.py app/services/turbine_models.py opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py opencode/skill/bid-tech-word-placeholder-filler/scripts/run_from_manifest.py` 通过。
+- `node --test src/pages/gapRecognitionHelpers.test.mjs` 通过：10 passed。
+- `npm run lint` 通过。
+- `npm run build` 通过。
+- 已重建并重启 `web / fastapi / worker / opencode`，`http://127.0.0.1/projects/PRJ-0003/gaps` 返回 200。
+- 运行态 `POST /api/projects/PRJ-0003/gaps/facts/build` 返回 `draft 52` 个事实字段，其中 `17` 个待补充；未确认事实表时调用单项 `ai-fill` 返回“请先维护并确认项目事实表”。
+
+遗留问题：
+
+- 三率中的正确率当前以“已填写字段是否有证据链/事实依据”为严格自动口径；如要达到最终合同级人工基准，还需要引入人工 gold answer 的逐字段对比集。
+- 尚未在真实 `PRJ-0003` 上跑完整一键填写，因为该操作会批量生成大量产物；部署后建议先由用户在页面确认事实表，再执行一键填写抽查。
+
+### 2026-05-05 09:06 修复 S3 待填写 Word 旧计划误走表格 Skill
+
+改动目标：
+
+- 修复用户指出的 1.4“风电机组自主可控推广应用的承诺”被错误显示/执行为 `bid-tech-table-filler` 的问题。
+- 确保素材库 `sourceType=material_fill_template` 的待填写 Word 统一走 `bid-tech-word-placeholder-filler`，空副表/空表继续走 `bid-tech-table-filler`。
+- 确保 Word filler 能从项目身份中读取招标方/招标人等基础事实，不能确定时仍按 `[待人工补充：字段名]` 并标黄。
+
+改动内容：
+
+- `gap_planning.py` 增加 `normalize_gap_plan_fill_task_skills()`，新生成计划、读取旧计划、执行 `ai-fill` 前都会把旧的 material Word 填写任务从 table skill 迁移到 word skill。
+- `store.py` 在 `gaps-detection`、`gaps`、`ai-fill` 路径上自动修复并持久化旧 gap plan，避免 PRJ-0003 这类历史计划继续展示错误 Skill。
+- `run_ai_fill_for_gap()` 给 Word filler manifest 补入 `projectIdentity` 和 `customerName`。
+- `bid-tech-word-placeholder-filler` 从 `projectIdentity.owner/customerName/customerCanonicalName` 提取 `招标方/招标人/客户名称` 事实，用于承诺函等 Word 占位符。
+- 增加回归测试：旧 material Word 任务即使保存为 table skill，执行前也必须改走 word skill；承诺函里的 `招标方/日期` 必须被真实值消解。
+
+验证结果：
+
+- `PYTHONPATH=. .venv/bin/python -m py_compile app/services/gap_planning.py app/services/store.py opencode/skill/bid-tech-word-placeholder-filler/scripts/run_from_manifest.py` 通过。
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_gap_review_flow.py::GapReviewFlowTests::test_stale_material_word_fill_task_is_repaired_to_word_skill_before_ai_fill tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_word_placeholder_filler_uses_project_identity_for_owner_placeholders tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_word_placeholder_filler_replaces_parse_and_project_placeholders -q` 通过：3 passed。
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_toc_skill_scripts.py tests/test_gap_review_flow.py -q` 通过：53 passed。
+- 已重建并重启 `fastapi / worker / opencode`。
+- `PRJ-0003` 当前 22 个素材库待填写 Word 任务全部为 `bid-tech-word-placeholder-filler`，80 个非素材库空表/副表任务全部为 `bid-tech-table-filler`。
+- 已实际对 `PRJ-0003` 的 1.4 执行一次 AI 填写：输出 `风电机组自主可控推广应用的承诺_AI填写.docx`，`placeholderCount=2`，`filledPlaceholderCount=2`，`unfilledPlaceholderCount=0`，文档内不再残留 `待填写/待人工补充`，包含 `致：华能集团` 和 `日  期：2026年05月05日`。
+
+遗留问题：
+
+- 本轮只实际点击验证了 1.4；其他待填写 Word 现在已走正确 Skill，但若要逐项检查内容质量，还需要按目标二批量评测流程重新跑一轮并对比人工基准。
+
+### 2026-05-05 08:53 S3 缺口处理前端改为人工确认后 AI 填写
+
+改动目标：
+
+- 按用户确认，把 S3 缺口处理页调整为“先识别缺口，再点目录预览未填写空表/Word，人工检查来源素材后手动点击 AI 填写，填写完成后目录显示 AI 已填写，并默认预览填写结果”。
+- 保持 AI 填写仍走后端 `ai-fill`，由 OpenCode 调用对应 Skill：副表/空表走 `bid-tech-table-filler`，待填写 Word 走 `bid-tech-word-placeholder-filler`。
+
+改动内容：
+
+- `GapRecognition.jsx` 增加 AI 填写按钮、填写状态、来源素材检查区，并把 `fillTaskId / referenceMaterialIds / referenceMaterials / parseFieldIds` 传给 `gapsAPI.aiFill`。
+- AI 填写返回 `{ item, artifact, gapPlan }` 时保留原 S3 识别状态并合并新 gapPlan，避免页面误回到“待识别”。
+- 右侧 OnlyOffice 预览改为可切换未填写空表/Word、来源素材和填写结果；未填写时默认空白对象，填写后默认 AI 填写产物。
+- `gapRecognitionHelpers.js` 调整目录项结果摘要：AI 填写产物显示 `AI已填写`，已完成填写任务显示 `填写完毕`；预览选项保留空白源和素材源。
+- `gapRecognitionHelpers.test.mjs` 补充预览顺序和 AI 已填写状态回归。
+
+验证结果：
+
+- `node --test src/pages/gapRecognitionHelpers.test.mjs` 通过：9 passed。
+- `npm run lint` 通过。
+- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的既有提示。
+- 已重建并启动 `web` 容器：`docker compose build web && docker compose up -d web`。
+- `curl -fsS http://127.0.0.1/api/healthz` 返回 `status=ok`；`http://127.0.0.1/` 返回 200。
+
+遗留问题：
+
+- 本轮未在浏览器里实际点击 AI 填写，避免误触发一次真实 OpenCode 填写任务；交互入口和 API 契约已通过构建、lint 和 helper 回归验证。
+
+### 2026-05-04 20:28 副表填写 Skill 拆分口径与真实项目大规模验收
+
+改动目标：
+
+- 按用户确认，把第 14 条拆成两条路线：副表/空表填写由 `bid-tech-table-filler` 负责；素材库 `requiresFill` 待填写 Word 后续单独建 `bid-tech-word-placeholder-filler`。
+- 本轮只验真实项目里的所有副表，不混入素材库待填写 Word。
+
+改动内容：
+
+- `doc/14-甲方新增需求待办.md` 改为“两类 Skill 分工”：副表填写处理结构化表格，待填写 Word 处理正文/表格占位符。
+- `bid-tech-table-filler/SKILL.md` 收窄为“空副表/空表原样填写”，明确素材库待填写 Word 不在本 Skill 范围内。
+- `run_from_manifest.py` 增加真实批量容错：解析出来但没有表格的副表原样复制，报告记 `targetFieldCount=0`；批量中单个异常进入 `failedTargets`，不拖垮全批。
+- `tests/test_toc_skill_scripts.py` 增加无表格副表批量回归，验证空壳副表原样输出且普通副表继续填写。
+
+验证结果：
+
+- 目标回归通过：`PYTHONPATH=. .venv/bin/python -m pytest tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_table_filler_copies_no_table_appendix_without_failing_batch tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_table_filler_auto_selects_non_c_appendix_sources_from_material_index tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_table_filler_preserves_generic_appendix_and_highlights_manual_cells -q` 通过：3 passed。
+- 已重建并重启 `opencode` 容器，容器内确认新版 `s4fill` 生效。
+- 真实项目 `PRJ-0003` 副表专用 manifest：`82` 个副表目标，排除 `32` 个素材库待填写 Word。
+- 容器端到端执行：`docker compose exec -T opencode s4fill /data/documents/PRJ-0003/technical-workspace/s4_gap_workdir/table_filler_e2e_all/appendix_only_e2e/appendix_only_manifest.json`。
+- 批量报告：`targetCount=82`，`successfulTargetCount=82`，`failedTargetCount=0`，`outputFiles=82`。
+- 字段统计：`targetFieldCount=479`，`filledFieldCount=126`，`unfilledFieldCount=353`；其中 `43` 个副表识别到可填字段，`39` 个副表为零字段/标题页/空壳类输出。
+- 抽样检查 C.1/C.2/C.3/A.1 输出 Word 均保留表格；未填项数量与黄色高亮单元格数量一致：C.1 为 `10/10`，C.2 为 `21/21`，C.3 为 `36/36`，A.1 为 `13/13`。
+
+遗留问题：
+
+- 副表填写 Skill 已能大规模跑稳，但真实完整度仍依赖素材库中是否有对应事实；当前只保守填写确定字段，不编造。
+- 素材库待填写 Word 还未验收，下一步应单独重建 `bid-tech-word-placeholder-filler`，按占位符标签、段落上下文和素材来源做替换。
+
+### 2026-05-04 20:04 第二个 S3 Skill 补通用自动选材，不再只围绕 C 表
+
+改动目标：
+
+- 按用户纠正，把 `bid-tech-table-filler` 从“C 表增强为主”调整为“所有空副表/待填 Word 先自动判断素材来源，再保守填写”。
+
+改动内容：
+
+- `run_from_manifest.py` 增加通用素材路由层：读取目标副表标题、字段、备注、占位标签，对 `materialIndex` 中素材按主题/字段/文件名/路径/占位标签打分。
+- C.1/C.2/C.3 规则保留为增强包，但不再是主路径；非 C 副表可按供货范围、性能保证、塔筒基础、运输安装、备品备件、技术资料、偏差响应、风资源、环境适应性、试验检测等通用主题选材。
+- `fillReport.sourceSelection` 增加自动选材候选、分数、选中理由；批量报告也汇总每个目标的选材结果。
+- 后端 `run_ai_fill_for_gap` 现在会把允许范围内的 `materialIndex` 带给填写 Skill，并将可读取的 Word/Excel 素材下载到本次 `ai_fill` 工作目录，避免 Skill 只有素材元信息却读不到文件。
+- `SKILL.md` 更新边界：Agent 只调用 `s4fill`，脚本负责自动选材、抽取事实、字段映射、原 Word 写入和报告。
+
+验证结果：
+
+- 新增非 C 副表测试：`附表B.2 供货范围响应表` 在没有人工指定素材、且 `recommendedMaterials` 给错为风资源素材时，能从 `materialIndex` 自动选择 `供货范围清单` 并填满 3/3。
+- 目标回归通过：`PYTHONPATH=. .venv/bin/python -m pytest tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_table_filler_auto_selects_non_c_appendix_sources_from_material_index tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_table_filler_preserves_generic_appendix_and_highlights_manual_cells tests/test_gap_review_flow.py::GapReviewFlowTests::test_gap_ai_fill_calls_opencode_skill_and_registers_resolved_artifact tests/test_gap_review_flow.py::GapReviewFlowTests::test_gap_ai_fill_manifest_carries_appendix_context_and_recommended_materials -q` 通过：4 passed。
+- 现有批量样例仍可输出 4 个目标：C.1/C.2/C.3/A.1 合计填 67 项、待人工 64 项，并在 summary 中返回 `outputFiles=4`、`targetResults=4`、`sourceSelections=4`。
+
+遗留问题：
+
+- 还需要拿真实项目目录里的“所有副表 + 素材库待填写 Word”做一次端到端 OpenCode/容器验收。
+- 自动选材目前是确定性打分路由，适合作为 MVP 稳定底座；后续如果要进一步提高复杂语义匹配，可在同一报告结构下接 LLM rerank，但仍要保留人工覆盖优先。
+
+### 2026-05-04 18:45 第二个 S3 Skill 原样填充能力封装与批量样例验证
+
+改动目标：
+
+- 将 `bid-tech-table-filler` 从说明型 Word 占位实现，重建为“保留原 Word/表格结构”的空副表/待填 Word 填写 Skill。
+- 覆盖单副表和多副表批量调用；C.1/C.2/C.3 作为增强样例，非 C 副表走通用表头识别和字段相似匹配。
+
+改动内容：
+
+- `bid-tech-table-filler/scripts/run_from_manifest.py` 改为读取 manifest 中的空 Word、参考 Word/Excel、解析字段和投标机型，识别待填列，写入原表格单元格。
+- 无法确定的字段写入 `[待人工补充：字段名]`，并设置黄色单元格底色 `FFF2CC`。
+- 支持 `targets / appendixTargets / appendixTasks` 批量填写，每个目标输出独立 Word，并生成批量 JSON 报告。
+- C.1/C.2/C.3 增加参数表和子系统专题增强抽取；其他附表使用通用 Word/Excel 键值抽取、字段名相似度、解析字段和 `projectTurbineModel`。
+- `SKILL.md` 更新为当前边界：Agent 只组织输入并调用 `s4fill`，脚本负责确定性填写和报告。
+- `tests/test_toc_skill_scripts.py` 增加通用副表回归，验证原结构保留、项目字段填写、待人工补充和黄色高亮。
+
+验证结果：
+
+- 本地批量样例通过：C.1 填 24/34、C.2 填 15/36、C.3 填 24/57，非 C 的 A.1 样例填 4/4。
+- DOCX 检查通过：C.1/C.2/C.3 的 `[待人工补充]` 数量分别为 10/21/33，黄色高亮单元格数量一致。
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_table_filler_preserves_generic_appendix_and_highlights_manual_cells tests/test_gap_review_flow.py::GapReviewFlowTests::test_gap_ai_fill_calls_opencode_skill_and_registers_resolved_artifact tests/test_gap_review_flow.py::GapReviewFlowTests::test_gap_ai_fill_manifest_carries_appendix_context_and_recommended_materials -q` 通过：3 passed。
+- 已重建并启动 `opencode` 镜像；容器内 `s4fill /data/documents/skill-test/container_manifest.json` 能批量输出 4 个目标和报告。
+
+遗留问题：
+
+- 容器 smoke 只挂了参数表，未挂全量专题 Word，所以 C.2/C.3 完整度低于本地完整素材测试；真实产品需要由后端把人工选择、Excel 路由或 Wiki 判断出的素材路径完整传入 manifest。
+- 第 14 条还未勾选完成；后续还需接前端人工改选入口、真实项目目录里的所有副表批量验收，以及素材库待填写 Word 的真实样本测试。
+
 ### 2026-05-03 16:29 技术标阶段口径收口到 S0-S6
 
 改动目标：
@@ -1484,6 +1683,51 @@ bid_workspace
 - `code/sewpg-bid-backend/app/workers/redis_worker.py`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+## 2026-05-05 S3 Word 填写正确率修复与分批验收
+
+- 修复 `bid-tech-word-placeholder-filler`：表格单元格上下文不再把占位符文本本身作为语义依据，避免 `[投标方案，待填写]` 抢占行名，导致 1.6 `投标关键数据一览表` 全部填成 `EW10.0-220-125`。
+- 增加 Word 行级语义校验：关键数据表只校验 AI 实际填写过的单元格；语义失败会拉低 `correctnessRate` 并进入 `needs_review`，不能再只靠证据链数量显示 100%。
+- 补充 `供货保障能力` 基地字段抽取：从 `固定-上海电气生产能力介绍.docx` 抽取高台生产基地名称与介绍，避免 fuzzy 到表头或品牌列表。
+- 验证：
+  - `PYTHONPATH=. .venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_turbine_model_selection.py tests/test_toc_skill_scripts.py -q` -> `72 passed`
+  - 已重建并重启 `fastapi / worker / opencode`。
+  - `PRJ-0003` 按 21 批重跑 102 个有填写任务的 gap，21 批均返回；最终字段覆盖率 `3850/4027 = 95.60%`，完整率 `95.60%`，证据链正确率口径 `100%`，语义校验 `46/46 = 100%`。
+  - 仍有 52 个任务级 `needs_review`，主要集中在 B/C/F/G 部分附表的低覆盖或无可识别目标字段；当前不再把这些任务包装为全部通过。
+
+### 2026-05-05 S3 填写链路端到端复核
+
+本轮修复：
+
+- S3 AI 填写强制以已确认项目事实表为前置条件，并按 Word/table fillTask 分别调用 `bid-tech-word-placeholder-filler` 与 `bid-tech-table-filler`。
+- 项目事实表补强项目优先、客户其次、通用兜底的来源优先级；`总装机容量`、`机组台数`、`轮毂高度`、`安全等级`、风资源字段均可从确认事实表进入填写 manifest。
+- Word 填写新增 `风资源报告` 综合占位规则，使用事实表生成风资源摘要。
+- 表格填写修复 `投标人响应值` 列识别、已填写单元格跳过、品牌表备注列误识别、项目事实表作为项目特定字段可信来源、sidecar 证据链回填、批量质量按字段数加权统计。
+
+验证结果：
+
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_turbine_model_selection.py tests/test_toc_skill_scripts.py -q`：69 passed。
+- 已重建并重启 `fastapi / worker / opencode / web`。
+- PRJ-0003 S3 端到端重跑结果：104/104 个 fillTask completed，字段级覆盖率 3851/4027 = 95.63%，证据链率 100%，剩余 176 个字段保留黄标人工补充。
+- 典型修复项：1.4 走 Word filler；A.1 从 9/19 提升到 15/19；B.1.2/B.1.3 不再把品牌表备注空列误判为待填；G.5.1 证据链恢复为 173 条并通过质量验收。
+
+### 2026-05-05 目标一/目标二验收闭环
+
+完成范围：
+
+- 目标一：`bid-tech-table-filler` 完成附表全量 v12 评测，输出目录为 `/data/documents/PRJ-0003/technical-workspace/s4_gap_workdir/table_filler_e2e_all/appendix_only_e2e_v12_tower_key/outputs`。
+- 目标二：新增并接入 `bid-tech-word-placeholder-filler`，批量填充 16 个素材库待填写 Word，输出目录为 `/data/documents/PRJ-0003/technical-workspace/s4_gap_workdir/target2_word_fill_all_v4/outputs`。
+- 后端 S3 AI 填写入口已能按任务类型分流到表格填充或 Word 占位符填充 Skill。
+
+评分证据：
+
+- 目标一人工附表对比：`strictCoverage=0.8521`，`tolerantCoverage=0.8547`，已超过 85%。
+- 目标二人工正文对比：`placeholderFillCoverage=1.0`，`residualPlaceholderCount=0`，`humanBodyNgramCoverage=0.9839`，`combinedCoverage=0.9903`，已超过 85%。
+
+验证结果：
+
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_toc_skill_scripts.py tests/test_gap_review_flow.py -q`：51 passed。
+- `docker compose build opencode && docker compose up -d opencode` 已执行，`opencode` 与 `fastapi` 容器均为 healthy。
 
 ### 2026-05-04 S3 缺口识别实现收口
 
@@ -3330,5 +3574,19 @@ bid_workspace
 - `"tmp/table-filler-sample/semantic_c2_c3/preview/APPX-0019-\351\231\204\350\241\250C.3 \346\234\272\346\242\260\344\274\240\345\212\250\351\203\250\344\273\266\346\212\200\346\234\257\345\217\202\346\225\260-\350\257\255\344\271\211\346\230\240\345\260\204\346\240\267\344\276\213\345\241\253\345\205\205.pdf"`
 - `tmp/table-filler-sample/semantic_c2_c3/reference_facts.c2_c3.semantic.json`
 - `tmp/table-filler-sample/target_fields.semantic.json`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-05 15:48:59 post-commit b50bbb2
+
+提交摘要：docs: tidy project documentation entrypoints
+
+变更文件：
+
+- `README.md`
+- `code/AGENT.md`
+- `"doc/16-\347\233\256\346\240\207\344\270\200\344\270\216\347\233\256\346\240\207\344\272\214\346\234\200\347\273\210\347\233\256\346\240\207.md"`
+- `doc/README.md`
+- `doc/superpowers/plans/2026-05-03-material-library-top-level-scope.md`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。

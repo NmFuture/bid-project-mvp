@@ -308,6 +308,11 @@ export const gapsAPI = {
     request(`/projects/${projectId}/gaps/${gid}/select-material`, { method: 'POST', body: data }),
   submitReview: (projectId) =>
     request(`/projects/${projectId}/gaps/submit-review`, { method: 'POST' }),
+  facts: (projectId) => request(`/projects/${projectId}/gaps/facts`),
+  buildFacts: (projectId) =>
+    request(`/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
+  saveFacts: (projectId, data) =>
+    request(`/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
   recheck: (projectId) =>
     request(`/projects/${projectId}/gaps/recheck`, { method: 'POST' }),
   aiFill: (projectId, gid, data) =>
@@ -315,6 +320,13 @@ export const gapsAPI = {
       method: 'POST',
       body: data,
       timeoutMs: 10 * 60 * 1000,
+      retryCount: 0,
+    }),
+  aiFillAll: (projectId, data) =>
+    request(`/projects/${projectId}/gaps/ai-fill-all`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 30 * 60 * 1000,
       retryCount: 0,
     }),
   submissions: (projectId) => request(`/projects/${projectId}/materials/submissions`),
