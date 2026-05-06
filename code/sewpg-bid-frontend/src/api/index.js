@@ -411,6 +411,8 @@ export const materialsAPI = {
       request('/materials/raw/folders/bootstrap', { method: 'POST', body: data }),
     createFolder: (data) =>
       request('/materials/raw/folders', { method: 'POST', body: data }),
+    moveFolder: (data) =>
+      request('/materials/raw/folders/move', { method: 'POST', body: data }),
     deleteFolder: (params = {}) => {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
       return request(`/materials/raw/folders${qs ? `?${qs}` : ''}`, { method: 'DELETE' })

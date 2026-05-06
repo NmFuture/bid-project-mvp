@@ -50,6 +50,10 @@ const ALLOWED_EXTENSIONS = new Set([
   'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm',
 ])
 const MATERIAL_ROOT_PATHS = ['技术标', '商务标']
+const PROTECTED_MOVE_FOLDER_PATHS = new Set([
+  '技术标',
+  '商务标',
+])
 
 const MATERIAL_ROOT_LABELS = {
   技术标: '技术标',
@@ -166,15 +170,7 @@ const ensureMaterialRootNodes = (nodes = []) => {
     fileCount: 0,
     children: [],
   }
-  const techChildrenByPath = new Map((technicalNode.children || []).map((child) => [normalizePath(child.path), child]))
-  const techChildren = ['技术标/通用素材', '技术标/客户素材', '技术标/项目素材'].map((path) => techChildrenByPath.get(path) || ({
-    id: path,
-    name: path.split('/').pop(),
-    path,
-    directFileCount: 0,
-    fileCount: 0,
-    children: [],
-  }))
+  const techChildren = Array.isArray(technicalNode.children) ? technicalNode.children : []
   const normalizedTechnical = {
     ...technicalNode,
     name: '技术标',
@@ -406,6 +402,10 @@ function TreeNode({
   selectedFileId,
   onSelect,
   onFileSelect,
+  onDeleteFolder,
+  onMoveDrop,
+  dragTargetPath,
+  setDragTargetPath,
   level = 0,
   collapsedMap,
   onToggle,
@@ -421,15 +421,44 @@ function TreeNode({
   const fileIndent = (34 + (level + 1) * 16) * (scale / 100)
   const directFiles = filesByFolderPath?.get(normalizePath(node.path)) || []
   const displayFileCount = directFiles.length || directFileCount
+  const normalizedNodePath = normalizePath(node.path)
+  const canDragFolder = !PROTECTED_MOVE_FOLDER_PATHS.has(normalizedNodePath)
+  const canDeleteThisFolder = Boolean(normalizedNodePath)
+  const isDropTarget = dragTargetPath === normalizedNodePath
   return (
     <div>
       <button
+        draggable={canDragFolder}
+        onDragStart={(event) => {
+          if (!canDragFolder) {
+            event.preventDefault()
+            return
+          }
+          event.dataTransfer.effectAllowed = 'move'
+          event.dataTransfer.setData('application/x-raw-folder', JSON.stringify({ path: normalizedNodePath }))
+          event.dataTransfer.setData('text/plain', normalizedNodePath)
+        }}
+        onDragOver={(event) => {
+          event.preventDefault()
+          event.dataTransfer.dropEffect = 'move'
+          setDragTargetPath(normalizedNodePath)
+          if (canExpand) onToggle(node.path, false)
+        }}
+        onDragLeave={() => setDragTargetPath((current) => (current === normalizedNodePath ? '' : current))}
+        onDrop={(event) => {
+          event.preventDefault()
+          setDragTargetPath('')
+          onMoveDrop(event, normalizedNodePath)
+        }}
         onClick={() => {
           onSelect(node.path)
           if (canExpand) onToggle(node.path, false)
         }}
         style={{ paddingLeft: `${indent}px`, fontSize: `${Math.max(11, Math.min(14, 13 * (scale / 100)))}px` }}
-        className={`w-full text-left rounded-lg py-2 pr-2 transition-colors flex items-center justify-between gap-2 ${
+        className={`group w-full text-left rounded-lg py-2 pr-2 transition-colors flex items-center justify-between gap-2 ${
+          isDropTarget
+            ? 'bg-primary/15 text-primary ring-1 ring-primary/40'
+            :
           selected
             ? 'bg-primary/10 text-primary font-semibold'
             : 'text-on-surface-variant hover:bg-surface-container-low'
@@ -440,6 +469,7 @@ function TreeNode({
             <span
               onClick={(event) => {
                 event.stopPropagation()
+                onSelect(node.path)
                 onToggle(node.path)
               }}
               className="material-symbols-outlined text-sm text-outline hover:text-primary"
@@ -454,8 +484,31 @@ function TreeNode({
           </span>
           <span className="truncate">{node.name}</span>
         </span>
-        <span className="text-xs text-outline shrink-0">
-          {displayFileCount ? `${displayFileCount}/${node.fileCount}` : node.fileCount}
+        <span className="flex shrink-0 items-center gap-1">
+          <span className="text-xs text-outline">
+            {displayFileCount ? `${displayFileCount}/${node.fileCount}` : node.fileCount}
+          </span>
+          {canDeleteThisFolder && (
+            <span
+              role="button"
+              tabIndex={0}
+              title="删除此文件夹"
+              onClick={(event) => {
+                event.stopPropagation()
+                onDeleteFolder(normalizedNodePath)
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  onDeleteFolder(normalizedNodePath)
+                }
+              }}
+              className="hidden h-6 w-6 items-center justify-center rounded text-outline hover:bg-error-container/40 hover:text-error group-hover:inline-flex"
+            >
+              <span className="material-symbols-outlined text-[16px]">delete</span>
+            </span>
+          )}
         </span>
       </button>
       {!collapsed && directFiles.length > 0 && (
@@ -468,6 +521,12 @@ function TreeNode({
               <button
                 key={item.id}
                 type="button"
+                draggable
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = 'move'
+                  event.dataTransfer.setData('application/x-raw-file', JSON.stringify({ id: item.id, folderPath: item.folderPath || '' }))
+                  event.dataTransfer.setData('text/plain', item.id)
+                }}
                 onClick={() => onFileSelect(item)}
                 title={previewable ? item.name || '' : cleanedPreviewBlockedMessage(item)}
                 style={{
@@ -502,6 +561,10 @@ function TreeNode({
               selectedFileId={selectedFileId}
               onSelect={onSelect}
               onFileSelect={onFileSelect}
+              onDeleteFolder={onDeleteFolder}
+              onMoveDrop={onMoveDrop}
+              dragTargetPath={dragTargetPath}
+              setDragTargetPath={setDragTargetPath}
               level={level + 1}
               collapsedMap={collapsedMap}
               onToggle={onToggle}
@@ -527,6 +590,7 @@ export default function MaterialDB({ showToast = () => {} }) {
   const [tree, setTree] = useState([])
   const [collapsedMap, setCollapsedMap] = useState({})
   const [treeScale, setTreeScale] = useState(100)
+  const [dragTargetPath, setDragTargetPath] = useState('')
   const [filesPayload, setFilesPayload] = useState({ items: [], total: 0, page: 1, pageSize: 20 })
   const [parseStatus, setParseStatus] = useState(null)
   const [selectedFolderPath, setSelectedFolderPath] = useState('')
@@ -570,7 +634,7 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   const canManageCurrentFolder = Boolean(selectedFolderPath) && !selectedFolderPath.startsWith('商务标')
   const canCreateFolder = Boolean(selectedFolderPath) && canManageCurrentFolder
-  const canDeleteFolder = Boolean(selectedFolderPath && selectedFolderPath.includes('/') && selectedFolderPath.split('/').length > 2) && canManageCurrentFolder
+  const canDeleteFolder = Boolean(selectedFolderPath)
 
   const fileItems = useMemo(() => filesPayload?.items || [], [filesPayload?.items])
   const totalCount = Number(filesPayload?.total || 0)
@@ -903,17 +967,19 @@ export default function MaterialDB({ showToast = () => {} }) {
     }
   }
 
-  const handleDeleteFolder = async () => {
-    if (!canDeleteFolder) {
+  const handleDeleteFolder = async (path = selectedFolderPath) => {
+    const targetPath = normalizePath(path)
+    const canDeleteTarget = Boolean(targetPath)
+    if (!canDeleteTarget) {
       showToast('当前目录暂不支持删除。', 'error')
       return
     }
-    const ok = window.confirm(`确认删除文件夹：${selectedFolderPath} ？`)
+    const ok = window.confirm(`确认删除文件夹：${targetPath} ？\n\n该目录下的子文件夹和素材文件也会一起删除。`)
     if (!ok) return
     try {
-      const result = await materialsAPI.raw.deleteFolder({ path: selectedFolderPath })
+      const result = await materialsAPI.raw.deleteFolder({ path: targetPath })
       showToast(result?.message || '文件夹删除成功')
-      setSelectedFolderPath(parentPath(selectedFolderPath))
+      setSelectedFolderPath(parentPath(targetPath))
       await loadLibrary({ silent: true })
     } catch (e) {
       showToast(safeMessage(e, '删除文件夹失败'), 'error')
@@ -941,6 +1007,72 @@ export default function MaterialDB({ showToast = () => {} }) {
       setPreviewError(safeMessage(e, '清洗稿预览加载失败'))
     } finally {
       setPreviewLoading(false)
+    }
+  }
+
+  const parseDragPayload = (event, mimeType) => {
+    try {
+      const raw = event.dataTransfer.getData(mimeType)
+      return raw ? JSON.parse(raw) : null
+    } catch {
+      return null
+    }
+  }
+
+  const handleMoveDrop = async (event, targetPath) => {
+    const normalizedTarget = normalizePath(targetPath)
+    if (!normalizedTarget || normalizedTarget.startsWith('商务标')) {
+      showToast('商务标素材库当前不可移动。', 'error')
+      return
+    }
+
+    const filePayload = parseDragPayload(event, 'application/x-raw-file')
+    if (filePayload?.id) {
+      const sourceFolder = normalizePath(filePayload.folderPath)
+      if (sourceFolder === normalizedTarget) return
+      try {
+        const result = await materialsAPI.raw.moveFile({
+          fileId: filePayload.id,
+          targetPath: normalizedTarget,
+        })
+        showToast(result?.message || '文件移动成功')
+        await loadLibrary({ silent: true })
+      } catch (e) {
+        if (e?.status === 409 && e?.code === 'MATERIAL_CONFLICT') {
+          setConflictContext({
+            type: 'move-file',
+            payload: { fileId: filePayload.id, targetPath: normalizedTarget },
+            detail: e?.payload?.conflict || null,
+          })
+        } else {
+          showToast(safeMessage(e, '文件移动失败'), 'error')
+        }
+      }
+      return
+    }
+
+    const folderPayload = parseDragPayload(event, 'application/x-raw-folder')
+    const sourcePath = normalizePath(folderPayload?.path)
+    if (!sourcePath || sourcePath === normalizedTarget) return
+    if (PROTECTED_MOVE_FOLDER_PATHS.has(sourcePath)) {
+      showToast('基础目录不允许移动。', 'error')
+      return
+    }
+    if (normalizedTarget.startsWith(`${sourcePath}/`)) {
+      showToast('不能将目录移动到自身的子目录下。', 'error')
+      return
+    }
+
+    try {
+      const result = await materialsAPI.raw.moveFolder({
+        sourcePath,
+        targetParentPath: normalizedTarget,
+      })
+      showToast(result?.message || '文件夹移动成功')
+      setSelectedFolderPath(result?.folderPath || normalizedTarget)
+      await loadLibrary({ silent: true })
+    } catch (e) {
+      showToast(safeMessage(e, '文件夹移动失败'), 'error')
     }
   }
 
@@ -978,6 +1110,18 @@ export default function MaterialDB({ showToast = () => {} }) {
   const resolveConflict = async (action) => {
     if (conflictContext.type === 'upload') {
       await performUpload(action)
+    } else if (conflictContext.type === 'move-file') {
+      try {
+        const result = await materialsAPI.raw.moveFile({
+          ...(conflictContext.payload || {}),
+          onConflict: action,
+        })
+        showToast(result?.message || '文件移动成功')
+        setConflictContext(null)
+        await loadLibrary({ silent: true })
+      } catch (e) {
+        showToast(safeMessage(e, '文件移动失败'), 'error')
+      }
     }
   }
 
@@ -1210,6 +1354,10 @@ export default function MaterialDB({ showToast = () => {} }) {
                         setSelectedFolderPath(item.folderPath || selectedFolderPath)
                         handlePreviewCleaned(item)
                       }}
+                      onDeleteFolder={handleDeleteFolder}
+                      onMoveDrop={handleMoveDrop}
+                      dragTargetPath={dragTargetPath}
+                      setDragTargetPath={setDragTargetPath}
                       collapsedMap={collapsedMap}
                       onToggle={toggleNode}
                       scale={treeScale}

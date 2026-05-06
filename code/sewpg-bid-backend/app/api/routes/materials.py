@@ -147,6 +147,14 @@ async def raw_move_file(data: dict[str, Any] = Body(default_factory=dict)) -> di
     )
 
 
+@router.post("/api/materials/raw/folders/move")
+async def raw_move_folder(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await material_store.raw_move_folder(
+        source_path=str(data.get("sourcePath") or ""),
+        target_parent_path=str(data.get("targetParentPath") or data.get("targetPath") or ""),
+    )
+
+
 @router.delete("/api/materials/raw/{file_id}")
 async def raw_delete_file(file_id: str) -> dict[str, Any]:
     return await material_store.raw_delete_file(file_id)

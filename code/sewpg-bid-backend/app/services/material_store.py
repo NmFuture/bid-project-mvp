@@ -866,19 +866,6 @@ class MaterialStore:
                 int(spec["sort_order"]),
             )
             roots.append(root)
-            if str(spec["name"]) != "技术标":
-                continue
-            for child in TECHNICAL_TIER_FOLDERS:
-                await self._ensure_folder_path(
-                    session,
-                    str(child["name"]),
-                    root.id,
-                    str(child["tier"]),
-                    "技术标",
-                    None,
-                    int(child["sort_order"]),
-                    customer_name=str(child.get("customer_name") or "") or None,
-                )
         await self._migrate_legacy_technical_folders(session)
         return roots
 
@@ -1061,20 +1048,36 @@ class MaterialStore:
         folder_path = str(path or "").strip().strip("/")
         if not folder_path:
             raise PeripheralError(400, "path 不能为空。", "RAW_FOLDER_PATH_REQUIRED")
-
         async with async_session() as session:
-            result = await session.execute(select(RawFolder).where(RawFolder.path == folder_path).options(selectinload(RawFolder.files)))
+            result = await session.execute(select(RawFolder).where(RawFolder.path == folder_path))
             folder = result.scalar_one_or_none()
             if folder is None:
                 raise PeripheralError(404, "目录不存在。", "RAW_FOLDER_NOT_FOUND")
-            if folder.files:
-                raise PeripheralError(400, "目录下仍有文件，请先移除或迁移文件后再删除。", "RAW_FOLDER_NOT_EMPTY")
 
-            await session.delete(folder)
+            descendant_result = await session.execute(
+                select(RawFolder).where(or_(RawFolder.path == folder.path, RawFolder.path.startswith(f"{folder.path}/")))
+            )
+            folders = descendant_result.scalars().all()
+            folder_ids = [folder.id for folder in folders]
+            files_result = await session.execute(
+                select(RawFile).where(RawFile.folder_id.in_(folder_ids)).options(selectinload(RawFile.folder))
+            )
+            files = files_result.scalars().all()
+            for item in files:
+                await self._purge_raw_file_objects(session, item)
+                await session.delete(item)
+
+            for descendant in sorted(folders, key=lambda entry: len(str(entry.path or "").split("/")), reverse=True):
+                await session.delete(descendant)
             await session.commit()
 
             tree = await self.raw_tree()
-            return {"message": "文件夹删除成功。", "folderPath": folder_path, "tree": tree["tree"]}
+            return {
+                "message": f"文件夹删除成功，共删除 {len(files)} 个素材文件。",
+                "folderPath": folder_path,
+                "deletedFileCount": len(files),
+                "tree": tree["tree"],
+            }
 
     async def raw_upload(
         self,
@@ -2282,6 +2285,102 @@ class MaterialStore:
             )
             moved = refreshed.scalar_one()
             return {"message": "移动成功", "item": moved.to_dict()}
+
+    async def raw_move_folder(self, source_path: str, target_parent_path: str) -> dict[str, Any]:
+        source_path = str(source_path or "").strip().strip("/")
+        target_parent_path = str(target_parent_path or "").strip().strip("/")
+        if not source_path or not target_parent_path:
+            raise PeripheralError(400, "源目录和目标目录不能为空。", "RAW_FOLDER_MOVE_PATH_REQUIRED")
+
+        protected_paths = {"技术标", "商务标"}
+        if source_path in protected_paths:
+            raise PeripheralError(400, "该基础目录不允许移动。", "RAW_FOLDER_MOVE_PROTECTED")
+        if target_parent_path == source_path or target_parent_path.startswith(f"{source_path}/"):
+            raise PeripheralError(400, "不能将目录移动到自身或其子目录下。", "RAW_FOLDER_MOVE_DESCENDANT")
+
+        async with async_session() as session:
+            await self._ensure_runtime_tables(session)
+            source_result = await session.execute(select(RawFolder).where(RawFolder.path == source_path))
+            source = source_result.scalar_one_or_none()
+            if source is None:
+                raise PeripheralError(404, "源目录不存在。", "RAW_FOLDER_NOT_FOUND")
+
+            parent_result = await session.execute(select(RawFolder).where(RawFolder.path == target_parent_path))
+            target_parent = parent_result.scalar_one_or_none()
+            if target_parent is None:
+                raise PeripheralError(404, "目标目录不存在。", "RAW_FOLDER_NOT_FOUND")
+
+            next_root_path = f"{target_parent.path.rstrip('/')}/{source.name}"
+            existing_result = await session.execute(select(RawFolder).where(RawFolder.path == next_root_path))
+            if existing_result.scalar_one_or_none() is not None:
+                raise PeripheralError(409, "目标目录下已存在同名文件夹。", "RAW_FOLDER_EXISTS")
+
+            folder_result = await session.execute(
+                select(RawFolder).where(or_(RawFolder.path == source.path, RawFolder.path.startswith(f"{source.path}/")))
+            )
+            folders = folder_result.scalars().all()
+            folders_by_old_path = {folder.path: folder for folder in folders}
+            files_result = await session.execute(
+                select(RawFile)
+                .join(RawFolder, RawFile.folder_id == RawFolder.id)
+                .where(or_(RawFolder.path == source.path, RawFolder.path.startswith(f"{source.path}/")))
+                .options(selectinload(RawFile.folder))
+            )
+            files = files_result.scalars().all()
+
+            old_to_new_path: dict[str, str] = {}
+            folder_id_to_new_path: dict[int, str] = {}
+            for folder in folders:
+                suffix = folder.path.removeprefix(source.path).lstrip("/")
+                next_path = "/".join([part for part in [next_root_path, suffix] if part])
+                old_to_new_path[folder.path] = next_path
+                folder_id_to_new_path[int(folder.id)] = next_path
+
+            source.parent_id = target_parent.id
+            inherited_tier = self._infer_material_tier_from_folder(target_parent)
+            for old_path, folder in folders_by_old_path.items():
+                new_path = old_to_new_path[old_path]
+                folder.path = new_path
+                folder.tier = inherited_tier
+                folder.bid_type = target_parent.bid_type or folder.bid_type
+                folder.customer_name = target_parent.customer_name or folder.customer_name
+                folder.project_id = target_parent.project_id or folder.project_id
+
+            for item in files:
+                old_key = item.minio_key
+                new_folder_path = folder_id_to_new_path.get(int(item.folder_id))
+                if not new_folder_path:
+                    continue
+                next_key = self._raw_object_key(new_folder_path, item.name)
+                if old_key and old_key != next_key:
+                    minio_client.copy_object(item.minio_bucket, old_key, next_key)
+                    minio_client.remove_object(item.minio_bucket, old_key)
+                ext = dict(item.ext_fields or {})
+                ext.update(
+                    {
+                        "sourceMinioKey": next_key,
+                        "sourceFileName": item.name,
+                        "materialTier": inherited_tier,
+                        "materialTierLabel": MATERIAL_TIER_LABELS.get(inherited_tier, ""),
+                        "projectId": target_parent.project_id or ext.get("projectId") or "",
+                        "customerName": target_parent.customer_name or ext.get("customerName") or "",
+                        "bidType": target_parent.bid_type or ext.get("bidType") or "",
+                        "lastAction": "move-folder",
+                        "lastOperator": "当前用户",
+                    }
+                )
+                item.minio_key = next_key
+                item.ext_fields = ext
+
+            await session.commit()
+            tree = await self.raw_tree()
+            return {
+                "message": "文件夹移动成功",
+                "sourcePath": source_path,
+                "folderPath": next_root_path,
+                "movedFileCount": len(files),
+                "tree": tree["tree"],
+            }
 
 
 material_store = MaterialStore()
