@@ -14,7 +14,7 @@ from app.main import app
 from app.core.config import settings
 from app.services.outline_generation import _run_local_outline_skill
 from app.services.store import store
-from app.services.workspace_artifacts import technical_workspace_dir
+from app.services.workspace_artifacts import business_workspace_dir, technical_workspace_dir
 
 
 class DirectoryGenerationTests(unittest.TestCase):
@@ -40,16 +40,17 @@ class DirectoryGenerationTests(unittest.TestCase):
             doc.add_paragraph(text, style=style) if style else doc.add_paragraph(text)
         doc.save(path)
 
-    def _prepare_project_with_parse_result(self) -> str:
+    def _prepare_project_with_parse_result(self, bid_type: str = "技术标") -> str:
         project = store.create_project(
             {
                 "name": "目录生成联调项目",
                 "customerName": "测试业主",
+                "bidType": bid_type,
             }
         )
         project_id = project["id"]
 
-        project_dir = technical_workspace_dir(project_id)
+        project_dir = business_workspace_dir(project_id) if bid_type == "商务标" else technical_workspace_dir(project_id)
         project_dir.mkdir(parents=True, exist_ok=True)
 
         tender_path = settings.uploads_dir / project_id / "tender" / "招标文件.docx"
@@ -141,6 +142,345 @@ class DirectoryGenerationTests(unittest.TestCase):
             "parts": [{"type": "text", "text": "{}"}],
         }
         return result
+
+    def _mock_business_futurecode_outline(self, prompt: str, *args, **kwargs) -> dict:
+        self.assertIn("Use the business-bid-outline skill", prompt)
+        self.assertNotIn('"agentDecisions"', prompt)
+        self.assertIn("完整执行 business-bid-outline Skill", prompt)
+        self.assertIn("准备脚本只生成输入材料", prompt)
+        self.assertIn("不要自行生成或修改前端兼容 toc.json", prompt)
+        self.assertIn("manifest.templateFile", prompt)
+        self.assertIn("不扫描当前工作目录", prompt)
+        self.assertIn("不使用 user_confirmed_inputs.json", prompt)
+        self.assertIn('"schema_version": "business_bid_outline.v1"', prompt)
+        self.assertTrue(any(line.strip().startswith("business-outline ") for line in prompt.splitlines()))
+        self.assertEqual(kwargs.get("early_tool_command"), "")
+        manifest_line = next(line for line in prompt.splitlines() if line.strip().startswith("business-outline "))
+        manifest_path = Path(manifest_line.strip().split(" ", 1)[1])
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        work_dir = Path(manifest["workDir"])
+        business_outline_file = work_dir / "outline.json"
+        (work_dir / "history_bid_outline_inputs.json").write_text(
+            json.dumps({"document_name": "template-main.docx", "outline_candidates": []}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (work_dir / "tender_map_inputs.json").write_text(
+            json.dumps({"document_name": "招标文件.docx", "blocks": [], "tables": []}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        business_outline_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": "business_bid_outline.v1",
+                    "document_name": "商务标目录",
+                    "sections": [
+                        {
+                            "id": "BIZ-1",
+                            "title": "商务响应文件",
+                            "level": 1,
+                            "required_status": "必要",
+                            "source_text": "投标人须提交服务团队安排。",
+                        }
+                    ],
+                    "review_items": [],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "schema_version": "business_bid_outline.v1",
+            "businessOutlineFile": str(business_outline_file),
+            "historyBidOutlineInputsFile": str(work_dir / "history_bid_outline_inputs.json"),
+            "tenderMapInputsFile": str(work_dir / "tender_map_inputs.json"),
+            "summary": {"total_sections": 1},
+            "agentDecisions": [],
+            "opencodeOutput": {
+                "status": "received",
+                "sessionId": "test-business-outline-session",
+                "providerId": "opencode",
+                "modelId": "big-pickle",
+                "receivedAt": "2026-05-04T00:00:00Z",
+                "parts": [{"type": "text", "text": "{}"}],
+            },
+        }
+
+    def _mock_business_futurecode_outline_with_result_overrides(self, prompt: str, *args, **kwargs) -> dict:
+        result = self._mock_business_futurecode_outline(prompt, *args, **kwargs)
+        manifest_line = next(line for line in prompt.splitlines() if line.strip().startswith("business-outline "))
+        manifest_path = Path(manifest_line.strip().split(" ", 1)[1])
+        work_dir = Path(json.loads(manifest_path.read_text(encoding="utf-8"))["workDir"])
+        business_outline_file = work_dir / "outline.json"
+        business_outline_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": "business_bid_outline.v1",
+                    "sections": [
+                        {
+                            "id": "BIZ-1",
+                            "title": "Business complete parent",
+                            "level": 1,
+                            "required_status": "necessary",
+                            "source_text": "Tender requires the complete business parent item.",
+                            "children": [
+                                {
+                                    "id": "BIZ-1-1",
+                                    "title": "Business complete child",
+                                    "level": 2,
+                                    "required_status": "necessary",
+                                    "source_text": "Tender requires the complete business child item.",
+                                }
+                            ],
+                        }
+                    ],
+                    "review_items": [],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        result["items"] = [
+            {
+                "itemId": "TOC-MODEL-0001",
+                "order": 1,
+                "title": "Incomplete model result must not win",
+                "level": 1,
+                "annotation": "adapted",
+                "source_refs": [],
+                "material_refs": [],
+            }
+        ]
+        result["agentDecisions"] = [
+            {
+                "itemId": "TOC-MODEL-0001",
+                "title": "Explanatory model decision must not rewrite business toc",
+                "decision": "improved_source",
+                "new_source": "Explanation text, not a directory patch.",
+            }
+        ]
+        return result
+
+    def _mock_business_futurecode_outline_missing_outline(self, prompt: str, *args, **kwargs) -> dict:
+        manifest_line = next(line for line in prompt.splitlines() if line.strip().startswith("business-outline "))
+        manifest_path = Path(manifest_line.strip().split(" ", 1)[1])
+        work_dir = Path(json.loads(manifest_path.read_text(encoding="utf-8"))["workDir"])
+        (work_dir / "history_bid_outline_inputs.json").write_text("{}", encoding="utf-8")
+        (work_dir / "tender_map_inputs.json").write_text("{}", encoding="utf-8")
+        return {
+            "schema_version": "business_bid_outline.v1",
+            "businessOutlineFile": str(work_dir / "outline.json"),
+            "summary": {"total_sections": 0},
+            "opencodeOutput": {"status": "received", "parts": []},
+        }
+
+    def _mock_business_futurecode_outline_with_outline_payload(self, payload: dict) -> callable:
+        def _mock(prompt: str, *args, **kwargs) -> dict:
+            manifest_line = next(line for line in prompt.splitlines() if line.strip().startswith("business-outline "))
+            manifest_path = Path(manifest_line.strip().split(" ", 1)[1])
+            work_dir = Path(json.loads(manifest_path.read_text(encoding="utf-8"))["workDir"])
+            (work_dir / "history_bid_outline_inputs.json").write_text("{}", encoding="utf-8")
+            (work_dir / "tender_map_inputs.json").write_text("{}", encoding="utf-8")
+            business_outline_file = work_dir / "outline.json"
+            business_outline_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            return {
+                "schema_version": "business_bid_outline.v1",
+                "businessOutlineFile": str(business_outline_file),
+                "summary": {"total_sections": len(payload.get("sections") or [])},
+                "opencodeOutput": {"status": "received", "parts": []},
+            }
+
+        return _mock
+
+    def test_generate_business_outline_uses_business_workspace_and_skill(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result("商务标")
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_business_futurecode_outline,
+        ):
+            payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        work_dir = Path(payload["opencodeOutput"]["workDir"])
+        manifest = json.loads(Path(payload["opencodeOutput"]["canonicalManifestPath"]).read_text(encoding="utf-8"))
+        self.assertEqual(payload["status"], "completed")
+        self.assertIn("business-workspace", str(work_dir))
+        self.assertNotIn("technical-workspace", str(work_dir))
+        self.assertEqual(work_dir, business_workspace_dir(project_id) / "s2_toc_workdir")
+        self.assertEqual(payload["opencodeOutput"]["engine"], "business-bid-outline")
+        self.assertEqual(payload["opencodeOutput"]["skill"], "business-bid-outline")
+        self.assertEqual(manifest["bidType"], "商务标")
+        self.assertIn("business-workspace", manifest["workDir"])
+        self.assertEqual(Path(manifest["templateFile"]).parent, work_dir)
+        self.assertEqual(Path(manifest["templateFile"]).name, "template-main.docx")
+        toc = json.loads(Path(payload["opencodeOutput"]["tocJsonPath"]).read_text(encoding="utf-8"))
+        business_outline_path = business_workspace_dir(project_id) / "s2_toc_workdir" / "outline.json"
+        history_inputs_path = business_workspace_dir(project_id) / "s2_toc_workdir" / "history_bid_outline_inputs.json"
+        tender_map_inputs_path = business_workspace_dir(project_id) / "s2_toc_workdir" / "tender_map_inputs.json"
+        self.assertEqual(toc["schema_version"], "bid-toc-json-v1")
+        self.assertTrue(business_outline_path.exists())
+        self.assertTrue(history_inputs_path.exists())
+        self.assertTrue(tender_map_inputs_path.exists())
+        self.assertEqual(toc["businessOutlineFile"], str(business_outline_path))
+        self.assertEqual(payload["opencodeOutput"]["businessOutlinePath"], str(business_outline_path))
+        self.assertEqual(payload["opencodeOutput"]["historyBidOutlineInputsPath"], str(history_inputs_path))
+        self.assertEqual(payload["opencodeOutput"]["tenderMapInputsPath"], str(tender_map_inputs_path))
+        self.assertTrue(all(item.get("source") == "business_outline" for item in toc["items"]))
+        self.assertTrue(all(item.get("required_status") and item.get("requiredStatus") for item in toc["items"]))
+        self.assertTrue(all(item.get("source_text") and item.get("sourceText") for item in toc["items"]))
+        searchable_items = [item for item in toc["items"] if item.get("source_refs")]
+        self.assertTrue(searchable_items)
+        self.assertTrue(
+            all(
+                ref.get("searchText") and ref.get("basisText") and ref.get("rawText")
+                for item in searchable_items
+                for ref in item.get("source_refs", [])
+            )
+        )
+        self.assertTrue((business_workspace_dir(project_id) / "s2_toc_workdir" / "s2_input.json").exists())
+        self.assertFalse((technical_workspace_dir(project_id) / "s2_toc_workdir").exists())
+
+    def test_generate_business_outline_uses_outline_json_over_model_result_items(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result("商务标")
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_business_futurecode_outline_with_result_overrides,
+        ):
+            payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        toc = json.loads(Path(payload["opencodeOutput"]["tocJsonPath"]).read_text(encoding="utf-8"))
+        self.assertEqual(toc["schema_version"], "bid-toc-json-v1")
+        self.assertEqual([item["title"] for item in toc["items"]], ["Business complete parent", "Business complete child"])
+        self.assertTrue(all(item.get("source") == "business_outline" for item in toc["items"]))
+        self.assertTrue(all(item.get("source_text") for item in toc["items"]))
+        self.assertFalse(toc.get("ruleEvidence", {}).get("agentDecisions"))
+
+    def test_generate_business_outline_requires_final_outline_json(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result("商务标")
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_business_futurecode_outline_missing_outline,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "outline.json"):
+                generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+    def test_generate_business_outline_rejects_invalid_outline_schema(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result("商务标")
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_business_futurecode_outline_with_outline_payload(
+                {"schema_version": "bid-toc-json-v1", "sections": [{"title": "商务响应文件"}]}
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "business_bid_outline.v1"):
+                generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+    def test_generate_business_outline_rejects_empty_outline_sections(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result("商务标")
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_business_futurecode_outline_with_outline_payload(
+                {"schema_version": "business_bid_outline.v1", "sections": []}
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "sections"):
+                generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+    def test_generate_business_outline_does_not_fallback_to_local_business_runner(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result("商务标")
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=RuntimeError("offline business outline"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "business-bid-outline"):
+                generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        self.assertFalse((business_workspace_dir(project_id) / "s2_toc_workdir" / "outline.json").exists())
+
+    def test_business_outline_runner_only_prepares_skill_inputs(self) -> None:
+        import importlib.util
+        import sys
+
+        script_path = (
+            Path(__file__).resolve().parents[1]
+            / "opencode"
+            / "skill"
+            / "business-bid-outline"
+            / "scripts"
+            / "run_from_manifest.py"
+        )
+        spec = importlib.util.spec_from_file_location("business_outline_runner_input_only_test", script_path)
+        runner = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        sys.modules["business_outline_runner_input_only_test"] = runner
+        spec.loader.exec_module(runner)
+
+        project_id = self._prepare_project_with_parse_result("商务标")
+        work_dir = business_workspace_dir(project_id) / "runner-input-only"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        template_file = settings.uploads_dir / project_id / "template" / "投标文件-正文.docx"
+        tender_file = settings.uploads_dir / project_id / "tender" / "招标文件.docx"
+        manifest_path = work_dir / "s2_input.json"
+        manifest = {
+            "projectId": project_id,
+            "projectName": "目录生成联调项目",
+            "bidType": "商务标",
+            "workDir": str(work_dir),
+            "templateFile": str(template_file),
+            "tenderFiles": [{"id": "TEN-1", "name": "招标文件.docx", "path": str(tender_file)}],
+            "outputFile": str(work_dir / "toc.json"),
+            "evidenceFile": str(work_dir / "toc_evidence.json"),
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        result = runner.run_manifest(manifest, manifest_path)
+
+        self.assertTrue((work_dir / "history_bid_outline_inputs.json").exists())
+        self.assertTrue((work_dir / "tender_map_inputs.json").exists())
+        self.assertFalse((work_dir / "outline.json").exists())
+        self.assertFalse((work_dir / "toc.json").exists())
+        self.assertFalse((work_dir / "toc_evidence.json").exists())
+        self.assertFalse((work_dir / "agent_review_input.json").exists())
+        self.assertEqual(result["summary"]["schema_version"], "business-outline-inputs-v1")
+        self.assertEqual(result["summary"]["historyBidOutlineInputsFile"], str(work_dir / "history_bid_outline_inputs.json"))
+        self.assertEqual(result["summary"]["tenderMapInputsFile"], str(work_dir / "tender_map_inputs.json"))
+
+    def test_business_outline_regenerate_uses_generated_business_toc_not_technical_defaults(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result("商务标")
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_business_futurecode_outline,
+        ):
+            generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        store.save_outline(project_id, [{"id": "OL-X", "title": "人工改坏目录", "children": []}])
+        payload = store.regenerate_outline(project_id)
+        titles = [node["title"] for node in payload["nodes"]]
+
+        self.assertEqual(titles, ["商务响应文件"])
+        self.assertNotIn("技术方案", titles)
+        self.assertNotIn("项目概况", titles)
+        self.assertEqual(payload["reviewStatus"], "draft")
 
     def test_generate_outline_for_project_calls_futurecode_s2toc_skill(self) -> None:
         from app.services.outline_generation import generate_outline_for_project

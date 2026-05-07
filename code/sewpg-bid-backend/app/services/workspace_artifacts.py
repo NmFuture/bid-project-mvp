@@ -15,7 +15,18 @@ from app.services.parse_profiles import (
 )
 
 
-def workspace_dir(project_id: str, profile: ParseProfile) -> Path:
+def _profile_for_workspace(value: Any = "技术标") -> ParseProfile:
+    if isinstance(value, ParseProfile):
+        return value
+    return resolve_parse_profile(str(value or "技术标"))
+
+
+def workspace_slug_for_bid_type(bid_type: Any = "技术标") -> str:
+    return _profile_for_workspace(bid_type).key
+
+
+def workspace_dir(project_id: str, profile_or_bid_type: Any = "技术标") -> Path:
+    profile = _profile_for_workspace(profile_or_bid_type)
     return settings.documents_dir / project_id / profile.workspace_dirname
 
 
@@ -27,24 +38,28 @@ def business_workspace_dir(project_id: str) -> Path:
     return workspace_dir(project_id, BUSINESS_PARSE_PROFILE)
 
 
-def workspace_appendices_dir(project_id: str, profile: ParseProfile) -> Path:
-    return workspace_dir(project_id, profile) / "appendices"
+def workspace_appendices_dir(project_id: str, profile_or_bid_type: Any = "技术标") -> Path:
+    return workspace_dir(project_id, profile_or_bid_type) / "appendices"
 
 
 def technical_workspace_appendices_dir(project_id: str) -> Path:
     return workspace_appendices_dir(project_id, TECHNICAL_PARSE_PROFILE)
 
 
-def workspace_parse_dir(project_id: str, profile: ParseProfile) -> Path:
-    return workspace_dir(project_id, profile) / "parse"
+def workspace_parse_dir(project_id: str, profile_or_bid_type: Any = "技术标") -> Path:
+    return workspace_dir(project_id, profile_or_bid_type) / "parse"
 
 
 def technical_workspace_parse_dir(project_id: str) -> Path:
     return workspace_parse_dir(project_id, TECHNICAL_PARSE_PROFILE)
 
 
+def workspace_stage_dir(project_id: str, stage_name: str, bid_type: Any = "技术标") -> Path:
+    return workspace_dir(project_id, bid_type) / stage_name
+
+
 def technical_workspace_stage_dir(project_id: str, stage_name: str) -> Path:
-    return technical_workspace_dir(project_id) / stage_name
+    return workspace_stage_dir(project_id, stage_name, "技术标")
 
 
 def legacy_workspace_roots(project_id: str, parse_storage: dict[str, Any] | None = None) -> list[Path]:
@@ -162,7 +177,7 @@ def promote_parse_artifacts_to_workspace(
     bid_type: str = "技术标",
     clean_workspace: bool = True,
 ) -> dict[str, Any]:
-    """Copy the current S1 parse JSON and generated appendix Word files into the technical workspace."""
+    """Copy the current S1 parse JSON and generated Word assets into the project workspace."""
     from app.services.parsing import (
         materialize_parse_appendix_docx_assets,
         materialize_parse_business_commitment_letter_docx_assets,

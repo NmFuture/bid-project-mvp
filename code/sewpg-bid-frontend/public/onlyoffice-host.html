@@ -119,9 +119,15 @@
         }
       }
 
+      const relaySearchResult = (message) => {
+        if (!message || message.source !== SEARCH_SOURCE || message.type !== 'search-result') return
+        postToParent(message)
+      }
+
       window.addEventListener('message', (event) => {
         if (event.origin !== window.location.origin) return
         relaySearchMessage(event.data)
+        relaySearchResult(event.data)
       })
 
       const buildScriptCandidates = (documentServerUrl) => {
