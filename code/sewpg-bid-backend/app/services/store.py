@@ -243,10 +243,20 @@ def build_parse_event(
     }
 
 
-def default_fill_tasks() -> list[dict[str, Any]]:
+def fill_task_label(project: dict[str, Any] | None = None) -> str:
+    bid_type = str((project or {}).get("bidType") or "技术标")
+    return f"调用{bid_type}正文拼装 skill"
+
+
+def fill_document_label(project: dict[str, Any] | None = None) -> str:
+    bid_type = str((project or {}).get("bidType") or "技术标")
+    return f"{bid_type}正文"
+
+
+def default_fill_tasks(project: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     return [
         {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "pending"},
-        {"id": "task-2", "label": "调用技术标正文拼装 skill", "status": "pending"},
+        {"id": "task-2", "label": fill_task_label(project), "status": "pending"},
         {"id": "task-3", "label": "写入 Word 正文", "status": "pending"},
     ]
 
@@ -715,7 +725,12 @@ class AppStore:
                 parse_result = project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {}
                 parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
                 if parse_result.get("status") == "completed":
-                    promoted = promote_parse_artifacts_to_workspace(project_id, parse_result, parse_storage)
+                    promoted = promote_parse_artifacts_to_workspace(
+                        project_id,
+                        parse_result,
+                        parse_storage,
+                        bid_type=project.get("bidType") or "技术标",
+                    )
                     project["parse_result"] = promoted["parseResult"]
                     project["parse_storage"] = promoted["parseStorage"]
                     project["workspaceArtifacts"] = promoted["artifacts"]
@@ -1279,7 +1294,7 @@ class AppStore:
 
     def regenerate_outline(self, project_id: str) -> dict[str, Any]:
         project = self._require(project_id)
-        nodes = default_outline_nodes(project["name"])
+        nodes = self._regenerated_outline_nodes(project)
         project["outline_state"] = {
             "outlineVersion": int(project["outline_state"].get("outlineVersion") or 1) + 1,
             "reviewStatus": "draft",
@@ -1290,6 +1305,74 @@ class AppStore:
         project["updatedAt"] = now_iso()
         self._persist_project(project)
         return copy.deepcopy(project["outline_state"])
+
+    def _regenerated_outline_nodes(self, project: dict[str, Any]) -> list[dict[str, Any]]:
+        if str(project.get("bidType") or "").strip() != "商务标":
+            return default_outline_nodes(project["name"])
+        nodes = self._outline_nodes_from_directory_toc(project)
+        return nodes or copy.deepcopy(project.get("outline_state", {}).get("nodes") or [])
+
+    def _outline_nodes_from_directory_toc(self, project: dict[str, Any]) -> list[dict[str, Any]]:
+        directory_state = project.get("directory_state") if isinstance(project.get("directory_state"), dict) else {}
+        opencode_output = directory_state.get("opencodeOutput") if isinstance(directory_state.get("opencodeOutput"), dict) else {}
+        toc_path = Path(str(opencode_output.get("tocJsonPath") or "")).expanduser()
+        if not str(toc_path).strip() or not toc_path.exists():
+            return []
+        try:
+            toc = json.loads(toc_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        items = toc.get("items") if isinstance(toc, dict) else None
+        if not isinstance(items, list):
+            return []
+        return self._outline_nodes_from_toc_items(items)
+
+    @staticmethod
+    def _outline_nodes_from_toc_items(items: list[Any]) -> list[dict[str, Any]]:
+        roots: list[dict[str, Any]] = []
+        stack: list[tuple[int, dict[str, Any]]] = []
+        counters: list[int] = []
+        for fallback_order, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                continue
+            try:
+                level = max(1, int(item.get("level") or 1))
+            except (TypeError, ValueError):
+                level = 1
+            if not stack and level > 1:
+                level = 1
+            elif stack and level > stack[-1][0] + 1:
+                level = stack[-1][0] + 1
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            counters = counters[:level]
+            if len(counters) < level:
+                counters.extend([0] * (level - len(counters)))
+            counters[level - 1] += 1
+            title = str(item.get("title") or item.get("name") or f"未命名章节{fallback_order}").strip()
+            node = {
+                "id": "OL-" + "-".join(str(part) for part in counters[:level] if part),
+                "title": title,
+                "children": [],
+                "tocNumber": str(item.get("number") or "").strip(),
+                "annotation": str(item.get("annotation") or "").strip(),
+                "required_status": str(item.get("required_status") or item.get("requiredStatus") or "").strip(),
+                "requiredStatus": str(item.get("requiredStatus") or item.get("required_status") or "").strip(),
+                "source_text": str(item.get("source_text") or item.get("sourceText") or "").strip(),
+                "sourceText": str(item.get("sourceText") or item.get("source_text") or "").strip(),
+                "source": str(item.get("source") or "").strip(),
+                "reason": str(item.get("reason") or "").strip(),
+            }
+            if isinstance(item.get("source_refs"), list):
+                node["sourceRefs"] = copy.deepcopy(item["source_refs"])
+            if isinstance(item.get("material_refs"), list):
+                node["materialRefs"] = copy.deepcopy(item["material_refs"])
+            if stack:
+                stack[-1][1].setdefault("children", []).append(node)
+            else:
+                roots.append(node)
+            stack.append((level, node))
+        return roots
 
     def confirm_outline(self, project_id: str) -> dict[str, Any]:
         project = self._require(project_id)
@@ -1897,25 +1980,26 @@ class AppStore:
 
     def start_fill_generation(self, project_id: str) -> dict[str, Any]:
         project = self._require(project_id)
+        document_label = fill_document_label(project)
         payload = {
             "status": "running",
             "percentage": 5,
             "filledAt": "",
             "runDurationSec": 0,
             "runDuration": "",
-            "summary": "已开始拼装技术标正文，正在准备 S2 目录、Wiki 与素材库。",
+            "summary": f"已开始拼装{document_label}，正在准备 S2 目录、Wiki 与素材库。",
             "output": None,
             "sections": [],
             "opencodeOutput": build_directory_opencode_output(),
             "events": [
                 build_directory_event(
-                    "已开始技术标正文拼装任务，正在准备 S2 目录、Wiki 与素材库。",
+                    f"已开始{document_label}拼装任务，正在准备 S2 目录、Wiki 与素材库。",
                     step="bootstrap",
                 ),
             ],
             "tasks": [
                 {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "running"},
-                {"id": "task-2", "label": "调用技术标正文拼装 skill", "status": "pending"},
+                {"id": "task-2", "label": fill_task_label(project), "status": "pending"},
                 {"id": "task-3", "label": "写入 Word 正文", "status": "pending"},
             ],
         }
@@ -2018,13 +2102,14 @@ class AppStore:
                 "riskFlags": ["FACT_REQUIRED"],
             },
         ]
+        document_label = fill_document_label(project)
         project["fill_state"] = {
             "status": "completed",
             "percentage": 100,
             "filledAt": filled_at,
             "runDurationSec": 79,
             "runDuration": "1分19秒",
-            "summary": "技术标正文拼装完成。",
+            "summary": f"{document_label}拼装完成。",
             "output": {
                 "fileName": f"{project['name']}_正文.docx",
                 "fileType": "docx",
@@ -2034,11 +2119,11 @@ class AppStore:
             "sections": sections,
             "opencodeOutput": build_directory_opencode_output(),
             "events": [
-                build_directory_event("技术标正文拼装完成。", level="success", step="done", at=filled_at),
+                build_directory_event(f"{document_label}拼装完成。", level="success", step="done", at=filled_at),
             ],
             "tasks": [
                 {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "done"},
-                {"id": "task-2", "label": "调用技术标正文拼装 skill", "status": "done"},
+                {"id": "task-2", "label": fill_task_label(project), "status": "done"},
                 {"id": "task-3", "label": "写入 Word 正文", "status": "done"},
             ],
         }
@@ -2075,9 +2160,10 @@ class AppStore:
         if opencode_output is not None:
             current_output.update(copy.deepcopy(opencode_output))
         current_output["parts"] = copy.deepcopy(current_output.get("parts") or [])[-20:]
+        document_label = fill_document_label(project)
         current_events.append(
             build_directory_event(
-                f"技术标正文拼装完成，已输出 {len(sections)} 个目录章节。",
+                f"{document_label}拼装完成，已输出 {len(sections)} 个目录章节。",
                 level="success",
                 step="done",
                 at=filled_at,
@@ -2103,7 +2189,7 @@ class AppStore:
             "events": current_events[-20:],
             "tasks": [
                 {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "done"},
-                {"id": "task-2", "label": "调用技术标正文拼装 skill", "status": "done"},
+                {"id": "task-2", "label": fill_task_label(project), "status": "done"},
                 {"id": "task-3", "label": "写入 Word 正文", "status": "done"},
             ],
         }

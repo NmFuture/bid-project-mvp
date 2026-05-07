@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Callable
 
 import httpx
@@ -86,6 +88,7 @@ class OpencodeClient:
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
+        early_tool_command: str = "s2toc",
     ) -> dict[str, Any]:
         session = self.create_session("S2 目录生成")
         session_id = str(session.get("id") or "")
@@ -101,7 +104,7 @@ class OpencodeClient:
             session_id,
             prompt_text,
             stream_callback=stream_callback,
-            early_tool_command="s2toc",
+            early_tool_command=early_tool_command,
         )
         parsed = self._extract_outline_json(response)
         return {
@@ -296,6 +299,7 @@ class OpencodeClient:
             not isinstance(parsed.get("nodes"), list)
             and not isinstance(parsed.get("items"), list)
             and not isinstance(parsed.get("outputFile"), str)
+            and not isinstance(parsed.get("businessOutlineFile"), str)
         ):
             raise RuntimeError("futurecode 返回的目录 JSON 结构不正确。")
         return parsed
@@ -440,12 +444,27 @@ class OpencodeClient:
         thread.start()
 
         last_signature: tuple[str, tuple[tuple[str, str], ...]] | None = None
+        last_activity = time.monotonic()
+        idle_timeout = max(120.0, min(float(settings.opencode_timeout_sec), 900.0))
         while not finished.wait(0.5):
+            previous_signature = last_signature
             if stream_callback is not None:
                 last_signature = self._emit_session_output_delta(
                     session_id,
                     stream_callback,
                     last_signature,
+                )
+            elif early_tool_command:
+                snapshot = self._get_session_output_snapshot(session_id)
+                signature = snapshot.get("signature")
+                if signature is not None:
+                    last_signature = signature
+            if last_signature != previous_signature:
+                last_activity = time.monotonic()
+            elif time.monotonic() - last_activity > idle_timeout:
+                raise RuntimeError(
+                    f"futurecode idle timeout after {int(idle_timeout)} seconds without new output; "
+                    f"check session {session_id} tool calls."
                 )
             if early_tool_command:
                 messages = self.list_session_messages(session_id)
@@ -595,7 +614,47 @@ class OpencodeClient:
                 output = str(state.get("output") or "").strip()
                 if output and OpencodeClient._looks_like_json_object(output):
                     return output
+                synthesized = OpencodeClient._synthesize_tool_response_from_manifest(command, expected)
+                if synthesized:
+                    return synthesized
         return ""
+
+    @staticmethod
+    def _synthesize_tool_response_from_manifest(command: str, command_name: str) -> str:
+        parts = command.split()
+        if len(parts) < 2:
+            return ""
+        manifest_path = Path(parts[-1]).expanduser()
+        if not manifest_path.exists():
+            return ""
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            return ""
+        work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
+        output_file = Path(str(manifest.get("outputFile") or work_dir / "toc.json")).expanduser()
+        evidence_file = Path(str(manifest.get("evidenceFile") or work_dir / "toc_evidence.json")).expanduser()
+        if not output_file.exists():
+            return ""
+        summary: dict[str, Any] = {"total_items": 0}
+        try:
+            toc = json.loads(output_file.read_text(encoding="utf-8"))
+            toc_summary = toc.get("summary") if isinstance(toc, dict) else None
+            if isinstance(toc_summary, dict):
+                summary.update(toc_summary)
+            if isinstance(toc, dict) and isinstance(toc.get("items"), list):
+                summary["total_items"] = len(toc["items"])
+        except Exception:
+            pass
+        payload: dict[str, Any] = {
+            "schema_version": "bid-toc-json-v1",
+            "outputFile": str(output_file),
+            "evidenceFile": str(evidence_file),
+            "summary": summary,
+        }
+        if command_name == "business-outline":
+            payload["businessOutlineFile"] = str(work_dir / "outline.json")
+        return json.dumps(payload, ensure_ascii=False)
 
     def _tool_output_response(
         self,
@@ -785,9 +844,21 @@ class OpencodeClient:
         normalized: list[dict[str, Any]] = []
         for part in parts:
             part_type = str(part.get("type") or "").strip()
-            if part_type not in {"reasoning", "text", "step-start", "step-finish"}:
+            if part_type not in {"reasoning", "text", "step-start", "step-finish", "tool"}:
                 continue
             text = str(part.get("text") or part.get("reasoning") or "").strip()
+            if not text:
+                if part_type == "step-start":
+                    text = "futurecode 已开始处理目录生成请求。"
+                elif part_type == "reasoning":
+                    text = "futurecode 正在分析招标文件与投标模板。"
+                elif part_type == "step-finish":
+                    text = "futurecode 已完成一个处理步骤。"
+                elif part_type == "tool":
+                    tool_name = str(part.get("tool") or "工具").strip()
+                    state = part.get("state") if isinstance(part.get("state"), dict) else {}
+                    status = str(state.get("status") or "运行中").strip()
+                    text = f"futurecode 正在调用 {tool_name}（{status}）。"
             normalized.append(
                 {
                     "type": part_type,

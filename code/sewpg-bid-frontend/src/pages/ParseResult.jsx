@@ -7,7 +7,7 @@ import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 import { brandFutureCodeOrFallback } from '../utils/branding'
-import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
+import { bidTypeFromWorkspace, projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -83,6 +83,8 @@ export default function ParseResult({ showToast }) {
   const navigate = useNavigate()
   const { id } = useParams()
   const workspaceSlug = useWorkspaceSlug()
+  const workspaceBidType = bidTypeFromWorkspace(workspaceSlug)
+  const isBusinessBid = workspaceBidType === '商务标'
   const [project, setProject] = useState(null)
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -158,6 +160,7 @@ export default function ParseResult({ showToast }) {
   const directoryStatus = directoryState?.status || 'idle'
   const isDirectoryRunning = directoryStatus === 'running'
   const isDirectoryCompleted = directoryStatus === 'completed'
+  const isDirectoryFailed = directoryStatus === 'failed'
   const directoryProgress = Math.max(0, Math.min(100, Number(directoryState?.percentage) || 0))
   const directoryTasks = Array.isArray(directoryState?.tasks) ? directoryState.tasks : []
   const ruleEvidence = directoryState?.ruleEvidence || {}
@@ -167,7 +170,7 @@ export default function ParseResult({ showToast }) {
     .slice(0, 8)
   const directoryFutureCodeOutput = directoryState?.opencodeOutput || {}
   const directoryFutureCodeParts = Array.isArray(directoryFutureCodeOutput?.parts)
-    ? directoryFutureCodeOutput.parts.filter((part) => part?.text).slice(-8)
+    ? directoryFutureCodeOutput.parts.slice(-8)
     : []
 
   useEffect(() => {
@@ -201,6 +204,14 @@ export default function ParseResult({ showToast }) {
     setTemplateFiles((prev) => prev.filter((_, i) => i !== index))
   }
 
+  const uploadSelectedTemplateFiles = async () => {
+    const formData = new FormData()
+    templateFiles.forEach((file) => formData.append('templateFiles', file))
+    await parseAPI.uploadTemplates(id, { formData })
+    setTemplateFiles([])
+    await loadData()
+  }
+
   const handleUploadTemplateFiles = async () => {
     if (!isProjectInfoComplete) {
       showToast?.('请先返回“解析”模块，重新确认参与并补全项目信息。', 'error')
@@ -224,11 +235,7 @@ export default function ParseResult({ showToast }) {
     setUploading(true)
     setUploadError('')
     try {
-      const formData = new FormData()
-      templateFiles.forEach((file) => formData.append('templateFiles', file))
-      await parseAPI.uploadTemplates(id, { formData })
-      setTemplateFiles([])
-      await loadData()
+      await uploadSelectedTemplateFiles()
       showToast?.('模板文件上传成功。')
     } catch (e) {
       const message = e?.message || '模板文件上传失败'
@@ -293,6 +300,13 @@ export default function ParseResult({ showToast }) {
     if (generatingDirectory || isDirectoryRunning) return
     setGeneratingDirectory(true)
     try {
+      if (templateFiles.length) {
+        await uploadSelectedTemplateFiles()
+        showToast?.('模板文件已上传，开始生成目录。')
+      } else if (isBusinessBid && !uploadedTemplateFiles.length && !fallbackWillBeUsed) {
+        showToast?.('请先上传商务标模板文件。', 'error')
+        return
+      }
       await stagesAPI.update(id, 1, { status: 'completed' })
       const payload = await directoryAPI.run(id)
       setDirectoryState(payload)
@@ -490,7 +504,11 @@ export default function ParseResult({ showToast }) {
             disabled={!canGoNextStage || generatingDirectory || isDirectoryRunning}
             className="stage-action-btn px-5 py-2.5 bg-primary text-on-primary font-semibold rounded-lg transition-colors hover:bg-primary/90 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {generatingDirectory || isDirectoryRunning ? '生成中...' : isDirectoryCompleted ? '重新生成目录' : '生成目录'}
+            {generatingDirectory || isDirectoryRunning
+              ? '生成中...'
+              : isDirectoryCompleted || isDirectoryFailed
+                ? '重新生成目录'
+                : '生成目录'}
           </button>
         </div>
 
@@ -500,6 +518,12 @@ export default function ParseResult({ showToast }) {
           </div>
           <span className="text-xs text-outline whitespace-nowrap">{directoryProgress}%</span>
         </div>
+
+        {isDirectoryFailed ? (
+          <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
+            {directoryState?.summary || '目录生成失败，请查看 futurecode 流式输出后重新生成。'}
+          </div>
+        ) : null}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
           {directoryTasks.length ? directoryTasks.map((task) => (

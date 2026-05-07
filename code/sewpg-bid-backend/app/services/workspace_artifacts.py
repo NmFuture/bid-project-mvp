@@ -9,20 +9,44 @@ from typing import Any
 from app.core.config import settings
 
 
+def workspace_slug_for_bid_type(bid_type: Any = "技术标") -> str:
+    return "business" if str(bid_type or "").strip() == "商务标" else "technical"
+
+
+def workspace_dir(project_id: str, bid_type: Any = "技术标") -> Path:
+    return settings.documents_dir / project_id / f"{workspace_slug_for_bid_type(bid_type)}-workspace"
+
+
 def technical_workspace_dir(project_id: str) -> Path:
-    return settings.documents_dir / project_id / "technical-workspace"
+    return workspace_dir(project_id, "技术标")
+
+
+def business_workspace_dir(project_id: str) -> Path:
+    return workspace_dir(project_id, "商务标")
+
+
+def workspace_appendices_dir(project_id: str, bid_type: Any = "技术标") -> Path:
+    return workspace_dir(project_id, bid_type) / "appendices"
+
+
+def workspace_parse_dir(project_id: str, bid_type: Any = "技术标") -> Path:
+    return workspace_dir(project_id, bid_type) / "parse"
+
+
+def workspace_stage_dir(project_id: str, stage_name: str, bid_type: Any = "技术标") -> Path:
+    return workspace_dir(project_id, bid_type) / stage_name
 
 
 def technical_workspace_appendices_dir(project_id: str) -> Path:
-    return technical_workspace_dir(project_id) / "appendices"
+    return workspace_appendices_dir(project_id, "技术标")
 
 
 def technical_workspace_parse_dir(project_id: str) -> Path:
-    return technical_workspace_dir(project_id) / "parse"
+    return workspace_parse_dir(project_id, "技术标")
 
 
 def technical_workspace_stage_dir(project_id: str, stage_name: str) -> Path:
-    return technical_workspace_dir(project_id) / stage_name
+    return workspace_stage_dir(project_id, stage_name, "技术标")
 
 
 def legacy_workspace_roots(project_id: str, parse_storage: dict[str, Any] | None = None) -> list[Path]:
@@ -76,9 +100,14 @@ def _copy_file_if_exists(source: Path, destination: Path) -> bool:
     return True
 
 
-def _workspace_appendix_item(project_id: str, appendix: dict[str, Any], destination: Path) -> dict[str, Any]:
+def _workspace_appendix_item(
+    project_id: str,
+    appendix: dict[str, Any],
+    destination: Path,
+    workspace_slug: str = "technical",
+) -> dict[str, Any]:
     item = copy.deepcopy(appendix)
-    workspace_path = f"technical-workspace/appendices/{destination.name}"
+    workspace_path = f"{workspace_slug}-workspace/appendices/{destination.name}"
     item["docxPath"] = str(destination)
     item["workspacePath"] = workspace_path
     return item
@@ -127,13 +156,15 @@ def promote_parse_artifacts_to_workspace(
     parse_result: dict[str, Any],
     parse_storage: dict[str, Any],
     *,
+    bid_type: Any = "技术标",
     clean_workspace: bool = True,
 ) -> dict[str, Any]:
-    """Copy the current S1 parse JSON and generated appendix Word files into the technical workspace."""
+    """Copy the current S1 parse JSON and generated appendix Word files into the project workspace."""
 
-    workspace_root = technical_workspace_dir(project_id)
-    parse_dir = technical_workspace_parse_dir(project_id)
-    appendix_dir = technical_workspace_appendices_dir(project_id)
+    workspace_slug = workspace_slug_for_bid_type(bid_type)
+    workspace_root = workspace_dir(project_id, bid_type)
+    parse_dir = workspace_parse_dir(project_id, bid_type)
+    appendix_dir = workspace_appendices_dir(project_id, bid_type)
     parse_dir.mkdir(parents=True, exist_ok=True)
     appendix_dir.mkdir(parents=True, exist_ok=True)
 
@@ -164,7 +195,7 @@ def promote_parse_artifacts_to_workspace(
     for appendix, source, destination in appendix_sources:
         if source.resolve() != destination.resolve():
             shutil.copy2(source, destination)
-        promoted_appendices.append(_workspace_appendix_item(project_id, appendix, destination))
+        promoted_appendices.append(_workspace_appendix_item(project_id, appendix, destination, workspace_slug))
 
     if isinstance(structured, dict):
         structured["appendices"] = promoted_appendices

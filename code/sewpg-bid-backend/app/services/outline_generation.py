@@ -17,10 +17,12 @@ from app.services.opencode_client import OpencodeClient
 from app.services.parsing import IMAGE_SUFFIXES, _ocr_fallback_text
 from app.services.store import build_directory_opencode_output, now_iso, store
 from app.services.template_store import is_valid_docx_file
-from app.services.workspace_artifacts import technical_workspace_dir
+from app.services.workspace_artifacts import workspace_dir
 
 OUTLINE_SKILL_NAME = "bid-tech-outline-generator"
+BUSINESS_OUTLINE_SKILL_NAME = "business-bid-outline"
 OUTLINE_SKILL_COMMAND = "s2toc"
+BUSINESS_OUTLINE_SKILL_COMMAND = "business-outline"
 OUTLINE_SKILL_RUNNER = (
     BASE_DIR
     / "opencode"
@@ -40,6 +42,23 @@ OUTLINE_REVIEW_BUDGET = {
     "stdoutScriptDecisions": 24,
 }
 PUBLIC_EVIDENCE_DECISION_LIMIT = 80
+
+
+def _is_business_bid(bid_type: Any) -> bool:
+    return str(bid_type or "").strip() == "商务标"
+
+
+def _outline_skill_name(bid_type: Any) -> str:
+    return BUSINESS_OUTLINE_SKILL_NAME if _is_business_bid(bid_type) else OUTLINE_SKILL_NAME
+
+
+def _outline_skill_command(bid_type: Any) -> str:
+    return BUSINESS_OUTLINE_SKILL_COMMAND if _is_business_bid(bid_type) else OUTLINE_SKILL_COMMAND
+
+
+def _outline_skill_runner(skill_name: str) -> Path:
+    return BASE_DIR / "opencode" / "skill" / skill_name / "scripts" / "run_from_manifest.py"
+
 
 def generate_outline_for_project(project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
     return generate_outline_for_project_with_progress(project_id, data)
@@ -81,6 +100,7 @@ def generate_outline_for_project_with_progress(
 
     toc_result = _run_outline_skill(
         Path(str(skill_workspace["canonicalManifestPath"])),
+        bid_type=skill_workspace["bidType"],
         progress_callback=progress_callback,
     )
     publish_info = _publish_toc_skill_workspace(skill_workspace, toc_result)
@@ -90,10 +110,11 @@ def generate_outline_for_project_with_progress(
     opencode_output = toc_result.get("opencodeOutput") if isinstance(toc_result.get("opencodeOutput"), dict) else {}
     if not opencode_output:
         opencode_output = build_directory_opencode_output(status="received")
+    skill_name = _outline_skill_name(skill_workspace["bidType"])
     opencode_output.update(
         {
-            "engine": OUTLINE_SKILL_NAME,
-            "skill": OUTLINE_SKILL_NAME,
+            "engine": skill_name,
+            "skill": skill_name,
             "workDir": publish_info["workDir"],
             "manifestPath": publish_info["manifestPath"],
             "canonicalManifestPath": publish_info["canonicalManifestPath"],
@@ -125,9 +146,14 @@ def generate_outline_for_project_with_progress(
 
 def _run_outline_skill(
     manifest_path: Path,
+    *,
+    bid_type: Any,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
-    prompt = _build_outline_prompt(manifest_path)
+    if _is_business_bid(bid_type):
+        return _run_business_outline_skill(manifest_path, progress_callback=progress_callback)
+
+    prompt = _build_outline_prompt(manifest_path, bid_type)
     try:
         return _load_outline_result(
             OpencodeClient().generate_outline_with_trace(
@@ -142,6 +168,7 @@ def _run_outline_skill(
                     if progress_callback
                     else None
                 ),
+                early_tool_command=_outline_skill_command(bid_type),
             ),
             manifest_path,
         )
@@ -155,11 +182,46 @@ def _run_outline_skill(
         return _load_outline_result(fallback, manifest_path)
 
 
+def _run_business_outline_skill(
+    manifest_path: Path,
+    *,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
+    try:
+        prompt = _build_business_outline_prompt(manifest_path)
+        return _load_outline_result(
+            OpencodeClient().generate_outline_with_trace(
+                prompt,
+                session_ready_callback=(
+                    (lambda details: progress_callback("outline_session_ready", details))
+                    if progress_callback
+                    else None
+                ),
+                stream_callback=(
+                    (lambda details: progress_callback("outline_delta", details))
+                    if progress_callback
+                    else None
+                ),
+                early_tool_command="",
+            ),
+            manifest_path,
+        )
+    except Exception as exc:
+        if progress_callback:
+            progress_callback(
+                "outline_failed",
+                {"error": str(exc), "manifestPath": str(manifest_path)},
+            )
+        raise RuntimeError(f"商务标目录必须由 futurecode 按 business-bid-outline Skill 生成，当前执行失败：{exc}") from exc
+
+
 def _run_local_outline_skill(manifest_path: Path) -> dict[str, Any]:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    skill_name = _outline_skill_name(manifest.get("bidType"))
     completed = subprocess.run(
         [
             sys.executable,
-            str(OUTLINE_SKILL_RUNNER),
+            str(_outline_skill_runner(skill_name)),
             "--manifest",
             str(manifest_path),
             "--response",
@@ -168,6 +230,8 @@ def _run_local_outline_skill(manifest_path: Path) -> dict[str, Any]:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=max(30, int(settings.opencode_timeout_sec)),
     )
     result = json.loads(completed.stdout)
@@ -175,24 +239,29 @@ def _run_local_outline_skill(manifest_path: Path) -> dict[str, Any]:
         "status": "received",
         "sessionId": str(manifest_path),
         "providerId": "local-skill",
-        "modelId": OUTLINE_SKILL_NAME,
+        "modelId": skill_name,
         "receivedAt": now_iso(),
         "parts": [{"type": "text", "text": completed.stdout.strip()}],
     }
     return result
 
 
-def _build_outline_prompt(manifest_path: Path) -> str:
+def _build_outline_prompt(manifest_path: Path, bid_type: Any) -> str:
+    if _is_business_bid(bid_type):
+        return _build_business_outline_prompt(manifest_path)
+    skill_name = _outline_skill_name(bid_type)
+    skill_command = _outline_skill_command(bid_type)
+    bid_type_text = str(bid_type or "技术标")
     return f"""
-Use the {OUTLINE_SKILL_NAME} skill.
+Use the {skill_name} skill.
 
-你现在在做 S2 技术标目录生成。后端已经准备好 manifest，其中只包含招标文件、投标模板、可选附表模板和输出路径。
+你现在在做 S2 {bid_type_text}目录生成。后端已经准备好 manifest，其中只包含招标文件、投标模板、可选附表模板和输出路径。
 
 manifest：{manifest_path}
 
 请先直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径：
 
-{OUTLINE_SKILL_COMMAND} {manifest_path}
+{skill_command} {manifest_path}
 
 命令会写入 outputFile/evidenceFile/agentReviewFile，并在 stdout 打印小型 JSON。stdout 已包含 agentReviewDigest，请只根据 stdout 里的 agentReviewDigest 做一次语义审核。
 不要读取、cat、head、tail、grep outputFile/evidenceFile/agentReviewFile；这些文件由后端读取并保存。
@@ -213,10 +282,68 @@ manifest：{manifest_path}
 """.strip()
 
 
+def _build_business_outline_prompt(manifest_path: Path) -> str:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
+    business_outline_file = str(work_dir / "outline.json")
+    history_file = str(work_dir / "history_bid_outline_inputs.json")
+    tender_file = str(work_dir / "tender_map_inputs.json")
+    return f"""
+Use the {BUSINESS_OUTLINE_SKILL_NAME} skill.
+
+你现在在做 S2 商务标目录生成。必须完整执行 business-bid-outline Skill，并严格遵循原有 Skill 的产物边界：准备脚本只生成输入材料，最终 outline.json 只能由 AI 判断后写入。
+
+manifest：{manifest_path}
+
+集成准备动作：直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径：
+
+{BUSINESS_OUTLINE_SKILL_COMMAND} {manifest_path}
+
+该命令只负责根据 manifest.templateFile 和 manifest.tenderFiles 生成：
+- {history_file}
+- {tender_file}
+
+该命令不得被视为最终目录生成；不得把它的 stdout、summary 或任何候选信息当作最终 outline.json。
+
+AI 判断动作：命令完成后，继续按 business-bid-outline Skill 的步骤 2-7 做 AI 判断：学习历史商务标目录结构，分析当前招标文件，匹配每个目录项的 source_text，判断 required_status，补强必须提交材料，最终写入 outline.json。
+
+必须使用后端 manifest.templateFile 作为历史商务标/商务模板来源，不扫描当前工作目录，不使用 user_confirmed_inputs.json。
+
+后续判断只基于原始 Skill 输入产物：
+- 历史商务标输入：{history_file}
+- 招标文件输入：{tender_file}
+
+禁止调用 read 工具；不要使用 cat/head/tail/grep 直接打印 JSON 大文件。需要访问文件内容或写回结果时，只能调用 Bash 工具执行 python3 脚本读取上述原始产物、按 business-bid-outline Skill 逻辑分析和写回。Python 脚本可以完整读取 JSON 文件到内存，但每次 stdout 只输出当前判断所需的简短检查结果，避免刷屏或截断。
+
+必须把最终 AI 判断后的原生产物写入：
+{business_outline_file}
+
+outline.json 必须满足：
+{{
+  "schema_version": "business_bid_outline.v1",
+  "sections": []
+}}
+
+不要自行生成或修改前端兼容 toc.json；后端会根据最终 outline.json 自动转换。
+
+最后只返回严格 JSON，不要 Markdown，不要解释文字：
+{{
+  "schema_version": "business_bid_outline.v1",
+  "businessOutlineFile": "{business_outline_file}",
+  "historyBidOutlineInputsFile": "{history_file}",
+  "tenderMapInputsFile": "{tender_file}",
+  "summary": {{"total_sections": 0}}
+}}
+""".strip()
+
 def _load_outline_result(result: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     output_file = Path(str(result.get("outputFile") or manifest.get("outputFile") or "")).expanduser()
     evidence_file = Path(str(result.get("evidenceFile") or manifest.get("evidenceFile") or "")).expanduser()
+    is_business_bid = _is_business_bid(manifest.get("bidType"))
+    if is_business_bid:
+        return _load_business_outline_result(result, manifest, output_file, evidence_file)
+
     if not output_file.exists():
         raise RuntimeError(f"S2 目录 Skill 未生成 outputFile：{output_file}")
 
@@ -239,6 +366,196 @@ def _load_outline_result(result: dict[str, Any], manifest_path: Path) -> dict[st
         toc["opencodeOutput"] = result["opencodeOutput"]
     toc["ruleEvidence"] = _public_rule_evidence_from_file(evidence_file)
     return toc
+
+
+def _load_business_outline_result(
+    result: dict[str, Any],
+    manifest: dict[str, Any],
+    output_file: Path,
+    evidence_file: Path,
+) -> dict[str, Any]:
+    work_dir = Path(str(manifest.get("workDir") or output_file.parent)).expanduser()
+    business_outline_file = Path(str(result.get("businessOutlineFile") or work_dir / "outline.json")).expanduser()
+    business_outline = _load_business_outline_json(business_outline_file)
+    _write_business_toc_from_outline_payload(manifest, business_outline, business_outline_file, output_file, evidence_file)
+    toc = json.loads(output_file.read_text(encoding="utf-8"))
+    if not isinstance(toc, dict) or not isinstance(toc.get("items"), list):
+        raise RuntimeError("商务标 outline.json 未能转换为有效 bid-toc-json-v1。")
+    toc["items"] = _clean_toc_items(toc["items"])
+    _rewrite_toc_file(output_file, toc, evidence_file)
+    toc["outputFile"] = str(output_file)
+    toc["evidenceFile"] = str(evidence_file)
+    toc["businessOutlineFile"] = str(business_outline_file)
+    if isinstance(result.get("opencodeOutput"), dict):
+        toc["opencodeOutput"] = result["opencodeOutput"]
+    toc["ruleEvidence"] = _public_rule_evidence_from_file(evidence_file)
+    return toc
+
+
+def _load_business_outline_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise RuntimeError(f"商务标目录 Skill 未生成最终 outline.json：{path}")
+    business_outline = _load_json_dict(path)
+    if business_outline.get("schema_version") != "business_bid_outline.v1":
+        raise RuntimeError("商务标 outline.json schema_version 必须是 business_bid_outline.v1。")
+    sections = business_outline.get("sections")
+    if not isinstance(sections, list) or not sections:
+        raise RuntimeError("商务标 outline.json 必须包含非空 sections[]。")
+    return business_outline
+
+
+def _write_business_toc_from_outline(
+    manifest: dict[str, Any],
+    result: dict[str, Any],
+    output_file: Path,
+    evidence_file: Path,
+) -> None:
+    work_dir = Path(str(manifest.get("workDir") or output_file.parent)).expanduser()
+    business_outline_file = Path(str(result.get("businessOutlineFile") or work_dir / "outline.json")).expanduser()
+    business_outline = _load_business_outline_json(business_outline_file)
+    _write_business_toc_from_outline_payload(manifest, business_outline, business_outline_file, output_file, evidence_file)
+
+
+def _write_business_toc_from_outline_payload(
+    manifest: dict[str, Any],
+    business_outline: dict[str, Any],
+    business_outline_file: Path,
+    output_file: Path,
+    evidence_file: Path,
+) -> None:
+    work_dir = Path(str(manifest.get("workDir") or output_file.parent)).expanduser()
+    sections = business_outline.get("sections") if isinstance(business_outline.get("sections"), list) else []
+    if not sections:
+        raise RuntimeError("商务标 outline.json 必须包含非空 sections[]。")
+
+    items = _clean_toc_items(_business_toc_items_from_sections(sections))
+    counts = Counter(str(item.get("annotation") or "") for item in items)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    evidence_file.parent.mkdir(parents=True, exist_ok=True)
+    source_files = {
+        "tender": manifest.get("tenderFiles") if isinstance(manifest.get("tenderFiles"), list) else [],
+        "template": str(manifest.get("templateFile") or ""),
+        "output": str(output_file),
+        "evidence": str(evidence_file),
+        "businessOutline": str(business_outline_file),
+        "tenderMapInputs": str(work_dir / "tender_map_inputs.json"),
+        "historyBidOutlineInputs": str(work_dir / "history_bid_outline_inputs.json"),
+    }
+    toc = {
+        "schema_version": "bid-toc-json-v1",
+        "document_title": str(business_outline.get("document_name") or "商务标目录"),
+        "project": {
+            "projectId": str(manifest.get("projectId") or ""),
+            "projectCode": str(manifest.get("projectCode") or ""),
+            "projectName": str(manifest.get("projectName") or ""),
+            "bidType": str(manifest.get("bidType") or "商务标"),
+        },
+        "source_files": source_files,
+        "summary": {
+            "total_items": len(items),
+            "annotation_counts": dict(counts),
+        },
+        "items": items,
+        "outputFile": str(output_file),
+        "evidenceFile": str(evidence_file),
+        "businessOutlineFile": str(business_outline_file),
+    }
+    evidence = {
+        "schema_version": "bid-toc-evidence-v1",
+        "engine": "business-bid-outline",
+        "inputs": source_files,
+        "businessOutlineFile": str(business_outline_file),
+        "decisions": business_outline.get("review_items") if isinstance(business_outline.get("review_items"), list) else [],
+    }
+    output_file.write_text(json.dumps(toc, ensure_ascii=False, indent=2), encoding="utf-8")
+    if not evidence_file.exists():
+        evidence_file.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _business_toc_items_from_sections(sections: list[Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+
+    def append_section(section: dict[str, Any], number_parts: list[int]) -> None:
+        order = len(items) + 1
+        required_status = _normalize_required_status(section.get("required_status") or section.get("requiredStatus"))
+        source_text = str(section.get("source_text") or section.get("sourceText") or "").strip()
+        source_refs = _business_source_refs_from_section(section, source_text)
+        items.append(
+            {
+                "itemId": f"TOC-{order:04d}",
+                "order": order,
+                "number": ".".join(str(part) for part in number_parts),
+                "title": str(section.get("title") or section.get("name") or f"商务标目录项{order}").strip(),
+                "level": max(1, int(section.get("level") or len(number_parts) or 1)),
+                "annotation": _business_annotation_from_required_status(required_status),
+                "required_status": required_status,
+                "requiredStatus": required_status,
+                "source_text": source_text,
+                "sourceText": source_text,
+                "source": "business_outline",
+                "reason": str(section.get("reason") or "商务标目录项来自 futurecode 生成的 outline.json。").strip(),
+                "source_refs": source_refs,
+                "material_refs": [],
+            }
+        )
+        children = section.get("children") if isinstance(section.get("children"), list) else []
+        for child_index, child in enumerate(children, start=1):
+            if isinstance(child, dict):
+                append_section(child, [*number_parts, child_index])
+
+    for index, section in enumerate(sections, start=1):
+        if isinstance(section, dict):
+            append_section(section, [index])
+    return items
+
+
+def _normalize_required_status(value: Any) -> str:
+    text = str(value or "").strip()
+    if text in {"必要", "可选", "待确认"}:
+        return text
+    if text in {"必选", "必须", "应提交", "须提交", "保留"}:
+        return "必要"
+    if text in {"选填", "按需", "如适用", "适用时提交"}:
+        return "可选"
+    return text or "待确认"
+
+
+def _business_annotation_from_required_status(required_status: str) -> str:
+    if required_status == "待确认":
+        return "待确认"
+    if required_status == "可选":
+        return "可选"
+    return "保留"
+
+
+def _business_source_refs_from_section(section: dict[str, Any], source_text: str) -> list[dict[str, Any]]:
+    raw_refs = section.get("source_refs") if isinstance(section.get("source_refs"), list) else []
+    if not raw_refs and isinstance(section.get("sourceRefs"), list):
+        raw_refs = section["sourceRefs"]
+    if not raw_refs and isinstance(section.get("source_ref"), dict):
+        raw_refs = [section["source_ref"]]
+    refs = [_clean_source_ref(ref) for ref in raw_refs if isinstance(ref, dict)]
+    if refs:
+        return refs
+    if not source_text:
+        return []
+    return [
+        _clean_source_ref(
+            {
+                "type": "tender",
+                "role": "basis",
+                "kind": "business_outline_section",
+                "sectionId": str(section.get("id") or ""),
+                "title": str(section.get("title") or ""),
+                "raw_text": source_text,
+                "rawText": source_text,
+                "basisText": source_text,
+                "searchText": source_text,
+                "reason": "商务标 outline.json 目录项依据",
+            }
+        )
+    ]
+
 
 
 def _apply_agent_decisions(
@@ -314,6 +631,11 @@ def _clean_toc_items(items: list[Any]) -> list[dict[str, Any]]:
         material_refs = item.get("material_refs")
         if not isinstance(material_refs, list):
             material_refs = item.get("materialRefs") if isinstance(item.get("materialRefs"), list) else []
+        annotation = str(item.get("annotation") or "").strip() or "保留"
+        required_status = str(item.get("required_status") or item.get("requiredStatus") or "").strip()
+        if not required_status:
+            required_status = _required_status_from_annotation(annotation)
+        source_text = _toc_item_source_text(item)
         cleaned.append(
             {
                 "itemId": str(item.get("itemId") or f"TOC-{index:04d}"),
@@ -321,7 +643,11 @@ def _clean_toc_items(items: list[Any]) -> list[dict[str, Any]]:
                 "number": str(item.get("number") or "").strip(),
                 "title": str(item.get("title") or item.get("name") or f"未命名章节{index}").strip(),
                 "level": _coerce_toc_level(item.get("level")),
-                "annotation": str(item.get("annotation") or "").strip() or "保留",
+                "annotation": annotation,
+                "required_status": required_status,
+                "requiredStatus": required_status,
+                "source_text": source_text,
+                "sourceText": source_text,
                 "source": str(item.get("source") or "").strip() or "template",
                 "reason": str(item.get("reason") or "").strip(),
                 "source_refs": [_clean_source_ref(ref) for ref in source_refs if isinstance(ref, dict)],
@@ -329,6 +655,15 @@ def _clean_toc_items(items: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return cleaned
+
+
+def _required_status_from_annotation(annotation: str) -> str:
+    text = str(annotation or "").strip()
+    if text in {"待确认", "可选"}:
+        return text
+    if text in {"保留", "必要"}:
+        return "必要"
+    return text
 
 
 def _clean_source_ref(ref: dict[str, Any]) -> dict[str, Any]:
@@ -473,7 +808,8 @@ def _prepare_toc_skill_workspace(
     tender_file_records: list[dict[str, Any]],
     template_file_records: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    project_dir = technical_workspace_dir(project_id)
+    bid_type = _normalize_bid_type(str(project.get("bidType") or "技术标"))
+    project_dir = workspace_dir(project_id, bid_type)
     project_dir.mkdir(parents=True, exist_ok=True)
 
     published_work_dir = project_dir / "s2_toc_workdir"
@@ -487,7 +823,6 @@ def _prepare_toc_skill_workspace(
     template_path, attach_path = _copy_template_inputs(template_file_records, staging_work_dir, project_id)
     if template_path is None:
         raise ValueError("投标模板不存在，请先上传可读取的投标模板文件。")
-    bid_type = _normalize_bid_type(str(project.get("bidType") or "投标文件"))
     output_file = staging_work_dir / _safe_file_name(settings.s2_toc_output_file_name, "toc.json")
     evidence_file = staging_work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json")
     manifest_path = staging_work_dir / "s2_input.json"
@@ -543,6 +878,9 @@ def _publish_toc_skill_workspace(skill_workspace: dict[str, Any], toc_result: di
     evidence_file = Path(
         str(manifest.get("evidenceFile") or published_work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json"))
     ).expanduser()
+    business_outline_file = published_work_dir / "outline.json"
+    tender_map_inputs_file = published_work_dir / "tender_map_inputs.json"
+    history_bid_outline_inputs_file = published_work_dir / "history_bid_outline_inputs.json"
     manifest["workDir"] = str(published_work_dir)
     manifest["outputFile"] = str(output_file)
     manifest["evidenceFile"] = str(evidence_file)
@@ -550,17 +888,31 @@ def _publish_toc_skill_workspace(skill_workspace: dict[str, Any], toc_result: di
 
     _remap_json_file(staging_output_file, replacements, {"outputFile": str(output_file), "evidenceFile": str(evidence_file)})
     _remap_json_file(staging_evidence_file, replacements)
-    _remap_json_file(staging_work_dir / "agent_review_input.json", replacements)
+    _remap_json_file(staging_work_dir / "outline.json", replacements)
+    _remap_json_file(staging_work_dir / "tender_map_inputs.json", replacements)
+    _remap_json_file(staging_work_dir / "history_bid_outline_inputs.json", replacements)
 
     result = _remap_workspace_paths(toc_result, replacements)
     result["outputFile"] = str(output_file)
     result["evidenceFile"] = str(evidence_file)
+    if (staging_work_dir / "outline.json").exists():
+        result["businessOutlineFile"] = str(business_outline_file)
+    if (staging_work_dir / "tender_map_inputs.json").exists():
+        result["tenderMapInputsFile"] = str(tender_map_inputs_file)
+    if (staging_work_dir / "history_bid_outline_inputs.json").exists():
+        result["historyBidOutlineInputsFile"] = str(history_bid_outline_inputs_file)
     if isinstance(result.get("opencodeOutput"), dict):
         result["opencodeOutput"]["workDir"] = str(published_work_dir)
         result["opencodeOutput"]["manifestPath"] = str(manifest_path)
         result["opencodeOutput"]["canonicalManifestPath"] = str(manifest_path)
         result["opencodeOutput"]["tocJsonPath"] = str(output_file)
         result["opencodeOutput"]["evidencePath"] = str(evidence_file)
+        if (staging_work_dir / "outline.json").exists():
+            result["opencodeOutput"]["businessOutlinePath"] = str(business_outline_file)
+        if (staging_work_dir / "tender_map_inputs.json").exists():
+            result["opencodeOutput"]["tenderMapInputsPath"] = str(tender_map_inputs_file)
+        if (staging_work_dir / "history_bid_outline_inputs.json").exists():
+            result["opencodeOutput"]["historyBidOutlineInputsPath"] = str(history_bid_outline_inputs_file)
 
     previous_archive = ""
     try:
@@ -812,12 +1164,21 @@ def _nodes_from_toc_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         node_id = "OL-" + "-".join(str(part) for part in counters[:level] if part)
 
         title = _toc_item_title(item, fallback_order)
+        source_text = _toc_item_source_text(item)
+        annotation = str(item.get("annotation") or "").strip()
+        required_status = str(item.get("required_status") or item.get("requiredStatus") or "").strip()
+        if not required_status:
+            required_status = _required_status_from_annotation(annotation)
         node = {
             "id": node_id,
             "title": title,
             "children": [],
             "tocNumber": str(item.get("number") or "").strip(),
-            "annotation": str(item.get("annotation") or "").strip(),
+            "annotation": annotation,
+            "required_status": required_status,
+            "requiredStatus": required_status,
+            "source_text": source_text,
+            "sourceText": source_text,
             "source": str(item.get("source") or "").strip(),
             "reason": str(item.get("reason") or "").strip(),
         }
@@ -852,3 +1213,25 @@ def _toc_item_title(item: dict[str, Any], fallback_order: int) -> str:
     if number:
         return number
     return f"未命名章节{fallback_order}"
+
+
+def _toc_item_source_text(item: dict[str, Any]) -> str:
+    explicit = str(item.get("source_text") or item.get("sourceText") or "").strip()
+    if explicit:
+        return explicit
+    source_refs = item.get("source_refs")
+    if not isinstance(source_refs, list):
+        source_refs = item.get("sourceRefs") if isinstance(item.get("sourceRefs"), list) else []
+    for ref in source_refs:
+        if not isinstance(ref, dict):
+            continue
+        text = str(
+            ref.get("searchText")
+            or ref.get("basisText")
+            or ref.get("rawText")
+            or ref.get("raw_text")
+            or ""
+        ).strip()
+        if text:
+            return text
+    return ""
