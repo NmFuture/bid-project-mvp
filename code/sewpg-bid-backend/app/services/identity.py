@@ -247,8 +247,6 @@ def build_project_identity(project: dict[str, Any]) -> dict[str, Any]:
 def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
     identity = build_project_identity(project)
     bid_type = normalize_bid_type(identity.get("bidType") or project.get("bidType"), "技术标")
-    if bid_type != "技术标":
-        bid_type = "技术标"
     customer_name = str(identity.get("customerCanonicalName") or identity.get("customerName") or "").strip()
     project_id = str(identity.get("projectId") or identity.get("bidProjectId") or project.get("id") or "").strip()
     scopes: list[dict[str, Any]] = [

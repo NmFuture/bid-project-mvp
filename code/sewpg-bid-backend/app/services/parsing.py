@@ -20,10 +20,18 @@ from docx import Document
 from app.core.config import settings
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.opencode_client import OpencodeClient
+from app.services.parse_profiles import (
+    BUSINESS_PARSE_PROFILE,
+    TECHNICAL_PARSE_PROFILE,
+    ParseProfile,
+    TECHNICAL_PARSE_SKILL_NAME,
+    resolve_parse_profile,
+)
 from app.services.peripheral import PeripheralError
 
-PARSE_SKILL_NAME = "bid-tender-structured-parser"
-PARSER_CORE_DIR = Path(__file__).resolve().parents[2] / "opencode" / "skill" / PARSE_SKILL_NAME / "scripts"
+PARSER_CORE_DIR = (
+    Path(__file__).resolve().parents[2] / "opencode" / "skill" / TECHNICAL_PARSE_SKILL_NAME / "scripts"
+)
 if str(PARSER_CORE_DIR) not in sys.path:
     sys.path.insert(0, str(PARSER_CORE_DIR))
 
@@ -162,6 +170,39 @@ ENVIRONMENT_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("lightning", "防雷暴", ("防雷暴", "防雷")),
     FieldSpec("sandstorm", "防风沙", ("防风沙", "风沙")),
     FieldSpec("highTemperature", "抗高温", ("抗高温", "高温")),
+)
+
+BUSINESS_RESPONSE_FIELDS: tuple[FieldSpec, ...] = (
+    FieldSpec("bidLetterRequired", "投标函要求", ("投标函",)),
+    FieldSpec("authorizationLetterRequired", "授权委托书要求", ("授权委托书", "法定代表人授权委托书")),
+    FieldSpec("integrityCommitmentRequired", "廉洁承诺要求", ("廉洁", "廉洁自律承诺", "廉洁承诺")),
+    FieldSpec("sealValidityStatementRequired", "投标专用章效力说明要求", ("投标专用章效力说明",)),
+    FieldSpec("bidPriceTableRequired", "投标价格表要求", ("投标价格", "投标价格表")),
+    FieldSpec("openingPriceTableRequired", "开标价格表要求", ("开标价格表",)),
+    FieldSpec("specificationTableRequired", "货物规格表要求", ("货物规格", "规格表")),
+    FieldSpec("commercialDeviationTableRequired", "商务偏差表要求", ("商务偏差", "偏差表")),
+    FieldSpec("supplyScopeTableRequired", "供货范围表要求", ("供货范围", "供货范围表")),
+    FieldSpec("bidSecurityRequired", "投标保证金要求", ("投标保证金", "保证金", "保函")),
+    FieldSpec("performanceBondCommitmentRequired", "履约保证承诺要求", ("履约保证函", "履约承诺", "履约保证")),
+    FieldSpec("attachment9Required", "附件9要求", ("附件9", "附件九")),
+)
+
+QUALIFICATION_SUPPORT_FIELDS: tuple[FieldSpec, ...] = (
+    FieldSpec("qualificationDocumentRequired", "资格证明文件要求", ("资格证明", "合格投标人", "资格审查")),
+    FieldSpec("performanceDocumentRequired", "业绩证明文件要求", ("业绩证明", "合同扫描件", "中标通知书", "验收报告")),
+    FieldSpec("financialDocumentRequired", "财务文件要求", ("审计报告", "财务报表", "财务状况")),
+    FieldSpec("creditDocumentRequired", "资信诚信文件要求", ("资信证明", "信用中国", "纳税信用", "失信")),
+    FieldSpec("certificationDocumentRequired", "证书文件要求", ("认证证书", "资质证书", "体系认证")),
+    FieldSpec("customerSpecificProofRequired", "客户专项证明要求", ("战略协议", "框架协议", "评价信", "优秀供应商证明", "示范应用证明")),
+)
+
+COMMITMENT_REQUIREMENT_FIELDS: tuple[FieldSpec, ...] = (
+    FieldSpec("generalCommitmentCount", "承诺线索识别数", ("承诺",)),
+    FieldSpec("generatedCommitmentCount", "自动生成承诺文件数", ("承诺函", "承诺书", "不得存在下列情形")),
+    FieldSpec("pendingCommitmentCount", "待确认承诺线索数", ("承诺",)),
+    FieldSpec("disqualificationCommitmentRequired", "不得存在下列情形承诺要求", ("不得存在下列情形", "不得存在下列情形之一")),
+    FieldSpec("otherCommitmentSectionRequired", "其他承诺章节要求", ("投标人需要说明的其他内容", "其他内容", "其他承诺")),
+    FieldSpec("commitmentGenerationBasis", "承诺文件生成依据", ("承诺函", "承诺书", "不得存在下列情形")),
 )
 
 SCORING_SCORE_PATTERN = re.compile(r"(?P<item>[\u4e00-\u9fa5A-Za-z0-9（）()、/]+?)\s*(?P<score>\d+(?:\.\d+)?\s*分)")
@@ -499,6 +540,906 @@ def _build_field_groups(items: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _copy_meta_fields(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sourceFile": str(item.get("sourceFile") or ""),
+        "sourceDocumentId": str(item.get("sourceDocumentId") or ""),
+        "section": str(item.get("section") or ""),
+        "evidence": str(item.get("evidence") or ""),
+        "evidenceLocation": str(item.get("evidenceLocation") or ""),
+    }
+
+
+def _business_field_from_item(spec: FieldSpec, item: dict[str, Any], *, value_override: str | None = None) -> dict[str, Any]:
+    field = {
+        "key": spec.key,
+        "label": spec.label,
+        "value": (value_override if value_override is not None else str(item.get("value") or item.get("keyValue") or "")).strip(),
+        "status": "found",
+        **_copy_meta_fields(item),
+        "confidence": float(item.get("confidence") or 0.86),
+    }
+    return field
+
+
+def _empty_business_field(spec: FieldSpec, *, value: str = "") -> dict[str, Any]:
+    return {
+        "key": spec.key,
+        "label": spec.label,
+        "value": value,
+        "status": "missing" if not value else "derived",
+        "sourceFile": "",
+        "sourceDocumentId": "",
+        "section": "",
+        "evidence": "",
+        "evidenceLocation": "",
+        "confidence": 0.0,
+    }
+
+
+def _find_business_item(items: list[dict[str, Any]], spec: FieldSpec) -> dict[str, Any] | None:
+    for item in items:
+        haystack = " ".join(
+            str(item.get(key) or "")
+            for key in ("title", "keyEntity", "value", "evidence", "section")
+        )
+        if any(alias in haystack for alias in spec.aliases):
+            return item
+    return None
+
+
+def _build_business_project_basics(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    filtered_specs = tuple(spec for spec in PROJECT_BASIC_FIELDS if spec.key != "technicalCommitment")
+    fields: list[dict[str, Any]] = []
+    for spec in filtered_specs:
+        matched = next(
+            (
+                item
+                for item in items
+                if any(alias in str(item.get("keyEntity") or item.get("title") or item.get("evidence") or "") for alias in spec.aliases)
+            ),
+            None,
+        )
+        fields.append(_business_field_from_item(spec, matched) if matched else _empty_business_field(spec))
+    return fields
+
+
+def _build_business_response_fields(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    fields: list[dict[str, Any]] = []
+    for spec in BUSINESS_RESPONSE_FIELDS:
+        matched = _find_business_item(items, spec)
+        fields.append(_business_field_from_item(spec, matched) if matched else _empty_business_field(spec))
+    return fields
+
+
+def _build_qualification_support_fields(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    fields: list[dict[str, Any]] = []
+    for spec in QUALIFICATION_SUPPORT_FIELDS:
+        matched = _find_business_item(items, spec)
+        fields.append(_business_field_from_item(spec, matched) if matched else _empty_business_field(spec))
+    return fields
+
+
+def _find_commitment_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    matched: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        text = " ".join(str(item.get(key) or "") for key in ("title", "value", "evidence", "section"))
+        if "承诺" not in text and "不得存在下列情形" not in text:
+            continue
+        item_id = str(item.get("id") or "")
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        matched.append(item)
+    return matched
+
+
+COMMITMENT_DOC_KEYWORDS = ("承诺函", "承诺书")
+COMMITMENT_GENERATION_HINTS = (
+    "另附承诺函",
+    "另附承诺书",
+    "单独提供承诺函",
+    "单独提供承诺书",
+    "须提供承诺函",
+    "须提供承诺书",
+    "应提供承诺函",
+    "应提供承诺书",
+    "应出具承诺函",
+    "应出具承诺书",
+    "需提供承诺函",
+    "需提供承诺书",
+    "须出具承诺函",
+    "须出具承诺书",
+)
+COMMITMENT_REQUIREMENT_CONTEXT_HINTS = (
+    "提供",
+    "提交",
+    "出具",
+    "附",
+    "另附",
+    "单独",
+    "递交",
+    "响应",
+    "按要求",
+    "须",
+    "应",
+    "需",
+    "必须",
+)
+COMMITMENT_IGNORE_KEYWORDS = (
+    "技术承诺",
+    "廉洁承诺",
+    "廉洁自律承诺",
+    "履约承诺",
+    "履约保证承诺",
+    "投标函",
+    "授权委托书",
+    "评分标准",
+    "评分办法",
+    "证明材料",
+    "目录",
+)
+COMMITMENT_NON_REQUIREMENT_TITLE_HINTS = (
+    "格式",
+    "模板",
+    "目录",
+    "附件",
+    "附录",
+    "详见",
+    "示例",
+    "参考",
+)
+TECHNICAL_COMMITMENT_KEYWORDS = (
+    "发电量",
+    "功率曲线",
+    "功率",
+    "可利用率",
+    "涉网性能",
+    "机组",
+    "叶轮",
+    "轮毂",
+    "塔筒",
+    "箱变",
+    "风机",
+    "载荷",
+    "噪声",
+    "振动",
+    "发电性能",
+    "性能保证",
+    "技术指标",
+)
+COMMITMENT_TOPIC_TITLE_KEYWORDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("confidentiality", ("保密",), "保密承诺书"),
+    ("disqualification", ("不得存在下列情形",), "投标人不存在下列情形之一承诺函"),
+    ("delivery", ("交货", "供货周期", "交付"), "交货周期承诺书"),
+    ("quality", ("质量", "质保", "售后", "服务"), "质量服务承诺书"),
+    ("security", ("投标保证金", "保函", "保证金"), "投标保证金承诺书"),
+    ("compliance", ("合规", "守法", "违法", "违规", "信用"), "合规承诺书"),
+)
+COMMITMENT_TOPIC_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("confidentiality", ("保密",)),
+    ("compliance", ("合规", "守法", "违法", "违规", "信用")),
+    ("security", ("投标保证金", "保函", "保证金")),
+    ("disqualification", ("不得存在下列情形",)),
+    ("integrity", ("廉洁",)),
+    ("performance_bond", ("履约保证", "履约承诺")),
+    ("delivery_commitment", ("交货", "工期", "供货周期")),
+    ("quality_commitment", ("质量", "质保", "售后", "服务承诺")),
+)
+COMMITMENT_SEMANTIC_REVIEW_MAX_ITEMS = 12
+
+
+def _commitment_text(item: dict[str, Any]) -> str:
+    return " ".join(str(item.get(key) or "") for key in ("title", "value", "evidence", "section"))
+
+
+def _is_technical_commitment_item(item: dict[str, Any]) -> bool:
+    normalized = re.sub(r"\s+", "", _commitment_text(item))
+    if not normalized:
+        return False
+    return any(keyword in normalized for keyword in TECHNICAL_COMMITMENT_KEYWORDS)
+
+
+def _preferred_commitment_title(item: dict[str, Any], trigger_text: str) -> str:
+    raw_title = str(item.get("title") or "").strip()
+    raw_value = str(item.get("value") or "").strip()
+    raw_evidence = str(item.get("evidence") or "").strip()
+    source_text = raw_evidence or raw_value or raw_title or trigger_text
+    normalized_source = re.sub(r"\s+", "", source_text)
+
+    for _, keywords, preferred_title in COMMITMENT_TOPIC_TITLE_KEYWORDS:
+        if any(keyword in normalized_source for keyword in keywords):
+            return preferred_title
+
+    title = raw_title or trigger_text or "承诺文件"
+    if title in COMMITMENT_DOC_KEYWORDS or title == "承诺":
+        for keyword in COMMITMENT_GENERATION_HINTS + COMMITMENT_DOC_KEYWORDS:
+            if keyword in source_text:
+                prefix = _normalize_commitment_title_prefix(source_text.split(keyword, 1)[0])
+                if prefix:
+                    return f"{prefix}{keyword}"
+                return keyword
+
+    title = _normalize_commitment_title_prefix(title)
+    if not any(keyword in title for keyword in COMMITMENT_DOC_KEYWORDS):
+        title = f"{title}承诺书"
+    return title
+
+
+def _normalize_commitment_topic(text: str) -> str:
+    normalized = re.sub(r"\s+", "", str(text or ""))
+    for topic, keywords in COMMITMENT_TOPIC_KEYWORDS:
+        if any(keyword in normalized for keyword in keywords):
+            return topic
+    if "承诺函" in normalized or "承诺书" in normalized:
+        return normalized[:80]
+    return normalized[:80] or "commitment"
+
+
+def _normalize_commitment_title_prefix(text: str) -> str:
+    normalized = str(text or "").strip(" ：:，,、。.；;（）()")
+    for prefix in ("投标人应出具", "投标人应提供", "投标人须提供", "投标人需提供", "投标人须出具", "投标人另附", "应出具", "应提供", "须提供", "需提供", "须出具", "另附"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix):].strip(" ：:，,、。.；;（）()")
+            break
+    return normalized
+
+
+def _contains_commitment_requirement_context(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(text or ""))
+    return any(hint in normalized for hint in COMMITMENT_REQUIREMENT_CONTEXT_HINTS)
+
+
+def _looks_like_bare_commitment_title(item: dict[str, Any]) -> bool:
+    evidence = str(item.get("evidence") or item.get("value") or item.get("title") or "").strip()
+    normalized = re.sub(r"\s+", "", evidence)
+    if not normalized:
+        return False
+    if not any(keyword in normalized for keyword in COMMITMENT_DOC_KEYWORDS):
+        return False
+    if _contains_commitment_requirement_context(normalized):
+        return False
+    if any(token in normalized for token in COMMITMENT_NON_REQUIREMENT_TITLE_HINTS):
+        return True
+    if _looks_like_section_heading(evidence):
+        return True
+    return len(normalized) <= 18 and normalized.endswith(COMMITMENT_DOC_KEYWORDS)
+
+
+def _extract_commitment_trigger_phrase(text: str) -> str:
+    normalized = str(text or "").strip()
+    if "不得存在下列情形" in normalized:
+        return "投标人不得存在下列情形之一"
+    for hint in COMMITMENT_GENERATION_HINTS:
+        if hint in normalized:
+            return hint
+    for keyword in COMMITMENT_DOC_KEYWORDS:
+        if keyword in normalized:
+            return keyword
+    return "承诺"
+
+
+def _build_commitment_semantic_review_prompt(candidates: list[dict[str, Any]]) -> str:
+    records = []
+    for item in candidates[:COMMITMENT_SEMANTIC_REVIEW_MAX_ITEMS]:
+        records.append(
+            {
+                "id": str(item.get("id") or ""),
+                "title": str(item.get("title") or ""),
+                "section": str(item.get("section") or ""),
+                "evidence": str(item.get("evidence") or item.get("value") or ""),
+                "sourceFile": str(item.get("sourceFile") or ""),
+                "evidenceLocation": str(item.get("evidenceLocation") or ""),
+                "contextBefore": str(item.get("contextBefore") or ""),
+                "contextAfter": str(item.get("contextAfter") or ""),
+                "topicKey": str(item.get("topicKey") or ""),
+                "triggerText": str(item.get("triggerText") or ""),
+            }
+        )
+
+    return (
+        "你在做商务标承诺文件语义复核。请只根据输入文本判断，该条是否要求投标人单独形成一份承诺函/承诺书。\n"
+        "输出 JSON，格式为：\n"
+        "{\n"
+        '  "decisions": [\n'
+        '    {"id":"RAW-0001","action":"generate|clue|ignore","topicKey":"confidentiality","preferredTitle":"保密承诺书","reason":"一句简短原因"}\n'
+        "  ]\n"
+        "}\n"
+        "判断规则：\n"
+        "1. 如果只是章节标题、目录项、模板名、格式名、附件名，不要生成，action=ignore 或 clue。\n"
+        "2. 如果语义上明确要求投标人单独提供/提交/出具一份承诺函或承诺书，action=generate。\n"
+        "3. 如果存在承诺字样，但看不出是否必须单独成文，action=clue。\n"
+        "4. 如果 evidence 只是类似“保密承诺书”这类短标题，必须结合 section、contextBefore、contextAfter 判断；上下文没有明确“提供/提交/出具/另附/单独成文”要求时，不要生成。\n"
+        "5. 同一主题如果只是重复标题、重复要求或同一事项的不同表述，最多保留一个 generate，其余用 ignore 或 clue。\n"
+        "6. topicKey 尽量归一，例如 confidentiality、compliance、security、delivery_commitment、quality_commitment、disqualification。\n"
+        "7. preferredTitle 只在 action=generate 时填写，且应是适合最终文件名的主题名称。\n\n"
+        f"候选列表：\n{json.dumps(records, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _review_commitment_candidates_semantically(candidates: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    if not candidates:
+        return {}
+    try:
+        result = OpencodeClient().review_business_commitments_with_trace(
+            _build_commitment_semantic_review_prompt(candidates)
+        )
+    except RuntimeError:
+        return {}
+    decisions = result.get("decisions")
+    if not isinstance(decisions, list):
+        return {}
+    reviewed: dict[str, dict[str, Any]] = {}
+    for decision in decisions:
+        if not isinstance(decision, dict):
+            continue
+        item_id = str(decision.get("id") or "").strip()
+        if not item_id:
+            continue
+        reviewed[item_id] = decision
+    return reviewed
+
+
+def _is_commitment_doc_required(item: dict[str, Any]) -> bool:
+    text = _commitment_text(item)
+    normalized = re.sub(r"\s+", "", text)
+    if "不得存在下列情形" in normalized:
+        return True
+    if any(hint in normalized for hint in COMMITMENT_GENERATION_HINTS):
+        return True
+    if any(keyword in normalized for keyword in COMMITMENT_DOC_KEYWORDS):
+        if _looks_like_bare_commitment_title(item):
+            return False
+        if _contains_commitment_requirement_context(normalized):
+            return True
+        return False
+    if any(keyword in normalized for keyword in COMMITMENT_NON_REQUIREMENT_TITLE_HINTS):
+        return False
+    if _looks_like_section_heading(str(item.get("evidence") or item.get("title") or "")):
+        return False
+    if ("投标人" in normalized or "投标方" in normalized) and any(token in normalized for token in ("须承诺", "应承诺", "承诺如下")):
+        return True
+    return False
+
+
+def _is_commitment_item_ignored(item: dict[str, Any]) -> bool:
+    text = _commitment_text(item)
+    normalized = re.sub(r"\s+", "", text)
+    if "承诺" not in normalized and "不得存在下列情形" not in normalized:
+        return True
+    if _is_technical_commitment_item(item):
+        return True
+    if _is_commitment_doc_required(item):
+        return False
+    if any(keyword in normalized for keyword in COMMITMENT_IGNORE_KEYWORDS):
+        if "不得存在下列情形" not in normalized:
+            return True
+    if any(token in normalized for token in ("评分", "得分", "分值", "证明材料要求")):
+        return True
+    return False
+
+
+def _build_business_commitment_analysis(
+    items: list[dict[str, Any]],
+    *,
+    run_semantic_review: bool = True,
+) -> dict[str, list[dict[str, Any]]]:
+    all_items = _find_commitment_items(items)
+    clues: list[dict[str, Any]] = []
+    letters: list[dict[str, Any]] = []
+    generated_topics: set[str] = set()
+    clue_topics: set[tuple[str, str]] = set()
+    semantic_candidates: list[dict[str, Any]] = []
+    semantic_candidate_ids: set[str] = set()
+    semantic_candidate_signatures: set[tuple[str, str, str]] = set()
+
+    for item in all_items:
+        if _is_commitment_item_ignored(item):
+            continue
+        text = _commitment_text(item)
+        topic = _normalize_commitment_topic(text)
+        trigger_text = _extract_commitment_trigger_phrase(text)
+        topic_key = topic or "commitment"
+        base = {
+            **_copy_meta_fields(item),
+            "topic": topic,
+            "topicKey": topic_key,
+            "triggerText": trigger_text,
+            "triggerContext": str(item.get("evidence") or item.get("value") or "").strip(),
+        }
+        if _is_commitment_doc_required(item):
+            normalized = re.sub(r"\s+", "", text)
+            if any(keyword in normalized for keyword in COMMITMENT_DOC_KEYWORDS) and not _contains_commitment_requirement_context(normalized):
+                item_id = str(item.get("id") or "")
+                signature = (
+                    str(item.get("sourceFile") or ""),
+                    str(item.get("evidenceLocation") or ""),
+                    re.sub(r"\s+", "", str(item.get("evidence") or item.get("value") or item.get("title") or "")),
+                )
+                if item_id and item_id not in semantic_candidate_ids and signature not in semantic_candidate_signatures:
+                    semantic_candidate_ids.add(item_id)
+                    semantic_candidate_signatures.add(signature)
+                    semantic_candidates.append({**item, **base})
+                continue
+
+            if topic_key in generated_topics:
+                continue
+            generated_topics.add(topic_key)
+            if topic_key == "disqualification":
+                title = "投标人不存在下列情形之一承诺函"
+                commitment_type = "disqualification"
+            else:
+                title = _preferred_commitment_title(item, trigger_text)
+                commitment_type = "general_commitment"
+            letters.append(
+                {
+                    "id": f"CL-{len(letters) + 1:04d}",
+                    "artifactType": "commitment_letter",
+                    "title": title,
+                    "commitmentType": commitment_type,
+                    "status": "pending_review",
+                    **base,
+                    "docxPath": "",
+                    "workspacePath": "",
+                    "placementHint": "投标人需要说明的其他内容",
+                    "needsHumanReview": True,
+                    "riskFlags": ["template_pending", "legal_wording_review_required"],
+                    "previewType": "onlyoffice",
+                }
+            )
+            continue
+
+        normalized = re.sub(r"\s+", "", text)
+        if any(keyword in normalized for keyword in COMMITMENT_DOC_KEYWORDS):
+            item_id = str(item.get("id") or "")
+            signature = (
+                str(item.get("sourceFile") or ""),
+                str(item.get("evidenceLocation") or ""),
+                re.sub(r"\s+", "", str(item.get("evidence") or item.get("value") or item.get("title") or "")),
+            )
+            if item_id and item_id not in semantic_candidate_ids and signature not in semantic_candidate_signatures:
+                semantic_candidate_ids.add(item_id)
+                semantic_candidate_signatures.add(signature)
+                semantic_candidates.append({**item, **base})
+            continue
+
+        clue_key = (topic_key, base["triggerContext"])
+        if clue_key in clue_topics:
+            continue
+        clue_topics.add(clue_key)
+        clues.append(
+            {
+                "id": f"CC-{len(clues) + 1:04d}",
+                "artifactType": "commitment_clue",
+                "title": str(item.get("title") or trigger_text or "承诺线索").strip() or "承诺线索",
+                "clueType": "pending_manual_review",
+                "status": "needs_review",
+                **base,
+                "recommendedAction": "暂不自动生成，请人工判断是否需要单独承诺函/承诺书。",
+                "riskFlags": ["ambiguous_requirement"],
+            }
+        )
+
+    reviewed = _review_commitment_candidates_semantically(semantic_candidates) if run_semantic_review else {}
+    for item in semantic_candidates:
+        decision = reviewed.get(str(item.get("id") or "")) or {}
+        if not run_semantic_review:
+            decision = {
+                "action": "clue",
+                "topicKey": str(item.get("topicKey") or item.get("topic") or "commitment"),
+                "reason": "语义复核延后到最终结构化结果阶段执行。",
+            }
+        action = str(decision.get("action") or "clue").strip().lower()
+        topic_key = str(decision.get("topicKey") or item.get("topicKey") or item.get("topic") or "commitment").strip() or "commitment"
+        if action == "ignore":
+            continue
+        if action == "generate":
+            if topic_key in generated_topics:
+                continue
+            generated_topics.add(topic_key)
+            title = str(decision.get("preferredTitle") or "").strip() or _preferred_commitment_title(item, str(item.get("triggerText") or "承诺"))
+            commitment_type = "disqualification" if topic_key == "disqualification" else "general_commitment"
+            letters.append(
+                {
+                    "id": f"CL-{len(letters) + 1:04d}",
+                    "artifactType": "commitment_letter",
+                    "title": title,
+                    "commitmentType": commitment_type,
+                    "status": "pending_review",
+                    **_copy_meta_fields(item),
+                    "topic": topic_key,
+                    "topicKey": topic_key,
+                    "triggerText": str(item.get("triggerText") or "承诺"),
+                    "triggerContext": str(item.get("triggerContext") or item.get("evidence") or item.get("value") or "").strip(),
+                    "docxPath": "",
+                    "workspacePath": "",
+                    "placementHint": "投标人需要说明的其他内容",
+                    "needsHumanReview": True,
+                    "riskFlags": ["semantic_review_passed", "legal_wording_review_required"],
+                    "previewType": "onlyoffice",
+                }
+            )
+            continue
+
+        clue_key = (
+            topic_key,
+            str(item.get("triggerContext") or item.get("evidence") or item.get("value") or "").strip(),
+        )
+        if clue_key in clue_topics:
+            continue
+        clue_topics.add(clue_key)
+        clues.append(
+            {
+                "id": f"CC-{len(clues) + 1:04d}",
+                "artifactType": "commitment_clue",
+                "title": str(item.get("title") or item.get("triggerText") or "承诺线索").strip() or "承诺线索",
+                "clueType": "pending_manual_review",
+                "status": "needs_review",
+                **_copy_meta_fields(item),
+                "topic": topic_key,
+                "topicKey": topic_key,
+                "triggerText": str(item.get("triggerText") or "承诺"),
+                "triggerContext": str(item.get("triggerContext") or item.get("evidence") or item.get("value") or "").strip(),
+                "recommendedAction": str(decision.get("reason") or "暂不自动生成，请人工判断是否需要单独承诺函/承诺书。").strip(),
+                "riskFlags": ["semantic_review_required"],
+            }
+        )
+
+    return {"letters": letters, "clues": clues}
+
+
+def _looks_like_section_heading(line: str) -> bool:
+    text = str(line or "").strip()
+    if not text:
+        return False
+    return bool(
+        re.match(r"^(?:第[一二三四五六七八九十百千0-9]+[章节条]|[（(]?[一二三四五六七八九十0-9]+[）)])", text)
+        or text.startswith("附件")
+        or text.startswith("附表")
+    )
+
+
+def _scan_business_hint_items(documents: list[dict[str, Any]], texts_by_id: dict[str, str]) -> list[dict[str, Any]]:
+    keywords = sorted(
+        {
+            *[alias for spec in BUSINESS_RESPONSE_FIELDS for alias in spec.aliases],
+            *[alias for spec in QUALIFICATION_SUPPORT_FIELDS for alias in spec.aliases],
+            *[alias for spec in COMMITMENT_REQUIREMENT_FIELDS for alias in spec.aliases],
+            "投标人不得存在下列情形之一",
+            "不得存在下列情形",
+            "投标人需要说明的其他内容",
+        },
+        key=len,
+        reverse=True,
+    )
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for document in documents:
+        document_id = str(document.get("id") or "")
+        source_file = str(document.get("name") or document_id or "招标文件")
+        lines = [line.strip() for line in str(texts_by_id.get(document_id) or "").splitlines()]
+        current_section = ""
+        for line_number, line in enumerate(lines, start=1):
+            if not line:
+                continue
+            if _looks_like_section_heading(line):
+                current_section = line
+            matched_keyword = next((keyword for keyword in keywords if keyword and keyword in line), "")
+            if not matched_keyword:
+                continue
+            dedupe_key = (document_id, line)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            label, value = _split_label_value(line, matched_keyword)
+            line_index = line_number - 1
+            context_before = next(
+                (candidate for candidate in reversed(lines[max(0, line_index - 2):line_index]) if candidate),
+                "",
+            )
+            context_after = next(
+                (candidate for candidate in lines[line_index + 1:line_index + 3] if candidate),
+                "",
+            )
+            items.append(
+                {
+                    "id": f"RAW-{len(items) + 1:04d}",
+                    "type": "商务提示",
+                    "category": "business_hint",
+                    "title": label or matched_keyword,
+                    "keyEntity": matched_keyword,
+                    "keyValue": value,
+                    "value": value or line,
+                    "sourceFile": source_file,
+                    "sourceDocumentId": document_id,
+                    "section": current_section,
+                    "evidence": line,
+                    "evidenceLocation": f"L{line_number}",
+                    "contextBefore": context_before,
+                    "contextAfter": context_after,
+                    "confidence": 0.72,
+                }
+            )
+    return items
+
+
+def _build_commitment_requirement_fields(
+    items: list[dict[str, Any]],
+    *,
+    analysis: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    analysis = analysis or _build_business_commitment_analysis(items)
+    commitment_items = _find_commitment_items(items)
+    disqualification_item = next(
+        (
+            item
+            for item in commitment_items
+            if "不得存在下列情形" in " ".join(str(item.get(key) or "") for key in ("title", "value", "evidence"))
+        ),
+        None,
+    )
+    other_content_item = next(
+        (
+            item
+            for item in items
+            if "投标人需要说明的其他内容" in " ".join(str(item.get(key) or "") for key in ("title", "value", "evidence", "section"))
+        ),
+        None,
+    )
+
+    fields: list[dict[str, Any]] = []
+    for spec in COMMITMENT_REQUIREMENT_FIELDS:
+        if spec.key == "generalCommitmentCount":
+            count_text = str(len(analysis["letters"]) + len(analysis["clues"]))
+            matched = commitment_items[0] if commitment_items else None
+            fields.append(
+                _business_field_from_item(spec, matched, value_override=count_text)
+                if matched
+                else _empty_business_field(spec, value="0")
+            )
+            continue
+        if spec.key == "generatedCommitmentCount":
+            matched = analysis["letters"][0] if analysis["letters"] else None
+            fields.append(
+                _business_field_from_item(spec, matched, value_override=str(len(analysis["letters"])))
+                if matched
+                else _empty_business_field(spec, value="0")
+            )
+            continue
+        if spec.key == "pendingCommitmentCount":
+            matched = analysis["clues"][0] if analysis["clues"] else None
+            fields.append(
+                _business_field_from_item(spec, matched, value_override=str(len(analysis["clues"])))
+                if matched
+                else _empty_business_field(spec, value="0")
+            )
+            continue
+        if spec.key == "disqualificationCommitmentRequired":
+            fields.append(
+                _business_field_from_item(spec, disqualification_item)
+                if disqualification_item
+                else _empty_business_field(spec)
+            )
+            continue
+        if spec.key == "otherCommitmentSectionRequired":
+            fields.append(
+                _business_field_from_item(spec, other_content_item)
+                if other_content_item
+                else _empty_business_field(spec)
+            )
+            continue
+        if spec.key == "commitmentGenerationBasis":
+            matched = analysis["letters"][0] if analysis["letters"] else None
+            value = "；".join(str(item.get("triggerContext") or "").strip() for item in analysis["letters"][:3] if str(item.get("triggerContext") or "").strip()).strip("；")
+            fields.append(
+                _business_field_from_item(spec, matched, value_override=value or "未识别到明确的承诺函/承诺书生成依据")
+                if matched
+                else _empty_business_field(spec, value="未识别到明确的承诺函/承诺书生成依据")
+            )
+            continue
+        fields.append(_empty_business_field(spec))
+    return fields
+
+
+def _business_presence_from_keywords(items: list[dict[str, Any]], *, keywords: tuple[str, ...]) -> dict[str, Any]:
+    matched = [
+        item
+        for item in items
+        if any(keyword in " ".join(str(item.get(key) or "") for key in ("title", "value", "evidence", "section")) for keyword in keywords)
+    ]
+    if not matched:
+        return {
+            "status": "missing",
+            "summary": "招标文件中暂未识别到明确要求。",
+            "evidences": [],
+        }
+    evidences = [
+        {
+            **_copy_meta_fields(item),
+        }
+        for item in matched[:8]
+    ]
+    summary = "；".join(str(item.get("value") or item.get("evidence") or "").strip() for item in matched if str(item.get("value") or item.get("evidence") or "").strip())
+    return {
+        "status": "present",
+        "summary": summary[:800],
+        "evidences": evidences,
+    }
+
+
+def _build_business_requirement_presence(items: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "qualificationDocuments": _business_presence_from_keywords(
+            items,
+            keywords=("资格证明", "合格投标人", "资格审查"),
+        ),
+        "performanceDocuments": _business_presence_from_keywords(
+            items,
+            keywords=("业绩", "合同", "中标通知书", "验收报告", "试运行"),
+        ),
+        "deviationResponse": _business_presence_from_keywords(
+            items,
+            keywords=("商务偏差", "偏差表", "偏离表"),
+        ),
+        "bidSecurity": _business_presence_from_keywords(
+            items,
+            keywords=("投标保证金", "保证金", "保函"),
+        ),
+        "otherCommitments": _business_presence_from_keywords(
+            items,
+            keywords=("承诺", "投标人需要说明的其他内容", "履约保证"),
+        ),
+        "disqualificationClauses": _business_presence_from_keywords(
+            items,
+            keywords=("投标人不得存在下列情形之一", "不得存在下列情形"),
+        ),
+    }
+
+
+def _filter_business_scoring(scoring: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(scoring, dict):
+        return {"business": [], "price": [], "compliance": []}
+    return {
+        "business": copy.deepcopy(scoring.get("business") or []),
+        "price": copy.deepcopy(scoring.get("price") or []),
+        "compliance": copy.deepcopy(scoring.get("compliance") or []),
+    }
+
+
+def _build_business_coverage(
+    field_groups: dict[str, Any],
+    scoring: dict[str, list[dict[str, Any]]],
+    presence: dict[str, Any],
+) -> list[dict[str, Any]]:
+    checks = [
+        ("商务评分要求", len(scoring.get("business") or []) > 0),
+        ("报价与价格表", any(field.get("status") == "found" for field in field_groups.get("businessResponse") or [] if field.get("key") in {"bidPriceTableRequired", "openingPriceTableRequired"})),
+        ("偏差响应", bool((presence.get("deviationResponse") or {}).get("status") == "present")),
+        ("资格证明", bool((presence.get("qualificationDocuments") or {}).get("status") == "present")),
+        ("业绩证明", bool((presence.get("performanceDocuments") or {}).get("status") == "present")),
+        ("保证金", bool((presence.get("bidSecurity") or {}).get("status") == "present")),
+        ("其他承诺", bool((presence.get("otherCommitments") or {}).get("status") == "present")),
+    ]
+    return [
+        {
+            "label": label,
+            "status": "covered" if covered else "missing",
+        }
+        for label, covered in checks
+    ]
+
+
+def _build_business_commitment_letters(
+    project_id: str,
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    _ = project_id
+    return _build_business_commitment_analysis(items)["letters"]
+
+
+
+def _build_business_commitment_clues(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _build_business_commitment_analysis(items)["clues"]
+
+
+def _transform_to_business_contract(
+    project_id: str,
+    payload: dict[str, Any],
+    *,
+    profile: ParseProfile,
+    documents: list[dict[str, Any]],
+    texts_by_id: dict[str, str],
+    run_semantic_review: bool = True,
+) -> dict[str, Any]:
+    result = copy.deepcopy(payload if isinstance(payload, dict) else {})
+    items = result.get("items") if isinstance(result.get("items"), list) else []
+    hint_items = _scan_business_hint_items(documents, texts_by_id)
+    merged_items = [*copy.deepcopy(items), *hint_items]
+    result["items"] = merged_items
+    structured = result.get("structured") if isinstance(result.get("structured"), dict) else {}
+    source_documents = copy.deepcopy(structured.get("sourceDocuments") or [])
+    project_dates = copy.deepcopy(structured.get("projectDates") or {"startDate": "", "endDate": ""})
+    appendices = copy.deepcopy(structured.get("appendices") or [])
+    scoring = _filter_business_scoring(structured.get("scoringCriteria") or {})
+    commitment_analysis = _build_business_commitment_analysis(
+        merged_items,
+        run_semantic_review=run_semantic_review,
+    )
+    field_groups = {
+        "projectBasics": _build_business_project_basics(merged_items),
+        "businessResponse": _build_business_response_fields(merged_items),
+        "qualificationSupport": _build_qualification_support_fields(merged_items),
+        "commitmentRequirements": _build_commitment_requirement_fields(
+            merged_items,
+            analysis=commitment_analysis,
+        ),
+    }
+    presence = _build_business_requirement_presence(merged_items)
+    _ = project_id
+    commitment_letters = copy.deepcopy(commitment_analysis["letters"])
+    commitment_clues = copy.deepcopy(commitment_analysis["clues"])
+
+    result["structured"] = {
+        "schemaVersion": profile.schema_version,
+        "targetSkill": profile.skill_name,
+        "mode": str(structured.get("mode") or "local-structured-parser"),
+        "sourceDocuments": source_documents,
+        "scoringCriteria": scoring,
+        "fieldGroups": field_groups,
+        "requirementPresence": presence,
+        "coverage": _build_business_coverage(field_groups, scoring, presence),
+        "projectDates": {
+            "startDate": str(project_dates.get("startDate") or ""),
+            "endDate": str(project_dates.get("endDate") or ""),
+        },
+        "appendices": appendices,
+        "commitmentLetters": commitment_letters,
+        "commitmentClues": commitment_clues,
+        "categoryCounts": {
+            "商务评分": len(scoring.get("business") or []),
+            "报价评分": len(scoring.get("price") or []),
+            "合规审查": len(scoring.get("compliance") or []),
+            "商务附表": len(appendices),
+            "承诺文件": len(commitment_letters),
+            "待确认承诺线索": len(commitment_clues),
+        },
+        "opencodeOutput": copy.deepcopy(structured.get("opencodeOutput") or {}),
+    }
+    return result
+
+
+def _business_project_name_from_structured(structured: dict[str, Any]) -> str:
+    field_groups = structured.get("fieldGroups") if isinstance(structured, dict) else {}
+    project_basics = field_groups.get("projectBasics") if isinstance(field_groups, dict) else []
+    for field in project_basics if isinstance(project_basics, list) else []:
+        if not isinstance(field, dict):
+            continue
+        if str(field.get("key") or "") != "projectName":
+            continue
+        value = str(field.get("value") or "").strip()
+        if value:
+            return value
+    raw_basics = structured.get("projectBasics") if isinstance(structured, dict) else {}
+    if isinstance(raw_basics, dict):
+        return str(raw_basics.get("项目名称") or raw_basics.get("projectName") or "").strip()
+    return ""
+
+
+def _business_tenderer_name_from_structured(structured: dict[str, Any]) -> str:
+    field_groups = structured.get("fieldGroups") if isinstance(structured, dict) else {}
+    project_basics = field_groups.get("projectBasics") if isinstance(field_groups, dict) else []
+    for field in project_basics if isinstance(project_basics, list) else []:
+        if not isinstance(field, dict):
+            continue
+        if str(field.get("key") or "") != "tenderer":
+            continue
+        value = str(field.get("value") or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _sanitize_docx_name(value: str, fallback: str) -> str:
     cleaned = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
@@ -534,13 +1475,28 @@ def _appendix_output_dir(project_id: str) -> Path:
     return parsed_appendix_path(project_id)
 
 
-def _workspace_appendix_output_dir(project_id: str) -> Path:
-    return settings.documents_dir / project_id / "technical-workspace" / "appendices"
+def _commitment_letter_output_dir(project_id: str) -> Path:
+    path = settings.parsed_dir / project_id / "s1_commitment_letters"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _workspace_appendix_output_dir(project_id: str, profile: ParseProfile) -> Path:
+    return settings.documents_dir / project_id / profile.workspace_dirname / "appendices"
+
+
+def _workspace_commitment_letter_output_dir(project_id: str, profile: ParseProfile) -> Path:
+    return settings.documents_dir / project_id / profile.workspace_dirname / "commitment-letters"
 
 
 def _appendix_asset_path(project_id: str, appendix_id: str, title: str) -> tuple[Path, str]:
     file_name = f"{appendix_id}-{_sanitize_docx_name(title, '附表')}.docx"
     return _appendix_output_dir(project_id) / file_name, f"s1_appendices/{file_name}"
+
+
+def _commitment_letter_asset_path(project_id: str, letter_id: str, title: str) -> tuple[Path, str]:
+    file_name = f"{letter_id}-{_sanitize_docx_name(title, '承诺函')}.docx"
+    return _commitment_letter_output_dir(project_id) / file_name, f"s1_commitment_letters/{file_name}"
 
 
 def _path_is_inside(path: Path, root: Path) -> bool:
@@ -551,7 +1507,43 @@ def _path_is_inside(path: Path, root: Path) -> bool:
         return False
 
 
-def materialize_appendix_docx(project_id: str, appendix: dict[str, Any]) -> dict[str, Any]:
+def _write_commitment_letter_docx(path: Path, letter: dict[str, Any], *, project_name: str = "", tenderer_name: str = "") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    title = str(letter.get("title") or "承诺函").strip() or "承诺函"
+    trigger_context = str(letter.get("triggerContext") or letter.get("evidence") or letter.get("triggerText") or "").strip()
+    commitment_type = str(letter.get("commitmentType") or "").strip()
+
+    doc = Document()
+    doc.add_heading(title, level=1)
+    if project_name:
+        doc.add_paragraph(f"项目名称：{project_name}")
+    if tenderer_name:
+        doc.add_paragraph(f"招标人：{tenderer_name}")
+    if trigger_context:
+        doc.add_paragraph(f"触发依据：{trigger_context}")
+
+    doc.add_paragraph("致：招标人")
+    doc.add_paragraph("说明：本文件为商务标解析阶段自动生成的承诺函草稿，请结合招标文件原文、法务要求和项目实际情况复核后使用。")
+
+    if commitment_type == "disqualification":
+        doc.add_paragraph("我方在参加本项目投标过程中，郑重承诺如下：")
+        doc.add_paragraph("1. 我方不存在招标文件中列示的“投标人不得存在下列情形之一”所述任一情形。")
+        doc.add_paragraph("2. 如本承诺与实际情况不符，我方愿意按照招标文件和相关规定承担相应责任。")
+    else:
+        doc.add_paragraph("根据招标文件中的承诺要求，我方郑重承诺如下：")
+        doc.add_paragraph("1. 我方将严格按照招标文件要求对相关事项进行响应并履行承诺。")
+        if trigger_context:
+            doc.add_paragraph(f"2. 本承诺函重点对应的招标文件原文为：{trigger_context}")
+        doc.add_paragraph("3. 如本承诺与实际情况不符，我方愿意按照招标文件和相关规定承担相应责任。")
+
+    doc.add_paragraph("")
+    doc.add_paragraph("投标人（盖章）：________________")
+    doc.add_paragraph("法定代表人或授权代表（签字或盖章）：________________")
+    doc.add_paragraph("日期：________________")
+    doc.save(path)
+
+
+def materialize_appendix_docx(project_id: str, appendix: dict[str, Any], *, profile: ParseProfile = TECHNICAL_PARSE_PROFILE) -> dict[str, Any]:
     """Ensure an appendix entry has a generated Word asset, even when no template table was found."""
 
     item = copy.deepcopy(appendix)
@@ -559,7 +1551,8 @@ def materialize_appendix_docx(project_id: str, appendix: dict[str, Any]) -> dict
     title = str(item.get("title") or item.get("evidence") or "附表").strip() or "附表"
     rows = item.get("rows") if isinstance(item.get("rows"), list) else []
     output_dir = _appendix_output_dir(project_id)
-    workspace_output_dir = _workspace_appendix_output_dir(project_id)
+    workspace_output_dir = _workspace_appendix_output_dir(project_id, profile)
+    project_workspace_root = settings.documents_dir / project_id
 
     existing_path = Path(str(item.get("docxPath") or ""))
     if not existing_path.is_absolute():
@@ -569,12 +1562,13 @@ def materialize_appendix_docx(project_id: str, appendix: dict[str, Any]) -> dict
         and (
             _path_is_inside(existing_path, output_dir)
             or _path_is_inside(existing_path, workspace_output_dir)
+            or _path_is_inside(existing_path, project_workspace_root)
         )
     )
     if not existing_path_allowed:
         existing_path, workspace_path = _appendix_asset_path(project_id, appendix_id, title)
     else:
-        workspace_path = str(item.get("workspacePath") or f"technical-workspace/appendices/{existing_path.name}")
+        workspace_path = str(item.get("workspacePath") or f"{profile.workspace_dirname}/appendices/{existing_path.name}")
 
     if not existing_path.exists():
         _write_appendix_docx(existing_path, title, rows)
@@ -588,6 +1582,58 @@ def materialize_appendix_docx(project_id: str, appendix: dict[str, Any]) -> dict
             "rowCount": len(rows),
             "docxPath": str(existing_path),
             "workspacePath": workspace_path,
+        }
+    )
+    return item
+
+
+def materialize_business_commitment_letter_docx(
+    project_id: str,
+    letter: dict[str, Any],
+    *,
+    profile: ParseProfile = BUSINESS_PARSE_PROFILE,
+    project_name: str = "",
+    tenderer_name: str = "",
+) -> dict[str, Any]:
+    item = copy.deepcopy(letter)
+    letter_id = str(item.get("id") or "").strip() or "CL-0000"
+    title = str(item.get("title") or item.get("triggerText") or "承诺函").strip() or "承诺函"
+    output_dir = _commitment_letter_output_dir(project_id)
+    workspace_output_dir = _workspace_commitment_letter_output_dir(project_id, profile)
+    project_workspace_root = settings.documents_dir / project_id
+
+    existing_path = Path(str(item.get("docxPath") or ""))
+    if not existing_path.is_absolute():
+        existing_path = Path()
+    existing_path_allowed = (
+        bool(existing_path)
+        and (
+            _path_is_inside(existing_path, output_dir)
+            or _path_is_inside(existing_path, workspace_output_dir)
+            or _path_is_inside(existing_path, project_workspace_root)
+        )
+    )
+    if not existing_path_allowed:
+        existing_path, workspace_path = _commitment_letter_asset_path(project_id, letter_id, title)
+    else:
+        if str(item.get("workspacePath") or "").strip():
+            workspace_path = str(item.get("workspacePath") or "")
+        elif _path_is_inside(existing_path, workspace_output_dir):
+            workspace_path = f"{profile.workspace_dirname}/commitment-letters/{existing_path.name}"
+        else:
+            workspace_path = f"s1_commitment_letters/{existing_path.name}"
+
+    if not existing_path.exists():
+        _write_commitment_letter_docx(existing_path, item, project_name=project_name, tenderer_name=tenderer_name)
+
+    item.update(
+        {
+            "id": letter_id,
+            "title": title,
+            "status": "generated",
+            "docxPath": str(existing_path),
+            "workspacePath": workspace_path,
+            "previewType": "onlyoffice",
         }
     )
     return item
@@ -645,6 +1691,7 @@ def _prepare_appendix_outputs(
     appendices: list[dict[str, Any]],
     *,
     renumber: bool,
+    profile: ParseProfile = TECHNICAL_PARSE_PROFILE,
 ) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
     for index, appendix in enumerate(_dedupe_appendix_page_number_artifacts(appendices), start=1):
@@ -653,11 +1700,39 @@ def _prepare_appendix_outputs(
             item["id"] = f"APPX-{index:04d}"
             item["docxPath"] = ""
             item.pop("workspacePath", None)
-        prepared.append(materialize_appendix_docx(project_id, item))
+        prepared.append(materialize_appendix_docx(project_id, item, profile=profile))
     return prepared
 
 
-def materialize_parse_appendix_docx_assets(project_id: str, parse_result: dict[str, Any]) -> dict[str, Any]:
+def _prepare_commitment_letter_outputs(
+    project_id: str,
+    letters: list[dict[str, Any]],
+    *,
+    renumber: bool,
+    profile: ParseProfile = BUSINESS_PARSE_PROFILE,
+    project_name: str = "",
+    tenderer_name: str = "",
+) -> list[dict[str, Any]]:
+    prepared: list[dict[str, Any]] = []
+    for index, letter in enumerate(letters, start=1):
+        item = copy.deepcopy(letter)
+        if renumber:
+            item["id"] = f"CL-{index:04d}"
+            item["docxPath"] = ""
+            item.pop("workspacePath", None)
+        prepared.append(
+            materialize_business_commitment_letter_docx(
+                project_id,
+                item,
+                profile=profile,
+                project_name=project_name,
+                tenderer_name=tenderer_name,
+            )
+        )
+    return prepared
+
+
+def materialize_parse_appendix_docx_assets(project_id: str, parse_result: dict[str, Any], *, bid_type: str = "技术标") -> dict[str, Any]:
     payload = copy.deepcopy(parse_result)
     structured = payload.get("structured")
     if not isinstance(structured, dict):
@@ -665,7 +1740,36 @@ def materialize_parse_appendix_docx_assets(project_id: str, parse_result: dict[s
     appendices = structured.get("appendices")
     if not isinstance(appendices, list):
         return payload
-    structured["appendices"] = _prepare_appendix_outputs(project_id, appendices, renumber=False)
+    profile = resolve_parse_profile(bid_type)
+    structured["appendices"] = _prepare_appendix_outputs(project_id, appendices, renumber=False, profile=profile)
+    return payload
+
+
+def materialize_parse_business_commitment_letter_docx_assets(
+    project_id: str,
+    parse_result: dict[str, Any],
+    *,
+    bid_type: str = "商务标",
+) -> dict[str, Any]:
+    payload = copy.deepcopy(parse_result)
+    structured = payload.get("structured")
+    if not isinstance(structured, dict):
+        return payload
+    if resolve_parse_profile(bid_type).key != "business":
+        return payload
+    letters = structured.get("commitmentLetters")
+    if not isinstance(letters, list):
+        return payload
+    project_name = _business_project_name_from_structured(structured)
+    tenderer_name = _business_tenderer_name_from_structured(structured)
+    structured["commitmentLetters"] = _prepare_commitment_letter_outputs(
+        project_id,
+        letters,
+        renumber=False,
+        profile=BUSINESS_PARSE_PROFILE,
+        project_name=project_name,
+        tenderer_name=tenderer_name,
+    )
     return payload
 
 
@@ -887,9 +1991,41 @@ def _extract_structured_requirements(documents: list[dict[str, Any]], texts_by_i
     )
 
 
-def _build_tender_parse_prompt(skill_manifest_path: Path) -> str:
+def _build_tender_parse_prompt(skill_manifest_path: Path, profile: ParseProfile) -> str:
+    if profile.key == "business":
+        return f"""
+Use the {profile.skill_name} skill.
+
+你现在在做 S1 商务招标文件结构化解析。请调用解析 Skill 读取 manifest 中的多份招标文件文本，输出可直接给后端使用的结构化 JSON。
+
+manifest：{skill_manifest_path}
+
+请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 600000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径。命令会把完整结构化 JSON 写入 manifest.structuredResultPath，并只在 stdout 打印小型摘要 JSON：
+
+s1parse {skill_manifest_path}
+
+只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
+返回格式必须是：
+{{
+  "schemaVersion": "{profile.schema_version}",
+  "targetSkill": "{profile.skill_name}",
+  "outputFile": "manifest 中的 structuredResultPath",
+  "summary": {{"itemCount": 0, "categoryCounts": {{}}, "scoringCounts": {{"business": 0, "price": 0, "compliance": 0}}, "projectDates": {{"startDate": "", "endDate": ""}}}}
+}}
+
+解析目标必须覆盖：
+1. 商务评分、报价评分、符合性/合规性审查。
+2. 项目基础信息：项目名称、招标编号、招标人/管理单位、规模、交货周期、质保期。
+3. 商务响应要求：投标函、授权书、保证金、偏差表、报价表、供货范围表、履约承诺等。
+4. 资格与业绩支撑：资格证明、业绩证明、财务资料、资信资料、证书资料。
+5. 承诺事项要求：全文搜索“承诺”，并识别“投标人不得存在下列情形之一”等条款。
+6. 商务附表、空表和标准附件。
+7. 投标相关日期：招标文件获取/报名起始日期、投标文件递交截止日期或开标日期。不要把交货、供货、服务期、工期、竣工、安装调试等履约日期写入 projectDates。
+
+完整 JSON 必须包含 structured.sourceDocuments、structured.scoringCriteria、structured.fieldGroups、structured.requirementPresence、structured.coverage。每条 item、评分行和字段必须保留 sourceFile、sourceDocumentId、section、evidence、evidenceLocation。
+""".strip()
     return f"""
-Use the {PARSE_SKILL_NAME} skill.
+Use the {profile.skill_name} skill.
 
 你现在在做 S1 招标文件结构化解析。请调用解析 Skill 读取 manifest 中的多份招标文件文本，输出可直接给后端使用的结构化 JSON。
 
@@ -902,8 +2038,8 @@ s1parse {skill_manifest_path}
 只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
 返回格式必须是：
 {{
-  "schemaVersion": "bid-tender-structured-v1",
-  "targetSkill": "{PARSE_SKILL_NAME}",
+  "schemaVersion": "{profile.schema_version}",
+  "targetSkill": "{profile.skill_name}",
   "outputFile": "manifest 中的 structuredResultPath",
   "summary": {{"itemCount": 0, "categoryCounts": {{}}, "scoringCounts": {{"technical": 0, "business": 0, "price": 0, "lcoe": 0, "compliance": 0}}, "projectDates": {{"startDate": "", "endDate": ""}}}}
 }}
@@ -926,6 +2062,7 @@ def _resolve_skill_structured_result(
     result: dict[str, Any],
     *,
     local_result: dict[str, Any],
+    profile: ParseProfile,
 ) -> dict[str, Any]:
     output_file = Path(str(result.get("outputFile") or ""))
     if output_file.exists():
@@ -949,9 +2086,10 @@ def _resolve_skill_structured_result(
             for key in ["sourceDocuments", "fieldGroups", "scoringCriteria", "requirementPresence", "coverage", "appendices"]:
                 if not structured.get(key) and local_structured.get(key):
                     structured[key] = local_structured[key]
-        structured["targetSkill"] = PARSE_SKILL_NAME
+        structured["targetSkill"] = profile.skill_name
         structured["mode"] = "opencode-skill"
         structured["opencodeOutput"] = result.get("opencodeOutput") or {}
+        structured["schemaVersion"] = str(structured.get("schemaVersion") or profile.schema_version)
     return resolved
 
 
@@ -959,20 +2097,21 @@ def _run_parse_skill(
     skill_manifest_path: Path,
     *,
     local_result: dict[str, Any],
+    profile: ParseProfile,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> tuple[dict[str, Any], str]:
     if not settings.s1_parse_opencode_enabled:
         return local_result, ""
     try:
         result = OpencodeClient().generate_tender_parse_with_trace(
-            _build_tender_parse_prompt(skill_manifest_path),
+            _build_tender_parse_prompt(skill_manifest_path, profile),
             stream_callback=(
                 (lambda details: progress_callback("opencode_delta", details))
                 if progress_callback
                 else None
             ),
         )
-        return _resolve_skill_structured_result(result, local_result=local_result), ""
+        return _resolve_skill_structured_result(result, local_result=local_result, profile=profile), ""
     except RuntimeError as exc:
         fallback = json.loads(json.dumps(local_result, ensure_ascii=False))
         structured = fallback.setdefault("structured", {})
@@ -985,8 +2124,11 @@ def _run_parse_skill(
 def parse_tender_documents(
     project_id: str,
     tender_files: list[dict[str, Any]],
+    *,
+    bid_type: str = "技术标",
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    profile = resolve_parse_profile(bid_type)
     project_dir = parsed_project_dir(project_id)
     appendix_temp_dir = project_dir / "s1_appendices"
     if appendix_temp_dir.exists():
@@ -1080,8 +2222,17 @@ def parse_tender_documents(
     structured_result = _extract_structured_requirements(documents, texts_by_id)
     appendices = _extract_markdown_appendices(project_id, documents, texts_by_id)
     appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices)))
-    appendices = _prepare_appendix_outputs(project_id, appendices, renumber=True)
+    appendices = _prepare_appendix_outputs(project_id, appendices, renumber=True, profile=profile)
     structured_result["structured"]["appendices"] = appendices
+    if profile.key == "business":
+        structured_result = _transform_to_business_contract(
+            project_id,
+            structured_result,
+            profile=profile,
+            documents=documents,
+            texts_by_id=texts_by_id,
+            run_semantic_review=not settings.s1_parse_opencode_enabled,
+        )
     if progress_callback:
         progress_callback(
             "appendices_extracted",
@@ -1095,21 +2246,13 @@ def parse_tender_documents(
     skill_manifest_path = project_dir / "s1_parse_manifest.json"
     skill_manifest = {
         "projectId": project_id,
-        "targetSkill": PARSE_SKILL_NAME,
+        "bidType": profile.bid_type,
+        "parseProfile": profile.key,
+        "targetSkill": profile.skill_name,
         "combinedTextPath": str(combined_text_path),
         "structuredResultPath": str(structured_path),
         "documents": documents,
-        "targets": [
-            "评分细则",
-            "项目基础信息",
-            "风机核心参数",
-            "性能保证指标",
-            "环境适应性要求",
-            "专题方案要求",
-            "附表和供货范围",
-            "考核条款",
-            "投标相关日期",
-        ],
+        "targets": list(profile.targets),
     }
     skill_manifest_path.write_text(json.dumps(skill_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     if progress_callback:
@@ -1117,8 +2260,26 @@ def parse_tender_documents(
     structured_result, skill_warning = _run_parse_skill(
         skill_manifest_path,
         local_result=structured_result,
+        profile=profile,
         progress_callback=progress_callback,
     )
+    should_finalize_business_semantics = (
+        profile.key == "business"
+        and isinstance(structured_result.get("structured"), dict)
+        and (
+            str(structured_result["structured"].get("mode") or "").strip() == "opencode-skill"
+            or (settings.s1_parse_opencode_enabled and bool(skill_warning))
+        )
+    )
+    if should_finalize_business_semantics:
+        structured_result = _transform_to_business_contract(
+            project_id,
+            structured_result,
+            profile=profile,
+            documents=documents,
+            texts_by_id=texts_by_id,
+            run_semantic_review=True,
+        )
     resolved_structured = structured_result.setdefault("structured", {})
     if not resolved_structured.get("appendices"):
         resolved_structured["appendices"] = appendices
@@ -1127,6 +2288,16 @@ def parse_tender_documents(
             project_id,
             resolved_structured["appendices"],
             renumber=True,
+            profile=profile,
+        )
+    if profile.key == "business" and isinstance(resolved_structured.get("commitmentLetters"), list):
+        resolved_structured["commitmentLetters"] = _prepare_commitment_letter_outputs(
+            project_id,
+            resolved_structured.get("commitmentLetters") or [],
+            renumber=True,
+            profile=profile,
+            project_name=_business_project_name_from_structured(resolved_structured),
+            tenderer_name=_business_tenderer_name_from_structured(resolved_structured),
         )
     if skill_warning:
         warnings.append(skill_warning)
@@ -1152,14 +2323,16 @@ def parse_tender_documents(
         "textLength": len(combined_text),
         "textPreview": combined_text[:TEXT_PREVIEW_LIMIT],
         "warnings": warnings,
-        "targetSkill": PARSE_SKILL_NAME,
-        "categoryCounts": structured["categoryCounts"],
+        "targetSkill": profile.skill_name,
+        "categoryCounts": structured.get("categoryCounts") or {},
         "projectDates": {
             "startDate": project_dates.get("startDate") or "",
             "endDate": project_dates.get("endDate") or "",
         },
         "appendixCount": len(structured.get("appendices") or []),
     }
+    if profile.key == "business":
+        summary["commitmentLetterCount"] = len(structured.get("commitmentLetters") or [])
 
     if progress_callback:
         progress_callback(
@@ -1176,6 +2349,8 @@ def parse_tender_documents(
         "manifestPath": str(manifest_path),
         "structuredResultPath": str(structured_path),
         "skillManifestPath": str(skill_manifest_path),
+        "bidType": profile.bid_type,
+        "parseProfile": profile.key,
         "documents": documents,
         "items": items,
         "structured": structured,
