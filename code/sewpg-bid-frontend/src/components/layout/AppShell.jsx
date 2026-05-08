@@ -1,16 +1,18 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import enterpriseLogo from '../../assets/logo-removebg.png'
 import { WORKSPACE_TYPES, workspaceFromPathname, workspaceRoute } from '../../utils/workspace'
+import { ROLE_LABEL, availableWorkspacesFor } from '../../utils/permissions'
 
-const NAV_ITEMS = [
-  { path: '/parse/technical', icon: 'engineering', label: '技术解析', match: '/parse/technical' },
-  { path: '/parse/business', icon: 'request_quote', label: '商务解析', match: '/parse/business' },
-  { path: '/materials/structured', icon: 'database', label: '素材库', match: '/materials' },
-  { path: '/workspace/tech/projects', icon: 'engineering', label: '技术标', match: '/workspace/tech' },
-  { path: '/workspace/business/projects', icon: 'request_quote', label: '商务标', match: '/workspace/business' },
-  { path: '/audit', icon: 'history', label: '审计', match: '/audit' },
-  { path: '/settings', icon: 'settings', label: '设置', match: '/settings' },
+const ALL_NAV_ITEMS = [
+  { path: '/dashboard', icon: 'dashboard', label: '工作台', match: '/dashboard', workspaces: ['tech', 'business'] },
+  { path: '/parse/technical', icon: 'engineering', label: '技术解析', match: '/parse/technical', workspaces: ['tech'] },
+  { path: '/parse/business', icon: 'request_quote', label: '商务解析', match: '/parse/business', workspaces: ['business'] },
+  { path: '/materials/structured', icon: 'database', label: '素材库', match: '/materials', workspaces: ['tech', 'business'] },
+  { path: '/workspace/tech/projects', icon: 'engineering', label: '技术标', match: '/workspace/tech', workspaces: ['tech'] },
+  { path: '/workspace/business/projects', icon: 'request_quote', label: '商务标', match: '/workspace/business', workspaces: ['business'] },
+  { path: '/audit', icon: 'history', label: '审计', match: '/audit', workspaces: ['tech', 'business'] },
+  { path: '/settings', icon: 'settings', label: '设置', match: '/settings', workspaces: ['tech', 'business'] },
 ]
 
 const WORKSPACE_NAV_ITEMS = [
@@ -23,9 +25,17 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
   const [showUserMenu, setShowUserMenu] = useState(false)
   const userName = String(currentUser?.name || '当前用户')
   const userEmail = String(currentUser?.email || '')
+  const userDept = String(currentUser?.dept || '')
+  const userRole = currentUser?.role || null
+  const userRoleLabel = userRole ? ROLE_LABEL[userRole] : ''
   const userAvatar = String(currentUser?.avatar || userName[0] || '用')
   const workspaceSlug = workspaceFromPathname(location.pathname)
   const workspace = workspaceSlug ? WORKSPACE_TYPES[workspaceSlug] : null
+  const navItems = useMemo(() => {
+    const allowed = new Set(availableWorkspacesFor(currentUser))
+    if (allowed.size === 0) return ALL_NAV_ITEMS
+    return ALL_NAV_ITEMS.filter((item) => item.workspaces.some((w) => allowed.has(w)))
+  }, [currentUser])
 
   const isActive = (match) => (
     location.pathname.startsWith(match)
@@ -56,6 +66,11 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
 
         <div className="flex items-center gap-2">
           <span className="hidden md:inline text-xs text-[#d6ebff]">欢迎您，{userName}</span>
+          {userRoleLabel && (
+            <span className="hidden md:inline-flex items-center h-6 px-2 rounded-full bg-[#0f77c4] text-[11px] font-semibold tracking-wide text-white">
+              {userRoleLabel}
+            </span>
+          )}
           {/* User Avatar */}
           <div className="relative">
             <button
@@ -67,8 +82,16 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
             {showUserMenu && (
               <div className="absolute right-0 top-12 w-48 bg-white rounded-xl shadow-[0_8px_24px_-8px_rgba(0,0,0,0.15)] border border-surface-container-high py-2 animate-fade-in z-50">
                 <div className="px-4 py-3 border-b border-surface-container-high">
-                  <div className="text-sm font-semibold text-on-surface">{userName}</div>
-                  <div className="text-xs text-outline">{userEmail || '未绑定邮箱'}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-sm font-semibold text-on-surface">{userName}</div>
+                    {userRoleLabel && (
+                      <span className="inline-flex items-center h-5 px-1.5 rounded bg-primary-container text-[10px] text-on-primary-container font-semibold">
+                        {userRoleLabel}
+                      </span>
+                    )}
+                  </div>
+                  {userDept && <div className="text-xs text-outline mt-0.5">{userDept}</div>}
+                  <div className="text-xs text-outline mt-0.5">{userEmail || '未绑定邮箱'}</div>
                 </div>
                 <button
                   type="button"
@@ -100,7 +123,7 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
         <aside className="hidden md:flex flex-col bg-[#0067B6] fixed left-0 top-12 h-[calc(100vh-4.75rem)] w-[74px] z-40 pt-0 pb-0 border-r border-[#0f77c4]">
           {/* Nav Items */}
           <nav className="flex-1 overflow-y-auto flex flex-col gap-0 px-0 font-headline text-xs">
-            {NAV_ITEMS.map((item) => (
+            {navItems.map((item) => (
               <NavLink
                 key={item.path}
                 to={item.path}

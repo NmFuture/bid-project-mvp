@@ -496,3 +496,95 @@ h1, h2, h3, h4, h5, h6, .font-headline {
   border-left: 4px solid var(--color-error);
   color: var(--color-on-surface);
 }
+
+/* ============ Animations: streaming, progress, ring glow ============ */
+
+@keyframes shimmer-strip {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+@keyframes float-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes stream-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+@keyframes spin-slow {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes count-up {
+  from { transform: translateY(6px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes progress-stripes {
+  from { background-position: 0 0; }
+  to { background-position: 24px 0; }
+}
+
+@keyframes ring-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 104, 183, 0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(0, 104, 183, 0); }
+}
+
+.animate-shimmer-strip {
+  animation: shimmer-strip 1.6s linear infinite;
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 1.6s ease-in-out infinite;
+}
+
+.animate-float-in {
+  animation: float-in 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.animate-stream-cursor {
+  animation: stream-cursor 0.9s steps(2) infinite;
+}
+
+.animate-spin-slow {
+  animation: spin-slow 1.4s linear infinite;
+}
+
+.animate-count-up {
+  animation: count-up 0.5s ease-out;
+}
+
+.animate-ring-glow {
+  animation: ring-glow 1.6s ease-in-out infinite;
+}
+
+.bg-stripes {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(255, 255, 255, 0.18) 0,
+    rgba(255, 255, 255, 0.18) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+  background-size: 24px 24px;
+  animation: progress-stripes 1s linear infinite;
+}
+
+/* 进入动画交错延迟（在卡片列表里逐张浮入） */
+.stagger > * { animation: float-in 0.45s cubic-bezier(0.16, 1, 0.3, 1) backwards; }
+.stagger > *:nth-child(1) { animation-delay: 0.04s; }
+.stagger > *:nth-child(2) { animation-delay: 0.08s; }
+.stagger > *:nth-child(3) { animation-delay: 0.12s; }
+.stagger > *:nth-child(4) { animation-delay: 0.16s; }
+.stagger > *:nth-child(5) { animation-delay: 0.20s; }
+.stagger > *:nth-child(6) { animation-delay: 0.24s; }
+.stagger > *:nth-child(7) { animation-delay: 0.28s; }
+.stagger > *:nth-child(8) { animation-delay: 0.32s; }
