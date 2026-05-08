@@ -295,7 +295,16 @@ class SystemUser(Base):
 
     def to_public_dict(self) -> dict[str, Any]:
         roles = self.roles or []
-        role = "admin" if any(str(item).lower() in {"admin", "管理员"} for item in roles) else "member"
+        role_codes = {str(item) for item in roles}
+        role_codes_lower = {item.lower() for item in role_codes}
+        if "TB" in role_codes or "管理员" in role_codes or "admin" in role_codes_lower:
+            role = "TB"
+        elif "T" in role_codes:
+            role = "T"
+        elif "B" in role_codes:
+            role = "B"
+        else:
+            role = "member"
         return {
             "id": self.id,
             "name": self.name,

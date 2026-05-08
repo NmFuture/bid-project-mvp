@@ -1,10 +1,11 @@
 from fastapi import APIRouter
 
-from app.api.routes import audit, auth, coverage, directory, document, export, gaps, generation, materials, ocr, outline, parse, projects, review, settings, system
+from app.api.routes import audit, auth, coverage, dashboard, directory, document, export, gaps, generation, materials, ocr, outline, parse, projects, review, settings, system
 
 api_router = APIRouter()
 api_router.include_router(system.router)
 api_router.include_router(auth.router)
+api_router.include_router(dashboard.router)
 api_router.include_router(projects.router)
 api_router.include_router(parse.router)
 api_router.include_router(directory.router)
