@@ -10,6 +10,77 @@
 
 ## 进度记录
 
+### 2026-05-07 13:23 补齐 doc/17 评测引擎和 doc/18 重组基础件
+
+改动目标：
+
+- 在不依赖人工 gold 文件的前提下，把 `doc/17` 后续阶段先做成可执行脚本闭环：prediction 加载、字段 diff、指标、失败归因、证据审计、报告渲染、隔离 lint。
+- 为 `doc/18` 预置不接主链路的基础组件：证据卡片 schema、确定性推理规则、结构化复查器和 Wiki 健康检查，等 baseline 出来后再接入 S3。
+
+改动内容：
+
+- `eval/scripts/load_predictions.py`、`validate_predictions.py`：prediction CSV 加载与主键校验。
+- `eval/scripts/diff_engine.py`：支持 `numeric / enum / phrase / list / paragraph / not_fillable` 的基础字段级 diff。
+- `eval/scripts/compute_metrics.py`：输出填写率、准确率、黄标精确率/召回率、关键事实一致率、证据链率、分档准确率。
+- `eval/scripts/failure_breakdown.py`：按误填、漏填、错标黄、漏标黄聚合失败，并按字段类型、难度、Skill、项目切片。
+- `eval/scripts/audit_evidence.py`：证据链抽样审计 CSV；未提供 source root 时标记人工审计。
+- `eval/scripts/render_report.py`、`run_eval.py`：生成 `metrics.json / failure_breakdown.json / evidence_audit.csv / report.md`。
+- `eval/scripts/extract_predictions.py`：从 S3 `.fill_report.json` 抽取 prediction CSV。
+- `eval/scripts/lint_eval_isolation.py`、`lint_skill_hardcode.py`：实现评测代码/Skill 隔离和明显 gold/样例硬编码检查。
+- `eval/docs/runbook.md`：记录 doc/17 各阶段执行命令。
+- `eval/docs/material_search_plan.md`：记录 doc/18 Wiki 主路 + BM25 兜底设计。
+- `app/services/kb_schema.py`：新增项目知识库证据卡片 schema。
+- `app/services/derive_rules.py`：新增容量、台数、总容量、有效小时数等确定性推理/闭合检查基础规则。
+- `app/services/gap_reviewer.py`：新增结构化复查器基础函数，支持强一致、交叉引用、T5 标黄合理性和数值闭合检查。
+- `app/services/wiki_health.py`：新增 Wiki 卡片数、Markdown 数、估算 token 和健康告警统计。
+- 新增/扩展测试：`tests/test_eval_gold_schema.py`、`tests/test_s3_restructure_foundations.py`。
+
+验证结果：
+
+- `python3 -m py_compile eval/scripts/*.py app/services/kb_schema.py app/services/derive_rules.py app/services/gap_reviewer.py app/services/wiki_health.py tests/test_eval_gold_schema.py tests/test_s3_restructure_foundations.py` 通过。
+- `python3 -m unittest tests.test_eval_gold_schema tests.test_s3_restructure_foundations` 通过：14 tests OK。
+- `python3 eval/scripts/validate_gold.py eval/gold/PRJ-0003/sample.csv` 通过。
+- `python3 eval/scripts/validate_predictions.py eval/runs/sample/predictions.csv` 通过。
+- `python3 eval/scripts/run_eval.py --gold eval/gold/PRJ-0003/sample.csv --predictions eval/runs/sample/predictions.csv --run-dir eval/runs/sample` 通过，生成四类评测产物。
+- `python3 eval/scripts/lint_eval_isolation.py --repo-root .` 通过。
+- `python3 eval/scripts/lint_skill_hardcode.py --skill-dir opencode/skill` 通过。
+
+遗留问题：
+
+- 真实 `baseline-prj0003` 仍被人工基准文件阻塞；当前只有 sample gold/prediction 用于 smoke。
+- `extract_predictions.py` 已覆盖现有 fill report 的通用结构，但真实 baseline 需要用实际 `.fill_report.json` 跑一遍并根据对齐率再补 locator 规则。
+- `kb_schema / derive_rules / gap_reviewer / wiki_health` 目前只是 doc/18 基础件，尚未接入 S3 运行链路；应等 doc/17 baseline 出来后再决定接入范围。
+
+### 2026-05-07 12:58 启动 doc/17 字段级评测体系阶段 A
+
+改动目标：
+
+- 按 `doc/17-评测体系建设计划.md` 先落地评测工程脚手架，给后续 PRJ-0003 gold 拆分和 baseline 评测提供固定目录与 CSV 契约。
+- 保证评测代码与 S3 填写 Skill 物理隔离，当前只做标准库/独立脚本，不引用 `app.*` 或 `opencode/skill`。
+
+改动内容：
+
+- 新增 `code/sewpg-bid-backend/eval/` 目录骨架：`docs/`、`gold/`、`runs/`、`judge/`、`scripts/`。
+- 新增 `eval/README.md`，明确 eval 目录不得被生产代码或 Skill 引用，gold 数据不得挂载进 Skill 运行时。
+- 新增 `eval/docs/gold_schema.md` 和 `eval/docs/prediction_schema.md`，锁定字段级 gold / prediction CSV 主键和列定义。
+- 新增 `eval/scripts/gold_schema.py`，定义 `GoldRow`、`PredictionRow`、枚举值、主键和 CSV 行校验。
+- 新增 `eval/scripts/load_gold.py`、`eval/scripts/validate_gold.py`，支持加载和校验 gold CSV，检查主键重复、枚举合法和 T5/not_fillable 规则。
+- 新增 `eval/scripts/extract_gold_draft.py`，可从人工 docx 生成待人工校对的 gold 草稿 CSV；后续拿到人工附表/正文后用于 B 阶段提效。
+- 新增 `eval/gold/PRJ-0003/sample.csv` 作为 schema smoke 示例。
+- 新增 `tests/test_eval_gold_schema.py`，覆盖 gold schema、prediction schema、重复主键检测和正文占位符草稿抽取。
+
+验证结果：
+
+- `python3 eval/scripts/validate_gold.py eval/gold/PRJ-0003/sample.csv` 通过：`gold validation passed`。
+- `python3 eval/scripts/load_gold.py eval/gold/PRJ-0003/sample.csv` 通过：加载 2 行。
+- `python3 -m unittest tests.test_eval_gold_schema` 通过：6 tests OK。
+- `python3 -m py_compile eval/scripts/gold_schema.py eval/scripts/load_gold.py eval/scripts/validate_gold.py eval/scripts/extract_gold_draft.py tests/test_eval_gold_schema.py` 通过。
+
+遗留问题：
+
+- 当前机器上未找到 `/Users/wlb/Downloads/技术标模板/投标文件-附表.docx` 和 `/Users/wlb/Downloads/技术标模板/投标文件-正文.docx`，因此暂未生成真实 PRJ-0003 gold。
+- 下一步需要提供或同步人工附表/正文基准文件，然后用 `extract_gold_draft.py` 生成草稿，再人工补 `human_answer / field_type / difficulty_tier / evidence_source`。
+
 ### 2026-05-05 10:18 收敛 S3 项目事实表生成口径
 
 改动目标：

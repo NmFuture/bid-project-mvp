@@ -534,6 +534,14 @@ class MaterialStore:
             "downloadUrl": f"/api/materials/wiki/attachments/WIKI-ATT-{attachment.id:04d}/content" if attachment.minio_key else "",
         }
 
+    @staticmethod
+    def _purge_wiki_attachment_object(attachment: WikiAttachment) -> None:
+        key = str(attachment.minio_key or "")
+        if not key:
+            return
+        bucket = str(attachment.minio_bucket or settings.minio_buckets["materials"])
+        minio_client.remove_object(bucket, key)
+
     # ------------------------------------------------------------------ #
     # Raw Materials
     # ------------------------------------------------------------------ #
@@ -2081,13 +2089,63 @@ class MaterialStore:
                 doc.node.path = "/".join(doc.node.path.split("/")[:-1] + [doc.node.title])
             if data.get("markdownContent") is not None:
                 doc.markdown_content = str(data["markdownContent"])
-            if data.get("tags"):
+            if data.get("tags") is not None:
                 doc.tags = list(data["tags"])
-            if data.get("applicableTypes"):
+            if data.get("applicableTypes") is not None:
                 doc.node.bid_types = list(data["applicableTypes"])
 
             await session.commit()
             return {"message": "Updated", **await self.wiki_list(node_id, str(data.get("bidType") or ""))}
+
+    async def wiki_delete(self, node_id: str, bid_type: str = "") -> dict[str, Any]:
+        numeric_id = int(node_id.replace("WIKI-", ""))
+        async with async_session() as session:
+            await self._ensure_runtime_tables(session)
+            result = await session.execute(select(WikiNode).where(WikiNode.id == numeric_id))
+            node = result.scalar_one_or_none()
+            if node is None:
+                raise PeripheralError(404, "Wiki 节点不存在。", "WIKI_NODE_NOT_FOUND")
+
+            all_nodes = (await session.execute(select(WikiNode))).scalars().all()
+            children_by_parent: dict[int, list[WikiNode]] = {}
+            for item in all_nodes:
+                if item.parent_id is not None:
+                    children_by_parent.setdefault(int(item.parent_id), []).append(item)
+
+            node_ids: set[int] = set()
+            node_depths: dict[int, int] = {}
+
+            def collect(current: WikiNode, depth: int = 0) -> None:
+                node_ids.add(int(current.id))
+                node_depths[int(current.id)] = depth
+                for child in children_by_parent.get(int(current.id), []):
+                    collect(child, depth + 1)
+
+            collect(node)
+            docs = (
+                await session.execute(select(WikiDoc).where(WikiDoc.node_id.in_(node_ids)))
+            ).scalars().all()
+            doc_ids = [int(doc.id) for doc in docs]
+            attachments: list[WikiAttachment] = []
+            if doc_ids:
+                attachments = (
+                    await session.execute(select(WikiAttachment).where(WikiAttachment.doc_id.in_(doc_ids)))
+                ).scalars().all()
+            for attachment in attachments:
+                self._purge_wiki_attachment_object(attachment)
+
+            nodes_by_id = {int(item.id): item for item in all_nodes if int(item.id) in node_ids}
+            for item_id in sorted(node_ids, key=lambda value: node_depths.get(value, 0), reverse=True):
+                item = nodes_by_id.get(item_id)
+                if item is not None:
+                    await session.delete(item)
+            await session.commit()
+
+        return {
+            "message": f"Wiki 节点删除成功，共删除 {len(node_ids)} 个节点。",
+            "deletedNodeCount": len(node_ids),
+            **await self.wiki_list("", bid_type),
+        }
 
     async def wiki_refresh_summary(self, node_id: str, bid_type: str = "") -> dict[str, Any]:
         numeric_id = int(node_id.replace("WIKI-", ""))
@@ -2190,6 +2248,28 @@ class MaterialStore:
                 "mimeType": attachment.mime_type or "application/octet-stream",
             }
 
+    async def wiki_delete_attachment(self, attachment_id: str, bid_type: str = "") -> dict[str, Any]:
+        numeric_id = int(attachment_id.replace("WIKI-ATT-", ""))
+        async with async_session() as session:
+            await self._ensure_runtime_tables(session)
+            result = await session.execute(
+                select(WikiAttachment)
+                .where(WikiAttachment.id == numeric_id)
+                .options(selectinload(WikiAttachment.doc))
+            )
+            attachment = result.scalar_one_or_none()
+            if attachment is None:
+                raise PeripheralError(404, "附件不存在。", "WIKI_ATTACHMENT_NOT_FOUND")
+            node_id = int(attachment.doc.node_id) if attachment.doc else 0
+            self._purge_wiki_attachment_object(attachment)
+            await session.delete(attachment)
+            await session.commit()
+
+        return {
+            "message": "附件删除成功。",
+            **await self.wiki_list(f"WIKI-{node_id:04d}" if node_id else "", bid_type),
+        }
+
     async def import_generated_wiki_blueprint(
         self,
         *,
@@ -2200,7 +2280,7 @@ class MaterialStore:
     ) -> dict[str, Any]:
         async with async_session() as session:
             await self._ensure_runtime_tables(session)
-            normalized_mode = mode if mode in {"create", "update", "replace"} else "create"
+            normalized_mode = mode if mode in {"create", "update", "replace", "refresh"} else "create"
             normalized_root_title = safe_segment(root_title, "平台级Wiki（自动生成）")
 
             async def purge_wiki_root(root: WikiNode) -> None:
@@ -2253,6 +2333,18 @@ class MaterialStore:
                 ).scalars().all()
                 for orphaned_root in orphaned_roots:
                     await purge_wiki_root(orphaned_root)
+
+            async def purge_generated_children(root: WikiNode) -> None:
+                generated_children = (
+                    await session.execute(
+                        select(WikiNode).where(
+                            WikiNode.parent_id == root.id,
+                            WikiNode.title.in_(["01-素材总表", "02-章节映射表", "03-素材卡片", "04-待填写清单", "05-使用规则"]),
+                        )
+                    )
+                ).scalars().all()
+                for child in generated_children:
+                    await purge_wiki_root(child)
 
             async def create_node(
                 spec: dict[str, Any],
@@ -2347,7 +2439,7 @@ class MaterialStore:
                 for duplicate_root in existing_roots[1:]:
                     await purge_wiki_root(duplicate_root)
                 await purge_orphaned_platform_sections()
-                if normalized_mode == "update":
+                if normalized_mode in {"update", "refresh"}:
                     root_node.title = normalized_root_title
                     root_node.path = normalized_root_title
                     root_node.bid_types = list(root_spec["applicableTypes"])
@@ -2365,10 +2457,18 @@ class MaterialStore:
                     else:
                         root_doc.markdown_content = root_spec["markdownContent"]
                         root_doc.tags = list(root_spec["tags"])
+                    if normalized_mode == "refresh":
+                        await purge_generated_children(root_node)
                     for index, child in enumerate(nodes):
                         if isinstance(child, dict):
-                            await upsert_node(child, root_node, sort_order=index)
-                    message = f"{self._bid_type_for_wiki_root(normalized_root_title)} Wiki 已更新，并已清理重复根节点。"
+                            if normalized_mode == "refresh":
+                                await create_node(child, root_node, sort_order=index)
+                            else:
+                                await upsert_node(child, root_node, sort_order=index)
+                    if normalized_mode == "refresh":
+                        message = f"{self._bid_type_for_wiki_root(normalized_root_title)} Wiki 已刷新，并已替换自动生成节点。"
+                    else:
+                        message = f"{self._bid_type_for_wiki_root(normalized_root_title)} Wiki 已更新，并已清理重复根节点。"
                 else:
                     message = f"{self._bid_type_for_wiki_root(normalized_root_title)} Wiki 已存在，已保留现有版本并清理重复根节点。"
             else:

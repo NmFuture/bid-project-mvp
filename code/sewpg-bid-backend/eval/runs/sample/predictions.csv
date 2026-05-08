@@ -1,0 +1,3 @@
+project_id,doc_type,locator,field_name,predicted_answer,mark_yellow,evidence_refs,skill_name,fill_path,confidence
+PRJ-0003,appendix,附表C/表1/行3,投标机型,SE-15530,false,投标机型参数表,bid-tech-table-filler,kb_lookup,0.91
+PRJ-0003,body,第1章/技术评分标准索引表/[投标机型],投标机型,SE-15530,false,人工正文,bid-tech-word-placeholder-filler,kb_lookup,0.92

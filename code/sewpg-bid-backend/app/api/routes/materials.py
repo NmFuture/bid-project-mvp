@@ -318,6 +318,11 @@ async def wiki_update(node_id: str, data: dict[str, Any] = Body(default_factory=
     return await material_store.wiki_update(node_id, data)
 
 
+@router.delete("/api/materials/wiki/{node_id}")
+async def wiki_delete(node_id: str, bidType: str = Query(default="")) -> dict[str, Any]:
+    return await material_store.wiki_delete(node_id, bidType)
+
+
 @router.post("/api/materials/wiki/{node_id}/move")
 async def wiki_move(node_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     return await material_store.wiki_move(
@@ -388,3 +393,8 @@ async def wiki_download_attachment_content(attachment_id: str) -> StreamingRespo
         media_type=str(payload["mimeType"] or "application/octet-stream"),
         headers=headers,
     )
+
+
+@router.delete("/api/materials/wiki/attachments/{attachment_id}")
+async def wiki_delete_attachment(attachment_id: str, bidType: str = Query(default="")) -> dict[str, Any]:
+    return await material_store.wiki_delete_attachment(attachment_id, bidType)

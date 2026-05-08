@@ -1,0 +1,3 @@
+﻿project_id,doc_type,locator,field_name,skill_name,evidence_refs,audit_status,note
+PRJ-0003,appendix,附表C/表1/行3,投标机型,bid-tech-table-filler,投标机型参数表,needs_manual_audit,source_root not provided
+PRJ-0003,body,第1章/技术评分标准索引表/[投标机型],投标机型,bid-tech-word-placeholder-filler,人工正文,needs_manual_audit,source_root not provided

@@ -59,9 +59,13 @@ export default function MaterialWiki({ showToast = () => {} }) {
   const [draft, setDraft] = useState(normalizeDraft(null))
   const [saving, setSaving] = useState(false)
   const [refreshingSummary, setRefreshingSummary] = useState(false)
+  const [refreshingWiki, setRefreshingWiki] = useState(false)
+  const [rebuildingWiki, setRebuildingWiki] = useState(false)
   const [creatingNode, setCreatingNode] = useState(false)
   const [movingNode, setMovingNode] = useState(false)
+  const [deletingNode, setDeletingNode] = useState(false)
   const [uploadingAttachment, setUploadingAttachment] = useState(false)
+  const [deletingAttachmentId, setDeletingAttachmentId] = useState('')
 
   const [dragNodeId, setDragNodeId] = useState('')
   const [collapsedMap, setCollapsedMap] = useState({})
@@ -215,6 +219,24 @@ export default function MaterialWiki({ showToast = () => {} }) {
     }
   }
 
+  const handleDeleteNode = async (nodeId = selectedNodeId, title = selectedNode?.title || '') => {
+    if (activeBidType !== '技术标') return
+    if (!nodeId) return
+    const ok = window.confirm(`确认删除 Wiki 节点：${title || nodeId} ？\n\n该节点下的子节点、正文和附件也会一起删除。`)
+    if (!ok) return
+    setDeletingNode(true)
+    try {
+      const payload = await materialsAPI.wiki.delete(nodeId, { bidType: '技术标' })
+      applyPayload(payload)
+      showToast(payload?.message || 'Wiki 节点删除成功')
+    } catch (e) {
+      console.error(e)
+      showToast(safeMessage(e, '删除 Wiki 节点失败，请稍后重试。'), 'error')
+    } finally {
+      setDeletingNode(false)
+    }
+  }
+
   const handleRefreshSummary = async () => {
     if (!selectedNodeId) return
     setRefreshingSummary(true)
@@ -227,6 +249,52 @@ export default function MaterialWiki({ showToast = () => {} }) {
       showToast(safeMessage(e, '摘要刷新失败，请稍后重试。'), 'error')
     } finally {
       setRefreshingSummary(false)
+    }
+  }
+
+  const handleRefreshWiki = async () => {
+    if (activeBidType !== '技术标') {
+      showToast('商务标 Wiki 当前先保留为空，暂不刷新。', 'error')
+      return
+    }
+    const ok = window.confirm('确认刷新技术标 Wiki？系统会重新读取当前素材库，并替换自动生成的素材总表、章节映射、素材卡片、待填写清单和使用规则。')
+    if (!ok) return
+    setRefreshingWiki(true)
+    try {
+      const payload = await materialsAPI.wiki.bootstrap({
+        mode: 'refresh',
+        bidType: '技术标',
+      })
+      applyPayload(payload)
+      showToast(payload?.generation?.summary || payload?.message || '技术标 Wiki 已刷新')
+    } catch (e) {
+      console.error(e)
+      showToast(safeMessage(e, '刷新 Wiki 失败，请稍后重试。'), 'error')
+    } finally {
+      setRefreshingWiki(false)
+    }
+  }
+
+  const handleRebuildWiki = async () => {
+    if (activeBidType !== '技术标') {
+      showToast('商务标 Wiki 当前先保留为空，暂不重建。', 'error')
+      return
+    }
+    const ok = window.confirm('确认重建技术标 Wiki？现有自动生成根树会被重新生成。')
+    if (!ok) return
+    setRebuildingWiki(true)
+    try {
+      const payload = await materialsAPI.wiki.bootstrap({
+        mode: 'replace',
+        bidType: '技术标',
+      })
+      applyPayload(payload)
+      showToast(payload?.generation?.summary || payload?.message || '技术标 Wiki 已重建')
+    } catch (e) {
+      console.error(e)
+      showToast(safeMessage(e, '重建 Wiki 失败，请稍后重试。'), 'error')
+    } finally {
+      setRebuildingWiki(false)
     }
   }
 
@@ -257,6 +325,24 @@ export default function MaterialWiki({ showToast = () => {} }) {
       showToast(safeMessage(e, '附件上传失败，请稍后重试。'), 'error')
     } finally {
       setUploadingAttachment(false)
+    }
+  }
+
+  const handleDeleteAttachment = async (attachment) => {
+    if (activeBidType !== '技术标') return
+    if (!attachment?.id) return
+    const ok = window.confirm(`确认删除附件：${attachment.name} ？`)
+    if (!ok) return
+    setDeletingAttachmentId(attachment.id)
+    try {
+      const payload = await materialsAPI.wiki.deleteAttachment(attachment.id, { bidType: '技术标' })
+      applyPayload(payload)
+      showToast(payload?.message || '附件删除成功')
+    } catch (e) {
+      console.error(e)
+      showToast(safeMessage(e, '附件删除失败，请稍后重试。'), 'error')
+    } finally {
+      setDeletingAttachmentId('')
     }
   }
 
@@ -354,7 +440,19 @@ export default function MaterialWiki({ showToast = () => {} }) {
             <span className={`truncate ${selected ? 'font-semibold text-primary' : ''}`}>
               {node.title}
             </span>
-            <span className="material-symbols-outlined text-sm text-outline ml-auto opacity-50 group-hover:opacity-100">
+            <button
+              type="button"
+              title="删除节点"
+              disabled={deletingNode}
+              onClick={(event) => {
+                event.stopPropagation()
+                handleDeleteNode(node.id, node.title)
+              }}
+              className="ml-auto hidden h-6 w-6 items-center justify-center rounded text-outline hover:bg-error-container/40 hover:text-error disabled:opacity-50 group-hover:inline-flex"
+            >
+              <span className="material-symbols-outlined text-[16px]">delete</span>
+            </button>
+            <span className="material-symbols-outlined text-sm text-outline opacity-50 group-hover:opacity-100">
               drag_indicator
             </span>
           </div>
@@ -379,6 +477,39 @@ export default function MaterialWiki({ showToast = () => {} }) {
     )
   }
 
+  if (activeBidType !== '技术标') {
+    return (
+      <div className="flex flex-col gap-6 animate-fade-in">
+        <MaterialsViewSwitch
+          active="wiki"
+          activeBidType={activeBidType}
+          lockedBidType={lockedBidType}
+          onBidTypeChange={handleBidTypeChange}
+          title="商务标 Wiki"
+          subtitle="商务标 Wiki 先保留为空，当前不生成、不展示业务内容。"
+          meta={(
+            <div className="flex flex-wrap gap-2 text-xs xl:justify-end">
+              <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+                标类 商务标
+              </span>
+              <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+                状态 预留
+              </span>
+            </div>
+          )}
+          basePath={materialsBasePath}
+        />
+        <div className="rounded-xl border border-surface-container-high bg-surface-container-lowest px-6 py-12 text-center">
+          <span className="material-symbols-outlined text-4xl text-outline">request_quote</span>
+          <h2 className="mt-4 text-lg font-semibold text-on-surface">商务标 Wiki 暂不启用</h2>
+          <p className="mt-2 text-sm text-on-surface-variant">
+            当前只维护技术标原始素材和技术标 Wiki；商务标后续会使用独立 Skill 构建。
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   if (!selectedNode && !tree.length) {
     return (
       <PageEmpty
@@ -400,45 +531,66 @@ export default function MaterialWiki({ showToast = () => {} }) {
         title={`${activeBidType} Wiki`}
         subtitle={selectedNode?.pathText || selectedNode?.title || `${activeBidType} Wiki 内容维护`}
         actions={(
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-nowrap gap-2">
+            <button
+              onClick={handleRefreshWiki}
+              disabled={refreshingWiki || rebuildingWiki}
+              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-secondary-container text-on-secondary-container hover:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {refreshingWiki ? '刷新中...' : '刷新Wiki'}
+            </button>
+            <button
+              onClick={handleRebuildWiki}
+              disabled={refreshingWiki || rebuildingWiki}
+              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {rebuildingWiki ? '重建中...' : '重建Wiki'}
+            </button>
             <button
               onClick={handleRefreshSummary}
               disabled={!selectedNodeId || refreshingSummary}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {refreshingSummary ? '生成中...' : '刷新摘要'}
             </button>
             <button
               onClick={() => uploadInputRef.current?.click()}
               disabled={!selectedNodeId || uploadingAttachment}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {uploadingAttachment ? '上传中...' : '上传附件'}
             </button>
             <button
+              onClick={() => handleDeleteNode()}
+              disabled={!selectedNodeId || deletingNode}
+              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-error-container text-on-error-container hover:bg-error-container/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {deletingNode ? '删除中...' : '删除节点'}
+            </button>
+            <button
               onClick={handleSave}
-              disabled={!isDirty || saving}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!isDirty || saving || deletingNode}
+              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {saving ? '保存中...' : '保存'}
             </button>
           </div>
         )}
         meta={(
-          <div className="flex w-full flex-wrap gap-2 text-xs xl:justify-end">
-            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+          <div className="flex flex-nowrap gap-2 text-xs xl:justify-end">
+            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
               标类 {activeBidType}
             </span>
-            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
               标签 {draft.tags.length}
             </span>
-            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
               适用类型 {draft.applicableTypes.length}
             </span>
-            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
               附件 {attachments.length}
             </span>
-            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
               更新 {selectedNode?.updatedAt ? selectedNode.updatedAt.replace('T', ' ').slice(0, 19) : '-'}
             </span>
           </div>
@@ -595,22 +747,33 @@ export default function MaterialWiki({ showToast = () => {} }) {
                   </div>
                   <div className="flex flex-col gap-2">
                     {attachments.map((att) => (
-                      <a
+                      <div
                         key={att.id}
-                        href={att.downloadUrl || '#'}
-                        onClick={(event) => {
-                          if (!att.downloadUrl) event.preventDefault()
-                        }}
                         className="flex items-center gap-3 p-3 bg-surface-container-low rounded-lg hover:bg-surface-container transition-colors"
                       >
                         <span className="material-symbols-outlined text-error text-lg">
                           {att.name.toLowerCase().endsWith('.pdf') ? 'picture_as_pdf' : 'description'}
                         </span>
-                        <div className="flex-1 min-w-0">
+                        <a
+                          href={att.downloadUrl || '#'}
+                          onClick={(event) => {
+                            if (!att.downloadUrl) event.preventDefault()
+                          }}
+                          className="flex-1 min-w-0"
+                        >
                           <div className="text-sm font-medium text-on-surface truncate">{att.name}</div>
                           <div className="text-xs text-outline">{att.size} · {att.time}</div>
-                        </div>
-                      </a>
+                        </a>
+                        <button
+                          type="button"
+                          title="删除附件"
+                          disabled={deletingAttachmentId === att.id}
+                          onClick={() => handleDeleteAttachment(att)}
+                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-outline hover:bg-error-container/40 hover:text-error disabled:opacity-50"
+                        >
+                          <span className="material-symbols-outlined text-[16px]">delete</span>
+                        </button>
+                      </div>
                     ))}
                     {!attachments.length && (
                       <div className="text-xs text-outline p-3 bg-surface-container-low rounded-lg">当前节点暂无附件</div>

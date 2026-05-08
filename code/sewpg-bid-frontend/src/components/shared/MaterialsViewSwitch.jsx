@@ -25,59 +25,60 @@ export default function MaterialsViewSwitch({
   const bidType = activeBidType === '商务标' ? '商务标' : '技术标'
   const bidTypeQuery = `?bidType=${encodeURIComponent(bidType)}`
   return (
-    <div className="rounded-2xl border border-surface-container-high bg-white">
-      <div className="flex flex-col gap-4 px-6 py-5 md:px-8">
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr),auto] xl:items-start">
-          <div className="min-w-0">
-            <h1 className="text-3xl font-headline font-bold text-primary">{title}</h1>
-            {subtitle ? <p className="mt-2 text-sm text-outline break-words">{subtitle}</p> : null}
+    <div className="rounded-xl border border-surface-container-high bg-white">
+      <div className="grid min-h-[92px] grid-cols-1 gap-3 px-5 py-4 xl:grid-cols-[auto,minmax(0,1fr),auto] xl:items-center">
+        <div className="flex flex-wrap items-center gap-2 xl:flex-nowrap">
+          <div className="inline-flex h-10 w-fit rounded-lg border border-surface-container-high bg-surface-container-lowest p-0.5 text-sm">
+            {BID_TYPE_ITEMS.map((item) => {
+              const selected = bidType === item.value
+              const disabled = Boolean(lockedBidType && lockedBidType !== item.value)
+              return (
+                <button
+                  key={item.value}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onBidTypeChange?.(item.value)}
+                  title={item.label}
+                  className={`inline-flex h-9 min-w-[92px] items-center justify-center gap-1.5 rounded-md px-3 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                    selected
+                      ? 'bg-primary text-on-primary font-medium'
+                      : 'text-on-surface-variant hover:bg-surface-container-high'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[17px]">{item.icon}</span>
+                  <span>{item.label}</span>
+                </button>
+              )
+            })}
           </div>
-          {actions ? <div className="min-w-0 w-full xl:w-auto">{actions}</div> : null}
+          <div className="inline-flex h-10 w-fit rounded-lg border border-surface-container-high bg-surface-container-lowest p-0.5 text-sm">
+            {ITEMS.map((item) => {
+              const selected = active === item.key
+              return (
+                <NavLink
+                  key={item.key}
+                  to={`${normalizedBasePath}${item.path}${bidTypeQuery}`}
+                  className={`inline-flex h-9 min-w-[88px] items-center justify-center rounded-md px-3 transition-colors ${
+                    selected
+                      ? 'bg-primary text-on-primary font-medium'
+                      : 'text-on-surface-variant hover:bg-surface-container-high'
+                  }`}
+                >
+                  {item.label}
+                </NavLink>
+              )
+            })}
+          </div>
         </div>
-        <div className="flex flex-col gap-3 border-t border-surface-container-high pt-4 md:flex-row md:items-center md:justify-between">
-          <div className="flex flex-wrap gap-2">
-            <div className="inline-flex w-fit rounded-lg border border-surface-container-high bg-surface-container-lowest p-1 text-sm">
-              {BID_TYPE_ITEMS.map((item) => {
-                const selected = bidType === item.value
-                const disabled = Boolean(lockedBidType && lockedBidType !== item.value)
-                return (
-                  <button
-                    key={item.value}
-                    type="button"
-                    disabled={disabled}
-                    onClick={() => onBidTypeChange?.(item.value)}
-                    className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                      selected
-                        ? 'bg-primary text-on-primary font-medium'
-                        : 'text-on-surface-variant hover:bg-surface-container-high'
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-[17px]">{item.icon}</span>
-                    {item.label}
-                  </button>
-                )
-              })}
-            </div>
-            <div className="inline-flex w-fit rounded-lg border border-surface-container-high bg-surface-container-lowest p-1 text-sm">
-              {ITEMS.map((item) => {
-                const selected = active === item.key
-                return (
-                  <NavLink
-                    key={item.key}
-                    to={`${normalizedBasePath}${item.path}${bidTypeQuery}`}
-                    className={`px-4 py-2 rounded-md transition-colors ${
-                      selected
-                        ? 'bg-primary text-on-primary font-medium'
-                        : 'text-on-surface-variant hover:bg-surface-container-high'
-                    }`}
-                  >
-                    {item.label}
-                  </NavLink>
-                )
-              })}
-            </div>
-          </div>
-          {meta ? <div className="min-w-0">{meta}</div> : null}
+
+        <div className="min-w-0 xl:px-3">
+          <h1 className="truncate text-lg font-headline font-bold text-on-surface">{title}</h1>
+          {subtitle ? <p className="mt-1 truncate text-xs text-outline">{subtitle}</p> : null}
+        </div>
+
+        <div className="flex min-w-0 flex-col gap-2 xl:items-end">
+          {actions ? <div className="min-w-0 max-w-full overflow-x-auto">{actions}</div> : null}
+          {meta ? <div className="min-h-7 min-w-0 max-w-full overflow-hidden">{meta}</div> : null}
         </div>
       </div>
     </div>

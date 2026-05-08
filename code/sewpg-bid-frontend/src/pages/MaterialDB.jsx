@@ -404,6 +404,8 @@ function TreeNode({
   selectedFileId,
   onSelect,
   onFileSelect,
+  onRenameFile,
+  onDeleteFile,
   onDeleteFolder,
   onMoveDrop,
   dragTargetPath,
@@ -520,9 +522,10 @@ function TreeNode({
             const previewable = canPreviewCleaned(item)
             const meta = cleanStatusMeta(item.cleanStatus)
             return (
-              <button
+              <div
                 key={item.id}
-                type="button"
+                role="button"
+                tabIndex={0}
                 draggable
                 onDragStart={(event) => {
                   event.dataTransfer.effectAllowed = 'move'
@@ -530,6 +533,12 @@ function TreeNode({
                   event.dataTransfer.setData('text/plain', item.id)
                 }}
                 onClick={() => onFileSelect(item)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    onFileSelect(item)
+                  }
+                }}
                 title={previewable ? item.name || '' : cleanedPreviewBlockedMessage(item)}
                 style={{
                   paddingLeft: `${fileIndent}px`,
@@ -548,7 +557,47 @@ function TreeNode({
                 <span className={`hidden shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex ${meta.className}`}>
                   {meta.label}
                 </span>
-              </button>
+                <span className="hidden shrink-0 items-center gap-1 group-hover:inline-flex">
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    title="重命名文件"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onRenameFile?.(item)
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        onRenameFile?.(item)
+                      }
+                    }}
+                    className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-surface-container-high hover:text-primary"
+                  >
+                    <span className="material-symbols-outlined text-[15px]">drive_file_rename_outline</span>
+                  </span>
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    title="删除文件"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onDeleteFile?.(item)
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        onDeleteFile?.(item)
+                      }
+                    }}
+                    className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-error-container/40 hover:text-error"
+                  >
+                    <span className="material-symbols-outlined text-[15px]">delete</span>
+                  </span>
+                </span>
+              </div>
             )
           })}
         </div>
@@ -563,6 +612,8 @@ function TreeNode({
               selectedFileId={selectedFileId}
               onSelect={onSelect}
               onFileSelect={onFileSelect}
+              onRenameFile={onRenameFile}
+              onDeleteFile={onDeleteFile}
               onDeleteFolder={onDeleteFolder}
               onMoveDrop={onMoveDrop}
               dragTargetPath={dragTargetPath}
@@ -984,6 +1035,44 @@ export default function MaterialDB({ showToast = () => {} }) {
     }
   }
 
+  const handleRenameFile = async (item) => {
+    if (!item?.id) return
+    const currentName = String(item.name || '').trim()
+    const nextName = window.prompt('请输入新的文件名', currentName)
+    if (!nextName || !nextName.trim() || nextName.trim() === currentName) return
+    try {
+      const result = await materialsAPI.raw.updateFile(item.id, { name: nextName.trim() })
+      showToast(result?.message || '文件重命名成功')
+      if (previewItem?.id === item.id) {
+        setPreviewItem((prev) => ({ ...prev, name: result?.item?.name || nextName.trim() }))
+        setPreviewSession(null)
+        setOnlyofficePreviewError('')
+      }
+      await loadLibrary({ silent: true })
+    } catch (e) {
+      showToast(safeMessage(e, '文件重命名失败'), 'error')
+    }
+  }
+
+  const handleDeleteFile = async (item) => {
+    if (!item?.id) return
+    const ok = window.confirm(`确认删除文件：${item.name || item.id} ？\n\n原始文件及其清洗稿也会一起删除。`)
+    if (!ok) return
+    try {
+      const result = await materialsAPI.raw.deleteFile(item.id)
+      showToast(result?.message || '文件删除成功')
+      if (previewItem?.id === item.id) {
+        setPreviewItem(null)
+        setPreviewSession(null)
+        setPreviewError('')
+        setOnlyofficePreviewError('')
+      }
+      await loadLibrary({ silent: true })
+    } catch (e) {
+      showToast(safeMessage(e, '文件删除失败'), 'error')
+    }
+  }
+
   const handlePreviewCleaned = async (item) => {
     setPreviewItem(item)
     setPreviewSession(null)
@@ -1155,51 +1244,52 @@ export default function MaterialDB({ showToast = () => {} }) {
         title="原始材料库"
         subtitle={refreshing || error ? (error || '正在刷新...') : (
           activeBidType === '技术标'
-            ? '管理技术标通用、客户、项目三档素材，并创建技术标 Wiki。'
-            : '管理商务标通用、客户、项目三档素材，并创建商务标 Wiki。'
+            ? '管理技术标通用、客户、项目三档原始素材，并创建技术标 Wiki。'
+            : '商务标素材库先保留为空，当前不上传素材。'
         )}
         actions={(
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-nowrap gap-2">
             <button
               onClick={() => runWikiBootstrap('update')}
-              disabled={creatingWiki}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-secondary-container text-on-secondary-container hover:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={creatingWiki || activeBidType !== '技术标'}
+              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-secondary-container text-on-secondary-container hover:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {creatingWiki ? '处理中...' : `生成/更新${activeBidType}Wiki`}
             </button>
             <button
               onClick={() => runWikiBootstrap('replace')}
-              disabled={creatingWiki}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={creatingWiki || activeBidType !== '技术标'}
+              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               重建Wiki
             </button>
             <button
               onClick={() => loadLibrary({ silent: true })}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors"
+              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors"
             >
               刷新
             </button>
             <button
               onClick={() => openUploadModal({ mode: 'tier' })}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={activeBidType !== '技术标'}
+              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               上传文件
             </button>
           </div>
         )}
         meta={(
-          <div className="flex flex-wrap gap-2 text-xs">
-            <span className="px-2.5 py-1 rounded-full bg-primary/10 text-primary">
+          <div className="flex flex-nowrap gap-2 text-xs xl:justify-end">
+            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-primary/10 text-primary">
               {activeBidType}
             </span>
-            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+            <span className="max-w-[260px] truncate whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
               当前目录 {selectedFolderPath || '-'}
             </span>
-            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
               文件 {fileItems.length}/{visibleTreeFileCount || totalCount}
             </span>
-            <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
               权限 可编辑
             </span>
           </div>
@@ -1347,6 +1437,8 @@ export default function MaterialDB({ showToast = () => {} }) {
                         setSelectedFolderPath(item.folderPath || selectedFolderPath)
                         handlePreviewCleaned(item)
                       }}
+                      onRenameFile={handleRenameFile}
+                      onDeleteFile={handleDeleteFile}
                       onDeleteFolder={handleDeleteFolder}
                       onMoveDrop={handleMoveDrop}
                       dragTargetPath={dragTargetPath}
