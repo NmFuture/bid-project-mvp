@@ -6,7 +6,7 @@ import ProjectWizardModal from '../components/modals/ProjectWizardModal'
 import { PageLoading, PageEmpty, PageError } from '../components/states/PageState'
 import FilterBar from '../components/shared/FilterBar'
 import { getStageRoute } from '../utils/stageFlow'
-import { bidTypeFromWorkspace, projectRoute, useWorkspaceSlug } from '../utils/workspace'
+import { bidTypeFromWorkspace, parseRouteFromBidType, projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 export default function ProjectList({ showToast, viewMode = 'projects' }) {
   const navigate = useNavigate()
@@ -57,7 +57,7 @@ export default function ProjectList({ showToast, viewMode = 'projects' }) {
 
   const getProjectEntryRoute = (project) => {
     const reviewDecision = String(project?.reviewDecision || 'participate')
-    if (reviewDecision !== 'participate') return `/parse?projectId=${project?.id || ''}`
+    if (reviewDecision !== 'participate') return parseRouteFromBidType(project?.bidType || '技术标', project?.id || '')
     const stage = Number(project?.currentStage) || 1
     const stageRoute = getStageRoute(project?.id, stage, workspaceSlug)
     if (stageRoute) return stageRoute

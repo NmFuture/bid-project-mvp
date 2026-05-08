@@ -98,6 +98,7 @@ async def project_materials_path(project_id: str) -> dict[str, Any]:
     project = store.get_project(project_id)
     scope = build_project_material_scope(project)
     identity = scope["identity"]
+    bid_type = str(scope.get("bidType") or identity.get("bidType") or project.get("bidType") or "技术标")
     material_project_code = str(identity.get("projectCode") or project.get("projectCode") or project["id"])
     material_project_id = str(identity.get("projectId") or project["id"])
     return {
@@ -110,8 +111,8 @@ async def project_materials_path(project_id: str) -> dict[str, Any]:
         "identity": identity,
         "turbineModel": project.get("turbineModel") or {},
         "turbineModelLabel": project.get("turbineModelLabel") or "",
-        "path": f"技术标/项目素材/{material_project_id}",
-        "bidType": scope["bidType"],
+        "path": f"{bid_type}/项目素材/{material_project_id}",
+        "bidType": bid_type,
         "readableScopes": scope["readableScopes"],
         "paths": scope["paths"],
         "summary": scope["summary"],

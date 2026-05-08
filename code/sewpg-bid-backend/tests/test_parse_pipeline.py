@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.core.config import settings
+from app.services import parsing as parsing_service
 from app.services.store import store
 
 
@@ -171,6 +172,14 @@ class ParsePipelineTests(unittest.TestCase):
         response = self.client.post(
             "/api/projects",
             json={"name": "解析测试项目", "customerName": "测试业主"},
+        )
+        response.raise_for_status()
+        return response.json()["id"]
+
+    def create_business_project(self) -> str:
+        response = self.client.post(
+            "/api/projects",
+            json={"name": "商务解析测试项目", "customerName": "测试业主", "bidType": "商务标"},
         )
         response.raise_for_status()
         return response.json()["id"]
@@ -814,6 +823,249 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(preview.status_code, 200)
         self.assertIn(str(workspace_appendix_dir), preview.json()["docxPath"])
         self.assertFalse(temp_project_dir.exists())
+
+    def test_business_bid_parse_returns_business_contract_without_technical_groups(self) -> None:
+        project_id = self.create_business_project()
+        tender = "\n".join(
+            [
+                "# 商务招标文件",
+                "项目名称：华能甘肃100MW风电项目",
+                "招标编号：HN-BUS-2026-001",
+                "招标人：华能集团",
+                "交货周期：2026年10月1日至2027年3月31日",
+                "质保期：5年",
+                "附表3：商务评分标准表",
+                "| 序号 | 评分项 | 分值 | 得分点 | 证明材料要求 |",
+                "| --- | --- | --- | --- | --- |",
+                "| 1 | 企业业绩 | 20分 | 近三年同类项目业绩满足要求得满分。 | 提供合同或中标通知书。 |",
+                "投标函：按招标文件格式填写并签字盖章。",
+                "法定代表人授权委托书：须加盖公章。",
+                "商务偏差表：投标人应逐项响应。",
+                "投标保证金：须提供电汇回单或保函。",
+                "投标人证明其是合格投标人并有资格履行合同的证明文件。",
+                "投标人不得存在下列情形之一。",
+                "投标人需要说明的其他内容。",
+            ]
+        ).encode("utf-8")
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        structured = payload["structured"]
+        self.assertEqual(structured["schemaVersion"], "bid-business-tender-structured-v1")
+        self.assertEqual(payload["summary"]["targetSkill"], "bid-business-tender-structured-parser")
+        self.assertIn("commitmentLetterCount", payload["summary"])
+
+        field_groups = structured["fieldGroups"]
+        self.assertIn("projectBasics", field_groups)
+        self.assertIn("businessResponse", field_groups)
+        self.assertIn("qualificationSupport", field_groups)
+        self.assertIn("commitmentRequirements", field_groups)
+        self.assertNotIn("turbineCoreParameters", field_groups)
+        self.assertNotIn("performanceGuarantees", field_groups)
+        self.assertNotIn("environmentAdaptation", field_groups)
+
+        scoring = structured["scoringCriteria"]
+        self.assertEqual(set(scoring.keys()), {"business", "price", "compliance"})
+        self.assertGreaterEqual(len(scoring["business"]), 1)
+        self.assertEqual(scoring["business"][0]["scoringItem"], "企业业绩")
+
+        self.assertEqual(structured["requirementPresence"]["bidSecurity"]["status"], "present")
+        self.assertEqual(structured["requirementPresence"]["qualificationDocuments"]["status"], "present")
+        self.assertEqual(structured["requirementPresence"]["disqualificationClauses"]["status"], "present")
+
+        commitment_fields = field_groups["commitmentRequirements"]
+        self.assertEqual(field_by_key(commitment_fields, "generalCommitmentCount")["value"], "1")
+        self.assertEqual(field_by_key(commitment_fields, "generatedCommitmentCount")["value"], "1")
+        self.assertEqual(field_by_key(commitment_fields, "pendingCommitmentCount")["value"], "0")
+        self.assertEqual(field_by_key(commitment_fields, "disqualificationCommitmentRequired")["status"], "found")
+
+        letters = structured["commitmentLetters"]
+        self.assertEqual(len(letters), 1)
+        self.assertEqual(letters[0]["title"], "投标人不存在下列情形之一承诺函")
+        self.assertEqual(letters[0]["commitmentType"], "disqualification")
+        self.assertEqual(letters[0]["status"], "generated")
+        self.assertTrue(letters[0]["docxPath"])
+        self.assertTrue(Path(letters[0]["docxPath"]).exists())
+
+        preview = self.client.get(
+            f"/api/projects/{project_id}/parse-results/commitment-letters/{letters[0]['id']}/preview"
+        )
+        self.assertEqual(preview.status_code, 200)
+        preview_payload = preview.json()
+        self.assertEqual(preview_payload["id"], letters[0]["id"])
+        self.assertIn("/parse-results/commitment-letters/", preview_payload["onlyoffice"]["browserFileUrl"])
+
+    def test_business_bid_participating_promotes_parse_json_to_business_workspace(self) -> None:
+        project_id = self.create_business_project()
+        tender = "\n".join(
+            [
+                "# 商务招标文件",
+                "项目名称：商务归档测试项目",
+                "招标编号：BUS-2026-002",
+                "投标保证金：须提交保函。",
+                "投标人不得存在下列情形之一。",
+                "附表1：商务偏差表",
+                "| 序号 | 条款 | 偏差说明 |",
+                "| --- | --- | --- |",
+                "| 1 | 付款条件 | |",
+            ]
+        ).encode("utf-8")
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["structured"]["schemaVersion"], "bid-business-tender-structured-v1")
+
+        updated = self.client.put(
+            f"/api/projects/{project_id}",
+            json={
+                "name": "商务归档测试项目",
+                "customerName": "测试业主",
+                "bidType": "商务标",
+                "reviewDecision": "participate",
+            },
+        )
+        self.assertEqual(updated.status_code, 200)
+
+        workspace_parse_dir = settings.documents_dir / project_id / "business-workspace" / "parse"
+        workspace_appendix_dir = settings.documents_dir / project_id / "business-workspace" / "appendices"
+        workspace_commitment_dir = settings.documents_dir / project_id / "business-workspace" / "commitment-letters"
+        self.assertTrue((workspace_parse_dir / "s1_structured_result.json").exists())
+        self.assertTrue((workspace_parse_dir / "parse-result.workspace.json").exists())
+        self.assertTrue(workspace_appendix_dir.exists())
+        self.assertTrue(workspace_commitment_dir.exists())
+
+        project = store._require(project_id)
+        parse_storage = project["parse_storage"]
+        self.assertEqual(Path(parse_storage["projectDir"]), settings.documents_dir / project_id / "business-workspace")
+        self.assertEqual(Path(parse_storage["parseDir"]), workspace_parse_dir)
+
+        structured_result = json.loads((workspace_parse_dir / "s1_structured_result.json").read_text(encoding="utf-8"))
+        self.assertEqual(structured_result["schemaVersion"], "bid-business-tender-structured-v1")
+        self.assertEqual(structured_result["structured"]["schemaVersion"], "bid-business-tender-structured-v1")
+        commitment_letters = structured_result["structured"]["commitmentLetters"]
+        self.assertEqual(len(commitment_letters), 1)
+        self.assertIn(str(workspace_commitment_dir), commitment_letters[0]["docxPath"])
+        self.assertEqual(
+            commitment_letters[0]["workspacePath"],
+            f"business-workspace/commitment-letters/{Path(commitment_letters[0]['docxPath']).name}",
+        )
+
+        preview = self.client.get(
+            f"/api/projects/{project_id}/parse-results/commitment-letters/{commitment_letters[0]['id']}/preview"
+        )
+        self.assertEqual(preview.status_code, 200)
+        self.assertIn(str(workspace_commitment_dir), preview.json()["docxPath"])
+
+    def test_business_bid_commitment_titles_use_semantic_review_and_dedupe_same_topic(self) -> None:
+        project_id = self.create_business_project()
+        tender = "\n".join(
+            [
+                "# 商务招标文件",
+                "项目名称：商务承诺测试项目",
+                "招标编号：BUS-2026-SEM-001",
+                "招标人：测试招标人",
+                "第八章 投标人需要说明的其他内容",
+                "保密承诺书",
+                "本项仅为目录标题，不构成单独提交要求。",
+                "另附保密承诺书。",
+                "投标人须提供保密承诺书。",
+                "保密承诺书",
+                "投标人应提供保密承诺书。",
+                "发电量承诺书另附。",
+                "投标人不得存在下列情形之一。",
+            ]
+        ).encode("utf-8")
+
+        with patch.object(
+            parsing_service.OpencodeClient,
+            "review_business_commitments_with_trace",
+            return_value={
+                "decisions": [
+                    {
+                        "id": "RAW-0001",
+                        "action": "ignore",
+                        "topicKey": "confidentiality",
+                        "preferredTitle": "",
+                        "reason": "仅标题，无明确单独提交要求。",
+                    }
+                ]
+            },
+        ) as mocked_review:
+            response = self.client.post(
+                f"/api/projects/{project_id}/parse-results/upload-and-run",
+                files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        structured = payload["structured"]
+        letters = structured["commitmentLetters"]
+        titles = [item["title"] for item in letters]
+
+        self.assertEqual(mocked_review.call_count, 1)
+        self.assertEqual(len(letters), 2)
+        self.assertEqual(titles.count("保密承诺书"), 1)
+        self.assertIn("投标人不存在下列情形之一承诺函", titles)
+        self.assertNotIn("发电量承诺书", "".join(titles))
+        self.assertEqual(
+            field_by_key(structured["fieldGroups"]["commitmentRequirements"], "generatedCommitmentCount")["value"],
+            "2",
+        )
+
+    def test_business_bid_commitment_title_only_candidate_becomes_clue_when_semantic_review_uncertain(self) -> None:
+        project_id = self.create_business_project()
+        tender = "\n".join(
+            [
+                "# 商务招标文件",
+                "项目名称：商务承诺线索测试项目",
+                "招标编号：BUS-2026-SEM-002",
+                "招标人：测试招标人",
+                "第八章 投标人需要说明的其他内容",
+                "保密承诺书",
+                "本节为模板目录，具体内容见附件。",
+            ]
+        ).encode("utf-8")
+
+        with patch.object(
+            parsing_service.OpencodeClient,
+            "review_business_commitments_with_trace",
+            return_value={
+                "decisions": [
+                    {
+                        "id": "RAW-0001",
+                        "action": "clue",
+                        "topicKey": "confidentiality",
+                        "preferredTitle": "",
+                        "reason": "仅识别到标题，建议人工确认是否需要单独成文。",
+                    }
+                ]
+            },
+        ) as mocked_review:
+            response = self.client.post(
+                f"/api/projects/{project_id}/parse-results/upload-and-run",
+                files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        structured = payload["structured"]
+        self.assertEqual(mocked_review.call_count, 1)
+        self.assertEqual(structured["commitmentLetters"], [])
+        self.assertEqual(len(structured["commitmentClues"]), 1)
+        self.assertEqual(structured["commitmentClues"][0]["topicKey"], "confidentiality")
+        self.assertIn("人工确认", structured["commitmentClues"][0]["recommendedAction"])
+        self.assertEqual(
+            field_by_key(structured["fieldGroups"]["commitmentRequirements"], "pendingCommitmentCount")["value"],
+            "1",
+        )
 
     def test_delete_project_cleans_parse_temp_workspace(self) -> None:
         project_id = self.create_project()

@@ -158,6 +158,43 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(uploaded_item["folderPath"], f"{folder_path}/投标资料/附件")
         self.assertEqual(uploaded_item["name"], "评分表.docx")
 
+    async def test_business_raw_material_library_supports_upload_and_query(self) -> None:
+        customer_name = f"华能集团-{self.run_id}"
+        target_path = f"商务标/客户素材/{customer_name}/01-客户关系与专项证明"
+        upload = await self.client.post(
+            "/api/materials/raw/upload",
+            data={
+                "bidType": "商务标",
+                "targetPath": target_path,
+                "customerName": customer_name,
+            },
+            files=[
+                (
+                    "files",
+                    (
+                        "授权书.docx",
+                        b"fake-business-docx-content",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+        self.assertEqual(upload.status_code, 200)
+        uploaded_item = upload.json()["items"][0]
+        self.assertEqual(uploaded_item["bidType"], "商务标")
+        self.assertEqual(uploaded_item["materialTier"], "customer")
+        self.assertEqual(uploaded_item["customerName"], customer_name)
+        self.assertEqual(uploaded_item["folderPath"], target_path)
+
+        files = await self.client.get(
+            "/api/materials/raw/files",
+            params={"bidType": "商务标", "customerName": customer_name},
+        )
+        self.assertEqual(files.status_code, 200)
+        self.assertEqual(files.json()["total"], 1)
+        self.assertEqual(files.json()["items"][0]["name"], "授权书.docx")
+        self.assertEqual(files.json()["items"][0]["bidType"], "商务标")
+
     async def test_structured_and_wiki_material_routes_return_frontend_ready_payloads(self) -> None:
         structured = await self.client.get("/api/materials/structured")
         self.assertEqual(structured.status_code, 200)

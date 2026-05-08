@@ -32,6 +32,7 @@ from app.services.gap_planning import (
     run_ai_fill_for_gap,
     summarize_gap_plan,
 )
+from app.services.parse_profiles import normalize_bid_type
 from app.services.workspace_artifacts import cleanup_parse_temp_workspace, promote_parse_artifacts_to_workspace
 from app.services.turbine_models import normalize_project_turbine_model, project_turbine_model
 
@@ -729,7 +730,7 @@ class AppStore:
                         project_id,
                         parse_result,
                         parse_storage,
-                        bid_type=project.get("bidType") or "技术标",
+                        bid_type=normalize_bid_type(str(project.get("bidType") or "技术标")),
                     )
                     project["parse_result"] = promoted["parseResult"]
                     project["parse_storage"] = promoted["parseStorage"]
