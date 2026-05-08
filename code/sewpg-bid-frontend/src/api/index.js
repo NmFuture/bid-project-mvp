@@ -509,6 +509,11 @@ export const authAPI = {
   logout: () => request('/auth/logout', { method: 'POST' }),
 }
 
+// ===== Dashboard =====
+export const dashboardAPI = {
+  get: () => request('/dashboard'),
+}
+
 // ===== OCR =====
 export const ocrAPI = {
   list: (projectId) => request(`/projects/${projectId}/ocr/tasks`),

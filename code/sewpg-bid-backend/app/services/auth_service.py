@@ -80,6 +80,34 @@ class AuthService:
             session.add(user)
             await session.commit()
 
+    async def ensure_role_seed_users(self) -> None:
+        await self._ensure_tables()
+        seed = [
+            ("U-ROLE-T", "安博", "anbo@nmscholar.fun", "技术中心 / 风电技术部", ["T"]),
+            ("U-ROLE-B", "马哥", "mage@nmscholar.fun", "商务中心 / 投标商务部", ["B"]),
+            ("U-ROLE-TB", "肖哥", "xiaoge@nmscholar.fun", "投标管理中心", ["TB"]),
+        ]
+        default_password = settings.auth_admin_password
+        async with async_session() as session:
+            for uid, name, email, dept, roles in seed:
+                existing = (
+                    await session.execute(select(SystemUser).where(SystemUser.email == email))
+                ).scalar_one_or_none()
+                if existing is not None:
+                    continue
+                session.add(
+                    SystemUser(
+                        id=uid,
+                        name=name,
+                        email=email,
+                        password_hash=_password_hash(default_password),
+                        dept=dept,
+                        roles=roles,
+                        status="active",
+                    )
+                )
+            await session.commit()
+
     async def login(
         self,
         *,
@@ -89,6 +117,7 @@ class AuthService:
         ip_address: str = "",
     ) -> dict[str, Any]:
         await self.ensure_bootstrap_admin()
+        await self.ensure_role_seed_users()
         normalized_email = str(email or "").strip().lower()
         if not normalized_email or not password:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="账号或密码错误")
