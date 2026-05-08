@@ -46,6 +46,20 @@ jobs:
 
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: biduser
+          POSTGRES_PASSWORD: bidpass
+          POSTGRES_DB: bidplatform
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U biduser -d bidplatform"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     defaults:
       run:
         working-directory: code/sewpg-bid-backend
@@ -63,6 +77,20 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt pytest
 
+      - name: Initialize backend database
+        working-directory: code
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import psycopg
+
+          sql = Path("initdb/01-init.sql").read_text(encoding="utf-8")
+          with psycopg.connect("postgresql://biduser:bidpass@localhost:5432/bidplatform", autocommit=True) as connection:
+              connection.execute(sql)
+          PY
+        env:
+          PGCONNECT_TIMEOUT: "10"
+
       - name: Compile backend
         run: python -m compileall app
 
@@ -70,11 +98,13 @@ jobs:
         run: python -c "from app.main import app; print(app.title)"
         env:
           APP_STORE_BACKEND: memory
+          DATABASE_URL: postgresql+asyncpg://biduser:bidpass@localhost:5432/bidplatform
 
-      - name: Run backend tests without Docker dependencies
+      - name: Run backend tests
         run: python -m pytest -m "not integration"
         env:
           APP_STORE_BACKEND: memory
+          DATABASE_URL: postgresql+asyncpg://biduser:bidpass@localhost:5432/bidplatform
 
   backend-integration:
     runs-on: ubuntu-latest

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -203,7 +204,7 @@ def preprocess(
         "placeholder_replace": replace_placeholders(doc, params or {}),
     }
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    os.makedirs(os.fspath(out_path.parent), exist_ok=True)
     doc.save(str(out_path))
 
     if verbose:

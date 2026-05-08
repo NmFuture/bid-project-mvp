@@ -29,6 +29,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -45,6 +46,10 @@ from copy import deepcopy
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from preprocess import preprocess
 from numbering_fixer import demote_headings_to_body, strip_numPr_from_body, strip_numPr_from_heading_styles
+
+
+def _path_exists(path: Path) -> bool:
+    return os.path.exists(os.fspath(path))
 
 
 def _isolate_section(doc) -> bool:
@@ -195,7 +200,7 @@ def merge(
     prep_dir: Path,
     out_path: Path,
 ) -> dict:
-    prep_dir.mkdir(parents=True, exist_ok=True)
+    os.makedirs(os.fspath(prep_dir), exist_ok=True)
 
     # 打开母版并清空 body（只保留 sectPr）
     master_doc = Document(str(template_path))
@@ -219,7 +224,7 @@ def merge(
     for cover in cover_entries:
         for path_rel in cover.get("paths", []):
             src = lib_root / path_rel
-            if not src.exists():
+            if not _path_exists(src):
                 log.warning(f"封面素材不存在: {src}")
                 stats["errors"] += 1
                 continue
@@ -341,12 +346,12 @@ def merge(
 
             for path_idx, path_rel in enumerate(entry.get("paths", [])):
                 src = lib_root / path_rel
-                if not src.exists():
+                if not _path_exists(src):
                     log.warning(f"  [{i}] 素材不存在: {src}")
                     stats["errors"] += 1
                     continue
 
-                size_mb = src.stat().st_size / 1024 / 1024
+                size_mb = os.path.getsize(os.fspath(src)) / 1024 / 1024
                 if size_mb > 100:
                     log.warning(f"  [{i}] 合并超大素材 ({size_mb:.0f} MB): {src.name}")
 
@@ -397,10 +402,10 @@ def merge(
     # Save
     strip_numPr_from_heading_styles(master_doc)
     strip_numPr_from_body(master_doc)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    os.makedirs(os.fspath(out_path.parent), exist_ok=True)
     composer.save(str(out_path))
 
-    log.info(f"merged → {out_path} ({out_path.stat().st_size / 1024 / 1024:.1f} MB)")
+    log.info(f"merged → {out_path} ({os.path.getsize(os.fspath(out_path)) / 1024 / 1024:.1f} MB)")
     log.info(f"stats: {stats}")
     return stats
 
