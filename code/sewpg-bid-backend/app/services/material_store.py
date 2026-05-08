@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import json
 import logging
 import re
 from datetime import UTC, datetime
@@ -43,6 +44,7 @@ from app.services.turbine_models import (
     turbine_model_from_material_name,
 )
 from app.services.identity import (
+    build_project_identity,
     canonical_customer,
     classify_material_path,
     customer_matches,
@@ -707,6 +709,66 @@ class MaterialStore:
                         customer_name=str(ext.get("customerCanonicalName") or ext.get("customerName") or ""),
                         item_bid_type=item_bid_type,
                     )
+
+            try:
+                project_rows = (
+                    (await session.execute(text("SELECT id, payload FROM projects")))
+                    .mappings()
+                    .all()
+                )
+            except Exception as exc:  # pragma: no cover - keeps material options usable before project store init.
+                logger.debug("Skip project-store identity options: %s", exc)
+                project_rows = []
+
+            for row in project_rows:
+                payload = row.get("payload") if hasattr(row, "get") else None
+                if isinstance(payload, str):
+                    try:
+                        payload = json.loads(payload)
+                    except json.JSONDecodeError:
+                        payload = {}
+                if not isinstance(payload, dict):
+                    continue
+                identity = payload.get("identity") if isinstance(payload.get("identity"), dict) else build_project_identity(payload)
+                project_id = str(
+                    payload.get("materialProjectId")
+                    or identity.get("projectId")
+                    or payload.get("projectId")
+                    or payload.get("id")
+                    or row.get("id", "")
+                )
+                customer_name = str(
+                    payload.get("materialCustomerName")
+                    or identity.get("customerCanonicalName")
+                    or payload.get("customerCanonicalName")
+                    or payload.get("customerName")
+                    or payload.get("owner")
+                    or ""
+                )
+                add_project(
+                    project_id=project_id,
+                    project_code=str(
+                        payload.get("materialProjectCode")
+                        or identity.get("projectCode")
+                        or payload.get("projectCode")
+                        or project_id
+                    ),
+                    project_name=str(
+                        payload.get("materialProjectName")
+                        or identity.get("projectName")
+                        or payload.get("name")
+                        or project_id
+                    ),
+                    customer_id=str(
+                        payload.get("materialCustomerId")
+                        or identity.get("customerId")
+                        or payload.get("customerId")
+                        or ""
+                    ),
+                    customer_name=customer_name,
+                    item_bid_type=str(payload.get("bidType") or identity.get("bidType") or ""),
+                    source="project",
+                )
 
         return {
             "customers": sorted(customers.values(), key=sort_key),
