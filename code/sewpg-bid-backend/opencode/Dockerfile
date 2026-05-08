@@ -37,7 +37,7 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       '  echo "usage: s1parse <manifest>" >&2' \
       '  exit 64' \
       'fi' \
-      'exec python3 /workspace/.opencode/skills/bid-tender-structured-parser/scripts/run_from_manifest.py "$1"' \
+      'exec python3 /workspace/.opencode/skills/s1parse_router.py "$1"' \
       > /usr/local/bin/s1parse \
     && printf '%s\n' \
       '#!/bin/sh' \
@@ -85,7 +85,7 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       '  echo "usage: wikibuild <manifest>" >&2' \
       '  exit 64' \
       'fi' \
-      'exec python3 /workspace/.opencode/skills/bid-tech-wiki-material-builder/scripts/run_from_manifest.py "$1"' \
+      'exec python3 /workspace/.opencode/skills/wikibuild_router.py "$1"' \
       > /usr/local/bin/wikibuild \
     && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/s7assemble /usr/local/bin/s4gap /usr/local/bin/s4fill /usr/local/bin/s4wordfill /usr/local/bin/wikibuild
 

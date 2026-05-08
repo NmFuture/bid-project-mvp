@@ -21,6 +21,7 @@ from app.core.config import BASE_DIR, settings
 from app.models import async_session
 from app.models.materials import RawFile
 from app.services.identity import canonical_customer, classify_material_path, material_identity
+from app.services.business_wiki_blueprint import build_business_wiki_blueprint
 from app.services.minio_client import minio_client
 from app.services.material_store import material_store
 from app.services.peripheral import PeripheralError
@@ -114,9 +115,11 @@ MAX_CARD_EXCERPT_PARAGRAPHS = 10
 MAX_CARD_HEADINGS = 80
 MAX_INDEX_ITEMS = 260
 MAX_SYNC_DOCX_BYTES = 30 * 1024 * 1024
-WIKI_BID_TYPES = {"技术标"}
-WIKI_SKILL_NAME = "bid-tech-wiki-material-builder"
-WIKI_SKILL_RUNNER = BASE_DIR / "opencode" / "skill" / WIKI_SKILL_NAME / "scripts" / "run_from_manifest.py"
+WIKI_BID_TYPES = {"技术标", "商务标"}
+WIKI_SKILL_NAMES = {
+    "技术标": "bid-tech-wiki-material-builder",
+    "商务标": "bid-business-wiki-material-builder",
+}
 HEADING_STYLE_RE = re.compile(r"(?:Heading|标题)\s*([1-9])|Heading([1-9])", re.IGNORECASE)
 NUMBERED_HEADING_RE = re.compile(
     r"^(?:(第[一二三四五六七八九十百]+[章节篇])|([一二三四五六七八九十]+[、.．])|((?:\d+[.．、]){1,5}))\s*\S+"
@@ -189,7 +192,13 @@ def _normalize_wiki_bid_type(value: str = "") -> str:
 
 
 def _wiki_skill_name(bid_type: str) -> str:
-    return WIKI_SKILL_NAME
+    normalized = _normalize_wiki_bid_type(bid_type)
+    return WIKI_SKILL_NAMES.get(normalized, WIKI_SKILL_NAMES["技术标"])
+
+
+def _wiki_skill_runner(bid_type: str) -> Path:
+    skill_name = _wiki_skill_name(bid_type)
+    return BASE_DIR / "opencode" / "skill" / skill_name / "scripts" / "run_from_manifest.py"
 
 
 def _wiki_root_title(bid_type: str) -> str:
@@ -601,13 +610,13 @@ Use the {skill_name} skill.
 4. `{bid_type}` 关注范围：{bid_focus}。
 5. Wiki 不是越复杂越好。只保留完成目标所需的最小结构：
    - 01-素材总表
-   - 02-章节映射表
-   - 03-素材卡片
-   - 04-待填写清单
+   - 02-模板模块映射表
+   - 03-证据卡片
+   - 04-待填写与待确认清单
    - 05-使用规则
-6. `03-素材卡片` 是按需加载入口。每个真实素材应形成一张卡或在卡中明确引用，不要把原文全文塞进 Wiki。
-7. 如果某个素材只适合拼接其中一段或用于填写某张表，必须在卡片和章节映射里标明“部分使用/填表来源”，不要默认为整篇拼接。
-8. `04-待填写清单` 只标记需要每个项目现场填写、AI 填写或用户确认的内容，不在 Wiki 里代填。
+6. `03-证据卡片` 是按需加载入口。每个真实素材应形成一张卡或在卡中明确引用，不要把原文全文塞进 Wiki。
+7. 如果某个素材只适合拼接其中一段、摘取图片或用于填写某张表，必须在卡片和模板模块映射里标明使用方式，不要默认为整篇拼接。
+8. `04-待填写与待确认清单` 只标记需要每个项目现场填写、AI 填写或用户确认的内容，不在 Wiki 里代填。
 9. 每张素材卡片必须写清 AI 检索身份：
    - identity_scope=general/customer/project
    - customer_id/customer_name/customer_aliases
@@ -634,16 +643,16 @@ Use the {skill_name} skill.
 }}
 3. nodes 第一层必须且只需要包含这些工作节点，标题要完全一致：
    - 01-素材总表
-   - 02-章节映射表
-   - 03-素材卡片
-   - 04-待填写清单
+   - 02-模板模块映射表
+   - 03-证据卡片
+   - 04-待填写与待确认清单
    - 05-使用规则
-4. `01-素材总表`：列真实文件、路径、素材层级、身份、清洗状态、推荐用途。
-5. `02-章节映射表`：列目录/章节需求到素材卡片的候选关系，并标明整篇拼接、部分摘取、填表来源、附件引用。
-6. `03-素材卡片`：按“通用素材/客户素材/项目素材”分组，再按主题分组；每张卡必须保留 path、material_id、cleaned_file_name、skeleton_section、attach_mode、identity_scope、customer_id、customer_name、project_id、project_code。
-7. `04-待填写清单`：列需要缺口处理页面确认/填写的内容，如项目参数、空表、保证值、客户定制字段、只可从素材中摘取的段落。
-8. `05-使用规则`：写清后续 Agent 的读取顺序、身份过滤、override/append/reference/exclude 规则和禁止编造事实。
-9. 如果 materialInventory.items 为空，只生成 `{bid_type}` 的待补料框架和使用规则，不要虚构素材卡片。
+4. `01-素材总表`：列真实文件、路径、素材层级、身份、业务分类、清洗策略、推荐模块。
+5. `02-模板模块映射表`：列模板模块到证据卡片的候选关系，并标明 attach_whole / extract_fields / extract_image / fill_table / reference_only。
+6. `03-证据卡片`：按“通用素材/客户素材/项目素材”分组，并尽量镜像原始素材库路径；每张卡必须保留 path、material_id、cleaned_file_name、identity_scope、customer_id、customer_name、project_id、project_code、usage_mode、validity_status。
+7. `04-待填写与待确认清单`：列需要缺口处理页面确认/填写的内容，如项目基础变量、金额时效变量、证据选择与版本确认、合规与页码确认。
+8. `05-使用规则`：写清后续 Agent 的读取顺序、身份过滤、证据优先级、模块使用方式、OCR/图片处理和禁止编造事实。
+9. 如果 materialInventory.items 为空，只生成 `{bid_type}` 的待补料框架和使用规则，不要虚构证据卡片。
 
 输入摘要：
 {payload}
@@ -877,7 +886,25 @@ def _material_card_node(material: dict[str, Any]) -> dict[str, Any]:
 
 
 def _matches_bid_type(material: dict[str, Any], bid_type: str) -> bool:
-    material_bid_type = str(material.get("bidType") or "通用")
+    material_bid_type = str(material.get("bidType") or "").strip()
+    if not material_bid_type:
+        path_text = " ".join(
+            str(material.get(key) or "")
+            for key in ("path", "folderPath", "name", "title")
+        )
+        folder_tier = str(material.get("materialTier") or "").strip().lower()
+        identity_scope = str(material.get("identityScope") or "").strip().lower()
+        if (
+            any(keyword in path_text for keyword in ("通用素材", "客户素材", "项目素材"))
+            and (folder_tier in {"standard", "customer", "project"} or identity_scope in {"general", "customer", "project"})
+        ):
+            material_bid_type = bid_type
+        elif any(keyword in path_text for keyword in ("商务标", "商务", "报价", "开标", "投标函", "授权", "偏差", "保证金")):
+            material_bid_type = "商务标"
+        elif any(keyword in path_text for keyword in ("技术标", "技术", "风机", "机组", "风资源")):
+            material_bid_type = "技术标"
+        else:
+            material_bid_type = "通用"
     if bid_type == "商务标":
         return material_bid_type == "商务标"
     return material_bid_type == bid_type or material_bid_type == "通用"
@@ -1291,6 +1318,9 @@ def _build_quality_log_node(materials: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _build_material_wiki_blueprint(reference: dict[str, Any], inventory: dict[str, Any], bid_type: str = "技术标") -> dict[str, Any]:
     bid_type = _normalize_wiki_bid_type(bid_type)
+    if bid_type == "商务标":
+        return build_business_wiki_blueprint(inventory, root_title=_wiki_root_title(bid_type))
+
     materials = list(inventory.get("items") or [])
     docx_materials = [item for item in materials if item.get("ext") == "docx"]
     parsed = [item for item in docx_materials if not item.get("parseError")]
@@ -1567,12 +1597,15 @@ def _now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _run_local_wiki_skill(manifest_path: Path) -> dict[str, Any]:
-    if not WIKI_SKILL_RUNNER.exists():
-        raise RuntimeError(f"技术标 Wiki Skill runner 不存在：{WIKI_SKILL_RUNNER}")
+def _run_local_wiki_skill(manifest_path: Path, bid_type: str) -> dict[str, Any]:
+    normalized_bid_type = _normalize_wiki_bid_type(bid_type)
+    skill_name = _wiki_skill_name(normalized_bid_type)
+    runner = _wiki_skill_runner(normalized_bid_type)
+    if not runner.exists():
+        raise RuntimeError(f"{normalized_bid_type} Wiki Skill runner 不存在：{runner}")
 
     completed = subprocess.run(
-        [sys.executable, str(WIKI_SKILL_RUNNER), str(manifest_path)],
+        [sys.executable, str(runner), str(manifest_path)],
         check=False,
         capture_output=True,
         text=True,
@@ -1583,19 +1616,19 @@ def _run_local_wiki_skill(manifest_path: Path) -> dict[str, Any]:
     stderr = (completed.stderr or "").strip()
     if completed.returncode != 0:
         detail = "\n".join(part for part in (stdout, stderr) if part)
-        raise RuntimeError(f"技术标 Wiki Skill runner 执行失败（{completed.returncode}）：{detail}")
+        raise RuntimeError(f"{normalized_bid_type} Wiki Skill runner 执行失败（{completed.returncode}）：{detail}")
 
     try:
         result = json.loads(stdout or "{}")
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"技术标 Wiki Skill runner 返回内容不是有效 JSON：{stdout}") from exc
+        raise RuntimeError(f"{normalized_bid_type} Wiki Skill runner 返回内容不是有效 JSON：{stdout}") from exc
 
     result.setdefault("schema_version", "bid-wiki-blueprint-v1")
     result["opencodeOutput"] = {
         "status": "received",
         "sessionId": str(manifest_path),
         "providerId": "local-skill",
-        "modelId": WIKI_SKILL_NAME,
+        "modelId": skill_name,
         "receivedAt": _now_iso(),
         "parts": [{"type": "text", "text": stdout}],
     }
@@ -1608,12 +1641,6 @@ async def generate_platform_wiki(
     bid_type: str = "技术标",
     fallback_to_deterministic: bool = False,
 ) -> dict[str, Any]:
-    if str(bid_type or "").strip() == "商务标":
-        raise PeripheralError(
-            400,
-            "当前只开放技术标 Wiki 构建；商务标素材库先保留为空，暂不生成商务标 Wiki。",
-            "BUSINESS_WIKI_DISABLED",
-        )
     normalized_bid_type = _normalize_wiki_bid_type(bid_type)
     skill_name = _wiki_skill_name(normalized_bid_type)
     reference_root = Path(reference_path).expanduser().resolve() if reference_path else DEFAULT_REFERENCE_WIKI_PATH
@@ -1625,7 +1652,7 @@ async def generate_platform_wiki(
     fallback_used = False
 
     try:
-        skill_result = await asyncio.to_thread(_run_local_wiki_skill, manifest_path)
+        skill_result = await asyncio.to_thread(_run_local_wiki_skill, manifest_path, normalized_bid_type)
         blueprint = _normalize_blueprint(_load_wiki_blueprint_result(skill_result))
         blueprint["rootTitle"] = _wiki_root_title(normalized_bid_type)
         opencode_output: dict[str, Any] = skill_result.get("opencodeOutput") or {}
@@ -1636,12 +1663,12 @@ async def generate_platform_wiki(
             "providerId": "local-skill",
             "modelId": skill_name,
             "receivedAt": _now_iso(),
-            "parts": [{"type": "text", "text": f"执行技术标 Wiki Skill runner 失败：{exc}"}],
+            "parts": [{"type": "text", "text": f"执行{normalized_bid_type} Wiki Skill runner 失败：{exc}"}],
         }
         if not fallback_to_deterministic:
             raise PeripheralError(
                 502,
-                f"创建 {normalized_bid_type} Wiki 调用技术标 Wiki Skill 失败：{exc}",
+                f"创建 {normalized_bid_type} Wiki 调用 {skill_name} 失败：{exc}",
                 "WIKI_SKILL_FAILED",
                 {"opencodeOutput": failed_output},
             ) from exc

@@ -76,15 +76,6 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }, [])
 
   const loadData = useCallback(async (params = {}, options = {}) => {
-    if (activeBidType !== '技术标') {
-      setData({ tree: [], selectedNode: null, tagOptions: [], applicableTypeOptions: [] })
-      setDraft(normalizeDraft(null))
-      setError('')
-      setLoading(false)
-      setRefreshing(false)
-      return
-    }
-
     if (options.silent) {
       setRefreshing(true)
     } else {
@@ -94,7 +85,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
     try {
       const response = await materialsAPI.wiki.list({
         ...params,
-        bidType: '技术标',
+        bidType: activeBidType,
       })
       applyPayload(response)
     } catch (e) {
@@ -179,17 +170,13 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   const handleCreateNode = async (isFolder = false) => {
-    if (activeBidType !== '技术标') {
-      showToast('商务标 Wiki 当前先保留为空，暂不启用。', 'error')
-      return
-    }
     setCreatingNode(true)
     try {
       const payload = await materialsAPI.wiki.create({
         parentId: selectedNodeId,
         title: isFolder ? '新建目录' : '新建节点',
         isFolder,
-        bidType: '技术标',
+        bidType: activeBidType,
       })
       applyPayload(payload)
       showToast(isFolder ? '目录创建成功' : '节点创建成功')
@@ -202,10 +189,6 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   const handleSave = async () => {
-    if (activeBidType !== '技术标') {
-      showToast('商务标 Wiki 当前先保留为空，暂不保存。', 'error')
-      return
-    }
     if (!selectedNodeId) return
     const title = draft.title.trim()
     if (!title) {
@@ -220,7 +203,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
         markdownContent: draft.markdownContent,
         tags: draft.tags,
         applicableTypes: draft.applicableTypes,
-        bidType: '技术标',
+        bidType: activeBidType,
       })
       applyPayload(payload)
       showToast('节点保存成功')
@@ -233,11 +216,10 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   const handleRefreshSummary = async () => {
-    if (activeBidType !== '技术标') return
     if (!selectedNodeId) return
     setRefreshingSummary(true)
     try {
-      const payload = await materialsAPI.wiki.refreshSummary(selectedNodeId, { bidType: '技术标' })
+      const payload = await materialsAPI.wiki.refreshSummary(selectedNodeId, { bidType: activeBidType })
       applyPayload(payload)
       showToast('摘要已刷新')
     } catch (e) {
@@ -258,10 +240,6 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   const handleUploadAttachment = async (file) => {
-    if (activeBidType !== '技术标') {
-      showToast('商务标 Wiki 当前先保留为空，暂不上传附件。', 'error')
-      return
-    }
     if (!file || !selectedNodeId) return
 
     setUploadingAttachment(true)
@@ -270,7 +248,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
       formData.append('file', file)
       formData.append('fileName', file.name)
       formData.append('fileSize', String(file.size))
-      formData.append('bidType', '技术标')
+      formData.append('bidType', activeBidType)
       const payload = await materialsAPI.wiki.uploadAttachment(selectedNodeId, formData)
       applyPayload(payload)
       showToast('附件上传成功')
@@ -283,14 +261,13 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   const handleMoveNode = async (movingId, targetNode, mode) => {
-    if (activeBidType !== '技术标') return
     if (!movingId || !targetNode?.id || movingId === targetNode.id) return
     setMovingNode(true)
     try {
       const payload = await materialsAPI.wiki.move(movingId, {
         targetId: targetNode.id,
         mode,
-        bidType: '技术标',
+        bidType: activeBidType,
       })
       applyPayload(payload)
       showToast(mode === 'inside' ? '节点已移动为子节点' : '节点顺序已更新')
@@ -402,39 +379,6 @@ export default function MaterialWiki({ showToast = () => {} }) {
     )
   }
 
-  if (activeBidType !== '技术标') {
-    return (
-      <div className="flex flex-col gap-6 animate-fade-in">
-        <MaterialsViewSwitch
-          active="wiki"
-          activeBidType={activeBidType}
-          lockedBidType={lockedBidType}
-          onBidTypeChange={handleBidTypeChange}
-          title="商务标 Wiki"
-          subtitle="商务标 Wiki 先保留为空，当前不生成、不展示业务内容。"
-          meta={(
-            <div className="flex w-full flex-wrap gap-2 text-xs xl:justify-end">
-              <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
-                标类 商务标
-              </span>
-              <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
-                状态 预留
-              </span>
-            </div>
-          )}
-          basePath={materialsBasePath}
-        />
-        <div className="rounded-xl border border-surface-container-high bg-surface-container-lowest px-6 py-12 text-center">
-          <span className="material-symbols-outlined text-4xl text-outline">request_quote</span>
-          <h2 className="mt-4 text-lg font-semibold text-on-surface">商务标 Wiki 暂不启用</h2>
-          <p className="mt-2 text-sm text-on-surface-variant">
-            当前只维护技术标原始素材和技术标 Wiki；商务标后续会使用独立 Skill 构建。
-          </p>
-        </div>
-      </div>
-    )
-  }
-
   if (!selectedNode && !tree.length) {
     return (
       <PageEmpty
@@ -453,8 +397,8 @@ export default function MaterialWiki({ showToast = () => {} }) {
         activeBidType={activeBidType}
         lockedBidType={lockedBidType}
         onBidTypeChange={handleBidTypeChange}
-        title="技术标 Wiki"
-        subtitle={selectedNode?.pathText || selectedNode?.title || '技术标 Wiki 内容维护'}
+        title={`${activeBidType} Wiki`}
+        subtitle={selectedNode?.pathText || selectedNode?.title || `${activeBidType} Wiki 内容维护`}
         actions={(
           <div className="flex flex-wrap gap-3">
             <button
@@ -483,7 +427,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
         meta={(
           <div className="flex w-full flex-wrap gap-2 text-xs xl:justify-end">
             <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
-              标类 技术标
+              标类 {activeBidType}
             </span>
             <span className="px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
               标签 {draft.tags.length}

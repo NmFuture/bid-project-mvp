@@ -8,7 +8,7 @@ import { PageError, PageLoading } from '../components/states/PageState'
 import { bidTypeFromWorkspace, useWorkspaceSlug, workspaceRoute } from '../utils/workspace'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
-const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm'
+const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
 const UPLOAD_KIND_STORAGE_KEY = 'materials.raw.upload.kind'
 const MATERIAL_TIER_OPTIONS = [
   {
@@ -30,6 +30,7 @@ const MATERIAL_TIER_OPTIONS = [
 const CLEAN_STATUS_OPTIONS = [
   { value: '', label: '全部状态' },
   { value: 'cleaned', label: '已清洗' },
+  { value: 'original_only', label: '仅保留原件' },
   { value: 'failed', label: '清洗失败' },
 ]
 const BID_TYPE_TABS = [
@@ -43,11 +44,11 @@ const BID_TYPE_TABS = [
     value: '商务标',
     label: '商务标',
     icon: 'request_quote',
-    rootPath: '商务标',
+    rootPath: '商务标/通用素材',
   },
 ]
 const ALLOWED_EXTENSIONS = new Set([
-  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm',
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
 ])
 const MATERIAL_ROOT_PATHS = ['技术标', '商务标']
 const PROTECTED_MOVE_FOLDER_PATHS = new Set([
@@ -79,6 +80,7 @@ const materialTierMeta = (value) =>
 
 const cleanStatusMeta = (status) => {
   if (status === 'cleaned') return { label: '已清洗', className: 'bg-secondary-container text-on-secondary-container' }
+  if (status === 'original_only') return { label: '仅保留原件', className: 'bg-tertiary-container text-on-tertiary-container' }
   if (status === 'failed') return { label: '清洗失败', className: 'bg-error-container text-on-error-container' }
   if (status === 'cleaning') return { label: '清洗中', className: 'bg-primary/10 text-primary' }
   return { label: '待清洗', className: 'bg-surface-container-high text-on-surface-variant' }
@@ -88,6 +90,7 @@ const canPreviewCleaned = (item) => item?.cleanStatus === 'cleaned' && Boolean(i
 
 const cleanedPreviewBlockedMessage = (item) => {
   if (!item) return '点击左侧已清洗文件，可在这里预览清洗稿。'
+  if (item.cleanStatus === 'original_only') return '该文件为原件素材，系统保留原文件，不生成清洗稿。'
   if (item.cleanStatus === 'failed') return '该文件清洗失败，暂不开放清洗稿预览。'
   if (item.cleanStatus === 'cleaning') return '该文件仍在清洗中，完成后才可预览。'
   return '该文件尚未生成清洗后 Word，暂不开放预览。'
@@ -138,8 +141,7 @@ const extOf = (name) => {
 const materialTierFromRootPath = (path) => {
   const normalized = String(path || '').replace(/^\/+|\/+$/g, '')
   const parts = normalized.split('/').filter(Boolean)
-  if (parts[0] === '商务标') return 'business'
-  const tierName = parts[0] === '技术标' ? parts[1] : parts[0]
+  const tierName = MATERIAL_ROOT_PATHS.includes(parts[0]) ? parts[1] : parts[0]
   if (tierName === '通用素材') return 'standard'
   if (tierName === '客户素材') return 'customer'
   if (tierName === '项目素材') return 'project'
@@ -632,7 +634,7 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   const [conflictContext, setConflictContext] = useState(null)
 
-  const canManageCurrentFolder = Boolean(selectedFolderPath) && !selectedFolderPath.startsWith('商务标')
+  const canManageCurrentFolder = Boolean(selectedFolderPath)
   const canCreateFolder = Boolean(selectedFolderPath) && canManageCurrentFolder
   const canDeleteFolder = Boolean(selectedFolderPath)
 
@@ -799,10 +801,6 @@ export default function MaterialDB({ showToast = () => {} }) {
   const openUploadModal = (options = {}) => {
     const targetPath = options.targetPath || selectedFolderPath
     const rootTier = materialTierFromRootPath(targetPath)
-    if (rootTier === 'business' || activeBidType !== '技术标') {
-      showToast('商务标素材库当前先保留为空，暂不支持上传。', 'error')
-      return
-    }
     const mode = options.mode || (rootTier ? 'tier' : 'tier')
     const nextTier = options.materialTier || rootTier || (filters.projectId.trim() ? 'project' : 'standard')
     setShowUploadModal(true)
@@ -1076,11 +1074,7 @@ export default function MaterialDB({ showToast = () => {} }) {
     }
   }
 
-  const runWikiBootstrap = async (mode = 'update') => {
-    if (activeBidType !== '技术标') {
-      showToast('当前只开放技术标 Wiki 构建；商务标先保留为空。', 'error')
-      return
-    }
+  const runWikiBootstrap = async (mode = activeBidType === '商务标' ? 'replace' : 'update') => {
     if (mode === 'replace') {
       const ok = window.confirm(`确认重建${activeBidType} Wiki？现有自动生成根树会被重新生成。`)
       if (!ok) return
@@ -1162,20 +1156,20 @@ export default function MaterialDB({ showToast = () => {} }) {
         subtitle={refreshing || error ? (error || '正在刷新...') : (
           activeBidType === '技术标'
             ? '管理技术标通用、客户、项目三档素材，并创建技术标 Wiki。'
-            : '商务标素材库先保留为空，当前不上传素材、不生成 Wiki。'
+            : '管理商务标通用、客户、项目三档素材，并创建商务标 Wiki。'
         )}
         actions={(
           <div className="flex flex-wrap gap-3">
             <button
               onClick={() => runWikiBootstrap('update')}
-              disabled={creatingWiki || activeBidType !== '技术标'}
+              disabled={creatingWiki}
               className="px-4 py-2 text-sm font-medium rounded-lg bg-secondary-container text-on-secondary-container hover:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {creatingWiki ? '处理中...' : `生成/更新${activeBidType}Wiki`}
             </button>
             <button
               onClick={() => runWikiBootstrap('replace')}
-              disabled={creatingWiki || activeBidType !== '技术标'}
+              disabled={creatingWiki}
               className="px-4 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               重建Wiki
@@ -1188,7 +1182,6 @@ export default function MaterialDB({ showToast = () => {} }) {
             </button>
             <button
               onClick={() => openUploadModal({ mode: 'tier' })}
-              disabled={activeBidType !== '技术标'}
               className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               上传文件
@@ -1429,7 +1422,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                     className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
                   >
                     <option value="技术标">技术标</option>
-                    <option value="商务标" disabled>商务标（暂不启用）</option>
+                    <option value="商务标">商务标</option>
                   </select>
                 </label>
               </div>
@@ -1441,7 +1434,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                     value={uploadPath}
                     onChange={(e) => setUploadPath(e.target.value)}
                     className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                    placeholder="例如：技术标/通用素材/专题方案要求"
+                    placeholder={`例如：${activeBidType}/通用素材/01-示例目录`}
                   />
                 </label>
               ) : (
@@ -1614,7 +1607,7 @@ export default function MaterialDB({ showToast = () => {} }) {
               )}
 
               <p className="text-xs text-outline">
-                白名单：pdf/doc/docx/xls/xlsx/xlsm；单文件 1024MB。
+                白名单：pdf/doc/docx/xls/xlsx/xlsm/png/jpg/jpeg/webp/bmp/tif/tiff；单文件 1024MB。图片类素材仅保留原件，不触发自动清洗。
               </p>
 
               {uploadError && (

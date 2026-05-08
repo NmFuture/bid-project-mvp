@@ -273,6 +273,19 @@ class OpencodeClient:
             "opencodeOutput": self._build_output_trace(session_id, response),
         }
 
+    def review_business_commitments_with_trace(
+        self,
+        prompt_text: str,
+    ) -> dict[str, Any]:
+        session = self.create_session("商务标承诺语义复核")
+        session_id = str(session.get("id") or "")
+        response = self._send_prompt_with_session_polling(session_id, prompt_text)
+        parsed = self._extract_commitment_review_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
     def list_session_messages(self, session_id: str) -> list[dict[str, Any]]:
         try:
             with httpx.Client(timeout=httpx.Timeout(5.0, connect=5.0)) as client:
@@ -358,6 +371,16 @@ class OpencodeClient:
             and not isinstance(parsed.get("outputFile"), str)
         ):
             raise RuntimeError("futurecode 返回的招标解析 JSON 结构不正确。")
+        return parsed
+
+    def _extract_commitment_review_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = self._extract_json_response(
+            response,
+            empty_message="futurecode 未返回承诺复核结果。",
+            repair_kind="business_commitment_review",
+        )
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("decisions"), list):
+            raise RuntimeError("futurecode 返回的承诺复核 JSON 结构不正确。")
         return parsed
 
     def _extract_table_fill_json(self, response: dict[str, Any]) -> dict[str, Any]:
@@ -713,6 +736,12 @@ class OpencodeClient:
                 '"sourceFile":"招标文件.docx","evidence":"项目名称：示例项目","evidenceLocation":"L1"}],'
                 '"structured":{"projectDates":{"startDate":"2026-01-01","endDate":"2026-02-01"},'
                 '"categories":[{"key":"project_basics","label":"项目基础信息","count":1,"items":[]}]}}'
+            )
+        elif repair_kind == "business_commitment_review":
+            schema_hint = (
+                '{"decisions":[{"id":"RAW-0001","action":"generate",'
+                '"topicKey":"confidentiality","preferredTitle":"保密承诺书",'
+                '"reason":"明确要求投标人单独提供保密承诺书。"}]}'
             )
         elif repair_kind == "table_fill":
             schema_hint = (

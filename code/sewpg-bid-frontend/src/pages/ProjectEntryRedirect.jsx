@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { projectsAPI } from '../api'
 import { PageLoading, PageError } from '../components/states/PageState'
 import { getStageRoute } from '../utils/stageFlow'
-import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
+import { parseRouteFromBidType, projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const resolveStage = (value) => {
   const parsed = Number(value)
@@ -31,7 +31,7 @@ export default function ProjectEntryRedirect() {
       const project = await projectsAPI.get(id)
       const reviewDecision = String(project?.reviewDecision || 'participate')
       if (reviewDecision !== 'participate') {
-        navigate(`/parse?projectId=${id}`, { replace: true })
+        navigate(parseRouteFromBidType(project?.bidType || '技术标', id), { replace: true })
         return
       }
       const stage = resolveStage(project?.currentStage)

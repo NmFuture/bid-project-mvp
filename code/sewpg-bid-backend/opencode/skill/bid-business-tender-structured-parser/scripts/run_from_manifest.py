@@ -10,7 +10,7 @@ SCRIPT_DIR = CURRENT.parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from parser_core import SKILL_NAME, parse_manifest
+from business_contract import SCHEMA_VERSION, SKILL_NAME, build_business_result
 
 
 def _summary(result: dict[str, Any], output_path: Path) -> dict[str, Any]:
@@ -18,7 +18,7 @@ def _summary(result: dict[str, Any], output_path: Path) -> dict[str, Any]:
     scoring = structured.get("scoringCriteria") if isinstance(structured.get("scoringCriteria"), dict) else {}
     project_dates = structured.get("projectDates") if isinstance(structured.get("projectDates"), dict) else {}
     return {
-        "schemaVersion": "bid-tender-structured-v1",
+        "schemaVersion": SCHEMA_VERSION,
         "targetSkill": SKILL_NAME,
         "outputFile": str(output_path),
         "summary": {
@@ -26,7 +26,7 @@ def _summary(result: dict[str, Any], output_path: Path) -> dict[str, Any]:
             "categoryCounts": structured.get("categoryCounts") or {},
             "scoringCounts": {
                 key: len(scoring.get(key) or [])
-                for key in ("technical", "business", "price", "lcoe", "compliance")
+                for key in ("business", "price", "compliance")
             },
             "projectDates": {
                 "startDate": project_dates.get("startDate") or "",
@@ -44,7 +44,7 @@ def main() -> int:
     manifest_path = Path(sys.argv[1])
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     output_path = Path(str(manifest.get("structuredResultPath") or manifest_path.with_name("s1_structured_result.json")))
-    result = parse_manifest(manifest, mode="opencode-skill")
+    result = build_business_result(manifest, mode="opencode-skill")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(_summary(result, output_path), ensure_ascii=False))

@@ -4,7 +4,8 @@ import enterpriseLogo from '../../assets/logo-removebg.png'
 import { WORKSPACE_TYPES, workspaceFromPathname, workspaceRoute } from '../../utils/workspace'
 
 const NAV_ITEMS = [
-  { path: '/parse', icon: 'document_scanner', label: '解析', match: '/parse' },
+  { path: '/parse/technical', icon: 'engineering', label: '技术解析', match: '/parse/technical' },
+  { path: '/parse/business', icon: 'request_quote', label: '商务解析', match: '/parse/business' },
   { path: '/materials/structured', icon: 'database', label: '素材库', match: '/materials' },
   { path: '/workspace/tech/projects', icon: 'engineering', label: '技术标', match: '/workspace/tech' },
   { path: '/workspace/business/projects', icon: 'request_quote', label: '商务标', match: '/workspace/business' },
@@ -26,7 +27,10 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
   const workspaceSlug = workspaceFromPathname(location.pathname)
   const workspace = workspaceSlug ? WORKSPACE_TYPES[workspaceSlug] : null
 
-  const isActive = (match) => location.pathname.startsWith(match) || (match === '/parse' && location.pathname.startsWith('/review'))
+  const isActive = (match) => (
+    location.pathname.startsWith(match)
+    || (match === '/parse/technical' && (location.pathname === '/parse' || location.pathname.startsWith('/review')))
+  )
   const isWorkspaceNavActive = (item) => {
     const target = workspaceRoute(workspaceSlug, item.path)
     if (item.key === 'projects') {
