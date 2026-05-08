@@ -54,7 +54,15 @@ const SEARCH_STORAGE_KEY = 'onlyoffice-search-bridge-message'
 const SEARCH_CHANNEL_NAME = 'onlyoffice-search-bridge'
 const SEARCH_RESULT_SOURCE = 'onlyoffice-search-bridge'
 
-const collectSourceRefs = (node) => (Array.isArray(node?.sourceRefs) ? node.sourceRefs : [])
+const collectSourceRefs = (node) => {
+  if (Array.isArray(node?.sourceRefs)) return node.sourceRefs
+  if (Array.isArray(node?.source_refs)) return node.source_refs
+  return []
+}
+
+const isBusinessOutlineNode = (node) =>
+  node?.source === 'business_outline' ||
+  collectSourceRefs(node).some((ref) => ref?.kind === 'business_outline_section')
 
 const pickTenderBasisRef = (node) => {
   const refs = collectSourceRefs(node).filter((ref) => ref?.type === 'tender')
@@ -65,6 +73,35 @@ const sourceRefSearchText = (ref) =>
   String(ref?.searchText || ref?.basisText || ref?.rawText || ref?.raw_text || ref?.title || '')
     .replace(/\s+/g, ' ')
     .trim()
+
+const nodeSearchText = (node) => {
+  const refText = collectSourceRefs(node).map(sourceRefSearchText).find(Boolean) || ''
+  return String(node?.sourceText || node?.source_text || refText || node?.title || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+const requiredStatusLabel = (node) => {
+  const explicit = String(node?.requiredStatus || node?.required_status || '').trim()
+  if (explicit) return explicit
+  if (!isBusinessOutlineNode(node)) return ''
+  const annotation = String(node?.annotation || '').trim()
+  if (annotation === '保留') return '必要'
+  return annotation
+}
+
+const requiredStatusClassName = (status) => {
+  if (status === '必要') {
+    return 'border-primary/20 bg-primary/10 text-primary'
+  }
+  if (status === '可选') {
+    return 'border-surface-container-high bg-surface-container-high text-on-surface-variant'
+  }
+  if (status === '待确认') {
+    return 'border-amber-200 bg-amber-50 text-amber-950'
+  }
+  return 'border-secondary/20 bg-secondary-container text-on-secondary-container'
+}
 
 const relationLabel = (relation = '') => {
   const labels = {
@@ -200,14 +237,14 @@ export default function OutlineReview({ showToast }) {
   }, [markPendingSearch, showToast])
 
   const focusSourceRef = useCallback(async (basisRef) => {
-    if (!basisRef || basisRef?.type !== 'tender') return
+    if (!basisRef) return
     const searchText = sourceRefSearchText(basisRef)
     if (!searchText) return
 
     setActiveBasisRef(basisRef)
     const refFileId = String(basisRef.fileId || '').trim()
     const activeFileId = String(tenderPreview?.activeFile?.id || '').trim()
-    if (refFileId && refFileId !== activeFileId) {
+    if (basisRef?.type === 'tender' && refFileId && refFileId !== activeFileId) {
       try {
         const payload = await outlineAPI.get(id, { fileId: refFileId })
         setTenderPreview(payload?.tenderPreview || null)
@@ -225,8 +262,16 @@ export default function OutlineReview({ showToast }) {
 
   const focusTenderBasis = useCallback(async (node) => {
     const basisRef = pickTenderBasisRef(node)
-    await focusSourceRef(basisRef)
-  }, [focusSourceRef])
+    if (basisRef) {
+      await focusSourceRef(basisRef)
+      return
+    }
+    const searchText = nodeSearchText(node)
+    if (searchText) {
+      setActiveBasisRef(null)
+      sendOnlyOfficeSearch(searchText, onlyofficeEmbedRef, markPendingSearch)
+    }
+  }, [focusSourceRef, markPendingSearch])
 
   const handleSave = async () => {
     if (saving) return
@@ -405,7 +450,8 @@ export default function OutlineReview({ showToast }) {
         const canMoveDown = index < siblings.length - 1
         const hasChildren = Array.isArray(node.children) && node.children.length > 0
         const isCollapsed = collapsedNodeIds.has(node.id)
-        const basisRef = pickTenderBasisRef(node)
+        const status = requiredStatusLabel(node)
+        const canFocusBasis = Boolean(pickTenderBasisRef(node) || nodeSearchText(node))
 
         return (
           <div key={node.id}>
@@ -443,7 +489,7 @@ export default function OutlineReview({ showToast }) {
                 className="flex-1 !min-h-0 h-8 px-1.5 border-0 bg-transparent text-sm text-on-surface focus:ring-0 focus:outline-none"
                 placeholder="输入章节标题"
               />
-              {basisRef ? (
+              {status ? (
                 <button
                   type="button"
                   onClick={(e) => {
@@ -451,10 +497,11 @@ export default function OutlineReview({ showToast }) {
                     setActiveNodeId(node.id)
                     focusTenderBasis(node)
                   }}
-                  className="shrink-0 rounded border border-secondary/20 bg-secondary-container px-2 py-1 text-[11px] font-semibold text-on-secondary-container transition-colors hover:border-secondary hover:bg-secondary/20 focus:outline-none focus:ring-2 focus:ring-secondary/30"
-                  title={sourceRefSearchText(basisRef)}
+                  disabled={!canFocusBasis}
+                  className={`shrink-0 rounded border px-2 py-1 text-[11px] font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-secondary/30 disabled:cursor-default ${requiredStatusClassName(status)} ${canFocusBasis ? 'hover:brightness-95' : ''}`}
+                  title={canFocusBasis ? '点击定位招标依据' : ''}
                 >
-                  有依据
+                  {status}
                 </button>
               ) : null}
               <button

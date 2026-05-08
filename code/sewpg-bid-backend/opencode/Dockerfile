@@ -50,6 +50,14 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
     && printf '%s\n' \
       '#!/bin/sh' \
       'if [ "$#" -ne 1 ]; then' \
+      '  echo "usage: business-outline <manifest>" >&2' \
+      '  exit 64' \
+      'fi' \
+      'exec python3 /workspace/.opencode/skills/business-bid-outline/scripts/run_from_manifest.py --manifest "$1" --response summary' \
+      > /usr/local/bin/business-outline \
+    && printf '%s\n' \
+      '#!/bin/sh' \
+      'if [ "$#" -ne 1 ]; then' \
       '  echo "usage: s7assemble <manifest>" >&2' \
       '  exit 64' \
       'fi' \
@@ -87,7 +95,7 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       'fi' \
       'exec python3 /workspace/.opencode/skills/wikibuild_router.py "$1"' \
       > /usr/local/bin/wikibuild \
-    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/s7assemble /usr/local/bin/s4gap /usr/local/bin/s4fill /usr/local/bin/s4wordfill /usr/local/bin/wikibuild
+    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/business-outline /usr/local/bin/s7assemble /usr/local/bin/s4gap /usr/local/bin/s4fill /usr/local/bin/s4wordfill /usr/local/bin/wikibuild
 
 EXPOSE 4096
 
