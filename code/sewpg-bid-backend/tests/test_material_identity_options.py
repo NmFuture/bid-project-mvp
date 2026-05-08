@@ -23,9 +23,25 @@ class _ExecuteResult:
         return _ScalarResult(self._items)
 
 
+class _MappingResult:
+    def __init__(self, items: list[dict[str, object]]) -> None:
+        self._items = items
+
+    def all(self) -> list[dict[str, object]]:
+        return self._items
+
+
+class _ExecuteMappingResult:
+    def __init__(self, items: list[dict[str, object]]) -> None:
+        self._items = items
+
+    def mappings(self) -> _MappingResult:
+        return _MappingResult(self._items)
+
+
 class _FakeSession:
-    def __init__(self, folders: list[object], files: list[object]) -> None:
-        self._results = [_ExecuteResult(folders), _ExecuteResult(files)]
+    def __init__(self, folders: list[object], files: list[object], projects: list[dict[str, object]] | None = None) -> None:
+        self._results = [_ExecuteResult(folders), _ExecuteResult(files), _ExecuteMappingResult(projects or [])]
 
     async def __aenter__(self) -> _FakeSession:
         return self
@@ -82,6 +98,34 @@ class MaterialIdentityOptionsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([item["customerId"] for item in payload["customers"]], ["CUST-HUANENG"])
         self.assertEqual([item["projectId"] for item in payload["projects"]], ["MAT-HN-CHIFENG-001"])
+
+    async def test_identity_options_include_project_store_projects(self) -> None:
+        fake_session = _FakeSession(
+            folders=[],
+            files=[],
+            projects=[
+                {
+                    "id": "PRJ-0001",
+                    "payload": {
+                        "id": "PRJ-0001",
+                        "projectCode": "PRJ-0001",
+                        "name": "赤峰风电项目",
+                        "customerName": "华能集团",
+                        "bidType": "技术标",
+                    },
+                }
+            ],
+        )
+        with (
+            patch("app.services.material_store.async_session", return_value=fake_session),
+            patch.object(material_store, "_ensure_runtime_tables", new=AsyncMock()),
+            patch.object(material_store, "_ensure_raw_material_roots", new=AsyncMock(return_value=[])),
+        ):
+            payload = await material_store.identity_options(bid_type="技术标")
+
+        self.assertEqual([item["customerId"] for item in payload["customers"]], ["CUST-HUANENG"])
+        self.assertEqual([item["projectId"] for item in payload["projects"]], ["PRJ-0001"])
+        self.assertEqual(payload["projects"][0]["source"], "project")
 
 
 if __name__ == "__main__":

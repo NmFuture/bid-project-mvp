@@ -19,7 +19,16 @@ export const workspaceFromSlug = (slug = '') => WORKSPACE_TYPES[String(slug || '
 
 export const slugFromBidType = (bidType = '') => (bidType === '商务标' ? 'business' : 'tech')
 
+export const normalizeBidType = (bidType = '') => (String(bidType || '').includes('商务') ? '商务标' : '技术标')
+
 export const bidTypeFromWorkspace = (slug = '') => workspaceFromSlug(slug)?.bidType || ''
+
+export const parseRouteFromBidType = (bidType = '技术标', projectId = '') => {
+  const normalized = normalizeBidType(bidType)
+  const basePath = normalized === '商务标' ? '/parse/business' : '/parse/technical'
+  if (!projectId) return basePath
+  return `${basePath}?projectId=${encodeURIComponent(projectId)}`
+}
 
 export const workspaceBasePath = (slug = '') => {
   const workspace = workspaceFromSlug(slug)

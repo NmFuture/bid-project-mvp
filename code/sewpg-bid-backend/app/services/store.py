@@ -32,6 +32,7 @@ from app.services.gap_planning import (
     run_ai_fill_for_gap,
     summarize_gap_plan,
 )
+from app.services.parse_profiles import normalize_bid_type
 from app.services.workspace_artifacts import cleanup_parse_temp_workspace, promote_parse_artifacts_to_workspace
 from app.services.turbine_models import normalize_project_turbine_model, project_turbine_model
 
@@ -715,7 +716,12 @@ class AppStore:
                 parse_result = project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {}
                 parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
                 if parse_result.get("status") == "completed":
-                    promoted = promote_parse_artifacts_to_workspace(project_id, parse_result, parse_storage)
+                    promoted = promote_parse_artifacts_to_workspace(
+                        project_id,
+                        parse_result,
+                        parse_storage,
+                        bid_type=normalize_bid_type(str(project.get("bidType") or "技术标")),
+                    )
                     project["parse_result"] = promoted["parseResult"]
                     project["parse_storage"] = promoted["parseStorage"]
                     project["workspaceArtifacts"] = promoted["artifacts"]
@@ -2394,6 +2400,22 @@ class AppStore:
         def is_material_fact_ref(ref: dict[str, Any]) -> bool:
             return str(ref.get("type") or "") in {"materialFact", "derivedMaterialFact"}
 
+        def blank_source_paths() -> set[str]:
+            paths: set[str] = set()
+            plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+            for item in plan.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                for task in item.get("fillTasks") or []:
+                    if not isinstance(task, dict):
+                        continue
+                    blank = task.get("blankSource") if isinstance(task.get("blankSource"), dict) else {}
+                    for key in ("docxPath", "path", "workspacePath"):
+                        value = str(blank.get(key) or "").strip()
+                        if value:
+                            paths.add(str(Path(value).resolve()))
+            return paths
+
         def add_candidate(
             label: str,
             value: Any,
@@ -2544,7 +2566,7 @@ class AppStore:
                 source_priority=260,
             )
 
-        for fact in self._project_material_fact_fields(project, gap_state):
+        for fact in self._project_material_fact_fields(project, gap_state, excluded_paths=blank_source_paths()):
             if fact.get("internal"):
                 continue
             add_candidate(
@@ -2862,7 +2884,13 @@ class AppStore:
             )
         )
 
-    def _project_material_fact_fields(self, project: dict[str, Any], gap_state: dict[str, Any]) -> list[dict[str, Any]]:
+    def _project_material_fact_fields(
+        self,
+        project: dict[str, Any],
+        gap_state: dict[str, Any],
+        *,
+        excluded_paths: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         materials = self._project_fact_material_index(project, gap_state)
         if not materials:
             return []
@@ -2877,6 +2905,8 @@ class AppStore:
                 continue
             path = Path(path_text)
             if not path.exists():
+                continue
+            if str(path.resolve()) in (excluded_paths or set()):
                 continue
             suffix = path.suffix.lower()
             if suffix in {".docx", ".doc"}:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import json
 import logging
 import re
 from datetime import UTC, datetime
@@ -43,6 +44,7 @@ from app.services.turbine_models import (
     turbine_model_from_material_name,
 )
 from app.services.identity import (
+    build_project_identity,
     canonical_customer,
     classify_material_path,
     customer_matches,
@@ -96,6 +98,8 @@ MATERIAL_TIER_LABELS = {
     "project": "项目素材",
 }
 CLEANABLE_MATERIAL_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm", ".docx", ".doc"}
+ORIGINAL_ONLY_MATERIAL_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+MATERIAL_LIBRARY_ALLOWED_SUFFIXES = CLEANABLE_MATERIAL_SUFFIXES | ORIGINAL_ONLY_MATERIAL_SUFFIXES | {".md"}
 RAW_MATERIAL_ROOTS = (
     {"name": "技术标", "tier": "standard", "bid_type": "技术标", "sort_order": 1},
     {"name": "商务标", "tier": "standard", "bid_type": "商务标", "sort_order": 2},
@@ -106,6 +110,78 @@ TECHNICAL_TIER_FOLDERS = (
     {"name": "客户素材", "tier": "customer", "sort_order": 2},
     {"name": "项目素材", "tier": "project", "sort_order": 3},
 )
+BUSINESS_TIER_FOLDERS = TECHNICAL_TIER_FOLDERS
+BUSINESS_STANDARD_SUBFOLDERS = (
+    {
+        "name": "01-资质合规库",
+        "tier": "standard",
+        "sort_order": 1,
+    },
+    {
+        "name": "02-企业能力库",
+        "tier": "standard",
+        "sort_order": 2,
+    },
+    {
+        "name": "03-业绩资产池",
+        "tier": "standard",
+        "sort_order": 3,
+    },
+    {
+        "name": "04-财务资料库",
+        "tier": "standard",
+        "sort_order": 4,
+    },
+    {
+        "name": "05-专题证书库",
+        "tier": "standard",
+        "sort_order": 5,
+        "children": (
+            {"name": "01-机型认证证书", "tier": "standard", "sort_order": 1},
+            {"name": "02-大部件型式认证证书", "tier": "standard", "sort_order": 2},
+        ),
+    },
+    {
+        "name": "06-通用模板底稿库",
+        "tier": "standard",
+        "sort_order": 6,
+    },
+)
+BUSINESS_CUSTOMIZED_SUBFOLDERS = (
+    {
+        "name": "01-客户关系与专项证明",
+        "tier": "customer",
+        "sort_order": 1,
+    },
+    {
+        "name": "02-商务响应文件",
+        "tier": "customer",
+        "sort_order": 2,
+    },
+    {
+        "name": "03-模板底稿与过程文件",
+        "tier": "customer",
+        "sort_order": 3,
+    },
+)
+
+
+def business_customized_tier_from_path(folder_path: str) -> str:
+    parts = [part for part in str(folder_path or "").replace("\\", "/").strip("/").split("/") if part]
+    if len(parts) == 3 and parts[:2] == ["商务标", "客户素材"]:
+        return "customer"
+    if len(parts) == 3 and parts[:2] == ["商务标", "项目素材"]:
+        return "project"
+    return ""
+
+
+def business_customized_child_tier_for_parent_path(parent_path: str) -> str:
+    parts = [part for part in str(parent_path or "").replace("\\", "/").strip("/").split("/") if part]
+    if len(parts) == 2 and parts == ["商务标", "客户素材"]:
+        return "customer"
+    if len(parts) == 2 and parts == ["商务标", "项目素材"]:
+        return "project"
+    return ""
 
 
 def canonical_technical_material_path(path: str) -> str:
@@ -146,7 +222,13 @@ def clean_status_for_new_file(file_name: str) -> tuple[str, str]:
     suffix = PurePosixPath(str(file_name or "")).suffix.lower()
     if suffix in CLEANABLE_MATERIAL_SUFFIXES:
         return "pending", "等待清洗转换为 Word。"
+    if suffix in ORIGINAL_ONLY_MATERIAL_SUFFIXES:
+        return "original_only", "图片类原件直接保留，不触发自动清洗。"
     return "failed", "当前格式暂不支持自动清洗转换。"
+
+
+def bid_type_sort_order(bid_type: str) -> int:
+    return 1 if bid_type == "技术标" else 2
 
 
 class MaterialStore:
@@ -628,6 +710,66 @@ class MaterialStore:
                         item_bid_type=item_bid_type,
                     )
 
+            try:
+                project_rows = (
+                    (await session.execute(text("SELECT id, payload FROM projects")))
+                    .mappings()
+                    .all()
+                )
+            except Exception as exc:  # pragma: no cover - keeps material options usable before project store init.
+                logger.debug("Skip project-store identity options: %s", exc)
+                project_rows = []
+
+            for row in project_rows:
+                payload = row.get("payload") if hasattr(row, "get") else None
+                if isinstance(payload, str):
+                    try:
+                        payload = json.loads(payload)
+                    except json.JSONDecodeError:
+                        payload = {}
+                if not isinstance(payload, dict):
+                    continue
+                identity = payload.get("identity") if isinstance(payload.get("identity"), dict) else build_project_identity(payload)
+                project_id = str(
+                    payload.get("materialProjectId")
+                    or identity.get("projectId")
+                    or payload.get("projectId")
+                    or payload.get("id")
+                    or row.get("id", "")
+                )
+                customer_name = str(
+                    payload.get("materialCustomerName")
+                    or identity.get("customerCanonicalName")
+                    or payload.get("customerCanonicalName")
+                    or payload.get("customerName")
+                    or payload.get("owner")
+                    or ""
+                )
+                add_project(
+                    project_id=project_id,
+                    project_code=str(
+                        payload.get("materialProjectCode")
+                        or identity.get("projectCode")
+                        or payload.get("projectCode")
+                        or project_id
+                    ),
+                    project_name=str(
+                        payload.get("materialProjectName")
+                        or identity.get("projectName")
+                        or payload.get("name")
+                        or project_id
+                    ),
+                    customer_id=str(
+                        payload.get("materialCustomerId")
+                        or identity.get("customerId")
+                        or payload.get("customerId")
+                        or ""
+                    ),
+                    customer_name=customer_name,
+                    item_bid_type=str(payload.get("bidType") or identity.get("bidType") or ""),
+                    source="project",
+                )
+
         return {
             "customers": sorted(customers.values(), key=sort_key),
             "projects": sorted(projects.values(), key=sort_key),
@@ -761,7 +903,7 @@ class MaterialStore:
         clean_id = safe_segment(project_id, "")
         if not clean_id:
             raise PeripheralError(400, "projectId 不能为空。", "PROJECT_ID_REQUIRED")
-        normalized_bid_type = "技术标"
+        normalized_bid_type = bid_type if bid_type in {"技术标", "商务标"} else "技术标"
         root_path = f"{normalized_bid_type}/项目素材/{clean_id}"
 
         async with async_session() as session:
@@ -774,25 +916,27 @@ class MaterialStore:
             # Find or create parent chain
             parent = await self._find_folder(session, f"{normalized_bid_type}/项目素材")
             if parent is None:
-                tech_root = await self._ensure_folder_path(
+                root_folder = await self._ensure_folder_path(
                     session,
                     normalized_bid_type,
                     None,
                     "standard",
                     normalized_bid_type,
                     None,
-                    1,
+                    bid_type_sort_order(normalized_bid_type),
                 )
                 parent = await self._ensure_folder_path(
                     session,
                     "项目素材",
-                    tech_root.id,
+                    root_folder.id,
                     "project",
                     normalized_bid_type,
                     None,
                     3,
                 )
-            await self._ensure_folder_path(session, clean_id, parent.id, "project", normalized_bid_type, clean_id, 0)
+            project_folder = await self._ensure_folder_path(session, clean_id, parent.id, "project", normalized_bid_type, clean_id, 0)
+            if normalized_bid_type == "商务标":
+                await self._ensure_business_customized_subfolders(session, project_folder, tier="project")
             await session.commit()
 
         return {"message": "项目目录骨架初始化完成。", "payload": {"projectId": clean_id, "path": root_path}}
@@ -807,26 +951,37 @@ class MaterialStore:
         project_id: str = "",
     ) -> RawFolder:
         tier = normalize_material_tier(material_tier) or "project"
-        normalized_bid_type = "技术标"
-        tech_root = await self._ensure_folder_path(session, normalized_bid_type, None, "standard", normalized_bid_type, None, 1)
+        normalized_bid_type = bid_type if bid_type in {"技术标", "商务标"} else "技术标"
+        root_folder = await self._ensure_folder_path(
+            session,
+            normalized_bid_type,
+            None,
+            "standard",
+            normalized_bid_type,
+            None,
+            bid_type_sort_order(normalized_bid_type),
+        )
 
         if tier == "standard":
-            return await self._ensure_folder_path(
+            base_folder = await self._ensure_folder_path(
                 session,
                 "通用素材",
-                tech_root.id,
+                root_folder.id,
                 "standard",
                 normalized_bid_type,
                 None,
-                1 if normalized_bid_type == "技术标" else 2,
+                1,
                 customer_name="平台标准",
             )
+            if normalized_bid_type == "商务标":
+                await self._ensure_business_standard_subfolders(session, base_folder)
+            return base_folder
 
         if tier == "customer":
             clean_customer = safe_segment(customer_name, "")
             if not clean_customer:
                 raise PeripheralError(400, "客户素材必须填写客户名称。", "CUSTOMER_NAME_REQUIRED")
-            root = await self._ensure_folder_path(session, "客户素材", tech_root.id, "customer", normalized_bid_type, None, 2)
+            root = await self._ensure_folder_path(session, "客户素材", root_folder.id, "customer", normalized_bid_type, None, 2)
             customer = await self._ensure_folder_path(
                 session,
                 clean_customer,
@@ -837,13 +992,15 @@ class MaterialStore:
                 0,
                 customer_name=clean_customer,
             )
+            if normalized_bid_type == "商务标":
+                await self._ensure_business_customized_subfolders(session, customer, tier="customer")
             return customer
 
         clean_project_id = safe_segment(project_id, "")
         if not clean_project_id:
             raise PeripheralError(400, "项目素材必须填写项目 ID。", "PROJECT_ID_REQUIRED")
-        root = await self._ensure_folder_path(session, "项目素材", tech_root.id, "project", normalized_bid_type, None, 3)
-        return await self._ensure_folder_path(
+        root = await self._ensure_folder_path(session, "项目素材", root_folder.id, "project", normalized_bid_type, None, 3)
+        project_folder = await self._ensure_folder_path(
             session,
             clean_project_id,
             root.id,
@@ -852,6 +1009,9 @@ class MaterialStore:
             clean_project_id,
             0,
         )
+        if normalized_bid_type == "商务标":
+            await self._ensure_business_customized_subfolders(session, project_folder, tier="project")
+        return project_folder
 
     async def _ensure_raw_material_roots(self, session: Any) -> list[RawFolder]:
         roots: list[RawFolder] = []
@@ -866,6 +1026,24 @@ class MaterialStore:
                 int(spec["sort_order"]),
             )
             roots.append(root)
+            bid_type = str(spec["name"])
+            tier_folders = TECHNICAL_TIER_FOLDERS if bid_type == "技术标" else BUSINESS_TIER_FOLDERS
+            for child in tier_folders:
+                await self._ensure_folder_path(
+                    session,
+                    str(child["name"]),
+                    root.id,
+                    str(child["tier"]),
+                    bid_type,
+                    None,
+                    int(child["sort_order"]),
+                    customer_name=str(child.get("customer_name") or "") or None,
+                )
+            if bid_type == "商务标":
+                standard_root = await self._find_folder(session, f"{bid_type}/通用素材")
+                if standard_root is not None:
+                    await self._ensure_business_standard_subfolders(session, standard_root)
+                await self._backfill_existing_business_customized_subfolders(session)
         await self._migrate_legacy_technical_folders(session)
         return roots
 
@@ -987,6 +1165,53 @@ class MaterialStore:
         await session.flush()
         return folder
 
+    async def _ensure_business_standard_subfolders(self, session: Any, standard_root: RawFolder) -> None:
+        for spec in BUSINESS_STANDARD_SUBFOLDERS:
+            folder = await self._ensure_folder_path(
+                session,
+                str(spec["name"]),
+                standard_root.id,
+                str(spec["tier"]),
+                "商务标",
+                None,
+                int(spec["sort_order"]),
+                customer_name=standard_root.customer_name,
+            )
+            for child in spec.get("children") or ():
+                await self._ensure_folder_path(
+                    session,
+                    str(child["name"]),
+                    folder.id,
+                    str(child["tier"]),
+                    "商务标",
+                    None,
+                    int(child["sort_order"]),
+                    customer_name=standard_root.customer_name,
+                )
+
+    async def _ensure_business_customized_subfolders(self, session: Any, base_folder: RawFolder, *, tier: str) -> None:
+        for spec in BUSINESS_CUSTOMIZED_SUBFOLDERS:
+            await self._ensure_folder_path(
+                session,
+                str(spec["name"]),
+                base_folder.id,
+                tier,
+                "商务标",
+                base_folder.project_id,
+                int(spec["sort_order"]),
+                customer_name=base_folder.customer_name,
+            )
+
+    async def _backfill_existing_business_customized_subfolders(self, session: Any) -> None:
+        folders = (
+            await session.execute(select(RawFolder).where(RawFolder.path.like("商务标/%")))
+        ).scalars().all()
+        for folder in folders:
+            tier = business_customized_tier_from_path(str(folder.path or ""))
+            if not tier:
+                continue
+            await self._ensure_business_customized_subfolders(session, folder, tier=tier)
+
     async def _ensure_nested_folder(
         self,
         session: Any,
@@ -1039,6 +1264,10 @@ class MaterialStore:
                 project_id=parent.project_id if parent else None,
             )
             session.add(folder)
+            await session.flush()
+            customized_tier = business_customized_child_tier_for_parent_path(parent.path if parent else "")
+            if customized_tier:
+                await self._ensure_business_customized_subfolders(session, folder, tier=customized_tier)
             await session.commit()
 
             tree = await self.raw_tree()
@@ -1097,8 +1326,6 @@ class MaterialStore:
         if not file_inputs:
             raise PeripheralError(400, "请至少上传一个文件。", "RAW_UPLOAD_FILES_REQUIRED")
         normalized_bid_type = bid_type if bid_type in {"技术标", "商务标", "通用"} else "技术标"
-        if normalized_bid_type != "技术标":
-            raise PeripheralError(400, "商务标素材库当前仅保留空目录，暂不支持上传。", "BUSINESS_MATERIAL_DISABLED")
         normalized_tier = normalize_material_tier(material_tier)
         auto_target = not bool(target_path)
 
@@ -1121,8 +1348,6 @@ class MaterialStore:
                 inferred_target_tier = normalize_material_tier(str(location.get("materialTier") or ""))
                 inferred_customer_name = customer_name
                 inferred_project_id = project_id
-                if target_parts and target_parts[0] == "商务标":
-                    raise PeripheralError(400, "商务标素材库当前仅保留空目录，暂不支持上传。", "BUSINESS_MATERIAL_DISABLED")
                 if inferred_target_tier == "standard":
                     inferred_customer_name = inferred_customer_name or "平台标准"
                 if inferred_target_tier == "customer":
@@ -1194,6 +1419,14 @@ class MaterialStore:
                 file_name = safe_segment(relative_parts[-1] if relative_parts else item.get("name") or "", "")
                 if not file_name:
                     continue
+                suffix = PurePosixPath(file_name).suffix.lower()
+                if suffix not in MATERIAL_LIBRARY_ALLOWED_SUFFIXES:
+                    allowed = ", ".join(sorted(MATERIAL_LIBRARY_ALLOWED_SUFFIXES))
+                    raise PeripheralError(
+                        400,
+                        f"文件 {file_name} 类型不在素材库白名单内，当前支持：{allowed}",
+                        "RAW_FILE_TYPE_NOT_ALLOWED",
+                    )
 
                 folder = await self._ensure_nested_folder(session, base_folder, relative_dir)
 

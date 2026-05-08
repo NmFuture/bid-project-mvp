@@ -11,11 +11,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from app.api.utils import absolute_url, onlyoffice_backend_base_url
 from app.core.config import settings
 from app.services.onlyoffice_documents import WORD_MEDIA_TYPE, build_editor_session_key
+from app.services.parse_profiles import normalize_bid_type
 from app.services.parsing import (
     IMAGE_SUFFIXES,
     extract_docx_text,
+    materialize_business_commitment_letter_docx,
     materialize_appendix_docx,
     materialize_parse_appendix_docx_assets,
+    materialize_parse_business_commitment_letter_docx_assets,
     parse_tender_documents,
 )
 from app.services.store import store
@@ -169,7 +172,17 @@ async def save_uploads_with_offset(
 
 @router.get("/api/projects/{project_id}/parse-results")
 async def get_parse_results(project_id: str) -> dict[str, Any]:
-    return materialize_parse_appendix_docx_assets(project_id, store.get_parse_result(project_id))
+    project = store.get_project(project_id)
+    payload = materialize_parse_appendix_docx_assets(
+        project_id,
+        store.get_parse_result(project_id),
+        bid_type=normalize_bid_type(str(project.get("bidType") or "技术标")),
+    )
+    return materialize_parse_business_commitment_letter_docx_assets(
+        project_id,
+        payload,
+        bid_type=normalize_bid_type(str(project.get("bidType") or "技术标")),
+    )
 
 
 @router.get("/api/projects/{project_id}/parse-results/progress")
@@ -244,6 +257,77 @@ def _build_appendix_preview(project_id: str, appendix_id: str, request: Request)
     }
 
 
+def _resolve_commitment_letter_docx(project_id: str, letter_id: str) -> tuple[dict[str, Any], Path]:
+    project = store.get_project(project_id)
+    parse_result = materialize_parse_business_commitment_letter_docx_assets(
+        project_id,
+        store.get_parse_result(project_id),
+        bid_type=normalize_bid_type(str(project.get("bidType") or "技术标")),
+    )
+    structured = parse_result.get("structured") if isinstance(parse_result, dict) else {}
+    letters = structured.get("commitmentLetters") if isinstance(structured, dict) else []
+    project_name = ""
+    field_groups = structured.get("fieldGroups") if isinstance(structured, dict) else {}
+    for field in field_groups.get("projectBasics") if isinstance(field_groups, dict) and isinstance(field_groups.get("projectBasics"), list) else []:
+        if isinstance(field, dict) and str(field.get("key") or "") == "projectName":
+            project_name = str(field.get("value") or "").strip()
+            break
+    for letter in letters if isinstance(letters, list) else []:
+        if not isinstance(letter, dict):
+            continue
+        if str(letter.get("id") or "") != letter_id:
+            continue
+        item = materialize_business_commitment_letter_docx(
+            project_id,
+            letter,
+            project_name=project_name,
+        )
+        path = Path(str(item.get("docxPath") or ""))
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="承诺函 Word 文件不存在。")
+        return item, path
+    raise HTTPException(status_code=404, detail="未找到对应的承诺函。")
+
+
+def _build_commitment_letter_preview(project_id: str, letter_id: str, request: Request) -> dict[str, Any]:
+    letter, path = _resolve_commitment_letter_docx(project_id, letter_id)
+    file_name = path.name
+    file_type, document_type = _document_type_by_suffix(path)
+    quoted_name = quote(file_name)
+    browser_file_url = absolute_url(
+        request,
+        f"/api/projects/{project_id}/parse-results/commitment-letters/{letter_id}/file/{quoted_name}",
+    )
+    browser_callback_url = _add_callback_token(
+        absolute_url(request, f"/api/projects/{project_id}/parse-results/commitment-letters/callback"),
+    )
+    onlyoffice_base = onlyoffice_backend_base_url(request)
+    onlyoffice_file_url = (
+        f"{onlyoffice_base}/api/projects/{project_id}/parse-results/commitment-letters/{letter_id}/file/{quoted_name}"
+    )
+    onlyoffice_callback_url = _add_callback_token(
+        f"{onlyoffice_base}/api/projects/{project_id}/parse-results/commitment-letters/callback",
+    )
+    return {
+        **letter,
+        "fileUrl": browser_file_url,
+        "onlyoffice": {
+            "documentKey": build_editor_session_key(path),
+            "title": letter.get("title") or file_name,
+            "fileType": file_type,
+            "documentType": document_type,
+            "fileUrl": onlyoffice_file_url,
+            "callbackUrl": onlyoffice_callback_url,
+            "browserFileUrl": browser_file_url,
+            "browserCallbackUrl": browser_callback_url,
+            "user": {
+                "id": "user-1",
+                "name": "当前用户",
+            },
+        },
+    }
+
+
 @router.get("/api/projects/{project_id}/parse-results/appendices/{appendix_id}/preview")
 async def get_appendix_preview(project_id: str, appendix_id: str, request: Request) -> dict[str, Any]:
     return _build_appendix_preview(project_id, appendix_id, request)
@@ -267,6 +351,39 @@ async def get_appendix_file_by_name(project_id: str, appendix_id: str, filename:
 
 @router.post("/api/projects/{project_id}/parse-results/appendices/callback")
 async def appendix_onlyoffice_callback(
+    project_id: str,
+    request: Request,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> JSONResponse:
+    _ = project_id
+    _ = data
+    _validate_callback_token(request)
+    return JSONResponse({"error": 0})
+
+
+@router.get("/api/projects/{project_id}/parse-results/commitment-letters/{letter_id}/preview")
+async def get_commitment_letter_preview(project_id: str, letter_id: str, request: Request) -> dict[str, Any]:
+    return _build_commitment_letter_preview(project_id, letter_id, request)
+
+
+@router.get("/api/projects/{project_id}/parse-results/commitment-letters/{letter_id}/file")
+async def get_commitment_letter_file(project_id: str, letter_id: str) -> FileResponse:
+    return await get_commitment_letter_file_by_name(project_id, letter_id, "")
+
+
+@router.get("/api/projects/{project_id}/parse-results/commitment-letters/{letter_id}/file/{filename:path}")
+async def get_commitment_letter_file_by_name(project_id: str, letter_id: str, filename: str) -> FileResponse:
+    letter, path = _resolve_commitment_letter_docx(project_id, letter_id)
+    _ = filename
+    return FileResponse(
+        path=path,
+        media_type=WORD_MEDIA_TYPE,
+        filename=Path(str(letter.get("workspacePath") or path.name)).name,
+    )
+
+
+@router.post("/api/projects/{project_id}/parse-results/commitment-letters/callback")
+async def commitment_letter_onlyoffice_callback(
     project_id: str,
     request: Request,
     data: dict[str, Any] = Body(default_factory=dict),
@@ -363,9 +480,11 @@ async def run_parse_without_upload(project_id: str) -> dict[str, Any]:
         event_message=f"复用 {len(tender_files)} 个已上传招标文件。",
     )
     try:
+        project = store.get_project(project_id)
         summary, parse_storage = parse_tender_documents(
             project_id,
             tender_files,
+            bid_type=normalize_bid_type(str(project.get("bidType") or "技术标")),
             progress_callback=_progress_callback(project_id),
         )
     except Exception as exc:
@@ -386,7 +505,11 @@ async def run_parse_without_upload(project_id: str) -> dict[str, Any]:
         summary=summary,
         parse_storage=parse_storage,
     )
-    parse_result = materialize_parse_appendix_docx_assets(project_id, parse_result)
+    parse_result = materialize_parse_appendix_docx_assets(
+        project_id,
+        parse_result,
+        bid_type=normalize_bid_type(str(project.get("bidType") or "技术标")),
+    )
     return {**parse_result, "message": "解析完成"}
 
 
@@ -422,9 +545,11 @@ async def upload_and_parse(
     store.start_parse_progress(project_id)
     _progress_callback(project_id)("upload_ready", {"fileCount": len(active_tender)})
     try:
+        project = store.get_project(project_id)
         summary, parse_storage = parse_tender_documents(
             project_id,
             active_tender,
+            bid_type=normalize_bid_type(str(project.get("bidType") or "技术标")),
             progress_callback=_progress_callback(project_id),
         )
     except Exception as exc:
@@ -445,7 +570,11 @@ async def upload_and_parse(
         summary=summary,
         parse_storage=parse_storage,
     )
-    parse_result = materialize_parse_appendix_docx_assets(project_id, parse_result)
+    parse_result = materialize_parse_appendix_docx_assets(
+        project_id,
+        parse_result,
+        bid_type=normalize_bid_type(str(project.get("bidType") or "技术标")),
+    )
     return {
         **parse_result,
         "message": "上传成功，已自动完成解析。",

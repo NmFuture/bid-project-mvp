@@ -5,23 +5,23 @@ ARG OPENCODE_NPM_VERSION=1.14.18
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     FORMAT_CLEANER_ALLOW_SYSTEM_PY=1 \
-    OPENCODE_HOME=/root/.local/share/opencode
+    OPENCODE_HOME=/root/.local/share/opencode \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=10
 
 WORKDIR /workspace
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 python3-pip ripgrep \
-    && rm -rf /var/lib/apt/lists/* \
-    && npm install -g "opencode-ai@${OPENCODE_NPM_VERSION}" \
-    && python3 -m pip install --no-cache-dir --break-system-packages \
-      "python-docx==1.1.2" \
-      "pymupdf>=1.24.0" \
-      "pandas>=2.2.0" \
-      "openpyxl>=3.1.0" \
-      "lxml>=5.2.0" \
-      "docxcompose>=1.4.0" \
-      "PyYAML>=6.0.0" \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g "opencode-ai@${OPENCODE_NPM_VERSION}" \
     && npm cache clean --force
+
+RUN python3 -m pip install --no-cache-dir --break-system-packages "python-docx==1.1.2" "pymupdf>=1.24.0"
+RUN python3 -m pip install --no-cache-dir --break-system-packages "pandas>=2.2.0" "openpyxl>=3.1.0"
+RUN python3 -m pip install --no-cache-dir --break-system-packages "lxml>=5.2.0" "docxcompose>=1.4.0" "PyYAML>=6.0.0"
 
 COPY opencode.json /workspace/opencode.json
 COPY .opencode /workspace/.opencode
@@ -37,7 +37,7 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       '  echo "usage: s1parse <manifest>" >&2' \
       '  exit 64' \
       'fi' \
-      'exec python3 /workspace/.opencode/skills/bid-tender-structured-parser/scripts/run_from_manifest.py "$1"' \
+      'exec python3 /workspace/.opencode/skills/s1parse_router.py "$1"' \
       > /usr/local/bin/s1parse \
     && printf '%s\n' \
       '#!/bin/sh' \
@@ -85,7 +85,7 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       '  echo "usage: wikibuild <manifest>" >&2' \
       '  exit 64' \
       'fi' \
-      'exec python3 /workspace/.opencode/skills/bid-tech-wiki-material-builder/scripts/run_from_manifest.py "$1"' \
+      'exec python3 /workspace/.opencode/skills/wikibuild_router.py "$1"' \
       > /usr/local/bin/wikibuild \
     && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/s7assemble /usr/local/bin/s4gap /usr/local/bin/s4fill /usr/local/bin/s4wordfill /usr/local/bin/wikibuild
 

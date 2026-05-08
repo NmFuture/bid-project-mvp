@@ -38,6 +38,9 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
             transport=httpx.ASGITransport(app=app),
             base_url="http://127.0.0.1:8000",
         )
+        login = await self.client.post("/api/auth/login", json={"email": "admin@sewpg.com", "password": "123456"})
+        login.raise_for_status()
+        self.headers = {"Authorization": f"Bearer {login.json()['token']}"}
 
     async def asyncTearDown(self) -> None:
         await self.client.aclose()
@@ -155,6 +158,43 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(uploaded_item["folderPath"], f"{folder_path}/投标资料/附件")
         self.assertEqual(uploaded_item["name"], "评分表.docx")
 
+    async def test_business_raw_material_library_supports_upload_and_query(self) -> None:
+        customer_name = f"华能集团-{self.run_id}"
+        target_path = f"商务标/客户素材/{customer_name}/01-客户关系与专项证明"
+        upload = await self.client.post(
+            "/api/materials/raw/upload",
+            data={
+                "bidType": "商务标",
+                "targetPath": target_path,
+                "customerName": customer_name,
+            },
+            files=[
+                (
+                    "files",
+                    (
+                        "授权书.docx",
+                        b"fake-business-docx-content",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+        self.assertEqual(upload.status_code, 200)
+        uploaded_item = upload.json()["items"][0]
+        self.assertEqual(uploaded_item["bidType"], "商务标")
+        self.assertEqual(uploaded_item["materialTier"], "customer")
+        self.assertEqual(uploaded_item["customerName"], customer_name)
+        self.assertEqual(uploaded_item["folderPath"], target_path)
+
+        files = await self.client.get(
+            "/api/materials/raw/files",
+            params={"bidType": "商务标", "customerName": customer_name},
+        )
+        self.assertEqual(files.status_code, 200)
+        self.assertEqual(files.json()["total"], 1)
+        self.assertEqual(files.json()["items"][0]["name"], "授权书.docx")
+        self.assertEqual(files.json()["items"][0]["bidType"], "商务标")
+
     async def test_structured_and_wiki_material_routes_return_frontend_ready_payloads(self) -> None:
         structured = await self.client.get("/api/materials/structured")
         self.assertEqual(structured.status_code, 200)
@@ -197,60 +237,38 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
     async def test_audit_settings_and_export_routes_are_available(self) -> None:
         project_id = await self.create_project()
 
-        gateway = await self.client.get("/api/settings/llm-gateway")
+        gateway = await self.client.get("/api/settings/llm-gateway", headers=self.headers)
         self.assertEqual(gateway.status_code, 200)
         self.assertIn("endpoint", gateway.json())
 
         gateway_test = await self.client.post(
             "/api/settings/llm-gateway/test",
+            headers=self.headers,
             json={"endpoint": "https://gateway.example.com", "model": "gpt-5.4"},
         )
-        self.assertEqual(gateway_test.status_code, 200)
-        self.assertTrue(gateway_test.json()["success"])
+        self.assertEqual(gateway_test.status_code, 502)
+        self.assertEqual(gateway_test.json()["code"], "LLM_TEST_FAILED")
 
-        dotx_upload = await self.client.post(
-            "/api/settings/dotx-templates",
-            json={"fileName": "标准模板.dotx", "fileSize": 1024, "version": "2026.04"},
-        )
-        self.assertEqual(dotx_upload.status_code, 200)
-        dotx_id = dotx_upload.json()["item"]["id"]
+        default_templates = await self.client.get("/api/settings/default-templates", headers=self.headers)
+        self.assertEqual(default_templates.status_code, 200)
+        self.assertIn("items", default_templates.json())
 
-        dotx_activate = await self.client.post(f"/api/settings/dotx-templates/{dotx_id}/activate")
-        self.assertEqual(dotx_activate.status_code, 200)
-
-        excel_upload = await self.client.post(
-            "/api/settings/excel-templates",
-            json={"tableKey": "performance_guarantee", "fileName": "性能保证.xlsx", "version": "2026.04"},
-        )
-        self.assertEqual(excel_upload.status_code, 200)
-        excel_id = excel_upload.json()["item"]["id"]
-
-        excel_activate = await self.client.post(f"/api/settings/excel-templates/{excel_id}/activate")
-        self.assertEqual(excel_activate.status_code, 200)
-
-        backup_create = await self.client.post("/api/settings/backups/create", json={"note": "联调前备份"})
-        self.assertEqual(backup_create.status_code, 200)
-        backup_id = backup_create.json()["item"]["id"]
-
-        backup_restore = await self.client.post(f"/api/settings/backups/{backup_id}/restore")
-        self.assertEqual(backup_restore.status_code, 200)
-
-        health = await self.client.get("/api/settings/health")
+        health = await self.client.get("/api/settings/health", headers=self.headers)
         self.assertEqual(health.status_code, 200)
         self.assertIsInstance(health.json(), list)
 
-        audit_list = await self.client.get("/api/audit")
+        audit_list = await self.client.get("/api/audit", headers=self.headers)
         self.assertEqual(audit_list.status_code, 200)
         audit_payload = audit_list.json()
         self.assertIn("filterOptions", audit_payload)
         self.assertGreater(len(audit_payload["items"]), 0)
 
         audit_id = audit_payload["items"][0]["id"]
-        audit_detail = await self.client.get(f"/api/audit/{audit_id}")
+        audit_detail = await self.client.get(f"/api/audit/{audit_id}", headers=self.headers)
         self.assertEqual(audit_detail.status_code, 200)
         self.assertEqual(audit_detail.json()["id"], audit_id)
 
-        audit_export = await self.client.get("/api/audit/export")
+        audit_export = await self.client.get("/api/audit/export", headers=self.headers)
         self.assertEqual(audit_export.status_code, 200)
         self.assertIn("fileName", audit_export.json())
 

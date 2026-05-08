@@ -14,11 +14,12 @@ import MaterialDB from './pages/MaterialDB'
 import MaterialWiki from './pages/MaterialWiki'
 import AuditLog from './pages/AuditLog'
 import TenderReview from './pages/TenderReview'
+import BusinessTenderReview from './pages/BusinessTenderReview'
 import Settings from './pages/Settings'
 import Login from './pages/Login'
 import Toast from './components/shared/Toast'
 import { authAPI } from './api'
-import { projectRoute, useWorkspaceSlug, workspaceFromSlug, workspaceRoute } from './utils/workspace'
+import { parseRouteFromBidType, projectRoute, useWorkspaceSlug, workspaceFromSlug, workspaceRoute } from './utils/workspace'
 
 const AUTH_STORAGE_KEY = 'sewpg.auth.session'
 
@@ -47,7 +48,7 @@ const persistSession = (session) => {
 function WorkspaceRedirect() {
   const { workspace } = useParams()
   const resolved = workspaceFromSlug(workspace)
-  if (!resolved) return <Navigate to="/parse" replace />
+  if (!resolved) return <Navigate to="/parse/technical" replace />
   return <Navigate to={workspaceRoute(resolved.slug, '/projects')} replace />
 }
 
@@ -133,9 +134,11 @@ export default function App() {
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
       <AppShell currentUser={session?.user} onLogout={handleLogout}>
         <Routes>
-          <Route path="/" element={<Navigate to="/parse" replace />} />
-          <Route path="/parse" element={<TenderReview showToast={showToast} />} />
-          <Route path="/review" element={<TenderReview showToast={showToast} />} />
+          <Route path="/" element={<Navigate to="/parse/technical" replace />} />
+          <Route path="/parse" element={<Navigate to="/parse/technical" replace />} />
+          <Route path="/parse/technical" element={<TenderReview showToast={showToast} />} />
+          <Route path="/parse/business" element={<BusinessTenderReview showToast={showToast} />} />
+          <Route path="/review" element={<Navigate to={parseRouteFromBidType('技术标')} replace />} />
           <Route path="/workspace/:workspace" element={<WorkspaceRedirect />} />
           <Route path="/workspace/:workspace/projects" element={<ProjectList showToast={showToast} />} />
           <Route path="/workspace/:workspace/flow" element={<WorkspaceRedirect />} />
