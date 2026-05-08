@@ -886,7 +886,25 @@ def _material_card_node(material: dict[str, Any]) -> dict[str, Any]:
 
 
 def _matches_bid_type(material: dict[str, Any], bid_type: str) -> bool:
-    material_bid_type = str(material.get("bidType") or "通用")
+    material_bid_type = str(material.get("bidType") or "").strip()
+    if not material_bid_type:
+        path_text = " ".join(
+            str(material.get(key) or "")
+            for key in ("path", "folderPath", "name", "title")
+        )
+        folder_tier = str(material.get("materialTier") or "").strip().lower()
+        identity_scope = str(material.get("identityScope") or "").strip().lower()
+        if (
+            any(keyword in path_text for keyword in ("通用素材", "客户素材", "项目素材"))
+            and (folder_tier in {"standard", "customer", "project"} or identity_scope in {"general", "customer", "project"})
+        ):
+            material_bid_type = bid_type
+        elif any(keyword in path_text for keyword in ("商务标", "商务", "报价", "开标", "投标函", "授权", "偏差", "保证金")):
+            material_bid_type = "商务标"
+        elif any(keyword in path_text for keyword in ("技术标", "技术", "风机", "机组", "风资源")):
+            material_bid_type = "技术标"
+        else:
+            material_bid_type = "通用"
     if bid_type == "商务标":
         return material_bid_type == "商务标"
     return material_bid_type == bid_type or material_bid_type == "通用"

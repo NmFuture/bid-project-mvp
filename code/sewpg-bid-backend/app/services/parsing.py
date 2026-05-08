@@ -625,7 +625,15 @@ def _find_commitment_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     for item in items:
         text = " ".join(str(item.get(key) or "") for key in ("title", "value", "evidence", "section"))
+        category = str(item.get("category") or "")
+        key_entity = str(item.get("keyEntity") or "")
+        title = str(item.get("title") or "")
+        evidence = str(item.get("evidence") or "")
         if "承诺" not in text and "不得存在下列情形" not in text:
+            continue
+        if category == "project_basics" and key_entity == "项目名称":
+            continue
+        if title == "项目名称" and evidence.startswith("项目名称"):
             continue
         item_id = str(item.get("id") or "")
         if item_id in seen:
@@ -1016,7 +1024,7 @@ def _build_business_commitment_analysis(
                 "clueType": "pending_manual_review",
                 "status": "needs_review",
                 **base,
-                "recommendedAction": "暂不自动生成，请人工判断是否需要单独承诺函/承诺书。",
+                "recommendedAction": "暂不自动生成，请人工确认是否需要单独承诺函/承诺书。",
                 "riskFlags": ["ambiguous_requirement"],
             }
         )
@@ -1081,7 +1089,7 @@ def _build_business_commitment_analysis(
                 "topicKey": topic_key,
                 "triggerText": str(item.get("triggerText") or "承诺"),
                 "triggerContext": str(item.get("triggerContext") or item.get("evidence") or item.get("value") or "").strip(),
-                "recommendedAction": str(decision.get("reason") or "暂不自动生成，请人工判断是否需要单独承诺函/承诺书。").strip(),
+                "recommendedAction": str(decision.get("reason") or "暂不自动生成，请人工确认是否需要单独承诺函/承诺书。").strip(),
                 "riskFlags": ["semantic_review_required"],
             }
         )
@@ -1307,6 +1315,171 @@ def _filter_business_scoring(scoring: dict[str, Any]) -> dict[str, list[dict[str
     }
 
 
+def _scoring_bucket_from_title(title: str) -> str:
+    text = re.sub(r"\s+", " ", str(title or "").replace("\u3000", " ")).strip()
+    if not text:
+        return ""
+    if any(keyword in text for keyword in ("投标报价评分", "报价评分", "价格评分", "开标价格表", "报价表")):
+        return "price"
+    if any(keyword in text for keyword in ("符合性审查", "合规", "符合性", "审查标准")):
+        return "compliance"
+    if any(keyword in text for keyword in ("商务评分", "商务评审", "商务打分", "评标办法")):
+        return "business"
+    return ""
+
+
+def _collect_markdown_table(lines: list[str], start_index: int) -> tuple[list[tuple[int, str]], int]:
+    rows: list[tuple[int, str]] = []
+    index = start_index
+    while index < len(lines):
+        line = lines[index]
+        if not MARKDOWN_TABLE_LINE_PATTERN.match(line.strip()):
+            break
+        rows.append((index + 1, line))
+        index += 1
+    return rows, index
+
+
+def _parse_markdown_scoring_rows(
+    *,
+    rows: list[tuple[int, str]],
+    document: dict[str, Any],
+    section: str,
+    start_index: int,
+) -> list[dict[str, Any]]:
+    parsed_rows: list[dict[str, Any]] = []
+    table_rows = [(line_no, _parse_markdown_table_row(line)) for line_no, line in rows]
+    filtered_rows = [(line_no, cells) for line_no, cells in table_rows if cells and not _is_markdown_separator_row(cells)]
+    if len(filtered_rows) <= 1:
+        return parsed_rows
+    data_rows = filtered_rows[1:]
+    order = start_index
+    for line_no, cells in data_rows:
+        if len(cells) < 4:
+            continue
+        scoring_item = cells[1].strip() if len(cells) > 1 else ""
+        score = cells[2].strip() if len(cells) > 2 else ""
+        score_point = cells[3].strip() if len(cells) > 3 else ""
+        proof_requirement = cells[4].strip() if len(cells) > 4 else ""
+        if not scoring_item and not score_point:
+            continue
+        parsed_rows.append(
+            {
+                "order": str(order),
+                "scoringItem": scoring_item,
+                "score": score,
+                "scorePoint": score_point,
+                "proofRequirement": proof_requirement,
+                "status": "found",
+                "sourceFile": str(document.get("name") or ""),
+                "sourceDocumentId": str(document.get("id") or ""),
+                "section": section,
+                "evidence": " | ".join(cell for cell in cells if cell),
+                "evidenceLocation": f"L{line_no}",
+            }
+        )
+        order += 1
+    return parsed_rows
+
+
+def _extract_markdown_scoring(documents: list[dict[str, Any]], texts_by_id: dict[str, str]) -> dict[str, list[dict[str, Any]]]:
+    scoring = {"business": [], "price": [], "compliance": []}
+    for document in documents:
+        text = str(texts_by_id.get(str(document.get("id") or "")) or "")
+        if "|" not in text:
+            continue
+        lines = text.splitlines()
+        current_section = ""
+        pending_scoring_title = ""
+        index = 0
+        while index < len(lines):
+            raw_line = lines[index]
+            line = raw_line.strip()
+            if not line:
+                index += 1
+                continue
+            if line.startswith("#"):
+                current_section = line.strip("# ").strip()
+                pending_scoring_title = ""
+                index += 1
+                continue
+
+            bucket_from_line = _scoring_bucket_from_title(line)
+            if _looks_like_section_heading(line):
+                current_section = line
+                pending_scoring_title = line if bucket_from_line else ""
+                index += 1
+                continue
+
+            if bucket_from_line:
+                pending_scoring_title = line
+                if index + 1 < len(lines) and MARKDOWN_TABLE_LINE_PATTERN.match(lines[index + 1].strip()):
+                    rows, next_index = _collect_markdown_table(lines, index + 1)
+                    scoring[bucket_from_line].extend(
+                        _parse_markdown_scoring_rows(
+                            rows=rows,
+                            document=document,
+                            section=line,
+                            start_index=len(scoring[bucket_from_line]) + 1,
+                        )
+                    )
+                    pending_scoring_title = ""
+                    index = next_index
+                    continue
+
+            if MARKDOWN_TABLE_LINE_PATTERN.match(line):
+                bucket = _scoring_bucket_from_title(pending_scoring_title or current_section)
+                if bucket:
+                    rows, next_index = _collect_markdown_table(lines, index)
+                    scoring[bucket].extend(
+                        _parse_markdown_scoring_rows(
+                            rows=rows,
+                            document=document,
+                            section=pending_scoring_title or current_section,
+                            start_index=len(scoring[bucket]) + 1,
+                        )
+                    )
+                    pending_scoring_title = ""
+                    index = next_index
+                    continue
+
+            index += 1
+    return scoring
+
+
+def _merge_business_scoring(
+    base_scoring: dict[str, Any],
+    markdown_scoring: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    merged = _filter_business_scoring(base_scoring)
+    seen = {
+        bucket: {
+            (
+                str(row.get("sourceDocumentId") or ""),
+                str(row.get("evidenceLocation") or ""),
+                str(row.get("scoringItem") or ""),
+                str(row.get("score") or ""),
+            )
+            for row in merged.get(bucket) or []
+            if isinstance(row, dict)
+        }
+        for bucket in merged
+    }
+    for bucket, rows in markdown_scoring.items():
+        for row in rows:
+            key = (
+                str(row.get("sourceDocumentId") or ""),
+                str(row.get("evidenceLocation") or ""),
+                str(row.get("scoringItem") or ""),
+                str(row.get("score") or ""),
+            )
+            if key in seen[bucket]:
+                continue
+            seen[bucket].add(key)
+            merged[bucket].append(row)
+    return merged
+
+
 def _build_business_coverage(
     field_groups: dict[str, Any],
     scoring: dict[str, list[dict[str, Any]]],
@@ -1361,7 +1534,10 @@ def _transform_to_business_contract(
     source_documents = copy.deepcopy(structured.get("sourceDocuments") or [])
     project_dates = copy.deepcopy(structured.get("projectDates") or {"startDate": "", "endDate": ""})
     appendices = copy.deepcopy(structured.get("appendices") or [])
-    scoring = _filter_business_scoring(structured.get("scoringCriteria") or {})
+    scoring = _merge_business_scoring(
+        structured.get("scoringCriteria") or {},
+        _extract_markdown_scoring(documents, texts_by_id),
+    )
     commitment_analysis = _build_business_commitment_analysis(
         merged_items,
         run_semantic_review=run_semantic_review,

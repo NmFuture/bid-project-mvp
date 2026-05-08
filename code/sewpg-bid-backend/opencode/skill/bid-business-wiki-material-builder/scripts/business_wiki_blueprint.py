@@ -312,6 +312,8 @@ def infer_special_common_subgroup(path: str, title: str, group_name: str) -> str
 
 def infer_common_group(path: str, title: str) -> str:
     text = f"{path}/{title}"
+    if any(token in text for token in ("机型认证", "型式认证", "证书", "部件")):
+        return "05-专题证书库"
     if any(token in text for token in ("营业执照", "资质", "认证", "信用", "资信", "纳税", "开户")):
         return "01-资质合规库"
     if any(token in text for token in ("组织架构", "能力", "工厂", "产能", "服务", "专利", "奖项", "质量管理")):
@@ -320,8 +322,6 @@ def infer_common_group(path: str, title: str) -> str:
         return "03-业绩资产池"
     if any(token in text for token in ("财务", "审计", "报表")):
         return "04-财务资料库"
-    if any(token in text for token in ("机型认证", "型式认证", "证书", "部件")):
-        return "05-专题证书库"
     return "06-通用模板底稿库"
 
 
