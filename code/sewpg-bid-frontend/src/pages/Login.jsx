@@ -6,24 +6,24 @@ import RoleChip from '../components/shared/RoleChip'
 const QUICK_LOGIN = [
   {
     role: 'T',
-    email: 'liminyuan@sewpg.com',
-    name: '李明远',
+    email: 'anbo@nmscholar.fun',
+    name: '安博',
     title: '风电技术高级工程师',
     department: '技术中心 / 风电技术部',
     employeeId: 'T-1024',
   },
   {
     role: 'B',
-    email: 'wangzhiyuan@sewpg.com',
-    name: '王致远',
+    email: 'mage@nmscholar.fun',
+    name: '马哥',
     title: '商务标主管',
     department: '商务中心 / 投标商务部',
     employeeId: 'B-2308',
   },
   {
     role: 'TB',
-    email: 'zhangxiaoyan@sewpg.com',
-    name: '张晓岩',
+    email: 'xiaoge@nmscholar.fun',
+    name: '肖哥',
     title: '投标项目经理',
     department: '投标管理中心',
     employeeId: 'P-0517',
@@ -97,7 +97,9 @@ export default function Login({ onLogin }) {
       <div className="relative min-h-screen grid lg:grid-cols-[5fr_4fr] xl:grid-cols-[7fr_5fr]">
         <div className="hidden lg:flex flex-col justify-between p-12 xl:p-16 text-white">
           <div className="flex items-center gap-3 animate-float-in">
-            <img src={enterpriseLogo} alt="上海电气" className="h-9 w-auto object-contain" />
+            <span className="inline-flex h-10 items-center rounded-md bg-white px-3 py-1.5 shadow-sm">
+              <img src={enterpriseLogo} alt="上海电气" className="h-7 w-auto object-contain" />
+            </span>
             <div className="leading-tight">
               <div className="text-[15px] font-headline font-semibold tracking-wide">投标智能体平台</div>
               <div className="text-[11px] text-white/55 mt-0.5">上海电气风电集团股份有限公司</div>
@@ -150,7 +152,9 @@ export default function Login({ onLogin }) {
             style={{ animationDelay: '0.16s' }}
           >
             <div className="lg:hidden flex items-center gap-3 text-white">
-              <img src={enterpriseLogo} alt="上海电气" className="h-9 w-auto object-contain" />
+              <span className="inline-flex h-10 items-center rounded-md bg-white px-3 py-1.5 shadow-sm">
+                <img src={enterpriseLogo} alt="上海电气" className="h-7 w-auto object-contain" />
+              </span>
               <span className="text-[15px] font-headline font-semibold">投标智能体平台</span>
             </div>
 

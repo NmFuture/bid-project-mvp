@@ -1,104 +1,177 @@
-import { useMemo, useState } from 'react'
-import { NavLink, useLocation } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import enterpriseLogo from '../../assets/logo-removebg.png'
-import { WORKSPACE_TYPES, workspaceFromPathname, workspaceRoute } from '../../utils/workspace'
-import { ROLE_LABEL, availableWorkspacesFor } from '../../utils/permissions'
+import {
+  WORKSPACE_TYPES,
+  workspaceFromPathname,
+  workspaceRoute,
+} from '../../utils/workspace'
+import {
+  availableWorkspacesFor,
+  defaultWorkspaceFor,
+  canViewBothWorkspaces,
+} from '../../utils/permissions'
+import RoleChip from '../shared/RoleChip'
 
-const ALL_NAV_ITEMS = [
-  { path: '/dashboard', icon: 'dashboard', label: '工作台', match: '/dashboard', workspaces: ['tech', 'business'] },
-  { path: '/parse/technical', icon: 'engineering', label: '技术解析', match: '/parse/technical', workspaces: ['tech'] },
-  { path: '/parse/business', icon: 'request_quote', label: '商务解析', match: '/parse/business', workspaces: ['business'] },
-  { path: '/materials/structured', icon: 'database', label: '素材库', match: '/materials', workspaces: ['tech', 'business'] },
-  { path: '/workspace/tech/projects', icon: 'engineering', label: '技术标', match: '/workspace/tech', workspaces: ['tech'] },
-  { path: '/workspace/business/projects', icon: 'request_quote', label: '商务标', match: '/workspace/business', workspaces: ['business'] },
-  { path: '/audit', icon: 'history', label: '审计', match: '/audit', workspaces: ['tech', 'business'] },
-  { path: '/settings', icon: 'settings', label: '设置', match: '/settings', workspaces: ['tech', 'business'] },
+// 一级导航：6 项，对所有角色一致；2-5 项的链接随当前 workspace 变化。
+const NAV_DEFINITIONS = [
+  { key: 'dashboard', icon: 'dashboard', label: '工作台', match: /^\/dashboard/, path: () => '/dashboard' },
+  {
+    key: 'parse',
+    icon: 'document_scanner',
+    label: '解析',
+    match: /^\/(parse|review)/,
+    path: (slug) => (slug === 'business' ? '/parse/business' : '/parse/technical'),
+  },
+  {
+    key: 'projects',
+    icon: 'folder_open',
+    label: '项目',
+    match: /^(\/workspace\/[^/]+)?\/projects/,
+    path: (slug) => workspaceRoute(slug, '/projects'),
+  },
+  {
+    key: 'materials',
+    icon: 'database',
+    label: '素材库',
+    match: /^(\/workspace\/[^/]+)?\/materials/,
+    path: (slug) => workspaceRoute(slug, '/materials/structured'),
+  },
+  {
+    key: 'logs',
+    icon: 'history',
+    label: '日志',
+    match: /^(\/workspace\/[^/]+)?\/(audit|logs)/,
+    path: (slug) => workspaceRoute(slug, '/logs'),
+  },
+  { key: 'settings', icon: 'settings', label: '设置', match: /^\/settings/, path: () => '/settings' },
 ]
 
-const WORKSPACE_NAV_ITEMS = [
-  { key: 'projects', path: '/projects', icon: 'folder_open', label: '项目' },
-  { key: 'logs', path: '/logs', icon: 'history_edu', label: '日志' },
-]
+const WORKSPACE_STORAGE_KEY = 'sewpg.workspace'
 
 export default function AppShell({ children, currentUser = null, onLogout = () => {} }) {
   const location = useLocation()
+  const navigate = useNavigate()
   const [showUserMenu, setShowUserMenu] = useState(false)
+
   const userName = String(currentUser?.name || '当前用户')
   const userEmail = String(currentUser?.email || '')
   const userDept = String(currentUser?.dept || '')
   const userRole = currentUser?.role || null
-  const userRoleLabel = userRole ? ROLE_LABEL[userRole] : ''
-  const userAvatar = String(currentUser?.avatar || userName[0] || '用')
-  const workspaceSlug = workspaceFromPathname(location.pathname)
-  const workspace = workspaceSlug ? WORKSPACE_TYPES[workspaceSlug] : null
-  const navItems = useMemo(() => {
-    const allowed = new Set(availableWorkspacesFor(currentUser))
-    if (allowed.size === 0) return ALL_NAV_ITEMS
-    return ALL_NAV_ITEMS.filter((item) => item.workspaces.some((w) => allowed.has(w)))
-  }, [currentUser])
+  const userInitial = userName[0] || '用'
 
-  const isActive = (match) => (
-    location.pathname.startsWith(match)
-    || (match === '/parse/technical' && (location.pathname === '/parse' || location.pathname.startsWith('/review')))
-  )
-  const isWorkspaceNavActive = (item) => {
-    const target = workspaceRoute(workspaceSlug, item.path)
-    if (item.key === 'projects') {
-      return location.pathname === target || /^\/workspace\/[^/]+\/projects(\/|$)/.test(location.pathname)
+  const allowedWorkspaces = useMemo(() => availableWorkspacesFor(currentUser), [currentUser])
+
+  const urlWorkspace = workspaceFromPathname(location.pathname)
+  const [manualWorkspace, setManualWorkspace] = useState(null)
+
+  const activeWorkspace = useMemo(() => {
+    if (urlWorkspace && allowedWorkspaces.includes(urlWorkspace)) return urlWorkspace
+    if (manualWorkspace && allowedWorkspaces.includes(manualWorkspace)) return manualWorkspace
+    if (typeof window !== 'undefined') {
+      const stored = window.sessionStorage.getItem(WORKSPACE_STORAGE_KEY)
+      if (stored && allowedWorkspaces.includes(stored)) return stored
     }
-    return location.pathname.startsWith(target)
+    return defaultWorkspaceFor(currentUser)
+  }, [urlWorkspace, manualWorkspace, allowedWorkspaces, currentUser])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !activeWorkspace) return
+    window.sessionStorage.setItem(WORKSPACE_STORAGE_KEY, activeWorkspace)
+  }, [activeWorkspace])
+
+  const showSwitcher = canViewBothWorkspaces(currentUser)
+  const workspaceForLinks = activeWorkspace
+
+  const handleSwitchWorkspace = (slug) => {
+    if (slug === activeWorkspace) return
+    setManualWorkspace(slug)
+    if (urlWorkspace) {
+      const tail = location.pathname.replace(/^\/workspace\/[^/]+/, '')
+      navigate(`/workspace/${slug}${tail}`)
+    }
   }
 
+  const navItems = NAV_DEFINITIONS.map((it) => ({
+    ...it,
+    to: it.path(workspaceForLinks),
+  }))
+
+  const isActive = (def) => def.match.test(location.pathname)
+
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
-      {/* ===== Header ===== */}
+    <div className="h-screen flex flex-col overflow-hidden bg-surface">
       <header className="fixed top-0 w-full z-50 h-12 bg-[#05202E] text-white border-b border-[#154e7a] flex items-center justify-between gap-2 px-3 md:px-5">
         <div className="flex items-center gap-3 min-w-0">
-          <img
-            src={enterpriseLogo}
-            alt="上海电气"
-            className="h-7 w-auto object-contain shrink-0"
-          />
-          <span className="text-[18px] font-semibold tracking-tight text-white font-headline leading-none truncate">
+          <span className="inline-flex h-8 shrink-0 items-center rounded-sm bg-white px-2 py-1 shadow-sm">
+            <img src={enterpriseLogo} alt="上海电气" className="h-6 w-auto object-contain" />
+          </span>
+          <span className="text-[15px] font-semibold tracking-tight text-white font-headline leading-none truncate">
             投标智能体平台
           </span>
         </div>
 
+        {showSwitcher && (
+          <div className="hidden md:flex items-center gap-1 rounded-full bg-white/10 p-0.5 backdrop-blur">
+            {allowedWorkspaces.map((slug) => {
+              const ws = WORKSPACE_TYPES[slug]
+              if (!ws) return null
+              const active = activeWorkspace === slug
+              return (
+                <button
+                  key={slug}
+                  type="button"
+                  onClick={() => handleSwitchWorkspace(slug)}
+                  className={`inline-flex items-center gap-1.5 px-3 h-7 rounded-full text-xs font-medium transition-all ${active ? 'bg-white text-[#05202E] shadow' : 'text-white/80 hover:text-white'}`}
+                >
+                  <span
+                    className="material-symbols-outlined text-[15px]"
+                    style={{ fontVariationSettings: active ? "'FILL' 1" : "'FILL' 0" }}
+                  >
+                    {ws.icon}
+                  </span>
+                  {ws.label}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
         <div className="flex items-center gap-2">
-          <span className="hidden md:inline text-xs text-[#d6ebff]">欢迎您，{userName}</span>
-          {userRoleLabel && (
-            <span className="hidden md:inline-flex items-center h-6 px-2 rounded-full bg-[#0f77c4] text-[11px] font-semibold tracking-wide text-white">
-              {userRoleLabel}
+          {userRole && (
+            <span className="hidden md:inline-flex">
+              <RoleChip role={userRole} />
             </span>
           )}
-          {/* User Avatar */}
+          <span className="hidden lg:inline text-xs text-[#d6ebff]">{userName}</span>
           <div className="relative">
             <button
               className="w-8 h-8 rounded-full overflow-hidden border border-[#8fb8d8] cursor-pointer bg-[#20679f] flex items-center justify-center text-white font-semibold text-sm"
-              onClick={() => setShowUserMenu(!showUserMenu)}
+              onClick={() => setShowUserMenu((v) => !v)}
+              aria-label="用户菜单"
             >
-              {userAvatar}
+              {userInitial}
             </button>
             {showUserMenu && (
-              <div className="absolute right-0 top-12 w-48 bg-white rounded-xl shadow-[0_8px_24px_-8px_rgba(0,0,0,0.15)] border border-surface-container-high py-2 animate-fade-in z-50">
+              <div className="absolute right-0 top-12 w-56 bg-white rounded-xl shadow-[0_8px_24px_-8px_rgba(0,0,0,0.15)] border border-surface-container-high py-2 animate-fade-in z-50">
                 <div className="px-4 py-3 border-b border-surface-container-high">
-                  <div className="flex items-center gap-2">
-                    <div className="text-sm font-semibold text-on-surface">{userName}</div>
-                    {userRoleLabel && (
-                      <span className="inline-flex items-center h-5 px-1.5 rounded bg-primary-container text-[10px] text-on-primary-container font-semibold">
-                        {userRoleLabel}
-                      </span>
-                    )}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-semibold text-on-surface truncate">{userName}</div>
+                    {userRole && <RoleChip role={userRole} showLabel={false} />}
                   </div>
-                  {userDept && <div className="text-xs text-outline mt-0.5">{userDept}</div>}
-                  <div className="text-xs text-outline mt-0.5">{userEmail || '未绑定邮箱'}</div>
+                  {userDept && <div className="text-xs text-on-surface-variant mt-1 truncate">{userDept}</div>}
+                  {userEmail && <div className="text-[11px] text-outline mt-1 truncate font-mono">{userEmail}</div>}
                 </div>
                 <button
                   type="button"
                   className="w-full text-left flex items-center gap-3 px-4 py-2.5 text-sm text-on-surface hover:bg-surface-container-low transition-colors"
+                  onClick={() => {
+                    setShowUserMenu(false)
+                    navigate('/settings')
+                  }}
                 >
-                  <span className="material-symbols-outlined text-lg">person</span>
-                  个人信息
+                  <span className="material-symbols-outlined text-lg">settings</span>
+                  设置
                 </button>
                 <button
                   type="button"
@@ -117,77 +190,57 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
         </div>
       </header>
 
-      {/* ===== Sidebar + Main ===== */}
       <div className="flex flex-1 pt-12 min-h-0">
-        {/* Sidebar */}
-        <aside className="hidden md:flex flex-col bg-[#0067B6] fixed left-0 top-12 h-[calc(100vh-4.75rem)] w-[74px] z-40 pt-0 pb-0 border-r border-[#0f77c4]">
-          {/* Nav Items */}
+        <aside className="hidden md:flex flex-col bg-[#0067B6] fixed left-0 top-12 h-[calc(100vh-3rem)] w-[78px] z-40 border-r border-[#0f77c4]">
           <nav className="flex-1 overflow-y-auto flex flex-col gap-0 px-0 font-headline text-xs">
-            {navItems.map((item) => (
-              <NavLink
-                key={item.path}
-                to={item.path}
-                className={`w-full flex flex-col items-center justify-center gap-1 px-0 py-3 border-y border-transparent transition-colors ${
-                  isActive(item.match)
-                    ? 'bg-[#4C95CD] text-white border-[#62a2d4]'
-                    : 'text-white/90 hover:text-white hover:bg-[#237ac0]'
-                }`}
-              >
-                <span
-                  className="material-symbols-outlined text-[19px]"
-                  style={{ fontVariationSettings: isActive(item.match) ? "'FILL' 1" : "'FILL' 0" }}
+            {navItems.map((item) => {
+              const active = isActive(item)
+              return (
+                <NavLink
+                  key={item.key}
+                  to={item.to}
+                  className={`w-full flex flex-col items-center justify-center gap-1 px-1 py-3 border-y border-transparent transition-all ${active ? 'bg-[#4C95CD] text-white border-[#62a2d4]' : 'text-white/85 hover:text-white hover:bg-[#237ac0]'}`}
                 >
-                  {item.icon}
-                </span>
-                <span className="tracking-wide leading-none font-semibold">{item.label}</span>
-              </NavLink>
-            ))}
+                  <span
+                    className="material-symbols-outlined text-[20px]"
+                    style={{ fontVariationSettings: active ? "'FILL' 1" : "'FILL' 0" }}
+                  >
+                    {item.icon}
+                  </span>
+                  <span className="tracking-wide leading-none font-semibold text-[11px]">{item.label}</span>
+                </NavLink>
+              )
+            })}
           </nav>
-        </aside>
 
-        {/* Main Content */}
-        <main className="flex-1 md:ml-[74px] overflow-y-auto px-7 py-4 md:px-10 md:py-5 lg:px-12 lg:py-6 xl:px-14 relative bg-white min-h-0">
-          {workspace && (
-            <div className="mb-4 flex flex-col gap-3 border-b border-[#d7e1ec] pb-3 md:flex-row md:items-center md:justify-between">
-              <div className="flex items-center gap-2 text-sm font-semibold text-[#163b58]">
-                <span className="material-symbols-outlined text-[18px] text-[#0067B6]">{workspace.icon}</span>
-                <span>{workspace.label}工作区</span>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {WORKSPACE_NAV_ITEMS.map((item) => {
-                  const selected = isWorkspaceNavActive(item)
-                  return (
-                    <NavLink
-                      key={item.key}
-                      to={workspaceRoute(workspaceSlug, item.path)}
-                      className={`inline-flex h-8 items-center gap-1.5 border px-3 text-sm font-medium transition-colors ${
-                        selected
-                          ? 'border-[#0067B6] bg-[#0067B6] text-white'
-                          : 'border-[#c7d4e0] bg-white text-[#36576f] hover:border-[#0067B6] hover:text-[#0067B6]'
-                      }`}
-                    >
-                      <span className="material-symbols-outlined text-[17px]">{item.icon}</span>
-                      {item.label}
-                    </NavLink>
-                  )
-                })}
+          {workspaceForLinks && WORKSPACE_TYPES[workspaceForLinks] && (
+            <div className="px-2 pb-2 pt-1 border-t border-white/15">
+              <div className="rounded-md bg-white/10 px-2 py-1.5 text-[10px] text-white/85 leading-tight text-center">
+                <span
+                  className="material-symbols-outlined text-[14px] block"
+                  style={{ fontVariationSettings: "'FILL' 1" }}
+                >
+                  {WORKSPACE_TYPES[workspaceForLinks].icon}
+                </span>
+                <span className="block mt-0.5 font-semibold">
+                  {WORKSPACE_TYPES[workspaceForLinks].label}
+                </span>
               </div>
             </div>
           )}
+        </aside>
+
+        <main className="flex-1 md:ml-[78px] overflow-y-auto bg-white min-h-0 px-7 py-4 md:px-10 md:py-5 lg:px-12 lg:py-6 xl:px-14">
           {children}
         </main>
       </div>
 
-      <footer className="md:ml-[74px] h-7 border-t border-outline-variant/45 bg-surface text-outline text-xs flex items-center justify-center">
+      <footer className="md:ml-[78px] h-7 border-t border-outline-variant/45 bg-surface text-outline text-xs flex items-center justify-center">
         © 上海电气风电集团股份有限公司版权所有
       </footer>
 
-      {/* Click outside to close menus */}
       {showUserMenu && (
-        <div
-          className="fixed inset-0 z-30"
-          onClick={() => { setShowUserMenu(false) }}
-        />
+        <div className="fixed inset-0 z-30" onClick={() => setShowUserMenu(false)} />
       )}
     </div>
   )

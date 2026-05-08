@@ -83,9 +83,9 @@ class AuthService:
     async def ensure_role_seed_users(self) -> None:
         await self._ensure_tables()
         seed = [
-            ("U-ROLE-T", "李明远", "liminyuan@sewpg.com", "技术中心 / 风电技术部", ["T"]),
-            ("U-ROLE-B", "王致远", "wangzhiyuan@sewpg.com", "商务中心 / 投标商务部", ["B"]),
-            ("U-ROLE-TB", "张晓岩", "zhangxiaoyan@sewpg.com", "投标管理中心", ["TB"]),
+            ("U-ROLE-T", "安博", "anbo@nmscholar.fun", "技术中心 / 风电技术部", ["T"]),
+            ("U-ROLE-B", "马哥", "mage@nmscholar.fun", "商务中心 / 投标商务部", ["B"]),
+            ("U-ROLE-TB", "肖哥", "xiaoge@nmscholar.fun", "投标管理中心", ["TB"]),
         ]
         default_password = settings.auth_admin_password
         async with async_session() as session:
