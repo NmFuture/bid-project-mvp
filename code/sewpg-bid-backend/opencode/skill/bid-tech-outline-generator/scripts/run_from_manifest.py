@@ -675,8 +675,14 @@ def parse_outline_paragraph(para: Paragraph, *, allow_body_list: bool = True) ->
     if parsed is None and level is None:
         return None
     number = parsed["number"] if parsed else ""
-    title = parsed["title"] if parsed else strip_heading_number(text)
-    return {"number": number, "title": clean_title(title), "level": max(1, int(level or 1))}
+    title = clean_title(parsed["title"] if parsed else strip_heading_number(text))
+    # Defense in depth against table-cell paragraphs leaking through with a
+    # heading style. A real heading must contain at least one Chinese
+    # ideograph or Latin letter; pure-digit / punctuation-only "titles"
+    # (e.g. ``216`` from a power curve cell) are noise.
+    if not re.search(r"[一-鿿A-Za-z]", title):
+        return None
+    return {"number": number, "title": title, "level": max(1, int(level or 1))}
 
 
 def parse_heading_line(text: str, *, allow_body_list: bool = True) -> dict[str, Any] | None:
@@ -940,8 +946,24 @@ def strip_heading_number(value: str) -> str:
 
 
 def strip_page_number(value: str) -> str:
+    """Strip a trailing TOC-style page number (e.g. ``1.1 项目概况 ......... 12``).
+
+    Defensive against table-cell numeric values (e.g. ``216.9`` from a power
+    curve appendix in the bid template). The rule is: only commit to the
+    strip if the result still contains real heading content — at least one
+    Chinese ideograph or Latin letter. Otherwise the input is itself a
+    numeric value (``216.9``, ``2.75-3.25``, ``3.5``) and we must keep it
+    intact, otherwise downstream identifies it as a noise TOC item.
+
+    Without this guard, the previous regex would mangle ``216.9`` into
+    ``216`` because the dot is in the separator class — bug surfaced when
+    13 spurious GAP items appeared in S3 with titles like ``216``, ``367``."""
+
     text = normalize_space(value)
-    return re.sub(r"[\s　.．·•-]*(?:第\s*)?\d{1,4}\s*(?:页)?$", "", text).strip()
+    stripped = re.sub(r"[\s　.．·•-]*(?:第\s*)?\d{1,4}\s*(?:页)?$", "", text).strip()
+    if not re.search(r"[一-鿿A-Za-z]", stripped):
+        return text
+    return stripped
 
 
 def level_from_number(number: str) -> int:

@@ -880,6 +880,107 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertNotIn("叶根部驱动转矩", titles)
             self.assertNotIn("变桨电机转矩", titles)
 
+    def test_bid_outline_generator_drops_numeric_table_cell_paragraphs(self) -> None:
+        """Regression: D.x 功率曲线表格 cell-paragraphs (e.g. ``216.9``,
+        ``3.5``, ``2.75-3.25``) used to be promoted to TOC entries when the
+        cell happened to carry a Heading style. Two layered defenses now
+        prevent this:
+
+        1. ``strip_page_number`` only commits the strip if the result still
+           has Chinese / Latin content (so ``216.9`` no longer turns into
+           ``216``).
+        2. ``parse_outline_paragraph`` rejects any candidate whose final
+           title has no Chinese / Latin character.
+
+        Symptom in production: 13 phantom GAP items with titles ``216``,
+        ``367``, ``345``, ``591``, ``554`` … appeared in S3 缺口处理 for
+        every project parsed against this customer's bid template."""
+
+        outline_runner = load_outline_script("run_from_manifest")
+
+        # Direct unit checks on the helper functions, in case the higher-level
+        # runner test below is somehow still passing them through.
+        self.assertEqual(outline_runner.strip_page_number("1.1 项目概况 ......... 12"), "1.1 项目概况")
+        self.assertEqual(outline_runner.strip_page_number("附表E.3 推荐机型 195"), "附表E.3 推荐机型")
+        # Numeric cell values must round-trip unchanged.
+        self.assertEqual(outline_runner.strip_page_number("216.9"), "216.9")
+        self.assertEqual(outline_runner.strip_page_number("3.5"), "3.5")
+        self.assertEqual(outline_runner.strip_page_number("2.75-3.25"), "2.75-3.25")
+        self.assertEqual(outline_runner.strip_page_number("12"), "12")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            output = root / "toc.json"
+            evidence = root / "evidence.json"
+
+            template_doc = Document()
+            # Genuine TOC entries we expect to keep
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.add_paragraph("1.1 项目概况", style="Heading 2")
+            # Simulate a 附表D.1 power curve table whose data cells carry a
+            # heading style (real customer template does this for visual
+            # emphasis on numeric columns). Each cell-paragraph would
+            # otherwise be picked up as a TOC item by iter_docx_paragraphs
+            # since it walks every <w:p> in the document, including those
+            # nested inside <w:tbl>/<w:tc>.
+            template_doc.add_paragraph("附表D.1 标准及风电场空气密度功率曲线", style="Heading 2")
+            curve_table = template_doc.add_table(rows=4, cols=4)
+            curve_data = [
+                ["风速区间(m/s)", "区间平均风速(m/s)", "标准1.225 (kW)", "风电场1.16 (kW)"],
+                ["2.75-3.25", "3.0", "216.9", "204"],
+                ["3.25-3.75", "3.5", "367.9", "345.4"],
+                ["3.75-4.25", "4.0", "591.2", "554.7"],
+            ]
+            for row_idx, row_values in enumerate(curve_data):
+                for col_idx, value in enumerate(row_values):
+                    cell = curve_table.cell(row_idx, col_idx)
+                    cell.text = ""
+                    para = cell.paragraphs[0]
+                    para.add_run(value)
+                    # Apply Heading 3 to every cell paragraph — this is the
+                    # exact production trigger that promoted "216.9" etc.
+                    para.style = template_doc.styles["Heading 3"]
+            template_doc.save(template)
+
+            tender_doc = Document()
+            tender_doc.add_paragraph("投标人应提供完整技术方案。")
+            tender_doc.save(tender)
+
+            outline_runner.run_manifest(
+                {
+                    "projectId": "PRJ-TEST",
+                    "workDir": str(root),
+                    "templateFile": str(template),
+                    "tenderFiles": [{"id": "TEN-1", "name": "tender.docx", "path": str(tender)}],
+                    "outputFile": str(output),
+                    "evidenceFile": str(evidence),
+                },
+                root / "s2_input.json",
+            )
+
+            toc = json_load(output)
+            titles = [str(item.get("title") or "") for item in toc["items"]]
+
+            # Real headings survive
+            self.assertIn("技术方案", titles)
+            self.assertIn("项目概况", titles)
+            self.assertIn("标准及风电场空气密度功率曲线", titles)
+
+            # Numeric noise from the curve table must NOT appear in TOC
+            for noise in ("216", "216.9", "367", "367.9", "345", "591", "3.5", "3", "2.75-3.25"):
+                self.assertNotIn(noise, titles, f"numeric noise {noise!r} leaked into TOC titles {titles!r}")
+
+            # Defensive: no item should have an all-numeric / all-punctuation title
+            for item in toc["items"]:
+                title = str(item.get("title") or "").strip()
+                self.assertRegex(
+                    title,
+                    r"[一-鿿A-Za-z]",
+                    f"item {item.get('itemId')} has noise title {title!r} with no Chinese / Latin content",
+                )
+
     def test_bid_assembler_parse_toc_accepts_current_s2_json(self) -> None:
         parse_toc = load_assembler_script("parse_toc")
 
