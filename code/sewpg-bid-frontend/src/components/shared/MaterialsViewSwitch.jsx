@@ -6,8 +6,8 @@ const ITEMS = [
 ]
 
 const BID_TYPE_ITEMS = [
-  { value: '技术标', label: '技术标', icon: 'engineering' },
-  { value: '商务标', label: '商务标', icon: 'request_quote' },
+  { value: '技术标', label: '技术标', shortLabel: '技' },
+  { value: '商务标', label: '商务标', shortLabel: '商' },
 ]
 
 export default function MaterialsViewSwitch({
@@ -45,7 +45,14 @@ export default function MaterialsViewSwitch({
                       : 'text-on-surface-variant hover:bg-surface-container-high'
                   }`}
                 >
-                  <span className="material-symbols-outlined text-[17px]">{item.icon}</span>
+                  <span
+                    aria-hidden="true"
+                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded text-xs ${
+                      selected ? 'bg-white/20 text-on-primary' : 'bg-surface-container-high text-primary'
+                    }`}
+                  >
+                    {item.shortLabel}
+                  </span>
                   <span>{item.label}</span>
                 </button>
               )
