@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import os
 import re
+import time
+import urllib.error
+import urllib.request
 import zipfile
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
+
+logger = logging.getLogger(__name__)
 
 
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -114,6 +121,13 @@ def run_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any
     attach_outline = extract_outline(attach_file) if attach_file else []
     candidates = extract_candidates(tender_files)
     items, decisions = build_items(template_outline, attach_outline, candidates)
+
+    # Optional AI judge layer — when ``OUTLINE_JUDGE_ENABLED=true`` plus the
+    # endpoint env vars are set, send the rule-based items to an LLM for noise
+    # culling before we serialize toc.json. The judge can only DROP items;
+    # the rule-based path stays authoritative on shape, numbering and titles.
+    items_before_judge = items
+    items, judge_review = _apply_outline_judge(items, work_dir)
     review_budget = review_budget_from_manifest(manifest)
 
     annotation_counts = Counter(str(item.get("annotation") or "") for item in items)
@@ -138,6 +152,13 @@ def run_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any
             "annotation_counts": dict(annotation_counts),
             "template_heading_count": len(template_outline),
             "tender_candidate_count": len(candidates),
+            "outline_judge": {
+                "status": judge_review.get("status"),
+                "input_item_count": judge_review.get("input_item_count"),
+                "kept_item_count": judge_review.get("kept_item_count"),
+                "dropped_item_count": judge_review.get("dropped_item_count"),
+                "model": judge_review.get("model"),
+            },
         },
         "items": items,
         "outputFile": str(output_file),
@@ -334,6 +355,233 @@ def slim_decision(decision: dict[str, Any]) -> dict[str, Any]:
         "confidence": decision.get("confidence"),
         "reason": decision.get("reason"),
     }
+
+
+JUDGE_PROMPT = """你是中文投标文件目录质检员。下面给你一份从客户投标模板里提取出来的目录条目列表，每条目录已带 number/title/level，以及它在原模板里的位置 paragraph_index。请逐条判断它是否真的是一条目录条目。
+
+判断要点：
+- 真正的目录条目应当是有人类可读的中文章节、节、附表标题
+- 应该 DROP 的：纯数字 / 纯小数 / 风速区间 / 表头列名（如"风速 m/s"）/ 单位（如 "kg"）/ 签名行 / 备注 / 单纯说明性段落（"投标人应在投标文件中..."）/ 以图编号开头的图说明
+- 不要 DROP 同名重复的目录条目（同一份模板里"认证未完成或存在待解决项"在不同附表下都应保留）
+- 不要 DROP 你自己不确定的项；只 DROP 你高度确信是噪声的
+
+严格只输出 JSON 数组，不要任何前后缀解释或代码块标记。每个元素：
+{"index": <数字，输入数组里的下标>, "verdict": "KEEP" 或 "DROP", "reason": "简短原因"}
+
+输入目录条目：
+{items}
+"""
+
+
+def _run_outline_judge(
+    items: list[dict[str, Any]],
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout_s: int,
+) -> dict[str, Any]:
+    """Send the rule-based TOC items to an OpenAI-compatible LLM and ask it to
+    drop obvious noise. Returns a dict with the parsed verdicts plus diagnostics.
+
+    Raises on any error so the caller can fall through to the unfiltered output.
+    The judge ONLY chooses KEEP or DROP; it never adds new items or modifies
+    titles. That keeps the rule-based path strictly authoritative on shape and
+    contents — the LLM is a noise-removal filter, nothing more."""
+
+    if not items:
+        return {"verdicts": [], "elapsed_s": 0.0, "model": model, "raw_content": ""}
+
+    compact = [
+        {
+            "index": idx,
+            "number": str(it.get("number") or ""),
+            "title": str(it.get("title") or ""),
+            "level": it.get("level"),
+            "paragraph_index": it.get("paragraph_index") or it.get("paragraphIndex") or 0,
+            "annotation": str(it.get("annotation") or ""),
+        }
+        for idx, it in enumerate(items)
+    ]
+    prompt = JUDGE_PROMPT.replace("{items}", json.dumps(compact, ensure_ascii=False))
+
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+        "max_tokens": 16000,
+    }).encode("utf-8")
+
+    url = base_url.rstrip("/") + "/chat/completions"
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    t0 = time.monotonic()
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        raw = resp.read().decode("utf-8")
+    elapsed = time.monotonic() - t0
+
+    payload = json.loads(raw)
+    msg = payload["choices"][0]["message"]
+    content = msg.get("content") or ""
+
+    # Parse the JSON array from the model's content. Tolerate code-fence wrappers.
+    text = content.strip()
+    text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"```$", "", text).strip()
+    arr_match = re.search(r"\[[\s\S]*\]", text)
+    if not arr_match:
+        raise ValueError(f"judge returned no JSON array; content[:160]={content[:160]!r}")
+    parsed = json.loads(arr_match.group(0))
+    if not isinstance(parsed, list):
+        raise ValueError("judge returned non-list JSON")
+
+    verdicts: list[dict[str, Any]] = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            idx = int(entry.get("index"))
+        except (TypeError, ValueError):
+            continue
+        verdict = str(entry.get("verdict") or "").upper().strip()
+        if verdict not in {"KEEP", "DROP"}:
+            continue
+        verdicts.append({
+            "index": idx,
+            "verdict": verdict,
+            "reason": str(entry.get("reason") or "")[:200],
+        })
+
+    usage = payload.get("usage", {}) or {}
+    return {
+        "verdicts": verdicts,
+        "elapsed_s": round(elapsed, 2),
+        "model": model,
+        "raw_content": content[:4000],
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "reasoning_tokens": (usage.get("completion_tokens_details") or {}).get("reasoning_tokens"),
+    }
+
+
+def _judge_config_from_env() -> dict[str, Any] | None:
+    """Read ``OUTLINE_JUDGE_*`` env vars. Returns ``None`` when the judge is
+    disabled or any required field is missing."""
+
+    if str(os.environ.get("OUTLINE_JUDGE_ENABLED", "")).strip().lower() not in {"1", "true", "yes", "on"}:
+        return None
+    base_url = (os.environ.get("OUTLINE_JUDGE_BASE_URL") or "").strip()
+    api_key = (os.environ.get("OUTLINE_JUDGE_API_KEY") or "").strip()
+    model = (os.environ.get("OUTLINE_JUDGE_MODEL") or "").strip()
+    if not (base_url and api_key and model):
+        return None
+    timeout_raw = os.environ.get("OUTLINE_JUDGE_TIMEOUT_SEC", "").strip()
+    try:
+        timeout_s = int(timeout_raw) if timeout_raw else 600
+    except ValueError:
+        timeout_s = 600
+    return {
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": model,
+        "timeout_s": max(60, min(timeout_s, 1800)),
+    }
+
+
+def _apply_outline_judge(
+    items: list[dict[str, Any]],
+    work_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """If the AI judge is configured, call it and DROP items it flags. Returns
+    ``(filtered_items, review_payload)``. ``review_payload`` is always written
+    to ``outline_judge_review.json`` for audit trail (including a "disabled" or
+    "error" status when applicable). On any error, ``items`` is returned
+    unchanged — the rule-based path is authoritative."""
+
+    review: dict[str, Any] = {
+        "schema_version": "bid-toc-outline-judge-v1",
+        "status": "disabled",
+        "input_item_count": len(items),
+        "kept_item_count": len(items),
+        "dropped_item_count": 0,
+        "verdicts": [],
+    }
+    config = _judge_config_from_env()
+    if config is None:
+        _persist_judge_review(work_dir, review)
+        return items, review
+
+    review["status"] = "ran"
+    review["model"] = config["model"]
+    review["base_url"] = config["base_url"]
+    try:
+        result = _run_outline_judge(
+            items,
+            base_url=config["base_url"],
+            api_key=config["api_key"],
+            model=config["model"],
+            timeout_s=config["timeout_s"],
+        )
+    except Exception as exc:  # network error / parse error / etc
+        review["status"] = "error"
+        review["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+        _persist_judge_review(work_dir, review)
+        logger.warning("outline judge failed; falling back to rule-only items: %s", review["error"])
+        return items, review
+
+    verdicts = result.get("verdicts", [])
+    drop_indices: set[int] = {
+        v["index"] for v in verdicts
+        if v.get("verdict") == "DROP" and 0 <= v["index"] < len(items)
+    }
+    filtered = [it for idx, it in enumerate(items) if idx not in drop_indices]
+    dropped_count = len(items) - len(filtered)
+    # Safety net: never let the judge wipe out the TOC. If it tries to drop
+    # more than half the items (hallucination, prompt misunderstanding, model
+    # downtime returning garbage…), treat the verdict as untrusted and keep the
+    # original rule-based items. The threshold is "more than half" rather than
+    # "all" so a wildly aggressive judge can't get partial damage through, and
+    # the audit file still records what it tried to do.
+    if dropped_count > len(items) // 2:
+        review["status"] = "rejected_too_aggressive"
+        review["dropped_item_count"] = dropped_count
+        review["verdicts"] = verdicts
+        review.update({k: v for k, v in result.items() if k != "verdicts"})
+        _persist_judge_review(work_dir, review)
+        logger.warning(
+            "outline judge tried to drop %d/%d items (>50%%); ignoring its verdicts",
+            dropped_count,
+            len(items),
+        )
+        return items, review
+
+    review["status"] = "applied"
+    review["verdicts"] = verdicts
+    review["dropped_item_count"] = len(items) - len(filtered)
+    review["kept_item_count"] = len(filtered)
+    review["dropped_titles"] = [
+        {"index": idx, "title": str(items[idx].get("title") or ""), "number": str(items[idx].get("number") or "")}
+        for idx in sorted(drop_indices)
+    ]
+    review.update({k: v for k, v in result.items() if k != "verdicts"})
+    _persist_judge_review(work_dir, review)
+    return filtered, review
+
+
+def _persist_judge_review(work_dir: Path, review: dict[str, Any]) -> None:
+    try:
+        path = work_dir / "outline_judge_review.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:  # pragma: no cover - audit log failure must never abort outline gen
+        logger.exception("failed to persist outline_judge_review.json")
 
 
 def extract_outline(path: Path) -> list[OutlineEntry]:
