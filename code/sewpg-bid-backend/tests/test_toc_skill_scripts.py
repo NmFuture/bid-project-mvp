@@ -1617,6 +1617,75 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertEqual(rows[2].cells[2].text, "包含配套钢塔筒")
             self.assertEqual(rows[3].cells[2].text, "提供安装维护专用工具一套")
 
+    def test_bid_table_filler_fills_same_shape_response_table_from_reference_docx(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blank = tmp_path / "附表B.6 技术服务响应表.docx"
+            blank_doc = Document()
+            table = blank_doc.add_table(rows=1, cols=4)
+            table.style = "Table Grid"
+            for index, text in enumerate(["序号", "服务项目", "投标人响应值", "备注"]):
+                table.cell(0, index).text = text
+            for row in (
+                ["1", "现场培训", "", ""],
+                ["2", "技术支持", "", ""],
+                ["3", "资料交付", "", ""],
+            ):
+                cells = table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            blank_doc.save(blank)
+
+            reference = tmp_path / "项目技术服务响应源表.docx"
+            reference_doc = Document()
+            source_table = reference_doc.add_table(rows=1, cols=4)
+            source_table.style = "Table Grid"
+            for index, text in enumerate(["编号", "服务项目", "响应内容", "说明"]):
+                source_table.cell(0, index).text = text
+            for row in (
+                ["1", "现场培训", "提供不少于10人次现场培训", "项目服务"],
+                ["2", "技术支持", "提供7x24小时远程技术支持", "项目服务"],
+                ["3", "资料交付", "按招标要求提交全套技术资料", "项目服务"],
+            ):
+                cells = source_table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            reference_doc.save(reference)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "appendixTask": {
+                            "id": "APPX-B6",
+                            "title": "附表B.6 技术服务响应表",
+                            "docxPath": str(blank),
+                        },
+                        "referenceMaterials": [
+                            {"id": "SERVICE", "name": reference.name, "path": str(reference), "materialTier": "project"}
+                        ],
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["fillReport"]["filledFieldCount"], 3)
+            self.assertEqual(result["fillReport"]["unfilledFieldCount"], 0)
+            self.assertTrue(any(item["action"] == "fill" and "同形行列结构" in item["reason"] for item in result["filledFieldDetails"]))
+            filled_doc = Document(str(output))
+            rows = filled_doc.tables[0].rows
+            self.assertEqual(rows[1].cells[2].text, "提供不少于10人次现场培训")
+            self.assertEqual(rows[2].cells[2].text, "提供7x24小时远程技术支持")
+            self.assertEqual(rows[3].cells[2].text, "按招标要求提交全套技术资料")
+
     def test_bid_table_filler_uses_parse_fields_and_project_materials_for_project_specific_values(self) -> None:
         table_filler = load_table_filler_script("run_from_manifest")
 

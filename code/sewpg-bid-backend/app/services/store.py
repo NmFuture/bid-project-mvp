@@ -1594,15 +1594,24 @@ class AppStore:
                     onlyoffice_base_url=onlyoffice_base_url,
                 )
                 artifact = result.get("artifact") if isinstance(result.get("artifact"), dict) else {}
-                results.append(
-                    {
-                        "gapId": gap_id,
-                        "artifactId": str(artifact.get("id") or ""),
-                        "skill": str(artifact.get("skill") or ""),
-                        "fileName": str(artifact.get("fileName") or ""),
-                        "qualityReport": copy.deepcopy(artifact.get("qualityReport") or {}),
-                    }
-                )
+                artifacts = [
+                    item
+                    for item in (result.get("artifacts") if isinstance(result.get("artifacts"), list) else [artifact])
+                    if isinstance(item, dict) and item
+                ]
+                for artifact_item in artifacts:
+                    results.append(
+                        {
+                            "gapId": gap_id,
+                            "artifactId": str(artifact_item.get("id") or ""),
+                            "artifactIds": [str(item.get("id") or "") for item in artifacts if str(item.get("id") or "")],
+                            "skill": str(artifact_item.get("skill") or ""),
+                            "fileName": str(artifact_item.get("fileName") or ""),
+                            "batchTargetIndex": artifact_item.get("batchTargetIndex") or 0,
+                            "batchTargetCount": artifact_item.get("batchTargetCount") or 0,
+                            "qualityReport": copy.deepcopy(artifact_item.get("qualityReport") or {}),
+                        }
+                    )
                 project["updatedAt"] = now_iso()
                 self._persist_project(project)
             except Exception as exc:  # pragma: no cover - batch must report failures instead of hiding progress
@@ -2603,6 +2612,31 @@ class AppStore:
             if preserve_existing and value_text:
                 field["status"] = "confirmed"
 
+        def preserve_manual_fields() -> None:
+            for existing in existing_by_key.values():
+                if not isinstance(existing, dict):
+                    continue
+                label_text = self._canonical_fact_label(existing.get("label"))
+                key = self._fact_label_key(label_text)
+                if not key or key in fields_by_key:
+                    continue
+                source_refs = [
+                    ref
+                    for ref in (existing.get("sourceRefs") if isinstance(existing.get("sourceRefs"), list) else [])
+                    if isinstance(ref, dict)
+                ]
+                is_manual = any(str(ref.get("type") or "") == "manualFact" for ref in source_refs)
+                if not is_manual:
+                    continue
+                has_value = bool(str(existing.get("value") or "").strip())
+                field = copy.deepcopy(existing)
+                field["label"] = label_text
+                field["key"] = key
+                field["category"] = str(field.get("category") or "人工补充事实")
+                field["status"] = str(field.get("status") or ("candidate" if has_value else "missing"))
+                field["sourceRefs"] = source_refs or [{"type": "manualFact", "title": "人工新增", "field": label_text}]
+                fields_by_key[key] = field
+
         trusted_parse_facts = self._trusted_parse_fact_fields(project.get("parse_result"))
         first_parse_value = {
             self._fact_label_key(fact.get("label")): fact.get("value")
@@ -2696,6 +2730,8 @@ class AppStore:
                         },
                         confidence=0.0,
                     )
+
+        preserve_manual_fields()
 
         fields = list(fields_by_key.values())
         for field in fields:

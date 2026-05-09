@@ -10,6 +10,115 @@
 
 ## 进度记录
 
+### 2026-05-09 16:47 补齐 S3 事实表人工补录入口
+
+改动目标：
+
+- 处理 S3 中“用户想输入但系统未抽取到字段，导致事实表/AI 填写继续卡住”的问题。
+- 保留现有事实表门禁，但允许用户在 S3 事实表弹窗中新增人工事实，作为抽取漏项的兜底来源。
+
+改动内容：
+
+- `code/sewpg-bid-frontend/src/pages/GapRecognition.jsx`
+  - 项目事实表弹窗新增“新增字段”按钮。
+  - 人工新增字段支持编辑字段名与确认值，并在确认前校验“有值但无字段名”的情况。
+  - 空事实表状态下也可直接新增字段，避免必须先等系统抽取出字段。
+- `code/sewpg-bid-backend/app/services/store.py`
+  - 重建事实表时保留 `manualFact` 来源的人工字段，避免用户点击“刷新事实”后补录内容丢失。
+- `code/sewpg-bid-backend/tests/test_gap_review_flow.py`
+  - 新增回归：人工新增字段保存确认后，再次构建事实表仍保留字段和值。
+
+验证结果：
+
+- `PYTHONPYCACHEPREFIX=/private/tmp/nmfuture_pycache /opt/homebrew/bin/python3.11 -m py_compile app/services/store.py tests/test_gap_review_flow.py` 通过。
+- 挂载本地后端代码到 fastapi 镜像后运行目标回归：
+  - `docker compose run --rm -T -v /Users/anbc/Desktop/NmFuture/code/sewpg-bid-backend:/app fastapi python -m unittest tests.test_gap_review_flow.GapReviewFlowTests.test_project_fact_table_preserves_manual_fields_when_rebuilt` 通过：1 test OK。
+  - `docker compose run --rm -T -v /Users/anbc/Desktop/NmFuture/code/sewpg-bid-backend:/app fastapi python -m unittest tests.test_gap_review_flow.GapReviewFlowTests.test_project_fact_table_builds_required_fields_from_project_and_gap_placeholders tests.test_gap_review_flow.GapReviewFlowTests.test_project_fact_table_preserves_manual_fields_when_rebuilt tests.test_gap_review_flow.GapReviewFlowTests.test_project_fact_table_filters_noisy_parse_items_and_extracts_table_fields tests.test_gap_review_flow.GapReviewFlowTests.test_gap_ai_fill_requires_confirmed_fact_table_and_manifest_carries_it` 通过：4 tests OK。
+- 前端验证：
+  - `node --test src/pages/gapRecognitionHelpers.test.mjs` 通过：10 tests OK。
+  - `npm run build` 通过，保留既有 Vite 主 chunk 超 500KB 提示。
+
+遗留问题：
+
+- 人工补录是漏抽取兜底；后续仍应把高频漏项沉淀为抽取规则和 doc/17 字段级评测用例。
+- 当前运行中的服务如果没有挂载本地源码，需要重建/重启 `web/fastapi` 才能在页面立即看到新增入口。
+
+### 2026-05-09 13:37 补齐 S3 批量副表填写产物回挂
+
+改动目标：
+
+- 继续补充 S3 副表填表闭环：当 `bid-tech-table-filler` 一次批量产出多份 Word 时，后端不再只把 `batch_fill_report.json` 当作唯一 artifact，而是把每份可打开的填写 Word 都挂回 `gapPlan.resolvedArtifacts`。
+- 保持单项 AI 填写兼容旧返回，同时让一键填写结果能列出批量任务拆出的每份 Word 产物。
+
+改动内容：
+
+- `app/services/gap_planning.py`
+  - 识别 table-filler 返回的 `outputFiles/targetResults`，只把 `.docx` 输出注册为可预览 artifact。
+  - 每份 Word 产物生成独立 artifact id、OnlyOffice URL、单产物 `fillReport/qualityReport`、批量序号和 `batchReportPath`。
+  - 批量报告仍用于聚合质量；`failedTargetCount > 0` 时整体质量不通过。
+  - 同一个 fillTask 重跑时按整组 artifact 替换旧产物，避免残留旧批量结果。
+- `app/services/store.py`
+  - `ai-fill-all` 兼容 `result.artifacts`，逐份返回 `artifactId/fileName/qualityReport`，不再只返回第一份。
+- `tests/test_gap_review_flow.py`
+  - 新增接口回归：模拟一个 table-filler 任务产出两份 Word，验证响应、gapPlan、OnlyOffice URL 和 artifact 下载路由都能看到两份产物。
+  - 修正两个 S3 回归测试的项目身份设置，按当前身份归一化逻辑写入 `owner/customerName` 后再验证事实表和 Word 填写 manifest。
+
+验证结果：
+
+- `PYTHONPYCACHEPREFIX=/private/tmp/nmfuture_pycache PYTHONPATH=. /opt/homebrew/bin/python3.11 -m py_compile app/services/gap_planning.py app/services/store.py tests/test_gap_review_flow.py` 通过。
+- 挂载本地后端代码到 fastapi 镜像后运行目标回归：
+  - `docker compose run --rm -T -v /Users/anbc/Desktop/NmFuture/code/sewpg-bid-backend:/app fastapi python -m unittest tests.test_gap_review_flow.GapReviewFlowTests.test_gap_ai_fill_registers_each_batch_table_output_as_previewable_artifact tests.test_gap_review_flow.GapReviewFlowTests.test_gap_ai_fill_calls_opencode_skill_and_registers_resolved_artifact tests.test_gap_review_flow.GapReviewFlowTests.test_gap_ai_fill_all_runs_word_tasks_before_table_tasks_and_returns_quality_summary` 通过：3 tests OK。
+- 挂载本地后端代码到 fastapi 镜像后运行相关完整回归：
+  - `docker compose run --rm -T -v /Users/anbc/Desktop/NmFuture/code/sewpg-bid-backend:/app fastapi python -m unittest tests.test_gap_review_flow tests.test_turbine_model_selection tests.test_toc_skill_scripts` 通过：74 tests OK。
+- 前端验证：
+  - `node --test src/pages/gapRecognitionHelpers.test.mjs` 通过：10 tests OK。
+  - `npm run lint` 通过，保留既有 `TenderReview.jsx` hook warning。
+  - `npm run build` 通过，保留既有 Vite 主 chunk 超 500KB 提示。
+
+遗留问题：
+
+- 第 14 条仍不能勾选完成：素材库待填写 Word、真实人工 gold 85% 评测和完整真实项目批量复验还未最终收口。
+- 当前运行中的 fastapi 容器没有挂载本地源码；如要让页面立即使用本轮后端改动，需要重建/重启相关服务。
+
+### 2026-05-09 继续补充 S3 副表填表通用同形表能力
+
+改动目标：
+
+- 在现有 `bid-tech-table-filler` 专项规则之外，补一个更泛化的填表路径：当参考素材 Word 中存在与目标空副表同类表头、同名行字段和已填写响应列时，直接按行字段把来源响应值写回目标空表。
+- 减少“来源表不是两列键值表”时只靠通用键值抽取导致漏填的情况，并继续保持原 Word 表格结构、证据链和无法确定项标黄口径。
+
+改动内容：
+
+- `opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py`
+  - 新增同形响应表检测：识别来源表的字段列和值列，按目标手工待补字段逐行匹配来源表行标签。
+  - 同形表匹配成功后，把原先 `[待人工补充：字段名]` 的单元格替换为确定值，并移除黄色待人工底色。
+  - 生成 `same_shape_table` 证据，记录来源文件、来源表、来源行列和匹配原因。
+  - 将 table filler runner 的 UTC 用法改为 Python 3.9 兼容的 `timezone.utc`，便于本机标准库环境验证。
+- `tests/test_toc_skill_scripts.py`
+  - 新增回归：目标空表和参考 Word 都是“服务项目/响应值”类同形表，来源不是键值表时仍应填满目标响应列。
+
+验证结果：
+
+- `PYTHONPYCACHEPREFIX=/private/tmp/nmfuture-pycache python3 -m py_compile opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py tests/test_toc_skill_scripts.py` 通过。
+- `PYTHONPYCACHEPREFIX=/private/tmp/nmfuture-pycache python3 -m py_compile app/services/gap_planning.py app/services/store.py` 通过。
+- 当前机器没有后端 `.venv`，系统 Python 未安装 `pytest/openpyxl`；因此用 `/private/tmp/nmfuture-test-stubs/openpyxl` 临时 stub 跑标准库 `unittest` 聚焦验证。
+- 聚焦回归通过：
+  - `test_bid_table_filler_fills_same_shape_response_table_from_reference_docx`
+  - `test_bid_table_filler_batch_output_names_include_appendix_id_to_avoid_collisions`
+  - `test_bid_table_filler_copies_no_table_appendix_without_failing_batch`
+- 容器挂载源码后执行标准库 `unittest` 通过：上述 3 条 table filler 回归 + `test_gap_ai_fill_registers_each_batch_table_output_as_previewable_artifact`，4 tests OK。
+- 容器挂载源码后执行更完整 S3/机型回归通过：`python -m unittest tests.test_toc_skill_scripts tests.test_gap_review_flow tests.test_turbine_model_selection`，74 tests OK。
+- 前端 `npm run lint` 通过，保留既有 `TenderReview.jsx` hook warning。
+- 前端 `npm run build` 通过，保留既有 Vite 主 chunk 超 500KB 提示。
+- 已执行 `docker compose build opencode fastapi worker`，并 `docker compose up -d --force-recreate opencode fastapi worker`。
+- 容器健康检查通过：`fastapi / worker / opencode` 均为 healthy。
+- 运行态 `s4fill` 烟测通过：在 `/data/documents/s3-same-shape-smoke/` 构造同形表 manifest，`opencode` 容器内执行 `s4fill /data/documents/s3-same-shape-smoke/manifest.json`，返回 `filledFieldCount=2`、`unfilledFieldCount=0`，输出 Word 中“现场培训/技术支持”响应值均已写入，`.fill_report.json` 记录来源表行列证据。
+
+遗留问题：
+
+- 后端完整 pytest 仍需在安装项目依赖的环境或容器中运行。
+- 第 14 条还不能勾选完成：素材库待填写 Word 路线、真实人工 gold 85% 评测和完整批量验收仍未完成。
+
 ### 2026-05-07 13:23 补齐 doc/17 评测引擎和 doc/18 重组基础件
 
 改动目标：
