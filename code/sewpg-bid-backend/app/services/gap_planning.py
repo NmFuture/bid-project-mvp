@@ -169,10 +169,40 @@ def _validate_gap_plan_toc_coverage(plan: dict[str, Any], toc_json_path: Path) -
 
 
 def _run_async(awaitable: Any) -> Any:
+    """Run an awaitable from synchronous code.
+
+    Two cases:
+    - No running loop in this thread: ``asyncio.run`` directly.
+    - A loop is running in this thread (i.e. we are *on* an asyncio event
+      loop's own thread, e.g. inside an ``async def`` FastAPI handler): we
+      MUST NOT spawn-and-join a worker thread here, because the join would
+      block the loop's thread and freeze every other request — that's the
+      production hang we hit on ``/gaps/ai-fill-all``. Surface this as a
+      ``RuntimeError`` so the structural bug fails fast at call time and the
+      caller is forced to wrap the sync chain with ``asyncio.to_thread`` or
+      switch the FastAPI handler to ``def`` (which puts the work in a
+      thread-pool worker).
+
+    A caller that is in a *different* thread that happens to have its own
+    running loop (rare in FastAPI but possible in tests) goes through the
+    spawn-thread-and-join path, which is safe because we are not blocking
+    the loop's own thread."""
+
     try:
-        asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(awaitable)
+
+    loop_thread_id = getattr(loop, "_thread_id", None)
+    if loop_thread_id is not None and threading.get_ident() == loop_thread_id:
+        raise RuntimeError(
+            "_run_async was called from the running event loop's own thread. "
+            "Blocking here would freeze the FastAPI server. Wrap the calling "
+            "sync code with asyncio.to_thread / starlette run_in_threadpool, "
+            "or change the FastAPI route handler from 'async def' to 'def' "
+            "(FastAPI will then run it in a worker thread automatically)."
+        )
+
     result: dict[str, Any] = {}
     error: dict[str, BaseException] = {}
 
