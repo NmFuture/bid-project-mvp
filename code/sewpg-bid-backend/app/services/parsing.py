@@ -1634,6 +1634,15 @@ def _is_markdown_separator_row(cells: list[str]) -> bool:
 
 
 def _write_appendix_docx(path: Path, title: str, rows: list[list[str]]) -> None:
+    """Fallback: build a fresh docx from a flattened ``rows`` list.
+
+    Used only when no source docx is available to slice from (for example when
+    the RFP was supplied as Markdown or PDF). This path loses any merge/style
+    metadata that the source might have had, by construction. Prefer
+    :func:`_slice_appendix_from_source` whenever the source is a real docx so
+    the original ``<w:tbl>`` (and its ``<w:gridSpan>`` / ``<w:vMerge>``) is
+    preserved verbatim."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = Document()
     doc.add_heading(title, level=1)
@@ -1645,6 +1654,190 @@ def _write_appendix_docx(path: Path, title: str, rows: list[list[str]]) -> None:
             for col_index in range(column_count):
                 table.cell(row_index, col_index).text = row[col_index] if col_index < len(row) else ""
     doc.save(path)
+
+
+def _build_appendix_slice_state(source_docx: Path) -> dict[str, Any] | None:
+    """Read ``source_docx`` once and return cached state for repeated calls
+    to :func:`_slice_appendix_from_source`.
+
+    A real RFP can be 20+ MB with millions of XML elements and dozens of
+    appendices. Cloning the entire document tree per appendix (the previous
+    approach) burned multiple seconds each — the caller froze for minutes
+    on production-sized files. The current approach is genuinely a "cut":
+    we hold direct references to every body child of the source, and each
+    slice MOVES the kept children into a fresh per-appendix body element
+    rather than cloning. Children are O(1) to detach; only the trailing
+    ``<w:sectPr>`` is deepcopied (it's a single small element shared across
+    all outputs).
+
+    The returned dict carries:
+    - ``sourcePath``  — original file path (kept for diagnostics)
+    - ``parts``       — every zip entry of the source as ``{name: (info, bytes)}``,
+      so each output zip can be assembled without re-reading the source
+    - ``rootTag`` / ``rootAttrib`` / ``rootNsmap`` — used to clone the
+      ``<w:document>`` shell (without its body) for each output
+    - ``rootChildrenBeforeBody`` — non-body siblings of body (rare, e.g.
+      ``<w:background>``) cached as deepcopies so each output gets a fresh
+      copy
+    - ``bodyTag`` / ``bodyAttrib`` — used to build the new body element
+    - ``bodyChildren`` — list of references to each body child of the source,
+      indexable by ``body_index``. Children are MOVED out of this list into
+      per-appendix bodies, mutating the source tree in the process.
+    - ``sectPr`` — reference to the source's trailing ``<w:sectPr>`` so each
+      output can deepcopy its own copy
+    """
+
+    if not source_docx.is_file():
+        return None
+    try:
+        from lxml import etree as _etree
+        from copy import deepcopy as _deepcopy
+
+        with zipfile.ZipFile(source_docx, "r") as zf:
+            parts: dict[str, tuple[Any, bytes]] = {
+                info.filename: (info, zf.read(info.filename))
+                for info in zf.infolist()
+            }
+        doc_xml = parts["word/document.xml"][1]
+        doc_tree = _etree.fromstring(doc_xml)
+        body_tag = f"{WORD_NAMESPACE}body"
+        sect_pr_tag = f"{WORD_NAMESPACE}sectPr"
+        body = doc_tree.find(body_tag)
+        if body is None:
+            return None
+
+        # Cache non-body siblings of <w:document> (e.g. <w:background>) as
+        # deepcopies so each output gets a fresh, independent copy.
+        root_children_before_body: list[Any] = []
+        for child in doc_tree.iterchildren():
+            if child.tag == body_tag:
+                break
+            root_children_before_body.append(_deepcopy(child))
+
+        body_children = list(body.iterchildren())
+        sect_pr = body.find(sect_pr_tag)
+    except Exception:
+        return None
+
+    return {
+        "sourcePath": str(source_docx),
+        "parts": parts,
+        "rootTag": doc_tree.tag,
+        "rootAttrib": dict(doc_tree.attrib),
+        "rootNsmap": dict(doc_tree.nsmap),
+        "rootChildrenBeforeBody": root_children_before_body,
+        "bodyTag": body_tag,
+        "bodyAttrib": dict(body.attrib),
+        "bodyChildren": body_children,
+        "sectPr": sect_pr,
+    }
+
+
+def _slice_appendix_from_source(
+    source_docx: Path,
+    target_docx: Path,
+    keep_start: int,
+    keep_end: int,
+    source_state: dict[str, Any] | None = None,
+) -> bool:
+    """Produce ``target_docx`` by literally CUTTING children
+    ``[keep_start, keep_end]`` (inclusive, by ``body_index``) out of the
+    source docx body and dropping them into a fresh ``<w:document>`` shell.
+
+    The kept children are MOVED, not cloned: lxml's ``new_parent.append(elem)``
+    detaches ``elem`` from its old parent in O(1). For a 21 MB RFP with 50
+    appendices this brings per-appendix CPU work from ~3 s (full-tree
+    deepcopy) to a few ms (deepcopy of one ``<w:sectPr>``).
+
+    All non-document parts of the docx (``word/styles.xml``,
+    ``word/numbering.xml``, ``word/_rels/document.xml.rels``,
+    ``word/media/*`` …) are written to the output zip from cached source
+    bytes, so cell merges, fonts, embedded images, list numbering and
+    hyperlinks render exactly as in the source.
+
+    Caveat: because moves mutate the shared ``source_state``, processing
+    appendices that overlap on body indices is not supported (``S0`` already
+    enforces disjoint ranges via ``used_tables``). Children that have been
+    moved into one output's body cannot be moved again.
+
+    Returns ``True`` on success, ``False`` if the source is missing or the
+    indices are not valid."""
+
+    if keep_end < keep_start:
+        return False
+    if source_state is None:
+        source_state = _build_appendix_slice_state(source_docx)
+    if source_state is None:
+        return False
+    target_docx.parent.mkdir(parents=True, exist_ok=True)
+
+    from copy import deepcopy as _deepcopy
+    from lxml import etree as _etree
+
+    body_children: list[Any] = source_state["bodyChildren"]
+    sect_pr = source_state["sectPr"]
+    sect_pr_tag = f"{WORD_NAMESPACE}sectPr"
+
+    # Build a fresh <w:document> shell with the source's namespaces / attribs.
+    new_root = _etree.Element(
+        source_state["rootTag"],
+        attrib=source_state["rootAttrib"],
+        nsmap=source_state["rootNsmap"],
+    )
+    # Re-attach any non-body siblings that lived above <w:body> in the source
+    # (rare, but safe).
+    for sibling in source_state["rootChildrenBeforeBody"]:
+        new_root.append(_deepcopy(sibling))
+    new_body = _etree.SubElement(
+        new_root,
+        source_state["bodyTag"],
+        attrib=source_state["bodyAttrib"],
+    )
+
+    # MOVE each kept child from source body into the new body. lxml semantics:
+    # ``new_body.append(child)`` detaches ``child`` from its prior parent.
+    n = len(body_children)
+    start = max(0, keep_start)
+    end = min(n - 1, keep_end)
+    for idx in range(start, end + 1):
+        child = body_children[idx]
+        if child.tag == sect_pr_tag:
+            # sect_pr is appended at the end as a deepcopy so subsequent
+            # appendices can also reference it.
+            continue
+        # If this child has already been moved (overlapping ranges, which
+        # shouldn't happen but we guard anyway), skip it.
+        if child.getparent() is None or child.getparent() is not None and child.getparent().tag != source_state["bodyTag"]:
+            # Already moved out of the source body — skip silently.
+            if child.getparent() is None:
+                continue
+        new_body.append(child)
+
+    if sect_pr is not None:
+        new_body.append(_deepcopy(sect_pr))
+
+    new_doc_xml = _etree.tostring(
+        new_root,
+        xml_declaration=True,
+        encoding="UTF-8",
+        standalone=True,
+    )
+
+    # Assemble the output zip from cached source parts. The only entry that
+    # changes per appendix is ``word/document.xml``; everything else
+    # (styles, numbering, rels, media) ships byte-for-byte.
+    parts: dict[str, tuple[Any, bytes]] = source_state["parts"]
+    try:
+        with zipfile.ZipFile(target_docx, "w", zipfile.ZIP_DEFLATED) as dst:
+            for filename, (info, data) in parts.items():
+                if filename == "word/document.xml":
+                    dst.writestr(info, new_doc_xml)
+                else:
+                    dst.writestr(info, data)
+    except Exception:
+        target_docx.unlink(missing_ok=True)
+        return False
+    return True
 
 
 def _appendix_output_dir(project_id: str) -> Path:
@@ -1720,9 +1913,30 @@ def _write_commitment_letter_docx(path: Path, letter: dict[str, Any], *, project
 
 
 def materialize_appendix_docx(project_id: str, appendix: dict[str, Any], *, profile: ParseProfile = TECHNICAL_PARSE_PROFILE) -> dict[str, Any]:
-    """Ensure an appendix entry has a generated Word asset, even when no template table was found."""
+    """Ensure an appendix entry has a generated Word asset, even when no template table was found.
 
-    item = copy.deepcopy(appendix)
+    The slice metadata, if present under the private ``_slice`` key, is consumed
+    here and stripped from the returned dict so it never enters JSON / DB. The
+    expected shape is::
+
+        {"sourcePath": str, "keepStart": int, "keepEnd": int}
+
+    When provided and the slice succeeds, the appendix docx is produced by
+    cutting the body of ``sourcePath`` directly, which preserves merges, styles,
+    media, numbering and section properties verbatim. Otherwise we fall back to
+    rebuilding from ``rows`` (Markdown/PDF inputs)."""
+
+    # Peel off the private ``_slice`` key BEFORE deep-copying, since it can
+    # carry an in-memory lxml tree (``sourceState``) that is large and
+    # expensive to copy element-by-element. Shallow-copy the rest of the
+    # dict so we don't mutate the caller's payload.
+    slice_info = None
+    if isinstance(appendix, dict) and "_slice" in appendix:
+        appendix_without_slice = dict(appendix)
+        slice_info = appendix_without_slice.pop("_slice", None)
+        item = copy.deepcopy(appendix_without_slice)
+    else:
+        item = copy.deepcopy(appendix)
     appendix_id = str(item.get("id") or "").strip() or "APPX-0000"
     title = str(item.get("title") or item.get("evidence") or "附表").strip() or "附表"
     rows = item.get("rows") if isinstance(item.get("rows"), list) else []
@@ -1747,7 +1961,26 @@ def materialize_appendix_docx(project_id: str, appendix: dict[str, Any], *, prof
         workspace_path = str(item.get("workspacePath") or f"{profile.workspace_dirname}/appendices/{existing_path.name}")
 
     if not existing_path.exists():
-        _write_appendix_docx(existing_path, title, rows)
+        sliced = False
+        if isinstance(slice_info, dict):
+            source_path = Path(str(slice_info.get("sourcePath") or ""))
+            keep_start_raw = slice_info.get("keepStart")
+            keep_end_raw = slice_info.get("keepEnd")
+            source_state = slice_info.get("sourceState")
+            if (
+                source_path.is_file()
+                and isinstance(keep_start_raw, int)
+                and isinstance(keep_end_raw, int)
+            ):
+                sliced = _slice_appendix_from_source(
+                    source_path,
+                    existing_path,
+                    keep_start_raw,
+                    keep_end_raw,
+                    source_state=source_state if isinstance(source_state, dict) else None,
+                )
+        if not sliced:
+            _write_appendix_docx(existing_path, title, rows)
 
     item.update(
         {
@@ -1869,13 +2102,50 @@ def _prepare_appendix_outputs(
     renumber: bool,
     profile: ParseProfile = TECHNICAL_PARSE_PROFILE,
 ) -> list[dict[str, Any]]:
+    """Materialize appendix docx assets, renumbering IDs sequentially when asked.
+
+    On renumber, an appendix may already have a docx generated under its old ID
+    by an earlier pass (typically the slicing pass in ``_extract_docx_appendices``).
+    Re-running ``materialize_appendix_docx`` with a cleared ``docxPath`` would
+    fall back to a rows-rebuild and lose the carefully preserved formatting.
+    Instead, when the existing file is on disk, move it to its new ID-aligned
+    path so the materializer sees a valid ``docxPath`` and skips regeneration."""
+
     prepared: list[dict[str, Any]] = []
     for index, appendix in enumerate(_dedupe_appendix_page_number_artifacts(appendices), start=1):
         item = copy.deepcopy(appendix)
         if renumber:
-            item["id"] = f"APPX-{index:04d}"
-            item["docxPath"] = ""
-            item.pop("workspacePath", None)
+            new_id = f"APPX-{index:04d}"
+            old_id = str(item.get("id") or "").strip()
+            old_docx = Path(str(item.get("docxPath") or ""))
+            old_docx_valid = bool(str(item.get("docxPath") or "")) and old_docx.is_file()
+            renamed = False
+            if old_docx_valid and old_id and old_id != new_id:
+                title = str(item.get("title") or item.get("evidence") or "附表").strip() or "附表"
+                new_docx_path, new_workspace_path = _appendix_asset_path(project_id, new_id, title)
+                if old_docx.resolve() != new_docx_path.resolve():
+                    new_docx_path.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        shutil.move(str(old_docx), str(new_docx_path))
+                    except Exception:
+                        # Move can fail across filesystems; fall back to copy + unlink.
+                        shutil.copy2(str(old_docx), str(new_docx_path))
+                        old_docx.unlink(missing_ok=True)
+                    item["docxPath"] = str(new_docx_path)
+                    item["workspacePath"] = new_workspace_path
+                    renamed = True
+                else:
+                    # Path already matches the new ID — just pin metadata.
+                    item["docxPath"] = str(new_docx_path)
+                    item["workspacePath"] = new_workspace_path
+                    renamed = True
+            elif old_docx_valid and old_id == new_id:
+                # ID unchanged (re-numbering produced the same value) — keep file as-is.
+                renamed = True
+            item["id"] = new_id
+            if not renamed:
+                item["docxPath"] = ""
+                item.pop("workspacePath", None)
         prepared.append(materialize_appendix_docx(project_id, item, profile=profile))
     return prepared
 
@@ -2072,16 +2342,34 @@ def _docx_table_rows(table: Any) -> list[list[str]]:
 
 
 def _iter_docx_blocks(path: Path) -> list[dict[str, Any]]:
+    """Walk the docx body and yield {paragraph,table} blocks.
+
+    Each block records ``body_index`` — its position among ``body.iterchildren()`` —
+    so callers can map a block back to the original ``<w:p>`` / ``<w:tbl>`` element
+    when slicing the source docx (see ``_slice_appendix_from_source``)."""
+
     doc = Document(str(path))
     tables = iter(doc.tables)
     blocks: list[dict[str, Any]] = []
-    for child in doc.element.body.iterchildren():
+    for body_index, child in enumerate(doc.element.body.iterchildren()):
         if child.tag == f"{WORD_NAMESPACE}p":
-            blocks.append({"type": "paragraph", "text": _docx_paragraph_text(child)})
+            blocks.append(
+                {
+                    "type": "paragraph",
+                    "text": _docx_paragraph_text(child),
+                    "body_index": body_index,
+                }
+            )
         elif child.tag == f"{WORD_NAMESPACE}tbl":
             table = next(tables, None)
             if table is not None:
-                blocks.append({"type": "table", "rows": _docx_table_rows(table)})
+                blocks.append(
+                    {
+                        "type": "table",
+                        "rows": _docx_table_rows(table),
+                        "body_index": body_index,
+                    }
+                )
     return blocks
 
 
@@ -2099,6 +2387,11 @@ def _extract_docx_appendices(
 
         source_file = str(document.get("name") or source_path.name or "招标文件")
         blocks = _iter_docx_blocks(source_path)
+        # Parse the source docx once and hand the cached lxml tree + zip
+        # path to every per-appendix slicer. Without this cache, a 21 MB RFP
+        # with 50 appendices would re-parse the source ~50 times (each open
+        # + parse takes seconds, freezing the request for minutes).
+        source_state = _build_appendix_slice_state(source_path)
         used_tables: set[int] = set()
         for index, block in enumerate(blocks):
             if block.get("type") != "paragraph":
@@ -2114,6 +2407,7 @@ def _extract_docx_appendices(
             title = line.strip(" #") or "附表"
             table_index = -1
             rows: list[list[str]] = []
+            table_body_index: int | None = None
             for lookahead in range(index + 1, min(len(blocks), index + 8)):
                 next_block = blocks[lookahead]
                 if next_block.get("type") == "paragraph" and _is_appendix_heading(str(next_block.get("text") or "")):
@@ -2121,9 +2415,14 @@ def _extract_docx_appendices(
                 if next_block.get("type") == "table" and lookahead not in used_tables:
                     table_index = lookahead
                     rows = next_block.get("rows") or []
+                    raw_body_index = next_block.get("body_index")
+                    table_body_index = raw_body_index if isinstance(raw_body_index, int) else None
                     break
 
             appendix_id = f"APPX-{start_index + len(appendices) + 1:04d}"
+            heading_body_index_raw = block.get("body_index")
+            heading_body_index = heading_body_index_raw if isinstance(heading_body_index_raw, int) else None
+
             if table_index == -1 or not rows:
                 appendices.append(materialize_appendix_docx(
                     project_id,
@@ -2142,20 +2441,34 @@ def _extract_docx_appendices(
                 continue
 
             used_tables.add(table_index)
-            appendices.append(materialize_appendix_docx(
-                project_id,
-                {
-                    "id": appendix_id,
-                    "title": title,
-                    "status": "generated",
-                    "sourceFile": source_file,
-                    "evidence": line,
-                    "evidenceLocation": f"B{index + 1}",
-                    "rows": rows,
-                    "rowCount": len(rows),
-                    "docxPath": "",
+            # If we have body indices for both the heading and the table, attach
+            # slice metadata so materialize_appendix_docx can cut the original
+            # docx instead of rebuilding from rows. The key is private (leading
+            # underscore) and gets popped by the materializer before the dict is
+            # returned, so it never leaks into JSON / DB.
+            appendix_payload: dict[str, Any] = {
+                "id": appendix_id,
+                "title": title,
+                "status": "generated",
+                "sourceFile": source_file,
+                "evidence": line,
+                "evidenceLocation": f"B{index + 1}",
+                "rows": rows,
+                "rowCount": len(rows),
+                "docxPath": "",
+            }
+            if heading_body_index is not None and table_body_index is not None:
+                appendix_payload["_slice"] = {
+                    "sourcePath": str(source_path),
+                    "keepStart": heading_body_index,
+                    "keepEnd": table_body_index,
+                    # ``sourceState`` carries an already-parsed lxml tree of
+                    # the source's word/document.xml so the slicer doesn't
+                    # re-parse a 20 MB docx per appendix. Stays in-memory
+                    # only — popped + dropped before the dict is serialized.
+                    "sourceState": source_state,
                 }
-            ))
+            appendices.append(materialize_appendix_docx(project_id, appendix_payload))
     return appendices
 
 
