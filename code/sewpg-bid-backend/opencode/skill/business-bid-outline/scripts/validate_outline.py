@@ -10,7 +10,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 REQUIRED_TOP_LEVEL = ["schema_version", "document_name", "outline_source", "context", "sections", "review_items"]
 REQUIRED_OUTLINE_SOURCE = ["section_title", "source_text", "confidence"]
-REQUIRED_SECTION = ["id", "title", "level", "required_status", "source_text", "children"]
+REQUIRED_SECTION = ["id", "title", "number", "level", "required_status", "source_text", "children"]
 REQUIRED_REVIEW_ITEM = ["message", "source_text", "suggested_section_id", "required_status"]
 VALID_REQUIRED_STATUS = {"必要", "可选", "待确认"}
 VALID_CONFIDENCE = {"high", "medium", "low"}
@@ -19,6 +19,7 @@ VALID_OUTLINE_SOURCE_TYPE = {
     "history_bid_toc",
     "history_bid_headings",
     "history_bid_unknown",
+    "local_runner_fallback",
     "tender_matched",
     "tender_format_toc",
 }
@@ -73,6 +74,8 @@ def validate_section(section, path, errors, section_ids):
     for key in ["title", "source_text"]:
         if key in section and not isinstance(section[key], str):
             errors.append(f"{path}.{key}: expected string")
+    if "number" in section and section["number"] is not None and not isinstance(section["number"], str):
+        errors.append(f"{path}.number: expected string or null")
     if "level" in section and not isinstance(section["level"], int):
         errors.append(f"{path}.level: expected integer")
     if section.get("required_status") not in VALID_REQUIRED_STATUS:

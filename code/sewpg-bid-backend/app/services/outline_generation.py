@@ -327,8 +327,20 @@ AI 判断动作：命令完成后，继续按 business-bid-outline Skill 的步�
 outline.json 必须满足：
 {{
   "schema_version": "business_bid_outline.v1",
-  "sections": []
+  "sections": [
+    {{
+      "id": "sec-001",
+      "title": "目录标题",
+      "number": null,
+      "level": 1,
+      "required_status": "待确认",
+      "source_text": "逐字证据",
+      "children": []
+    }}
+  ]
 }}
+
+每一个 sections[*] 以及所有子级 section 都必须显式包含 number 字段。有历史编号时保留字符串编号；历史无编号、空编号或无法可靠推断时写为 null 或空字符串，禁止由层级顺序强行生成 1、1.1、1.2 等编号。
 
 不要自行生成或修改前端兼容 toc.json；后端会根据最终 outline.json 自动转换。
 
@@ -407,7 +419,21 @@ def _load_business_outline_json(path: Path) -> dict[str, Any]:
     sections = business_outline.get("sections")
     if not isinstance(sections, list) or not sections:
         raise RuntimeError("商务标 outline.json 必须包含非空 sections[]。")
+    _validate_business_outline_section_numbers(sections)
     return business_outline
+
+
+def _validate_business_outline_section_numbers(sections: list[Any], path: str = "sections") -> None:
+    for index, section in enumerate(sections):
+        section_path = f"{path}[{index}]"
+        if not isinstance(section, dict):
+            continue
+        if "number" not in section:
+            raise RuntimeError(f"商务标 outline.json {section_path}.number 缺失。")
+        _business_section_number(section.get("number"))
+        children = section.get("children")
+        if isinstance(children, list):
+            _validate_business_outline_section_numbers(children, f"{section_path}.children")
 
 
 def _write_business_toc_from_outline(
@@ -481,18 +507,19 @@ def _write_business_toc_from_outline_payload(
 def _business_toc_items_from_sections(sections: list[Any]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
 
-    def append_section(section: dict[str, Any], number_parts: list[int]) -> None:
+    def append_section(section: dict[str, Any], fallback_level: int) -> None:
         order = len(items) + 1
         required_status = _normalize_required_status(section.get("required_status") or section.get("requiredStatus"))
         source_text = str(section.get("source_text") or section.get("sourceText") or "").strip()
         source_refs = _business_source_refs_from_section(section, source_text)
+        number = _business_section_number(section.get("number"))
         items.append(
             {
                 "itemId": f"TOC-{order:04d}",
                 "order": order,
-                "number": ".".join(str(part) for part in number_parts),
+                "number": number,
                 "title": str(section.get("title") or section.get("name") or f"商务标目录项{order}").strip(),
-                "level": max(1, int(section.get("level") or len(number_parts) or 1)),
+                "level": _coerce_toc_level(section.get("level") or fallback_level),
                 "annotation": _business_annotation_from_required_status(required_status),
                 "required_status": required_status,
                 "requiredStatus": required_status,
@@ -505,14 +532,22 @@ def _business_toc_items_from_sections(sections: list[Any]) -> list[dict[str, Any
             }
         )
         children = section.get("children") if isinstance(section.get("children"), list) else []
-        for child_index, child in enumerate(children, start=1):
+        for child in children:
             if isinstance(child, dict):
-                append_section(child, [*number_parts, child_index])
+                append_section(child, fallback_level + 1)
 
-    for index, section in enumerate(sections, start=1):
+    for section in sections:
         if isinstance(section, dict):
-            append_section(section, [index])
+            append_section(section, 1)
     return items
+
+
+def _business_section_number(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    raise RuntimeError("商务标 outline.json sections[].number 必须是字符串或 null。")
 
 
 def _normalize_required_status(value: Any) -> str:
@@ -1213,6 +1248,8 @@ def _toc_item_title(item: dict[str, Any], fallback_order: int) -> str:
     title = str(item.get("title") or "").strip()
     number = str(item.get("number") or "").strip()
     if title:
+        if str(item.get("source") or "").strip() == "business_outline":
+            return title
         if number and not re.fullmatch(r"\d+(?:\.\d+)*", number):
             return f"{number} {title}".strip()
         return title

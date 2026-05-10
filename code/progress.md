@@ -10,185 +10,36 @@
 
 ## 进度记录
 
-### 2026-05-09 16:47 补齐 S3 事实表人工补录入口
+### 2026-05-10 商务标目录生成 Skill 编号链路适配
 
 改动目标：
 
-- 处理 S3 中“用户想输入但系统未抽取到字段，导致事实表/AI 填写继续卡住”的问题。
-- 保留现有事实表门禁，但允许用户在 S3 事实表弹窗中新增人工事实，作为抽取漏项的兜底来源。
+- 商务标目录审核页标题编号显示改为使用 `business-bid-outline` Skill 生成的 `outline.json.sections[*].number`。
+- 空编号保持为空，不再由前端或后端按层级自动生成编号。
+- 记录真实容器目录生成过程和报告 Skill 执行时长，方便后续排查与验收。
 
 改动内容：
 
-- `code/sewpg-bid-frontend/src/pages/GapRecognition.jsx`
-  - 项目事实表弹窗新增“新增字段”按钮。
-  - 人工新增字段支持编辑字段名与确认值，并在确认前校验“有值但无字段名”的情况。
-  - 空事实表状态下也可直接新增字段，避免必须先等系统抽取出字段。
-- `code/sewpg-bid-backend/app/services/store.py`
-  - 重建事实表时保留 `manualFact` 来源的人工字段，避免用户点击“刷新事实”后补录内容丢失。
-- `code/sewpg-bid-backend/tests/test_gap_review_flow.py`
-  - 新增回归：人工新增字段保存确认后，再次构建事实表仍保留字段和值。
+- `business-bid-outline` Skill 明确 `number` 字段学习规则：历史标题有编号则保留，历史无编号或无法可靠推断则输出 `null` 或空字符串。
+- 历史商务标目录输入脚本提取标题编号并拆分干净标题，`validate_outline.py` 要求每个 section 显式包含 `number`。
+- 后端加载商务标 `outline.json` 时校验 `number` 字段，并将其贯通到 `toc.json.items[*].number` 和 `outline_state.nodes[*].tocNumber`。
+- 后端对 `source == "business_outline"` 的节点标题不再拼接中文编号，避免编号列和标题输入框重复显示。
+- 前端 `OutlineReview.jsx` 编号列显示 `tocNumber`，不再显示 UI 递归生成的 `seq`；新增 `outlineNumber` 工具和回归测试。
+- 新增 `doc/23-商务标目录生成Skill适配说明.md`，记录数据流、刷新口径、关键文件和 2026-05-09 真实容器验收记录。
 
 验证结果：
 
-- `PYTHONPYCACHEPREFIX=/private/tmp/nmfuture_pycache /opt/homebrew/bin/python3.11 -m py_compile app/services/store.py tests/test_gap_review_flow.py` 通过。
-- 挂载本地后端代码到 fastapi 镜像后运行目标回归：
-  - `docker compose run --rm -T -v /Users/anbc/Desktop/NmFuture/code/sewpg-bid-backend:/app fastapi python -m unittest tests.test_gap_review_flow.GapReviewFlowTests.test_project_fact_table_preserves_manual_fields_when_rebuilt` 通过：1 test OK。
-  - `docker compose run --rm -T -v /Users/anbc/Desktop/NmFuture/code/sewpg-bid-backend:/app fastapi python -m unittest tests.test_gap_review_flow.GapReviewFlowTests.test_project_fact_table_builds_required_fields_from_project_and_gap_placeholders tests.test_gap_review_flow.GapReviewFlowTests.test_project_fact_table_preserves_manual_fields_when_rebuilt tests.test_gap_review_flow.GapReviewFlowTests.test_project_fact_table_filters_noisy_parse_items_and_extracts_table_fields tests.test_gap_review_flow.GapReviewFlowTests.test_gap_ai_fill_requires_confirmed_fact_table_and_manifest_carries_it` 通过：4 tests OK。
-- 前端验证：
-  - `node --test src/pages/gapRecognitionHelpers.test.mjs` 通过：10 tests OK。
-  - `npm run build` 通过，保留既有 Vite 主 chunk 超 500KB 提示。
+- `node --test src/utils/outlineNumber.test.mjs` 通过：3 passed。
+- `npm run build` 通过。
+- `npm run lint` 通过：0 errors，保留 `TenderReview.jsx` 的既有 hooks warning。
+- `.venv\Scripts\python.exe -m pytest tests/test_directory_generation.py -q` 通过：30 passed。
+- `docker compose up -d --build` 已重建并启动完整服务。
+- 真实商务标目录生成项目 `PRJ-0004`，OpenCode session `ses_1f2f073c3ffenS6H3NCxW8VEdG`，开始时间 `2026-05-09T14:06:20Z`，完成时间 `2026-05-09T14:10:26Z`，总耗时 246 秒，Skill 执行耗时 243 秒。
+- 真实输出中 `outline.json`、`toc.json` 和 `outline_state.nodes[*].tocNumber` 的编号链路一致：`["一、","二、","三、","3.1","3.2","","四、","五、","5.1","5.2"]`。
 
 遗留问题：
 
-- 人工补录是漏抽取兜底；后续仍应把高频漏项沉淀为抽取规则和 doc/17 字段级评测用例。
-- 当前运行中的服务如果没有挂载本地源码，需要重建/重启 `web/fastapi` 才能在页面立即看到新增入口。
-
-### 2026-05-09 13:37 补齐 S3 批量副表填写产物回挂
-
-改动目标：
-
-- 继续补充 S3 副表填表闭环：当 `bid-tech-table-filler` 一次批量产出多份 Word 时，后端不再只把 `batch_fill_report.json` 当作唯一 artifact，而是把每份可打开的填写 Word 都挂回 `gapPlan.resolvedArtifacts`。
-- 保持单项 AI 填写兼容旧返回，同时让一键填写结果能列出批量任务拆出的每份 Word 产物。
-
-改动内容：
-
-- `app/services/gap_planning.py`
-  - 识别 table-filler 返回的 `outputFiles/targetResults`，只把 `.docx` 输出注册为可预览 artifact。
-  - 每份 Word 产物生成独立 artifact id、OnlyOffice URL、单产物 `fillReport/qualityReport`、批量序号和 `batchReportPath`。
-  - 批量报告仍用于聚合质量；`failedTargetCount > 0` 时整体质量不通过。
-  - 同一个 fillTask 重跑时按整组 artifact 替换旧产物，避免残留旧批量结果。
-- `app/services/store.py`
-  - `ai-fill-all` 兼容 `result.artifacts`，逐份返回 `artifactId/fileName/qualityReport`，不再只返回第一份。
-- `tests/test_gap_review_flow.py`
-  - 新增接口回归：模拟一个 table-filler 任务产出两份 Word，验证响应、gapPlan、OnlyOffice URL 和 artifact 下载路由都能看到两份产物。
-  - 修正两个 S3 回归测试的项目身份设置，按当前身份归一化逻辑写入 `owner/customerName` 后再验证事实表和 Word 填写 manifest。
-
-验证结果：
-
-- `PYTHONPYCACHEPREFIX=/private/tmp/nmfuture_pycache PYTHONPATH=. /opt/homebrew/bin/python3.11 -m py_compile app/services/gap_planning.py app/services/store.py tests/test_gap_review_flow.py` 通过。
-- 挂载本地后端代码到 fastapi 镜像后运行目标回归：
-  - `docker compose run --rm -T -v /Users/anbc/Desktop/NmFuture/code/sewpg-bid-backend:/app fastapi python -m unittest tests.test_gap_review_flow.GapReviewFlowTests.test_gap_ai_fill_registers_each_batch_table_output_as_previewable_artifact tests.test_gap_review_flow.GapReviewFlowTests.test_gap_ai_fill_calls_opencode_skill_and_registers_resolved_artifact tests.test_gap_review_flow.GapReviewFlowTests.test_gap_ai_fill_all_runs_word_tasks_before_table_tasks_and_returns_quality_summary` 通过：3 tests OK。
-- 挂载本地后端代码到 fastapi 镜像后运行相关完整回归：
-  - `docker compose run --rm -T -v /Users/anbc/Desktop/NmFuture/code/sewpg-bid-backend:/app fastapi python -m unittest tests.test_gap_review_flow tests.test_turbine_model_selection tests.test_toc_skill_scripts` 通过：74 tests OK。
-- 前端验证：
-  - `node --test src/pages/gapRecognitionHelpers.test.mjs` 通过：10 tests OK。
-  - `npm run lint` 通过，保留既有 `TenderReview.jsx` hook warning。
-  - `npm run build` 通过，保留既有 Vite 主 chunk 超 500KB 提示。
-
-遗留问题：
-
-- 第 14 条仍不能勾选完成：素材库待填写 Word、真实人工 gold 85% 评测和完整真实项目批量复验还未最终收口。
-- 当前运行中的 fastapi 容器没有挂载本地源码；如要让页面立即使用本轮后端改动，需要重建/重启相关服务。
-
-### 2026-05-09 继续补充 S3 副表填表通用同形表能力
-
-改动目标：
-
-- 在现有 `bid-tech-table-filler` 专项规则之外，补一个更泛化的填表路径：当参考素材 Word 中存在与目标空副表同类表头、同名行字段和已填写响应列时，直接按行字段把来源响应值写回目标空表。
-- 减少“来源表不是两列键值表”时只靠通用键值抽取导致漏填的情况，并继续保持原 Word 表格结构、证据链和无法确定项标黄口径。
-
-改动内容：
-
-- `opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py`
-  - 新增同形响应表检测：识别来源表的字段列和值列，按目标手工待补字段逐行匹配来源表行标签。
-  - 同形表匹配成功后，把原先 `[待人工补充：字段名]` 的单元格替换为确定值，并移除黄色待人工底色。
-  - 生成 `same_shape_table` 证据，记录来源文件、来源表、来源行列和匹配原因。
-  - 将 table filler runner 的 UTC 用法改为 Python 3.9 兼容的 `timezone.utc`，便于本机标准库环境验证。
-- `tests/test_toc_skill_scripts.py`
-  - 新增回归：目标空表和参考 Word 都是“服务项目/响应值”类同形表，来源不是键值表时仍应填满目标响应列。
-
-验证结果：
-
-- `PYTHONPYCACHEPREFIX=/private/tmp/nmfuture-pycache python3 -m py_compile opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py tests/test_toc_skill_scripts.py` 通过。
-- `PYTHONPYCACHEPREFIX=/private/tmp/nmfuture-pycache python3 -m py_compile app/services/gap_planning.py app/services/store.py` 通过。
-- 当前机器没有后端 `.venv`，系统 Python 未安装 `pytest/openpyxl`；因此用 `/private/tmp/nmfuture-test-stubs/openpyxl` 临时 stub 跑标准库 `unittest` 聚焦验证。
-- 聚焦回归通过：
-  - `test_bid_table_filler_fills_same_shape_response_table_from_reference_docx`
-  - `test_bid_table_filler_batch_output_names_include_appendix_id_to_avoid_collisions`
-  - `test_bid_table_filler_copies_no_table_appendix_without_failing_batch`
-- 容器挂载源码后执行标准库 `unittest` 通过：上述 3 条 table filler 回归 + `test_gap_ai_fill_registers_each_batch_table_output_as_previewable_artifact`，4 tests OK。
-- 容器挂载源码后执行更完整 S3/机型回归通过：`python -m unittest tests.test_toc_skill_scripts tests.test_gap_review_flow tests.test_turbine_model_selection`，74 tests OK。
-- 前端 `npm run lint` 通过，保留既有 `TenderReview.jsx` hook warning。
-- 前端 `npm run build` 通过，保留既有 Vite 主 chunk 超 500KB 提示。
-- 已执行 `docker compose build opencode fastapi worker`，并 `docker compose up -d --force-recreate opencode fastapi worker`。
-- 容器健康检查通过：`fastapi / worker / opencode` 均为 healthy。
-- 运行态 `s4fill` 烟测通过：在 `/data/documents/s3-same-shape-smoke/` 构造同形表 manifest，`opencode` 容器内执行 `s4fill /data/documents/s3-same-shape-smoke/manifest.json`，返回 `filledFieldCount=2`、`unfilledFieldCount=0`，输出 Word 中“现场培训/技术支持”响应值均已写入，`.fill_report.json` 记录来源表行列证据。
-
-遗留问题：
-
-- 后端完整 pytest 仍需在安装项目依赖的环境或容器中运行。
-- 第 14 条还不能勾选完成：素材库待填写 Word 路线、真实人工 gold 85% 评测和完整批量验收仍未完成。
-
-### 2026-05-07 13:23 补齐 doc/17 评测引擎和 doc/18 重组基础件
-
-改动目标：
-
-- 在不依赖人工 gold 文件的前提下，把 `doc/17` 后续阶段先做成可执行脚本闭环：prediction 加载、字段 diff、指标、失败归因、证据审计、报告渲染、隔离 lint。
-- 为 `doc/18` 预置不接主链路的基础组件：证据卡片 schema、确定性推理规则、结构化复查器和 Wiki 健康检查，等 baseline 出来后再接入 S3。
-
-改动内容：
-
-- `eval/scripts/load_predictions.py`、`validate_predictions.py`：prediction CSV 加载与主键校验。
-- `eval/scripts/diff_engine.py`：支持 `numeric / enum / phrase / list / paragraph / not_fillable` 的基础字段级 diff。
-- `eval/scripts/compute_metrics.py`：输出填写率、准确率、黄标精确率/召回率、关键事实一致率、证据链率、分档准确率。
-- `eval/scripts/failure_breakdown.py`：按误填、漏填、错标黄、漏标黄聚合失败，并按字段类型、难度、Skill、项目切片。
-- `eval/scripts/audit_evidence.py`：证据链抽样审计 CSV；未提供 source root 时标记人工审计。
-- `eval/scripts/render_report.py`、`run_eval.py`：生成 `metrics.json / failure_breakdown.json / evidence_audit.csv / report.md`。
-- `eval/scripts/extract_predictions.py`：从 S3 `.fill_report.json` 抽取 prediction CSV。
-- `eval/scripts/lint_eval_isolation.py`、`lint_skill_hardcode.py`：实现评测代码/Skill 隔离和明显 gold/样例硬编码检查。
-- `eval/docs/runbook.md`：记录 doc/17 各阶段执行命令。
-- `eval/docs/material_search_plan.md`：记录 doc/18 Wiki 主路 + BM25 兜底设计。
-- `app/services/kb_schema.py`：新增项目知识库证据卡片 schema。
-- `app/services/derive_rules.py`：新增容量、台数、总容量、有效小时数等确定性推理/闭合检查基础规则。
-- `app/services/gap_reviewer.py`：新增结构化复查器基础函数，支持强一致、交叉引用、T5 标黄合理性和数值闭合检查。
-- `app/services/wiki_health.py`：新增 Wiki 卡片数、Markdown 数、估算 token 和健康告警统计。
-- 新增/扩展测试：`tests/test_eval_gold_schema.py`、`tests/test_s3_restructure_foundations.py`。
-
-验证结果：
-
-- `python3 -m py_compile eval/scripts/*.py app/services/kb_schema.py app/services/derive_rules.py app/services/gap_reviewer.py app/services/wiki_health.py tests/test_eval_gold_schema.py tests/test_s3_restructure_foundations.py` 通过。
-- `python3 -m unittest tests.test_eval_gold_schema tests.test_s3_restructure_foundations` 通过：14 tests OK。
-- `python3 eval/scripts/validate_gold.py eval/gold/PRJ-0003/sample.csv` 通过。
-- `python3 eval/scripts/validate_predictions.py eval/runs/sample/predictions.csv` 通过。
-- `python3 eval/scripts/run_eval.py --gold eval/gold/PRJ-0003/sample.csv --predictions eval/runs/sample/predictions.csv --run-dir eval/runs/sample` 通过，生成四类评测产物。
-- `python3 eval/scripts/lint_eval_isolation.py --repo-root .` 通过。
-- `python3 eval/scripts/lint_skill_hardcode.py --skill-dir opencode/skill` 通过。
-
-遗留问题：
-
-- 真实 `baseline-prj0003` 仍被人工基准文件阻塞；当前只有 sample gold/prediction 用于 smoke。
-- `extract_predictions.py` 已覆盖现有 fill report 的通用结构，但真实 baseline 需要用实际 `.fill_report.json` 跑一遍并根据对齐率再补 locator 规则。
-- `kb_schema / derive_rules / gap_reviewer / wiki_health` 目前只是 doc/18 基础件，尚未接入 S3 运行链路；应等 doc/17 baseline 出来后再决定接入范围。
-
-### 2026-05-07 12:58 启动 doc/17 字段级评测体系阶段 A
-
-改动目标：
-
-- 按 `doc/17-评测体系建设计划.md` 先落地评测工程脚手架，给后续 PRJ-0003 gold 拆分和 baseline 评测提供固定目录与 CSV 契约。
-- 保证评测代码与 S3 填写 Skill 物理隔离，当前只做标准库/独立脚本，不引用 `app.*` 或 `opencode/skill`。
-
-改动内容：
-
-- 新增 `code/sewpg-bid-backend/eval/` 目录骨架：`docs/`、`gold/`、`runs/`、`judge/`、`scripts/`。
-- 新增 `eval/README.md`，明确 eval 目录不得被生产代码或 Skill 引用，gold 数据不得挂载进 Skill 运行时。
-- 新增 `eval/docs/gold_schema.md` 和 `eval/docs/prediction_schema.md`，锁定字段级 gold / prediction CSV 主键和列定义。
-- 新增 `eval/scripts/gold_schema.py`，定义 `GoldRow`、`PredictionRow`、枚举值、主键和 CSV 行校验。
-- 新增 `eval/scripts/load_gold.py`、`eval/scripts/validate_gold.py`，支持加载和校验 gold CSV，检查主键重复、枚举合法和 T5/not_fillable 规则。
-- 新增 `eval/scripts/extract_gold_draft.py`，可从人工 docx 生成待人工校对的 gold 草稿 CSV；后续拿到人工附表/正文后用于 B 阶段提效。
-- 新增 `eval/gold/PRJ-0003/sample.csv` 作为 schema smoke 示例。
-- 新增 `tests/test_eval_gold_schema.py`，覆盖 gold schema、prediction schema、重复主键检测和正文占位符草稿抽取。
-
-验证结果：
-
-- `python3 eval/scripts/validate_gold.py eval/gold/PRJ-0003/sample.csv` 通过：`gold validation passed`。
-- `python3 eval/scripts/load_gold.py eval/gold/PRJ-0003/sample.csv` 通过：加载 2 行。
-- `python3 -m unittest tests.test_eval_gold_schema` 通过：6 tests OK。
-- `python3 -m py_compile eval/scripts/gold_schema.py eval/scripts/load_gold.py eval/scripts/validate_gold.py eval/scripts/extract_gold_draft.py tests/test_eval_gold_schema.py` 通过。
-
-遗留问题：
-
-- 当前机器上未找到 `/Users/wlb/Downloads/技术标模板/投标文件-附表.docx` 和 `/Users/wlb/Downloads/技术标模板/投标文件-正文.docx`，因此暂未生成真实 PRJ-0003 gold。
-- 下一步需要提供或同步人工附表/正文基准文件，然后用 `extract_gold_draft.py` 生成草稿，再人工补 `human_answer / field_type / difficulty_tier / evidence_source`。
+- 目录生成完成后，浏览器若停留在旧状态，需要刷新页面才能看到最新 `outline_state`。
 
 ### 2026-05-05 10:18 收敛 S3 项目事实表生成口径
 

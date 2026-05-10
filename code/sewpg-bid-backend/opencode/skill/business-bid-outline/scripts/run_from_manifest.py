@@ -110,26 +110,40 @@ def build_fallback_outline(
             {
                 "id": "BIZ-FALLBACK-001",
                 "title": "商务响应文件",
+                "number": None,
                 "level": 1,
                 "required_status": "待确认",
                 "source_text": "本目录由 business-bid-outline 本地兜底生成，请人工确认商务标目录结构。",
                 "source_refs": [],
                 "reason": "历史商务标模板和招标文件未解析出明确目录项，生成兜底父节点供人工审核。",
+                "children": [],
             }
         ]
     return {
         "schema_version": "business_bid_outline.v1",
         "document_name": str(manifest.get("projectName") or history_inputs.get("document_name") or "商务标目录"),
         "outline_source": {
+            "section_title": "本地兜底商务标目录",
+            "source_text": str((template_outline[0] if template_outline else {}).get("rawText") or "local runner fallback"),
+            "confidence": "low",
             "source_type": "local_runner_fallback",
             "history_document_name": str(history_inputs.get("document_name") or ""),
             "summary": "futurecode 不可用或超时时，由本地 runner 基于历史商务标目录候选生成待审核目录。",
+        },
+        "context": {
+            "fallback": {
+                "summary": "futurecode 不可用或超时时触发本地兜底目录，后续需要人工审核。",
+                "source_text": str((template_outline[0] if template_outline else {}).get("rawText") or "local runner fallback"),
+            }
         },
         "sections": sections,
         "review_items": [
             {
                 "id": "REVIEW-FALLBACK-001",
                 "message": "本目录为本地兜底结果，需要人工审核后再进入后续阶段。",
+                "source_text": "futurecode 不可用或超时时触发本地兜底目录。",
+                "suggested_section_id": None,
+                "required_status": "待确认",
                 "severity": "warning",
             }
         ],
@@ -152,6 +166,7 @@ def outline_sections_from_template(
         section = {
             "id": f"BIZ-FALLBACK-{index:04d}",
             "title": title,
+            "number": section_number(item.get("number")),
             "level": level,
             "required_status": "必要" if candidate else "待确认",
             "source_text": raw_text,
@@ -179,11 +194,13 @@ def outline_sections_from_tender_candidates(candidates: list[dict[str, Any]]) ->
             {
                 "id": f"BIZ-TENDER-{index:04d}",
                 "title": title,
+                "number": None,
                 "level": 1,
                 "required_status": "待确认",
                 "source_text": str(candidate.get("rawText") or title),
                 "source_refs": [source_ref(candidate)],
                 "reason": "历史商务标目录不可用时，由招标文件要求候选生成，需人工确认。",
+                "children": [],
             }
         )
     return sections
@@ -219,6 +236,13 @@ def source_file_payload(item: dict[str, Any]) -> dict[str, str]:
     return {"id": str(item.get("id") or ""), "name": str(item.get("name") or ""), "path": str(item.get("path") or "")}
 
 
+def section_number(value: Any) -> Any:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def history_candidates_for_toc(history_inputs: dict[str, Any]) -> list[dict[str, Any]]:
     document_name = str(history_inputs.get("document_name") or "")
     candidates = history_inputs.get("outline_candidates") if isinstance(history_inputs.get("outline_candidates"), list) else []
@@ -231,7 +255,7 @@ def history_candidates_for_toc(history_inputs: dict[str, Any]) -> list[dict[str,
             continue
         result.append(
             {
-                "number": str(candidate.get("candidate_id") or index + 1),
+                "number": section_number(candidate.get("number")),
                 "title": title,
                 "level": max(1, int(candidate.get("level") or 1)),
                 "sourceFile": document_name,

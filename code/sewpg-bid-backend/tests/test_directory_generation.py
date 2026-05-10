@@ -177,9 +177,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                         {
                             "id": "BIZ-1",
                             "title": "商务响应文件",
+                            "number": "一、",
                             "level": 1,
                             "required_status": "必要",
                             "source_text": "投标人须提交服务团队安排。",
+                            "children": [],
                         }
                     ],
                     "review_items": [],
@@ -220,6 +222,7 @@ class DirectoryGenerationTests(unittest.TestCase):
                         {
                             "id": "BIZ-1",
                             "title": "Business complete parent",
+                            "number": "A.",
                             "level": 1,
                             "required_status": "necessary",
                             "source_text": "Tender requires the complete business parent item.",
@@ -227,9 +230,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                                 {
                                     "id": "BIZ-1-1",
                                     "title": "Business complete child",
+                                    "number": "",
                                     "level": 2,
                                     "required_status": "necessary",
                                     "source_text": "Tender requires the complete business child item.",
+                                    "children": [],
                                 }
                             ],
                         }
@@ -361,6 +366,78 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertTrue(all(item.get("source_text") for item in toc["items"]))
         self.assertFalse(toc.get("ruleEvidence", {}).get("agentDecisions"))
 
+    def test_generate_business_outline_preserves_skill_number_values(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result("商务标")
+        outline_payload = {
+            "schema_version": "business_bid_outline.v1",
+            "sections": [
+                {
+                    "id": "BIZ-1",
+                    "title": "投标函及授权文件",
+                    "number": "一、",
+                    "level": 1,
+                    "required_status": "必要",
+                    "source_text": "投标文件应包括投标函、法定代表人身份证明或授权委托书。",
+                    "children": [
+                        {
+                            "id": "BIZ-1-1",
+                            "title": "投标函",
+                            "number": "1.1",
+                            "level": 2,
+                            "required_status": "必要",
+                            "source_text": "投标函格式",
+                            "children": [],
+                        },
+                        {
+                            "id": "BIZ-1-2",
+                            "title": "商务评分索引表",
+                            "number": "",
+                            "level": 2,
+                            "required_status": "待确认",
+                            "source_text": "商务评分索引表",
+                            "children": [],
+                        },
+                        {
+                            "id": "BIZ-1-3",
+                            "title": "供货保障专题",
+                            "number": None,
+                            "level": 2,
+                            "required_status": "待确认",
+                            "source_text": "供货保障专题",
+                            "children": [],
+                        },
+                    ],
+                }
+            ],
+            "review_items": [],
+        }
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_business_futurecode_outline_with_outline_payload(outline_payload),
+        ):
+            payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        toc = json.loads(Path(payload["opencodeOutput"]["tocJsonPath"]).read_text(encoding="utf-8"))
+        self.assertEqual(
+            [(item["title"], item["number"]) for item in toc["items"]],
+            [
+                ("投标函及授权文件", "一、"),
+                ("投标函", "1.1"),
+                ("商务评分索引表", ""),
+                ("供货保障专题", ""),
+            ],
+        )
+        outline = store.get_outline_state(project_id)
+        root = outline["nodes"][0]
+        self.assertEqual(root["title"], "投标函及授权文件")
+        self.assertEqual(root["tocNumber"], "一、")
+        self.assertEqual(root["children"][0]["tocNumber"], "1.1")
+        self.assertEqual(root["children"][1]["tocNumber"], "")
+        self.assertEqual(root["children"][2]["tocNumber"], "")
+
     def test_generate_business_outline_requires_final_outline_json(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
 
@@ -420,6 +497,34 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertEqual(toc["schema_version"], "bid-toc-json-v1")
         self.assertTrue(toc["items"])
         self.assertTrue(all(item.get("source") == "business_outline" for item in toc["items"]))
+        self.assertTrue(all("number" in item for item in toc["items"]))
+
+    def test_generate_business_outline_rejects_missing_section_number(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result("商务标")
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_business_futurecode_outline_with_outline_payload(
+                {
+                    "schema_version": "business_bid_outline.v1",
+                    "sections": [
+                        {
+                            "id": "BIZ-1",
+                            "title": "商务响应文件",
+                            "level": 1,
+                            "required_status": "必要",
+                            "source_text": "投标人须提交商务响应文件。",
+                            "children": [],
+                        }
+                    ],
+                    "review_items": [],
+                }
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "sections\\[0\\]\\.number"):
+                generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
     def test_business_outline_runner_prepares_inputs_and_fallback_outline(self) -> None:
         import importlib.util
@@ -466,6 +571,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         outline = json.loads(outline_path.read_text(encoding="utf-8"))
         self.assertEqual(outline["schema_version"], "business_bid_outline.v1")
         self.assertTrue(outline["sections"])
+        self.assertTrue(all("number" in section for section in outline["sections"]))
         self.assertEqual(outline["outline_source"]["source_type"], "local_runner_fallback")
         self.assertFalse((work_dir / "toc.json").exists())
         self.assertFalse((work_dir / "toc_evidence.json").exists())
