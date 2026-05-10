@@ -681,6 +681,8 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
             by_number[number] = item
         if title:
             by_title[title] = item
+        if number and title:
+            by_title[_normalize_title(f"{number} {item.get('title') or ''}")] = item
 
     for entry in plan:
         number = str(entry.get("chapter_no_flat") or entry.get("chapter_no") or "").strip()
@@ -689,6 +691,14 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
         if not gap_item:
             continue
         paths = _gap_plan_paths(gap_item)
+        if not paths and _gap_plan_item_is_structural(gap_item):
+            entry["paths"] = []
+            entry["shifts"] = []
+            entry["attach_modes"] = []
+            entry["status"] = STATUS_STRUCTURAL
+            entry["note"] = "来自缺口识别与处理计划：结构性目录项"
+            entry["gap_plan_item_id"] = str(gap_item.get("id") or "")
+            continue
         if not paths:
             continue
         entry["paths"] = paths
@@ -716,6 +726,17 @@ def _gap_plan_paths(item: dict) -> list[str]:
             if candidate and candidate not in paths:
                 paths.append(candidate)
     return paths
+
+
+def _gap_plan_item_is_structural(item: dict) -> bool:
+    status = str(item.get("status") or "").strip().lower()
+    if status == "structural":
+        return True
+    usage = str(item.get("usage") or "").strip().lower()
+    if usage == "structural":
+        return True
+    gap_reason = str(item.get("gapReason") or "")
+    return "结构性目录项" in gap_reason
 
 
 def _normalize_title(value: str) -> str:

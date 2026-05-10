@@ -4,6 +4,8 @@ import asyncio
 import json
 import re
 import shutil
+import subprocess
+import sys
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -13,7 +15,6 @@ from app.core.config import BASE_DIR, settings
 from app.services.material_store import material_store
 from app.services.minio_client import minio_client
 from app.services.onlyoffice_documents import document_path
-from app.services.opencode_client import OpencodeClient
 from app.services.store import now_iso, store
 from app.services.turbine_models import project_turbine_model
 from app.services.workspace_artifacts import legacy_workspace_roots, technical_workspace_stage_dir
@@ -24,6 +25,9 @@ ASSEMBLER_SKILL_NAME = "bid-tech-assembler"
 ASSEMBLER_SKILL_COMMAND = "s7assemble"
 ASSEMBLER_SKILL_DIR = BASE_DIR / "opencode" / "skill" / "bid-tech-assembler"
 ASSEMBLER_RUNNER = ASSEMBLER_SKILL_DIR / "scripts" / "run_from_manifest.py"
+TECH_FORMAT_CLEANER_SKILL_NAME = "bid-tech-format-cleaner"
+TECH_FORMAT_CLEANER_SKILL_DIR = BASE_DIR / "opencode" / "skill" / TECH_FORMAT_CLEANER_SKILL_NAME
+TECH_FORMAT_CLEANER_RUNNER = TECH_FORMAT_CLEANER_SKILL_DIR / "scripts" / "run_from_manifest.py"
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
@@ -34,14 +38,11 @@ def assemble_tech_bid_for_project_with_progress(
 ) -> dict[str, Any]:
     project = store.get_project(project_id)
     outline_state = store.get_outline_state(project_id)
-    review_state = store.get_review_items(project_id)
     parse_storage = store.get_parse_storage(project_id)
     _, template_file_records = store.get_parse_inputs(project_id)
 
     if outline_state.get("reviewStatus") != "confirmed":
         raise ValueError("请先完成目录确认后再生成标书。")
-    if not review_state.get("confirmed"):
-        raise ValueError("请先完成缺口处理确认后再生成标书。")
 
     started_at = time.monotonic()
     work_dir = _prepare_work_dir(project_id, parse_storage)
@@ -100,11 +101,6 @@ def assemble_tech_bid_for_project_with_progress(
     if not assembled_path.exists():
         raise RuntimeError(f"S4 生成标书未生成输出文件：{assembled_path}")
 
-    target_path = document_path(project_id)
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(assembled_path, target_path)
-    file_size_bytes = target_path.stat().st_size
-
     plan_path = Path(str(result.get("planFile") or work_dir / "assembly_plan.json"))
     report_path = Path(str(result.get("assemblyReport") or work_dir / "assembly_report.md"))
     review_path = Path(str(result.get("needsReview") or work_dir / "needs_review.md"))
@@ -112,9 +108,6 @@ def assemble_tech_bid_for_project_with_progress(
     coverage = _build_material_coverage(plan, material_cards)
     sections = _sections_from_plan(plan)
     content = _build_fallback_content(report_path, review_path)
-    run_duration_sec = max(1, int(round(time.monotonic() - started_at)))
-    filled_at = now_iso()
-    file_name = assembled_path.name
 
     if progress_callback:
         progress_callback(
@@ -126,19 +119,40 @@ def assemble_tech_bid_for_project_with_progress(
             },
         )
 
+    format_clean = _run_tech_format_cleaner_step(
+        project=project,
+        toc_json_path=toc_json_path,
+        assembled_path=assembled_path,
+        work_dir=work_dir,
+        progress_callback=progress_callback,
+    )
+    final_output_path = Path(str(format_clean.get("outputFile") or assembled_path))
+    if not final_output_path.exists():
+        final_output_path = assembled_path
+
+    target_path = document_path(project_id)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(final_output_path, target_path)
+    file_size_bytes = target_path.stat().st_size
+    file_name = final_output_path.name
+    run_duration_sec = max(1, int(round(time.monotonic() - started_at)))
+    filled_at = now_iso()
+
     opencode_output = result.get("opencodeOutput") if isinstance(result.get("opencodeOutput"), dict) else {}
     opencode_output.update(
         {
             "skill": ASSEMBLER_SKILL_NAME,
             "workDir": str(work_dir),
             "manifestPath": str(manifest_path),
-            "outputFile": str(assembled_path),
+            "outputFile": str(final_output_path),
+            "rawOutputFile": str(assembled_path),
             "assemblyReport": str(report_path),
             "needsReview": str(review_path),
             "coverage": {
                 "usedMaterialCount": coverage["fullCover"],
                 "unassembledMaterialCount": coverage["noCover"],
             },
+            "formatClean": format_clean,
         }
     )
     if not opencode_output.get("parts"):
@@ -154,9 +168,11 @@ def assemble_tech_bid_for_project_with_progress(
                     {
                         "skill": ASSEMBLER_SKILL_NAME,
                         "manifestPath": str(manifest_path),
-                        "outputFile": str(assembled_path),
+                        "outputFile": str(final_output_path),
+                        "rawOutputFile": str(assembled_path),
                         "assemblyReport": str(report_path),
                         "needsReview": str(review_path),
+                        "formatClean": format_clean,
                     },
                     ensure_ascii=False,
                 ),
@@ -182,11 +198,13 @@ def assemble_tech_bid_for_project_with_progress(
             "gapPlanPath": str(gap_plan_path) if gap_plan_path else "",
             "wikiDir": str(wiki_dir),
             "materialLibraryDir": str(material_library_dir),
-            "outputFile": str(assembled_path),
+            "outputFile": str(final_output_path),
+            "rawOutputFile": str(assembled_path),
             "documentPath": str(target_path),
             "assemblyReport": str(report_path),
             "needsReview": str(review_path),
             "planFile": str(plan_path),
+            "formatClean": format_clean,
         },
     )
 
@@ -272,15 +290,123 @@ def _prepare_gap_plan(project_id: str, work_dir: Path) -> Path | None:
     gap_state = store._require(project_id).get("gap_state") or {}
     plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
     if not plan:
+        recovered_plan_path = technical_workspace_stage_dir(project_id, "s4_gap_workdir") / "gap_plan.json"
+        if recovered_plan_path.exists():
+            loaded = json.loads(recovered_plan_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                plan = loaded
+    if not plan:
         return None
+    plan = json.loads(json.dumps(plan, ensure_ascii=False))
+    plan = _with_recovered_ai_fill_artifacts(project_id, plan)
+    has_resolved_artifacts = _gap_plan_has_resolved_artifacts(plan)
     if not bool(review_state.get("confirmed")):
-        raise ValueError("请先完成缺口处理确认后再生成标书。")
+        if not has_resolved_artifacts:
+            return None
     integrity = gap_state.get("integrity") if isinstance(gap_state.get("integrity"), dict) else {}
     if integrity and str(integrity.get("status") or "") != "passed":
-        raise ValueError("缺口完整性校验未通过，暂不可生成标书。")
+        if not has_resolved_artifacts:
+            return None
     target = work_dir / "gap_plan.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
     return target
+
+
+def _with_recovered_ai_fill_artifacts(project_id: str, plan: dict[str, Any]) -> dict[str, Any]:
+    items = plan.get("items") if isinstance(plan.get("items"), list) else []
+    if not items:
+        return plan
+    ai_fill_dir = technical_workspace_stage_dir(project_id, "s4_gap_workdir") / "ai_fill"
+    if not ai_fill_dir.exists():
+        return plan
+
+    by_gap_id = {
+        str(item.get("id") or ""): item
+        for item in items
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
+    recovered_count = 0
+    for gap_dir in sorted(path for path in ai_fill_dir.glob("GAP-*") if path.is_dir()):
+        item = by_gap_id.get(gap_dir.name)
+        if not item:
+            continue
+        output_files = [
+            path
+            for path in sorted(gap_dir.glob("*.docx"))
+            if "_AI填写" in path.stem and not path.name.startswith("~$")
+        ]
+        if not output_files:
+            continue
+
+        existing_paths = {
+            str(artifact.get("path") or artifact.get("docx") or "")
+            for artifact in item.get("resolvedArtifacts") or []
+            if isinstance(artifact, dict)
+        }
+        artifacts: list[dict[str, Any]] = []
+        for index, output_file in enumerate(output_files, start=1):
+            output_path = str(output_file)
+            if output_path in existing_paths:
+                continue
+            report = _load_ai_fill_report(output_file)
+            title = str(report.get("title") or item.get("title") or output_file.stem)
+            artifacts.append(
+                {
+                    "id": f"RECOVERED-{gap_dir.name}-{index:03d}",
+                    "source": "ai_fill",
+                    "skill": str(report.get("skill") or ""),
+                    "gapId": gap_dir.name,
+                    "title": title,
+                    "fileName": output_file.name,
+                    "path": output_path,
+                    "s7Ready": True,
+                    "recoveredBy": "s4_assembly",
+                }
+            )
+        if not artifacts:
+            continue
+        item.setdefault("resolvedArtifacts", []).extend(artifacts)
+        item["matchedMaterials"] = []
+        item["status"] = "resolved"
+        item["resolvedSource"] = f"{len(item.get('resolvedArtifacts') or [])} 份AI填写产物"
+        recovered_count += len(artifacts)
+
+    if recovered_count:
+        plan = dict(plan)
+        plan["s7RecoveredAiFillArtifactCount"] = recovered_count
+    return plan
+
+
+def _load_ai_fill_report(output_file: Path) -> dict[str, Any]:
+    report_path = output_file.with_suffix(".fill_report.json")
+    if report_path.exists():
+        try:
+            data = json.loads(report_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        if isinstance(data, dict):
+            report = data.get("fillReport") if isinstance(data.get("fillReport"), dict) else {}
+            merged = dict(report)
+            for key in ("title", "skill", "status"):
+                if data.get(key) and key not in merged:
+                    merged[key] = data.get(key)
+            return merged
+    return {}
+
+
+def _gap_plan_has_resolved_artifacts(plan: dict[str, Any]) -> bool:
+    items = plan.get("items") if isinstance(plan.get("items"), list) else []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for artifact in item.get("resolvedArtifacts") or []:
+            if not isinstance(artifact, dict):
+                continue
+            path = _runtime_path(str(artifact.get("path") or artifact.get("docx") or ""))
+            if path.exists() and path.suffix.lower() == ".docx":
+                return True
+    return False
 
 
 def _outline_nodes_to_toc_items(nodes: list[dict[str, Any]], prefix: str = "", level: int = 1) -> list[dict[str, Any]]:
@@ -314,13 +440,20 @@ def _prepare_wiki_dir(project: dict[str, Any], parse_storage: dict[str, Any], wo
             return target
 
     target.mkdir(parents=True, exist_ok=True)
-    export_wiki(
-        api_base=settings.bid_internal_api_base_url or "http://fastapi:8000",
-        bid_type=str(project.get("bidType") or "投标文件"),
-        out_dir=target,
-    )
-    if not (target / "卡片").exists():
-        raise RuntimeError("当前项目没有可用 Wiki 卡片，无法按素材库拼装正文。")
+    cards_dir = target / "卡片"
+    cards_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        export_wiki(
+            api_base=settings.bid_internal_api_base_url or "http://fastapi:8000",
+            bid_type=str(project.get("bidType") or "投标文件"),
+            out_dir=target,
+        )
+    except Exception:
+        # Wiki API is a convenience source. S4 can still synthesize filesystem
+        # cards from the material library below, so keep the assembly path alive.
+        cards_dir.mkdir(parents=True, exist_ok=True)
+    if not cards_dir.exists():
+        cards_dir.mkdir(parents=True, exist_ok=True)
     return target
 
 
@@ -845,21 +978,173 @@ def _run_assembler_manifest(
     manifest_path: Path,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
-    prompt = _build_assembler_prompt(manifest_path)
-    result = OpencodeClient().run_bid_tech_assembler_with_trace(
-        prompt,
-        session_ready_callback=(
-            (lambda details: progress_callback("assembler_session_ready", details))
-            if progress_callback
-            else None
-        ),
-        stream_callback=(
-            (lambda details: progress_callback("assembler_delta", details))
-            if progress_callback
-            else None
-        ),
+    if progress_callback:
+        progress_callback(
+            "assembler_session_ready",
+            {
+                "sessionId": str(manifest_path),
+                "providerId": "local-skill",
+                "modelId": ASSEMBLER_SKILL_NAME,
+            },
+        )
+    return _run_local_assembler(manifest_path)
+
+
+def _run_local_assembler(manifest_path: Path) -> dict[str, Any]:
+    completed = subprocess.run(
+        [sys.executable, str(ASSEMBLER_RUNNER), "--manifest", str(manifest_path), "--response", "summary"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
-    return result
+    parsed = json.loads(completed.stdout or "{}")
+    parsed["opencodeOutput"] = {
+        "status": "received",
+        "sessionId": str(manifest_path),
+        "providerId": "local-skill",
+        "modelId": ASSEMBLER_SKILL_NAME,
+        "receivedAt": now_iso(),
+        "parts": [{"type": "text", "text": completed.stdout or ""}],
+    }
+    return parsed
+
+
+def _run_tech_format_cleaner_step(
+    *,
+    project: dict[str, Any],
+    toc_json_path: Path,
+    assembled_path: Path,
+    work_dir: Path,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
+    manifest_path = work_dir / "tech_format_clean_input.json"
+    outline_path = _prepare_tech_format_outline(toc_json_path, work_dir)
+    output_path = assembled_path.with_name(f"{assembled_path.stem}.formatted.docx")
+    manifest = {
+        "schemaVersion": "bid-tech-format-clean-manifest-v1",
+        "inputFile": str(assembled_path),
+        "outlineFile": str(outline_path),
+        "outputFile": str(output_path),
+        "projectName": str(project.get("name") or project.get("id") or "技术标项目"),
+        "styleSpecPath": str(ASSEMBLER_SKILL_DIR / "references" / "heading_style.json"),
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if progress_callback:
+        progress_callback(
+            "calling_format_cleaner",
+            {
+                "manifestPath": str(manifest_path),
+                "inputFile": str(assembled_path),
+                "skill": TECH_FORMAT_CLEANER_SKILL_NAME,
+            },
+        )
+
+    try:
+        result = _run_local_tech_format_cleaner(manifest_path)
+        formatted_path = Path(str(result.get("outputFile") or output_path)).expanduser()
+        if not formatted_path.exists():
+            raise RuntimeError(f"技术标格式清洗未生成输出文件：{formatted_path}")
+        clean = {
+            "status": "completed",
+            "skill": TECH_FORMAT_CLEANER_SKILL_NAME,
+            "manifestPath": str(manifest_path),
+            "inputFile": str(assembled_path),
+            "outlineFile": str(outline_path),
+            "outputFile": str(formatted_path),
+            "reportFile": str(result.get("reportFile") or formatted_path.with_name("tech_format_clean_report.md")),
+            "summary": result.get("summary") if isinstance(result.get("summary"), dict) else {},
+            "opencodeOutput": result.get("opencodeOutput") if isinstance(result.get("opencodeOutput"), dict) else {},
+        }
+        if progress_callback:
+            progress_callback(
+                "format_cleaner_completed",
+                {"summary": clean["summary"], "outputFile": clean["outputFile"], "skill": TECH_FORMAT_CLEANER_SKILL_NAME},
+            )
+        return clean
+    except Exception as exc:
+        clean = {
+            "status": "failed",
+            "skill": TECH_FORMAT_CLEANER_SKILL_NAME,
+            "manifestPath": str(manifest_path),
+            "inputFile": str(assembled_path),
+            "outlineFile": str(outline_path),
+            "outputFile": str(assembled_path),
+            "error": str(exc),
+        }
+        if progress_callback:
+            progress_callback(
+                "format_cleaner_failed",
+                {"error": str(exc), "manifestPath": str(manifest_path), "skill": TECH_FORMAT_CLEANER_SKILL_NAME},
+            )
+        return clean
+
+
+def _run_local_tech_format_cleaner(manifest_path: Path) -> dict[str, Any]:
+    completed = subprocess.run(
+        [sys.executable, str(TECH_FORMAT_CLEANER_RUNNER), str(manifest_path), "--response", "summary"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    parsed = json.loads(completed.stdout or "{}")
+    parsed["opencodeOutput"] = {
+        "status": "received",
+        "sessionId": str(manifest_path),
+        "providerId": "local-skill",
+        "modelId": TECH_FORMAT_CLEANER_SKILL_NAME,
+        "receivedAt": now_iso(),
+        "parts": [{"type": "text", "text": completed.stdout or ""}],
+    }
+    return parsed
+
+
+def _prepare_tech_format_outline(toc_json_path: Path, work_dir: Path) -> Path:
+    target = work_dir / "tech_format_outline.json"
+    toc = json.loads(toc_json_path.read_text(encoding="utf-8"))
+    items = toc.get("items") if isinstance(toc, dict) and isinstance(toc.get("items"), list) else []
+    outline = {
+        "schema_version": "tech_bid_outline.v1",
+        "document_name": str(toc.get("document_title") or "技术标投标文件") if isinstance(toc, dict) else "技术标投标文件",
+        "sections": _tech_format_sections_from_toc_items(items),
+    }
+    if not outline["sections"]:
+        outline["sections"] = [{"id": "TECH-FORMAT-0001", "title": "技术标投标文件", "number": "", "level": 1, "children": []}]
+    target.write_text(json.dumps(outline, ensure_ascii=False, indent=2), encoding="utf-8")
+    return target
+
+
+def _tech_format_sections_from_toc_items(items: list[Any]) -> list[dict[str, Any]]:
+    roots: list[dict[str, Any]] = []
+    stack: list[dict[str, Any]] = []
+    for index, raw in enumerate(items, start=1):
+        if not isinstance(raw, dict):
+            continue
+        title = str(raw.get("title") or raw.get("name") or "").strip()
+        if not title:
+            continue
+        try:
+            level = int(raw.get("level") or 1)
+        except (TypeError, ValueError):
+            level = 1
+        level = max(1, min(level, 9))
+        section = {
+            "id": str(raw.get("itemId") or raw.get("nodeId") or raw.get("id") or f"TECH-FORMAT-{index:04d}"),
+            "title": title,
+            "number": str(raw.get("number") or raw.get("tocNumber") or "").strip(),
+            "level": level,
+            "children": [],
+        }
+        while stack and int(stack[-1].get("level") or 1) >= level:
+            stack.pop()
+        if stack:
+            stack[-1].setdefault("children", []).append(section)
+        else:
+            roots.append(section)
+        stack.append(section)
+    return roots
 
 
 def _build_assembler_prompt(manifest_path: Path) -> str:
@@ -924,11 +1209,17 @@ def _sections_from_plan(plan: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _build_material_coverage(plan: list[dict[str, Any]], cards: list[dict[str, Any]]) -> dict[str, Any]:
     used_paths: set[str] = set()
+    used_path_keys: set[str] = set()
     partial_items: list[dict[str, Any]] = []
     for item in plan:
         status = str(item.get("status") or "")
         if status in {"MATCHED", "ADAPTED", "COVER"}:
-            used_paths.update(str(path) for path in item.get("paths") or [] if str(path).strip())
+            for path in item.get("paths") or []:
+                path_text = str(path).strip()
+                if not path_text:
+                    continue
+                used_paths.add(path_text)
+                used_path_keys.update(_coverage_path_keys(path_text))
         elif status in {"UNMATCHED", "NEEDS_REVIEW"}:
             partial_items.append(
                 {
@@ -946,7 +1237,7 @@ def _build_material_coverage(plan: list[dict[str, Any]], cards: list[dict[str, A
             "nodeTitle": f"素材未出现在 S2 目录 JSON 或拼装计划中：{card.get('scope') or ''}/{card.get('category') or ''}",
         }
         for card in material_cards
-        if str(card.get("path") or "") not in used_paths
+        if not _coverage_card_used(card, used_path_keys)
     ]
 
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -959,7 +1250,7 @@ def _build_material_coverage(plan: list[dict[str, Any]], cards: list[dict[str, A
     for group_name, group_cards in sorted(grouped.items()):
         children = []
         for card in sorted(group_cards, key=lambda item: str(item.get("title") or "")):
-            used = str(card.get("path") or "") in used_paths
+            used = _coverage_card_used(card, used_path_keys)
             children.append(
                 {
                     "id": str(card.get("id") or card.get("path") or ""),
@@ -981,7 +1272,7 @@ def _build_material_coverage(plan: list[dict[str, Any]], cards: list[dict[str, A
             }
         )
 
-    full_cover = len(used_paths)
+    full_cover = sum(1 for card in material_cards if _coverage_card_used(card, used_path_keys))
     no_cover = len(no_cover_items)
     partial_cover = len(partial_items)
     total_materials = len(material_cards)
@@ -996,6 +1287,24 @@ def _build_material_coverage(plan: list[dict[str, Any]], cards: list[dict[str, A
         "noCoverItems": no_cover_items,
         "basis": "assembly_materials_vs_s2_toc_json",
     }
+
+
+def _coverage_card_used(card: dict[str, Any], used_path_keys: set[str]) -> bool:
+    return bool(_coverage_path_keys(str(card.get("path") or "")) & used_path_keys) or bool(
+        _coverage_path_keys(str(card.get("originalPath") or "")) & used_path_keys
+    )
+
+
+def _coverage_path_keys(path_text: str) -> set[str]:
+    path_text = str(path_text or "").strip()
+    if not path_text:
+        return set()
+    keys = {path_text}
+    try:
+        keys.add(str(_runtime_path(path_text)))
+    except Exception:
+        pass
+    return {key for key in keys if key}
 
 
 def _build_fallback_content(report_path: Path, review_path: Path) -> str:

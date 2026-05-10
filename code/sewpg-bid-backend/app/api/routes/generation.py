@@ -51,6 +51,14 @@ def _fill_tasks(step1: str, step2: str, step3: str, project_id: str = "") -> lis
     ]
 
 
+def _failed_fill_tasks_for_percentage(project_id: str, percentage: int) -> list[dict[str, Any]]:
+    if percentage < 30:
+        return _fill_tasks("failed", "pending", "pending", project_id)
+    if percentage < 85:
+        return _fill_tasks("done", "failed", "pending", project_id)
+    return _fill_tasks("done", "done", "failed", project_id)
+
+
 def _project_audit_metadata(project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
     try:
         project = store.get_project(project_id)
@@ -251,18 +259,22 @@ def _handle_fill_progress(project_id: str, stage: str, details: dict[str, Any] |
 
     if stage == "calling_format_cleaner":
         manifest_path = str(meta.get("manifestPath") or "")
+        cleaner_skill = str(
+            meta.get("skill")
+            or ("bid-business-format-cleaner" if ctx["bidType"] == "商务标" else "bid-tech-format-cleaner")
+        )
         store.update_fill_generation_state(
             project_id,
             percentage=90,
-            summary="商务标正文已拼装完成，正在进行 Word 格式规范化处理。",
+            summary=f"{ctx['documentLabel']}已拼装完成，正在进行 Word 格式规范化处理。",
             tasks=_fill_tasks("done", "done", "running", project_id),
-            event_message="已进入商务标格式规范化阶段，正在统一标题样式、目录、页眉和分页。",
+            event_message=f"已进入{ctx['documentLabel']}格式规范化阶段，正在统一标题样式、目录、页眉和分页。",
             event_step="format_cleaning",
             opencode_output={
                 "status": "waiting",
                 "sessionId": manifest_path,
                 "providerId": "local-skill",
-                "modelId": "bid-business-format-cleaner",
+                "modelId": cleaner_skill,
                 "receivedAt": "",
                 "parts": [{"type": "text", "text": f"manifest={manifest_path}"}],
             },
@@ -270,12 +282,13 @@ def _handle_fill_progress(project_id: str, stage: str, details: dict[str, Any] |
         return
 
     if stage == "format_cleaner_session_ready":
+        cleaner_skill = str(meta.get("modelId") or meta.get("skill") or "")
         store.update_fill_generation_state(
             project_id,
             percentage=91,
-            summary="正在调用 futurecode 执行 bid-business-format-cleaner。",
+            summary=f"正在调用 futurecode 执行 {cleaner_skill or 'format-cleaner'}。",
             tasks=_fill_tasks("done", "done", "running", project_id),
-            event_message="futurecode session 已建立，正在等待商务标格式清洗结果。",
+            event_message=f"futurecode session 已建立，正在等待{ctx['documentLabel']}格式清洗结果。",
             event_step="format_session_ready",
             opencode_output={
                 "status": "waiting",
@@ -293,7 +306,7 @@ def _handle_fill_progress(project_id: str, stage: str, details: dict[str, Any] |
         store.update_fill_generation_state(
             project_id,
             percentage=93 if parts else None,
-            summary="futurecode 正在执行商务标格式规范化，请稍候。" if parts else None,
+            summary=f"futurecode 正在执行{ctx['documentLabel']}格式规范化，请稍候。" if parts else None,
             tasks=_fill_tasks("done", "done", "running", project_id),
             event_step="format_streaming",
             opencode_output={
@@ -314,9 +327,9 @@ def _handle_fill_progress(project_id: str, stage: str, details: dict[str, Any] |
         store.update_fill_generation_state(
             project_id,
             percentage=96,
-            summary=f"商务标格式规范化完成，未匹配标题 {unmatched} 个，格式风险 {risk_count} 项，正在保存最终 Word。",
+            summary=f"{ctx['documentLabel']}格式规范化完成，未匹配标题 {unmatched} 个，格式风险 {risk_count} 项，正在保存最终 Word。",
             tasks=_fill_tasks("done", "done", "running", project_id),
-            event_message=f"商务标格式规范化完成：未匹配标题 {unmatched} 个，格式风险 {risk_count} 项。",
+            event_message=f"{ctx['documentLabel']}格式规范化完成：未匹配标题 {unmatched} 个，格式风险 {risk_count} 项。",
             event_level="success",
             event_step="format_done",
         )
@@ -326,9 +339,9 @@ def _handle_fill_progress(project_id: str, stage: str, details: dict[str, Any] |
         store.update_fill_generation_state(
             project_id,
             percentage=94,
-            summary="商务标格式规范化失败，系统将保留正文拼装原稿继续输出。",
+            summary=f"{ctx['documentLabel']}格式规范化失败，系统将保留正文拼装原稿继续输出。",
             tasks=_fill_tasks("done", "done", "running", project_id),
-            event_message=f"商务标格式规范化失败，已降级使用未格式化正文：{meta.get('error') or '未知错误'}",
+            event_message=f"{ctx['documentLabel']}格式规范化失败，已降级使用未格式化正文：{meta.get('error') or '未知错误'}",
             event_level="warning",
             event_step="format_failed",
         )
@@ -377,9 +390,7 @@ def _run_fill_generation_job(project_id: str, data: dict[str, Any], user: dict[s
         )
     except RuntimeError as exc:
         current = store.get_fill_state(project_id)
-        tasks = _fill_tasks("done", "failed", "pending", project_id)
-        if int(current.get("percentage") or 0) >= 85:
-            tasks = _fill_tasks("done", "done", "failed", project_id)
+        tasks = _failed_fill_tasks_for_percentage(project_id, int(current.get("percentage") or 0))
         store.fail_fill_generation(project_id, str(exc), tasks=tasks)
         _record_generation_audit_sync(
             project_id=project_id,
@@ -392,9 +403,7 @@ def _run_fill_generation_job(project_id: str, data: dict[str, Any], user: dict[s
         )
     except Exception as exc:  # pragma: no cover
         current = store.get_fill_state(project_id)
-        tasks = _fill_tasks("done", "failed", "pending", project_id)
-        if int(current.get("percentage") or 0) >= 85:
-            tasks = _fill_tasks("done", "done", "failed", project_id)
+        tasks = _failed_fill_tasks_for_percentage(project_id, int(current.get("percentage") or 0))
         store.fail_fill_generation(project_id, f"正文拼装异常：{exc}", tasks=tasks)
         _record_generation_audit_sync(
             project_id=project_id,

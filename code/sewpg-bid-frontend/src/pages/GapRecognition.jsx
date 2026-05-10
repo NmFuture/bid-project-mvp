@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useParams } from 'react-router-dom'
-import { gapsAPI, materialsAPI, parseAPI, projectsAPI } from '../api'
+import { useNavigate, useParams } from 'react-router-dom'
+import { gapsAPI, materialsAPI, outlineAPI, parseAPI, projectsAPI, stagesAPI } from '../api'
 import { PageLoading, PageError } from '../components/states/PageState'
 import PageHeader from '../components/shared/PageHeader'
 import DataCard from '../components/shared/DataCard'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
+import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 import {
   asArray,
   asObjectArray,
@@ -348,6 +349,8 @@ const FactMaintenanceModal = ({
 
 export default function GapRecognition({ showToast }) {
   const { id } = useParams()
+  const navigate = useNavigate()
+  const workspaceSlug = useWorkspaceSlug()
   const [data, setData] = useState(null)
   const [selectedId, setSelectedId] = useState('')
   const [loading, setLoading] = useState(true)
@@ -821,6 +824,21 @@ export default function GapRecognition({ showToast }) {
     return payload
   }
 
+  const handleAdvanceToS4 = async () => {
+    if (busyAction) return
+    setBusyAction('advance-s4')
+    try {
+      await outlineAPI.confirm(id)
+      await stagesAPI.update(id, 3, { status: 'completed', allowUnconfirmedTechnicalGap: true })
+      showToast?.(isCompleted ? '已确认当前目录并进入 S4 生成标书。' : '已确认当前目录并跳过 S3，进入 S4 生成标书。')
+      navigate(projectRoute(id, '/generate', workspaceSlug))
+    } catch (e) {
+      showToast?.(e?.message || '进入 S4 失败', 'error')
+    } finally {
+      setBusyAction('')
+    }
+  }
+
   if (loading) return <PageLoading title="正在加载 S3 缺口处理..." />
   if (error) return <PageError title="S3 缺口处理加载失败" description={error} onRetry={loadData} />
 
@@ -865,6 +883,16 @@ export default function GapRecognition({ showToast }) {
               className="px-4 py-2.5 bg-primary text-on-primary text-sm font-medium rounded-lg hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {busyAction === 'detect' ? '识别中...' : isCompleted ? '重新识别缺口' : '识别缺口'}
+            </button>
+            <button
+              type="button"
+              onClick={handleAdvanceToS4}
+              disabled={Boolean(busyAction)}
+              title={isCompleted ? '进入 S4；未确认的技术缺口会在生成和共创阶段继续提示' : '技术标已允许跳过 S3 直接进入 S4'}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-secondary px-4 py-2.5 text-sm font-semibold text-on-secondary transition-colors hover:bg-secondary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
+              {busyAction === 'advance-s4' ? '进入中...' : '进入 S4 生成标书'}
             </button>
           </>
         )}

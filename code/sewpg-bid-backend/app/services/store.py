@@ -482,6 +482,13 @@ class AppStore:
         return project
 
     @staticmethod
+    def _should_skip_technical_gap_stage(project: dict[str, Any]) -> bool:
+        if normalize_bid_type(str(project.get("bidType") or "")) == "商务标":
+            return False
+        outline_state = project.get("outline_state") if isinstance(project.get("outline_state"), dict) else {}
+        return str(outline_state.get("reviewStatus") or "") == "confirmed"
+
+    @staticmethod
     def format_size(size_bytes: int) -> str:
         if size_bytes <= 0:
             return "0 MB"
@@ -743,6 +750,8 @@ class AppStore:
 
     def _summary(self, project: dict[str, Any]) -> dict[str, Any]:
         project = self._normalize_project_identity(project)
+        if self._should_skip_technical_gap_stage(project) and int(project.get("currentStage") or 1) == 3:
+            project["currentStage"] = 4
         identity = project.get("identity") or {}
         review_decision = str(project.get("reviewDecision") or "participate")
         if review_decision not in REVIEW_DECISION_LABELS:
@@ -1053,10 +1062,15 @@ class AppStore:
     def get_stages(self, project_id: str) -> list[dict[str, Any]]:
         project = self._require(project_id)
         current_stage = self._normalize_stage_value(project.get("currentStage"), scheme=STAGE_SCHEME)
+        skip_technical_gap_stage = self._should_skip_technical_gap_stage(project)
+        if skip_technical_gap_stage and current_stage == 3:
+            current_stage = 4
         stages: list[dict[str, Any]] = []
         for group in STAGE_PROGRESS_GROUPS:
             stage_id = int(group["id"])
-            if stage_id < current_stage:
+            if skip_technical_gap_stage and stage_id == 3:
+                status = "completed"
+            elif stage_id < current_stage:
                 status = "completed"
             elif stage_id == current_stage:
                 status = "active"
@@ -1069,6 +1083,7 @@ class AppStore:
                     "status": status,
                     "isHuman": bool(group["isHuman"]),
                     "routeStageId": group["routeStageId"],
+                    "isSkipped": bool(skip_technical_gap_stage and stage_id == 3),
                 }
             )
         return stages
@@ -1077,9 +1092,15 @@ class AppStore:
         project = self._require(project_id)
         status = str(data.get("status") or "").strip()
         normalized_stage = self._normalize_stage_request(stage)
+        current_stage = self._normalize_stage_value(project.get("currentStage"), scheme=STAGE_SCHEME)
         if status == "completed":
-            project["currentStage"] = min(MAX_PROJECT_STAGE, max(project["currentStage"], normalized_stage + 1))
+            next_stage = normalized_stage + 1
+            if normalized_stage == 2 and self._should_skip_technical_gap_stage(project):
+                next_stage = 4
+            project["currentStage"] = min(MAX_PROJECT_STAGE, max(current_stage, next_stage))
         elif status == "active":
+            if normalized_stage == 3 and self._should_skip_technical_gap_stage(project):
+                normalized_stage = 4
             project["currentStage"] = max(1, min(MAX_PROJECT_STAGE, normalized_stage))
         project["stageScheme"] = STAGE_SCHEME
         project["updatedAt"] = now_iso()
@@ -1698,6 +1719,9 @@ class AppStore:
         if not isinstance(project.get("outline_state"), dict):
             project["outline_state"] = self._recover_outline_state(project)
         project["outline_state"]["reviewStatus"] = "confirmed"
+        if self._should_skip_technical_gap_stage(project):
+            current_stage = self._normalize_stage_value(project.get("currentStage"), scheme=STAGE_SCHEME)
+            project["currentStage"] = min(MAX_PROJECT_STAGE, max(current_stage, 4))
         project["updatedAt"] = now_iso()
         self._persist_project(project)
         return {

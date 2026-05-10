@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.config import settings
 from app.services.store import now_iso, store
-from app.services.workspace_artifacts import technical_workspace_dir
+from app.services.workspace_artifacts import technical_workspace_dir, technical_workspace_stage_dir
 
 
 class FillGenerationTests(unittest.TestCase):
@@ -40,7 +40,7 @@ class FillGenerationTests(unittest.TestCase):
         self.client.close()
         self.temp_dir.cleanup()
 
-    def _prepare_project_for_s7(self) -> str:
+    def _prepare_project_after_outline(self) -> str:
         response = self.client.post(
             "/api/projects",
             json={
@@ -129,6 +129,10 @@ class FillGenerationTests(unittest.TestCase):
             summary="目录已生成。",
         )
         store.confirm_outline(project_id)
+        return project_id
+
+    def _prepare_project_for_s7(self) -> str:
+        project_id = self._prepare_project_after_outline()
         store.run_gap_detection(project_id)
         for item in store.get_gap_filling(project_id)["items"]:
             store.update_gap_item(project_id, item["id"], {"status": "skipped", "reason": "测试中人工确认忽略"})
@@ -280,6 +284,25 @@ class FillGenerationTests(unittest.TestCase):
         self.assertIn("关键参数响应", full_text)
         self.assertIn("【待填写：关键参数实测值】", full_text)
 
+    def test_generation_failure_before_inputs_marks_prepare_task_failed(self) -> None:
+        from app.api.routes.generation import _run_fill_generation_job
+
+        project_id = self._prepare_project_after_outline()
+        store.start_fill_generation(project_id)
+
+        with patch(
+            "app.api.routes.generation.generate_draft_for_project_with_progress",
+            side_effect=RuntimeError("Remote end closed connection without response"),
+        ):
+            _run_fill_generation_job(project_id, {})
+
+        payload = store.get_fill_state(project_id)
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["tasks"][0]["status"], "failed")
+        self.assertEqual(payload["tasks"][1]["status"], "pending")
+        self.assertEqual(payload["tasks"][2]["status"], "pending")
+        self.assertIn("Remote end closed", payload["summary"])
+
     def test_get_coverage_returns_tree_after_fill_generation(self) -> None:
         from app.api.routes.generation import _run_fill_generation_job
 
@@ -332,6 +355,184 @@ class FillGenerationTests(unittest.TestCase):
         self.assertIn("partialItems", coverage)
         self.assertIn("noCoverItems", coverage)
         self.assertGreater(len(coverage["tree"]), 0)
+
+    def test_material_coverage_matches_recovered_original_paths(self) -> None:
+        from app.services.tech_assembly import _build_material_coverage
+
+        original_path = "/data/documents/PRJ-0005/technical-workspace/s4_gap_workdir/ai_fill/GAP-0058/投标机型总方案信息表_AI填写.docx"
+        coverage = _build_material_coverage(
+            [
+                {
+                    "toc_idx": 58,
+                    "title": "投标机型总方案信息表",
+                    "status": "MATCHED",
+                    "paths": [original_path],
+                }
+            ],
+            [
+                {
+                    "id": original_path,
+                    "title": "投标机型总方案信息表",
+                    "path": "投标资料库-定制/缺口处理/投标机型总方案信息表_AI填写.docx",
+                    "originalPath": original_path,
+                    "scope": "定制",
+                    "category": "缺口处理",
+                    "available": True,
+                }
+            ],
+        )
+
+        self.assertEqual(coverage["fullCover"], 1)
+        self.assertEqual(coverage["noCover"], 0)
+        self.assertEqual(coverage["percentage"], 100)
+        self.assertEqual(coverage["tree"][0]["status"], "full")
+        self.assertEqual(coverage["tree"][0]["children"][0]["status"], "full")
+
+    def test_technical_stage_skips_s3_after_outline_confirmation(self) -> None:
+        project_id = self._prepare_project_after_outline()
+
+        project = store.get_project(project_id)
+        self.assertEqual(project["currentStage"], 4)
+
+        stages = store.get_stages(project_id)
+        active = next(stage for stage in stages if stage["status"] == "active")
+        skipped = next(stage for stage in stages if stage["id"] == 3)
+        self.assertEqual(active["id"], 4)
+        self.assertEqual(skipped["status"], "completed")
+        self.assertTrue(skipped["isSkipped"])
+
+    def test_s7_manifest_allows_missing_gap_plan_for_technical_bid(self) -> None:
+        from app.services import tech_assembly
+
+        project_id = self._prepare_project_after_outline()
+        manifest_payloads = []
+
+        def fake_prepare_wiki_dir(project, parse_storage, work_dir):
+            wiki_dir = work_dir / "wiki"
+            cards_dir = wiki_dir / "卡片"
+            cards_dir.mkdir(parents=True, exist_ok=True)
+            return wiki_dir
+
+        def fake_export_material_library(wiki_dir, library_dir):
+            library_dir.mkdir(parents=True, exist_ok=True)
+            return library_dir, []
+
+        def fake_run_assembler_manifest(manifest_path, progress_callback=None):
+            manifest_payloads.append(json.loads(Path(manifest_path).read_text(encoding="utf-8")))
+            output_file = Path(manifest_payloads[-1]["outputFile"])
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            doc = Document()
+            doc.add_paragraph("技术方案")
+            doc.save(output_file)
+            plan_file = output_file.parent / "assembly_plan.json"
+            plan_file.write_text(
+                json.dumps(
+                    [
+                        {
+                            "toc_idx": 1,
+                            "level": 1,
+                            "title": "技术方案",
+                            "status": "STRUCTURAL",
+                            "paths": [],
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            report = output_file.parent / "assembly_report.md"
+            review = output_file.parent / "needs_review.md"
+            report.write_text("ok", encoding="utf-8")
+            review.write_text("ok", encoding="utf-8")
+            return {
+                "schema_version": "bid-tech-assembly-v1",
+                "outputFile": str(output_file),
+                "planFile": str(plan_file),
+                "assemblyReport": str(report),
+                "needsReview": str(review),
+                "summary": {"total": 1, "byStatus": {"STRUCTURAL": 1}, "usedPathCount": 0},
+            }
+
+        with patch.object(tech_assembly, "_prepare_wiki_dir", side_effect=fake_prepare_wiki_dir), \
+            patch.object(tech_assembly, "_augment_wiki_with_material_cards", return_value=0), \
+            patch.object(tech_assembly, "_export_material_library", side_effect=fake_export_material_library), \
+            patch.object(tech_assembly, "_run_assembler_manifest", side_effect=fake_run_assembler_manifest):
+            result = tech_assembly.assemble_tech_bid_for_project_with_progress(project_id)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(manifest_payloads), 1)
+        self.assertEqual(manifest_payloads[0]["gapPlanPath"], "")
+        self.assertEqual(result["assembly"]["gapPlanPath"], "")
+        self.assertEqual(result["assembly"]["formatClean"]["status"], "completed")
+        self.assertTrue(Path(result["assembly"]["formatClean"]["outputFile"]).exists())
+        self.assertTrue(Path(result["assembly"]["formatClean"]["reportFile"]).exists())
+
+    def test_s7_gap_plan_recovers_s3_ai_fill_outputs_without_review_confirmation(self) -> None:
+        from app.services import tech_assembly
+
+        project_id = self._prepare_project_after_outline()
+        project = store._require(project_id)
+        project["gap_state"] = {
+            "plan": {
+                "schemaVersion": "bid-tech-gap-plan-v1",
+                "status": "ready",
+                "items": [
+                    {
+                        "id": "GAP-0058",
+                        "number": "附表A.1",
+                        "title": "投标机型总方案信息表",
+                        "status": "needs_input",
+                        "matchedMaterials": [
+                            {
+                                "id": "RAW-OLD",
+                                "path": "技术标/原始待填模板/投标机型总方案信息表.docx",
+                                "title": "原始待填模板",
+                            }
+                        ],
+                        "resolvedArtifacts": [],
+                    }
+                ],
+            },
+            "integrity": {"status": "blocked", "blockingCount": 1},
+        }
+        store._persist_project(project)
+
+        ai_fill_dir = technical_workspace_stage_dir(project_id, "s4_gap_workdir") / "ai_fill" / "GAP-0058"
+        ai_fill_dir.mkdir(parents=True, exist_ok=True)
+        filled_docx = ai_fill_dir / "投标机型总方案信息表_AI填写.docx"
+        doc = Document()
+        doc.add_paragraph("已填写表格")
+        doc.save(filled_docx)
+        (ai_fill_dir / "投标机型总方案信息表_AI填写.fill_report.json").write_text(
+            json.dumps({"fillReport": {"title": "投标机型总方案信息表"}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        work_dir = Path(self.temp_dir.name) / "s7"
+        gap_plan_path = tech_assembly._prepare_gap_plan(project_id, work_dir)
+
+        self.assertIsNotNone(gap_plan_path)
+        recovered = json.loads(Path(gap_plan_path).read_text(encoding="utf-8"))
+        item = recovered["items"][0]
+        self.assertEqual(item["status"], "resolved")
+        self.assertEqual(item["matchedMaterials"], [])
+        self.assertEqual(len(item["resolvedArtifacts"]), 1)
+        self.assertEqual(item["resolvedArtifacts"][0]["source"], "ai_fill")
+        self.assertEqual(item["resolvedArtifacts"][0]["path"], str(filled_docx))
+        self.assertEqual(recovered["s7RecoveredAiFillArtifactCount"], 1)
+
+    def test_wiki_export_failure_keeps_runtime_wiki_available(self) -> None:
+        from app.services import tech_assembly
+
+        project_id = self._prepare_project_after_outline()
+        project = store.get_project(project_id)
+        work_dir = Path(self.temp_dir.name) / "wiki-fallback-workdir"
+
+        with patch.object(tech_assembly, "export_wiki", side_effect=RuntimeError("remote closed")):
+            wiki_dir = tech_assembly._prepare_wiki_dir(project, {}, work_dir)
+
+        self.assertTrue(wiki_dir.exists())
+        self.assertTrue((wiki_dir / "卡片").exists())
 
     def test_runtime_material_card_matching_prefers_specific_child_section(self) -> None:
         from app.services.tech_assembly import _best_toc_section_for_material
@@ -456,7 +657,7 @@ class FillGenerationTests(unittest.TestCase):
         with patch.object(tech_assembly, "_prepare_wiki_dir", side_effect=fake_prepare_wiki_dir), \
             patch.object(tech_assembly, "_export_material_library", side_effect=fake_export_material_library), \
             patch.object(tech_assembly, "_run_assembler_manifest", side_effect=fake_run_assembler_manifest):
-            tech_assembly.assemble_tech_bid_for_project_with_progress(project_id)
+            result = tech_assembly.assemble_tech_bid_for_project_with_progress(project_id)
 
         self.assertEqual(len(manifest_payloads), 1)
         self.assertIn("gapPlanPath", manifest_payloads[0])
@@ -464,6 +665,7 @@ class FillGenerationTests(unittest.TestCase):
         self.assertTrue(gap_plan_path.exists())
         gap_plan = json.loads(gap_plan_path.read_text(encoding="utf-8"))
         self.assertEqual(gap_plan["schemaVersion"], "bid-tech-gap-plan-v1")
+        self.assertEqual(result["assembly"]["formatClean"]["status"], "completed")
 
 
 if __name__ == "__main__":

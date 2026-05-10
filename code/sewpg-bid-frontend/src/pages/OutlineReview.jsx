@@ -8,6 +8,7 @@ import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
 import OnlyOfficeWorkspace from '../components/shared/OnlyOfficeWorkspace'
 import { getOutlineDisplayNumber } from '../utils/outlineNumber'
+import { getStageRoute } from '../utils/stageFlow'
 import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const cloneNodes = (nodes = []) => JSON.parse(JSON.stringify(nodes))
@@ -332,9 +333,11 @@ export default function OutlineReview({ showToast }) {
       }
 
       await outlineAPI.confirm(id)
-      await stagesAPI.update(id, 2, { status: 'completed' })
-      showToast?.('目录审核已完成，已进入 S3 缺口处理')
-      navigate(projectRoute(id, '/gaps', workspaceSlug))
+      const stageResult = await stagesAPI.update(id, 2, { status: 'completed' })
+      const nextStageId = Number(stageResult?.currentStage) || 3
+      const nextRoute = getStageRoute(id, nextStageId, workspaceSlug) || projectRoute(id, '/gaps', workspaceSlug)
+      showToast?.(nextStageId >= 4 ? '目录审核已完成，已进入 S4 生成标书' : '目录审核已完成，已进入 S3 缺口处理')
+      navigate(nextRoute)
     } catch (e) {
       showToast?.(e?.message || '目录确认失败，请稍后重试', 'error')
     } finally {

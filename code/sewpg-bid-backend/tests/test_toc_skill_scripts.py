@@ -2394,6 +2394,98 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertNotIn("<w:numPr>", match.group(1))
 
+    def test_bid_assembler_gap_plan_matches_appendix_number_plus_title(self) -> None:
+        build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap_plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-0058",
+                                "number": "附表A.1",
+                                "title": "投标机型总方案信息表",
+                                "resolvedArtifacts": [
+                                    {
+                                        "source": "ai_fill",
+                                        "path": "/tmp/投标机型总方案信息表_AI填写.docx",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "toc_idx": 57,
+                    "level": 1,
+                    "chapter_no_flat": "",
+                    "chapter_no": "",
+                    "title": "附表A.1 投标机型总方案信息表",
+                    "paths": [],
+                    "shifts": [],
+                    "attach_modes": [],
+                    "field_replace": False,
+                    "status": "NEEDS_REVIEW",
+                    "note": "招标/模板新增章节，需人工补素材",
+                }
+            ]
+
+            updated = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+        self.assertEqual(updated[0]["status"], "MATCHED")
+        self.assertEqual(updated[0]["paths"], ["/tmp/投标机型总方案信息表_AI填写.docx"])
+        self.assertEqual(updated[0]["gap_plan_item_id"], "GAP-0058")
+
+    def test_bid_assembler_gap_plan_preserves_structural_items(self) -> None:
+        build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap_plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-0137",
+                                "number": "技术附表B",
+                                "title": "供货范围、消耗品及安装调试人员计划",
+                                "status": "structural",
+                                "gapReason": "结构性目录项，不直接要求素材。",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "toc_idx": 136,
+                    "level": 1,
+                    "chapter_no_flat": "",
+                    "chapter_no": "",
+                    "title": "技术附表B 供货范围、消耗品及安装调试人员计划",
+                    "paths": [],
+                    "shifts": [],
+                    "attach_modes": [],
+                    "field_replace": False,
+                    "status": "NEEDS_REVIEW",
+                    "note": "招标/模板新增章节，需人工补素材",
+                }
+            ]
+
+            updated = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+        self.assertEqual(updated[0]["status"], "STRUCTURAL")
+        self.assertEqual(updated[0]["paths"], [])
+        self.assertEqual(updated[0]["gap_plan_item_id"], "GAP-0137")
+
     def test_bid_assembler_merges_oversize_material_instead_of_placeholder(self) -> None:
         merger = load_assembler_script("merger")
 
