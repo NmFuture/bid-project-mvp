@@ -1,25 +1,25 @@
 # doc 目录说明
 
 > 用途：让新会话和新同事能在 5 分钟内知道“当前该看什么、历史资料在哪里”。
-> 更新日期：2026-05-05
+> 更新日期：2026-05-10
 
 ## 先看这 4 份
 
-1. [14-甲方新增需求待办.md](/Users/wlb/Agent/bid-project/doc/14-甲方新增需求待办.md)
+1. [14-甲方新增需求待办.md](14-甲方新增需求待办.md)
 - 当前唯一的下一阶段待办池
 - 按实施难度升序排列
 - 每条待办都有“完成情况”
-- 完成或推进一项后，同步记录到 `/Users/wlb/Agent/bid-project/code/progress.md`
+- 完成或推进一项后，同步记录到 `../code/progress.md`
 
-2. [15-技术标与商务标需求整理.md](/Users/wlb/Agent/bid-project/doc/15-技术标与商务标需求整理.md)
+2. [15-技术标与商务标需求整理.md](15-技术标与商务标需求整理.md)
 - 技术标、商务标 Word 需求整理结果
 - 用作待办来源和讨论依据
 
-3. [README.md](/Users/wlb/Agent/bid-project/README.md)
+3. [README.md](../README.md)
 - 当前 MVP 运行、部署、健康检查和验收入口
 - 新人先按这里把系统跑起来
 
-4. [16-目标一与目标二最终目标.md](/Users/wlb/Agent/bid-project/doc/16-目标一与目标二最终目标.md)
+4. [16-目标一与目标二最终目标.md](16-目标一与目标二最终目标.md)
 - 附表填写与素材库待填写内容生成的最终目标
 - 明确人工版本作为验收基准，自动结果必须达到人工效果至少 85%
 - 明确低于 85% 时必须继续诊断、修复、再评测
@@ -46,35 +46,52 @@
 
 > 2026-05-04 S3 收口口径：当前用户认可的只有第一个缺口识别 Skill `bid-tech-gap-planner`。第二个空副表/Word 填写 Skill 和第三个审阅/完整性复查 Skill 暂不作为已验收能力；后续会在第一个 Skill 的识别结果稳定后重新规划。
 
-- [05-MVP主链路说明.md](/Users/wlb/Agent/bid-project/doc/05-MVP主链路说明.md)
+- [05-MVP主链路说明.md](05-MVP主链路说明.md)
   - 主链路口径；当前唯一阶段基线为 `S0-S6`
 
-- [06-MVP接口文档.md](/Users/wlb/Agent/bid-project/doc/06-MVP接口文档.md)
+- [06-MVP接口文档.md](06-MVP接口文档.md)
   - 当前 `Web -> FastAPI` 接口基线；接口名保留历史兼容，用户阶段和返回标签按 `S0-S6`
 
-- [08-MVP部署说明.md](/Users/wlb/Agent/bid-project/doc/08-MVP部署说明.md)
+- [08-MVP部署说明.md](08-MVP部署说明.md)
   - Docker Compose 部署口径和环境变量说明；包含认证管理员、默认 LLM、PDF/图片识别模型配置和设置/审计/识别验收提示
 
-- [11-内网离线部署说明.md](/Users/wlb/Agent/bid-project/doc/11-内网离线部署说明.md)
+- [11-内网离线部署说明.md](11-内网离线部署说明.md)
   - 内网离线交付、镜像打包和现场部署步骤
 
-- [12-数据存储与素材库数据说明.md](/Users/wlb/Agent/bid-project/doc/12-数据存储与素材库数据说明.md)
+- [12-数据存储与素材库数据说明.md](12-数据存储与素材库数据说明.md)
   - PostgreSQL、MinIO、本地文件目录和素材库数据落点；包含历史内部目录名与当前 `S0-S6` 业务阶段的映射
 
-- [13-S4生成标书与覆盖诊断说明.md](/Users/wlb/Agent/bid-project/doc/13-S4生成标书与覆盖诊断说明.md)
+- [13-S4生成标书与覆盖诊断说明.md](13-S4生成标书与覆盖诊断说明.md)
   - `S4 生成标书` 与覆盖诊断实现口径；覆盖页保留为诊断/导出检查能力，不是独立主进度节点
+
+## 商务标资料
+
+- [19-商务标素材库与Wiki库设计说明.md](19-商务标素材库与Wiki库设计说明.md)
+  - 商务标素材库和 Wiki 的结构设计口径
+
+- [20-商务标素材库执行计划.md](20-商务标素材库执行计划.md)
+  - 商务标原始素材库、项目素材路径和 Wiki 闭环的实施顺序
+
+- [21-商务标解析模块执行计划.md](21-商务标解析模块执行计划.md)
+  - 商务标专用解析模块的后端、Skill、fallback、前端展示实施计划
+
+- [22-商务标解析结果Contract设计.md](22-商务标解析结果Contract设计.md)
+  - 商务标解析结果 JSON contract 和前端展示字段口径
+
+- [23-商务标目录生成Skill适配说明.md](23-商务标目录生成Skill适配说明.md)
+  - 商务标 S2 目录生成 Skill 的 `number` 字段、后端转换、前端审核页编号显示和真实容器验收记录
 
 ## 协作与对外资料
 
-- [GIT_WORKFLOW.md](/Users/wlb/Agent/bid-project/doc/GIT_WORKFLOW.md)
+- [GIT_WORKFLOW.md](GIT_WORKFLOW.md)
   - 分支、PR、合并和质量门禁约定
 
-- [10-甲方技术细议草案-合同预期最终交付版.md](/Users/wlb/Agent/bid-project/doc/10-甲方技术细议草案-合同预期最终交付版.md)
+- [10-甲方技术细议草案-合同预期最终交付版.md](10-甲方技术细议草案-合同预期最终交付版.md)
   - 合同沟通和最终交付范围口径
 
 ## 已归档
 
-早期设计、路线讨论、迁移方案和阶段分工资料已经移入 [archive/](/Users/wlb/Agent/bid-project/doc/archive/README.md)。
+早期设计、路线讨论、迁移方案和阶段分工资料已经移入 [archive/](archive/README.md)。
 
 归档原因：
 

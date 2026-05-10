@@ -304,9 +304,11 @@ def extract_auto_toc_candidates(body_elements, blocks, style_names=None):
         style = paragraph_style(paragraph)
         body_meta = bookmark_metadata.get(bookmark, {})
         level = toc_style_level(style, style_names) or paragraph_outline_level(paragraph) or body_meta.get("level") or 1
+        number, title_hint = split_heading_number(title)
         candidate = {
             "candidate_id": f"hist-cand-{len(candidates) + 1:03d}",
-            "title_hint": compact_text(title),
+            "title_hint": title_hint,
+            "number": number,
             "level": level,
             "source_text": visible or title,
             "source_type": "history_bid_auto_toc",
@@ -363,6 +365,25 @@ def strip_page_number(text):
     return re.sub(r"(?:\t|\s+)\d+\s*$", "", value).strip()
 
 
+NUMBER_PATTERNS = [
+    r"^(?P<number>[一二三四五六七八九十百]+[、．.])\s*(?P<title>\S.*)$",
+    r"^(?P<number>[（(][一二三四五六七八九十百]+[）)])\s*(?P<title>\S.*)$",
+    r"^(?P<number>[（(]\d+[）)])\s*(?P<title>\S.*)$",
+    r"^(?P<number>\d+(?:\.\d+)+)\s*(?P<title>\S.*)$",
+    r"^(?P<number>\d+[、．.])\s*(?P<title>\S.*)$",
+    r"^(?P<number>附件\s*\d+[A-Z]?(?:[-－]?\d+)?)\s*(?P<title>\S.*)$",
+]
+
+
+def split_heading_number(text):
+    value = strip_page_number(text)
+    for pattern in NUMBER_PATTERNS:
+        match = re.match(pattern, value)
+        if match:
+            return match.group("number").strip(), match.group("title").strip()
+    return None, value
+
+
 def infer_toc_level(text, style="", style_names=None):
     style_level = toc_style_level(style, style_names)
     if style_level:
@@ -382,26 +403,20 @@ def infer_toc_level(text, style="", style_names=None):
 
 
 def title_from_toc_line(text):
-    title = strip_page_number(text)
-    replacements = [
-        r"^[一二三四五六七八九十]+[、．.]\s*",
-        r"^[（(][一二三四五六七八九十]+[）)]\s*",
-        r"^\d+(?:\.\d+)?[、．.]\s*",
-        r"^附件\s*\d+[A-Z]?(?:[-－]?\d+)?\s*",
-    ]
-    for pattern in replacements:
-        title = re.sub(pattern, "", title)
+    _, title = split_heading_number(text)
     return title.strip() or strip_page_number(text)
 
 
 def title_from_heading(text):
-    return compact_text(text)
+    _, title = split_heading_number(text)
+    return title.strip() or compact_text(text)
 
 
-def candidate_from_block(block, index, source_type, title_hint, level):
+def candidate_from_block(block, index, source_type, title_hint, level, number=None):
     result = {
         "candidate_id": f"hist-cand-{index:03d}",
         "title_hint": title_hint,
+        "number": number,
         "level": level,
         "source_text": block.get("text", ""),
         "source_type": source_type,
@@ -416,12 +431,14 @@ def candidate_from_block(block, index, source_type, title_hint, level):
 def candidates_from_toc(toc_blocks, style_names=None):
     candidates = []
     for index, block in enumerate(toc_blocks, start=1):
+        number, title_hint = split_heading_number(block.get("text", ""))
         candidates.append(candidate_from_block(
             block,
             index,
             "history_bid_toc",
-            title_from_toc_line(block.get("text", "")),
+            title_hint,
             infer_toc_level(block.get("text", ""), block.get("style", ""), style_names),
+            number,
         ))
     return candidates
 
@@ -434,12 +451,14 @@ def candidates_from_headings(blocks):
     candidates = []
     for index, block in enumerate(heading_blocks, start=1):
         level = max(1, block.get("heading_level") - min_level + 1)
+        number, title_hint = split_heading_number(block.get("text", ""))
         candidates.append(candidate_from_block(
             block,
             index,
             "history_bid_headings",
-            title_from_heading(block.get("text", "")),
+            title_hint,
             level,
+            number,
         ))
     return candidates
 

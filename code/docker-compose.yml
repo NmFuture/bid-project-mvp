@@ -23,6 +23,8 @@ services:
     image: ${FASTAPI_IMAGE:-sewpg-bid/fastapi:${APP_IMAGE_TAG:-latest}}
     build:
       context: ./sewpg-bid-backend
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     container_name: sewpg_bid_fastapi
     environment:
       APP_ENV: production
@@ -99,6 +101,8 @@ services:
     image: ${FASTAPI_IMAGE:-sewpg-bid/fastapi:${APP_IMAGE_TAG:-latest}}
     build:
       context: ./sewpg-bid-backend
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     container_name: sewpg_bid_worker
     command: ["python", "-m", "app.workers.redis_worker"]
     environment:
@@ -175,6 +179,7 @@ services:
       dockerfile: Dockerfile
       args:
         OPENCODE_NPM_VERSION: ${OPENCODE_NPM_VERSION:-1.14.18}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     container_name: sewpg_bid_opencode
     working_dir: /workspace
     environment:
