@@ -210,6 +210,8 @@ class PrepareHistoryBidOutlineInputsTest(unittest.TestCase):
 
         self.assertEqual(output["outline_source"]["source_type"], "history_bid_auto_toc")
         self.assertEqual([candidate["level"] for candidate in output["outline_candidates"]], [1, 2, 2])
+        self.assertEqual([candidate["number"] for candidate in output["outline_candidates"]], [None, "1.1", "1.2"])
+        self.assertEqual([candidate["title_hint"] for candidate in output["outline_candidates"]], ["投标函及授权文件", "投标函", "法定代表人授权委托书"])
 
 
     def test_extracts_outline_candidates_from_plain_toc_page_and_stops_at_body(self):
@@ -239,6 +241,14 @@ class PrepareHistoryBidOutlineInputsTest(unittest.TestCase):
             "资格证明文件",
             "营业执照",
             "商务偏差表",
+        ])
+        self.assertEqual([candidate["number"] for candidate in candidates], [
+            "一、",
+            "（一）",
+            "（二）",
+            "二、",
+            "1.",
+            "三、",
         ])
         self.assertEqual([candidate["level"] for candidate in candidates], [1, 2, 2, 1, 2, 1])
         self.assertNotIn("商务评分索引表", [candidate["title_hint"] for candidate in candidates])
@@ -273,8 +283,20 @@ class PrepareHistoryBidOutlineInputsTest(unittest.TestCase):
             "资格证明文件",
             "营业执照",
         ])
+        self.assertEqual([candidate["number"] for candidate in output["outline_candidates"]], [None, None, None, None, None])
         self.assertEqual([candidate["level"] for candidate in output["outline_candidates"]], [1, 2, 2, 1, 2])
         self.assertEqual(output["outline_candidates"][1]["source_text"], "投标函")
+
+    def test_extracts_heading_numbers_from_explicit_heading_structure(self):
+        output = self.run_script([
+            paragraph("一、投标函及授权文件", "Heading1"),
+            paragraph("1.1 投标函", "Heading2"),
+            paragraph("商务评分索引表", "Heading1"),
+        ])
+
+        candidates = output["outline_candidates"]
+        self.assertEqual([candidate["title_hint"] for candidate in candidates], ["投标函及授权文件", "投标函", "商务评分索引表"])
+        self.assertEqual([candidate["number"] for candidate in candidates], ["一、", "1.1", None])
 
     def test_falls_back_to_outline_level_headings_when_no_toc_exists(self):
         output = self.run_script([
@@ -291,6 +313,7 @@ class PrepareHistoryBidOutlineInputsTest(unittest.TestCase):
             "供货保障专题",
             "供应链说明",
         ])
+        self.assertEqual([candidate["number"] for candidate in output["outline_candidates"]], [None, None, None])
         self.assertEqual([candidate["level"] for candidate in output["outline_candidates"]], [1, 1, 2])
 
 

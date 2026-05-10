@@ -10,6 +10,37 @@
 
 ## 进度记录
 
+### 2026-05-10 商务标目录生成 Skill 编号链路适配
+
+改动目标：
+
+- 商务标目录审核页标题编号显示改为使用 `business-bid-outline` Skill 生成的 `outline.json.sections[*].number`。
+- 空编号保持为空，不再由前端或后端按层级自动生成编号。
+- 记录真实容器目录生成过程和报告 Skill 执行时长，方便后续排查与验收。
+
+改动内容：
+
+- `business-bid-outline` Skill 明确 `number` 字段学习规则：历史标题有编号则保留，历史无编号或无法可靠推断则输出 `null` 或空字符串。
+- 历史商务标目录输入脚本提取标题编号并拆分干净标题，`validate_outline.py` 要求每个 section 显式包含 `number`。
+- 后端加载商务标 `outline.json` 时校验 `number` 字段，并将其贯通到 `toc.json.items[*].number` 和 `outline_state.nodes[*].tocNumber`。
+- 后端对 `source == "business_outline"` 的节点标题不再拼接中文编号，避免编号列和标题输入框重复显示。
+- 前端 `OutlineReview.jsx` 编号列显示 `tocNumber`，不再显示 UI 递归生成的 `seq`；新增 `outlineNumber` 工具和回归测试。
+- 新增 `doc/23-商务标目录生成Skill适配说明.md`，记录数据流、刷新口径、关键文件和 2026-05-09 真实容器验收记录。
+
+验证结果：
+
+- `node --test src/utils/outlineNumber.test.mjs` 通过：3 passed。
+- `npm run build` 通过。
+- `npm run lint` 通过：0 errors，保留 `TenderReview.jsx` 的既有 hooks warning。
+- `.venv\Scripts\python.exe -m pytest tests/test_directory_generation.py -q` 通过：30 passed。
+- `docker compose up -d --build` 已重建并启动完整服务。
+- 真实商务标目录生成项目 `PRJ-0004`，OpenCode session `ses_1f2f073c3ffenS6H3NCxW8VEdG`，开始时间 `2026-05-09T14:06:20Z`，完成时间 `2026-05-09T14:10:26Z`，总耗时 246 秒，Skill 执行耗时 243 秒。
+- 真实输出中 `outline.json`、`toc.json` 和 `outline_state.nodes[*].tocNumber` 的编号链路一致：`["一、","二、","三、","3.1","3.2","","四、","五、","5.1","5.2"]`。
+
+遗留问题：
+
+- 目录生成完成后，浏览器若停留在旧状态，需要刷新页面才能看到最新 `outline_state`。
+
 ### 2026-05-05 10:18 收敛 S3 项目事实表生成口径
 
 改动目标：

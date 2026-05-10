@@ -7,6 +7,7 @@ import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
 import OnlyOfficeWorkspace from '../components/shared/OnlyOfficeWorkspace'
+import { getOutlineDisplayNumber } from '../utils/outlineNumber'
 import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const cloneNodes = (nodes = []) => JSON.parse(JSON.stringify(nodes))
@@ -452,6 +453,7 @@ export default function OutlineReview({ showToast }) {
         const isCollapsed = collapsedNodeIds.has(node.id)
         const status = requiredStatusLabel(node)
         const canFocusBasis = Boolean(pickTenderBasisRef(node) || nodeSearchText(node))
+        const displayNumber = getOutlineDisplayNumber(node)
 
         return (
           <div key={node.id}>
@@ -481,7 +483,7 @@ export default function OutlineReview({ showToast }) {
               ) : (
                 <span className="w-6 shrink-0" />
               )}
-              <span className="w-9 shrink-0 text-xs font-semibold text-outline">{seq}</span>
+              <span className="w-9 shrink-0 text-xs font-semibold text-outline">{displayNumber}</span>
               <input
                 value={node.title || ''}
                 onClick={(e) => e.stopPropagation()}
