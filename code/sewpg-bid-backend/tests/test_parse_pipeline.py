@@ -62,6 +62,38 @@ def build_appendix_docx_bytes() -> bytes:
     return file_obj.getvalue()
 
 
+def build_appendix_with_merges_docx_bytes() -> bytes:
+    """Build an RFP-like docx whose appendix table uses both horizontal and vertical
+    cell merges, so we can assert that the parser preserves these structures end-to-end."""
+
+    file_obj = io.BytesIO()
+    doc = Document()
+    doc.add_paragraph("附表D.1 标准及风电场空气密度功率曲线")
+    table = doc.add_table(rows=4, cols=4)
+    table.style = "Table Grid"
+    # Row 0 header: merge all 4 cells into one banner
+    table.cell(0, 0).text = "机型：投标机型1"
+    table.cell(0, 0).merge(table.cell(0, 3))
+    # Row 1 sub-header: merge last two columns into "对比图"
+    headers = ["风速区间(m/s)", "区间平均风速(m/s)", "标准空气密度下功率(kW)", "对比图"]
+    for col_index, value in enumerate(headers):
+        table.cell(1, col_index).text = value
+    table.cell(1, 3).merge(table.cell(1, 3))
+    # Row 2: data row, with cols 2-3 vertically merged into row 3 (vMerge)
+    table.cell(2, 0).text = "0.00-0.50"
+    table.cell(2, 1).text = "0"
+    table.cell(2, 2).text = "/"
+    table.cell(2, 3).text = "/"
+    # Row 3: another data row; col 3 merged into row 2's col 3 (vertical)
+    table.cell(3, 0).text = "0.50-1.00"
+    table.cell(3, 1).text = "0.5"
+    table.cell(3, 2).text = "/"
+    table.cell(3, 3).text = "/"
+    table.cell(2, 3).merge(table.cell(3, 3))
+    doc.save(file_obj)
+    return file_obj.getvalue()
+
+
 def field_by_key(items: list[dict], key: str) -> dict:
     return next(item for item in items if item["key"] == key)
 
@@ -681,6 +713,134 @@ class ParsePipelineTests(unittest.TestCase):
         appendix_doc = Document(appendices[0]["docxPath"])
         self.assertEqual(appendix_doc.tables[0].cell(0, 1).text, "设备名称")
         self.assertEqual(appendix_doc.tables[0].cell(1, 2).text, "")
+
+    def test_parse_docx_appendix_preserves_cell_merges_via_source_slicing(self) -> None:
+        """Ensure the appendix docx generated from a docx-source RFP keeps the
+        original <w:vMerge>/<w:gridSpan> structures rather than being rebuilt
+        from a flattened rows list. This is the format-preservation guarantee."""
+        import zipfile
+
+        project_id = self.create_project()
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "含合并附表招标文件.docx",
+                        build_appendix_with_merges_docx_bytes(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        self.assertEqual(len(appendices), 1)
+
+        appendix_path = Path(appendices[0]["docxPath"])
+        self.assertTrue(appendix_path.exists(), f"appendix docx missing: {appendix_path}")
+
+        # 1. The generated appendix table must still carry cell-merge XML markers.
+        with zipfile.ZipFile(appendix_path) as zf:
+            doc_xml = zf.read("word/document.xml").decode("utf-8")
+        self.assertIn(
+            "gridSpan",
+            doc_xml,
+            "horizontal merge (<w:gridSpan>) was lost: the table was rebuilt from rows instead of sliced from source",
+        )
+        self.assertIn(
+            "vMerge",
+            doc_xml,
+            "vertical merge (<w:vMerge>) was lost: the table was rebuilt from rows instead of sliced from source",
+        )
+
+        # 2. The appendix should ship its own styles.xml (proof we copied the source
+        #    docx, not regenerated from scratch). A regenerated python-docx file has
+        #    a default styles.xml that is significantly smaller than what the source
+        #    carries because the source was authored with full Word style definitions.
+        with zipfile.ZipFile(appendix_path) as zf:
+            self.assertIn("word/styles.xml", zf.namelist())
+
+        # 3. The body should only retain the appendix heading + the table; everything
+        #    else from the source RFP body must be removed.
+        appendix_doc = Document(str(appendix_path))
+        self.assertEqual(len(appendix_doc.tables), 1, "exactly one table expected in the sliced appendix")
+        non_empty_paragraphs = [
+            paragraph.text.strip()
+            for paragraph in appendix_doc.paragraphs
+            if paragraph.text.strip()
+        ]
+        self.assertEqual(
+            non_empty_paragraphs,
+            ["附表D.1 标准及风电场空气密度功率曲线"],
+            "only the appendix heading paragraph should remain in body; got %r" % (non_empty_paragraphs,),
+        )
+
+    def test_parse_docx_appendix_slicing_handles_large_body_within_budget(self) -> None:
+        """Regression guard: a real RFP body can have thousands of paragraphs and
+        dozens of appendices. The slice path must stay O(N) overall, not O(N^2)
+        per appendix. Earlier the implementation called ``body.remove(child)``
+        per non-keeper, which froze the request thread for huge documents."""
+
+        import time
+
+        project_id = self.create_project()
+
+        # Build an RFP-shaped docx that's representative of a real bid file:
+        # ~5000 narrative paragraphs + 80 back-to-back appendices. Without
+        # source-tree caching, each appendix would re-parse a multi-MB docx
+        # via python-docx (several seconds per appendix => minutes total),
+        # which is what froze the upload thread in production.
+        narrative_blocks: list[str | list[list[str]]] = [
+            f"第{i // 50 + 1}章 章节{i + 1} 这一段是正文铺垫文本，内容足够长以便撑出体积。"
+            for i in range(5000)
+        ]
+        appendix_blocks: list[str | list[list[str]]] = []
+        for i in range(1, 81):
+            appendix_blocks.append(f"附表X.{i} 测试附表{i}")
+            appendix_blocks.append(
+                [
+                    ["序号", "字段", "值"],
+                    ["1", f"项目{i}", ""],
+                ]
+            )
+
+        rfp_bytes = build_docx_blocks_bytes(*narrative_blocks, *appendix_blocks)
+
+        deadline = time.monotonic()
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "大体量招标文件.docx",
+                        rfp_bytes,
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+        elapsed = time.monotonic() - deadline
+
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        self.assertEqual(
+            len(appendices),
+            80,
+            f"expected all 80 appendices to be discovered; got {len(appendices)}",
+        )
+        # 60s is a generous ceiling — the goal is to fail loudly if the
+        # algorithm regresses (e.g. re-parsing the 20+ MB source per appendix
+        # the way the first cut did, which took minutes per upload).
+        self.assertLess(
+            elapsed,
+            60.0,
+            f"appendix slicing took {elapsed:.1f}s for 5080-block / 80-appendix docx; "
+            "suspect a regression in _slice_appendix_from_source caching",
+        )
 
     def test_parse_docx_appendices_ignores_toc_titles_with_page_numbers(self) -> None:
         project_id = self.create_project()

@@ -193,6 +193,7 @@ const FactMaintenanceModal = ({
   onBuild,
   onConfirm,
   onFieldChange,
+  onAddField,
 }) => {
   if (!open) return null
   const summary = factTable?.summary || {}
@@ -221,6 +222,15 @@ const FactMaintenanceModal = ({
             >
               <span className="material-symbols-outlined text-[16px]">sync</span>
               {fields.length ? '刷新事实' : '生成事实表'}
+            </button>
+            <button
+              type="button"
+              onClick={onAddField}
+              disabled={busy}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-surface-container-high px-3 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-[16px]">add</span>
+              新增字段
             </button>
             <button
               type="button"
@@ -257,6 +267,7 @@ const FactMaintenanceModal = ({
                 </thead>
                 <tbody className="divide-y divide-surface-container-high">
                   {fields.map((field, index) => {
+                    const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
                     const statusTone = field.status === 'confirmed'
                       ? 'bg-secondary-container text-on-secondary-container'
                       : field.status === 'missing'
@@ -268,7 +279,16 @@ const FactMaintenanceModal = ({
                     return (
                       <tr key={field.id || `${field.label}-${index}`} className="align-top">
                         <td className="px-3 py-2">
-                          <div className="font-semibold text-on-surface">{field.label}</div>
+                          {isManualField ? (
+                            <input
+                              value={field.label || ''}
+                              onChange={(event) => onFieldChange(index, 'label', event.target.value)}
+                              placeholder="字段名称"
+                              className="h-9 w-full rounded-md border border-surface-container-high bg-surface px-2 text-sm font-semibold text-on-surface"
+                            />
+                          ) : (
+                            <div className="font-semibold text-on-surface">{field.label}</div>
+                          )}
                           <div className="mt-1 text-[11px] text-outline">{field.category || '项目事实'}</div>
                         </td>
                         <td className="px-3 py-2">
@@ -308,6 +328,15 @@ const FactMaintenanceModal = ({
               <div>
                 <span className="material-symbols-outlined text-4xl text-primary">fact_check</span>
                 <p className="mt-3 text-sm text-on-surface-variant">还没有项目事实表，先从项目基础信息、目录缺口、素材和解析字段生成候选事实。</p>
+                <button
+                  type="button"
+                  onClick={onAddField}
+                  disabled={busy}
+                  className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
+                >
+                  <span className="material-symbols-outlined text-[16px]">add</span>
+                  新增字段
+                </button>
               </div>
             </div>
           )}
@@ -622,15 +651,56 @@ export default function GapRecognition({ showToast }) {
 
   const handleFactFieldChange = (index, key, value) => {
     setFactFields((current) => current.map((field, idx) => (
-      idx === index ? { ...field, [key]: value, status: value ? (field.status === 'confirmed' ? 'confirmed' : 'candidate') : 'missing' } : field
+      idx === index
+        ? {
+            ...field,
+            [key]: value,
+            status: String(key === 'value' ? value : field.value || '').trim()
+              ? (field.status === 'confirmed' ? 'confirmed' : 'candidate')
+              : 'missing',
+          }
+        : field
     )))
+  }
+
+  const handleAddFactField = () => {
+    const createdAt = new Date().toISOString()
+    setFactFields((current) => [
+      ...current,
+      {
+        id: `FACT-MANUAL-${Date.now()}`,
+        key: '',
+        label: '',
+        category: '人工补充事实',
+        value: '',
+        unit: '',
+        required: false,
+        status: 'missing',
+        confidence: 1,
+        sourcePriority: 360,
+        sourceRefs: [{ type: 'manualFact', title: '人工新增', field: '' }],
+        alternatives: [],
+        notes: 'S3 人工补充',
+        updatedAt: createdAt,
+        updatedBy: '当前用户',
+      },
+    ])
   }
 
   const handleConfirmFactTable = async () => {
     if (busyAction || !factFields.length) return null
+    const hasUnnamedManualValue = factFields.some((field) => {
+      const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
+      return isManualField && String(field.value || '').trim() && !String(field.label || '').trim()
+    })
+    if (hasUnnamedManualValue) {
+      showToast?.('请先填写人工新增字段的字段名称', 'error')
+      return null
+    }
+    const fieldsToSave = factFields.filter((field) => String(field.label || field.value || '').trim())
     setBusyAction('facts-confirm')
     try {
-      const payload = await gapsAPI.saveFacts(id, { fields: factFields, confirm: true, operator: '当前用户' })
+      const payload = await gapsAPI.saveFacts(id, { fields: fieldsToSave, confirm: true, operator: '当前用户' })
       setFactTable(payload)
       setFactFields(asObjectArray(payload?.fields))
       setData((current) => current ? { ...current, projectFactTable: payload } : current)
@@ -1255,6 +1325,7 @@ export default function GapRecognition({ showToast }) {
         onBuild={() => loadFactTable({ build: true })}
         onConfirm={handleConfirmFactTable}
         onFieldChange={handleFactFieldChange}
+        onAddField={handleAddFactField}
       />
     </div>
   )

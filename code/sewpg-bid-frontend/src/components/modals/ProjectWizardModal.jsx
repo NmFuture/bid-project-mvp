@@ -252,18 +252,24 @@ export default function ProjectWizardModal({
     }
   }, [form.bidType])
 
-  const canNextStep = useMemo(() => {
-    if (step !== 0) return true
-    if (!form.name.trim()) return false
-    if (!form.customerName.trim()) return false
-    if (customerMode === 'library' && !selectedMaterialCustomerId) return false
-    if (materialProjectMode === 'library' && !selectedMaterialProjectId) return false
-    if (form.bidType === '技术标' && !String(form.turbineModel?.model || '').trim()) return false
-    if (!form.manager.trim()) return false
-    if (!form.startDate) return false
-    if (!form.endDate) return false
-    return true
+  const missingRequiredItems = useMemo(() => {
+    if (step !== 0) return []
+    const items = []
+    if (!form.name.trim()) items.push('项目名称')
+    if (customerMode === 'library') {
+      if (!selectedMaterialCustomerId || !form.customerName.trim()) items.push('重点客户')
+    } else if (!form.customerName.trim()) {
+      items.push('普通客户')
+    }
+    if (materialProjectMode === 'library' && !selectedMaterialProjectId) items.push('重点项目')
+    if (form.bidType === '技术标' && !String(form.turbineModel?.model || '').trim()) items.push('投标机型')
+    if (!form.manager.trim()) items.push('负责人')
+    if (!form.startDate) items.push('起始日期')
+    if (!form.endDate) items.push('截止日期')
+    return items
   }, [customerMode, form, materialProjectMode, selectedMaterialCustomerId, selectedMaterialProjectId, step])
+  const canNextStep = step !== 0 || missingRequiredItems.length === 0
+  const nextDisabledReason = missingRequiredItems.length ? `请先补全：${missingRequiredItems.join('、')}` : ''
 
   const archivePathPreview = useMemo(() => {
     const customer = form.customerName.trim() || '客户名'
@@ -516,7 +522,7 @@ export default function ProjectWizardModal({
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-on-surface mb-2">
-                    {materialProjectMode === 'library' ? '重点项目 *' : '普通项目 *'}
+                    {materialProjectMode === 'library' ? '重点项目 *' : '普通项目'}
                   </label>
                   {materialProjectMode === 'library' && materialProjects.length > 0 ? (
                     <select
@@ -645,6 +651,14 @@ export default function ProjectWizardModal({
                   />
                 </div>
               </div>
+              {missingRequiredItems.length > 0 && (
+                <div
+                  id="project-wizard-required-hint"
+                  className="border border-[#f2c169] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a4d00]"
+                >
+                  {nextDisabledReason}
+                </div>
+              )}
             </div>
           )}
 
@@ -700,6 +714,8 @@ export default function ProjectWizardModal({
             <button
               onClick={() => setStep(step + 1)}
               disabled={!canNextStep}
+              title={!canNextStep ? nextDisabledReason : undefined}
+              aria-describedby={!canNextStep ? 'project-wizard-required-hint' : undefined}
               className="h-8 px-6 bg-[#0bafff] text-on-primary text-sm font-medium border border-[#0aa3ea] hover:bg-[#07a3ef] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               下一步

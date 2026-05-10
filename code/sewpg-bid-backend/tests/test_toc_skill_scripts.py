@@ -880,6 +880,107 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertNotIn("叶根部驱动转矩", titles)
             self.assertNotIn("变桨电机转矩", titles)
 
+    def test_bid_outline_generator_drops_numeric_table_cell_paragraphs(self) -> None:
+        """Regression: D.x 功率曲线表格 cell-paragraphs (e.g. ``216.9``,
+        ``3.5``, ``2.75-3.25``) used to be promoted to TOC entries when the
+        cell happened to carry a Heading style. Two layered defenses now
+        prevent this:
+
+        1. ``strip_page_number`` only commits the strip if the result still
+           has Chinese / Latin content (so ``216.9`` no longer turns into
+           ``216``).
+        2. ``parse_outline_paragraph`` rejects any candidate whose final
+           title has no Chinese / Latin character.
+
+        Symptom in production: 13 phantom GAP items with titles ``216``,
+        ``367``, ``345``, ``591``, ``554`` … appeared in S3 缺口处理 for
+        every project parsed against this customer's bid template."""
+
+        outline_runner = load_outline_script("run_from_manifest")
+
+        # Direct unit checks on the helper functions, in case the higher-level
+        # runner test below is somehow still passing them through.
+        self.assertEqual(outline_runner.strip_page_number("1.1 项目概况 ......... 12"), "1.1 项目概况")
+        self.assertEqual(outline_runner.strip_page_number("附表E.3 推荐机型 195"), "附表E.3 推荐机型")
+        # Numeric cell values must round-trip unchanged.
+        self.assertEqual(outline_runner.strip_page_number("216.9"), "216.9")
+        self.assertEqual(outline_runner.strip_page_number("3.5"), "3.5")
+        self.assertEqual(outline_runner.strip_page_number("2.75-3.25"), "2.75-3.25")
+        self.assertEqual(outline_runner.strip_page_number("12"), "12")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            output = root / "toc.json"
+            evidence = root / "evidence.json"
+
+            template_doc = Document()
+            # Genuine TOC entries we expect to keep
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.add_paragraph("1.1 项目概况", style="Heading 2")
+            # Simulate a 附表D.1 power curve table whose data cells carry a
+            # heading style (real customer template does this for visual
+            # emphasis on numeric columns). Each cell-paragraph would
+            # otherwise be picked up as a TOC item by iter_docx_paragraphs
+            # since it walks every <w:p> in the document, including those
+            # nested inside <w:tbl>/<w:tc>.
+            template_doc.add_paragraph("附表D.1 标准及风电场空气密度功率曲线", style="Heading 2")
+            curve_table = template_doc.add_table(rows=4, cols=4)
+            curve_data = [
+                ["风速区间(m/s)", "区间平均风速(m/s)", "标准1.225 (kW)", "风电场1.16 (kW)"],
+                ["2.75-3.25", "3.0", "216.9", "204"],
+                ["3.25-3.75", "3.5", "367.9", "345.4"],
+                ["3.75-4.25", "4.0", "591.2", "554.7"],
+            ]
+            for row_idx, row_values in enumerate(curve_data):
+                for col_idx, value in enumerate(row_values):
+                    cell = curve_table.cell(row_idx, col_idx)
+                    cell.text = ""
+                    para = cell.paragraphs[0]
+                    para.add_run(value)
+                    # Apply Heading 3 to every cell paragraph — this is the
+                    # exact production trigger that promoted "216.9" etc.
+                    para.style = template_doc.styles["Heading 3"]
+            template_doc.save(template)
+
+            tender_doc = Document()
+            tender_doc.add_paragraph("投标人应提供完整技术方案。")
+            tender_doc.save(tender)
+
+            outline_runner.run_manifest(
+                {
+                    "projectId": "PRJ-TEST",
+                    "workDir": str(root),
+                    "templateFile": str(template),
+                    "tenderFiles": [{"id": "TEN-1", "name": "tender.docx", "path": str(tender)}],
+                    "outputFile": str(output),
+                    "evidenceFile": str(evidence),
+                },
+                root / "s2_input.json",
+            )
+
+            toc = json_load(output)
+            titles = [str(item.get("title") or "") for item in toc["items"]]
+
+            # Real headings survive
+            self.assertIn("技术方案", titles)
+            self.assertIn("项目概况", titles)
+            self.assertIn("标准及风电场空气密度功率曲线", titles)
+
+            # Numeric noise from the curve table must NOT appear in TOC
+            for noise in ("216", "216.9", "367", "367.9", "345", "591", "3.5", "3", "2.75-3.25"):
+                self.assertNotIn(noise, titles, f"numeric noise {noise!r} leaked into TOC titles {titles!r}")
+
+            # Defensive: no item should have an all-numeric / all-punctuation title
+            for item in toc["items"]:
+                title = str(item.get("title") or "").strip()
+                self.assertRegex(
+                    title,
+                    r"[一-鿿A-Za-z]",
+                    f"item {item.get('itemId')} has noise title {title!r} with no Chinese / Latin content",
+                )
+
     def test_bid_assembler_parse_toc_accepts_current_s2_json(self) -> None:
         parse_toc = load_assembler_script("parse_toc")
 
@@ -1515,6 +1616,75 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertEqual(rows[1].cells[2].text, "提供 EW10.0-220 风力发电机组")
             self.assertEqual(rows[2].cells[2].text, "包含配套钢塔筒")
             self.assertEqual(rows[3].cells[2].text, "提供安装维护专用工具一套")
+
+    def test_bid_table_filler_fills_same_shape_response_table_from_reference_docx(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blank = tmp_path / "附表B.6 技术服务响应表.docx"
+            blank_doc = Document()
+            table = blank_doc.add_table(rows=1, cols=4)
+            table.style = "Table Grid"
+            for index, text in enumerate(["序号", "服务项目", "投标人响应值", "备注"]):
+                table.cell(0, index).text = text
+            for row in (
+                ["1", "现场培训", "", ""],
+                ["2", "技术支持", "", ""],
+                ["3", "资料交付", "", ""],
+            ):
+                cells = table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            blank_doc.save(blank)
+
+            reference = tmp_path / "项目技术服务响应源表.docx"
+            reference_doc = Document()
+            source_table = reference_doc.add_table(rows=1, cols=4)
+            source_table.style = "Table Grid"
+            for index, text in enumerate(["编号", "服务项目", "响应内容", "说明"]):
+                source_table.cell(0, index).text = text
+            for row in (
+                ["1", "现场培训", "提供不少于10人次现场培训", "项目服务"],
+                ["2", "技术支持", "提供7x24小时远程技术支持", "项目服务"],
+                ["3", "资料交付", "按招标要求提交全套技术资料", "项目服务"],
+            ):
+                cells = source_table.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            reference_doc.save(reference)
+
+            manifest_path = tmp_path / "manifest.json"
+            output = tmp_path / "filled.docx"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "appendixTask": {
+                            "id": "APPX-B6",
+                            "title": "附表B.6 技术服务响应表",
+                            "docxPath": str(blank),
+                        },
+                        "referenceMaterials": [
+                            {"id": "SERVICE", "name": reference.name, "path": str(reference), "materialTier": "project"}
+                        ],
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["fillReport"]["filledFieldCount"], 3)
+            self.assertEqual(result["fillReport"]["unfilledFieldCount"], 0)
+            self.assertTrue(any(item["action"] == "fill" and "同形行列结构" in item["reason"] for item in result["filledFieldDetails"]))
+            filled_doc = Document(str(output))
+            rows = filled_doc.tables[0].rows
+            self.assertEqual(rows[1].cells[2].text, "提供不少于10人次现场培训")
+            self.assertEqual(rows[2].cells[2].text, "提供7x24小时远程技术支持")
+            self.assertEqual(rows[3].cells[2].text, "按招标要求提交全套技术资料")
 
     def test_bid_table_filler_uses_parse_fields_and_project_materials_for_project_specific_values(self) -> None:
         table_filler = load_table_filler_script("run_from_manifest")

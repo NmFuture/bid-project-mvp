@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "bid-eval-failure-breakdown-v1",
+  "failureCount": 0,
+  "byFailureType": {},
+  "byFieldType": {},
+  "byDifficultyTier": {},
+  "bySkillName": {},
+  "byProjectId": {},
+  "failures": []
+}

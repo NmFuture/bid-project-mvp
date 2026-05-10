@@ -456,9 +456,17 @@ export const materialsAPI = {
       request('/materials/wiki/bootstrap', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     create: (data) => request('/materials/wiki', { method: 'POST', body: data }),
     update: (id, data) => request(`/materials/wiki/${id}`, { method: 'PUT', body: data }),
+    delete: (id, params = {}) => {
+      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      return request(`/materials/wiki/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
+    },
     move: (id, data) => request(`/materials/wiki/${id}/move`, { method: 'POST', body: data }),
     uploadAttachment: (id, data) =>
       request(`/materials/wiki/${id}/attachments`, { method: 'POST', body: data }),
+    deleteAttachment: (id, params = {}) => {
+      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      return request(`/materials/wiki/attachments/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
+    },
     refreshSummary: (id, data = {}) =>
       request(`/materials/wiki/${id}/refresh-summary`, { method: 'POST', body: data }),
   },

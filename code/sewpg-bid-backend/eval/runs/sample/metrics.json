@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "bid-eval-metrics-v1",
+  "goldFieldCount": 2,
+  "predictionFieldCount": 2,
+  "fillableFieldCount": 2,
+  "attemptedFieldCount": 2,
+  "fillingRate": 1.0,
+  "accuracy": 1.0,
+  "weightedAccuracy": 1.0,
+  "yellowPrecision": 0.0,
+  "yellowRecall": 0.0,
+  "keyFactConsistencyRate": 1.0,
+  "evidenceChainRate": 1.0,
+  "tierAccuracy": {
+    "T2": {
+      "attempted": 2,
+      "correct": 2,
+      "accuracy": 1.0,
+      "weightedAccuracy": 1.0
+    }
+  },
+  "fieldTypeAccuracy": {
+    "phrase": {
+      "attempted": 2,
+      "correct": 2,
+      "accuracy": 1.0,
+      "weightedAccuracy": 1.0
+    }
+  },
+  "unalignedPredictionCount": 0
+}

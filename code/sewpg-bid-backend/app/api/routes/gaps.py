@@ -24,7 +24,10 @@ async def get_gap_detection(project_id: str) -> dict[str, Any]:
 
 
 @router.post("/api/projects/{project_id}/gaps-detection/run")
-async def run_gap_detection(project_id: str) -> dict[str, Any]:
+def run_gap_detection(project_id: str) -> dict[str, Any]:
+    # Sync handler (not ``async def``) so FastAPI runs it in run_in_threadpool.
+    # The store call eventually fans into ``_run_async`` (gap_planning), which
+    # would deadlock if this ran on the event loop thread. See gap_planning._run_async.
     try:
         payload = store.run_gap_detection(project_id)
     except RuntimeError as exc:
@@ -80,11 +83,14 @@ async def save_gap_project_facts(
 
 
 @router.post("/api/projects/{project_id}/gaps/ai-fill-all")
-async def ai_fill_all_gap_materials(
+def ai_fill_all_gap_materials(
     project_id: str,
     request: Request,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
+    # Sync handler so FastAPI offloads to a thread-pool worker. The store call
+    # walks every gap and may take many minutes; the inner gap_planning code
+    # also uses ``_run_async`` which only works off the event loop thread.
     try:
         return store.run_gap_ai_fill_all(
             project_id,
@@ -122,12 +128,13 @@ async def recheck_gaps(project_id: str) -> dict[str, Any]:
 
 
 @router.post("/api/projects/{project_id}/gaps/{gap_id}/ai-fill")
-async def ai_fill_gap_material(
+def ai_fill_gap_material(
     project_id: str,
     gap_id: str,
     request: Request,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
+    # Sync handler — store.run_gap_ai_fill chains into gap_planning._run_async.
     try:
         return store.run_gap_ai_fill(
             project_id,
@@ -159,12 +166,14 @@ async def gap_artifact_content(project_id: str, artifact_id: str, filename: str)
 
 
 @router.post("/api/projects/{project_id}/gaps/{gap_id}/upload")
-async def upload_gap_material(
+def upload_gap_material(
     project_id: str,
     gap_id: str,
     request: Request,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
+    # Sync handler — store.upload_gap_artifact chains into gap_planning._run_async
+    # via _allowed_material_index when registering the artifact against scope.
     try:
         return store.upload_gap_artifact(
             project_id,

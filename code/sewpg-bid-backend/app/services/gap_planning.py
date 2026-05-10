@@ -169,10 +169,40 @@ def _validate_gap_plan_toc_coverage(plan: dict[str, Any], toc_json_path: Path) -
 
 
 def _run_async(awaitable: Any) -> Any:
+    """Run an awaitable from synchronous code.
+
+    Two cases:
+    - No running loop in this thread: ``asyncio.run`` directly.
+    - A loop is running in this thread (i.e. we are *on* an asyncio event
+      loop's own thread, e.g. inside an ``async def`` FastAPI handler): we
+      MUST NOT spawn-and-join a worker thread here, because the join would
+      block the loop's thread and freeze every other request — that's the
+      production hang we hit on ``/gaps/ai-fill-all``. Surface this as a
+      ``RuntimeError`` so the structural bug fails fast at call time and the
+      caller is forced to wrap the sync chain with ``asyncio.to_thread`` or
+      switch the FastAPI handler to ``def`` (which puts the work in a
+      thread-pool worker).
+
+    A caller that is in a *different* thread that happens to have its own
+    running loop (rare in FastAPI but possible in tests) goes through the
+    spawn-thread-and-join path, which is safe because we are not blocking
+    the loop's own thread."""
+
     try:
-        asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(awaitable)
+
+    loop_thread_id = getattr(loop, "_thread_id", None)
+    if loop_thread_id is not None and threading.get_ident() == loop_thread_id:
+        raise RuntimeError(
+            "_run_async was called from the running event loop's own thread. "
+            "Blocking here would freeze the FastAPI server. Wrap the calling "
+            "sync code with asyncio.to_thread / starlette run_in_threadpool, "
+            "or change the FastAPI route handler from 'async def' to 'def' "
+            "(FastAPI will then run it in a worker thread automatically)."
+        )
+
     result: dict[str, Any] = {}
     error: dict[str, BaseException] = {}
 
@@ -531,6 +561,7 @@ def _build_fill_quality_report(result: dict[str, Any], *, output_exists: bool) -
     report = result.get("fillReport") if isinstance(result.get("fillReport"), dict) else {}
     unfilled_fields = result.get("unfilledFields") if isinstance(result.get("unfilledFields"), list) else []
     evidence_refs = result.get("evidenceRefs") if isinstance(result.get("evidenceRefs"), list) else []
+    failed_target_count = _numeric_report_value(report, "failedTargetCount")
     filled_count = _numeric_report_value(
         report,
         "filledFieldCount",
@@ -583,6 +614,7 @@ def _build_fill_quality_report(result: dict[str, Any], *, output_exists: bool) -
         and completeness_rate >= thresholds["completenessRate"]
         and unfilled_count == 0
         and semantic_failed_count == 0
+        and failed_target_count == 0
         and output_exists
     ) else "needs_review"
     return {
@@ -600,8 +632,125 @@ def _build_fill_quality_report(result: dict[str, Any], *, output_exists: bool) -
         "semanticCheckCount": semantic_check_count,
         "semanticFailedCount": semantic_failed_count,
         "semanticValidationRate": round(semantic_validation_rate, 4) if semantic_validation_rate is not None else None,
+        "failedTargetCount": failed_target_count,
         "thresholds": thresholds,
     }
+
+
+def _path_from_result(value: Any, *, base_dir: Path) -> Path:
+    path = Path(str(value or "")).expanduser()
+    if not path.is_absolute():
+        path = base_dir / path
+    return path
+
+
+def _fill_output_files(result: dict[str, Any], resolved_output: Path) -> list[Path]:
+    raw_files = result.get("outputFiles")
+    paths: list[Path] = []
+    if isinstance(raw_files, list):
+        for item in raw_files:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            path = _path_from_result(text, base_dir=resolved_output.parent)
+            if path.suffix.lower() == ".docx":
+                paths.append(path)
+    if not paths and resolved_output.suffix.lower() == ".docx":
+        paths.append(resolved_output)
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
+
+
+def _target_result_for_output(result: dict[str, Any], output_file: Path, index: int) -> dict[str, Any]:
+    target_results = _object_items(result.get("targetResults"))
+    output_key = str(output_file)
+    for target in target_results:
+        target_output = str(target.get("outputFile") or "").strip()
+        if target_output and str(_path_from_result(target_output, base_dir=output_file.parent)) == output_key:
+            return dict(target)
+    if 0 <= index - 1 < len(target_results):
+        return dict(target_results[index - 1])
+    return {
+        "schema_version": result.get("schema_version") or result.get("schemaVersion") or TABLE_FILL_SCHEMA_VERSION,
+        "outputFile": str(output_file),
+        "unfilledFields": list(result.get("unfilledFields") or []),
+        "evidenceRefs": list(result.get("evidenceRefs") or []),
+        "fillReport": dict(result.get("fillReport") or {}),
+        "filledAt": result.get("filledAt") or now_iso(),
+    }
+
+
+def _build_ai_fill_artifacts(
+    *,
+    project_id: str,
+    base_artifact_id: str,
+    gap_id: str,
+    task_id: str,
+    item_title: str,
+    skill_name: str,
+    result: dict[str, Any],
+    output_files: list[Path],
+    batch_report_path: Path,
+    created_at: str,
+    operator: str,
+    reference_materials: list[dict[str, Any]],
+    recommended_materials: list[dict[str, Any]],
+    parse_fields: list[dict[str, Any]],
+    manifest_path: Path,
+    browser_base_url: str = "",
+    onlyoffice_base_url: str = "",
+) -> list[dict[str, Any]]:
+    batch_count = len(output_files)
+    artifacts: list[dict[str, Any]] = []
+    for index, output_file in enumerate(output_files, start=1):
+        target_result = _target_result_for_output(result, output_file, index)
+        target_result = _merge_fill_sidecar_report(target_result, output_file)
+        target_report = target_result.get("fillReport") if isinstance(target_result.get("fillReport"), dict) else {}
+        artifact_id = base_artifact_id if batch_count == 1 else f"{base_artifact_id}-{index:03d}"
+        title = str(target_report.get("title") or item_title or output_file.stem)
+        quality_report = _build_fill_quality_report(target_result, output_exists=output_file.exists())
+        artifact = {
+            "id": artifact_id,
+            "source": "ai_fill",
+            "skill": skill_name,
+            "gapId": gap_id,
+            "fillTaskId": task_id,
+            "title": title,
+            "fileName": output_file.name,
+            "path": str(output_file),
+            "createdAt": created_at,
+            "operator": operator,
+            "unfilledFields": list(target_result.get("unfilledFields") or []),
+            "evidenceRefs": list(target_result.get("evidenceRefs") or []),
+            "fillReport": target_report,
+            "qualityReport": quality_report,
+            "referenceMaterials": reference_materials,
+            "recommendedMaterials": recommended_materials,
+            "parseFields": parse_fields,
+            "manifestPath": str(manifest_path),
+            "batchReportPath": str(batch_report_path) if batch_count > 1 else "",
+            "batchTargetIndex": index if batch_count > 1 else 0,
+            "batchTargetCount": batch_count if batch_count > 1 else 0,
+            "opencodeOutput": result.get("opencodeOutput") or {},
+            "onlyoffice": _artifact_onlyoffice_payload(
+                project_id=project_id,
+                artifact_id=artifact_id,
+                file_name=output_file.name,
+                browser_base_url=browser_base_url,
+                onlyoffice_base_url=onlyoffice_base_url,
+            ),
+            "s7Ready": True,
+        }
+        artifacts.append(artifact)
+    return artifacts
 
 
 def run_ai_fill_for_gap(
@@ -716,68 +865,72 @@ def run_ai_fill_for_gap(
     resolved_output = Path(str(result.get("outputFile") or output_file))
     if not resolved_output.exists():
         raise RuntimeError(f"AI 填写未生成输出文件：{resolved_output}")
-    result = _merge_fill_sidecar_report(result, resolved_output)
-    quality_report = _build_fill_quality_report(result, output_exists=True)
+    output_files = _fill_output_files(result, resolved_output)
+    if not output_files:
+        raise RuntimeError("AI 填写未生成可预览 Word 输出文件。")
+    missing_outputs = [path for path in output_files if not path.exists()]
+    if missing_outputs:
+        raise RuntimeError(f"AI 填写输出文件不存在：{missing_outputs[0]}")
 
-    artifact = {
-        "id": artifact_id,
-        "source": "ai_fill",
-        "skill": skill_name,
-        "gapId": gap_id,
-        "fillTaskId": str(task.get("id") or ""),
-        "title": str(item.get("title") or resolved_output.stem),
-        "fileName": resolved_output.name,
-        "path": str(resolved_output),
-        "createdAt": now_iso(),
-        "operator": str(data.get("operator") or "当前用户"),
-        "unfilledFields": list(result.get("unfilledFields") or []),
-        "evidenceRefs": list(result.get("evidenceRefs") or []),
-        "fillReport": result.get("fillReport") or {},
-        "qualityReport": quality_report,
-        "referenceMaterials": reference_materials,
-        "recommendedMaterials": recommended_materials,
-        "parseFields": parse_fields,
-        "manifestPath": str(manifest_path),
-        "opencodeOutput": result.get("opencodeOutput") or {},
-        "onlyoffice": _artifact_onlyoffice_payload(
-            project_id=str(project.get("id") or ""),
-            artifact_id=artifact_id,
-            file_name=resolved_output.name,
-            browser_base_url=browser_base_url,
-            onlyoffice_base_url=onlyoffice_base_url,
-        ),
-        "s7Ready": True,
-    }
+    if len(output_files) == 1:
+        result = _merge_fill_sidecar_report(result, output_files[0])
+    quality_report = _build_fill_quality_report(
+        result,
+        output_exists=bool(output_files) and all(path.exists() for path in output_files),
+    )
+    created_at = now_iso()
+    operator = str(data.get("operator") or "当前用户")
+    artifacts = _build_ai_fill_artifacts(
+        project_id=str(project.get("id") or ""),
+        base_artifact_id=artifact_id,
+        gap_id=gap_id,
+        task_id=str(task.get("id") or ""),
+        item_title=str(item.get("title") or resolved_output.stem),
+        skill_name=skill_name,
+        result=result,
+        output_files=output_files,
+        batch_report_path=resolved_output,
+        created_at=created_at,
+        operator=operator,
+        reference_materials=reference_materials,
+        recommended_materials=recommended_materials,
+        parse_fields=parse_fields,
+        manifest_path=manifest_path,
+        browser_base_url=browser_base_url,
+        onlyoffice_base_url=onlyoffice_base_url,
+    )
+    artifact = artifacts[0]
 
     task["status"] = "completed"
-    task["outputArtifactId"] = artifact_id
-    task["completedAt"] = artifact["createdAt"]
+    task["outputArtifactId"] = artifact["id"]
+    task["outputArtifactIds"] = [entry["id"] for entry in artifacts]
+    task["completedAt"] = created_at
     item["status"] = "resolved"
     item["qualityStatus"] = quality_report["status"]
     item["qualityReport"] = quality_report
-    item["resolvedArtifacts"] = _replace_resolved_artifact(
+    item["resolvedArtifacts"] = _replace_resolved_artifacts(
         item.get("resolvedArtifacts"),
-        artifact,
+        artifacts,
         fill_task_id=str(task.get("id") or ""),
         skill_name=skill_name,
-        file_name=resolved_output.name,
     )
-    item["resolvedAt"] = artifact["createdAt"]
-    item["resolvedSource"] = artifact["fileName"]
+    item["resolvedAt"] = created_at
+    item["resolvedSource"] = artifact["fileName"] if len(artifacts) == 1 else f"{len(artifacts)} 份AI填写产物"
     item["reviewNotes"] = list(item.get("reviewNotes") or [])
-    if artifact["unfilledFields"]:
-        item["reviewNotes"].append(f"AI 填写仍有未填字段：{len(artifact['unfilledFields'])} 项")
+    unfilled_count = len(result.get("unfilledFields") or [])
+    if unfilled_count:
+        item["reviewNotes"].append(f"AI 填写仍有未填字段：{unfilled_count} 项")
     if quality_report["status"] != "passed":
         item["reviewNotes"].append("AI 填写质量验收未达标，请人工复核或补充事实表后重填。")
 
-    plan["updatedAt"] = artifact["createdAt"]
+    plan["updatedAt"] = created_at
     plan["summary"] = summarize_gap_plan(plan)
     gap_state["plan"] = plan
     gap_state["items"] = _legacy_items_from_plan(plan)
     gap_state["submittedForReview"] = False
     gap_state["reviewConfirmed"] = False
     gap_state["reviewedAt"] = ""
-    return {"item": item, "artifact": artifact, "gapPlan": plan}
+    return {"item": item, "artifact": artifact, "artifacts": artifacts, "gapPlan": plan}
 
 
 def _compact_resolved_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
@@ -797,6 +950,9 @@ def _compact_resolved_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
         "fillReport": artifact.get("fillReport") or {},
         "qualityReport": artifact.get("qualityReport") or {},
         "manifestPath": artifact.get("manifestPath"),
+        "batchReportPath": artifact.get("batchReportPath") or "",
+        "batchTargetIndex": artifact.get("batchTargetIndex") or 0,
+        "batchTargetCount": artifact.get("batchTargetCount") or 0,
         "onlyoffice": artifact.get("onlyoffice") or {},
         "s7Ready": artifact.get("s7Ready", True),
         "referenceMaterialCount": len(artifact.get("referenceMaterials") or []),
@@ -825,6 +981,33 @@ def _replace_resolved_artifact(
         kept.append(_compact_resolved_artifact(item))
     kept.append(compact)
     return kept[-12:]
+
+
+def _replace_resolved_artifacts(
+    current: Any,
+    artifacts: list[dict[str, Any]],
+    *,
+    fill_task_id: str,
+    skill_name: str,
+) -> list[dict[str, Any]]:
+    compact_artifacts = [_compact_resolved_artifact(artifact) for artifact in artifacts]
+    compact_ids = {str(artifact.get("id") or "").strip() for artifact in compact_artifacts}
+    compact_names = {str(artifact.get("fileName") or "").strip() for artifact in compact_artifacts}
+    kept: list[dict[str, Any]] = []
+    for item in _object_items(current):
+        item_id = str(item.get("id") or "").strip()
+        item_task_id = str(item.get("fillTaskId") or "").strip()
+        item_skill = str(item.get("skill") or "").strip()
+        item_file_name = str(item.get("fileName") or "").strip()
+        if item_id and item_id in compact_ids:
+            continue
+        if fill_task_id and item_task_id == fill_task_id:
+            continue
+        if not item_task_id and item_skill == skill_name and item_file_name in compact_names:
+            continue
+        kept.append(_compact_resolved_artifact(item))
+    kept.extend(compact_artifacts)
+    return kept[-24:]
 
 def register_manual_gap_upload(
     project: dict[str, Any],

@@ -465,9 +465,113 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(artifact["fillReport"]["filledFieldCount"], 2)
         self.assertEqual(artifact["referenceMaterials"][0]["id"], "RAW-0001")
 
+    def test_gap_ai_fill_registers_each_batch_table_output_as_previewable_artifact(self) -> None:
+        project_id = self._create_project_with_confirmed_directory_json()
+        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        self.assertEqual(detection_response.status_code, 200, detection_response.text)
+        gap_plan = detection_response.json()["gapPlan"]
+        fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
+        gap_id = fill_item["id"]
+        fill_task_id = fill_item["fillTasks"][0]["id"]
+        self._confirm_project_fact_table(project_id)
+
+        def fake_run_batch_table_filler(manifest_path, progress_callback=None):
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            output_root = Path(manifest["outputFile"]).parent
+            output_root.mkdir(parents=True, exist_ok=True)
+            first_output = output_root / "001-APPX-A1_AI填写.docx"
+            second_output = output_root / "002-APPX-B2_AI填写.docx"
+            for path, text in (
+                (first_output, "附表A.1：EW10.0-220上置"),
+                (second_output, "附表B.2：满足招标要求"),
+            ):
+                doc = Document()
+                doc.add_paragraph(text)
+                doc.save(path)
+            batch_report = output_root / "batch_fill_report.json"
+            result = {
+                "schema_version": "bid-tech-table-fill-v1",
+                "outputFile": str(batch_report),
+                "outputFiles": [str(first_output), str(second_output)],
+                "unfilledFields": [],
+                "evidenceRefs": [{"field": "投标机型"}, {"field": "供货范围"}],
+                "targetResults": [
+                    {
+                        "schema_version": "bid-tech-table-fill-v1",
+                        "outputFile": str(first_output),
+                        "unfilledFields": [],
+                        "evidenceRefs": [{"field": "投标机型"}],
+                        "fillReport": {
+                            "title": "附表A.1 投标机型总方案信息表",
+                            "appendixId": "APPX-A1",
+                            "filledFieldCount": 1,
+                            "unfilledFieldCount": 0,
+                            "targetFieldCount": 1,
+                        },
+                        "filledAt": "2026-05-02T00:00:00Z",
+                    },
+                    {
+                        "schema_version": "bid-tech-table-fill-v1",
+                        "outputFile": str(second_output),
+                        "unfilledFields": [],
+                        "evidenceRefs": [{"field": "供货范围"}],
+                        "fillReport": {
+                            "title": "附表B.2 供货范围响应表",
+                            "appendixId": "APPX-B2",
+                            "filledFieldCount": 1,
+                            "unfilledFieldCount": 0,
+                            "targetFieldCount": 1,
+                        },
+                        "filledAt": "2026-05-02T00:00:00Z",
+                    },
+                ],
+                "fillReport": {
+                    "batch": True,
+                    "targetCount": 2,
+                    "successfulTargetCount": 2,
+                    "failedTargetCount": 0,
+                    "filledFieldCount": 2,
+                    "unfilledFieldCount": 0,
+                    "targetFieldCount": 2,
+                },
+            }
+            batch_report.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            return result
+
+        with patch("app.services.gap_planning.run_table_filler_skill", side_effect=fake_run_batch_table_filler):
+            response = self.client.post(
+                f"/api/projects/{project_id}/gaps/{gap_id}/ai-fill",
+                json={"fillTaskId": fill_task_id, "operator": "测试用户"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(len(payload["artifacts"]), 2)
+        self.assertEqual(payload["item"]["fillTasks"][0]["outputArtifactIds"], [item["id"] for item in payload["artifacts"]])
+        self.assertEqual(payload["item"]["resolvedSource"], "2 份AI填写产物")
+        self.assertEqual(payload["item"]["qualityReport"]["status"], "passed")
+        for index, artifact in enumerate(payload["artifacts"], start=1):
+            self.assertTrue(artifact["fileName"].endswith(".docx"))
+            self.assertEqual(artifact["batchTargetIndex"], index)
+            self.assertEqual(artifact["batchTargetCount"], 2)
+            self.assertEqual(artifact["qualityReport"]["status"], "passed")
+            self.assertIn(quote(artifact["fileName"]), artifact["onlyoffice"]["browserFileUrl"])
+
+        updated_gap = self.client.get(f"/api/projects/{project_id}/gaps").json()["gapPlan"]
+        updated_item = next(item for item in updated_gap["items"] if item["id"] == gap_id)
+        self.assertEqual(len(updated_item["resolvedArtifacts"]), 2)
+        first_artifact = updated_item["resolvedArtifacts"][0]
+        download = self.client.get(
+            f"/api/projects/{project_id}/gaps/artifacts/{first_artifact['id']}/content/{quote(first_artifact['fileName'])}"
+        )
+        self.assertEqual(download.status_code, 200)
+        self.assertGreater(len(download.content), 0)
+
     def test_project_fact_table_builds_required_fields_from_project_and_gap_placeholders(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
         project = store._require(project_id)
+        project["owner"] = "华能集团"
+        project["customerName"] = "华能集团"
         project["identity"] = {"owner": "华能集团", "customerName": "华能集团"}
         project["turbineModel"] = {
             "model": "EW10.0-220下置",
@@ -510,6 +614,40 @@ class GapReviewFlowTests(unittest.TestCase):
         confirmed_unknown = next(field for field in confirmed["fields"] if field["label"] == "未知保证值")
         self.assertEqual(confirmed_unknown["status"], "confirmed")
         self.assertEqual(confirmed_unknown["value"], "按招标文件要求执行")
+
+    def test_project_fact_table_preserves_manual_fields_when_rebuilt(self) -> None:
+        project_id = self._create_project_with_confirmed_directory_json()
+        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        self.assertEqual(detection_response.status_code, 200, detection_response.text)
+
+        build_response = self.client.post(f"/api/projects/{project_id}/gaps/facts/build")
+        self.assertEqual(build_response.status_code, 200, build_response.text)
+        fields = build_response.json()["fields"]
+        fields.append(
+            {
+                "id": "FACT-MANUAL-1",
+                "label": "现场特殊要求",
+                "category": "人工补充事实",
+                "value": "满足低温施工窗口要求",
+                "required": False,
+                "status": "candidate",
+                "confidence": 1,
+                "sourcePriority": 360,
+                "sourceRefs": [{"type": "manualFact", "title": "人工新增", "field": "现场特殊要求"}],
+            }
+        )
+        save_response = self.client.put(
+            f"/api/projects/{project_id}/gaps/facts",
+            json={"fields": fields, "confirm": True, "operator": "测试用户"},
+        )
+        self.assertEqual(save_response.status_code, 200, save_response.text)
+
+        rebuild_response = self.client.post(f"/api/projects/{project_id}/gaps/facts/build")
+        self.assertEqual(rebuild_response.status_code, 200, rebuild_response.text)
+        by_label = {field["label"]: field for field in rebuild_response.json()["fields"]}
+        self.assertEqual(by_label["现场特殊要求"]["value"], "满足低温施工窗口要求")
+        self.assertEqual(by_label["现场特殊要求"]["category"], "人工补充事实")
+        self.assertEqual(by_label["现场特殊要求"]["sourceRefs"][0]["type"], "manualFact")
 
     def test_project_fact_table_filters_noisy_parse_items_and_extracts_table_fields(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
@@ -1006,6 +1144,8 @@ class GapReviewFlowTests(unittest.TestCase):
             "planFile": "",
             "integrity": {},
         }
+        project["owner"] = "华能集团"
+        project["customerName"] = "华能集团"
         project["identity"] = {"owner": "华能集团", "customerName": "华能集团"}
         store._persist_project(project)
         self._confirm_project_fact_table(project_id, {"保证值": "满足招标要求"})
@@ -1190,6 +1330,8 @@ class GapReviewFlowTests(unittest.TestCase):
             "planFile": "",
             "integrity": {},
         }
+        project["owner"] = "华能集团"
+        project["customerName"] = "华能集团"
         project["identity"] = {"owner": "华能集团", "customerName": "华能集团"}
         store._persist_project(project)
 

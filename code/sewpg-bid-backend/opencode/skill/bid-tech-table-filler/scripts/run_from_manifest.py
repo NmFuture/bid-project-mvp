@@ -14,7 +14,7 @@ import re
 from copy import deepcopy
 from difflib import SequenceMatcher
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Iterable
@@ -283,7 +283,7 @@ class AppendixSpec:
 
 
 def now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
@@ -2062,14 +2062,16 @@ def set_cell(cell: Any, text: str, *, highlight: bool = False) -> None:
     run.font.name = "宋体"
     run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
     run.font.size = Pt(9)
+    tc_pr = cell._tc.get_or_add_tcPr()
+    shd = tc_pr.find(qn("w:shd"))
     if highlight:
         run.font.highlight_color = WD_COLOR_INDEX.YELLOW
-        tc_pr = cell._tc.get_or_add_tcPr()
-        shd = tc_pr.find(qn("w:shd"))
         if shd is None:
             shd = OxmlElement("w:shd")
             tc_pr.append(shd)
         shd.set(qn("w:fill"), "FFF2CC")
+    elif shd is not None and shd.get(qn("w:fill")) == "FFF2CC":
+        tc_pr.remove(shd)
 
 
 def fill_doc(spec: AppendixSpec, mapping: dict[str, Any], output_file: Path) -> None:
@@ -3375,6 +3377,161 @@ def apply_source_table_transplant(output_file: Path, sources: list[Source]) -> l
     return decisions
 
 
+def detect_table_fill_columns(table: Any) -> tuple[int, int, int] | None:
+    for header_row, row in enumerate(table.rows[:4]):
+        cells = [clean(cell.text) for cell in row.cells]
+        value_col = choose_response_value_col(cells)
+        if value_col < 0:
+            continue
+        field_col = choose_field_col(cells, value_col)
+        if field_col >= 0 and field_col != value_col:
+            return header_row, field_col, value_col
+    return None
+
+
+def source_fill_rows(table: Any, header_row: int, field_col: int, value_col: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row_idx, row in enumerate(table.rows[header_row + 1 :], start=header_row + 1):
+        cells = [clean(cell.text) for cell in row.cells]
+        if field_col >= len(cells) or value_col >= len(cells):
+            continue
+        label = cells[field_col]
+        value = cells[value_col]
+        if not label or not usable_value(value):
+            continue
+        if norm(label) in {"项目", "参数", "名称", "内容", "说明", "备注"}:
+            continue
+        rows.append({"label": label, "value": value, "row": row_idx + 1, "column": value_col + 1})
+    return rows
+
+
+def best_source_row_match(field: str, rows: list[dict[str, Any]]) -> tuple[float, dict[str, Any] | None]:
+    best_score = 0.0
+    best_row: dict[str, Any] | None = None
+    for row in rows:
+        score_value = generic_match_score(field, row["label"])
+        if score_value > best_score:
+            best_score = score_value
+            best_row = row
+    return best_score, best_row
+
+
+def apply_same_shape_source_table_fill(
+    output_file: Path,
+    sources: list[Source],
+    spec: AppendixSpec,
+    mapping: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if spec.table_index < 0:
+        return []
+    manual_decisions = [item for item in mapping.get("decisions") or [] if item.get("action") == "manual"]
+    if not manual_decisions:
+        return []
+
+    doc = Document(str(output_file))
+    if spec.table_index >= len(doc.tables):
+        return []
+    target_table = doc.tables[spec.table_index]
+
+    candidates_by_field: dict[str, list[dict[str, Any]]] = {}
+    for source in sources:
+        if source.kind != "docx":
+            continue
+        try:
+            if source.path.resolve() == spec.source.resolve():
+                continue
+            source_doc = Document(str(source.path))
+        except Exception:
+            continue
+        for source_table_idx, source_table in enumerate(source_doc.tables):
+            detected = detect_table_fill_columns(source_table)
+            if detected is None:
+                continue
+            source_header_row, source_field_col, source_value_col = detected
+            rows = source_fill_rows(source_table, source_header_row, source_field_col, source_value_col)
+            if not rows:
+                continue
+            header_similarity = table_header_similarity(target_table, source_table)
+            table_matches: dict[str, tuple[float, dict[str, Any]]] = {}
+            for decision in manual_decisions:
+                match_score, matched_row = best_source_row_match(str(decision.get("field") or ""), rows)
+                if matched_row is not None and match_score >= 0.74:
+                    table_matches[str(decision.get("targetFieldId") or "")] = (match_score, matched_row)
+            if not table_matches:
+                continue
+            required_matches = 1 if len(manual_decisions) <= 2 else 2
+            if header_similarity < 0.42 and len(table_matches) < required_matches:
+                continue
+            for decision in manual_decisions:
+                field_id = str(decision.get("targetFieldId") or "")
+                matched = table_matches.get(field_id)
+                if matched is None:
+                    continue
+                match_score, matched_row = matched
+                combined_score = round(min(0.96, match_score + min(header_similarity, 1.0) * 0.08 + source.priority / 1000), 3)
+                candidates_by_field.setdefault(field_id, []).append(
+                    {
+                        "score": combined_score,
+                        "source": source,
+                        "sourceTableIndex": source_table_idx,
+                        "headerSimilarity": round(header_similarity, 3),
+                        "row": matched_row,
+                    }
+                )
+
+    if not candidates_by_field:
+        return []
+
+    replacements: list[dict[str, Any]] = []
+    for decision in manual_decisions:
+        field_id = str(decision.get("targetFieldId") or "")
+        candidates = candidates_by_field.get(field_id) or []
+        if not candidates:
+            continue
+        selected = sorted(candidates, key=lambda item: (item["score"], item["source"].priority), reverse=True)[0]
+        if selected["score"] < 0.78:
+            continue
+        row_idx = int(decision.get("rowIndex") or -1)
+        if row_idx < 0 or row_idx >= len(target_table.rows):
+            continue
+        row = target_table.rows[row_idx]
+        if spec.value_col >= len(row.cells):
+            continue
+        value = selected["row"]["value"]
+        set_cell(row.cells[spec.value_col], value)
+        replacements.append(
+            {
+                **decision,
+                "action": "fill",
+                "value": value,
+                "confidence": selected["score"],
+                "selectedFact": {
+                    "factId": "",
+                    "label": selected["row"]["label"],
+                    "value": value,
+                    "unit": decision.get("unit") or "",
+                    "source": selected["source"].name,
+                    "sourceKind": selected["source"].kind,
+                    "sourcePriority": selected["source"].priority,
+                    "row": selected["row"]["row"],
+                    "sheet": f"table[{selected['sourceTableIndex']}]",
+                    "score": selected["score"],
+                    "usable": True,
+                    "notes": "来源素材与目标附表存在同形表头和同名行字段，按同一行响应值写入。",
+                    "risk": "",
+                    "actionHint": "same_shape_table",
+                    "sourcePath": str(selected["source"].path),
+                    "column": selected["row"]["column"],
+                },
+                "alternatives": [],
+                "reason": "目标附表与参考素材存在同形行列结构，按字段行匹配填入来源表响应值。",
+            }
+        )
+    if replacements:
+        doc.save(str(output_file))
+    return replacements
+
+
 def curve_value_for(
     curve_tables: list[dict[str, Any]],
     *,
@@ -3714,6 +3871,19 @@ def run_single_manifest(manifest: dict[str, Any], manifest_path: Path, *, batch_
             "partial": 0,
             "manual": 0,
             "total": len(table_transplant_decisions),
+        }
+    same_shape_decisions = apply_same_shape_source_table_fill(output_file, sources, spec, mapping)
+    if same_shape_decisions:
+        replacements = {decision["targetFieldId"]: decision for decision in same_shape_decisions}
+        mapping["decisions"] = [
+            replacements.get(decision.get("targetFieldId"), decision)
+            for decision in mapping.get("decisions") or []
+        ]
+        mapping["summary"] = {
+            "fill": sum(d["action"] == "fill" for d in mapping["decisions"]),
+            "partial": sum(d["action"] == "partial" for d in mapping["decisions"]),
+            "manual": sum(d["action"] == "manual" for d in mapping["decisions"]),
+            "total": len(mapping["decisions"]),
         }
     matrix_decisions = apply_curve_matrix_fill(output_file, sources)
     if matrix_decisions:
