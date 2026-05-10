@@ -269,6 +269,41 @@ export const parseAPI = {
     request(`/projects/${projectId}/parse-results/${rid}`, { method: 'PUT', body: data }),
   appendixPreview: (projectId, appendixId) =>
     request(`/projects/${projectId}/parse-results/appendices/${encodeURIComponent(appendixId)}/preview`),
+  approveAppendixAsset: (projectId, appendixId, data = {}) =>
+    request(`/projects/${projectId}/parse-results/appendices/${encodeURIComponent(appendixId)}/approve`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  approveAllAppendixAssets: (projectId, data = {}) =>
+    request(`/projects/${projectId}/parse-results/appendices/approve`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  approveBusinessScoringAsset: (projectId, data = {}) =>
+    request(`/projects/${projectId}/parse-results/business-scoring/approve`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  approveCommitmentLetterAsset: (projectId, letterId, data = {}) =>
+    request(`/projects/${projectId}/parse-results/commitment-letters/${encodeURIComponent(letterId)}/approve`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  approveAllCommitmentLetterAssets: (projectId, data = {}) =>
+    request(`/projects/${projectId}/parse-results/commitment-letters/approve`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
   commitmentLetterPreview: (projectId, letterId) =>
     request(`/projects/${projectId}/parse-results/commitment-letters/${encodeURIComponent(letterId)}/preview`),
 }
@@ -336,6 +371,51 @@ export const gapsAPI = {
     request(`/projects/${projectId}/materials/submissions`, { method: 'POST', body: data }),
   updateMissing: (projectId, missingId, data) =>
     request(`/projects/${projectId}/materials/missing/${missingId}`, { method: 'PATCH', body: data }),
+}
+
+// ===== Business Gap Handling =====
+export const businessGapsAPI = {
+  list: (projectId) => request(`/projects/${projectId}/business-gaps`),
+  run: (projectId) => request(`/projects/${projectId}/business-gaps/run`, { method: 'POST', timeoutMs: 10 * 60 * 1000, retryCount: 0 }),
+  facts: (projectId) => request(`/projects/${projectId}/business-gaps/facts`),
+  selectableMaterials: (projectId, params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/projects/${projectId}/business-gaps/selectable-materials${qs ? `?${qs}` : ''}`)
+  },
+  buildFacts: (projectId) =>
+    request(`/projects/${projectId}/business-gaps/facts/build`, { method: 'POST' }),
+  saveFacts: (projectId, data) =>
+    request(`/projects/${projectId}/business-gaps/facts`, { method: 'PUT', body: data }),
+  updateTask: (projectId, taskId, data) =>
+    request(`/projects/${projectId}/business-gaps/tasks/${taskId}`, { method: 'PATCH', body: data }),
+  createManualTask: (projectId, tocNodeId, data) =>
+    request(`/projects/${projectId}/business-gaps/toc/${tocNodeId}/manual-task`, { method: 'POST', body: data }),
+  confirmArtifact: (projectId, taskId, data) =>
+    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/confirm-artifact`, { method: 'POST', body: data }),
+  upload: (projectId, taskId, data) =>
+    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/upload`, { method: 'POST', body: data }),
+  uploadFiles: (projectId, taskId, data) =>
+    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/upload-files`, {
+      method: 'POST',
+      body: data?.formData || data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  removeArtifact: (projectId, taskId, artifactId) =>
+    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/artifacts/${encodeURIComponent(artifactId)}`, { method: 'DELETE' }),
+  selectMaterial: (projectId, taskId, data) =>
+    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/select-material`, { method: 'POST', body: data }),
+  selectTemplate: (projectId, taskId, data) =>
+    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/select-template`, { method: 'POST', body: data }),
+  aiDraft: (projectId, taskId, data) =>
+    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/ai-draft`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 10 * 60 * 1000,
+      retryCount: 0,
+    }),
+  syncArtifactMaterial: (projectId, taskId, data) =>
+    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/sync-artifact-material`, { method: 'POST', body: data }),
 }
 
 // ===== Gap Confirmation Preview =====

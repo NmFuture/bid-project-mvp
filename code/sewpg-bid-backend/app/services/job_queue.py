@@ -180,3 +180,17 @@ def release_generation_lock(job: dict[str, Any]) -> None:
             client.delete(lock_key)
     except RedisError as exc:
         logger.warning("Failed to release Redis job lock: %s", exc)
+
+
+def force_release_generation_lock(job_type: str, project_id: str) -> None:
+    if job_type not in KNOWN_JOB_TYPES:
+        raise ValueError(f"Unknown job type: {job_type}")
+
+    client = get_redis_client()
+    if client is None:
+        return
+
+    try:
+        client.delete(generation_lock_key(job_type, project_id))
+    except RedisError as exc:
+        logger.warning("Failed to force release Redis job lock: %s", exc)

@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "bid-business-gap-status-enums-v1",
+  "decision": ["ready", "fill_required", "material_required", "ai_draft_required", "review_required"],
+  "status": ["ready", "needs_input", "filling", "resolved", "ignored", "review_required"],
+  "taskType": ["document", "table", "attachment", "certificate", "bundle"],
+  "sourceType": ["toc_fixed", "parser_explicit", "parser_semantic", "material_recommendation", "manual"]
+}

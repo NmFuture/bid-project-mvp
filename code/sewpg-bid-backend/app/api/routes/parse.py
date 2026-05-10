@@ -9,6 +9,14 @@ from fastapi import APIRouter, Body, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 from app.api.utils import absolute_url, onlyoffice_backend_base_url
+from app.services.business_parse_assets import (
+    BusinessParseAssetError,
+    approve_all_business_appendix_assets,
+    approve_all_business_commitment_letter_assets,
+    approve_business_appendix_asset,
+    approve_business_commitment_letter_asset,
+    approve_business_scoring_asset,
+)
 from app.core.config import settings
 from app.services.onlyoffice_documents import WORD_MEDIA_TYPE, build_editor_session_key
 from app.services.parse_profiles import normalize_bid_type
@@ -327,10 +335,66 @@ def _build_commitment_letter_preview(project_id: str, letter_id: str, request: R
         },
     }
 
-
 @router.get("/api/projects/{project_id}/parse-results/appendices/{appendix_id}/preview")
 async def get_appendix_preview(project_id: str, appendix_id: str, request: Request) -> dict[str, Any]:
     return _build_appendix_preview(project_id, appendix_id, request)
+
+
+@router.post("/api/projects/{project_id}/parse-results/appendices/{appendix_id}/approve")
+async def approve_appendix_asset(
+    project_id: str,
+    appendix_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    try:
+        return approve_business_appendix_asset(project_id, appendix_id, approved=bool(data.get("approved", True)))
+    except BusinessParseAssetError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/api/projects/{project_id}/parse-results/appendices/approve")
+async def approve_all_appendix_assets(
+    project_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    try:
+        return approve_all_business_appendix_assets(project_id, approved=bool(data.get("approved", True)))
+    except BusinessParseAssetError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/api/projects/{project_id}/parse-results/business-scoring/approve")
+async def approve_business_scoring(
+    project_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    try:
+        return approve_business_scoring_asset(project_id, approved=bool(data.get("approved", True)))
+    except BusinessParseAssetError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/api/projects/{project_id}/parse-results/commitment-letters/{letter_id}/approve")
+async def approve_commitment_letter_asset(
+    project_id: str,
+    letter_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    try:
+        return approve_business_commitment_letter_asset(project_id, letter_id, approved=bool(data.get("approved", True)))
+    except BusinessParseAssetError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/api/projects/{project_id}/parse-results/commitment-letters/approve")
+async def approve_all_commitment_letter_assets(
+    project_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    try:
+        return approve_all_business_commitment_letter_assets(project_id, approved=bool(data.get("approved", True)))
+    except BusinessParseAssetError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.get("/api/projects/{project_id}/parse-results/appendices/{appendix_id}/file")

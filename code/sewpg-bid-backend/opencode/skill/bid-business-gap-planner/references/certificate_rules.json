@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "bid-business-gap-certificate-rules-v1",
+  "modelCertificate": {
+    "taskKey": "turbine_model_certificate",
+    "keywords": ["机型认证", "整机认证", "型式认证证书"],
+    "riskFlags": ["expiry_check_required", "model_fit_review_required"]
+  },
+  "componentCertificate": {
+    "taskKey": "component_type_certificate",
+    "keywords": ["大部件", "部件型式认证", "叶片", "齿轮箱", "发电机", "变流器", "主轴承"],
+    "riskFlags": ["expiry_check_required", "model_fit_review_required"]
+  }
+}

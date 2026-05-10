@@ -360,10 +360,27 @@ def _candidate_keys(*values: Any) -> set[str]:
 
 
 def customer_matches(customer_name: Any, ext: dict[str, Any]) -> bool:
+    raw_query = str(customer_name or "").strip()
+    raw_query_key = normalize_identity_text(raw_query)
+    direct_ext_values = [
+        ext.get("customerName"),
+        ext.get("customerCanonicalName"),
+        *(ext.get("customerAliases") or []),
+    ]
+    direct_ext_keys = _candidate_keys(*direct_ext_values)
+    if raw_query_key and raw_query_key in direct_ext_keys:
+        return True
+
     query = canonical_customer(customer_name)
     ext_customer_id = str(ext.get("customerId") or "").strip()
-    if query["customerId"] and ext_customer_id and query["customerId"] == ext_customer_id:
+    exact_known_customer = raw_query_key and raw_query_key in _candidate_keys(
+        query["customerCanonicalName"],
+        query["customerAliases"],
+    )
+    if exact_known_customer and query["customerId"] and ext_customer_id and query["customerId"] == ext_customer_id:
         return True
+    if raw_query_key and direct_ext_keys:
+        return False
     query_keys = _candidate_keys(customer_name, query["customerCanonicalName"], query["customerAliases"])
     ext_keys = _candidate_keys(
         ext.get("customerName"),

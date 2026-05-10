@@ -187,32 +187,38 @@ def _run_business_outline_skill(
     *,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
+    prompt = _build_business_outline_prompt(manifest_path)
     try:
-        prompt = _build_business_outline_prompt(manifest_path)
-        return _load_outline_result(
-            OpencodeClient().generate_outline_with_trace(
-                prompt,
-                session_ready_callback=(
-                    (lambda details: progress_callback("outline_session_ready", details))
-                    if progress_callback
-                    else None
-                ),
-                stream_callback=(
-                    (lambda details: progress_callback("outline_delta", details))
-                    if progress_callback
-                    else None
-                ),
-                early_tool_command="",
+        result = OpencodeClient().generate_outline_with_trace(
+            prompt,
+            session_ready_callback=(
+                (lambda details: progress_callback("outline_session_ready", details))
+                if progress_callback
+                else None
             ),
-            manifest_path,
+            stream_callback=(
+                (lambda details: progress_callback("outline_delta", details))
+                if progress_callback
+                else None
+            ),
+            early_tool_command="",
         )
     except Exception as exc:
         if progress_callback:
             progress_callback(
-                "outline_failed",
+                "outline_fallback",
                 {"error": str(exc), "manifestPath": str(manifest_path)},
             )
-        raise RuntimeError(f"商务标目录必须由 futurecode 按 business-bid-outline Skill 生成，当前执行失败：{exc}") from exc
+        try:
+            fallback = _run_local_outline_skill(manifest_path)
+            return _load_outline_result(fallback, manifest_path)
+        except Exception as fallback_exc:
+            raise RuntimeError(
+                "商务标目录生成失败："
+                f"futurecode 执行失败：{exc}；"
+                f"本地 business-bid-outline 兜底也失败：{fallback_exc}"
+            ) from fallback_exc
+    return _load_outline_result(result, manifest_path)
 
 
 def _run_local_outline_skill(manifest_path: Path) -> dict[str, Any]:

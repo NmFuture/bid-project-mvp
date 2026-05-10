@@ -100,4 +100,8 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             self.assertEqual(structured["commitmentLetters"][2]["title"], "投标人不存在下列情形之一承诺函")
             self.assertEqual(len(structured.get("commitmentClues") or []), 0)
             self.assertEqual(next(field for field in structured["fieldGroups"]["commitmentRequirements"] if field["key"] == "generatedCommitmentCount")["value"], "3")
+            fact_by_key = {field["fieldKey"]: field for field in structured["projectFactFields"]}
+            self.assertEqual(fact_by_key["projectName"]["value"], "华能甘肃100MW风电项目")
+            self.assertEqual(fact_by_key["tenderNo"]["value"], "HN-BUS-2026-001")
+            self.assertEqual(fact_by_key["tenderer"]["value"], "华能集团")
             self.assertGreaterEqual(len(payload["items"]), 10)

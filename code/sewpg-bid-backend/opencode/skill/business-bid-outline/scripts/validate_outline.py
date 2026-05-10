@@ -19,6 +19,7 @@ VALID_OUTLINE_SOURCE_TYPE = {
     "history_bid_toc",
     "history_bid_headings",
     "history_bid_unknown",
+    "local_runner_fallback",
     "tender_matched",
     "tender_format_toc",
 }

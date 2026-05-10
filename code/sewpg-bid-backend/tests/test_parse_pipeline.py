@@ -1019,6 +1019,10 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(structured["schemaVersion"], "bid-business-tender-structured-v1")
         self.assertEqual(payload["summary"]["targetSkill"], "bid-business-tender-structured-parser")
         self.assertIn("commitmentLetterCount", payload["summary"])
+        fact_by_key = {field["fieldKey"]: field for field in structured["projectFactFields"]}
+        self.assertEqual(fact_by_key["projectName"]["value"], "华能甘肃100MW风电项目")
+        self.assertEqual(fact_by_key["tenderNo"]["value"], "HN-BUS-2026-001")
+        self.assertEqual(fact_by_key["tenderer"]["value"], "华能集团")
 
         field_groups = structured["fieldGroups"]
         self.assertIn("projectBasics", field_groups)
@@ -1060,6 +1064,15 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(preview_payload["id"], letters[0]["id"])
         self.assertIn("/parse-results/commitment-letters/", preview_payload["onlyoffice"]["browserFileUrl"])
 
+        approved = self.client.post(
+            f"/api/projects/{project_id}/parse-results/commitment-letters/{letters[0]['id']}/approve",
+            json={"approved": True},
+        )
+        self.assertEqual(approved.status_code, 200)
+        approved_letter = approved.json()["letter"]
+        self.assertEqual(approved_letter["assetReviewStatus"], "approved")
+        self.assertEqual(approved_letter["assetMaterialFolder"], "02-商务响应文件")
+
     def test_business_bid_participating_promotes_parse_json_to_business_workspace(self) -> None:
         project_id = self.create_business_project()
         tender = "\n".join(
@@ -1082,6 +1095,12 @@ class ParsePipelineTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["structured"]["schemaVersion"], "bid-business-tender-structured-v1")
+        approve_response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/commitment-letters/approve",
+            json={"approved": True},
+        )
+        self.assertEqual(approve_response.status_code, 200)
+        self.assertEqual(approve_response.json()["approvedCount"], 1)
 
         updated = self.client.put(
             f"/api/projects/{project_id}",
@@ -1123,6 +1142,165 @@ class ParsePipelineTests(unittest.TestCase):
         )
         self.assertEqual(preview.status_code, 200)
         self.assertIn(str(workspace_commitment_dir), preview.json()["docxPath"])
+
+    def test_business_bid_text_attachment_template_docx_keeps_template_body(self) -> None:
+        project_id = self.create_business_project()
+        tender = "\n".join(
+            [
+                "第一章 投标文件格式",
+                "附件1 投标函",
+                "致：华能集团",
+                "我方已仔细研究招标文件的全部内容，愿意按招标文件要求参加投标。",
+                "投标人（盖章）：____________",
+                "二、法定代表人授权书",
+                "本人授权以下代表作为我方合法代理人参加本项目投标。",
+                "授权代表签字：____________",
+            ]
+        ).encode("utf-8")
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        self.assertGreaterEqual(len(appendices), 2)
+        bid_letter = next(item for item in appendices if "投标函" in item["title"])
+        self.assertEqual(bid_letter["rowCount"], 0)
+        doc = Document(str(Path(bid_letter["docxPath"])))
+        paragraph_texts = [paragraph.text for paragraph in doc.paragraphs]
+        self.assertIn("致：华能集团", paragraph_texts)
+        self.assertTrue(any("愿意按招标文件要求参加投标" in text for text in paragraph_texts))
+
+    def test_business_bid_extracts_sixth_chapter_attachment_templates(self) -> None:
+        project_id = self.create_business_project()
+        tender = "\n".join(
+            [
+                "第二章 投标人须知",
+                "投标人须无条件承诺在本采购项目第一台合同设备供货前取得本条a和b所述材料，需提供承诺书。",
+                "第六章 投标文件格式",
+                "附件1 投标函",
+                "致：华能集团",
+                "投标人（盖章）：____________",
+                "附件2 法定代表人（单位负责人）身份证明",
+                "姓名：____________ 身份证号：____________",
+                "附件3 业绩情况表",
+                "| 序号 | 项目名称 | 合同容量 | 投运时间 |",
+                "| --- | --- | --- | --- |",
+                "| 1 |  |  |  |",
+            ]
+        ).encode("utf-8")
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        structured = response.json()["structured"]
+        appendices = structured["appendices"]
+        titles = [item["title"] for item in appendices]
+        self.assertTrue(any("附件1 投标函" in title for title in titles))
+        self.assertTrue(any("法定代表人" in title and "身份证明" in title for title in titles))
+        self.assertTrue(any("业绩情况表" in title for title in titles))
+        bid_letter = next(item for item in appendices if "投标函" in item["title"])
+        doc = Document(str(Path(bid_letter["docxPath"])))
+        self.assertIn("致：华能集团", [paragraph.text for paragraph in doc.paragraphs])
+        self.assertNotIn("投标人须无条件承诺", "".join(titles))
+
+    def test_business_bid_generates_semantic_business_commitment_and_filters_technical_commitments(self) -> None:
+        project_id = self.create_business_project()
+        tender = "\n".join(
+            [
+                "# 商务招标文件",
+                "项目名称：商务承诺优化项目",
+                "招标编号：BUS-2026-COM-001",
+                "招标人：测试招标人",
+                "投标人需同时承诺两个保证年等效满负荷小时数值（需提供书面承诺函）。",
+                "投标人保证年等效满负荷小时数（需提供书面承诺函）。",
+                "投标人须无条件承诺在本采购项目第一台合同设备供货前取得本条a和b所述材料，需提供承诺书。",
+                "投标人不得存在下列情形之一。",
+            ]
+        ).encode("utf-8")
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        letters = response.json()["structured"]["commitmentLetters"]
+        titles = [item["title"] for item in letters]
+        all_text = "".join(titles + [str(item.get("triggerContext") or "") for item in letters])
+        self.assertIn("材料取得承诺书", titles)
+        self.assertIn("投标人不存在下列情形之一承诺函", titles)
+        self.assertNotIn("等效满负荷小时", all_text)
+        self.assertNotIn("发电量", all_text)
+
+    def test_business_bid_commitment_semantic_review_can_override_strong_rule_candidate(self) -> None:
+        project_id = self.create_business_project()
+        tender = "\n".join(
+            [
+                "# 商务招标文件",
+                "项目名称：商务承诺 AI 复核项目",
+                "招标编号：BUS-2026-AI-001",
+                "招标人：测试招标人",
+                "投标人须无条件承诺在本采购项目第一台合同设备供货前取得本条a和b所述材料，需提供承诺书。",
+            ]
+        ).encode("utf-8")
+
+        with patch.object(
+            parsing_service.OpencodeClient,
+            "review_business_commitments_with_trace",
+            return_value={
+                "decisions": [
+                    {
+                        "id": "RAW-0001",
+                        "action": "ignore",
+                        "topicKey": "certificate_obtainment",
+                        "preferredTitle": "",
+                        "reason": "AI 判断该项不需要自动生成商务承诺书。",
+                    }
+                ]
+            },
+        ) as mocked_review:
+            response = self.client.post(
+                f"/api/projects/{project_id}/parse-results/upload-and-run",
+                files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mocked_review.call_count, 1)
+        self.assertEqual(response.json()["structured"]["commitmentLetters"], [])
+
+    def test_business_bid_commitment_strong_rule_fallback_when_semantic_review_unavailable(self) -> None:
+        project_id = self.create_business_project()
+        tender = "\n".join(
+            [
+                "# 商务招标文件",
+                "项目名称：商务承诺兜底项目",
+                "招标编号：BUS-2026-FB-001",
+                "招标人：测试招标人",
+                "投标人须无条件承诺在本采购项目第一台合同设备供货前取得本条a和b所述材料，需提供承诺书。",
+            ]
+        ).encode("utf-8")
+
+        with patch.object(
+            parsing_service.OpencodeClient,
+            "review_business_commitments_with_trace",
+            side_effect=RuntimeError("semantic review unavailable"),
+        ) as mocked_review:
+            response = self.client.post(
+                f"/api/projects/{project_id}/parse-results/upload-and-run",
+                files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mocked_review.call_count, 1)
+        letters = response.json()["structured"]["commitmentLetters"]
+        self.assertEqual([item["title"] for item in letters], ["材料取得承诺书"])
+        self.assertIn("rule_fallback_generated", letters[0]["riskFlags"])
 
     def test_business_bid_commitment_titles_use_semantic_review_and_dedupe_same_topic(self) -> None:
         project_id = self.create_business_project()

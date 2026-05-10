@@ -27,6 +27,7 @@ The full output JSON must preserve:
 - `structured.fieldGroups.commitmentRequirements` for commitment count, disqualification commitment, other-commitment section, and commitment-generation basis.
 - `structured.requirementPresence` for qualification documents, performance documents, deviation response, bid security, other commitments, and disqualification clauses.
 - `structured.commitmentLetters[]` with commitment type, trigger evidence, placement hint, and preview metadata.
+- `structured.projectFactFields[]` with stable project facts for downstream S3/S4 filling, including project name, tender number, tenderer, management unit, section scale, delivery period, warranty period, bid start date, and bid deadline.
 - `structured.coverage[]` summarizing business response coverage.
 - `structured.projectDates.startDate` and `structured.projectDates.endDate` only for bidding-stage dates, not delivery/service/construction dates.
 - `sourceFile`, `sourceDocumentId`, `section`, `evidence`, and `evidenceLocation` for every extracted scoring row, field, and commitment trigger.

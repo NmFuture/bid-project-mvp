@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import copy
 import itertools
 import json
+import mimetypes
 import re
+import shutil
+import asyncio
+import threading
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +23,13 @@ from psycopg.types.json import Jsonb
 
 from app.core.config import settings
 from app.services.identity import build_project_identity, build_project_material_scope
+from app.services.business_gap_planning import (
+    _business_template_index,
+    build_business_gap_material_picker_index,
+    build_business_gap_plan_for_project,
+    refresh_business_gap_artifact_urls,
+    summarize_business_gap_plan,
+)
 from app.services.gap_planning import (
     TABLE_FILL_SKILL_NAME,
     WORD_FILL_SKILL_NAME,
@@ -30,10 +43,18 @@ from app.services.gap_planning import (
     register_manual_gap_upload,
     register_existing_gap_material,
     run_ai_fill_for_gap,
+    safe_filename,
     summarize_gap_plan,
 )
+from app.services.minio_client import minio_client
 from app.services.parse_profiles import normalize_bid_type
-from app.services.workspace_artifacts import cleanup_parse_temp_workspace, promote_parse_artifacts_to_workspace
+from app.services.material_store import material_store
+from app.services.workspace_artifacts import (
+    business_workspace_dir,
+    cleanup_parse_temp_workspace,
+    promote_parse_artifacts_to_workspace,
+    workspace_parse_dir,
+)
 from app.services.turbine_models import normalize_project_turbine_model, project_turbine_model
 
 
@@ -262,6 +283,45 @@ def default_fill_tasks(project: dict[str, Any] | None = None) -> list[dict[str, 
     ]
 
 
+def default_fill_state(project: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "status": "idle",
+        "percentage": 0,
+        "filledAt": "",
+        "runDurationSec": 0,
+        "runDuration": "",
+        "summary": "尚未生成标书，请点击“生成标书”后继续。",
+        "output": None,
+        "sections": [],
+        "opencodeOutput": build_directory_opencode_output(),
+        "events": [],
+        "tasks": default_fill_tasks(project),
+    }
+
+
+def _run_async_material_upload(**kwargs: Any) -> dict[str, Any]:
+    awaitable = material_store.raw_upload(**kwargs)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(awaitable)
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+
+    def runner() -> None:
+        try:
+            result["value"] = asyncio.run(awaitable)
+        except BaseException as exc:  # pragma: no cover
+            error["value"] = exc
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+    if error:
+        raise error["value"]
+    return result.get("value") if isinstance(result.get("value"), dict) else {}
+
+
 class AppStore:
     def __init__(self, storage_backend: str | None = None) -> None:
         settings.ensure_dirs()
@@ -442,7 +502,244 @@ class AppStore:
         project = self._load_project(project_id) or self._projects.get(project_id)
         if not project:
             raise KeyError(project_id)
+        self._ensure_runtime_states(project)
         return project
+
+    def _ensure_runtime_states(self, project: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(project.get("parse_result"), dict):
+            project["parse_result"] = self._recover_parse_result(project)
+        if not isinstance(project.get("parse_storage"), dict):
+            project["parse_storage"] = self._recover_parse_storage(project)
+        if not isinstance(project.get("parse_progress"), dict):
+            status = str((project.get("parse_result") or {}).get("status") or "idle")
+            project["parse_progress"] = {
+                "status": "completed" if status == "completed" else "idle",
+                "percentage": 100 if status == "completed" else 0,
+                "summary": "已从项目工作区恢复解析结果。" if status == "completed" else "尚未触发招标文件解析。",
+                "startedAt": "",
+                "completedAt": str((project.get("parse_result") or {}).get("parsedAt") or ""),
+                "events": [],
+                "opencodeOutput": build_directory_opencode_output(),
+            }
+        if not isinstance(project.get("fill_state"), dict):
+            project["fill_state"] = default_fill_state(project)
+        if not isinstance(project.get("directory_state"), dict):
+            project["directory_state"] = self._recover_directory_state(project)
+        if not isinstance(project.get("outline_state"), dict):
+            project["outline_state"] = self._recover_outline_state(project)
+        if not isinstance(project.get("document_state"), dict):
+            project["document_state"] = {
+                "status": "ready",
+                "documentId": f"DOC-{project['id']}",
+                "sourceFileName": f"{str(project.get('name') or project['id'])}_正文.docx",
+                "fileName": f"{str(project.get('name') or project['id'])}_正文.docx",
+                "fileType": "docx",
+                "version": 1,
+                "lastSavedAt": "",
+                "onlyoffice": {
+                    "documentKey": f"{project['id']}-v1",
+                    "title": f"{str(project.get('name') or project['id'])}_正文.docx",
+                    "user": {"id": "user-1", "name": "当前用户"},
+                },
+                "fallback": {"content": ""},
+            }
+        project["fill_state"].setdefault("opencodeOutput", build_directory_opencode_output())
+        project["fill_state"].setdefault("events", [])
+        project["fill_state"].setdefault("tasks", default_fill_tasks(project))
+        return project
+
+    def _recover_parse_result(self, project: dict[str, Any]) -> dict[str, Any]:
+        project_id = str(project.get("id") or "")
+        bid_type = normalize_bid_type(str(project.get("bidType") or "技术标"))
+        parse_dir = workspace_parse_dir(project_id, bid_type)
+        candidates = [
+            parse_dir / "parse-result.workspace.json",
+            parse_dir / "s1_structured_result.json",
+            business_workspace_dir(project_id) / "parse" / "parse-result.workspace.json",
+            settings.documents_dir / project_id / "technical-workspace" / "parse" / "parse-result.workspace.json",
+            settings.parsed_dir / project_id / "parse-result.workspace.json",
+            settings.parsed_dir / project_id / "s1_structured_result.json",
+        ]
+        for path in candidates:
+            payload = self._read_json_file(path)
+            if not payload:
+                continue
+            if path.name == "s1_structured_result.json":
+                payload = {
+                    "status": "completed",
+                    "parsedAt": now_iso(),
+                    "sourceFiles": [],
+                    "items": copy.deepcopy(payload.get("items") or []),
+                    "structured": copy.deepcopy(payload.get("structured") or {}),
+                    "summary": payload.get("summary") if isinstance(payload.get("summary"), dict) else {},
+                }
+            payload.setdefault("status", "completed")
+            payload.setdefault("parsedAt", now_iso())
+            payload.setdefault("sourceFiles", [])
+            payload.setdefault("items", [])
+            payload.setdefault("structured", {})
+            payload.setdefault(
+                "summary",
+                {
+                    "fileCount": len(payload.get("sourceFiles") or []),
+                    "extractedCount": len(payload.get("items") or []),
+                    "textLength": 0,
+                    "textPreview": "",
+                    "warnings": ["解析结果由项目工作区自动恢复。"],
+                },
+            )
+            return payload
+        return self._empty_parse_result(project)
+
+    def _recover_parse_storage(self, project: dict[str, Any]) -> dict[str, Any]:
+        project_id = str(project.get("id") or "")
+        bid_type = normalize_bid_type(str(project.get("bidType") or "技术标"))
+        parse_dir = workspace_parse_dir(project_id, bid_type)
+        manifest = self._read_json_file(parse_dir / "manifest.json")
+        structured_path = parse_dir / "s1_structured_result.json"
+        return {
+            "projectDir": str(parse_dir.parent) if parse_dir.exists() else "",
+            "parseDir": str(parse_dir) if parse_dir.exists() else "",
+            "combinedTextPath": str(parse_dir / "combined.txt") if (parse_dir / "combined.txt").exists() else "",
+            "manifestPath": str(parse_dir / "manifest.json") if (parse_dir / "manifest.json").exists() else "",
+            "structuredResultPath": str(structured_path) if structured_path.exists() else "",
+            "skillManifestPath": str(parse_dir / "s1_parse_manifest.json") if (parse_dir / "s1_parse_manifest.json").exists() else "",
+            "documents": list(manifest.get("documents") or []) if isinstance(manifest.get("documents"), list) else [],
+        }
+
+    @staticmethod
+    def _empty_parse_result(project: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "status": "idle",
+            "parsedAt": "",
+            "project": {
+                "id": str(project.get("id") or ""),
+                "files": copy.deepcopy(project.get("files") or []),
+                "templateFiles": copy.deepcopy(project.get("templateFiles") or []),
+                "startDate": str(project.get("startDate") or ""),
+                "endDate": str(project.get("endDate") or project.get("deadline") or ""),
+                "deadline": str(project.get("deadline") or project.get("endDate") or ""),
+                "currentStage": project.get("currentStage") or 1,
+            },
+            "sourceFiles": [],
+            "items": [],
+            "structured": {},
+            "summary": {
+                "fileCount": 0,
+                "extractedCount": 0,
+                "textLength": 0,
+                "textPreview": "",
+                "warnings": [],
+            },
+        }
+
+    @staticmethod
+    def _read_json_file(path: Path) -> dict[str, Any]:
+        try:
+            if not path.exists() or not path.is_file():
+                return {}
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _recover_directory_state(self, project: dict[str, Any]) -> dict[str, Any]:
+        project_id = str(project.get("id") or "")
+        toc_path = self._recover_business_toc_path(project)
+        generated_at = now_iso()
+        if toc_path:
+            return {
+                "status": "completed",
+                "percentage": 100,
+                "summary": "已从商务标 S2 目录产物恢复目录状态。",
+                "generatedAt": generated_at,
+                "output": {
+                    "fileName": f"{str(project.get('name') or project_id)}_目录.docx",
+                    "fileType": "docx",
+                    "chapterCount": 0,
+                },
+                "opencodeOutput": {
+                    **build_directory_opencode_output(),
+                    "tocJsonPath": str(toc_path),
+                    "outputFile": str(toc_path),
+                },
+                "ruleEvidence": {},
+                "events": [
+                    build_directory_event(
+                        "已从商务标 S2 目录产物恢复目录状态。",
+                        level="info",
+                        step="recovered",
+                        at=generated_at,
+                    )
+                ],
+                "tasks": [
+                    {"id": "task-1", "label": "准备目录候选", "status": "done"},
+                    {"id": "task-2", "label": "futurecode 语义审核", "status": "done"},
+                    {"id": "task-3", "label": "保存审核目录", "status": "done"},
+                ],
+            }
+        return {
+            "status": "idle",
+            "percentage": 0,
+            "summary": "尚未生成目录。",
+            "generatedAt": "",
+            "output": None,
+            "opencodeOutput": build_directory_opencode_output(),
+            "ruleEvidence": {},
+            "events": [],
+            "tasks": [
+                {"id": "task-1", "label": "准备目录候选", "status": "pending"},
+                {"id": "task-2", "label": "futurecode 语义审核", "status": "pending"},
+                {"id": "task-3", "label": "保存审核目录", "status": "pending"},
+            ],
+        }
+
+    def _recover_outline_state(self, project: dict[str, Any]) -> dict[str, Any]:
+        project_id = str(project.get("id") or "")
+        toc_path = self._recover_business_toc_path(project)
+        nodes: list[dict[str, Any]] = []
+        generated_at = now_iso()
+        if toc_path:
+            try:
+                toc = json.loads(toc_path.read_text(encoding="utf-8"))
+                items = toc.get("items") if isinstance(toc, dict) else []
+                if isinstance(items, list):
+                    nodes = self._outline_nodes_from_toc_items(items)
+                generated_at = str(toc.get("generatedAt") or toc.get("generated_at") or generated_at) if isinstance(toc, dict) else generated_at
+            except Exception:
+                nodes = []
+        return {
+            "outlineVersion": 1,
+            "reviewStatus": "confirmed" if nodes else "draft",
+            "generatedAt": generated_at if nodes else "",
+            "summary": {"totalNodeCount": self._count_nodes(nodes)},
+            "nodes": copy.deepcopy(nodes),
+            "recoveredFrom": str(toc_path or ""),
+        }
+
+    @staticmethod
+    def _recover_business_toc_path(project: dict[str, Any]) -> Path | None:
+        project_id = str(project.get("id") or "")
+        if not project_id:
+            return None
+        candidates: list[Path] = []
+        directory_state = project.get("directory_state") if isinstance(project.get("directory_state"), dict) else {}
+        opencode_output = directory_state.get("opencodeOutput") if isinstance(directory_state.get("opencodeOutput"), dict) else {}
+        for value in (opencode_output.get("tocJsonPath"), opencode_output.get("outputFile")):
+            if value:
+                candidates.append(Path(str(value)).expanduser())
+        candidates.extend(
+            [
+                settings.documents_dir / project_id / "business-workspace" / "s2_toc_workdir" / settings.s2_toc_output_file_name,
+                settings.documents_dir / project_id / "business-workspace" / "s2_toc_workdir" / "toc.json",
+                settings.documents_dir / project_id / "business-workspace" / "gaps" / settings.s2_toc_output_file_name,
+                settings.documents_dir / project_id / "business-workspace" / "gaps" / "toc.json",
+            ]
+        )
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file() and candidate.suffix.lower() == ".json":
+                return candidate
+        return None
 
     def _summary(self, project: dict[str, Any]) -> dict[str, Any]:
         project = self._normalize_project_identity(project)
@@ -621,19 +918,7 @@ class AppStore:
                 "summary": {"totalNodeCount": 0},
                 "nodes": [],
             },
-            "fill_state": {
-                "status": "idle",
-                "percentage": 0,
-                "filledAt": "",
-                "runDurationSec": 0,
-                "runDuration": "",
-                "summary": "尚未生成标书，请点击“生成标书”后继续。",
-                "output": None,
-                "sections": [],
-                "opencodeOutput": build_directory_opencode_output(),
-                "events": [],
-                "tasks": default_fill_tasks(),
-            },
+            "fill_state": default_fill_state({"bidType": str(data.get("bidType") or "技术标")}),
             "document_state": {
                 "status": "ready",
                 "documentId": f"DOC-{project_id}",
@@ -664,6 +949,16 @@ class AppStore:
                 "integrity": {},
                 "projectFactTable": {},
             },
+            "business_gap_state": {
+                "recognitionStatus": "idle",
+                "recognizedAt": "",
+                "submittedForReview": False,
+                "reviewConfirmed": False,
+                "reviewedAt": "",
+                "plan": {},
+                "planFile": "",
+                "integrity": {},
+            },
             "review_document_state": {
                 "parseStatus": "idle",
                 "parsedAt": "",
@@ -684,6 +979,10 @@ class AppStore:
 
     def get_project(self, project_id: str) -> dict[str, Any]:
         return self._detail(self._require(project_id))
+
+    def get_project_runtime_state(self, project_id: str) -> dict[str, Any]:
+        """Return the full persisted project payload for backend pipeline services."""
+        return copy.deepcopy(self._require(project_id))
 
     def update_project(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
         project = self._require(project_id)
@@ -874,6 +1173,21 @@ class AppStore:
 
     def get_parse_result(self, project_id: str) -> dict[str, Any]:
         return copy.deepcopy(self._require(project_id)["parse_result"])
+
+    def update_parse_result(
+        self,
+        project_id: str,
+        parse_result: dict[str, Any],
+        *,
+        parse_storage: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        project["parse_result"] = copy.deepcopy(parse_result)
+        if parse_storage is not None:
+            project["parse_storage"] = copy.deepcopy(parse_storage)
+        project["updatedAt"] = now_iso()
+        self._persist_project(project)
+        return copy.deepcopy(project["parse_result"])
 
     def get_parse_progress(self, project_id: str) -> dict[str, Any]:
         project = self._require(project_id)
@@ -1124,7 +1438,7 @@ class AppStore:
         opencode_output: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         project = self._require(project_id)
-        current = copy.deepcopy(project["directory_state"])
+        current = copy.deepcopy(project.get("directory_state") or self._recover_directory_state(project))
         if percentage is not None:
             current["percentage"] = max(0, min(100, int(percentage)))
         if summary is not None:
@@ -1161,7 +1475,7 @@ class AppStore:
         tasks: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         project = self._require(project_id)
-        current = copy.deepcopy(project["directory_state"])
+        current = copy.deepcopy(project.get("directory_state") or self._recover_directory_state(project))
         current["status"] = "failed"
         current["summary"] = message
         current_output = build_directory_opencode_output()
@@ -1230,8 +1544,9 @@ class AppStore:
             ],
         }
         project["directory_state"] = payload
+        current_outline = project.get("outline_state") if isinstance(project.get("outline_state"), dict) else {}
         project["outline_state"] = {
-            "outlineVersion": int(project["outline_state"].get("outlineVersion") or 0) + 1,
+            "outlineVersion": int(current_outline.get("outlineVersion") or 0) + 1,
             "reviewStatus": "draft",
             "generatedAt": generated_at,
             "summary": {"totalNodeCount": self._count_nodes(nodes)},
@@ -1242,7 +1557,8 @@ class AppStore:
         return copy.deepcopy(payload)
 
     def get_directory_state(self, project_id: str) -> dict[str, Any]:
-        state = copy.deepcopy(self._require(project_id)["directory_state"])
+        project = self._require(project_id)
+        state = copy.deepcopy(project["directory_state"])
         if not isinstance(state.get("ruleEvidence"), dict) or not state.get("ruleEvidence"):
             evidence = self._load_directory_rule_evidence(state)
             if evidence:
@@ -1279,11 +1595,12 @@ class AppStore:
         }
 
     def get_outline_state(self, project_id: str) -> dict[str, Any]:
-        return copy.deepcopy(self._require(project_id)["outline_state"])
+        project = self._require(project_id)
+        return copy.deepcopy(project["outline_state"])
 
     def save_outline(self, project_id: str, nodes: list[dict[str, Any]]) -> dict[str, Any]:
         project = self._require(project_id)
-        current = copy.deepcopy(project["outline_state"])
+        current = copy.deepcopy(project.get("outline_state") or self._recover_outline_state(project))
         current["outlineVersion"] = int(current.get("outlineVersion") or 1) + 1
         current["reviewStatus"] = "draft"
         current["summary"] = {"totalNodeCount": self._count_nodes(nodes)}
@@ -1296,8 +1613,9 @@ class AppStore:
     def regenerate_outline(self, project_id: str) -> dict[str, Any]:
         project = self._require(project_id)
         nodes = self._regenerated_outline_nodes(project)
+        current_outline = project.get("outline_state") if isinstance(project.get("outline_state"), dict) else {}
         project["outline_state"] = {
-            "outlineVersion": int(project["outline_state"].get("outlineVersion") or 1) + 1,
+            "outlineVersion": int(current_outline.get("outlineVersion") or 1) + 1,
             "reviewStatus": "draft",
             "generatedAt": now_iso(),
             "summary": {"totalNodeCount": self._count_nodes(nodes)},
@@ -1377,6 +1695,8 @@ class AppStore:
 
     def confirm_outline(self, project_id: str) -> dict[str, Any]:
         project = self._require(project_id)
+        if not isinstance(project.get("outline_state"), dict):
+            project["outline_state"] = self._recover_outline_state(project)
         project["outline_state"]["reviewStatus"] = "confirmed"
         project["updatedAt"] = now_iso()
         self._persist_project(project)
@@ -1714,6 +2034,1049 @@ class AppStore:
         self._persist_project(project)
         return copy.deepcopy(integrity)
 
+    def run_business_gap_detection(self, project_id: str) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标缺口处理仅支持商务标项目。")
+        if str((project.get("outline_state") or {}).get("reviewStatus") or "") != "confirmed":
+            raise ValueError("请先完成人工目录审核，再生成商务标缺口计划。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        plan = build_business_gap_plan_for_project(project)
+        recognized_at = now_iso()
+        plan["summary"] = summarize_business_gap_plan(plan)
+        business_gap_state.update(
+            {
+                "recognitionStatus": "completed",
+                "recognizedAt": recognized_at,
+                "submittedForReview": False,
+                "reviewConfirmed": False,
+                "reviewedAt": "",
+                "plan": plan,
+                "planFile": str(plan.get("planFile") or ""),
+                "integrity": self._business_gap_integrity(plan),
+            }
+        )
+        plan["integrity"] = copy.deepcopy(business_gap_state["integrity"])
+        project["updatedAt"] = recognized_at
+        self._persist_project(project)
+        return self._build_business_gap_payload(project, business_gap_state)
+
+    def get_business_gap_filling(
+        self,
+        project_id: str,
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标缺口处理仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        if business_gap_state["recognitionStatus"] != "completed":
+            return self._build_business_gap_payload(project, business_gap_state)
+        if self._refresh_business_gap_template_candidates(project, business_gap_state):
+            business_gap_state = self._ensure_business_gap_state(project)
+        payload = self._build_business_gap_payload(project, business_gap_state)
+        plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
+        refresh_business_gap_artifact_urls(
+            project_id,
+            plan,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+        )
+        payload["plan"] = plan
+        payload["businessGapPlan"] = plan
+        return payload
+
+    def list_business_gap_selectable_materials(self, project_id: str, *, keyword: str = "") -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标素材选择仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        if business_gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先生成商务标缺口计划。")
+        picker = build_business_gap_material_picker_index(project)
+        templates = [item for item in picker.get("templateIndex") or [] if isinstance(item, dict)]
+        materials = [item for item in picker.get("materialIndex") or [] if isinstance(item, dict)]
+        segments = [item for item in picker.get("evidenceSegments") or [] if isinstance(item, dict)]
+        material_by_id = {
+            str(item.get("id") or item.get("materialId") or ""): item
+            for item in materials
+            if str(item.get("id") or item.get("materialId") or "")
+        }
+        normalized_keyword = str(keyword or "").strip().lower()
+
+        def matches(text: str) -> bool:
+            return not normalized_keyword or normalized_keyword in str(text or "").lower()
+
+        selectable_templates: list[dict[str, Any]] = []
+        for template in templates:
+            haystack = " ".join(
+                [
+                    str(template.get("templateName") or ""),
+                    str(template.get("fileName") or ""),
+                    str(template.get("sourceLabel") or ""),
+                    str(template.get("sourceMode") or ""),
+                    str(template.get("filePath") or ""),
+                ]
+            )
+            if not matches(haystack):
+                continue
+            selectable_templates.append(
+                {
+                    "id": str(template.get("templateId") or template.get("filePath") or ""),
+                    "kind": "template",
+                    "templateId": str(template.get("templateId") or ""),
+                    "templateName": str(template.get("templateName") or template.get("fileName") or ""),
+                    "fileName": str(template.get("fileName") or ""),
+                    "filePath": str(template.get("filePath") or ""),
+                    "sourceMode": str(template.get("sourceMode") or ""),
+                    "sourceLabel": str(template.get("sourceLabel") or ""),
+                    "templateScope": str(template.get("templateScope") or ""),
+                    "assemblyMode": "template_fill_docx",
+                    "materialUsage": "fill_template",
+                    "mimeType": str(template.get("mimeType") or ""),
+                    "score": float(template.get("score") or 0),
+                    "reason": str(template.get("reason") or ""),
+                }
+            )
+
+        selectable_segments: list[dict[str, Any]] = []
+        for segment in segments:
+            material_id = str(segment.get("material_id") or segment.get("materialId") or "").strip()
+            material = material_by_id.get(material_id, {})
+            if not material_id or not material:
+                continue
+            name = str(material.get("name") or material.get("fileName") or segment.get("title") or material_id)
+            folder_path = str(material.get("folderPath") or segment.get("path") or "")
+            haystack = " ".join(
+                [
+                    name,
+                    folder_path,
+                    str(segment.get("title") or ""),
+                    str(segment.get("summary") or ""),
+                    " ".join(str(item) for item in segment.get("keywords") or []),
+                    str(segment.get("business_category") or ""),
+                    str(segment.get("document_type") or ""),
+                ]
+            )
+            if material_id and not matches(haystack):
+                continue
+            selectable_segments.append(
+                {
+                    "id": str(segment.get("segment_id") or ""),
+                    "kind": "segment",
+                    "materialId": material_id,
+                    "materialName": name,
+                    "folderPath": folder_path,
+                    "materialTier": str(material.get("materialTier") or segment.get("material_tier") or ""),
+                    "cleanStatus": str(material.get("cleanStatus") or ""),
+                    "hasCleanedWord": bool(material.get("hasCleanedWord")),
+                    "cleanedFileName": str(material.get("cleanedFileName") or ""),
+                    "evidenceSegmentId": str(segment.get("segment_id") or ""),
+                    "evidenceSegmentTitle": str(segment.get("title") or ""),
+                    "evidenceSegmentType": str(segment.get("segment_type") or ""),
+                    "evidenceSourcePages": str(segment.get("source_pages") or ""),
+                    "evidenceSummary": str(segment.get("summary") or ""),
+                    "wikiCardId": str(segment.get("card_id") or ""),
+                    "wikiUsageMode": str(segment.get("usage_mode") or ""),
+                    "wikiEvidence": {
+                        "validityStatus": str(segment.get("validity_status") or ""),
+                        "expiryDate": str(segment.get("expiry_date") or ""),
+                        "riskNotes": str(segment.get("risk_notes") or ""),
+                        "ocrStatus": str(segment.get("ocr_status") or ""),
+                        "ocrConfidence": str(segment.get("ocr_confidence") or ""),
+                    },
+                    "keywords": [str(item) for item in segment.get("keywords") or [] if str(item).strip()][:16],
+                    "updatedAt": str(material.get("updatedAt") or ""),
+                }
+            )
+
+        material_ids_with_segments = {str(item.get("materialId") or "") for item in selectable_segments if str(item.get("materialId") or "")}
+        selectable_materials: list[dict[str, Any]] = []
+        for material in materials:
+            material_id = str(material.get("id") or material.get("materialId") or "").strip()
+            if not material_id:
+                continue
+            name = str(material.get("name") or material.get("fileName") or material_id)
+            folder_path = str(material.get("folderPath") or "")
+            haystack = " ".join([name, folder_path, str(material.get("cleanedFileName") or ""), str(material.get("turbineModelLabel") or "")])
+            if not matches(haystack):
+                continue
+            selectable_materials.append(
+                {
+                    "id": material_id,
+                    "kind": "material",
+                    "materialId": material_id,
+                    "materialName": name,
+                    "folderPath": folder_path,
+                    "materialTier": str(material.get("materialTier") or ""),
+                    "cleanStatus": str(material.get("cleanStatus") or ""),
+                    "hasCleanedWord": bool(material.get("hasCleanedWord")),
+                    "cleanedFileName": str(material.get("cleanedFileName") or ""),
+                    "size": int(material.get("size") or 0),
+                    "turbineModelLabel": str(material.get("turbineModelLabel") or ""),
+                    "updatedAt": str(material.get("updatedAt") or ""),
+                    "segmentCount": sum(1 for item in selectable_segments if str(item.get("materialId") or "") == material_id),
+                    "hasSegments": material_id in material_ids_with_segments,
+                }
+            )
+
+        return {
+            "schemaVersion": "bid-business-selectable-materials-v1",
+            "projectId": project_id,
+            "bidType": "商务标",
+            "keyword": str(keyword or ""),
+            "templates": selectable_templates,
+            "items": selectable_materials,
+            "segments": selectable_segments,
+            "summary": {
+                "templateCount": len(selectable_templates),
+                "materialCount": len(selectable_materials),
+                "segmentCount": len(selectable_segments),
+                "wikiEvidenceSegmentCount": int((picker.get("businessWikiIndexSummary") or {}).get("evidenceSegmentCount") or 0),
+            },
+            "materialScope": copy.deepcopy(picker.get("materialScope") or {}),
+            "selectedBusinessTurbineModel": copy.deepcopy(picker.get("selectedBusinessTurbineModel") or {}),
+        }
+
+    def get_business_gap_fact_table(self, project_id: str) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标项目事实表仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        table = business_gap_state.get("projectFactTable") if isinstance(business_gap_state.get("projectFactTable"), dict) else {}
+        if table.get("schemaVersion") == PROJECT_FACT_TABLE_SCHEMA_VERSION:
+            return copy.deepcopy(table)
+        return self._empty_project_fact_table(project_id)
+
+    def build_business_gap_fact_table(self, project_id: str) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标项目事实表仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        if business_gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先生成商务标缺口计划，再维护项目事实表。")
+        table = self._build_project_fact_table(project, business_gap_state)
+        business_gap_state["projectFactTable"] = table
+        project["updatedAt"] = now_iso()
+        self._persist_project(project)
+        return copy.deepcopy(table)
+
+    def save_business_gap_fact_table(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标项目事实表仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        if business_gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先生成商务标缺口计划，再维护项目事实表。")
+        current = business_gap_state.get("projectFactTable")
+        if not isinstance(current, dict) or current.get("schemaVersion") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
+            current = self._build_project_fact_table(project, business_gap_state)
+        incoming_fields = data.get("fields") if isinstance(data.get("fields"), list) else current.get("fields") or []
+        confirm = bool(data.get("confirm") or data.get("confirmed"))
+        operator = str(data.get("operator") or "当前用户")
+        saved_at = now_iso()
+        fields = [
+            self._normalize_project_fact_field(field, index=index, confirm=confirm, operator=operator, saved_at=saved_at)
+            for index, field in enumerate(incoming_fields, start=1)
+            if isinstance(field, dict)
+        ]
+        table = {
+            "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+            "projectId": project_id,
+            "status": "confirmed" if confirm else "draft",
+            "builtAt": str(current.get("builtAt") or saved_at),
+            "updatedAt": saved_at,
+            "confirmedAt": saved_at if confirm else str(current.get("confirmedAt") or ""),
+            "confirmedBy": operator if confirm else str(current.get("confirmedBy") or ""),
+            "fields": fields,
+            "summary": self._summarize_project_fact_fields(fields),
+        }
+        business_gap_state["projectFactTable"] = table
+        project["updatedAt"] = saved_at
+        self._persist_project(project)
+        return copy.deepcopy(table)
+
+    def update_business_gap_task(self, project_id: str, task_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        project = self._require(project_id)
+        business_gap_state = self._ensure_business_gap_state(project)
+        plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
+        task = self._find_business_gap_task(plan, task_id)
+        allowed = {
+            "status",
+            "decision",
+            "selectedMaterialRefs",
+            "notes",
+            "confirmed",
+            "riskFlags",
+            "assemblyMode",
+            "materialUsage",
+            "fillPlan",
+            "selectedEvidenceSegments",
+        }
+        for key in allowed:
+            if key in data:
+                task[key] = copy.deepcopy(data[key])
+        intent_changed = "assemblyMode" in data or "materialUsage" in data or "selectedEvidenceSegments" in data
+        explicit_status_change = "status" in data or "decision" in data
+        if intent_changed:
+            if "assemblyMode" in data and "materialUsage" not in data:
+                task["materialUsage"] = self._business_material_usage_for_assembly_mode(str(task.get("assemblyMode") or ""))
+            elif not task.get("materialUsage"):
+                task["materialUsage"] = self._business_material_usage_for_assembly_mode(str(task.get("assemblyMode") or ""))
+            task["fillPlan"] = self._business_task_fill_plan(task)
+            if not explicit_status_change:
+                self._recompute_business_gap_task_after_artifact_change(task)
+            if str(task.get("assemblyMode") or "") == "template_fill_docx":
+                self._refresh_business_gap_template_candidates(project, business_gap_state)
+                plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else plan
+                task = self._find_business_gap_task(plan, task_id)
+        task["updatedAt"] = now_iso()
+        self._finalize_business_gap_plan_update(project, business_gap_state, plan, updated_at=task["updatedAt"])
+        return {"task": copy.deepcopy(task), "plan": copy.deepcopy(plan), "integrity": copy.deepcopy(business_gap_state["integrity"])}
+
+    def create_business_gap_manual_task(
+        self,
+        project_id: str,
+        toc_node_id: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标缺口处理仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        if business_gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先生成商务标缺口计划。")
+        plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
+        toc_ref = self._find_business_gap_toc_ref(plan, toc_node_id)
+        tasks = plan.setdefault("tasks", [])
+        if not isinstance(tasks, list):
+            plan["tasks"] = tasks = []
+        created_at = now_iso()
+        existing_ids = {str(task.get("id") or "") for task in tasks if isinstance(task, dict)}
+        base_index = len(tasks) + 1
+        task_id = f"BTASK-MANUAL-{base_index:04d}"
+        while task_id in existing_ids:
+            base_index += 1
+            task_id = f"BTASK-MANUAL-{base_index:04d}"
+        title = str(data.get("title") or "").strip() or f"{toc_ref.get('title') or '本章节'}补充材料"
+        task = {
+            "id": task_id,
+            "taskKey": f"manual_{safe_filename(str(toc_ref.get('nodeId') or toc_node_id), 'toc')}_{base_index}",
+            "title": title,
+            "titleAlias": [],
+            "moduleKey": str(data.get("moduleKey") or "commitments_and_notes"),
+            "taskType": str(data.get("taskType") or "attachment"),
+            "decision": "material_required",
+            "status": "needs_input",
+            "sourceType": "manual_user",
+            "sourceRequirement": {
+                "triggerText": str(data.get("requirement") or f"操作人针对目录章节「{toc_ref.get('title') or toc_node_id}」手动补充材料。"),
+                "triggerContext": "",
+                "normalizedTopic": title,
+                "fromSection": str(toc_ref.get("number") or ""),
+                "extractionMethod": "manual_user",
+            },
+            "sourceEvidenceRefs": [],
+            "tocTarget": {
+                "nodeId": str(toc_ref.get("nodeId") or toc_node_id),
+                "number": str(toc_ref.get("number") or ""),
+                "title": str(toc_ref.get("title") or ""),
+                "required": True,
+            },
+            "candidateMaterials": [],
+            "selectedMaterialRefs": [],
+            "resolvedArtifacts": [],
+            "assemblyMode": self._default_business_task_assembly_mode(
+                str(data.get("moduleKey") or "commitments_and_notes"),
+                str(data.get("taskType") or "attachment"),
+                "material_required",
+                title,
+            ),
+            "materialUsage": "",
+            "fillPlan": {},
+            "selectedEvidenceSegments": [],
+            "riskFlags": ["manual_upload_required"],
+            "requirementLevel": "required",
+            "assigneeMode": "manual_select",
+            "displayOrder": 9000 + base_index,
+            "fingerprint": f"manual:{project_id}:{toc_node_id}:{base_index}",
+            "updatedAt": created_at,
+        }
+        task["materialUsage"] = self._business_material_usage_for_assembly_mode(str(task.get("assemblyMode") or ""))
+        task["fillPlan"] = self._business_task_fill_plan(task)
+        tasks.append(task)
+        task_ids = toc_ref.setdefault("taskIds", [])
+        if task_id not in task_ids:
+            task_ids.append(task_id)
+        self._update_business_gap_toc_ref_statuses(plan)
+        self._finalize_business_gap_plan_update(project, business_gap_state, plan, updated_at=created_at)
+        return {
+            "message": "已为当前目录章节创建人工补料任务。",
+            "task": copy.deepcopy(task),
+            "plan": copy.deepcopy(plan),
+            "integrity": copy.deepcopy(business_gap_state["integrity"]),
+        }
+
+    def confirm_business_gap_artifact(self, project_id: str, task_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        project = self._require(project_id)
+        business_gap_state = self._ensure_business_gap_state(project)
+        plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
+        task = self._find_business_gap_task(plan, task_id)
+        artifact_id = str(data.get("artifactId") or "").strip()
+        confirmed = bool(data.get("confirmed", True))
+        artifacts = task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else []
+        artifact = None
+        for item in artifacts:
+            if not isinstance(item, dict):
+                continue
+            if not artifact_id or artifact_id == str(item.get("artifactId") or ""):
+                artifact = item
+                break
+        if artifact is None:
+            raise KeyError(artifact_id or task_id)
+        artifact["confirmed"] = confirmed
+        artifact["reviewStatus"] = "approved" if confirmed else "pending_review"
+        artifact["confirmedAt"] = now_iso() if confirmed else ""
+        if confirmed:
+            task["decision"] = "ready"
+            task["status"] = "ready"
+            task["riskFlags"] = [
+                flag
+                for flag in (task.get("riskFlags") if isinstance(task.get("riskFlags"), list) else [])
+                if flag not in {"missing_material", "parser_generated_unconfirmed"}
+            ]
+        else:
+            task["decision"] = "review_required"
+            task["status"] = "review_required"
+        task["updatedAt"] = now_iso()
+        self._finalize_business_gap_plan_update(project, business_gap_state, plan, updated_at=task["updatedAt"])
+        return {"task": copy.deepcopy(task), "artifact": copy.deepcopy(artifact), "plan": copy.deepcopy(plan)}
+
+    def remove_business_gap_artifact(
+        self,
+        project_id: str,
+        task_id: str,
+        artifact_id: str,
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标缺口处理仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        if business_gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先生成商务标缺口计划。")
+        plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
+        task = self._find_business_gap_task(plan, task_id)
+        artifacts = task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else []
+        target = str(artifact_id or "").strip()
+        kept: list[dict[str, Any]] = []
+        removed: dict[str, Any] | None = None
+        for artifact in artifacts:
+            if isinstance(artifact, dict) and str(artifact.get("artifactId") or "") == target:
+                removed = artifact
+                continue
+            if isinstance(artifact, dict):
+                kept.append(artifact)
+        if removed is None:
+            raise KeyError(artifact_id)
+        if str(removed.get("sourceMode") or "") not in {"uploaded_in_business_s3", "selected_from_business_material_library"}:
+            raise ValueError("解析生成产物不能在 S3 页面直接取消，请在解析产物审核处处理。")
+        if str(removed.get("materialSyncStatus") or "") == "synced_to_project_material":
+            raise ValueError("该补料已同步到项目素材库，不能直接取消；如需删除，请在素材库中处理。")
+
+        file_path = Path(str(removed.get("filePath") or ""))
+        if file_path.exists() and file_path.is_file():
+            try:
+                file_path.unlink()
+            except OSError:
+                removed["deleteWarning"] = "文件删除失败，仅从当前任务中移除记录。"
+
+        task["resolvedArtifacts"] = kept
+        removed_material_id = str(removed.get("materialId") or "")
+        if removed_material_id and isinstance(task.get("selectedMaterialRefs"), list):
+            task["selectedMaterialRefs"] = [
+                ref
+                for ref in task["selectedMaterialRefs"]
+                if not isinstance(ref, dict) or str(ref.get("materialId") or ref.get("id") or "") != removed_material_id
+            ]
+        self._recompute_business_gap_task_after_artifact_change(task)
+        now = now_iso()
+        task["updatedAt"] = now
+        self._finalize_business_gap_plan_update(project, business_gap_state, plan, updated_at=now)
+        self._refresh_business_gap_urls_for_result(
+            project_id,
+            plan,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+        )
+        return {
+            "message": "已取消该补料。",
+            "task": copy.deepcopy(task),
+            "artifact": copy.deepcopy(removed),
+            "plan": copy.deepcopy(plan),
+            "integrity": copy.deepcopy(business_gap_state["integrity"]),
+        }
+
+    def upload_business_gap_artifact(
+        self,
+        project_id: str,
+        task_id: str,
+        data: dict[str, Any],
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标缺口处理仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        if business_gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先生成商务标缺口计划。")
+        plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
+        task = self._find_business_gap_task(plan, task_id)
+        files = [entry for entry in data.get("files") or [] if isinstance(entry, dict)]
+        if not files:
+            raise ValueError("至少需要上传一个文件。")
+
+        upload_records: list[dict[str, Any]] = []
+        for index, file in enumerate(files, start=1):
+            source_name = str(file.get("name") or file.get("fileName") or f"{task_id}-{index}.bin")
+            content = str(
+                file.get("data")
+                or file.get("dataUrl")
+                or file.get("content")
+                or file.get("base64")
+                or file.get("base64Content")
+                or ""
+            )
+            raw_bytes, mime_type = self._decode_business_gap_upload_content(
+                content,
+                fallback_mime=str(file.get("mimeType") or ""),
+            )
+            upload_records.append(
+                {
+                    "name": source_name,
+                    "mimeType": mime_type or str(file.get("mimeType") or ""),
+                    "rawBytes": raw_bytes,
+                }
+            )
+        return self._register_business_gap_upload_records(
+            project,
+            business_gap_state,
+            plan,
+            task,
+            upload_records,
+            operator=str(data.get("operator") or "当前用户"),
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+        )
+
+    def upload_business_gap_artifact_bytes(
+        self,
+        project_id: str,
+        task_id: str,
+        files: list[dict[str, Any]],
+        *,
+        operator: str = "当前用户",
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标缺口处理仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        if business_gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先生成商务标缺口计划。")
+        plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
+        task = self._find_business_gap_task(plan, task_id)
+        return self._register_business_gap_upload_records(
+            project,
+            business_gap_state,
+            plan,
+            task,
+            files,
+            operator=operator,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+        )
+
+    def _register_business_gap_upload_records(
+        self,
+        project: dict[str, Any],
+        business_gap_state: dict[str, Any],
+        plan: dict[str, Any],
+        task: dict[str, Any],
+        files: list[dict[str, Any]],
+        *,
+        operator: str,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        project_id = str(project.get("id") or "")
+        task_id = str(task.get("id") or task.get("taskKey") or "task")
+        records = [entry for entry in files if isinstance(entry, dict)]
+        if not records:
+            raise ValueError("至少需要上传一个文件。")
+        work_dir = business_workspace_dir(project_id) / "gaps" / "uploads" / safe_filename(task_id, "task")
+        work_dir.mkdir(parents=True, exist_ok=True)
+        created_at = now_iso()
+        artifacts: list[dict[str, Any]] = []
+        existing_count = len(task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else [])
+        for index, file in enumerate(records, start=1):
+            source_name = str(file.get("name") or file.get("fileName") or f"{task_id}-{index}.bin")
+            file_name = safe_filename(source_name, f"{task_id}-{index}.bin")
+            raw_bytes = file.get("rawBytes") or file.get("bytes") or b""
+            if isinstance(raw_bytes, str):
+                raw_bytes, mime_type = self._decode_business_gap_upload_content(
+                    raw_bytes,
+                    fallback_mime=str(file.get("mimeType") or ""),
+                )
+            else:
+                raw_bytes = bytes(raw_bytes or b"")
+                mime_type = str(file.get("mimeType") or "")
+            if not raw_bytes:
+                raise ValueError(f"上传文件内容为空：{file_name}")
+            target_path = self._unique_business_gap_path(work_dir, file_name)
+            target_path.write_bytes(raw_bytes)
+            artifact_id = f"BART-{safe_filename(task_id, 'TASK')}-UPLOAD-{existing_count + index}"
+            artifact = {
+                "artifactId": artifact_id,
+                "artifactType": "manual_upload",
+                "fileName": target_path.name,
+                "filePath": str(target_path),
+                "sourceMode": "uploaded_in_business_s3",
+                "assemblyMode": self._assembly_mode_for_business_artifact(task, {"fileName": target_path.name, "mimeType": mime_type}),
+                "materialUsage": "",
+                "materialSyncStatus": "not_synced",
+                "materialSyncPolicy": "manual_project_only",
+                "materialTargetPath": self._default_business_gap_material_target_path(project_id, task),
+                "wikiSyncStatus": "not_synced",
+                "version": 1,
+                "previewable": True,
+                "confirmed": True,
+                "reviewStatus": "approved",
+                "confirmedAt": created_at,
+                "uploadedAt": created_at,
+                "operator": operator or "当前用户",
+                "mimeType": mime_type or mimetypes.guess_type(target_path.name)[0] or "application/octet-stream",
+            }
+            artifact["materialUsage"] = self._business_material_usage_for_assembly_mode(str(artifact.get("assemblyMode") or ""))
+            artifacts.append(artifact)
+
+        task.setdefault("resolvedArtifacts", []).extend(artifacts)
+        self._apply_business_task_artifact_intent(task, artifacts)
+        task["decision"] = "ready"
+        task["status"] = "ready"
+        task["updatedAt"] = created_at
+        task["resolvedAt"] = created_at
+        task["resolvedSource"] = artifacts[0]["fileName"]
+        task["riskFlags"] = [
+            flag
+            for flag in (task.get("riskFlags") if isinstance(task.get("riskFlags"), list) else [])
+            if flag not in {"missing_material", "manual_upload_required", "ai_draft_required"}
+        ]
+        self._finalize_business_gap_plan_update(project, business_gap_state, plan, updated_at=created_at)
+        self._refresh_business_gap_urls_for_result(
+            project_id,
+            plan,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+        )
+        return {
+            "task": copy.deepcopy(task),
+            "artifact": copy.deepcopy(artifacts[0]),
+            "artifacts": copy.deepcopy(artifacts),
+            "plan": copy.deepcopy(plan),
+            "integrity": copy.deepcopy(business_gap_state["integrity"]),
+        }
+
+    async def select_business_gap_material(
+        self,
+        project_id: str,
+        task_id: str,
+        data: dict[str, Any],
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标缺口处理仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        if business_gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先生成商务标缺口计划。")
+        plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
+        task = self._find_business_gap_task(plan, task_id)
+        selected = self._selected_business_material_entries(data)
+        if not selected:
+            raise ValueError("至少需要选择一份素材。")
+
+        work_dir = business_workspace_dir(project_id) / "gaps" / "selected-materials" / safe_filename(task_id, "task")
+        work_dir.mkdir(parents=True, exist_ok=True)
+        created_at = now_iso()
+        existing_count = len(task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else [])
+        material_refs: list[dict[str, Any]] = []
+        artifacts: list[dict[str, Any]] = []
+        for index, material in enumerate(selected, start=1):
+            material_id = str(material.get("id") or material.get("materialId") or "").strip()
+            if not material_id:
+                continue
+            payload, source_kind = await self._business_material_download_payload(material_id)
+            file_name = safe_filename(
+                str(material.get("cleanedFileName") or payload.get("fileName") or material.get("materialName") or material.get("name") or f"{material_id}.bin"),
+                f"{material_id}.bin",
+            )
+            target_path = self._unique_business_gap_path(work_dir, f"{index:02d}-{file_name}")
+            minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
+            ref = {
+                "materialId": material_id,
+                "materialName": str(material.get("materialName") or material.get("name") or payload.get("fileName") or material_id),
+                "folderPath": str(material.get("folderPath") or material.get("path") or ""),
+                "materialTier": str(material.get("materialTier") or material.get("libraryScope") or ""),
+                "sourceKind": source_kind,
+                "selectedAt": created_at,
+            }
+            artifact_id = f"BART-{safe_filename(task_id, 'TASK')}-MAT-{existing_count + index}"
+            artifact = {
+                "artifactId": artifact_id,
+                "artifactType": "selected_material",
+                "fileName": target_path.name,
+                "filePath": str(target_path),
+                "sourceMode": "selected_from_business_material_library",
+                "assemblyMode": self._assembly_mode_for_business_artifact(task, {**material, "fileName": target_path.name, "mimeType": payload.get("mimeType")}),
+                "materialUsage": str(material.get("wikiUsageMode") or ""),
+                "materialId": material_id,
+                "materialName": ref["materialName"],
+                "folderPath": ref["folderPath"],
+                "materialTier": ref["materialTier"],
+                "sourceKind": source_kind,
+                "version": 1,
+                "previewable": True,
+                "confirmed": True,
+                "reviewStatus": "approved",
+                "confirmedAt": created_at,
+                "selectedAt": created_at,
+                "operator": str(data.get("operator") or "当前用户"),
+                "mimeType": str(payload.get("mimeType") or mimetypes.guess_type(target_path.name)[0] or "application/octet-stream"),
+                "wikiCardId": str(material.get("wikiCardId") or ""),
+                "wikiUsageMode": str(material.get("wikiUsageMode") or ""),
+                "evidenceSegmentId": str(material.get("evidenceSegmentId") or ""),
+                "evidenceSegmentTitle": str(material.get("evidenceSegmentTitle") or ""),
+                "evidenceSegmentType": str(material.get("evidenceSegmentType") or ""),
+                "evidenceSourcePages": str(material.get("evidenceSourcePages") or ""),
+                "evidenceSummary": str(material.get("evidenceSummary") or ""),
+                "wikiEvidence": copy.deepcopy(material.get("wikiEvidence") or {}),
+            }
+            if not artifact["materialUsage"]:
+                artifact["materialUsage"] = self._business_material_usage_for_assembly_mode(str(artifact.get("assemblyMode") or ""))
+            material_refs.append(ref)
+            artifacts.append(artifact)
+
+        if not artifacts:
+            raise ValueError("至少需要选择一份有效素材。")
+        existing_refs = task.get("selectedMaterialRefs") if isinstance(task.get("selectedMaterialRefs"), list) else []
+        task["selectedMaterialRefs"] = self._merge_business_material_refs(existing_refs, material_refs)
+        task.setdefault("resolvedArtifacts", []).extend(artifacts)
+        self._apply_business_task_artifact_intent(task, artifacts)
+        self._record_business_material_feedback(
+            business_gap_state,
+            task,
+            artifacts,
+            operator=str(data.get("operator") or "当前用户"),
+            selected_at=created_at,
+        )
+        task["decision"] = "ready"
+        task["status"] = "ready"
+        task["updatedAt"] = created_at
+        task["resolvedAt"] = created_at
+        task["resolvedSource"] = artifacts[0]["fileName"]
+        task["riskFlags"] = [
+            flag
+            for flag in (task.get("riskFlags") if isinstance(task.get("riskFlags"), list) else [])
+            if flag not in {"missing_material"}
+        ]
+        self._finalize_business_gap_plan_update(project, business_gap_state, plan, updated_at=created_at)
+        self._refresh_business_gap_urls_for_result(
+            project_id,
+            plan,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+        )
+        return {
+            "task": copy.deepcopy(task),
+            "artifact": copy.deepcopy(artifacts[0]),
+            "artifacts": copy.deepcopy(artifacts),
+            "selectedMaterialRefs": copy.deepcopy(task["selectedMaterialRefs"]),
+            "plan": copy.deepcopy(plan),
+            "integrity": copy.deepcopy(business_gap_state["integrity"]),
+        }
+
+    def select_business_gap_template(
+        self,
+        project_id: str,
+        task_id: str,
+        data: dict[str, Any],
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标模板选择仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        if business_gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先生成商务标缺口计划。")
+        plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
+        task = self._find_business_gap_task(plan, task_id)
+        selected = self._selected_business_template_entry(task, data)
+        source_path = Path(str(selected.get("filePath") or selected.get("path") or "")).expanduser()
+        if not source_path.exists() or not source_path.is_file():
+            raise ValueError("候选模板文件不存在，请重新生成商务标缺口计划或重新上传模板。")
+        if source_path.suffix.lower() != ".docx":
+            raise ValueError("模板填充 Word 目前仅支持 DOCX 模板。")
+
+        work_dir = business_workspace_dir(project_id) / "gaps" / "selected-templates" / safe_filename(task_id, "task")
+        work_dir.mkdir(parents=True, exist_ok=True)
+        created_at = now_iso()
+        existing_count = len(task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else [])
+        target_path = self._unique_business_gap_path(work_dir, source_path.name)
+        shutil.copy2(source_path, target_path)
+        artifact = {
+            "artifactId": f"BART-{safe_filename(task_id, 'TASK')}-TPL-{existing_count + 1}",
+            "artifactType": "selected_bid_template",
+            "fileName": target_path.name,
+            "filePath": str(target_path),
+            "sourceMode": str(selected.get("sourceMode") or "selected_from_bid_template"),
+            "templateId": str(selected.get("templateId") or ""),
+            "templateName": str(selected.get("templateName") or selected.get("fileName") or target_path.name),
+            "templateScope": str(selected.get("templateScope") or ""),
+            "sourceLabel": str(selected.get("sourceLabel") or ""),
+            "assemblyMode": "template_fill_docx",
+            "materialUsage": "fill_template",
+            "version": 1,
+            "previewable": True,
+            "confirmed": True,
+            "reviewStatus": "approved",
+            "confirmedAt": created_at,
+            "selectedAt": created_at,
+            "operator": str(data.get("operator") or "当前用户"),
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+        task.setdefault("resolvedArtifacts", []).append(artifact)
+        self._apply_business_task_artifact_intent(task, [artifact])
+        self._recompute_business_gap_task_after_artifact_change(task)
+        task["updatedAt"] = created_at
+        task["resolvedAt"] = created_at
+        task["resolvedSource"] = artifact["fileName"]
+        self._finalize_business_gap_plan_update(project, business_gap_state, plan, updated_at=created_at)
+        self._refresh_business_gap_urls_for_result(
+            project_id,
+            plan,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+        )
+        return {
+            "message": "已选择模板并快照到商务 S3 工作区。",
+            "task": copy.deepcopy(task),
+            "artifact": copy.deepcopy(artifact),
+            "plan": copy.deepcopy(plan),
+            "integrity": copy.deepcopy(business_gap_state["integrity"]),
+        }
+
+    def run_business_gap_ai_draft(
+        self,
+        project_id: str,
+        task_id: str,
+        data: dict[str, Any],
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标 AI 起草仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        if business_gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先生成商务标缺口计划。")
+        plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
+        task = self._find_business_gap_task(plan, task_id)
+        if not self._business_task_can_ai_draft(task):
+            raise ValueError("该任务不适合 AI 起草，请选择候选素材或人工上传补料。")
+
+        fact_table = business_gap_state.get("projectFactTable")
+        if not isinstance(fact_table, dict) or fact_table.get("schemaVersion") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
+            fact_table = self._build_project_fact_table(project, business_gap_state)
+            business_gap_state["projectFactTable"] = fact_table
+        facts = self._fact_table_value_map(fact_table)
+        created_at = now_iso()
+        work_dir = business_workspace_dir(project_id) / "gaps" / "ai-drafts" / safe_filename(task_id, "task")
+        work_dir.mkdir(parents=True, exist_ok=True)
+        existing_count = len(task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else [])
+        title = str(task.get("title") or "商务响应文件")
+        output_path = self._unique_business_gap_path(work_dir, f"{safe_filename(title, '商务响应文件')}-AI起草.docx")
+        self._write_business_ai_draft_docx(output_path, project, task, facts, data)
+
+        artifact_id = f"BART-{safe_filename(task_id, 'TASK')}-AI-{existing_count + 1}"
+        artifact = {
+            "artifactId": artifact_id,
+            "artifactType": "ai_draft",
+            "fileName": output_path.name,
+            "filePath": str(output_path),
+            "sourceMode": "generated_by_business_s3_ai_draft",
+            "version": 1,
+            "previewable": True,
+            "confirmed": True,
+            "reviewStatus": "approved",
+            "confirmedAt": created_at,
+            "createdAt": created_at,
+            "operator": str(data.get("operator") or "当前用户"),
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "assemblyMode": "ai_draft",
+            "materialUsage": "generate_draft",
+            "draftMode": "controlled_business_ai_draft",
+            "draftPolicy": "only_for_s3_ai_draft_task",
+            "factTableStatus": str(fact_table.get("status") or "draft"),
+        }
+        task.setdefault("resolvedArtifacts", []).append(artifact)
+        self._apply_business_task_artifact_intent(task, [artifact])
+        task["decision"] = "ready"
+        task["status"] = "ready"
+        task["assigneeMode"] = "ai_draft"
+        task["updatedAt"] = created_at
+        task["resolvedAt"] = created_at
+        task["resolvedSource"] = artifact["fileName"]
+        task["riskFlags"] = [
+            flag
+            for flag in (task.get("riskFlags") if isinstance(task.get("riskFlags"), list) else [])
+            if flag not in {"missing_material", "manual_upload_required", "ai_draft_required"}
+        ]
+        if str(fact_table.get("status") or "") != "confirmed":
+            flags = task.setdefault("riskFlags", [])
+            if isinstance(flags, list) and "fact_table_unconfirmed" not in flags:
+                flags.append("fact_table_unconfirmed")
+        self._finalize_business_gap_plan_update(project, business_gap_state, plan, updated_at=created_at)
+        self._refresh_business_gap_urls_for_result(
+            project_id,
+            plan,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+        )
+        return {
+            "message": "已生成商务响应文件 AI 起草稿。",
+            "task": copy.deepcopy(task),
+            "artifact": copy.deepcopy(artifact),
+            "plan": copy.deepcopy(plan),
+            "integrity": copy.deepcopy(business_gap_state["integrity"]),
+            "projectFactTable": copy.deepcopy(fact_table),
+        }
+
+    def sync_business_gap_artifact_to_material_library(
+        self,
+        project_id: str,
+        task_id: str,
+        data: dict[str, Any],
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标缺口处理仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        if business_gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先生成商务标缺口计划。")
+        plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
+        task = self._find_business_gap_task(plan, task_id)
+        artifact_id = str(data.get("artifactId") or "").strip()
+        if not artifact_id:
+            raise ValueError("artifactId 不能为空。")
+        artifact = self._find_business_gap_artifact_in_task(task, artifact_id)
+        if str(artifact.get("sourceMode") or "") != "uploaded_in_business_s3":
+            raise ValueError("仅支持将人工上传的 S3 补料同步到商务标项目素材库。")
+        source_path = Path(str(artifact.get("filePath") or ""))
+        if not source_path.exists() or not source_path.is_file():
+            raise ValueError("补料文件不存在，无法同步。")
+
+        target_path = str(data.get("targetPath") or "").strip().strip("/")
+        if not target_path:
+            target_path = self._default_business_gap_material_target_path(project_id, task)
+        if not target_path.startswith(f"商务标/项目素材/{project_id}/"):
+            raise ValueError("S3 补料默认只允许同步到当前商务标项目素材库。")
+
+        raw_bytes = source_path.read_bytes()
+        upload_result = _run_async_material_upload(
+            target_path=target_path,
+            project_id=project_id,
+            project_code=str(project.get("projectCode") or project_id),
+            project_name=str(project.get("name") or project_id),
+            bid_type="商务标",
+            material_tier="project",
+            customer_id=str(project.get("customerId") or ""),
+            customer_name=str(project.get("customerCanonicalName") or project.get("customerName") or project.get("owner") or ""),
+            on_conflict="version",
+            files=[
+                {
+                    "name": str(artifact.get("fileName") or source_path.name),
+                    "mimeType": str(artifact.get("mimeType") or mimetypes.guess_type(source_path.name)[0] or "application/octet-stream"),
+                    "data": base64.b64encode(raw_bytes).decode("ascii"),
+                }
+            ],
+        )
+        synced_items = [item for item in upload_result.get("items") or [] if isinstance(item, dict)]
+        if not synced_items:
+            raise ValueError("补料同步失败：素材库未返回上传文件。")
+        synced = synced_items[0]
+        now = now_iso()
+        artifact["materialSyncStatus"] = "synced_to_project_material"
+        artifact["materialSyncedAt"] = now
+        artifact["materialTargetPath"] = target_path
+        artifact["materialId"] = str(synced.get("id") or "")
+        artifact["materialName"] = str(synced.get("name") or artifact.get("fileName") or "")
+        artifact["materialTier"] = str(synced.get("materialTier") or "project")
+        artifact["folderPath"] = str(synced.get("folderPath") or target_path)
+        artifact["cleanStatus"] = str(synced.get("cleanStatus") or "")
+        artifact["cleanMessage"] = str(synced.get("cleanMessage") or "")
+        artifact["wikiSyncStatus"] = "wiki_rebuild_required"
+        task["updatedAt"] = now
+        add_note = f"补料已同步到项目素材库：{target_path}"
+        task["notes"] = "\n".join(part for part in [str(task.get("notes") or "").strip(), add_note] if part)
+        business_gap_state["wikiRebuildRequired"] = True
+        business_gap_state["lastMaterialSyncAt"] = now
+        business_gap_state["lastMaterialSyncTargetPath"] = target_path
+        self._finalize_business_gap_plan_update(project, business_gap_state, plan, updated_at=now)
+        self._refresh_business_gap_urls_for_result(
+            project_id,
+            plan,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+        )
+        return {
+            "message": "补料已同步到商务标项目素材库，商务 Wiki 需要重新生成/更新。",
+            "task": copy.deepcopy(task),
+            "artifact": copy.deepcopy(artifact),
+            "material": copy.deepcopy(synced),
+            "materialUpload": copy.deepcopy(upload_result),
+            "wikiRebuildRequired": True,
+            "plan": copy.deepcopy(plan),
+            "integrity": copy.deepcopy(business_gap_state["integrity"]),
+        }
+
+    def get_business_gap_artifact(self, project_id: str, artifact_id: str) -> dict[str, Any]:
+        project = self._require(project_id)
+        business_gap_state = self._ensure_business_gap_state(project)
+        plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
+        for task in plan.get("tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            for artifact in task.get("resolvedArtifacts") or []:
+                if isinstance(artifact, dict) and str(artifact.get("artifactId") or "") == artifact_id:
+                    return copy.deepcopy(artifact)
+        raise KeyError(artifact_id)
+
     def get_gap_artifact(self, project_id: str, artifact_id: str) -> dict[str, Any]:
         project = self._require(project_id)
         gap_state = self._ensure_gap_state(project)
@@ -1986,7 +3349,8 @@ class AppStore:
         }
 
     def get_fill_state(self, project_id: str) -> dict[str, Any]:
-        return copy.deepcopy(self._require(project_id)["fill_state"])
+        project = self._require(project_id)
+        return copy.deepcopy(project["fill_state"])
 
     def start_fill_generation(self, project_id: str) -> dict[str, Any]:
         project = self._require(project_id)
@@ -2010,7 +3374,7 @@ class AppStore:
             "tasks": [
                 {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "running"},
                 {"id": "task-2", "label": fill_task_label(project), "status": "pending"},
-                {"id": "task-3", "label": "写入 Word 正文", "status": "pending"},
+                {"id": "task-3", "label": "写入并规范化 Word 正文", "status": "pending"},
             ],
         }
         project["fill_state"] = payload
@@ -2032,7 +3396,7 @@ class AppStore:
         opencode_output: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         project = self._require(project_id)
-        current = copy.deepcopy(project["fill_state"])
+        current = copy.deepcopy(project.get("fill_state") or default_fill_state(project))
         if percentage is not None:
             current["percentage"] = max(0, min(100, int(percentage)))
         if summary is not None:
@@ -2069,7 +3433,7 @@ class AppStore:
         tasks: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         project = self._require(project_id)
-        current = copy.deepcopy(project["fill_state"])
+        current = copy.deepcopy(project.get("fill_state") or default_fill_state(project))
         current["status"] = "failed"
         current["summary"] = message
         current_output = build_directory_opencode_output()
@@ -2134,7 +3498,7 @@ class AppStore:
             "tasks": [
                 {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "done"},
                 {"id": "task-2", "label": fill_task_label(project), "status": "done"},
-                {"id": "task-3", "label": "写入 Word 正文", "status": "done"},
+                {"id": "task-3", "label": "写入并规范化 Word 正文", "status": "done"},
             ],
         }
         project["document_state"]["sourceFileName"] = f"{project['name']}_正文.docx"
@@ -2200,7 +3564,7 @@ class AppStore:
             "tasks": [
                 {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "done"},
                 {"id": "task-2", "label": fill_task_label(project), "status": "done"},
-                {"id": "task-3", "label": "写入 Word 正文", "status": "done"},
+                {"id": "task-3", "label": "写入并规范化 Word 正文", "status": "done"},
             ],
         }
 
@@ -2324,6 +3688,14 @@ class AppStore:
             "容量": "总装机容量",
             "单机容量": "单机容量",
             "机组额定功率": "单机容量",
+            "项目编号": "招标编号",
+            "招标文件编号": "招标编号",
+            "项目单位": "招标人",
+            "建设单位": "招标人",
+            "业主": "招标人",
+            "交货期": "交货周期",
+            "质量保证期": "质保期",
+            "投标截止时间": "投标截止日期",
             "轮毂中心高度": "轮毂高度",
             "轮毂高度": "轮毂高度",
             "风轮直径": "叶轮直径",
@@ -2731,6 +4103,23 @@ class AppStore:
                         confidence=0.0,
                     )
 
+        for task in plan.get("tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            for label in self._business_fact_labels_from_task(task):
+                add_candidate(
+                    label,
+                    "",
+                    category="商务待填写字段",
+                    source_ref={
+                        "type": "businessGapTask",
+                        "taskId": str(task.get("id") or ""),
+                        "title": str(task.get("title") or ""),
+                        "field": label,
+                    },
+                    confidence=0.0,
+                )
+
         preserve_manual_fields()
 
         fields = list(fields_by_key.values())
@@ -2752,6 +4141,7 @@ class AppStore:
             "性能保证": 6,
             "待填写Word字段": 7,
             "待填写表格字段": 8,
+            "商务待填写字段": 9,
         }
         fields.sort(
             key=lambda field: (
@@ -2773,6 +4163,35 @@ class AppStore:
             "fields": fields,
             "summary": self._summarize_project_fact_fields(fields),
         }
+
+    @classmethod
+    def _business_fact_labels_from_task(cls, task: dict[str, Any]) -> list[str]:
+        title = str(task.get("title") or "")
+        task_key = str(task.get("taskKey") or "")
+        text = f"{title} {task_key}"
+        labels: list[str] = []
+        if re.search(r"投标函|授权|廉洁|专用章|保证金|保函|履约|其他说明|承诺|声明", text):
+            labels.extend(["项目名称", "招标编号", "招标人", "投标人", "日期"])
+        if re.search(r"价格|报价|开标|投标价格", text):
+            labels.extend(["项目名称", "招标编号", "投标报价", "币种"])
+        if re.search(r"规格|货物|供货范围|供货清单", text):
+            labels.extend(["投标机型", "单机容量", "总装机容量", "机组台数"])
+        if re.search(r"商务偏差|条款偏差", text):
+            labels.extend(["招标编号", "项目名称", "商务偏差说明"])
+        return list(dict.fromkeys(labels))
+
+    @classmethod
+    def _fact_table_value_map(cls, fact_table: dict[str, Any]) -> dict[str, str]:
+        values: dict[str, str] = {}
+        for field in fact_table.get("fields") or []:
+            if not isinstance(field, dict):
+                continue
+            label = cls._canonical_fact_label(str(field.get("label") or field.get("title") or ""))
+            value = str(field.get("value") or "").strip()
+            if label and value:
+                values[label] = value
+                values[cls._fact_label_key(label)] = value
+        return values
 
     @classmethod
     def _iter_parse_fact_fields(cls, value: Any) -> list[dict[str, Any]]:
@@ -2853,6 +4272,25 @@ class AppStore:
             }:
                 if cls._looks_like_party_name(value):
                     add("招标人", value, category="项目基础信息", source_field=field, confidence=0.84, required=False)
+            elif field_key == "managementUnit" or cls._fact_label_key(label) == cls._fact_label_key("管理单位"):
+                if cls._looks_like_party_name(value):
+                    add("管理单位", value, category="项目基础信息", source_field=field, confidence=0.82, required=False)
+            elif field_key == "bidSectionScale" or cls._fact_label_key(label) in {
+                cls._fact_label_key("标段规模"),
+                cls._fact_label_key("招标规模"),
+            }:
+                add("标段规模", value, category="项目基础信息", source_field=field, confidence=0.78, required=False)
+            elif field_key == "deliveryPeriod" or cls._fact_label_key(label) == cls._fact_label_key("交货周期"):
+                add("交货周期", value, category="项目基础信息", source_field=field, confidence=0.78, required=False)
+            elif field_key == "warrantyPeriod" or cls._fact_label_key(label) == cls._fact_label_key("质保期"):
+                add("质保期", value, category="项目基础信息", source_field=field, confidence=0.78, required=False)
+            elif field_key == "bidStartDate" or cls._fact_label_key(label) == cls._fact_label_key("投标起始日期"):
+                add("投标起始日期", value, category="投标时间信息", source_field=field, confidence=0.78, required=False)
+            elif field_key == "bidDeadline" or cls._fact_label_key(label) in {
+                cls._fact_label_key("投标截止日期"),
+                cls._fact_label_key("投标截止时间"),
+            }:
+                add("投标截止日期", value, category="投标时间信息", source_field=field, confidence=0.82, required=True)
 
             cls._add_performance_facts_from_parse_text(text, field, add)
 
@@ -3040,6 +4478,29 @@ class AppStore:
             for item in (plan.get("materialIndex") if isinstance(plan.get("materialIndex"), list) else [])
             if isinstance(item, dict)
         ]
+        if not materials and isinstance(plan.get("tasks"), list):
+            seen: set[str] = set()
+            for task in plan.get("tasks") or []:
+                if not isinstance(task, dict):
+                    continue
+                for raw in [*(task.get("candidateMaterials") or []), *(task.get("selectedMaterialRefs") or [])]:
+                    if not isinstance(raw, dict):
+                        continue
+                    material_id = str(raw.get("id") or raw.get("materialId") or "").strip()
+                    if not material_id or material_id in seen:
+                        continue
+                    seen.add(material_id)
+                    materials.append(
+                        {
+                            "id": material_id,
+                            "name": str(raw.get("name") or raw.get("materialName") or raw.get("fileName") or material_id),
+                            "folderPath": str(raw.get("folderPath") or raw.get("path") or ""),
+                            "materialTier": str(raw.get("materialTier") or raw.get("libraryScope") or ""),
+                            "cleanedFileName": str(raw.get("cleanedFileName") or ""),
+                            "hasCleanedWord": bool(raw.get("hasCleanedWord")),
+                            "turbineModelLabel": str(raw.get("turbineModelLabel") or ""),
+                        }
+                    )
         if not materials:
             try:
                 materials = _allowed_material_index(build_project_material_scope(project), project_turbine_model(project))
@@ -3071,7 +4532,9 @@ class AppStore:
         ):
             return materials
         project_id = str(project.get("id") or "project")
-        work_dir = settings.documents_dir / project_id / "technical-workspace" / "s4_gap_workdir" / "fact_table_materials"
+        bid_type = normalize_bid_type(str(project.get("bidType") or "")) or "技术标"
+        workspace_dir = "business-workspace" if bid_type == "商务标" else "technical-workspace"
+        work_dir = settings.documents_dir / project_id / workspace_dir / "gaps" / "fact_table_materials"
         work_dir.mkdir(parents=True, exist_ok=True)
         try:
             return _prepare_material_index_files(materials, work_dir, limit=120)
@@ -3572,6 +5035,811 @@ class AppStore:
         gap_state.setdefault("integrity", {})
         gap_state.setdefault("projectFactTable", {})
         return gap_state
+
+    def _ensure_business_gap_state(self, project: dict[str, Any]) -> dict[str, Any]:
+        state = project.get("business_gap_state")
+        if not isinstance(state, dict):
+            state = {}
+            project["business_gap_state"] = state
+        state.setdefault("recognitionStatus", "idle")
+        state.setdefault("recognizedAt", "")
+        state.setdefault("submittedForReview", False)
+        state.setdefault("reviewConfirmed", False)
+        state.setdefault("reviewedAt", "")
+        state.setdefault("plan", {})
+        state.setdefault("planFile", "")
+        state.setdefault("integrity", {})
+        state.setdefault("projectFactTable", {})
+        return state
+
+    @staticmethod
+    def _business_gap_integrity(plan: dict[str, Any]) -> dict[str, Any]:
+        tasks = [
+            task
+            for task in (plan.get("tasks") if isinstance(plan.get("tasks"), list) else [])
+            if isinstance(task, dict)
+        ]
+        blocking = [
+            {
+                "id": str(task.get("id") or ""),
+                "title": str(task.get("title") or ""),
+                "status": str(task.get("status") or ""),
+                "decision": str(task.get("decision") or ""),
+            }
+            for task in tasks
+            if str(task.get("status") or "") in {"needs_input", "filling", "review_required"}
+        ]
+        return {
+            "status": "passed" if not blocking else "blocked",
+            "checkedAt": now_iso(),
+            "blockingCount": len(blocking),
+            "blockingTasks": blocking,
+            "summary": summarize_business_gap_plan(plan),
+        }
+
+    @staticmethod
+    def _find_business_gap_task(plan: dict[str, Any], task_id: str) -> dict[str, Any]:
+        target = str(task_id or "")
+        for task in plan.get("tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            if target in {str(task.get("id") or ""), str(task.get("taskKey") or "")}:
+                return task
+        raise KeyError(task_id)
+
+    @staticmethod
+    def _find_business_gap_toc_ref(plan: dict[str, Any], node_id: str) -> dict[str, Any]:
+        target = str(node_id or "")
+        for ref in plan.get("tocRefs") or []:
+            if isinstance(ref, dict) and str(ref.get("nodeId") or "") == target:
+                return ref
+        raise KeyError(node_id)
+
+    @staticmethod
+    def _update_business_gap_toc_ref_statuses(plan: dict[str, Any]) -> None:
+        task_by_id = {
+            str(task.get("id") or ""): task
+            for task in plan.get("tasks") or []
+            if isinstance(task, dict) and str(task.get("id") or "")
+        }
+        for ref in plan.get("tocRefs") or []:
+            if not isinstance(ref, dict):
+                continue
+            bound = [task_by_id[task_id] for task_id in [str(item) for item in ref.get("taskIds") or []] if task_id in task_by_id]
+            if not bound:
+                ref["status"] = "empty"
+            elif all(str(task.get("status") or "") in {"ready", "resolved", "ignored"} for task in bound):
+                ref["status"] = "ready"
+            elif any(str(task.get("status") or "") == "review_required" for task in bound):
+                ref["status"] = "review_required"
+            else:
+                ref["status"] = "partial"
+
+    @staticmethod
+    def _find_business_gap_artifact_in_task(task: dict[str, Any], artifact_id: str) -> dict[str, Any]:
+        target = str(artifact_id or "")
+        for artifact in task.get("resolvedArtifacts") or []:
+            if isinstance(artifact, dict) and str(artifact.get("artifactId") or "") == target:
+                return artifact
+        raise KeyError(artifact_id)
+
+    @staticmethod
+    def _business_gap_artifact_matches_assembly_mode(task: dict[str, Any], artifact: dict[str, Any]) -> bool:
+        mode = str(task.get("assemblyMode") or "")
+        if not mode:
+            return True
+        artifact_mode = str(artifact.get("assemblyMode") or "")
+        usage = str(artifact.get("wikiUsageMode") or artifact.get("materialUsage") or "")
+        file_name = str(artifact.get("fileName") or artifact.get("materialName") or artifact.get("filePath") or "")
+        suffix = Path(file_name).suffix.lower()
+        source_mode = str(artifact.get("sourceMode") or "")
+        artifact_type = str(artifact.get("artifactType") or "")
+        if mode == "template_fill_docx":
+            if artifact_mode == "template_fill_docx" or usage == "fill_template":
+                return True
+            if artifact_type == "parse_appendix_template" or source_mode == "parsed_from_tender_attachment_template":
+                return True
+            return suffix in {".doc", ".docx"} and bool(re.search(r"模板|格式|底稿|投标函|授权|廉洁|承诺|声明|说明|履约", file_name))
+        if mode == "table_fill_from_material":
+            return artifact_mode == mode or usage == "fill_table" or suffix in {".xls", ".xlsx", ".xlsm"}
+        if mode == "embed_scan_or_image":
+            return artifact_mode == mode or usage == "embed_scan" or suffix in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+        if mode == "attach_whole_file":
+            return artifact_mode == mode or usage == "attach_whole"
+        if mode == "extract_segment":
+            return artifact_mode == mode or usage == "extract_segment" or bool(artifact.get("evidenceSegmentId"))
+        if mode == "ai_draft":
+            return artifact_mode == mode or usage == "generate_draft" or source_mode == "generated_by_business_s3_ai_draft"
+        if mode == "manual_upload":
+            return artifact_mode == mode or usage == "manual_upload" or source_mode == "uploaded_in_business_s3"
+        return True
+
+    @staticmethod
+    def _business_gap_candidate_matches_assembly_mode(task: dict[str, Any], candidate: dict[str, Any]) -> bool:
+        mode = str(task.get("assemblyMode") or "")
+        if not mode:
+            return True
+        usage = str(candidate.get("wikiUsageMode") or candidate.get("materialUsage") or "")
+        file_name = str(candidate.get("materialName") or candidate.get("name") or candidate.get("fileName") or "")
+        folder_path = str(candidate.get("folderPath") or candidate.get("path") or "")
+        text = f"{file_name} {folder_path}"
+        suffix = Path(file_name).suffix.lower()
+        if mode == "template_fill_docx":
+            return usage == "fill_template" or (
+                suffix in {"", ".doc", ".docx"} and bool(re.search(r"模板|格式|底稿|投标函|授权|廉洁|承诺|声明|说明|履约", text))
+            )
+        if mode == "table_fill_from_material":
+            return usage == "fill_table" or suffix in {".xls", ".xlsx", ".xlsm"} or bool(re.search(r"表|清单|报价|价格|规格|偏差", text))
+        if mode == "embed_scan_or_image":
+            return usage == "embed_scan" or suffix in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"} or bool(re.search(r"证书|扫描|图片|回单|保函", text))
+        if mode == "attach_whole_file":
+            return usage == "attach_whole"
+        if mode == "extract_segment":
+            return usage == "extract_segment" or bool(candidate.get("evidenceSegmentId"))
+        if mode == "ai_draft":
+            return usage == "generate_draft"
+        if mode == "manual_upload":
+            return usage == "manual_upload"
+        return True
+
+    @classmethod
+    def _business_task_wants_template_candidates(cls, task: dict[str, Any]) -> bool:
+        mode = str(task.get("assemblyMode") or "")
+        decision = str(task.get("decision") or "")
+        title = str(task.get("title") or "")
+        if mode == "template_fill_docx":
+            return True
+        if decision == "fill_required":
+            return True
+        return cls._default_business_task_assembly_mode(
+            str(task.get("moduleKey") or ""),
+            str(task.get("taskType") or ""),
+            decision,
+            title,
+        ) == "template_fill_docx"
+
+    @staticmethod
+    def _business_task_can_ai_draft(task: dict[str, Any]) -> bool:
+        task_type = str(task.get("taskType") or "")
+        decision = str(task.get("decision") or "")
+        assignee = str(task.get("assigneeMode") or "")
+        title = str(task.get("title") or "")
+        if task_type in {"certificate", "attachment", "bundle"}:
+            return False
+        if decision == "fill_required" or assignee in {"generate_or_fill", "ai_draft"}:
+            return True
+        return bool(re.search(r"投标函|授权|廉洁|承诺|声明|说明|专用章|履约", title))
+
+    @staticmethod
+    def _default_business_task_assembly_mode(module_key: str, task_type: str, decision: str, title: str) -> str:
+        normalized = re.sub(r"[\s:：，,。.！!？?\-_/'\"“”‘’·（）()【】\[\]/]+", "", str(title or ""))
+        if decision == "ai_draft_required":
+            return "ai_draft"
+        if task_type == "table":
+            return "table_fill_from_material"
+        if task_type == "certificate":
+            return "embed_scan_or_image"
+        if task_type == "attachment":
+            if any(token in normalized for token in ["扫描", "回单", "保函", "证书", "图片", "pdf"]):
+                return "embed_scan_or_image"
+            return "attach_whole_file"
+        if task_type == "bundle":
+            if module_key in {"enterprise_finance_supply", "performance_cooperation_support"}:
+                return "extract_segment"
+            return "attach_whole_file"
+        if decision == "fill_required":
+            return "template_fill_docx"
+        if any(token in normalized for token in ["投标函", "授权", "廉洁", "承诺", "声明", "说明", "履约"]):
+            return "template_fill_docx"
+        return "manual_upload"
+
+    @staticmethod
+    def _business_material_usage_for_assembly_mode(assembly_mode: str) -> str:
+        return {
+            "template_fill_docx": "fill_template",
+            "table_fill_from_material": "fill_table",
+            "attach_whole_file": "attach_whole",
+            "embed_scan_or_image": "embed_scan",
+            "extract_segment": "extract_segment",
+            "ai_draft": "generate_draft",
+            "manual_upload": "manual_upload",
+        }.get(str(assembly_mode or ""), "")
+
+    @classmethod
+    def _business_task_fill_plan(cls, task: dict[str, Any]) -> dict[str, Any]:
+        mode = str(task.get("assemblyMode") or cls._default_business_task_assembly_mode(
+            str(task.get("moduleKey") or ""),
+            str(task.get("taskType") or ""),
+            str(task.get("decision") or ""),
+            str(task.get("title") or ""),
+        ))
+        plan = {
+            "mode": mode,
+            "materialUsage": str(task.get("materialUsage") or cls._business_material_usage_for_assembly_mode(mode)),
+            "requiresProjectFacts": mode in {"template_fill_docx", "table_fill_from_material", "ai_draft"},
+            "requiresMaterialEvidence": mode in {"table_fill_from_material", "extract_segment", "attach_whole_file", "embed_scan_or_image"},
+            "requiresHumanReview": True,
+            "outputArtifactType": {
+                "template_fill_docx": "filled_docx",
+                "table_fill_from_material": "filled_table_docx",
+                "attach_whole_file": "whole_file_attachment",
+                "embed_scan_or_image": "embedded_scan",
+                "extract_segment": "extracted_segment_docx",
+                "ai_draft": "ai_draft_docx",
+            }.get(mode, "manual_artifact"),
+        }
+        if task.get("selectedEvidenceSegments"):
+            plan["evidenceSegmentCount"] = len(task.get("selectedEvidenceSegments") or [])
+        return plan
+
+    @classmethod
+    def _assembly_mode_for_business_artifact(cls, task: dict[str, Any], artifact: dict[str, Any]) -> str:
+        usage = str(artifact.get("wikiUsageMode") or artifact.get("materialUsage") or "").strip().lower().replace("-", "_")
+        usage_modes = {
+            "attach_whole": "attach_whole_file",
+            "attach_whole_file": "attach_whole_file",
+            "embed_scan": "embed_scan_or_image",
+            "embed_scan_or_image": "embed_scan_or_image",
+            "extract_segment": "extract_segment",
+            "fill_template": "template_fill_docx",
+            "template_fill_docx": "template_fill_docx",
+            "fill_table": "table_fill_from_material",
+            "table_fill_from_material": "table_fill_from_material",
+        }
+        if usage in usage_modes:
+            return usage_modes[usage]
+        suffix = Path(str(artifact.get("fileName") or artifact.get("filePath") or "")).suffix.lower()
+        mime_type = str(artifact.get("mimeType") or "").lower()
+        task_mode = str(task.get("assemblyMode") or "")
+        if suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".pdf"} or "image/" in mime_type or "pdf" in mime_type:
+            if task_mode in {"attach_whole_file", "extract_segment"}:
+                return task_mode
+            return "embed_scan_or_image"
+        if task_mode:
+            return task_mode
+        return cls._default_business_task_assembly_mode(
+            str(task.get("moduleKey") or ""),
+            str(task.get("taskType") or ""),
+            str(task.get("decision") or ""),
+            str(task.get("title") or ""),
+        )
+
+    @classmethod
+    def _apply_business_task_artifact_intent(cls, task: dict[str, Any], artifacts: list[dict[str, Any]]) -> None:
+        selected = next((artifact for artifact in artifacts if isinstance(artifact, dict)), None)
+        if selected:
+            task["assemblyMode"] = str(selected.get("assemblyMode") or task.get("assemblyMode") or "")
+            task["materialUsage"] = str(selected.get("materialUsage") or task.get("materialUsage") or "")
+        if not task.get("assemblyMode"):
+            task["assemblyMode"] = cls._default_business_task_assembly_mode(
+                str(task.get("moduleKey") or ""),
+                str(task.get("taskType") or ""),
+                str(task.get("decision") or ""),
+                str(task.get("title") or ""),
+            )
+        if not task.get("materialUsage"):
+            task["materialUsage"] = cls._business_material_usage_for_assembly_mode(str(task.get("assemblyMode") or ""))
+        segments: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            segment_id = str(artifact.get("evidenceSegmentId") or "").strip()
+            if not segment_id or segment_id in seen:
+                continue
+            seen.add(segment_id)
+            segments.append(
+                {
+                    "segmentId": segment_id,
+                    "title": str(artifact.get("evidenceSegmentTitle") or ""),
+                    "materialId": str(artifact.get("materialId") or ""),
+                    "materialName": str(artifact.get("materialName") or ""),
+                    "wikiCardId": str(artifact.get("wikiCardId") or ""),
+                    "sourcePages": str(artifact.get("evidenceSourcePages") or ""),
+                    "summary": str(artifact.get("evidenceSummary") or ""),
+                    "usageMode": str(artifact.get("wikiUsageMode") or artifact.get("materialUsage") or ""),
+                }
+            )
+        if segments:
+            current = [item for item in task.get("selectedEvidenceSegments") or [] if isinstance(item, dict)]
+            incoming_ids = {str(item.get("segmentId") or "") for item in segments if str(item.get("segmentId") or "")}
+            by_id = {
+                str(item.get("segmentId") or ""): item
+                for item in current
+                if str(item.get("segmentId") or "") and str(item.get("segmentId") or "") not in incoming_ids
+            }
+            for segment in segments:
+                by_id[str(segment.get("segmentId") or "")] = segment
+            task["selectedEvidenceSegments"] = [*segments, *by_id.values()][:12]
+        task["fillPlan"] = cls._business_task_fill_plan(task)
+
+    @classmethod
+    def _record_business_material_feedback(
+        cls,
+        business_gap_state: dict[str, Any],
+        task: dict[str, Any],
+        artifacts: list[dict[str, Any]],
+        *,
+        operator: str,
+        selected_at: str,
+    ) -> None:
+        entries = business_gap_state.setdefault("materialFeedback", [])
+        if not isinstance(entries, list):
+            entries = []
+            business_gap_state["materialFeedback"] = entries
+        existing_keys = {
+            str(item.get("feedbackKey") or "")
+            for item in entries
+            if isinstance(item, dict) and str(item.get("feedbackKey") or "")
+        }
+        task_title = str(task.get("title") or "")
+        toc_target = task.get("tocTarget") if isinstance(task.get("tocTarget"), dict) else {}
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            material_id = str(artifact.get("materialId") or "").strip()
+            segment_id = str(artifact.get("evidenceSegmentId") or "").strip()
+            if not material_id:
+                continue
+            feedback_key = cls._business_material_feedback_key(task, material_id, segment_id)
+            if feedback_key in existing_keys:
+                continue
+            existing_keys.add(feedback_key)
+            entries.append(
+                {
+                    "schemaVersion": "bid-business-material-feedback-item-v1",
+                    "feedbackKey": feedback_key,
+                    "taskId": str(task.get("id") or ""),
+                    "taskKey": str(task.get("taskKey") or ""),
+                    "taskTitle": task_title,
+                    "moduleKey": str(task.get("moduleKey") or ""),
+                    "taskType": str(task.get("taskType") or ""),
+                    "assemblyMode": str(task.get("assemblyMode") or artifact.get("assemblyMode") or ""),
+                    "materialUsage": str(task.get("materialUsage") or artifact.get("materialUsage") or ""),
+                    "tocNodeId": str(toc_target.get("nodeId") or ""),
+                    "tocNumber": str(toc_target.get("number") or ""),
+                    "tocTitle": str(toc_target.get("title") or ""),
+                    "materialId": material_id,
+                    "materialName": str(artifact.get("materialName") or artifact.get("fileName") or ""),
+                    "folderPath": str(artifact.get("folderPath") or ""),
+                    "materialTier": str(artifact.get("materialTier") or ""),
+                    "wikiCardId": str(artifact.get("wikiCardId") or ""),
+                    "evidenceSegmentId": segment_id,
+                    "evidenceSegmentTitle": str(artifact.get("evidenceSegmentTitle") or ""),
+                    "evidenceSummary": str(artifact.get("evidenceSummary") or ""),
+                    "selectedAt": selected_at,
+                    "operator": operator or "当前用户",
+                    "source": "business_s3_manual_selection",
+                }
+            )
+        business_gap_state["materialFeedback"] = entries[-300:]
+
+    @staticmethod
+    def _business_material_feedback_key(task: dict[str, Any], material_id: str, segment_id: str) -> str:
+        raw = "|".join(
+            [
+                str(task.get("moduleKey") or ""),
+                str(task.get("taskType") or ""),
+                str(task.get("title") or ""),
+                str(material_id or ""),
+                str(segment_id or ""),
+            ]
+        )
+        import hashlib
+
+        return "biz-feedback-" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+    @classmethod
+    def _write_business_ai_draft_docx(
+        cls,
+        output_path: Path,
+        project: dict[str, Any],
+        task: dict[str, Any],
+        facts: dict[str, str],
+        data: dict[str, Any],
+    ) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        title = str(task.get("title") or "商务响应文件")
+        normalized = title.replace("函格式", "函").replace("格式", "").strip() or "商务响应文件"
+        doc = Document()
+        doc.add_heading(normalized, level=1)
+
+        tenderer = cls._fact_value(facts, "招标人") or str(project.get("customerName") or project.get("owner") or "")
+        bidder = cls._fact_value(facts, "投标人") or str(data.get("bidderName") or "投标人")
+        project_name = cls._fact_value(facts, "项目名称") or str(project.get("name") or "")
+        tender_no = cls._fact_value(facts, "招标编号") or str(project.get("projectCode") or project.get("id") or "")
+        date_value = cls._fact_value(facts, "日期") or "    年    月    日"
+
+        if tenderer:
+            doc.add_paragraph(f"致：{tenderer}")
+        body = cls._business_ai_draft_body(normalized, project_name, tender_no)
+        for paragraph in body:
+            doc.add_paragraph(paragraph)
+
+        doc.add_paragraph(f"项目名称：{project_name or '[待填写：项目名称]'}")
+        doc.add_paragraph(f"招标编号：{tender_no or '[待填写：招标编号]'}")
+        if "报价" in normalized or "价格" in normalized:
+            doc.add_paragraph(f"投标报价：{cls._fact_value(facts, '投标报价') or '[待填写：投标报价]'}")
+            doc.add_paragraph(f"币种：{cls._fact_value(facts, '币种') or '人民币'}")
+        if "规格" in normalized or "供货" in normalized:
+            doc.add_paragraph(f"投标机型：{cls._fact_value(facts, '投标机型') or '[待填写：投标机型]'}")
+            doc.add_paragraph(f"总装机容量：{cls._fact_value(facts, '总装机容量') or '[待填写：总装机容量]'}")
+        doc.add_paragraph("")
+        doc.add_paragraph(f"投标人：{bidder}")
+        doc.add_paragraph("法定代表人或授权代表：________________")
+        doc.add_paragraph("日期：" + date_value)
+        doc.add_paragraph("")
+        doc.add_paragraph("注：本稿由商务标 S3 根据目录任务和项目事实表受控起草，签字、盖章、报价、金额及承诺范围须人工复核。")
+        doc.save(output_path)
+
+    @staticmethod
+    def _business_ai_draft_body(title: str, project_name: str, tender_no: str) -> list[str]:
+        project_label = project_name or "本项目"
+        if "授权" in title:
+            return [
+                f"我单位现授权本单位工作人员作为 {project_label}（招标编号：{tender_no or '待填写'}）投标事宜的合法代理人。",
+                "代理人在本项目投标、澄清、签署相关文件及处理投标事务中的行为，我单位均予以认可并承担相应法律责任。",
+            ]
+        if "廉洁" in title:
+            return [
+                f"我单位参加 {project_label} 投标活动，承诺严格遵守国家法律法规、招标文件及廉洁从业要求。",
+                "我单位不以任何不正当方式影响评审结果，不向相关人员输送利益，并接受招标人及监管机构监督。",
+            ]
+        if "承诺" in title or "声明" in title or "说明" in title:
+            return [
+                f"我单位已充分理解 {project_label} 招标文件要求，并承诺按招标文件、投标文件及后续合同约定履行相关义务。",
+                "如本承诺与招标文件专用条款或澄清文件存在不一致，以经人工复核后的最终投标文件为准。",
+            ]
+        if "履约" in title:
+            return [
+                f"我单位承诺在 {project_label} 中标后，按招标文件和合同约定及时提交履约保证金或履约保函。",
+                "若未按要求提交，我单位愿承担招标文件及合同约定的相关责任。",
+            ]
+        if "投标函" in title:
+            return [
+                f"我单位已认真阅读 {project_label} 招标文件及其补遗、澄清文件，愿按招标文件要求提交商务投标文件。",
+                "我单位承诺投标文件所载内容真实、准确、完整，并在投标有效期内保持投标文件有效。",
+            ]
+        return [
+            f"我单位针对 {project_label} 编制本商务响应文件。",
+            "本文件内容依据招标文件目录任务和项目事实表生成，需结合最终招标要求人工复核完善。",
+        ]
+
+    @staticmethod
+    def _fact_value(facts: dict[str, str], label: str) -> str:
+        key = re.sub(r"[\s　：:（）()【】\\[\\]]+", "", str(label or ""))
+        if label in facts:
+            return facts[label]
+        if key in facts:
+            return facts[key]
+        for existing, value in facts.items():
+            if key and (key in existing or existing in key):
+                return value
+        return ""
+
+    @staticmethod
+    def _default_business_gap_material_target_path(project_id: str, task: dict[str, Any]) -> str:
+        root = f"商务标/项目素材/{safe_filename(project_id, 'project')}"
+        module_key = str(task.get("moduleKey") or "")
+        task_type = str(task.get("taskType") or "")
+        sub_module = str(task.get("subModuleKey") or "")
+        title = str(task.get("title") or "")
+        if module_key == "qualification_compliance_certificates" and (
+            sub_module == "special_certificates" or task_type == "certificate" or "认证" in title or "证书" in title
+        ):
+            return f"{root}/02-商务响应文件/专题证书"
+        if module_key in {"base_documents_guarantees", "structured_response_tables", "commitments_and_notes"}:
+            return f"{root}/02-商务响应文件"
+        if module_key == "performance_cooperation_support":
+            return f"{root}/01-客户关系与专项证明"
+        return f"{root}/03-模板底稿与过程文件"
+
+    @staticmethod
+    def _decode_business_gap_upload_content(content: str, *, fallback_mime: str = "") -> tuple[bytes, str]:
+        text = str(content or "").strip()
+        if not text:
+            return b"", fallback_mime
+        if text.startswith("data:"):
+            header, separator, payload = text.partition(",")
+            if not separator:
+                return b"", fallback_mime
+            mime_type = header[5:].split(";", 1)[0] or fallback_mime
+            if ";base64" in header.lower():
+                try:
+                    return base64.b64decode(payload, validate=True), mime_type
+                except (binascii.Error, ValueError) as exc:
+                    raise ValueError("上传文件 Base64 内容无法解析。") from exc
+            return payload.encode("utf-8"), mime_type
+        try:
+            return base64.b64decode(text, validate=True), fallback_mime
+        except (binascii.Error, ValueError):
+            return text.encode("utf-8"), fallback_mime or "text/plain"
+
+    @staticmethod
+    def _unique_business_gap_path(directory: Path, file_name: str) -> Path:
+        target = directory / safe_filename(file_name, "artifact.bin")
+        if not target.exists():
+            return target
+        stem = target.stem or "artifact"
+        suffix = target.suffix
+        for index in range(2, 1000):
+            candidate = directory / f"{stem}-{index}{suffix}"
+            if not candidate.exists():
+                return candidate
+        raise ValueError(f"无法生成不重复的文件名：{file_name}")
+
+    @staticmethod
+    def _selected_business_material_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_entries = data.get("materials")
+        if raw_entries is None:
+            raw_entries = data.get("materialIds") or data.get("referenceMaterialIds") or []
+        entries: list[dict[str, Any]] = []
+        for entry in raw_entries if isinstance(raw_entries, list) else []:
+            if isinstance(entry, str):
+                entries.append({"materialId": entry})
+            elif isinstance(entry, dict):
+                entries.append(copy.deepcopy(entry))
+        return entries
+
+    @staticmethod
+    def _selected_business_template_entry(task: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+        raw = data.get("template") if isinstance(data.get("template"), dict) else data
+        template_id = str(raw.get("templateId") or "").strip() if isinstance(raw, dict) else ""
+        file_path = str(raw.get("filePath") or raw.get("path") or "").strip() if isinstance(raw, dict) else ""
+        for candidate in task.get("templateCandidates") or []:
+            if not isinstance(candidate, dict):
+                continue
+            if template_id and template_id == str(candidate.get("templateId") or ""):
+                return copy.deepcopy(candidate)
+            if file_path and file_path == str(candidate.get("filePath") or candidate.get("path") or ""):
+                return copy.deepcopy(candidate)
+        if isinstance(raw, dict) and file_path:
+            return copy.deepcopy(raw)
+        raise ValueError("请选择一份有效模板候选。")
+
+    @staticmethod
+    def _merge_business_material_refs(current: list[Any], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in [*current, *incoming]:
+            if not isinstance(item, dict):
+                continue
+            material_id = str(item.get("materialId") or item.get("id") or "").strip()
+            if not material_id or material_id in seen:
+                continue
+            seen.add(material_id)
+            merged.append(copy.deepcopy(item))
+        return merged
+
+    @classmethod
+    def _recompute_business_gap_task_after_artifact_change(cls, task: dict[str, Any]) -> None:
+        flags = task.setdefault("riskFlags", [])
+        if not isinstance(flags, list):
+            flags = []
+            task["riskFlags"] = flags
+        for stale_flag in (
+            "missing_material",
+            "manual_upload_required",
+            "template_missing_for_fill",
+            "candidate_template_unconfirmed",
+        ):
+            if stale_flag in flags:
+                flags.remove(stale_flag)
+        artifacts = [item for item in task.get("resolvedArtifacts") or [] if isinstance(item, dict)]
+        mode_artifacts = [
+            item
+            for item in artifacts
+            if cls._business_gap_artifact_matches_assembly_mode(task, item)
+        ]
+        confirmed_artifacts = [item for item in mode_artifacts if bool(item.get("confirmed"))]
+        template_candidates = [item for item in task.get("templateCandidates") or [] if isinstance(item, dict)]
+        candidates = [item for item in task.get("candidateMaterials") or [] if isinstance(item, dict)]
+        mode_candidates = [
+            item
+            for item in candidates
+            if cls._business_gap_candidate_matches_assembly_mode(task, item)
+        ]
+        if confirmed_artifacts:
+            task["decision"] = "ready"
+            task["status"] = "ready"
+            return
+        if mode_artifacts:
+            task["decision"] = "review_required"
+            task["status"] = "review_required"
+            return
+        if str(task.get("assemblyMode") or "") == "template_fill_docx" and template_candidates:
+            task["decision"] = "review_required"
+            task["status"] = "review_required"
+            if "candidate_template_unconfirmed" not in flags:
+                flags.append("candidate_template_unconfirmed")
+            return
+        if str(task.get("assemblyMode") or "") == "ai_draft":
+            task["decision"] = "ai_draft_required"
+            task["status"] = "needs_input"
+            if "ai_draft_required" not in flags:
+                flags.append("ai_draft_required")
+            return
+        if mode_candidates:
+            task["decision"] = "review_required"
+            task["status"] = "review_required"
+            if str(task.get("assemblyMode") or "") == "template_fill_docx" and "candidate_template_unconfirmed" not in flags:
+                flags.append("candidate_template_unconfirmed")
+            return
+        if str(task.get("assemblyMode") or "") == "template_fill_docx":
+            task["decision"] = "fill_required"
+            task["status"] = "needs_input"
+            for flag in ("missing_material", "template_missing_for_fill"):
+                if flag not in flags:
+                    flags.append(flag)
+            return
+        if str(task.get("sourceType") or "") == "manual_user":
+            task["decision"] = "material_required"
+            task["status"] = "needs_input"
+            for flag in ("missing_material", "manual_upload_required"):
+                if flag not in flags:
+                    flags.append(flag)
+            return
+        if str(task.get("taskType") or "") in {"attachment", "certificate", "bundle"} or str(task.get("decision") or "") == "material_required":
+            task["decision"] = "material_required"
+            task["status"] = "needs_input"
+            if "missing_material" not in flags:
+                flags.append("missing_material")
+            return
+        task["decision"] = "review_required"
+        task["status"] = "review_required"
+
+    def _refresh_business_gap_template_candidates(
+        self,
+        project: dict[str, Any],
+        business_gap_state: dict[str, Any],
+    ) -> bool:
+        plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
+        tasks = [task for task in plan.get("tasks") or [] if isinstance(task, dict)]
+        if not tasks:
+            return False
+
+        project_id = str(project.get("id") or "")
+        work_dir = business_workspace_dir(project_id) / "gaps"
+        template_index = _business_template_index(project, work_dir)
+        project_template_ids = {
+            str(candidate.get("templateId") or candidate.get("filePath") or candidate.get("originalPath") or "")
+            for candidate in template_index
+            if isinstance(candidate, dict) and str(candidate.get("sourceMode") or "") == "project_uploaded_bid_template"
+        }
+        active_template_keys = {
+            str(candidate.get("templateId") or candidate.get("filePath") or candidate.get("originalPath") or "")
+            for candidate in template_index
+            if isinstance(candidate, dict)
+        }
+        changed = False
+        has_project_template = bool(project_template_ids)
+        for task in tasks:
+            if not self._business_task_wants_template_candidates(task):
+                continue
+            existing = [item for item in task.get("templateCandidates") or [] if isinstance(item, dict)]
+            task_changed = False
+            if active_template_keys:
+                kept_existing: list[dict[str, Any]] = []
+                for item in existing:
+                    item_key = str(item.get("templateId") or item.get("filePath") or item.get("originalPath") or "")
+                    source_mode = str(item.get("sourceMode") or "")
+                    if item_key not in active_template_keys:
+                        continue
+                    if has_project_template and source_mode == "system_default_bid_template":
+                        continue
+                    kept_existing.append(item)
+                if len(kept_existing) != len(existing):
+                    existing = kept_existing
+                    task_changed = True
+                    changed = True
+            elif existing:
+                existing = []
+                task_changed = True
+                changed = True
+            existing_keys = {
+                str(item.get("templateId") or item.get("filePath") or item.get("originalPath") or "")
+                for item in existing
+                if str(item.get("templateId") or item.get("filePath") or item.get("originalPath") or "")
+            }
+            merged = [copy.deepcopy(item) for item in existing]
+            for candidate in template_index:
+                candidate_key = str(
+                    candidate.get("templateId")
+                    or candidate.get("filePath")
+                    or candidate.get("originalPath")
+                    or ""
+                )
+                if not candidate_key or candidate_key in existing_keys:
+                    continue
+                merged.append(copy.deepcopy(candidate))
+                existing_keys.add(candidate_key)
+                task_changed = True
+                changed = True
+            if not task_changed:
+                continue
+            task["templateCandidates"] = sorted(
+                merged,
+                key=lambda item: 0 if str(item.get("sourceMode") or "") == "project_uploaded_bid_template" else 1,
+            )[:8]
+            if task["templateCandidates"]:
+                if str(task.get("assemblyMode") or "") != "template_fill_docx":
+                    task["assemblyMode"] = "template_fill_docx"
+                task["materialUsage"] = self._business_material_usage_for_assembly_mode("template_fill_docx")
+                task["fillPlan"] = self._business_task_fill_plan(task)
+            self._recompute_business_gap_task_after_artifact_change(task)
+
+        if not changed:
+            return False
+        updated_at = now_iso()
+        self._finalize_business_gap_plan_update(project, business_gap_state, plan, updated_at=updated_at)
+        return True
+
+    @staticmethod
+    async def _business_material_download_payload(material_id: str) -> tuple[dict[str, Any], str]:
+        try:
+            payload = await material_store.raw_download_cleaned_content(material_id)
+            return payload, "cleaned"
+        except Exception:
+            payload = await material_store.raw_download_content(material_id)
+            return payload, "raw"
+
+    def _finalize_business_gap_plan_update(
+        self,
+        project: dict[str, Any],
+        business_gap_state: dict[str, Any],
+        plan: dict[str, Any],
+        *,
+        updated_at: str,
+    ) -> None:
+        plan["updatedAt"] = updated_at
+        self._update_business_gap_toc_ref_statuses(plan)
+        plan["summary"] = summarize_business_gap_plan(plan)
+        business_gap_state["plan"] = plan
+        business_gap_state["submittedForReview"] = False
+        business_gap_state["reviewConfirmed"] = False
+        business_gap_state["reviewedAt"] = ""
+        business_gap_state["integrity"] = self._business_gap_integrity(plan)
+        plan["integrity"] = copy.deepcopy(business_gap_state["integrity"])
+        project["updatedAt"] = updated_at
+        self._persist_project(project)
+
+    @staticmethod
+    def _refresh_business_gap_urls_for_result(
+        project_id: str,
+        plan: dict[str, Any],
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> None:
+        refresh_business_gap_artifact_urls(
+            project_id,
+            plan,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+        )
+
+    def _build_business_gap_payload(self, project: dict[str, Any], business_gap_state: dict[str, Any]) -> dict[str, Any]:
+        plan = copy.deepcopy(business_gap_state.get("plan") or {})
+        summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else summarize_business_gap_plan(plan)
+        return {
+            "status": business_gap_state["recognitionStatus"],
+            "recognizedAt": business_gap_state["recognizedAt"],
+            "submittedForReview": bool(business_gap_state["submittedForReview"]),
+            "reviewConfirmed": bool(business_gap_state["reviewConfirmed"]),
+            "summary": copy.deepcopy(summary),
+            "plan": plan,
+            "businessGapPlan": copy.deepcopy(plan),
+            "tocRefs": copy.deepcopy(plan.get("tocRefs") or []),
+            "tasks": copy.deepcopy(plan.get("tasks") or []),
+            "moduleGroups": copy.deepcopy(plan.get("moduleGroups") or []),
+            "integrity": copy.deepcopy(business_gap_state.get("integrity") or {}),
+            "source": {
+                "fromStage": "商务标缺口处理",
+                "projectId": project["id"],
+                "projectName": project["name"],
+                "bidType": project.get("bidType") or "商务标",
+            },
+        }
 
     def _repair_gap_state_fill_task_skills(self, gap_state: dict[str, Any]) -> bool:
         plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}

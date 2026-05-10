@@ -620,6 +620,21 @@ def _build_qualification_support_fields(items: list[dict[str, Any]]) -> list[dic
     return fields
 
 
+def _line_has_explicit_commitment_obligation(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(text or ""))
+    if not normalized:
+        return False
+    if "不得存在下列情形" in normalized:
+        return True
+    if any(hint in normalized for hint in COMMITMENT_GENERATION_HINTS):
+        return True
+    has_commitment = "承诺" in normalized
+    has_obligation = any(token in normalized for token in ("须", "应", "需", "必须", "无条件"))
+    has_doc_action = any(token in normalized for token in ("提供", "提交", "出具", "附", "另附", "递交"))
+    has_doc_name = any(token in normalized for token in (*COMMITMENT_DOC_KEYWORDS, "书面承诺", "承诺材料"))
+    return has_commitment and has_obligation and (has_doc_action or has_doc_name)
+
+
 def _find_commitment_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     matched: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -657,8 +672,10 @@ COMMITMENT_GENERATION_HINTS = (
     "应出具承诺书",
     "需提供承诺函",
     "需提供承诺书",
+    "需提供书面承诺",
     "须出具承诺函",
     "须出具承诺书",
+    "须无条件承诺",
 )
 COMMITMENT_REQUIREMENT_CONTEXT_HINTS = (
     "提供",
@@ -699,7 +716,14 @@ COMMITMENT_NON_REQUIREMENT_TITLE_HINTS = (
     "参考",
 )
 TECHNICAL_COMMITMENT_KEYWORDS = (
+    "等效满负荷小时",
+    "满负荷小时",
+    "保证年等效",
+    "保证小时",
+    "发电小时",
     "发电量",
+    "上网电量",
+    "电量",
     "功率曲线",
     "功率",
     "可利用率",
@@ -720,6 +744,7 @@ TECHNICAL_COMMITMENT_KEYWORDS = (
 COMMITMENT_TOPIC_TITLE_KEYWORDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("confidentiality", ("保密",), "保密承诺书"),
     ("disqualification", ("不得存在下列情形",), "投标人不存在下列情形之一承诺函"),
+    ("certificate_obtainment", ("取得本条", "取得材料", "取得证书", "取得认证", "供货前取得"), "材料取得承诺书"),
     ("delivery", ("交货", "供货周期", "交付"), "交货周期承诺书"),
     ("quality", ("质量", "质保", "售后", "服务"), "质量服务承诺书"),
     ("security", ("投标保证金", "保函", "保证金"), "投标保证金承诺书"),
@@ -730,6 +755,7 @@ COMMITMENT_TOPIC_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("compliance", ("合规", "守法", "违法", "违规", "信用")),
     ("security", ("投标保证金", "保函", "保证金")),
     ("disqualification", ("不得存在下列情形",)),
+    ("certificate_obtainment", ("取得本条", "取得材料", "取得证书", "取得认证", "供货前取得")),
     ("integrity", ("廉洁",)),
     ("performance_bond", ("履约保证", "履约承诺")),
     ("delivery_commitment", ("交货", "工期", "供货周期")),
@@ -773,6 +799,14 @@ def _preferred_commitment_title(item: dict[str, Any], trigger_text: str) -> str:
     if not any(keyword in title for keyword in COMMITMENT_DOC_KEYWORDS):
         title = f"{title}承诺书"
     return title
+
+
+def _normalize_commitment_title_by_topic(topic_key: str, title: str, item: dict[str, Any]) -> str:
+    if topic_key == "certificate_obtainment":
+        return "材料取得承诺书"
+    if topic_key == "disqualification":
+        return "投标人不存在下列情形之一承诺函"
+    return title.strip() or _preferred_commitment_title(item, str(item.get("triggerText") or "承诺"))
 
 
 def _normalize_commitment_topic(text: str) -> str:
@@ -819,6 +853,8 @@ def _extract_commitment_trigger_phrase(text: str) -> str:
     normalized = str(text or "").strip()
     if "不得存在下列情形" in normalized:
         return "投标人不得存在下列情形之一"
+    if "须无条件承诺" in normalized:
+        return "须无条件承诺"
     for hint in COMMITMENT_GENERATION_HINTS:
         if hint in normalized:
             return hint
@@ -833,7 +869,7 @@ def _build_commitment_semantic_review_prompt(candidates: list[dict[str, Any]]) -
     for item in candidates[:COMMITMENT_SEMANTIC_REVIEW_MAX_ITEMS]:
         records.append(
             {
-                "id": str(item.get("id") or ""),
+                "id": str(item.get("semanticReviewId") or item.get("id") or ""),
                 "title": str(item.get("title") or ""),
                 "section": str(item.get("section") or ""),
                 "evidence": str(item.get("evidence") or item.get("value") or ""),
@@ -861,7 +897,8 @@ def _build_commitment_semantic_review_prompt(candidates: list[dict[str, Any]]) -
         "4. 如果 evidence 只是类似“保密承诺书”这类短标题，必须结合 section、contextBefore、contextAfter 判断；上下文没有明确“提供/提交/出具/另附/单独成文”要求时，不要生成。\n"
         "5. 同一主题如果只是重复标题、重复要求或同一事项的不同表述，最多保留一个 generate，其余用 ignore 或 clue。\n"
         "6. topicKey 尽量归一，例如 confidentiality、compliance、security、delivery_commitment、quality_commitment、disqualification。\n"
-        "7. preferredTitle 只在 action=generate 时填写，且应是适合最终文件名的主题名称。\n\n"
+        "7. 发电量、功率、满负荷小时数、性能保证、机组技术参数等技术标承诺不要生成商务承诺文件，action=ignore。\n"
+        "8. preferredTitle 只在 action=generate 时填写，且应是适合最终文件名的主题名称。\n\n"
         f"候选列表：\n{json.dumps(records, ensure_ascii=False, indent=2)}"
     )
 
@@ -889,12 +926,135 @@ def _review_commitment_candidates_semantically(candidates: list[dict[str, Any]])
     return reviewed
 
 
+def _commitment_review_signature(item: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(item.get("sourceFile") or ""),
+        str(item.get("evidenceLocation") or ""),
+        re.sub(r"\s+", "", str(item.get("evidence") or item.get("value") or item.get("title") or "")),
+    )
+
+
+def _commitment_decision_for_item(
+    item: dict[str, Any],
+    reviewed: dict[str, dict[str, Any]],
+    reviewed_by_signature: dict[tuple[str, str, str], dict[str, Any]],
+) -> tuple[dict[str, Any], bool]:
+    for item_id in (str(item.get("semanticReviewId") or ""), str(item.get("id") or "")):
+        if item_id and item_id in reviewed:
+            return reviewed[item_id], True
+    signature = _commitment_review_signature(item)
+    if signature in reviewed_by_signature:
+        return reviewed_by_signature[signature], True
+    return {}, False
+
+
+def _commitment_decision_action(decision: dict[str, Any], default: str = "clue") -> str:
+    action = str(decision.get("action") or default).strip().lower()
+    return action if action in {"generate", "clue", "ignore"} else default
+
+
+def _append_semantic_commitment_candidate(
+    item: dict[str, Any],
+    *,
+    base: dict[str, Any],
+    semantic_candidates: list[dict[str, Any]],
+    semantic_candidate_ids: set[str],
+    semantic_candidate_signatures: set[tuple[str, str, str]],
+    force_generate_on_fallback: bool = False,
+) -> None:
+    item_id = str(item.get("id") or "")
+    signature = _commitment_review_signature(item)
+    if item_id and (item_id in semantic_candidate_ids or signature in semantic_candidate_signatures):
+        return
+    if item_id:
+        semantic_candidate_ids.add(item_id)
+    semantic_candidate_signatures.add(signature)
+    semantic_candidates.append(
+        {
+            **item,
+            **base,
+            "forceGenerateOnFallback": force_generate_on_fallback,
+        }
+    )
+
+
+def _append_commitment_letter(
+    letters: list[dict[str, Any]],
+    generated_topics: set[str],
+    item: dict[str, Any],
+    *,
+    topic_key: str,
+    title: str,
+    commitment_type: str,
+    risk_flags: list[str],
+) -> bool:
+    if topic_key in generated_topics:
+        return False
+    generated_topics.add(topic_key)
+    letters.append(
+        {
+            "id": f"CL-{len(letters) + 1:04d}",
+            "artifactType": "commitment_letter",
+            "title": title,
+            "commitmentType": commitment_type,
+            "status": "pending_review",
+            **_copy_meta_fields(item),
+            "topic": topic_key,
+            "topicKey": topic_key,
+            "triggerText": str(item.get("triggerText") or "承诺"),
+            "triggerContext": str(item.get("triggerContext") or item.get("evidence") or item.get("value") or "").strip(),
+            "docxPath": "",
+            "workspacePath": "",
+            "placementHint": "投标人需要说明的其他内容",
+            "needsHumanReview": True,
+            "riskFlags": risk_flags,
+            "previewType": "onlyoffice",
+        }
+    )
+    return True
+
+
+def _append_commitment_clue(
+    clues: list[dict[str, Any]],
+    clue_topics: set[tuple[str, str]],
+    item: dict[str, Any],
+    *,
+    topic_key: str,
+    recommended_action: str,
+    risk_flags: list[str],
+) -> bool:
+    trigger_context = str(item.get("triggerContext") or item.get("evidence") or item.get("value") or "").strip()
+    clue_key = (topic_key, trigger_context)
+    if clue_key in clue_topics:
+        return False
+    clue_topics.add(clue_key)
+    clues.append(
+        {
+            "id": f"CC-{len(clues) + 1:04d}",
+            "artifactType": "commitment_clue",
+            "title": str(item.get("title") or item.get("triggerText") or "承诺线索").strip() or "承诺线索",
+            "clueType": "pending_manual_review",
+            "status": "needs_review",
+            **_copy_meta_fields(item),
+            "topic": topic_key,
+            "topicKey": topic_key,
+            "triggerText": str(item.get("triggerText") or "承诺"),
+            "triggerContext": trigger_context,
+            "recommendedAction": recommended_action,
+            "riskFlags": risk_flags,
+        }
+    )
+    return True
+
+
 def _is_commitment_doc_required(item: dict[str, Any]) -> bool:
     text = _commitment_text(item)
     normalized = re.sub(r"\s+", "", text)
     if "不得存在下列情形" in normalized:
         return True
     if any(hint in normalized for hint in COMMITMENT_GENERATION_HINTS):
+        return True
+    if _line_has_explicit_commitment_obligation(normalized):
         return True
     if any(keyword in normalized for keyword in COMMITMENT_DOC_KEYWORDS):
         if _looks_like_bare_commitment_title(item):
@@ -956,142 +1116,107 @@ def _build_business_commitment_analysis(
             "triggerText": trigger_text,
             "triggerContext": str(item.get("evidence") or item.get("value") or "").strip(),
         }
-        if _is_commitment_doc_required(item):
-            normalized = re.sub(r"\s+", "", text)
-            if any(keyword in normalized for keyword in COMMITMENT_DOC_KEYWORDS) and not _contains_commitment_requirement_context(normalized):
-                item_id = str(item.get("id") or "")
-                signature = (
-                    str(item.get("sourceFile") or ""),
-                    str(item.get("evidenceLocation") or ""),
-                    re.sub(r"\s+", "", str(item.get("evidence") or item.get("value") or item.get("title") or "")),
-                )
-                if item_id and item_id not in semantic_candidate_ids and signature not in semantic_candidate_signatures:
-                    semantic_candidate_ids.add(item_id)
-                    semantic_candidate_signatures.add(signature)
-                    semantic_candidates.append({**item, **base})
-                continue
-
-            if topic_key in generated_topics:
-                continue
-            generated_topics.add(topic_key)
-            if topic_key == "disqualification":
-                title = "投标人不存在下列情形之一承诺函"
-                commitment_type = "disqualification"
-            else:
-                title = _preferred_commitment_title(item, trigger_text)
-                commitment_type = "general_commitment"
-            letters.append(
-                {
-                    "id": f"CL-{len(letters) + 1:04d}",
-                    "artifactType": "commitment_letter",
-                    "title": title,
-                    "commitmentType": commitment_type,
-                    "status": "pending_review",
-                    **base,
-                    "docxPath": "",
-                    "workspacePath": "",
-                    "placementHint": "投标人需要说明的其他内容",
-                    "needsHumanReview": True,
-                    "riskFlags": ["template_pending", "legal_wording_review_required"],
-                    "previewType": "onlyoffice",
-                }
-            )
-            continue
-
         normalized = re.sub(r"\s+", "", text)
-        if any(keyword in normalized for keyword in COMMITMENT_DOC_KEYWORDS):
-            item_id = str(item.get("id") or "")
-            signature = (
-                str(item.get("sourceFile") or ""),
-                str(item.get("evidenceLocation") or ""),
-                re.sub(r"\s+", "", str(item.get("evidence") or item.get("value") or item.get("title") or "")),
+        if topic_key == "disqualification" or "不得存在下列情形" in normalized:
+            _append_commitment_letter(
+                letters,
+                generated_topics,
+                {**item, **base},
+                topic_key="disqualification",
+                title="投标人不存在下列情形之一承诺函",
+                commitment_type="disqualification",
+                risk_flags=["template_pending", "legal_wording_review_required"],
             )
-            if item_id and item_id not in semantic_candidate_ids and signature not in semantic_candidate_signatures:
-                semantic_candidate_ids.add(item_id)
-                semantic_candidate_signatures.add(signature)
-                semantic_candidates.append({**item, **base})
             continue
 
-        clue_key = (topic_key, base["triggerContext"])
-        if clue_key in clue_topics:
+        if _is_commitment_doc_required(item):
+            _append_semantic_commitment_candidate(
+                item,
+                base=base,
+                semantic_candidates=semantic_candidates,
+                semantic_candidate_ids=semantic_candidate_ids,
+                semantic_candidate_signatures=semantic_candidate_signatures,
+                force_generate_on_fallback=True,
+            )
             continue
-        clue_topics.add(clue_key)
-        clues.append(
-            {
-                "id": f"CC-{len(clues) + 1:04d}",
-                "artifactType": "commitment_clue",
-                "title": str(item.get("title") or trigger_text or "承诺线索").strip() or "承诺线索",
-                "clueType": "pending_manual_review",
-                "status": "needs_review",
-                **base,
-                "recommendedAction": "暂不自动生成，请人工确认是否需要单独承诺函/承诺书。",
-                "riskFlags": ["ambiguous_requirement"],
-            }
+
+        if any(keyword in normalized for keyword in COMMITMENT_DOC_KEYWORDS):
+            _append_semantic_commitment_candidate(
+                item,
+                base=base,
+                semantic_candidates=semantic_candidates,
+                semantic_candidate_ids=semantic_candidate_ids,
+                semantic_candidate_signatures=semantic_candidate_signatures,
+            )
+            continue
+
+        _append_commitment_clue(
+            clues,
+            clue_topics,
+            {**item, **base},
+            topic_key=topic_key,
+            recommended_action="暂不自动生成，请人工确认是否需要单独承诺函/承诺书。",
+            risk_flags=["ambiguous_requirement"],
         )
 
     reviewed = _review_commitment_candidates_semantically(semantic_candidates) if run_semantic_review else {}
+    for index, item in enumerate(semantic_candidates[:COMMITMENT_SEMANTIC_REVIEW_MAX_ITEMS], start=1):
+        item["semanticReviewId"] = f"RAW-{index:04d}"
+    semantic_candidate_by_id: dict[str, dict[str, Any]] = {}
     for item in semantic_candidates:
-        decision = reviewed.get(str(item.get("id") or "")) or {}
-        if not run_semantic_review:
+        for key in (str(item.get("id") or ""), str(item.get("semanticReviewId") or "")):
+            if key:
+                semantic_candidate_by_id[key] = item
+    reviewed_by_signature: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for reviewed_id, decision in reviewed.items():
+        source_item = semantic_candidate_by_id.get(reviewed_id)
+        if source_item:
+            reviewed_by_signature[_commitment_review_signature(source_item)] = decision
+    for item in semantic_candidates:
+        decision, has_ai_decision = _commitment_decision_for_item(item, reviewed, reviewed_by_signature)
+        has_ai_decision = bool(run_semantic_review and has_ai_decision)
+        if has_ai_decision:
+            action = _commitment_decision_action(decision)
+        elif bool(item.get("forceGenerateOnFallback")):
+            action = "generate"
             decision = {
-                "action": "clue",
                 "topicKey": str(item.get("topicKey") or item.get("topic") or "commitment"),
-                "reason": "语义复核延后到最终结构化结果阶段执行。",
+                "preferredTitle": _preferred_commitment_title(item, str(item.get("triggerText") or "承诺")),
+                "reason": "AI 语义复核未返回结果，按明确承诺要求规则兜底生成。",
             }
-        action = str(decision.get("action") or "clue").strip().lower()
+        else:
+            action = "clue"
+            decision = {
+                "topicKey": str(item.get("topicKey") or item.get("topic") or "commitment"),
+                "reason": "AI 语义复核未返回结果，保留为人工确认线索。",
+            }
+
         topic_key = str(decision.get("topicKey") or item.get("topicKey") or item.get("topic") or "commitment").strip() or "commitment"
         if action == "ignore":
             continue
         if action == "generate":
-            if topic_key in generated_topics:
-                continue
-            generated_topics.add(topic_key)
             title = str(decision.get("preferredTitle") or "").strip() or _preferred_commitment_title(item, str(item.get("triggerText") or "承诺"))
+            title = _normalize_commitment_title_by_topic(topic_key, title, item)
             commitment_type = "disqualification" if topic_key == "disqualification" else "general_commitment"
-            letters.append(
-                {
-                    "id": f"CL-{len(letters) + 1:04d}",
-                    "artifactType": "commitment_letter",
-                    "title": title,
-                    "commitmentType": commitment_type,
-                    "status": "pending_review",
-                    **_copy_meta_fields(item),
-                    "topic": topic_key,
-                    "topicKey": topic_key,
-                    "triggerText": str(item.get("triggerText") or "承诺"),
-                    "triggerContext": str(item.get("triggerContext") or item.get("evidence") or item.get("value") or "").strip(),
-                    "docxPath": "",
-                    "workspacePath": "",
-                    "placementHint": "投标人需要说明的其他内容",
-                    "needsHumanReview": True,
-                    "riskFlags": ["semantic_review_passed", "legal_wording_review_required"],
-                    "previewType": "onlyoffice",
-                }
+            risk_flags = ["semantic_review_passed", "legal_wording_review_required"] if has_ai_decision else ["rule_fallback_generated", "legal_wording_review_required"]
+            _append_commitment_letter(
+                letters,
+                generated_topics,
+                item,
+                topic_key=topic_key,
+                title=title,
+                commitment_type=commitment_type,
+                risk_flags=risk_flags,
             )
             continue
 
-        clue_key = (
-            topic_key,
-            str(item.get("triggerContext") or item.get("evidence") or item.get("value") or "").strip(),
-        )
-        if clue_key in clue_topics:
-            continue
-        clue_topics.add(clue_key)
-        clues.append(
-            {
-                "id": f"CC-{len(clues) + 1:04d}",
-                "artifactType": "commitment_clue",
-                "title": str(item.get("title") or item.get("triggerText") or "承诺线索").strip() or "承诺线索",
-                "clueType": "pending_manual_review",
-                "status": "needs_review",
-                **_copy_meta_fields(item),
-                "topic": topic_key,
-                "topicKey": topic_key,
-                "triggerText": str(item.get("triggerText") or "承诺"),
-                "triggerContext": str(item.get("triggerContext") or item.get("evidence") or item.get("value") or "").strip(),
-                "recommendedAction": str(decision.get("reason") or "暂不自动生成，请人工确认是否需要单独承诺函/承诺书。").strip(),
-                "riskFlags": ["semantic_review_required"],
-            }
+        _append_commitment_clue(
+            clues,
+            clue_topics,
+            item,
+            topic_key=topic_key,
+            recommended_action=str(decision.get("reason") or "暂不自动生成，请人工确认是否需要单独承诺函/承诺书。").strip(),
+            risk_flags=["semantic_review_required"] if has_ai_decision else ["semantic_review_unavailable"],
         )
 
     return {"letters": letters, "clues": clues}
@@ -1111,12 +1236,15 @@ def _looks_like_section_heading(line: str) -> bool:
 def _scan_business_hint_items(documents: list[dict[str, Any]], texts_by_id: dict[str, str]) -> list[dict[str, Any]]:
     keywords = sorted(
         {
+            *[alias for spec in PROJECT_BASIC_FIELDS for alias in spec.aliases if spec.key != "technicalCommitment"],
             *[alias for spec in BUSINESS_RESPONSE_FIELDS for alias in spec.aliases],
             *[alias for spec in QUALIFICATION_SUPPORT_FIELDS for alias in spec.aliases],
             *[alias for spec in COMMITMENT_REQUIREMENT_FIELDS for alias in spec.aliases],
             "投标人不得存在下列情形之一",
             "不得存在下列情形",
             "投标人需要说明的其他内容",
+            "书面承诺",
+            "无条件承诺",
         },
         key=len,
         reverse=True,
@@ -1134,13 +1262,14 @@ def _scan_business_hint_items(documents: list[dict[str, Any]], texts_by_id: dict
             if _looks_like_section_heading(line):
                 current_section = line
             matched_keyword = next((keyword for keyword in keywords if keyword and keyword in line), "")
-            if not matched_keyword:
+            is_commitment_obligation = _line_has_explicit_commitment_obligation(line)
+            if not matched_keyword and not is_commitment_obligation:
                 continue
             dedupe_key = (document_id, line)
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
-            label, value = _split_label_value(line, matched_keyword)
+            label, value = _split_label_value(line, matched_keyword or "承诺要求")
             line_index = line_number - 1
             context_before = next(
                 (candidate for candidate in reversed(lines[max(0, line_index - 2):line_index]) if candidate),
@@ -1155,8 +1284,8 @@ def _scan_business_hint_items(documents: list[dict[str, Any]], texts_by_id: dict
                     "id": f"RAW-{len(items) + 1:04d}",
                     "type": "商务提示",
                     "category": "business_hint",
-                    "title": label or matched_keyword,
-                    "keyEntity": matched_keyword,
+                    "title": label or matched_keyword or "承诺要求",
+                    "keyEntity": matched_keyword or "承诺要求",
                     "keyValue": value,
                     "value": value or line,
                     "sourceFile": source_file,
@@ -1516,6 +1645,74 @@ def _build_business_commitment_clues(items: list[dict[str, Any]]) -> list[dict[s
     return _build_business_commitment_analysis(items)["clues"]
 
 
+BUSINESS_PROJECT_FACT_FIELD_SPECS: tuple[dict[str, Any], ...] = (
+    {"fieldKey": "projectName", "label": "项目名称", "required": True},
+    {"fieldKey": "tenderNo", "label": "招标编号", "required": True},
+    {"fieldKey": "tenderer", "label": "招标人", "required": True},
+    {"fieldKey": "managementUnit", "label": "管理单位", "required": False},
+    {"fieldKey": "bidSectionScale", "label": "标段规模", "required": False},
+    {"fieldKey": "deliveryPeriod", "label": "交货周期", "required": False},
+    {"fieldKey": "warrantyPeriod", "label": "质保期", "required": False},
+)
+
+
+def _build_business_project_fact_fields(
+    field_groups: dict[str, Any],
+    project_dates: dict[str, Any],
+) -> list[dict[str, Any]]:
+    project_basics = field_groups.get("projectBasics") if isinstance(field_groups.get("projectBasics"), list) else []
+    fields_by_key = {
+        str(field.get("key") or ""): field
+        for field in project_basics
+        if isinstance(field, dict)
+    }
+    fact_fields: list[dict[str, Any]] = []
+    for spec in BUSINESS_PROJECT_FACT_FIELD_SPECS:
+        field_key = str(spec["fieldKey"])
+        source = fields_by_key.get(field_key) or {}
+        value = str(source.get("value") or "").strip()
+        fact_fields.append(
+            {
+                "fieldKey": field_key,
+                "label": str(spec["label"]),
+                "value": value,
+                "category": "项目基础信息",
+                "status": "found" if value else "missing",
+                "required": bool(spec.get("required", False)),
+                "confidence": float(source.get("confidence") or (0.86 if value else 0.0)),
+                "sourceFile": str(source.get("sourceFile") or ""),
+                "sourceDocumentId": str(source.get("sourceDocumentId") or ""),
+                "section": str(source.get("section") or ""),
+                "evidence": str(source.get("evidence") or ""),
+                "evidenceLocation": str(source.get("evidenceLocation") or ""),
+            }
+        )
+
+    date_specs = (
+        ("bidStartDate", "投标起始日期", "startDate", False),
+        ("bidDeadline", "投标截止日期", "endDate", True),
+    )
+    for field_key, label, date_key, required in date_specs:
+        value = str(project_dates.get(date_key) or "").strip()
+        fact_fields.append(
+            {
+                "fieldKey": field_key,
+                "label": label,
+                "value": value,
+                "category": "投标时间信息",
+                "status": "found" if value else "missing",
+                "required": required,
+                "confidence": 0.78 if value else 0.0,
+                "sourceFile": "",
+                "sourceDocumentId": "",
+                "section": "",
+                "evidence": "",
+                "evidenceLocation": "",
+            }
+        )
+    return fact_fields
+
+
 def _transform_to_business_contract(
     project_id: str,
     payload: dict[str, Any],
@@ -1555,6 +1752,7 @@ def _transform_to_business_contract(
     _ = project_id
     commitment_letters = copy.deepcopy(commitment_analysis["letters"])
     commitment_clues = copy.deepcopy(commitment_analysis["clues"])
+    project_fact_fields = _build_business_project_fact_fields(field_groups, project_dates)
 
     result["structured"] = {
         "schemaVersion": profile.schema_version,
@@ -1572,6 +1770,7 @@ def _transform_to_business_contract(
         "appendices": appendices,
         "commitmentLetters": commitment_letters,
         "commitmentClues": commitment_clues,
+        "projectFactFields": project_fact_fields,
         "categoryCounts": {
             "商务评分": len(scoring.get("business") or []),
             "报价评分": len(scoring.get("price") or []),
@@ -1616,6 +1815,127 @@ def _business_tenderer_name_from_structured(structured: dict[str, Any]) -> str:
     return ""
 
 
+def _business_text_lines(text: str) -> list[tuple[int, str]]:
+    return [
+        (line_number, line.strip())
+        for line_number, line in enumerate(str(text or "").splitlines(), start=1)
+        if line.strip()
+    ]
+
+
+def _looks_like_business_template_stop_heading(text: str, profile: ParseProfile) -> bool:
+    normalized = str(text or "").strip().lstrip("#").strip()
+    if not normalized:
+        return False
+    if _is_scoring_appendix_heading(normalized):
+        return True
+    if profile.key == "business" and _is_business_major_section_heading(normalized):
+        return True
+    if _is_relevant_appendix_heading(normalized, profile):
+        return True
+    if profile.key == "business" and _looks_like_business_attachment_template_title(normalized, in_template_section=True):
+        return True
+    return bool(
+        re.match(r"^(?:第[一二三四五六七八九十百千0-9]+[章节条]|[一二三四五六七八九十]+[、.．]|[（(][一二三四五六七八九十0-9]+[）)])", normalized)
+        and any(
+            token in normalized
+            for token in (
+                "投标函", "法定代表人", "授权", "廉洁", "专用章", "投标价格", "开标价格",
+                "商务偏差", "货物规格", "供货范围", "保证金", "履约", "附件",
+                "资格", "证明", "其他内容", "承诺函", "承诺书",
+            )
+        )
+    )
+
+
+def _appendix_has_material_content(rows: list[list[str]], content_blocks: list[dict[str, Any]]) -> bool:
+    if rows:
+        return True
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "paragraph" and len(str(block.get("text") or "").strip()) >= 6:
+            return True
+        if block.get("type") == "table" and isinstance(block.get("rows"), list) and block.get("rows"):
+            return True
+    return False
+
+
+def _business_text_template_appendix_title(line: str, profile: ParseProfile) -> str:
+    title = str(line or "").strip().lstrip("#").strip()
+    if _is_relevant_appendix_heading(title, profile):
+        return title.strip(" #") or "商务附件模板"
+    match = re.match(
+        r"^(?:[一二三四五六七八九十0-9]+[、.．]\s*|[（(][一二三四五六七八九十0-9]+[）)]\s*)?"
+        r"(?P<title>(?:投标函|法定代表人(?:（单位负责人）)?身份证明|法定代表人授权书|法定代表人授权委托书|授权委托书|投标人廉洁自律承诺书|廉洁承诺书|投标专用章效力说明|投标价格表|开标价格表|商务偏差表|货物规格表|供货范围表|投标保证金|履约保证函格式承诺书|履约承诺书|否决项响应|投标人需要说明的其他内容|其他说明|附件\s*[0-9一二三四五六七八九十]+)[^：:。；;]*)",
+        title,
+    )
+    return (match.group("title").strip() if match else title) or "商务附件模板"
+
+
+def _extract_text_business_appendices(
+    project_id: str,
+    documents: list[dict[str, Any]],
+    texts_by_id: dict[str, str],
+    *,
+    start_index: int = 0,
+    profile: ParseProfile = BUSINESS_PARSE_PROFILE,
+) -> list[dict[str, Any]]:
+    if profile.key != "business":
+        return []
+    appendices: list[dict[str, Any]] = []
+    for document in documents:
+        document_id = str(document.get("id") or "")
+        source_file = str(document.get("name") or document_id or "招标文件")
+        source_path = Path(str(document.get("sourcePath") or ""))
+        if source_path.suffix.lower() in {".md", ".docx"}:
+            continue
+        lines = _business_text_lines(texts_by_id.get(document_id, ""))
+        in_template_section = False
+        for index, (line_number, line) in enumerate(lines):
+            if _is_business_template_section_heading(line):
+                in_template_section = True
+                continue
+            if in_template_section and _is_business_major_section_heading(line):
+                in_template_section = False
+            if not _looks_like_business_attachment_template_title(line, in_template_section=in_template_section):
+                continue
+            title = _business_text_template_appendix_title(line, profile)
+            content_blocks: list[dict[str, Any]] = []
+            for _, next_line in lines[index + 1:]:
+                if _is_business_template_section_heading(next_line):
+                    break
+                if _is_business_major_section_heading(next_line):
+                    break
+                if _looks_like_business_template_stop_heading(next_line, profile):
+                    break
+                content_blocks.append({"type": "paragraph", "text": next_line})
+                if len(content_blocks) >= 80:
+                    break
+            if not _appendix_has_material_content([], content_blocks):
+                continue
+            appendix_id = f"APPX-{start_index + len(appendices) + 1:04d}"
+            appendices.append(
+                materialize_appendix_docx(
+                    project_id,
+                    {
+                        "id": appendix_id,
+                        "title": title,
+                        "status": "generated",
+                        "sourceFile": source_file,
+                        "evidence": line,
+                        "evidenceLocation": f"L{line_number}",
+                        "rows": [],
+                        "contentBlocks": content_blocks,
+                        "rowCount": 0,
+                        "docxPath": "",
+                    },
+                    profile=profile,
+                )
+            )
+    return appendices
+
+
 def _sanitize_docx_name(value: str, fallback: str) -> str:
     cleaned = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
@@ -1633,28 +1953,48 @@ def _is_markdown_separator_row(cells: list[str]) -> bool:
     return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
 
 
-def _write_appendix_docx(path: Path, title: str, rows: list[list[str]]) -> None:
-    """Fallback: build a fresh docx from a flattened ``rows`` list.
+def _write_table_to_docx(doc: Document, rows: list[list[str]]) -> None:
+    column_count = max(len(row) for row in rows)
+    table = doc.add_table(rows=len(rows), cols=column_count)
+    table.style = "Table Grid"
+    for row_index, row in enumerate(rows):
+        for col_index in range(column_count):
+            table.cell(row_index, col_index).text = row[col_index] if col_index < len(row) else ""
 
-    Used only when no source docx is available to slice from (for example when
-    the RFP was supplied as Markdown or PDF). This path loses any merge/style
-    metadata that the source might have had, by construction. Prefer
-    :func:`_slice_appendix_from_source` whenever the source is a real docx so
-    the original ``<w:tbl>`` (and its ``<w:gridSpan>`` / ``<w:vMerge>``) is
-    preserved verbatim."""
 
+def _write_appendix_docx(
+    path: Path,
+    title: str,
+    rows: list[list[str]],
+    content_blocks: list[dict[str, Any]] | None = None,
+) -> None:
+    """Fallback: build a fresh docx from flattened rows/content blocks.
+
+    Source docx slicing is preferred when available because it preserves merged
+    cells and styles. Business attachments can additionally pass content blocks
+    so template body text is not reduced to a title-only Word file.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = Document()
     doc.add_heading(title, level=1)
-    if rows:
-        column_count = max(len(row) for row in rows)
-        table = doc.add_table(rows=len(rows), cols=column_count)
-        table.style = "Table Grid"
-        for row_index, row in enumerate(rows):
-            for col_index in range(column_count):
-                table.cell(row_index, col_index).text = row[col_index] if col_index < len(row) else ""
+    wrote_content = False
+    for block in content_blocks or []:
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type") or "")
+        if block_type == "paragraph":
+            block_text = str(block.get("text") or "").strip()
+            if block_text:
+                doc.add_paragraph(block_text)
+                wrote_content = True
+        elif block_type == "table":
+            block_rows = block.get("rows") if isinstance(block.get("rows"), list) else []
+            if block_rows:
+                _write_table_to_docx(doc, block_rows)
+                wrote_content = True
+    if rows and not wrote_content:
+        _write_table_to_docx(doc, rows)
     doc.save(path)
-
 
 def _build_appendix_slice_state(source_docx: Path) -> dict[str, Any] | None:
     """Read ``source_docx`` once and return cached state for repeated calls
@@ -1940,6 +2280,7 @@ def materialize_appendix_docx(project_id: str, appendix: dict[str, Any], *, prof
     appendix_id = str(item.get("id") or "").strip() or "APPX-0000"
     title = str(item.get("title") or item.get("evidence") or "附表").strip() or "附表"
     rows = item.get("rows") if isinstance(item.get("rows"), list) else []
+    content_blocks = item.get("contentBlocks") if isinstance(item.get("contentBlocks"), list) else []
     output_dir = _appendix_output_dir(project_id)
     workspace_output_dir = _workspace_appendix_output_dir(project_id, profile)
     project_workspace_root = settings.documents_dir / project_id
@@ -1960,9 +2301,10 @@ def materialize_appendix_docx(project_id: str, appendix: dict[str, Any], *, prof
     else:
         workspace_path = str(item.get("workspacePath") or f"{profile.workspace_dirname}/appendices/{existing_path.name}")
 
-    if not existing_path.exists():
+    should_rewrite = profile.key == "business" and _appendix_has_material_content(rows, content_blocks)
+    if should_rewrite or not existing_path.exists():
         sliced = False
-        if isinstance(slice_info, dict):
+        if not should_rewrite and isinstance(slice_info, dict):
             source_path = Path(str(slice_info.get("sourcePath") or ""))
             keep_start_raw = slice_info.get("keepStart")
             keep_end_raw = slice_info.get("keepEnd")
@@ -1980,7 +2322,7 @@ def materialize_appendix_docx(project_id: str, appendix: dict[str, Any], *, prof
                     source_state=source_state if isinstance(source_state, dict) else None,
                 )
         if not sliced:
-            _write_appendix_docx(existing_path, title, rows)
+            _write_appendix_docx(existing_path, title, rows, content_blocks)
 
     item.update(
         {
@@ -1988,6 +2330,7 @@ def materialize_appendix_docx(project_id: str, appendix: dict[str, Any], *, prof
             "title": title,
             "status": "generated",
             "rows": rows,
+            "contentBlocks": content_blocks,
             "rowCount": len(rows),
             "docxPath": str(existing_path),
             "workspacePath": workspace_path,
@@ -2086,11 +2429,26 @@ def _is_toc_page_number_appendix(item: dict[str, Any], candidates: list[dict[str
     return False
 
 
-def _dedupe_appendix_page_number_artifacts(appendices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _dedupe_appendix_page_number_artifacts(
+    appendices: list[dict[str, Any]],
+    *,
+    include_attachments: bool = False,
+    include_business_templates: bool = False,
+) -> list[dict[str, Any]]:
     candidates = [
         item
         for item in appendices
-        if isinstance(item, dict) and _is_appendix_heading(str(item.get("title") or item.get("evidence") or ""))
+        if isinstance(item, dict) and (
+            _looks_like_business_attachment_template_title(
+                str(item.get("title") or item.get("evidence") or ""),
+                in_template_section=True,
+            )
+            if include_business_templates
+            else _is_appendix_heading(
+                str(item.get("title") or item.get("evidence") or ""),
+                include_attachments=include_attachments,
+            )
+        )
     ]
     return [item for item in candidates if not _is_toc_page_number_appendix(item, candidates)]
 
@@ -2112,8 +2470,20 @@ def _prepare_appendix_outputs(
     path so the materializer sees a valid ``docxPath`` and skips regeneration."""
 
     prepared: list[dict[str, Any]] = []
-    for index, appendix in enumerate(_dedupe_appendix_page_number_artifacts(appendices), start=1):
+    for index, appendix in enumerate(
+        _dedupe_appendix_page_number_artifacts(
+            appendices,
+            include_attachments=profile.key == "business",
+            include_business_templates=profile.key == "business",
+        ),
+        start=1,
+    ):
         item = copy.deepcopy(appendix)
+        if profile.key == "business":
+            rows = item.get("rows") if isinstance(item.get("rows"), list) else []
+            content_blocks = item.get("contentBlocks") if isinstance(item.get("contentBlocks"), list) else []
+            if not _appendix_has_material_content(rows, content_blocks):
+                continue
         if renumber:
             new_id = f"APPX-{index:04d}"
             old_id = str(item.get("id") or "").strip()
@@ -2219,13 +2589,122 @@ def materialize_parse_business_commitment_letter_docx_assets(
     return payload
 
 
-def _is_appendix_heading(text: str) -> bool:
+def _is_appendix_heading(text: str, *, include_attachments: bool = False) -> bool:
     normalized = str(text or "").strip().lstrip("#").strip()
-    return bool(re.match(r"^(?:技术)?[附副]表(?:\s*[A-Za-z0-9一二三四五六七八九十]+)?(?:[：:、.．\s]|$)", normalized))
+    if re.match(r"^(?:技术)?[附副]表(?:\s*[A-Za-z0-9一二三四五六七八九十]+)?(?:[：:、.．\s]|$)", normalized):
+        return True
+    if include_attachments and re.match(r"^附件\s*[A-Za-z0-9一二三四五六七八九十]+(?:[：:、.．\s]|$)", normalized):
+        return True
+    return False
 
 
 def _is_scoring_appendix_heading(text: str) -> bool:
     return any(keyword in text for keyword in ("评分标准", "评分细则", "评标办法", "符合性审查", "投标报价评分", "度电成本评分"))
+
+
+BUSINESS_ATTACHMENT_TEMPLATE_TOPICS = (
+    "投标函", "法定代表人", "单位负责人", "身份证明", "授权书", "授权委托书",
+    "廉洁", "投标专用章", "效力说明", "投标价格", "开标价格", "商务偏差",
+    "货物规格", "规格表", "供货范围", "投标保证金", "履约保证函", "履约承诺",
+    "资格证明", "合格投标人", "资格履行合同", "业绩情况", "业绩表",
+    "财务状况", "制造商授权", "联合体协议", "分包", "其他内容", "其他说明",
+    "否决项", "承诺书", "承诺函",
+)
+
+BUSINESS_ATTACHMENT_TEMPLATE_CONTEXT_TOKENS = (
+    "投标文件格式",
+    "响应文件格式",
+    "商务文件格式",
+    "投标文件组成",
+    "第六章",
+    "第6章",
+)
+
+
+def _is_business_template_section_heading(text: str) -> bool:
+    normalized = str(text or "").strip().lstrip("#").strip()
+    if not normalized:
+        return False
+    if any(token in normalized for token in BUSINESS_ATTACHMENT_TEMPLATE_CONTEXT_TOKENS[:4]):
+        return True
+    return bool(re.match(r"^第[六6]章", normalized)) and any(
+        token in normalized for token in ("格式", "投标文件", "响应文件", "商务文件")
+    )
+
+
+def _is_business_major_section_heading(text: str) -> bool:
+    normalized = str(text or "").strip().lstrip("#").strip()
+    return bool(re.match(r"^第[一二三四五六七八九十0-9]+章", normalized))
+
+
+def _has_business_attachment_topic(text: str) -> bool:
+    normalized = str(text or "").strip()
+    return any(keyword in normalized for keyword in BUSINESS_ATTACHMENT_TEMPLATE_TOPICS)
+
+
+def _looks_like_business_attachment_template_title(text: str, *, in_template_section: bool = False) -> bool:
+    normalized = str(text or "").strip().lstrip("#").strip()
+    if _is_scoring_appendix_heading(normalized):
+        return False
+    has_appendix_prefix = _is_appendix_heading(normalized, include_attachments=True)
+    has_template_suffix = any(token in normalized for token in ("格式", "模板", "样式"))
+    has_response_format_title = _is_business_template_section_heading(normalized)
+    if has_response_format_title:
+        return False
+    has_numbered_business_prefix = bool(
+        re.match(r"^(?:[一二三四五六七八九十0-9]+[、.．]|[（(][一二三四五六七八九十0-9]+[）)])", normalized)
+    )
+    has_business_topic = _has_business_attachment_topic(normalized)
+    if has_appendix_prefix and (has_business_topic or has_template_suffix or in_template_section):
+        return True
+    if in_template_section and has_business_topic and (has_numbered_business_prefix or has_template_suffix or len(normalized) <= 48):
+        return True
+    return has_business_topic and has_template_suffix
+
+
+def _is_relevant_appendix_heading(text: str, profile: ParseProfile) -> bool:
+    if profile.key == "business":
+        return _looks_like_business_attachment_template_title(text)
+    return _is_appendix_heading(text)
+
+
+def _next_appendix_heading_index(blocks: list[dict[str, Any]], start_index: int, profile: ParseProfile) -> int:
+    in_template_section = False
+    if profile.key == "business":
+        for previous in range(max(0, start_index - 80), start_index + 1):
+            block = blocks[previous]
+            if block.get("type") == "paragraph" and _is_business_template_section_heading(str(block.get("text") or "")):
+                in_template_section = True
+                break
+    for lookahead in range(start_index + 1, len(blocks)):
+        next_block = blocks[lookahead]
+        if next_block.get("type") != "paragraph":
+            continue
+        next_text = str(next_block.get("text") or "")
+        if _is_relevant_appendix_heading(next_text, profile):
+            return lookahead
+        if profile.key == "business" and _is_business_major_section_heading(next_text):
+            return lookahead
+        if profile.key == "business" and _looks_like_business_attachment_template_title(
+            next_text,
+            in_template_section=in_template_section,
+        ):
+            return lookahead
+    return len(blocks)
+
+
+def _slice_content_blocks(blocks: list[dict[str, Any]], start_index: int, end_index: int) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = []
+    for block in blocks[start_index + 1:end_index]:
+        if block.get("type") == "paragraph":
+            text = str(block.get("text") or "").strip()
+            if text:
+                content.append({"type": "paragraph", "text": text})
+        elif block.get("type") == "table":
+            rows = block.get("rows") if isinstance(block.get("rows"), list) else []
+            if rows:
+                content.append({"type": "table", "rows": rows})
+    return content
 
 
 def _appendix_title_has_trailing_page_number(text: str) -> bool:
@@ -2262,6 +2741,7 @@ def _extract_markdown_appendices(
     texts_by_id: dict[str, str],
     *,
     start_index: int = 0,
+    profile: ParseProfile = TECHNICAL_PARSE_PROFILE,
 ) -> list[dict[str, Any]]:
     appendices: list[dict[str, Any]] = []
     for document in documents:
@@ -2272,9 +2752,23 @@ def _extract_markdown_appendices(
             continue
         lines = texts_by_id.get(document_id, "").splitlines()
         index = 0
+        in_template_section = False
         while index < len(lines):
             line = lines[index].strip()
-            if not _is_appendix_heading(line):
+            if profile.key == "business" and _is_business_template_section_heading(line):
+                in_template_section = True
+                index += 1
+                continue
+            if profile.key == "business" and in_template_section and _is_business_major_section_heading(line):
+                in_template_section = False
+            if profile.key == "business":
+                is_heading = _looks_like_business_attachment_template_title(
+                    line,
+                    in_template_section=in_template_section,
+                )
+            else:
+                is_heading = _is_relevant_appendix_heading(line, profile)
+            if not is_heading:
                 index += 1
                 continue
             if _is_scoring_appendix_heading(line):
@@ -2284,10 +2778,46 @@ def _extract_markdown_appendices(
             title = line.strip(" #")
             table_start = index + 1
             while table_start < len(lines) and not MARKDOWN_TABLE_LINE_PATTERN.match(lines[table_start]):
-                if lines[table_start].strip() and not _is_appendix_heading(lines[table_start]):
+                if profile.key != "business" and lines[table_start].strip() and not _is_relevant_appendix_heading(lines[table_start], profile):
+                    break
+                if (
+                    profile.key == "business"
+                    and lines[table_start].strip()
+                    and (
+                        _is_business_major_section_heading(lines[table_start])
+                        or _looks_like_business_attachment_template_title(
+                            lines[table_start],
+                            in_template_section=in_template_section,
+                        )
+                    )
+                ):
                     break
                 table_start += 1
+            if profile.key == "business":
+                next_heading = len(lines)
+                for lookahead in range(index + 1, len(lines)):
+                    lookahead_line = lines[lookahead].strip()
+                    if (
+                        _is_business_template_section_heading(lookahead_line)
+                        or _is_business_major_section_heading(lookahead_line)
+                        or _looks_like_business_attachment_template_title(
+                            lookahead_line,
+                            in_template_section=in_template_section,
+                        )
+                    ):
+                        next_heading = lookahead
+                        break
+            else:
+                next_heading = table_start + 1 if table_start < len(lines) else index + 1
             if table_start >= len(lines) or not MARKDOWN_TABLE_LINE_PATTERN.match(lines[table_start]):
+                content_blocks = [
+                    {"type": "paragraph", "text": text.strip()}
+                    for text in lines[index + 1:next_heading]
+                    if text.strip()
+                ]
+                if profile.key == "business" and not _appendix_has_material_content([], content_blocks):
+                    index = max(index + 1, next_heading)
+                    continue
                 appendix_id = f"APPX-{start_index + len(appendices) + 1:04d}"
                 appendices.append(materialize_appendix_docx(
                     project_id,
@@ -2299,20 +2829,38 @@ def _extract_markdown_appendices(
                         "evidence": line,
                         "evidenceLocation": f"L{index + 1}",
                         "rows": [],
+                        "contentBlocks": content_blocks,
                         "rowCount": 0,
                         "docxPath": "",
                     }
                 ))
-                index += 1
+                index = max(index + 1, next_heading)
                 continue
 
             rows: list[list[str]] = []
             table_end = table_start
-            while table_end < len(lines) and MARKDOWN_TABLE_LINE_PATTERN.match(lines[table_end]):
+            table_limit = next_heading if profile.key == "business" else len(lines)
+            while table_end < table_limit and MARKDOWN_TABLE_LINE_PATTERN.match(lines[table_end]):
                 cells = _parse_markdown_table_row(lines[table_end])
                 if not _is_markdown_separator_row(cells):
                     rows.append(cells)
                 table_end += 1
+            content_blocks = [
+                {"type": "paragraph", "text": text.strip()}
+                for text in lines[index + 1:table_start]
+                if text.strip()
+            ]
+            if rows:
+                content_blocks.append({"type": "table", "rows": rows})
+            if profile.key == "business":
+                content_blocks.extend(
+                    {"type": "paragraph", "text": text.strip()}
+                    for text in lines[table_end:next_heading]
+                    if text.strip()
+                )
+            if profile.key == "business" and not _appendix_has_material_content(rows, content_blocks):
+                index = max(table_end, next_heading)
+                continue
 
             appendix_id = f"APPX-{start_index + len(appendices) + 1:04d}"
             appendices.append(materialize_appendix_docx(
@@ -2325,11 +2873,12 @@ def _extract_markdown_appendices(
                     "evidence": line,
                     "evidenceLocation": f"L{index + 1}",
                     "rows": rows,
+                    "contentBlocks": content_blocks,
                     "rowCount": len(rows),
                     "docxPath": "",
                 }
             ))
-            index = table_end
+            index = max(table_end, next_heading)
     return appendices
 
 
@@ -2378,6 +2927,7 @@ def _extract_docx_appendices(
     documents: list[dict[str, Any]],
     *,
     start_index: int = 0,
+    profile: ParseProfile = TECHNICAL_PARSE_PROFILE,
 ) -> list[dict[str, Any]]:
     appendices: list[dict[str, Any]] = []
     for document in documents:
@@ -2393,31 +2943,47 @@ def _extract_docx_appendices(
         # + parse takes seconds, freezing the request for minutes).
         source_state = _build_appendix_slice_state(source_path)
         used_tables: set[int] = set()
+        in_template_section = False
         for index, block in enumerate(blocks):
             if block.get("type") != "paragraph":
                 continue
             line = str(block.get("text") or "").strip()
-            if not _is_appendix_heading(line):
+            if profile.key == "business" and _is_business_template_section_heading(line):
+                in_template_section = True
+                continue
+            if profile.key == "business" and in_template_section and _is_business_major_section_heading(line):
+                in_template_section = False
+            if profile.key == "business":
+                is_heading = _looks_like_business_attachment_template_title(
+                    line,
+                    in_template_section=in_template_section,
+                )
+            else:
+                is_heading = _is_relevant_appendix_heading(line, profile)
+            if not is_heading:
                 continue
             if _is_scoring_appendix_heading(line):
                 continue
-            if _is_docx_appendix_toc_artifact(blocks, index):
+            if profile.key != "business" and _is_docx_appendix_toc_artifact(blocks, index):
                 continue
 
             title = line.strip(" #") or "附表"
             table_index = -1
             rows: list[list[str]] = []
             table_body_index: int | None = None
-            for lookahead in range(index + 1, min(len(blocks), index + 8)):
+            next_heading_index = _next_appendix_heading_index(blocks, index, profile)
+            search_limit = next_heading_index if profile.key == "business" else min(len(blocks), index + 8)
+            for lookahead in range(index + 1, min(search_limit, index + 12)):
                 next_block = blocks[lookahead]
-                if next_block.get("type") == "paragraph" and _is_appendix_heading(str(next_block.get("text") or "")):
-                    break
                 if next_block.get("type") == "table" and lookahead not in used_tables:
                     table_index = lookahead
                     rows = next_block.get("rows") or []
                     raw_body_index = next_block.get("body_index")
                     table_body_index = raw_body_index if isinstance(raw_body_index, int) else None
                     break
+            content_blocks = _slice_content_blocks(blocks, index, next_heading_index)
+            if profile.key == "business" and not _appendix_has_material_content(rows, content_blocks):
+                continue
 
             appendix_id = f"APPX-{start_index + len(appendices) + 1:04d}"
             heading_body_index_raw = block.get("body_index")
@@ -2434,6 +3000,7 @@ def _extract_docx_appendices(
                         "evidence": line,
                         "evidenceLocation": f"B{index + 1}",
                         "rows": [],
+                        "contentBlocks": content_blocks,
                         "rowCount": 0,
                         "docxPath": "",
                     }
@@ -2441,11 +3008,6 @@ def _extract_docx_appendices(
                 continue
 
             used_tables.add(table_index)
-            # If we have body indices for both the heading and the table, attach
-            # slice metadata so materialize_appendix_docx can cut the original
-            # docx instead of rebuilding from rows. The key is private (leading
-            # underscore) and gets popped by the materializer before the dict is
-            # returned, so it never leaks into JSON / DB.
             appendix_payload: dict[str, Any] = {
                 "id": appendix_id,
                 "title": title,
@@ -2454,18 +3016,19 @@ def _extract_docx_appendices(
                 "evidence": line,
                 "evidenceLocation": f"B{index + 1}",
                 "rows": rows,
+                "contentBlocks": content_blocks,
                 "rowCount": len(rows),
                 "docxPath": "",
             }
-            if heading_body_index is not None and table_body_index is not None:
+            if (
+                profile.key != "business"
+                and heading_body_index is not None
+                and table_body_index is not None
+            ):
                 appendix_payload["_slice"] = {
                     "sourcePath": str(source_path),
                     "keepStart": heading_body_index,
                     "keepEnd": table_body_index,
-                    # ``sourceState`` carries an already-parsed lxml tree of
-                    # the source's word/document.xml so the slicer doesn't
-                    # re-parse a 20 MB docx per appendix. Stays in-memory
-                    # only — popped + dropped before the dict is serialized.
                     "sourceState": source_state,
                 }
             appendices.append(materialize_appendix_docx(project_id, appendix_payload))
@@ -2642,6 +3205,8 @@ def parse_tender_documents(
             text = extract_docx_text(file_path)
         elif extension == ".md":
             text = file_path.read_text(encoding="utf-8", errors="replace")
+        elif extension == ".txt":
+            text = file_path.read_text(encoding="utf-8", errors="replace")
         elif extension == ".pdf":
             text, pdf_meta = extract_pdf_text(file_path)
             page_count = pdf_meta["pageCount"]
@@ -2709,8 +3274,18 @@ def parse_tender_documents(
     combined_text_path.write_text(combined_text, encoding="utf-8")
 
     structured_result = _extract_structured_requirements(documents, texts_by_id)
-    appendices = _extract_markdown_appendices(project_id, documents, texts_by_id)
-    appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices)))
+    appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
+    appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices), profile=profile))
+    if profile.key == "business":
+        appendices.extend(
+            _extract_text_business_appendices(
+                project_id,
+                documents,
+                texts_by_id,
+                start_index=len(appendices),
+                profile=profile,
+            )
+        )
     appendices = _prepare_appendix_outputs(project_id, appendices, renumber=True, profile=profile)
     structured_result["structured"]["appendices"] = appendices
     if profile.key == "business":

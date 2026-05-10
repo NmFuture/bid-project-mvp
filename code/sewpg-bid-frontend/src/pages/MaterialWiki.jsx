@@ -220,13 +220,12 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   const handleDeleteNode = async (nodeId = selectedNodeId, title = selectedNode?.title || '') => {
-    if (activeBidType !== '技术标') return
     if (!nodeId) return
     const ok = window.confirm(`确认删除 Wiki 节点：${title || nodeId} ？\n\n该节点下的子节点、正文和附件也会一起删除。`)
     if (!ok) return
     setDeletingNode(true)
     try {
-      const payload = await materialsAPI.wiki.delete(nodeId, { bidType: '技术标' })
+      const payload = await materialsAPI.wiki.delete(nodeId, { bidType: activeBidType })
       applyPayload(payload)
       showToast(payload?.message || 'Wiki 节点删除成功')
     } catch (e) {
@@ -253,20 +252,16 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   const handleRefreshWiki = async () => {
-    if (activeBidType !== '技术标') {
-      showToast('商务标 Wiki 当前先保留为空，暂不刷新。', 'error')
-      return
-    }
-    const ok = window.confirm('确认刷新技术标 Wiki？系统会重新读取当前素材库，并替换自动生成的素材总表、章节映射、素材卡片、待填写清单和使用规则。')
+    const ok = window.confirm(`确认刷新${activeBidType} Wiki？系统会重新读取当前素材库，并替换自动生成的 Wiki 节点。`)
     if (!ok) return
     setRefreshingWiki(true)
     try {
       const payload = await materialsAPI.wiki.bootstrap({
         mode: 'refresh',
-        bidType: '技术标',
+        bidType: activeBidType,
       })
       applyPayload(payload)
-      showToast(payload?.generation?.summary || payload?.message || '技术标 Wiki 已刷新')
+      showToast(payload?.generation?.summary || payload?.message || `${activeBidType} Wiki 已刷新`)
     } catch (e) {
       console.error(e)
       showToast(safeMessage(e, '刷新 Wiki 失败，请稍后重试。'), 'error')
@@ -276,20 +271,16 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   const handleRebuildWiki = async () => {
-    if (activeBidType !== '技术标') {
-      showToast('商务标 Wiki 当前先保留为空，暂不重建。', 'error')
-      return
-    }
-    const ok = window.confirm('确认重建技术标 Wiki？现有自动生成根树会被重新生成。')
+    const ok = window.confirm(`确认重建${activeBidType} Wiki？现有自动生成根树会被重新生成。`)
     if (!ok) return
     setRebuildingWiki(true)
     try {
       const payload = await materialsAPI.wiki.bootstrap({
         mode: 'replace',
-        bidType: '技术标',
+        bidType: activeBidType,
       })
       applyPayload(payload)
-      showToast(payload?.generation?.summary || payload?.message || '技术标 Wiki 已重建')
+      showToast(payload?.generation?.summary || payload?.message || `${activeBidType} Wiki 已重建`)
     } catch (e) {
       console.error(e)
       showToast(safeMessage(e, '重建 Wiki 失败，请稍后重试。'), 'error')
@@ -329,13 +320,12 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   const handleDeleteAttachment = async (attachment) => {
-    if (activeBidType !== '技术标') return
     if (!attachment?.id) return
     const ok = window.confirm(`确认删除附件：${attachment.name} ？`)
     if (!ok) return
     setDeletingAttachmentId(attachment.id)
     try {
-      const payload = await materialsAPI.wiki.deleteAttachment(attachment.id, { bidType: '技术标' })
+      const payload = await materialsAPI.wiki.deleteAttachment(attachment.id, { bidType: activeBidType })
       applyPayload(payload)
       showToast(payload?.message || '附件删除成功')
     } catch (e) {
@@ -474,39 +464,6 @@ export default function MaterialWiki({ showToast = () => {} }) {
         description={error}
         onRetry={() => loadData()}
       />
-    )
-  }
-
-  if (activeBidType !== '技术标') {
-    return (
-      <div className="flex flex-col gap-6 animate-fade-in">
-        <MaterialsViewSwitch
-          active="wiki"
-          activeBidType={activeBidType}
-          lockedBidType={lockedBidType}
-          onBidTypeChange={handleBidTypeChange}
-          title="商务标 Wiki"
-          subtitle="商务标 Wiki 先保留为空，当前不生成、不展示业务内容。"
-          meta={(
-            <div className="flex flex-wrap gap-2 text-xs xl:justify-end">
-              <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
-                标类 商务标
-              </span>
-              <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
-                状态 预留
-              </span>
-            </div>
-          )}
-          basePath={materialsBasePath}
-        />
-        <div className="rounded-xl border border-surface-container-high bg-surface-container-lowest px-6 py-12 text-center">
-          <span className="material-symbols-outlined text-4xl text-outline">request_quote</span>
-          <h2 className="mt-4 text-lg font-semibold text-on-surface">商务标 Wiki 暂不启用</h2>
-          <p className="mt-2 text-sm text-on-surface-variant">
-            当前只维护技术标原始素材和技术标 Wiki；商务标后续会使用独立 Skill 构建。
-          </p>
-        </div>
-      </div>
     )
   }
 

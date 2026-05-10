@@ -2381,17 +2381,25 @@ class MaterialStore:
             async def upsert_node(spec: dict[str, Any], parent: WikiNode, *, sort_order: int = 0) -> WikiNode:
                 title = safe_segment(str(spec.get("title") or "未命名节点"), "未命名节点")
                 result = await session.execute(
-                    select(WikiNode).where(WikiNode.parent_id == parent.id, WikiNode.title == title)
+                    select(WikiNode)
+                    .where(WikiNode.parent_id == parent.id, WikiNode.title == title)
+                    .order_by(desc(WikiNode.created_at), desc(WikiNode.id))
                 )
-                node = result.scalar_one_or_none()
+                duplicate_nodes = result.scalars().all()
+                node = duplicate_nodes[0] if duplicate_nodes else None
                 if node is None:
                     node = await create_node(spec, parent, sort_order=sort_order)
                 else:
+                    for duplicate_node in duplicate_nodes[1:]:
+                        await purge_wiki_root(duplicate_node)
                     node.path = f"{parent.path}/{title}".lstrip("/")
                     node.bid_types = list(spec.get("applicableTypes") or node.bid_types or ["通用"])
                     node.sort_order = sort_order
                     doc_result = await session.execute(select(WikiDoc).where(WikiDoc.node_id == node.id))
-                    doc = doc_result.scalar_one_or_none()
+                    docs = doc_result.scalars().all()
+                    doc = docs[0] if docs else None
+                    for duplicate_doc in docs[1:]:
+                        await session.delete(duplicate_doc)
                     if doc is None:
                         session.add(
                             WikiDoc(

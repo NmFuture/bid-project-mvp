@@ -478,6 +478,27 @@ class DirectoryGenerationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "sections"):
                 generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
+    def test_generate_business_outline_falls_back_to_local_business_runner(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result("商务标")
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=RuntimeError("offline business outline"),
+        ):
+            payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        work_dir = business_workspace_dir(project_id) / "s2_toc_workdir"
+        self.assertEqual(payload["status"], "completed")
+        self.assertTrue((work_dir / "outline.json").exists())
+        self.assertTrue(Path(payload["opencodeOutput"]["tocJsonPath"]).exists())
+        toc = json.loads(Path(payload["opencodeOutput"]["tocJsonPath"]).read_text(encoding="utf-8"))
+        self.assertEqual(toc["schema_version"], "bid-toc-json-v1")
+        self.assertTrue(toc["items"])
+        self.assertTrue(all(item.get("source") == "business_outline" for item in toc["items"]))
+        self.assertTrue(all("number" in item for item in toc["items"]))
+
     def test_generate_business_outline_rejects_missing_section_number(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
 
@@ -505,21 +526,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "sections\\[0\\]\\.number"):
                 generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
-    def test_generate_business_outline_does_not_fallback_to_local_business_runner(self) -> None:
-        from app.services.outline_generation import generate_outline_for_project
-
-        project_id = self._prepare_project_with_parse_result("商务标")
-
-        with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
-            side_effect=RuntimeError("offline business outline"),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "business-bid-outline"):
-                generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
-
-        self.assertFalse((business_workspace_dir(project_id) / "s2_toc_workdir" / "outline.json").exists())
-
-    def test_business_outline_runner_only_prepares_skill_inputs(self) -> None:
+    def test_business_outline_runner_prepares_inputs_and_fallback_outline(self) -> None:
         import importlib.util
         import sys
 
@@ -559,11 +566,18 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         self.assertTrue((work_dir / "history_bid_outline_inputs.json").exists())
         self.assertTrue((work_dir / "tender_map_inputs.json").exists())
-        self.assertFalse((work_dir / "outline.json").exists())
+        outline_path = work_dir / "outline.json"
+        self.assertTrue(outline_path.exists())
+        outline = json.loads(outline_path.read_text(encoding="utf-8"))
+        self.assertEqual(outline["schema_version"], "business_bid_outline.v1")
+        self.assertTrue(outline["sections"])
+        self.assertTrue(all("number" in section for section in outline["sections"]))
+        self.assertEqual(outline["outline_source"]["source_type"], "local_runner_fallback")
         self.assertFalse((work_dir / "toc.json").exists())
         self.assertFalse((work_dir / "toc_evidence.json").exists())
         self.assertFalse((work_dir / "agent_review_input.json").exists())
         self.assertEqual(result["summary"]["schema_version"], "business-outline-inputs-v1")
+        self.assertEqual(result["summary"]["businessOutlineFile"], str(outline_path))
         self.assertEqual(result["summary"]["historyBidOutlineInputsFile"], str(work_dir / "history_bid_outline_inputs.json"))
         self.assertEqual(result["summary"]["tenderMapInputsFile"], str(work_dir / "tender_map_inputs.json"))
 

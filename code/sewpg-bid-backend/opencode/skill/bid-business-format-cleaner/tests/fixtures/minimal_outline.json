@@ -1,0 +1,27 @@
+{
+  "schema_version": "business_bid_outline.v1",
+  "sections": [
+    {
+      "id": "sec-001",
+      "title": "投标函",
+      "number": "一、",
+      "level": 1,
+      "children": [
+        {
+          "id": "sec-001-001",
+          "title": "法定代表人授权委托书",
+          "number": "1.1",
+          "level": 2,
+          "children": []
+        },
+        {
+          "id": "sec-001-002",
+          "title": "投标保证金",
+          "number": "1.2",
+          "level": 2,
+          "children": []
+        }
+      ]
+    }
+  ]
+}

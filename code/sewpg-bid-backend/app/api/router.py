@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import audit, auth, coverage, dashboard, directory, document, export, gaps, generation, materials, ocr, outline, parse, projects, review, settings, system
+from app.api.routes import audit, auth, business_gaps, coverage, dashboard, directory, document, export, gaps, generation, materials, ocr, outline, parse, projects, review, settings, system
 
 api_router = APIRouter()
 api_router.include_router(system.router)
@@ -11,6 +11,7 @@ api_router.include_router(parse.router)
 api_router.include_router(directory.router)
 api_router.include_router(outline.router)
 api_router.include_router(gaps.router)
+api_router.include_router(business_gaps.router)
 api_router.include_router(review.router)
 api_router.include_router(generation.router)
 api_router.include_router(coverage.router)

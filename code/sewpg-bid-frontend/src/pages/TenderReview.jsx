@@ -150,30 +150,24 @@ const BUSINESS_REVIEW_CONFIG = {
   resultTitle: '商务标结构化解析结果',
   pendingParseHint: '请点击上方“上传并解析”开始提取商务标结构化要求。',
   noSourceHint: '当前项目尚未上传商务招标文件。',
-  appendixTitle: '商务附表与附件产物',
-  appendixSwitchHint: '商务附表 Word 已生成，可切换预览。',
-  appendixEmptyHint: '未识别到商务附表要求。',
+  appendixTitle: '商务附件模板产物',
+  appendixSwitchHint: '已提取招标文件中的商务附件模板，可切换预览并审核；确认参与投标后自动同步至项目素材库。',
+  appendixEmptyHint: '未识别到可保存的商务附件模板。',
   scoringGroups: [
     ['business', '商务评分标准'],
     ['price', '投标报价评分标准'],
     ['compliance', '符合性审查标准'],
   ],
   fallbackScoringTitle: '商务评分细则',
-  fieldGroupSections: [
-    ['projectBasics', '项目基础信息'],
-    ['businessResponse', '商务响应要求'],
-    ['qualificationSupport', '资格与支撑要求'],
-    ['commitmentRequirements', '承诺事项要求'],
-  ],
-  presenceTitle: '商务要求覆盖情况',
-  buildPresenceRows: (presence = {}) => ([
-    { label: '资格文件要求', item: presence.qualificationDocuments },
-    { label: '业绩证明要求', item: presence.performanceDocuments },
-    { label: '偏差响应要求', item: presence.deviationResponse },
-    { label: '投标保证金要求', item: presence.bidSecurity },
-    { label: '其他承诺要求', item: presence.otherCommitments },
-    { label: '否决项承诺要求', item: presence.disqualificationClauses },
-  ]),
+  fieldGroupSections: [],
+  showPresence: false,
+  showCommitmentClues: false,
+  showEvidenceDetails: false,
+  showEvidenceLocationColumn: false,
+  showApproveBusinessScoring: true,
+  showApproveAppendices: true,
+  showApproveCommitmentLetters: true,
+  buildPresenceRows: () => [],
 }
 
 const commitmentTypeLabel = (value = '') => {
@@ -189,7 +183,20 @@ const commitmentStatusLabel = (value = '') => {
   return value || '-'
 }
 
-function FieldGroupTable({ title, fields = [] }) {
+const assetReviewStatusLabel = (value = '') => {
+  if (value === 'approved') return '已审核'
+  if (value === 'pending_review') return '待审核'
+  return '待审核'
+}
+
+const assetSyncStatusLabel = (value = '') => {
+  if (value === 'synced') return '已同步素材库'
+  if (value === 'failed') return '同步失败'
+  if (value === 'pending') return '待同步'
+  return '待确认参与后同步'
+}
+
+function FieldGroupTable({ title, fields = [], showEvidenceLocationColumn = true }) {
   return (
     <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
       <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low">
@@ -202,7 +209,9 @@ function FieldGroupTable({ title, fields = [] }) {
               <th className="px-4 py-2 text-left font-semibold text-on-surface">字段</th>
               <th className="px-4 py-2 text-left font-semibold text-on-surface">解析内容</th>
               <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+              {showEvidenceLocationColumn ? (
+                <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+              ) : null}
             </tr>
           </thead>
           <tbody>
@@ -213,7 +222,9 @@ function FieldGroupTable({ title, fields = [] }) {
                   {groupValue(field)}
                 </td>
                 <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{field.sourceFile || '-'}</td>
-                <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{field.evidenceLocation || '-'}</td>
+                {showEvidenceLocationColumn ? (
+                  <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{field.evidenceLocation || '-'}</td>
+                ) : null}
               </tr>
             ))}
           </tbody>
@@ -223,7 +234,7 @@ function FieldGroupTable({ title, fields = [] }) {
   )
 }
 
-function ScoringCriteriaTable({ title, rows = [], emptyText = '未识别到相关评分细则。' }) {
+function ScoringCriteriaTable({ title, rows = [], emptyText = '未识别到相关评分细则。', showEvidenceLocationColumn = true }) {
   return (
     <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
       <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
@@ -241,7 +252,9 @@ function ScoringCriteriaTable({ title, rows = [], emptyText = '未识别到相�
               <th className="px-4 py-2 text-left font-semibold text-on-surface">证明材料要求</th>
               <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
               <th className="px-4 py-2 text-left font-semibold text-on-surface">章节</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+              {showEvidenceLocationColumn ? (
+                <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+              ) : null}
             </tr>
           </thead>
           <tbody>
@@ -254,11 +267,13 @@ function ScoringCriteriaTable({ title, rows = [], emptyText = '未识别到相�
                 <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{item.proofRequirement || '-'}</td>
                 <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{item.sourceFile || '-'}</td>
                 <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{item.section || '-'}</td>
-                <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.evidenceLocation || '-'}</td>
+                {showEvidenceLocationColumn ? (
+                  <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.evidenceLocation || '-'}</td>
+                ) : null}
               </tr>
             )) : (
               <tr>
-                <td className="px-4 py-3 text-outline" colSpan={8}>{emptyText}</td>
+                <td className="px-4 py-3 text-outline" colSpan={showEvidenceLocationColumn ? 8 : 7}>{emptyText}</td>
               </tr>
             )}
           </tbody>
@@ -268,7 +283,7 @@ function ScoringCriteriaTable({ title, rows = [], emptyText = '未识别到相�
   )
 }
 
-function PresenceTable({ title = '专题方案 / 供货范围 / 考核条款', rows = [] }) {
+function PresenceTable({ title = '专题方案 / 供货范围 / 考核条款', rows = [], showEvidenceLocationColumn = true }) {
   return (
     <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
       <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low">
@@ -282,7 +297,9 @@ function PresenceTable({ title = '专题方案 / 供货范围 / 考核条款', r
               <th className="px-4 py-2 text-left font-semibold text-on-surface">识别结果</th>
               <th className="px-4 py-2 text-left font-semibold text-on-surface">摘要</th>
               <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+              {showEvidenceLocationColumn ? (
+                <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+              ) : null}
             </tr>
           </thead>
           <tbody>
@@ -298,7 +315,9 @@ function PresenceTable({ title = '专题方案 / 供货范围 / 考核条款', r
                   </td>
                   <td className="px-4 py-2 text-on-surface-variant min-w-[340px]">{row.item?.summary || '未识别到明确要求。'}</td>
                   <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{evidence?.sourceFile || '-'}</td>
-                  <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{evidence?.evidenceLocation || '-'}</td>
+                  {showEvidenceLocationColumn ? (
+                    <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{evidence?.evidenceLocation || '-'}</td>
+                  ) : null}
                 </tr>
               )
             })}
@@ -309,56 +328,7 @@ function PresenceTable({ title = '专题方案 / 供货范围 / 考核条款', r
   )
 }
 
-function CommitmentLetterTable({ letters = [] }) {
-  return (
-    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
-      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
-        <h4 className="text-sm font-semibold text-on-surface">自动生成承诺文件</h4>
-        <span className="text-xs text-outline">{letters.length} 个</span>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[1040px]">
-          <thead>
-            <tr className="border-b border-surface-container-high">
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">名称</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">类型</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">状态</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">放置章节</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">触发词</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">风险标记</th>
-            </tr>
-          </thead>
-          <tbody>
-            {letters.length ? letters.map((item) => (
-              <tr key={item.id || item.title} className="border-b border-surface-container-high last:border-b-0">
-                <td className="px-4 py-2 text-on-surface font-medium min-w-[180px]">{item.title || '-'}</td>
-                <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{commitmentTypeLabel(item.commitmentType)}</td>
-                <td className="px-4 py-2 whitespace-nowrap">
-                  <span className={`text-xs px-2 py-0.5 rounded-md font-semibold ${item.status === 'generated' ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
-                    {commitmentStatusLabel(item.status)}
-                  </span>
-                </td>
-                <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.placementHint || '-'}</td>
-                <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.triggerText || '-'}</td>
-                <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{item.sourceFile || '-'}</td>
-                <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.evidenceLocation || '-'}</td>
-                <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{Array.isArray(item.riskFlags) && item.riskFlags.length ? item.riskFlags.join('，') : '-'}</td>
-              </tr>
-            )) : (
-              <tr>
-                <td className="px-4 py-3 text-outline" colSpan={8}>未识别到可自动生成的承诺文件。</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-function CommitmentClueTable({ clues = [] }) {
+function CommitmentClueTable({ clues = [], showEvidenceLocationColumn = true }) {
   return (
     <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
       <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
@@ -374,7 +344,9 @@ function CommitmentClueTable({ clues = [] }) {
               <th className="px-4 py-2 text-left font-semibold text-on-surface">触发词</th>
               <th className="px-4 py-2 text-left font-semibold text-on-surface">建议动作</th>
               <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+              {showEvidenceLocationColumn ? (
+                <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+              ) : null}
               <th className="px-4 py-2 text-left font-semibold text-on-surface">风险标记</th>
             </tr>
           </thead>
@@ -390,12 +362,14 @@ function CommitmentClueTable({ clues = [] }) {
                 <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.triggerText || '-'}</td>
                 <td className="px-4 py-2 text-on-surface-variant min-w-[260px]">{item.recommendedAction || '-'}</td>
                 <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{item.sourceFile || '-'}</td>
-                <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.evidenceLocation || '-'}</td>
+                {showEvidenceLocationColumn ? (
+                  <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.evidenceLocation || '-'}</td>
+                ) : null}
                 <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{Array.isArray(item.riskFlags) && item.riskFlags.length ? item.riskFlags.join('，') : '-'}</td>
               </tr>
             )) : (
               <tr>
-                <td className="px-4 py-3 text-outline" colSpan={7}>未识别到待确认承诺线索。</td>
+                <td className="px-4 py-3 text-outline" colSpan={showEvidenceLocationColumn ? 7 : 6}>未识别到待确认承诺线索。</td>
               </tr>
             )}
           </tbody>
@@ -438,6 +412,18 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
   const [commitmentLetterPreview, setCommitmentLetterPreview] = useState(null)
   const [commitmentLetterPreviewLoading, setCommitmentLetterPreviewLoading] = useState(false)
   const [commitmentLetterPreviewError, setCommitmentLetterPreviewError] = useState('')
+  const [savingAppendixId, setSavingAppendixId] = useState('')
+  const [savingAllAppendices, setSavingAllAppendices] = useState(false)
+  const [savingBusinessScoring, setSavingBusinessScoring] = useState(false)
+  const [savingCommitmentLetterId, setSavingCommitmentLetterId] = useState('')
+  const [savingAllCommitmentLetters, setSavingAllCommitmentLetters] = useState(false)
+
+  const refreshParseResult = useCallback(async () => {
+    if (!selectedProjectId) return null
+    const data = await parseAPI.results(selectedProjectId)
+    setParseData(data)
+    return data
+  }, [selectedProjectId])
 
   const loadProjects = useCallback(async () => {
     setLoadingProjects(true)
@@ -589,6 +575,7 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
   const appendices = Array.isArray(parseData?.structured?.appendices)
     ? parseData.structured.appendices
     : EMPTY_APPENDICES
+  const businessScoringAsset = parseData?.structured?.businessScoringAsset || {}
   const commitmentLetters = Array.isArray(parseData?.structured?.commitmentLetters)
     ? parseData.structured.commitmentLetters
     : EMPTY_APPENDICES
@@ -823,6 +810,81 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
 
   const handleCreateReviewProject = async () => {
     await createReviewProject()
+  }
+
+  const handleApproveAppendixAsset = async (appendixId) => {
+    if (!selectedProjectId || !appendixId) return
+    setSavingAppendixId(appendixId)
+    try {
+      const result = await parseAPI.approveAppendixAsset(selectedProjectId, appendixId)
+      if (result?.parseResult) setParseData(result.parseResult)
+      else await refreshParseResult()
+      showToast?.(result?.message || '商务附件模板已审核通过。')
+    } catch (e) {
+      showToast?.(e?.message || '商务附件模板审核失败', 'error')
+    } finally {
+      setSavingAppendixId('')
+    }
+  }
+
+  const handleApproveAllAppendixAssets = async () => {
+    if (!selectedProjectId || !appendices.length) return
+    setSavingAllAppendices(true)
+    try {
+      const result = await parseAPI.approveAllAppendixAssets(selectedProjectId)
+      if (result?.parseResult) setParseData(result.parseResult)
+      else await refreshParseResult()
+      showToast?.(result?.message || '商务附件模板已批量审核通过。')
+    } catch (e) {
+      showToast?.(e?.message || '商务附件模板批量审核失败', 'error')
+    } finally {
+      setSavingAllAppendices(false)
+    }
+  }
+
+  const handleApproveBusinessScoringAsset = async () => {
+    if (!selectedProjectId) return
+    setSavingBusinessScoring(true)
+    try {
+      const result = await parseAPI.approveBusinessScoringAsset(selectedProjectId)
+      if (result?.parseResult) setParseData(result.parseResult)
+      else await refreshParseResult()
+      showToast?.(result?.message || '商务评分标准已审核通过。')
+    } catch (e) {
+      showToast?.(e?.message || '商务评分标准审核失败', 'error')
+    } finally {
+      setSavingBusinessScoring(false)
+    }
+  }
+
+  const handleApproveCommitmentLetterAsset = async (letterId) => {
+    if (!selectedProjectId || !letterId) return
+    setSavingCommitmentLetterId(letterId)
+    try {
+      const result = await parseAPI.approveCommitmentLetterAsset(selectedProjectId, letterId)
+      if (result?.parseResult) setParseData(result.parseResult)
+      else await refreshParseResult()
+      showToast?.(result?.message || '承诺函已审核通过。')
+    } catch (e) {
+      showToast?.(e?.message || '承诺函审核失败', 'error')
+    } finally {
+      setSavingCommitmentLetterId('')
+    }
+  }
+
+  const handleApproveAllCommitmentLetterAssets = async () => {
+    if (!selectedProjectId || !commitmentLetters.length) return
+    setSavingAllCommitmentLetters(true)
+    try {
+      const result = await parseAPI.approveAllCommitmentLetterAssets(selectedProjectId)
+      if (result?.parseResult) setParseData(result.parseResult)
+      else await refreshParseResult()
+      showToast?.(result?.message || '承诺函已批量审核通过。')
+    } catch (e) {
+      showToast?.(e?.message || '承诺函批量审核失败', 'error')
+    } finally {
+      setSavingAllCommitmentLetters(false)
+    }
   }
 
   const renderPickedFiles = () => {
@@ -1063,28 +1125,95 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
           <div className="p-6 text-sm text-on-surface-variant">{reviewConfig.pendingParseHint}</div>
         ) : (
           <div className="p-5 flex flex-col gap-5">
+            {reviewConfig.showApproveBusinessScoring && (
+              <div className="rounded-md border border-surface-container-high bg-surface-container-low px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-on-surface">商务评分标准审核</p>
+                  <p className="mt-1 text-xs text-outline">
+                    复核无误后先标记为后续可用资产；确认参与投标并完善项目信息后，自动同步到项目素材库的“03-模板底稿与过程文件”。
+                  </p>
+                  <p className="mt-1 text-xs text-outline">
+                    状态：{assetReviewStatusLabel(businessScoringAsset.reviewStatus || businessScoringAsset.status)}
+                    {' · '}
+                    {assetSyncStatusLabel(businessScoringAsset.syncStatus)}
+                  </p>
+                </div>
+                <button
+                  onClick={handleApproveBusinessScoringAsset}
+                  disabled={savingBusinessScoring || !isParseCompleted}
+                  className="whitespace-nowrap rounded-md bg-primary px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {savingBusinessScoring ? '审核中...' : '审核通过'}
+                </button>
+              </div>
+            )}
+
             <div className="flex flex-col gap-4">
               {scoringGroups.map((group) => (
-                <ScoringCriteriaTable key={group.key} title={group.title} rows={group.rows} />
+                <ScoringCriteriaTable
+                  key={group.key}
+                  title={group.title}
+                  rows={group.rows}
+                  showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
+                />
               ))}
             </div>
 
-            <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
-              {reviewConfig.fieldGroupSections.map(([key, title]) => (
-                <FieldGroupTable key={key} title={title} fields={fieldGroups[key] || []} />
-              ))}
-            </div>
+            {reviewConfig.fieldGroupSections.length ? (
+              <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
+                {reviewConfig.fieldGroupSections.map(([key, title]) => (
+                  <FieldGroupTable
+                    key={key}
+                    title={title}
+                    fields={fieldGroups[key] || []}
+                    showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
+                  />
+                ))}
+              </div>
+            ) : null}
 
-            <PresenceTable title={reviewConfig.presenceTitle} rows={presenceRows} />
+            {reviewConfig.showPresence !== false && (
+              <PresenceTable
+                title={reviewConfig.presenceTitle}
+                rows={presenceRows}
+                showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
+              />
+            )}
 
             {reviewConfig.bidType === '商务标' ? (
               <>
-                <CommitmentLetterTable letters={commitmentLetters} />
-                <CommitmentClueTable clues={commitmentClues} />
+                {reviewConfig.showCommitmentClues !== false && (
+                  <CommitmentClueTable
+                    clues={commitmentClues}
+                    showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
+                  />
+                )}
                 <div className="border border-surface-container-high rounded-md overflow-hidden">
                   <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
                     <h4 className="text-sm font-semibold text-on-surface">承诺函 Word 预览</h4>
-                    <span className="text-xs text-outline">{commitmentLetters.length} 个</span>
+                    <div className="flex items-center gap-2">
+                      {reviewConfig.showApproveCommitmentLetters && commitmentLetters.length ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleApproveCommitmentLetterAsset(selectedCommitmentLetter?.id)}
+                            disabled={savingAllCommitmentLetters || Boolean(savingCommitmentLetterId) || !selectedCommitmentLetter?.id}
+                            className="rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {savingCommitmentLetterId ? '审核中...' : '审核当前'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleApproveAllCommitmentLetterAssets}
+                            disabled={savingAllCommitmentLetters || Boolean(savingCommitmentLetterId)}
+                            className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {savingAllCommitmentLetters ? '审核中...' : '审核全部'}
+                          </button>
+                        </>
+                      ) : null}
+                      <span className="text-xs text-outline">{commitmentLetters.length} 个</span>
+                    </div>
                   </div>
                   {commitmentLetters.length ? (
                     <OnlyOfficeWorkspace
@@ -1098,6 +1227,7 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
                       documentMeta={(
                         <span className="whitespace-nowrap rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant">
                           {commitmentStatusLabel(selectedCommitmentLetter?.status)}
+                          {reviewConfig.showApproveCommitmentLetters ? ` · ${assetReviewStatusLabel(selectedCommitmentLetter?.assetReviewStatus)} · ${assetSyncStatusLabel(selectedCommitmentLetter?.assetSyncStatus)}` : ''}
                         </span>
                       )}
                       sidebar={(
@@ -1126,6 +1256,13 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
                                   <span className="line-clamp-2 text-sm font-semibold">{letter.title || '-'}</span>
                                   <span className="text-xs text-on-surface-variant">{commitmentTypeLabel(letter.commitmentType)}</span>
                                   <span className="text-xs text-outline">{letter.workspacePath || letter.docxPath || '-'}</span>
+                                  {reviewConfig.showApproveCommitmentLetters ? (
+                                    <span className="text-xs text-outline">
+                                      {assetReviewStatusLabel(letter.assetReviewStatus)}
+                                      {' · '}
+                                      {assetSyncStatusLabel(letter.assetSyncStatus)}
+                                    </span>
+                                  ) : null}
                                 </button>
                               )
                             })}
@@ -1170,7 +1307,29 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
             <div className="border border-surface-container-high rounded-md overflow-hidden">
               <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
                 <h4 className="text-sm font-semibold text-on-surface">{reviewConfig.appendixTitle}</h4>
-                <span className="text-xs text-outline">{appendices.length} 个</span>
+                <div className="flex items-center gap-2">
+                  {reviewConfig.showApproveAppendices && appendices.length ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleApproveAppendixAsset(selectedAppendix?.id)}
+                        disabled={savingAllAppendices || Boolean(savingAppendixId) || !selectedAppendix?.id}
+                        className="rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {savingAppendixId ? '审核中...' : '审核当前'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleApproveAllAppendixAssets}
+                        disabled={savingAllAppendices || Boolean(savingAppendixId)}
+                        className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {savingAllAppendices ? '审核中...' : '审核全部'}
+                      </button>
+                    </>
+                  ) : null}
+                  <span className="text-xs text-outline">{appendices.length} 个</span>
+                </div>
               </div>
               {appendices.length ? (
                 <OnlyOfficeWorkspace
@@ -1212,6 +1371,13 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
                               <span className="line-clamp-2 text-sm font-semibold">{appendix.title || '-'}</span>
                               <span className="text-xs text-on-surface-variant">{appendix.sourceFile || '-'}</span>
                               <span className="text-xs text-outline">{appendix.workspacePath || appendix.docxPath || '-'}</span>
+                              {reviewConfig.showApproveAppendices ? (
+                                <span className="text-xs text-outline">
+                                  {assetReviewStatusLabel(appendix.assetReviewStatus)}
+                                  {' · '}
+                                  {assetSyncStatusLabel(appendix.assetSyncStatus)}
+                                </span>
+                              ) : null}
                             </button>
                           )
                         })}
@@ -1251,35 +1417,41 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
               )}
             </div>
 
-            <details className="rounded-md border border-surface-container-high bg-white">
-              <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-on-surface">证据明细</summary>
-              <div className="overflow-x-auto border-t border-surface-container-high">
-                <table className="w-full text-sm min-w-[1120px]">
-                  <thead>
-                    <tr className="bg-surface-container-low border-b border-surface-container-high">
-                      <th className="px-4 py-2 text-left font-semibold text-on-surface">类别</th>
-                      <th className="px-4 py-2 text-left font-semibold text-on-surface">字段</th>
-                      <th className="px-4 py-2 text-left font-semibold text-on-surface">提取值</th>
-                      <th className="px-4 py-2 text-left font-semibold text-on-surface">来源文件</th>
-                      <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
-                      <th className="px-4 py-2 text-left font-semibold text-on-surface">证据文本</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((row) => (
-                      <tr key={row.id} className="border-b border-surface-container-high hover:bg-surface-container-low/60">
-                        <td className="px-4 py-2 text-on-surface whitespace-nowrap">{row.category}</td>
-                        <td className="px-4 py-2 text-on-surface-variant min-w-[160px]">{row.field}</td>
-                        <td className="px-4 py-2 text-primary font-medium min-w-[220px]">{row.value}</td>
-                        <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{row.fileName}</td>
-                        <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{row.evidenceLocation}</td>
-                        <td className="px-4 py-2 text-on-surface-variant min-w-[300px]">{row.evidence}</td>
+            {reviewConfig.showEvidenceDetails !== false && (
+              <details className="rounded-md border border-surface-container-high bg-white">
+                <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-on-surface">证据明细</summary>
+                <div className="overflow-x-auto border-t border-surface-container-high">
+                  <table className="w-full text-sm min-w-[1120px]">
+                    <thead>
+                      <tr className="bg-surface-container-low border-b border-surface-container-high">
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">类别</th>
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">字段</th>
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">提取值</th>
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">来源文件</th>
+                        {reviewConfig.showEvidenceLocationColumn !== false ? (
+                          <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+                        ) : null}
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">证据文本</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </details>
+                    </thead>
+                    <tbody>
+                      {rows.map((row) => (
+                        <tr key={row.id} className="border-b border-surface-container-high hover:bg-surface-container-low/60">
+                          <td className="px-4 py-2 text-on-surface whitespace-nowrap">{row.category}</td>
+                          <td className="px-4 py-2 text-on-surface-variant min-w-[160px]">{row.field}</td>
+                          <td className="px-4 py-2 text-primary font-medium min-w-[220px]">{row.value}</td>
+                          <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{row.fileName}</td>
+                          {reviewConfig.showEvidenceLocationColumn !== false ? (
+                            <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{row.evidenceLocation}</td>
+                          ) : null}
+                          <td className="px-4 py-2 text-on-surface-variant min-w-[300px]">{row.evidence}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            )}
           </div>
         )}
       </DataCard>

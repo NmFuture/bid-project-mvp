@@ -1,0 +1,164 @@
+{
+  "schema_version": "business_heading_style.v1",
+  "comment": "商务标成稿格式清洗 v1。页面、标题、正文、表格规则沿用现有技术标格式口径；页眉模板改为商务部分语义。",
+  "page": {
+    "top_cm": 2.54,
+    "bottom_cm": 2.54,
+    "left_cm": 3.18,
+    "right_cm": 3.18,
+    "header_top_cm": 1.0,
+    "footer_bottom_cm": 0.6,
+    "preserve_section_orientation": true
+  },
+  "heading": {
+    "1": {
+      "zh_font": "等线 Light",
+      "en_font": "Times New Roman",
+      "size_pt": 15,
+      "size_name": "小三",
+      "bold": true,
+      "align": "center",
+      "space_before_pt": 6,
+      "space_after_pt": 6,
+      "line_spacing": 1.75,
+      "first_line_indent_chars": 0,
+      "left_indent_cm": 0
+    },
+    "2": {
+      "zh_font": "等线 Light",
+      "en_font": "Times New Roman",
+      "size_pt": 14,
+      "size_name": "四号",
+      "bold": true,
+      "align": "left",
+      "space_before_pt": 6,
+      "space_after_pt": 6,
+      "line_spacing": 1.75,
+      "first_line_indent_chars": 0,
+      "left_indent_cm": 0
+    },
+    "3": {
+      "zh_font": "等线",
+      "en_font": "Times New Roman",
+      "size_pt": 12,
+      "size_name": "小四",
+      "bold": true,
+      "align": "left",
+      "space_before_pt": 6,
+      "space_after_pt": 6,
+      "line_spacing": 1.75,
+      "first_line_indent_chars": 0,
+      "left_indent_cm": 0
+    },
+    "4": {
+      "zh_font": "等线 Light",
+      "en_font": "Times New Roman",
+      "size_pt": 12,
+      "size_name": "小四",
+      "bold": true,
+      "align": "both",
+      "space_before_pt": 6,
+      "space_after_pt": 6,
+      "line_spacing": 1.75,
+      "first_line_indent_chars": 0,
+      "left_indent_cm": 0
+    },
+    "5": {
+      "zh_font": "等线",
+      "en_font": "Times New Roman",
+      "size_pt": 12,
+      "size_name": "小四",
+      "bold": true,
+      "align": "left",
+      "space_before_pt": 6,
+      "space_after_pt": 6,
+      "line_spacing": 1.75,
+      "first_line_indent_chars": 0,
+      "left_indent_cm": 0
+    },
+    "6": {
+      "zh_font": "等线 Light",
+      "en_font": "Times New Roman",
+      "size_pt": 12,
+      "size_name": "小四",
+      "bold": true,
+      "align": "both",
+      "space_before_pt": 6,
+      "space_after_pt": 6,
+      "line_spacing": 1.33,
+      "first_line_indent_chars": 0,
+      "left_indent_cm": 0.55
+    }
+  },
+  "body": {
+    "zh_font": "等线",
+    "en_font": "Times New Roman",
+    "size_pt": 12,
+    "size_name": "小四",
+    "bold": false,
+    "align": "both",
+    "space_before_pt": 0,
+    "space_after_pt": 0,
+    "line_spacing": 1.5,
+    "first_line_indent_chars": 2
+  },
+  "table_cell": {
+    "zh_font": "宋体",
+    "en_font": "宋体",
+    "size_pt": 10.5,
+    "size_name": "五号",
+    "bold": false,
+    "align": "center",
+    "line_spacing": 1.0,
+    "table_align": "center",
+    "space_before_pt": 0,
+    "space_after_pt": 0,
+    "first_line_indent_chars": 0
+  },
+  "caption": {
+    "zh_font": "等线",
+    "en_font": "等线",
+    "size_pt": 12,
+    "size_name": "小四",
+    "bold": false,
+    "align": "center",
+    "line_spacing": 1.5
+  },
+  "toc": {
+    "title": "目 录",
+    "title_style": "TOC Heading",
+    "field_instruction": " TOC \\o \"1-3\" \\h \\z \\u ",
+    "placeholder": "目录将在 Word 打开时自动更新",
+    "insert_when_missing": true,
+    "page_break_after": true,
+    "style_spec_path": "business_toc_style.json"
+  },
+  "header": {
+    "zh_font": "宋体",
+    "en_font": "宋体",
+    "size_pt": 7.5,
+    "size_name": "六号",
+    "bold": false,
+    "align": "right",
+    "line_spacing": 1.5,
+    "text_template": "{projectName}投标文件-商务部分",
+    "residual_terms": [
+      "技术部分",
+      "技术卷",
+      "技术标"
+    ],
+    "logo": {
+      "height_cm": 0.96,
+      "width_cm": 2.84,
+      "align": "left"
+    }
+  },
+  "page_number": {
+    "zh_font": "Times New Roman",
+    "en_font": "Times New Roman",
+    "size_pt": 12,
+    "size_name": "小四",
+    "bold": false,
+    "align": "center"
+  }
+}

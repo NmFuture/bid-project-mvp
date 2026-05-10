@@ -4,7 +4,9 @@ from typing import Any
 
 from fastapi import APIRouter, Body
 
+from app.services.business_parse_assets import BusinessParseAssetError, sync_approved_business_parse_assets
 from app.services.identity import build_project_material_scope
+from app.services.parse_profiles import normalize_bid_type
 from app.services.store import store
 from app.services.template_store import template_fallback_payload
 
@@ -40,7 +42,24 @@ async def get_project(project_id: str) -> dict[str, Any]:
 
 @router.put("/api/projects/{project_id}")
 async def update_project(project_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return store.update_project(project_id, data)
+    project = store.update_project(project_id, data)
+    decision = str(data.get("reviewDecision") or "").strip().lower()
+    if decision == "participate" and normalize_bid_type(str(project.get("bidType") or "")) == "商务标":
+        try:
+            sync_result = await sync_approved_business_parse_assets(project_id)
+        except BusinessParseAssetError as exc:
+            project["businessParseAssetSync"] = {
+                "status": "failed",
+                "message": exc.detail,
+                "statusCode": exc.status_code,
+            }
+        else:
+            project["businessParseAssetSync"] = {
+                key: value
+                for key, value in sync_result.items()
+                if key != "parseResult"
+            }
+    return project
 
 
 @router.get("/api/projects/{project_id}/template-fallback")

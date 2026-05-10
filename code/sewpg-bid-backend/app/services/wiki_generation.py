@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 import re
 import subprocess
 import sys
@@ -24,12 +25,18 @@ from app.services.identity import canonical_customer, classify_material_path, ma
 from app.services.business_wiki_blueprint import build_business_wiki_blueprint
 from app.services.minio_client import minio_client
 from app.services.material_store import material_store
+from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.peripheral import PeripheralError
 
 DEFAULT_REFERENCE_WIKI_PATH = Path(
     "/Users/anbocheng/Desktop/20260412_技术标/20260413_技术标_组织优化/素材库-20260413-wlb-clean-wiki/wiki"
 )
 MAX_EXCERPT_CHARS = 5000
+BUSINESS_WIKI_OCR_VERSION = 1
+BUSINESS_WIKI_OCR_TEXT_LIMIT = 12000
+BUSINESS_WIKI_DOCX_IMAGE_LIMIT = 12
+OCR_IMAGE_EXTS = {item.lstrip(".") for item in IMAGE_SUFFIXES}
+OCR_SOURCE_EXTS = OCR_IMAGE_EXTS | {"pdf"}
 
 
 def _read_excerpt(path: Path, limit: int = MAX_EXCERPT_CHARS) -> str:
@@ -322,6 +329,239 @@ def _extract_docx_profile(data: bytes) -> dict[str, Any]:
     }
 
 
+def _docx_embedded_images(data: bytes, limit: int = BUSINESS_WIKI_DOCX_IMAGE_LIMIT) -> list[dict[str, Any]]:
+    images: list[dict[str, Any]] = []
+    try:
+        with zipfile.ZipFile(BytesIO(data)) as archive:
+            for name in sorted(archive.namelist()):
+                if not name.startswith("word/media/"):
+                    continue
+                suffix = Path(name).suffix.lower()
+                if suffix.lstrip(".") not in OCR_IMAGE_EXTS:
+                    continue
+                images.append(
+                    {
+                        "name": name,
+                        "fileName": Path(name).name,
+                        "mimeType": mimetypes.guess_type(name)[0] or "image/png",
+                        "content": archive.read(name),
+                    }
+                )
+                if len(images) >= limit:
+                    break
+    except Exception:
+        return []
+    return images
+
+
+def _ocr_cache_signature(item: RawFile) -> dict[str, Any]:
+    ext = item.ext_fields or {}
+    return {
+        "version": int(item.version or 0),
+        "sourceMinioKey": str(item.minio_key or ""),
+        "sourceSizeBytes": int(item.size_bytes or 0),
+        "cleanedMinioKey": str(ext.get("cleanedMinioKey") or ""),
+        "cleanedSize": int(ext.get("cleanedSize") or 0),
+    }
+
+
+def _ocr_cache_is_fresh(payload: dict[str, Any], signature: dict[str, Any]) -> bool:
+    return (
+        isinstance(payload, dict)
+        and int(payload.get("schemaVersion") or 0) == BUSINESS_WIKI_OCR_VERSION
+        and payload.get("signature") == signature
+        and str(payload.get("status") or "") != "failed"
+    )
+
+
+def _truncate_ocr_text(text: str, limit: int = BUSINESS_WIKI_OCR_TEXT_LIMIT) -> str:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}\n...[OCR文本已截断]"
+
+
+def _candidate_ocr_fields(text: str) -> dict[str, Any]:
+    clean = re.sub(r"\s+", " ", str(text or "")).strip()
+    dates = []
+    seen: set[str] = set()
+    for token in re.findall(r"(?:20\d{2}|19\d{2})[年./-]\d{1,2}[月./-]\d{1,2}日?", clean):
+        if token not in seen:
+            seen.add(token)
+            dates.append(token)
+    doc_no = ""
+    match = re.search(r"(?:编号|证书编号|文号|合同编号|No\.?|NO\.?)[:：\s]*([A-Za-z0-9\-_/]+)", clean, re.IGNORECASE)
+    if match:
+        doc_no = match.group(1).strip()
+    issuer = ""
+    match = re.search(r"(?:发证机构|签发单位|出具单位|认证机构|开户行|银行)[:：\s]*([^，。；;]{2,50})", clean)
+    if match:
+        issuer = match.group(1).strip()
+    model_candidates = []
+    for token in re.findall(r"\b[A-Z]{1,6}\d{2,6}(?:[-_/][A-Z0-9]{1,12}){0,4}\b", clean, re.IGNORECASE):
+        normalized = token.strip()
+        if normalized and normalized not in model_candidates:
+            model_candidates.append(normalized)
+    component_candidates = []
+    for token in ("叶片", "齿轮箱", "发电机", "变流器", "主轴", "轮毂", "塔筒", "轴承", "偏航", "变桨", "大部件", "机型认证", "型式认证"):
+        if token in clean and token not in component_candidates:
+            component_candidates.append(token)
+    return {
+        "documentNumber": doc_no,
+        "issuer": issuer,
+        "issueDate": dates[0] if dates else "",
+        "expiryDate": dates[1] if len(dates) > 1 else "",
+        "dates": dates[:8],
+        "turbineModels": model_candidates[:8],
+        "components": component_candidates[:8],
+    }
+
+
+def _successful_ocr_payload(text: str, *, source_type: str, page_count: Any = 1, image_count: int = 0) -> dict[str, Any]:
+    normalized = _truncate_ocr_text(text)
+    return {
+        "status": "completed" if normalized else "empty",
+        "sourceType": source_type,
+        "text": normalized,
+        "fields": _candidate_ocr_fields(normalized),
+        "pageCount": page_count,
+        "imageCount": image_count,
+        "confidence": "0.80" if normalized else "0.00",
+        "updatedAt": _now_iso(),
+    }
+
+
+def _failed_ocr_payload(message: str, *, source_type: str) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "sourceType": source_type,
+        "text": "",
+        "fields": {},
+        "pageCount": 0,
+        "imageCount": 0,
+        "confidence": "0.00",
+        "message": message,
+        "updatedAt": _now_iso(),
+    }
+
+
+async def _recognize_source_file_for_wiki(item: RawFile, source_ext: str) -> dict[str, Any]:
+    bucket = str(item.minio_bucket or "")
+    key = str(item.minio_key or "")
+    data = await asyncio.to_thread(minio_client.get_object, bucket, key)
+    text, raw = await ocr_service.recognize_text_for_parse(
+        file_name=str(item.name or f"RAW-{int(item.id):04d}.{source_ext}"),
+        content=data,
+        mime_type=str(item.mime_type or mimetypes.guess_type(str(item.name or ""))[0] or ""),
+    )
+    return _successful_ocr_payload(
+        text,
+        source_type="source_file",
+        page_count=(raw or {}).get("pageCount") or 1,
+    )
+
+
+async def _recognize_docx_embedded_images_for_wiki(item: RawFile, profile: dict[str, Any]) -> dict[str, Any]:
+    bucket = str(profile.get("bucket") or item.minio_bucket or "")
+    key = str(profile.get("minioKey") or item.minio_key or "")
+    data = await asyncio.to_thread(minio_client.get_object, bucket, key)
+    images = _docx_embedded_images(data)
+    if not images:
+        return {
+            "status": "not_required",
+            "sourceType": "docx_embedded_images",
+            "text": "",
+            "fields": {},
+            "pageCount": 0,
+            "imageCount": 0,
+            "confidence": "n/a",
+            "updatedAt": _now_iso(),
+        }
+    texts: list[str] = []
+    for index, image in enumerate(images, start=1):
+        text, _ = await ocr_service.recognize_text_for_parse(
+            file_name=str(image.get("fileName") or f"embedded-{index}.png"),
+            content=image["content"],
+            mime_type=str(image.get("mimeType") or "image/png"),
+        )
+        if str(text or "").strip():
+            texts.append(f"[embedded_image_{index} {image.get('fileName')}]\n{text}")
+    return _successful_ocr_payload(
+        "\n\n".join(texts),
+        source_type="docx_embedded_images",
+        page_count=0,
+        image_count=len(images),
+    )
+
+
+async def _ensure_business_wiki_ocr_cache(item: RawFile, profile: dict[str, Any]) -> dict[str, Any]:
+    ext_fields = dict(item.ext_fields or {})
+    signature = _ocr_cache_signature(item)
+    cached = ext_fields.get("businessWikiOcr") if isinstance(ext_fields.get("businessWikiOcr"), dict) else {}
+    if _ocr_cache_is_fresh(cached, signature):
+        return cached
+
+    source_ext = str(profile.get("sourceExt") or "").lower()
+    ext = str(profile.get("ext") or "").lower()
+    try:
+        if source_ext in OCR_SOURCE_EXTS:
+            payload = await _recognize_source_file_for_wiki(item, source_ext)
+        elif ext == "docx":
+            payload = await _recognize_docx_embedded_images_for_wiki(item, profile)
+        else:
+            payload = {
+                "status": "not_required",
+                "sourceType": "none",
+                "text": "",
+                "fields": {},
+                "pageCount": 0,
+                "imageCount": 0,
+                "confidence": "n/a",
+                "updatedAt": _now_iso(),
+            }
+    except PeripheralError as exc:
+        payload = _failed_ocr_payload(str(exc.detail), source_type="source_file" if source_ext in OCR_SOURCE_EXTS else "docx_embedded_images")
+    except Exception as exc:  # pragma: no cover - OCR/provider availability varies.
+        payload = _failed_ocr_payload(str(exc), source_type="source_file" if source_ext in OCR_SOURCE_EXTS else "docx_embedded_images")
+
+    payload = {
+        "schemaVersion": BUSINESS_WIKI_OCR_VERSION,
+        "signature": signature,
+        **payload,
+    }
+    ext_fields["businessWikiOcr"] = payload
+    item.ext_fields = ext_fields
+    return payload
+
+
+def _apply_business_wiki_ocr_to_profile(profile: dict[str, Any], ocr_payload: dict[str, Any]) -> None:
+    if not isinstance(ocr_payload, dict):
+        return
+    profile["businessWikiOcr"] = ocr_payload
+    text = str(ocr_payload.get("text") or "").strip()
+    fields = ocr_payload.get("fields") if isinstance(ocr_payload.get("fields"), dict) else {}
+    if text:
+        profile["ocrText"] = text
+        profile.setdefault("paragraphs", [])
+        existing = {str(item) for item in profile["paragraphs"]}
+        for line in [line.strip() for line in text.splitlines() if line.strip()][:MAX_CARD_EXCERPT_PARAGRAPHS]:
+            if line not in existing:
+                profile["paragraphs"].append(line[:260])
+                existing.add(line)
+        profile["parseError"] = "" if profile.get("sourceExt") in OCR_SOURCE_EXTS else str(profile.get("parseError") or "")
+    profile["ocrStatus"] = str(ocr_payload.get("status") or "")
+    profile["ocrConfidence"] = str(ocr_payload.get("confidence") or "")
+    profile["ocrSourceType"] = str(ocr_payload.get("sourceType") or "")
+    profile["ocrFields"] = fields
+    if fields:
+        profile["documentNumber"] = str(fields.get("documentNumber") or "")
+        profile["issuer"] = str(fields.get("issuer") or "")
+        profile["issueDate"] = str(fields.get("issueDate") or "")
+        profile["expiryDate"] = str(fields.get("expiryDate") or "")
+        profile["turbineModels"] = list(fields.get("turbineModels") or [])[:8]
+        profile["components"] = list(fields.get("components") or [])[:8]
+
+
 def _material_level_range(headings: list[dict[str, Any]]) -> str:
     levels = sorted({int(item.get("level") or 0) for item in headings if item.get("level")})
     if not levels:
@@ -523,23 +763,26 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
 
 
 async def _summarize_material_inventory() -> dict[str, Any]:
-    async with async_session() as session:
-        result = await session.execute(select(RawFile).options(selectinload(RawFile.folder)))
-        files = result.scalars().all()
-
     items: list[dict[str, Any]] = []
     groups: dict[str, list[str]] = {}
     custom_items: list[str] = []
     parsed_count = 0
 
-    for item in files:
-        material = _profile_raw_file(item)
-        items.append(material)
-        groups.setdefault(f"{material['bidType']}/{material['scope']}/{material['group']}", []).append(material["name"])
-        if material["scope"] == "定制":
-            custom_items.append(material["name"])
-        if material["ext"] == "docx" and not material.get("parseError"):
-            parsed_count += 1
+    async with async_session() as session:
+        result = await session.execute(select(RawFile).options(selectinload(RawFile.folder)))
+        files = result.scalars().all()
+        for item in files:
+            material = _profile_raw_file(item)
+            if material.get("bidType") == "商务标":
+                ocr_payload = await _ensure_business_wiki_ocr_cache(item, material)
+                _apply_business_wiki_ocr_to_profile(material, ocr_payload)
+            items.append(material)
+            groups.setdefault(f"{material['bidType']}/{material['scope']}/{material['group']}", []).append(material["name"])
+            if material["scope"] == "定制":
+                custom_items.append(material["name"])
+            if material["ext"] == "docx" and not material.get("parseError"):
+                parsed_count += 1
+        await session.commit()
 
     return {
         "total": len(items),
@@ -693,6 +936,18 @@ def _compact_material_for_manifest(material: dict[str, Any]) -> dict[str, Any]:
         "materialLevelRange",
         "skeletonSection",
         "keywords",
+        "ocrStatus",
+        "ocrConfidence",
+        "ocrSourceType",
+        "ocrText",
+        "ocrFields",
+        "businessWikiOcr",
+        "documentNumber",
+        "issuer",
+        "issueDate",
+        "expiryDate",
+        "turbineModels",
+        "components",
     ]
     compact = {key: material.get(key) for key in keys if key in material}
     compact["headings"] = list(material.get("headings") or [])[:12]

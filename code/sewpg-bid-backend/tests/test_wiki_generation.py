@@ -334,6 +334,23 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(imported_nodes[2]["children"][0]["children"][0]["children"][0]["title"], "02-大部件型式认证证书")
         self.assertEqual(imported_nodes[3]["children"][0]["title"], "01-项目基础变量")
         self.assertEqual(imported_nodes[4]["children"][0]["title"], "01-身份过滤规则")
+        card_markdowns: list[str] = []
+
+        def collect_card_markdown(node: dict) -> None:
+            if "证据卡片" in (node.get("tags") or []) and "segment_id" in str(node.get("markdownContent") or ""):
+                card_markdowns.append(str(node.get("markdownContent") or ""))
+            for child in node.get("children") or []:
+                collect_card_markdown(child)
+
+        for node in imported_nodes:
+            collect_card_markdown(node)
+        combined_cards = "\n".join(card_markdowns)
+        self.assertIn("## 证据切片", combined_cards)
+        self.assertIn("segment_id", combined_cards)
+        self.assertIn("cleaned_heading", combined_cards)
+        self.assertIn("evidence_topic", combined_cards)
+        self.assertIn("applicable_chapters", combined_cards)
+        self.assertIn("chapter_keywords", combined_cards)
         self.assertEqual(result["generation"]["generator"], "deterministic_fallback")
         self.assertEqual(result["generation"]["bidType"], "商务标")
         self.assertTrue(result["generation"]["fallbackUsed"])

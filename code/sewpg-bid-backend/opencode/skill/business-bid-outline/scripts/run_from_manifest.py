@@ -55,6 +55,7 @@ def run_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any
     work_dir.mkdir(parents=True, exist_ok=True)
     history_inputs_file = work_dir / "history_bid_outline_inputs.json"
     tender_map_inputs_file = work_dir / "tender_map_inputs.json"
+    outline_file = work_dir / "outline.json"
 
     template_file = existing_path(manifest.get("templateFile"), "templateFile")
     tender_files = tender_inputs(manifest)
@@ -70,19 +71,139 @@ def run_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any
     tender_map_inputs = build_tender_map_inputs(tender_files[0], work_dir)
     tender_map_inputs_file.write_text(json.dumps(tender_map_inputs, ensure_ascii=False, indent=2), encoding="utf-8")
     candidates = extract_candidates_from_tender_map(tender_map_inputs, tender_files[0])
+    outline_payload = build_fallback_outline(
+        manifest=manifest,
+        history_inputs=history_inputs,
+        template_outline=template_outline,
+        tender_candidates=candidates,
+    )
+    outline_file.write_text(json.dumps(outline_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     summary = {
         "schema_version": "business-outline-inputs-v1",
         "skill": "business-bid-outline",
+        "businessOutlineFile": str(outline_file),
         "tenderMapInputsFile": str(tender_map_inputs_file),
         "historyBidOutlineInputsFile": str(history_inputs_file),
         "summary": {
             "history_outline_candidate_count": len(template_outline),
             "tender_candidate_count": len(candidates),
+            "outline_section_count": len(outline_payload.get("sections") or []),
             "tender_file_count": len(tender_files),
         },
     }
     return {"summary": summary, "review": summary}
+
+
+def build_fallback_outline(
+    *,
+    manifest: dict[str, Any],
+    history_inputs: dict[str, Any],
+    template_outline: list[dict[str, Any]],
+    tender_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    sections = outline_sections_from_template(template_outline, tender_candidates)
+    if not sections:
+        sections = outline_sections_from_tender_candidates(tender_candidates)
+    if not sections:
+        sections = [
+            {
+                "id": "BIZ-FALLBACK-001",
+                "title": "商务响应文件",
+                "number": None,
+                "level": 1,
+                "required_status": "待确认",
+                "source_text": "本目录由 business-bid-outline 本地兜底生成，请人工确认商务标目录结构。",
+                "source_refs": [],
+                "reason": "历史商务标模板和招标文件未解析出明确目录项，生成兜底父节点供人工审核。",
+                "children": [],
+            }
+        ]
+    return {
+        "schema_version": "business_bid_outline.v1",
+        "document_name": str(manifest.get("projectName") or history_inputs.get("document_name") or "商务标目录"),
+        "outline_source": {
+            "section_title": "本地兜底商务标目录",
+            "source_text": str((template_outline[0] if template_outline else {}).get("rawText") or "local runner fallback"),
+            "confidence": "low",
+            "source_type": "local_runner_fallback",
+            "history_document_name": str(history_inputs.get("document_name") or ""),
+            "summary": "futurecode 不可用或超时时，由本地 runner 基于历史商务标目录候选生成待审核目录。",
+        },
+        "context": {
+            "fallback": {
+                "summary": "futurecode 不可用或超时时触发本地兜底目录，后续需要人工审核。",
+                "source_text": str((template_outline[0] if template_outline else {}).get("rawText") or "local runner fallback"),
+            }
+        },
+        "sections": sections,
+        "review_items": [
+            {
+                "id": "REVIEW-FALLBACK-001",
+                "message": "本目录为本地兜底结果，需要人工审核后再进入后续阶段。",
+                "source_text": "futurecode 不可用或超时时触发本地兜底目录。",
+                "suggested_section_id": None,
+                "required_status": "待确认",
+                "severity": "warning",
+            }
+        ],
+    }
+
+
+def outline_sections_from_template(
+    template_outline: list[dict[str, Any]],
+    tender_candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    roots: list[dict[str, Any]] = []
+    stack: list[dict[str, Any]] = []
+    for index, item in enumerate(template_outline, start=1):
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        level = max(1, min(int(item.get("level") or 1), 6))
+        candidate = first_matching_candidate(title, tender_candidates)
+        raw_text = str((candidate or {}).get("rawText") or item.get("rawText") or title)
+        section = {
+            "id": f"BIZ-FALLBACK-{index:04d}",
+            "title": title,
+            "number": section_number(item.get("number")),
+            "level": level,
+            "required_status": "必要" if candidate else "待确认",
+            "source_text": raw_text,
+            "source_refs": [source_ref(candidate)] if candidate else [],
+            "reason": "本地兜底继承历史商务标目录；当前招标依据需人工复核。" if not candidate else "本地兜底继承历史商务标目录，并匹配到当前招标文件候选依据。",
+            "children": [],
+        }
+        while stack and int(stack[-1].get("level") or 1) >= level:
+            stack.pop()
+        if stack:
+            stack[-1].setdefault("children", []).append(section)
+        else:
+            roots.append(section)
+        stack.append(section)
+    return roots
+
+
+def outline_sections_from_tender_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sections: list[dict[str, Any]] = []
+    for index, candidate in enumerate(candidates[:40], start=1):
+        title = str(candidate.get("title") or "").strip()
+        if not title:
+            continue
+        sections.append(
+            {
+                "id": f"BIZ-TENDER-{index:04d}",
+                "title": title,
+                "number": None,
+                "level": 1,
+                "required_status": "待确认",
+                "source_text": str(candidate.get("rawText") or title),
+                "source_refs": [source_ref(candidate)],
+                "reason": "历史商务标目录不可用时，由招标文件要求候选生成，需人工确认。",
+                "children": [],
+            }
+        )
+    return sections
 
 
 def existing_path(value: Any, field: str) -> Path:
@@ -115,6 +236,13 @@ def source_file_payload(item: dict[str, Any]) -> dict[str, str]:
     return {"id": str(item.get("id") or ""), "name": str(item.get("name") or ""), "path": str(item.get("path") or "")}
 
 
+def section_number(value: Any) -> Any:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def history_candidates_for_toc(history_inputs: dict[str, Any]) -> list[dict[str, Any]]:
     document_name = str(history_inputs.get("document_name") or "")
     candidates = history_inputs.get("outline_candidates") if isinstance(history_inputs.get("outline_candidates"), list) else []
@@ -127,7 +255,7 @@ def history_candidates_for_toc(history_inputs: dict[str, Any]) -> list[dict[str,
             continue
         result.append(
             {
-                "number": str(candidate.get("candidate_id") or index + 1),
+                "number": section_number(candidate.get("number")),
                 "title": title,
                 "level": max(1, int(candidate.get("level") or 1)),
                 "sourceFile": document_name,
