@@ -844,10 +844,32 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertEqual(ai_draft_task["decision"], "ready")
         self.assertNotIn("ai_draft_required", ai_draft_task["riskFlags"])
 
-        sync_response = self.client.post(
-            f"/api/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/sync-artifact-material",
-            json={"artifactId": uploaded["artifactId"]},
-        )
+        async def fake_raw_upload(**kwargs):
+            self.assertEqual(kwargs["bid_type"], "商务标")
+            self.assertEqual(kwargs["material_tier"], "project")
+            self.assertIn(f"商务标/项目素材/{project_id}/02-商务响应文件", kwargs["target_path"])
+            return {
+                "message": "mock upload",
+                "items": [
+                    {
+                        "id": "RAW-SYNC-001",
+                        "name": "补充授权材料.pdf",
+                        "folderPath": kwargs["target_path"],
+                        "bidType": "商务标",
+                        "materialTier": "project",
+                        "projectId": project_id,
+                        "cleanStatus": "",
+                        "cleanMessage": "",
+                    }
+                ],
+                "cleaning": {"queued": 0, "jobs": []},
+            }
+
+        with patch("app.services.store.material_store.raw_upload", side_effect=fake_raw_upload):
+            sync_response = self.client.post(
+                f"/api/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/sync-artifact-material",
+                json={"artifactId": uploaded["artifactId"]},
+            )
         self.assertEqual(sync_response.status_code, 200)
         synced = sync_response.json()["artifact"]
         self.assertEqual(synced["materialSyncStatus"], "synced_to_project_material")
