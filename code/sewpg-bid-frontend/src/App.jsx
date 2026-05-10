@@ -6,7 +6,7 @@ import ProjectList from './pages/ProjectList'
 import ProjectEntryRedirect from './pages/ProjectEntryRedirect'
 import ParseResult from './pages/ParseResult'
 import OutlineReview from './pages/OutlineReview'
-import GapRecognition from './pages/GapRecognition'
+import GapEntry from './pages/GapEntry'
 import GenerateProgress from './pages/GenerateProgress'
 import CoverageHeatmap from './pages/CoverageHeatmap'
 import CoCreationEditor from './pages/CoCreationEditor'
@@ -159,7 +159,7 @@ export default function App() {
           <Route path="/workspace/:workspace/projects/:id/parse" element={<WorkspaceGuard user={session?.user}><ProjectPathRedirect path="/template-directory" /></WorkspaceGuard>} />
           <Route path="/workspace/:workspace/projects/:id/directory" element={<WorkspaceGuard user={session?.user}><ProjectPathRedirect path="/template-directory" /></WorkspaceGuard>} />
           <Route path="/workspace/:workspace/projects/:id/outline" element={<WorkspaceGuard user={session?.user}><OutlineReview showToast={showToast} /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/projects/:id/gaps" element={<WorkspaceGuard user={session?.user}><GapRecognition showToast={showToast} /></WorkspaceGuard>} />
+          <Route path="/workspace/:workspace/projects/:id/gaps" element={<WorkspaceGuard user={session?.user}><GapEntry showToast={showToast} /></WorkspaceGuard>} />
           <Route path="/workspace/:workspace/projects/:id/gaps-fill" element={<WorkspaceGuard user={session?.user}><ProjectPathRedirect path="/gaps" /></WorkspaceGuard>} />
           <Route path="/workspace/:workspace/projects/:id/gaps/review" element={<WorkspaceGuard user={session?.user}><ProjectPathRedirect path="/gaps" /></WorkspaceGuard>} />
           <Route path="/workspace/:workspace/projects/:id/generate" element={<WorkspaceGuard user={session?.user}><GenerateProgress showToast={showToast} /></WorkspaceGuard>} />
@@ -175,7 +175,7 @@ export default function App() {
           <Route path="/projects/:id/parse" element={<ProjectPathRedirect path="/template-directory" />} />
           <Route path="/projects/:id/directory" element={<ProjectPathRedirect path="/template-directory" />} />
           <Route path="/projects/:id/outline" element={<OutlineReview showToast={showToast} />} />
-          <Route path="/projects/:id/gaps" element={<GapRecognition showToast={showToast} />} />
+          <Route path="/projects/:id/gaps" element={<GapEntry showToast={showToast} />} />
           <Route path="/projects/:id/gaps-fill" element={<ProjectPathRedirect path="/gaps" />} />
           <Route path="/projects/:id/gaps/review" element={<ProjectPathRedirect path="/gaps" />} />
           <Route path="/projects/:id/generate" element={<GenerateProgress showToast={showToast} />} />

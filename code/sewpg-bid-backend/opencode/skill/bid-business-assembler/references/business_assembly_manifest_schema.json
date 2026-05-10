@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "bid-business-assembly-manifest-v1",
+  "required": [
+    "projectId",
+    "projectName",
+    "bidType",
+    "workDir",
+    "tocJsonPath",
+    "businessGapPlanPath",
+    "projectFactTablePath",
+    "parseResultPath",
+    "materialLibraryDir",
+    "outputFile"
+  ]
+}

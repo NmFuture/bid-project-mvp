@@ -1,0 +1,7 @@
+{
+  "inputFile": "../tests/fixtures/minimal_business_bid.docx",
+  "outlineFile": "../tests/fixtures/minimal_outline.json",
+  "outputFile": "out/minimal_business_bid.cleaned.docx",
+  "projectName": "示例项目",
+  "styleSpecPath": "../references/business_heading_style.json"
+}

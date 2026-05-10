@@ -89,6 +89,7 @@ print(json.dumps({
     "fieldGroupKeys": list(payload["structured"].get("fieldGroups", {}).keys()),
     "scoringCounts": {key: len(value or []) for key, value in (payload["structured"].get("scoringCriteria") or {}).items()},
     "commitmentLetterCount": len(payload["structured"].get("commitmentLetters") or []),
+    "projectFactFieldKeys": [item.get("fieldKey") for item in payload["structured"].get("projectFactFields") or []],
 }, ensure_ascii=False))
 '''.strip()
 
@@ -125,3 +126,5 @@ print(json.dumps({
         self.assertEqual(set(payload["scoringCounts"].keys()), {"business", "price", "compliance"})
         self.assertGreaterEqual(payload["scoringCounts"]["business"], 1)
         self.assertEqual(payload["commitmentLetterCount"], 1)
+        self.assertIn("projectName", payload["projectFactFieldKeys"])
+        self.assertIn("tenderNo", payload["projectFactFieldKeys"])

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
 from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
@@ -357,6 +358,65 @@ def infer_business_category(item: dict[str, Any], tier: str, group_name: str) ->
     return "商务响应文件"
 
 
+def infer_evidence_topic(path: str, title: str, category: str, document_type: str) -> str:
+    text = f"{path}/{title}/{category}/{document_type}"
+    topic_rules = [
+        ("投标函与基础响应文书", ("投标函", "法定代表人", "授权", "委托", "专用章", "廉洁")),
+        ("报价与商务表格", ("报价", "价格", "开标", "规格", "供货范围", "偏差")),
+        ("保证金与保函", ("保证金", "保函", "回单", "电汇", "担保")),
+        ("资格资质与信用", ("营业执照", "资质", "体系认证", "信用", "资信", "纳税", "开户")),
+        ("机型与大部件认证", ("机型认证", "整机认证", "大部件", "型式认证", "叶片", "齿轮箱", "发电机", "主轴承")),
+        ("业绩合同与运行证明", ("业绩", "合同", "中标通知书", "240h", "试运行", "验收")),
+        ("企业能力与供货保障", ("公司简介", "工厂", "生产能力", "服务能力", "质量管理", "供应链", "供货")),
+        ("财务与诚信", ("财务", "审计", "报表", "纳税", "资信证明", "信用中国", "失信")),
+        ("承诺声明与其他说明", ("承诺", "声明", "说明", "附件9", "其他内容")),
+        ("客户关系与专项证明", ("战略协议", "框架协议", "评价信", "优秀供应商", "示范应用")),
+    ]
+    for topic, keywords in topic_rules:
+        if any(keyword in text for keyword in keywords):
+            return topic
+    return category or "商务素材"
+
+
+def infer_applicable_chapters(profile: dict[str, Any]) -> list[str]:
+    values: list[Any] = []
+    values.extend(profile.get("applicable_modules") or [])
+    text = f"{profile.get('path')}/{profile.get('title')}/{profile.get('document_type')}/{profile.get('business_category')}"
+    chapter_rules = [
+        ("投标函", ("投标函",)),
+        ("法定代表人身份证明/授权书", ("法定代表人", "授权", "委托")),
+        ("投标人廉洁自律承诺书", ("廉洁",)),
+        ("投标价格表/开标价格表", ("报价", "价格", "开标")),
+        ("货物规格一览表/供货范围", ("规格", "供货范围")),
+        ("商务偏差表", ("偏差", "偏离")),
+        ("投标保证金/保函", ("保证金", "保函", "回单")),
+        ("履约保证承诺", ("履约",)),
+        ("资格证明文件", ("营业执照", "资质", "体系认证", "信用", "资信", "纳税", "开户")),
+        ("机型认证证书/大部件型式认证证书", ("机型认证", "整机认证", "大部件", "型式认证", "叶片", "齿轮箱", "发电机")),
+        ("业绩情况表及支撑材料", ("业绩", "合同", "中标", "240h", "验收")),
+        ("投标人需要说明的其他内容", ("承诺", "声明", "说明", "附件9", "其他内容")),
+    ]
+    for chapter, keywords in chapter_rules:
+        if any(keyword in text for keyword in keywords):
+            values.append(chapter)
+    return dedupe_strings(values, limit=8)
+
+
+def infer_chapter_keywords(profile: dict[str, Any]) -> list[str]:
+    return dedupe_strings(
+        [
+            profile.get("evidence_topic"),
+            profile.get("business_category"),
+            profile.get("document_type"),
+            profile.get("group_name"),
+            profile.get("subgroup_name"),
+            *(profile.get("applicable_chapters") or []),
+            *(profile.get("keywords") or []),
+        ],
+        limit=16,
+    )
+
+
 def collect_headings(item: dict[str, Any], limit: int = 8) -> list[str]:
     headings = item.get("headings") or []
     if not isinstance(headings, list):
@@ -387,6 +447,61 @@ def collect_tables(item: dict[str, Any], limit: int = 2) -> list[str]:
     return [str(value).strip() for value in tables[:limit] if str(value).strip()]
 
 
+def stable_short_id(value: Any) -> str:
+    text = str(value or "").strip() or "segment"
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
+
+
+def segment_keywords_from_text(text: str, fallback: list[str] | None = None, limit: int = 12) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for raw in [*(fallback or []), *re.split(r"[/_\-\s　.。；;，,、（）()【】\\]+", str(text or ""))]:
+        token = str(raw or "").strip()
+        if len(token) < 2 or token in seen:
+            continue
+        seen.add(token)
+        values.append(token)
+        if len(values) >= limit:
+            break
+    return values
+
+
+def dedupe_strings(values: list[Any], limit: int = 12) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in {"-", "[]", "待识别", "待映射", "待回退检索"}:
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def ocr_payload(item: dict[str, Any]) -> dict[str, Any]:
+    payload = item.get("businessWikiOcr") if isinstance(item.get("businessWikiOcr"), dict) else {}
+    return payload
+
+
+def ocr_text(item: dict[str, Any]) -> str:
+    direct = str(item.get("ocrText") or "").strip()
+    if direct:
+        return direct
+    return str(ocr_payload(item).get("text") or "").strip()
+
+
+def ocr_fields(item: dict[str, Any]) -> dict[str, Any]:
+    direct = item.get("ocrFields") if isinstance(item.get("ocrFields"), dict) else {}
+    if direct:
+        return direct
+    fields = ocr_payload(item).get("fields")
+    return fields if isinstance(fields, dict) else {}
+
+
 def collect_keywords(item: dict[str, Any], title: str, category: str, limit: int = 8) -> list[str]:
     seen: set[str] = set()
     values: list[str] = []
@@ -396,6 +511,9 @@ def collect_keywords(item: dict[str, Any], title: str, category: str, limit: int
     else:
         candidates = []
     candidates.extend([category, title])
+    for token in str(ocr_text(item)[:1000]).split():
+        if any(marker in token for marker in ("证书", "认证", "有效期", "机型", "部件", "编号")):
+            candidates.append(token.strip(" ：:，,。；;"))
     for value in candidates:
         if value and value not in seen:
             seen.add(value)
@@ -406,10 +524,15 @@ def collect_keywords(item: dict[str, Any], title: str, category: str, limit: int
 
 
 def infer_cleaning_strategy(item: dict[str, Any], ext: str, path: str, title: str) -> str:
+    source_ext = str(item.get("sourceExt") or ext).lower()
+    if source_ext in IMAGE_EXTS:
+        return "仅原件（图片直挂，不触发清洗）"
+    if source_ext == "pdf" and (item.get("cleanedFileName") or item.get("hasCleanedWord")):
+        return "原件+清洗稿（PDF已转换为Word）"
+    if source_ext == "pdf":
+        return "原件+清洗稿（PDF应转换为Word）"
     if ext in IMAGE_EXTS:
         return "仅原件（图片直挂，不触发清洗）"
-    if ext == "pdf" and any(token in f"{path}/{title}" for token in ("回单", "保函", "证书", "扫描", "截图")):
-        return "仅原件（扫描件/凭证）"
     if item.get("cleanedFileName") or item.get("hasCleanedWord"):
         return "原件+清洗稿"
     if ext in {"doc", "docx", "wps", "rtf"}:
@@ -481,6 +604,8 @@ def extract_text_blob(item: dict[str, Any], title: str, path: str, category: str
     parts.extend(collect_headings(item, 12))
     parts.extend(collect_paragraphs(item, 6))
     parts.extend(collect_tables(item, 4))
+    if ocr_text(item):
+        parts.append(ocr_text(item))
     parts.extend(str(value).strip() for value in (item.get("keywords") or []) if str(value).strip())
     return "\n".join(part for part in parts if part)
 
@@ -572,8 +697,15 @@ def infer_applicable_conditions(item: dict[str, Any], tier: str) -> str:
 
 def infer_risk_notes(item: dict[str, Any], ext: str, validity_status: str) -> str:
     notes: list[str] = []
+    ocr_status = str(item.get("ocrStatus") or ocr_payload(item).get("status") or "")
     if ext in IMAGE_EXTS:
         notes.append("图片原件不做清洗，使用前需人工核验证书内容与版式。")
+    if ext == "pdf":
+        notes.append("PDF 应保留原件并使用清洗稿/识别文本作为检索依据。")
+    if ocr_status == "failed":
+        notes.append("OCR 识别失败，证书编号、有效期和机型需人工核验。")
+    elif ocr_status in {"empty", "not_required"} and (ext in IMAGE_EXTS or ext == "pdf"):
+        notes.append("未获得可用 OCR 文本，图片/PDF 内容需人工核验。")
     if str(item.get("parseError") or "").strip():
         notes.append(f"解析异常：{item.get('parseError')}")
     if not collect_headings(item) and ext in {"doc", "docx", "wps", "rtf"}:
@@ -581,6 +713,80 @@ def infer_risk_notes(item: dict[str, Any], ext: str, validity_status: str) -> st
     if validity_status in {"pending_verify", "unknown"}:
         notes.append("有效期/签发信息未自动确认，生成前需人工复核。")
     return "；".join(notes) or "无显著自动风险。"
+
+
+def build_evidence_segments(profile: dict[str, Any]) -> list[dict[str, str]]:
+    segments: list[dict[str, str]] = []
+    base_keywords = [str(value) for value in profile.get("keywords") or [] if str(value).strip()]
+
+    def add_segment(
+        suffix: str,
+        title: str,
+        segment_type: str,
+        segment_scope: str,
+        summary: str,
+        source_pages: str = "",
+        keywords: list[str] | None = None,
+    ) -> None:
+        clean_title = str(title or "").strip()
+        clean_summary = str(summary or "").strip()
+        if not clean_title and not clean_summary:
+            return
+        seed = f"{profile['card_id']}:{suffix}:{clean_title}:{clean_summary[:80]}"
+        segments.append(
+            {
+                "segment_id": f"biz-seg-{stable_short_id(seed)}",
+                "segment_title": clean_title or profile["title"],
+                "segment_type": segment_type or profile["evidence_type"],
+                "segment_scope": segment_scope,
+                "segment_source_pages": source_pages or profile["source_pages"],
+                "segment_summary": clean_summary or profile["summary"],
+                "segment_keywords": "、".join(segment_keywords_from_text(f"{clean_title} {clean_summary}", [*base_keywords, *(keywords or [])])),
+            }
+        )
+
+    add_segment(
+        "primary",
+        profile["title"],
+        profile["evidence_type"],
+        "file_primary",
+        profile["summary"],
+        profile["source_pages"],
+    )
+    for index, heading in enumerate(collect_headings(profile["raw"], 10), start=1):
+        add_segment(
+            f"heading-{index}",
+            heading,
+            "heading_section",
+            "cleaned_heading",
+            f"清洗稿标题片段：{heading}",
+            "清洗稿标题/待页码定位",
+            [heading],
+        )
+    for index, table in enumerate(collect_tables(profile["raw"], 6), start=1):
+        add_segment(
+            f"table-{index}",
+            f"{profile['title']} 表格片段{index}",
+            "table_source",
+            "cleaned_table",
+            table[:260],
+            "清洗稿表格/待页码定位",
+            ["表格", "报价", "规格", "偏差", "供货范围"],
+        )
+    ocr_lines = [line.strip() for line in str(profile.get("ocr_text_excerpt") or "").splitlines() if line.strip()]
+    for index, line in enumerate(ocr_lines[:6], start=1):
+        if len(line) < 4:
+            continue
+        add_segment(
+            f"ocr-{index}",
+            line[:36],
+            "ocr_text",
+            "ocr_excerpt",
+            line[:260],
+            profile["source_pages"],
+            ["OCR", "证书", "编号", "有效期", "机型"],
+        )
+    return segments[:18]
 
 
 def profile_material(item: dict[str, Any]) -> dict[str, Any]:
@@ -591,18 +797,29 @@ def profile_material(item: dict[str, Any]) -> dict[str, Any]:
     group_name = second_group(item, tier, segments)
     category = infer_business_category(item, tier, group_name)
     ext = str(item.get("ext") or item.get("sourceExt") or Path(path).suffix.lstrip(".") or "").lower()
+    source_ext = str(item.get("sourceExt") or ext).lower()
     cleaned_strategy = infer_cleaning_strategy(item, ext, path, title)
     document_type = infer_document_type(ext, path, title, category)
     evidence_type = infer_evidence_type(ext, path, title, category)
+    evidence_topic = infer_evidence_topic(path, title, category, document_type)
     usage_mode = infer_usage_mode(ext, path, title, category)
     keywords = collect_keywords(item, title, category)
     text_blob = extract_text_blob(item, title, path, category)
+    fields = ocr_fields(item)
     issue_date, expiry_date, validity_status, last_verified_at = infer_validity_status(text_blob, path, title, ext)
+    issue_date = str(fields.get("issueDate") or item.get("issueDate") or issue_date)
+    expiry_date = str(fields.get("expiryDate") or item.get("expiryDate") or expiry_date)
+    if expiry_date:
+        _, _, validity_status, last_verified_at = infer_validity_status("\n".join([issue_date, expiry_date]), path, title, ext)
     final_version = infer_final_version(path, title)
     card_id = f"biz-card-{str(item.get('id') or Path(path).stem).strip()}"
     key_fields = collect_headings(item, 5) or keywords[:4]
     summary_parts = collect_headings(item, 3) + collect_paragraphs(item, 2)
+    if ocr_text(item) and not summary_parts:
+        summary_parts = [line.strip() for line in ocr_text(item).splitlines() if line.strip()][:2]
     summary = "；".join(summary_parts[:4]) if summary_parts else f"{document_type}，当前主要依赖路径与标题识别。"
+    ocr_status = str(item.get("ocrStatus") or ocr_payload(item).get("status") or "")
+    ocr_confidence = str(item.get("ocrConfidence") or ocr_payload(item).get("confidence") or "")
     profile = {
         "card_id": card_id,
         "material_id": str(item.get("id") or ""),
@@ -614,6 +831,7 @@ def profile_material(item: dict[str, Any]) -> dict[str, Any]:
         "subgroup_name": third_group(item, tier, group_name, segments),
         "bucket_name": bucket_name(item, tier, segments),
         "business_category": category,
+        "evidence_topic": evidence_topic,
         "document_type": document_type,
         "evidence_type": evidence_type,
         "cleaned_file_name": str(item.get("cleanedFileName") or ""),
@@ -626,22 +844,29 @@ def profile_material(item: dict[str, Any]) -> dict[str, Any]:
         "key_fields": key_fields,
         "keywords": keywords,
         "summary": summary,
-        "issuer": extract_issuer(text_blob),
-        "document_number": extract_document_number(text_blob),
+        "issuer": str(fields.get("issuer") or item.get("issuer") or extract_issuer(text_blob)),
+        "document_number": str(fields.get("documentNumber") or item.get("documentNumber") or extract_document_number(text_blob)),
         "issue_date": issue_date,
         "expiry_date": expiry_date,
         "validity_status": validity_status,
         "last_verified_at": last_verified_at,
         "applicable_conditions": infer_applicable_conditions(item, tier),
         "risk_notes": "",
-        "ocr_confidence": "n/a" if ext in IMAGE_EXTS else "1.00" if ext in {"doc", "docx", "wps", "rtf"} else "待OCR",
+        "ocr_status": ocr_status or ("not_required" if source_ext not in IMAGE_EXTS and source_ext != "pdf" else "required"),
+        "ocr_source_type": str(item.get("ocrSourceType") or ocr_payload(item).get("sourceType") or ""),
+        "ocr_confidence": ocr_confidence or ("n/a" if ext in IMAGE_EXTS else "1.00" if ext in {"doc", "docx", "wps", "rtf"} else "待OCR"),
+        "ocr_text_excerpt": ocr_text(item)[:500],
+        "turbine_models": [str(value) for value in (fields.get("turbineModels") or item.get("turbineModels") or []) if str(value).strip()][:8],
+        "components": [str(value) for value in (fields.get("components") or item.get("components") or []) if str(value).strip()][:8],
         "is_final_version": final_version,
-        "source_pages": "待页码回填" if ext in IMAGE_EXTS or ext == "pdf" else "原始文档未分页索引",
+        "source_pages": "待页码回填" if source_ext in IMAGE_EXTS or source_ext == "pdf" else "原始文档未分页索引",
         "usage_mode": usage_mode,
         "priority_score": infer_priority_score(tier, usage_mode, final_version),
         "needs_human_confirm": False,
         "retrieval_source": "path+title+headings+keywords",
         "applicable_modules": [],
+        "applicable_chapters": [],
+        "chapter_keywords": [],
         "module_matches": [],
         "search_text": text_blob,
         "ext": ext,
@@ -656,6 +881,7 @@ def profile_material(item: dict[str, Any]) -> dict[str, Any]:
         or str(item.get("parseError") or "").strip()
         or usage_mode in {"fill_table", "extract_fields"}
     )
+    profile["evidence_segments"] = build_evidence_segments(profile)
     return profile
 
 
@@ -769,6 +995,8 @@ def analyze_modules(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         profile["module_matches"] = matches[:5]
         profile["applicable_modules"] = [entry["module_name"] for entry in matches[:5]]
+        profile["applicable_chapters"] = infer_applicable_chapters(profile)
+        profile["chapter_keywords"] = infer_chapter_keywords(profile)
         if profile["ext"] not in IMAGE_EXTS and matches:
             preferred_usage = matches[0]["usage_mode"]
             if preferred_usage in {"fill_table", "extract_fields", "reference_only"}:
@@ -897,7 +1125,10 @@ def build_card_markdown(profile: dict[str, Any]) -> str:
         f"- project_code: {profile['project_code']}",
         "",
         "## 决策字段",
+        f"- evidence_topic: {profile.get('evidence_topic') or '待识别'}",
         f"- applicable_modules: {'、'.join(profile['applicable_modules']) or '待回退检索'}",
+        f"- applicable_chapters: {'、'.join(profile.get('applicable_chapters') or []) or '待映射'}",
+        f"- chapter_keywords: {'、'.join(profile.get('chapter_keywords') or []) or '待抽取'}",
         f"- usage_mode: {profile['usage_mode']}",
         f"- priority_score: {profile['priority_score']}",
         f"- needs_human_confirm: {'yes' if profile['needs_human_confirm'] else 'no'}",
@@ -916,17 +1147,45 @@ def build_card_markdown(profile: dict[str, Any]) -> str:
         f"- expiry_date: {profile['expiry_date'] or '待核验'}",
         f"- validity_status: {profile['validity_status']}",
         f"- last_verified_at: {profile['last_verified_at'] or '待核验'}",
+        f"- turbine_models: {'、'.join(profile.get('turbine_models') or []) or '待识别'}",
+        f"- components: {'、'.join(profile.get('components') or []) or '待识别'}",
         "",
         "## 风险字段",
         f"- applicable_conditions: {profile['applicable_conditions']}",
         f"- risk_notes: {profile['risk_notes']}",
+        f"- ocr_status: {profile.get('ocr_status') or 'n/a'}",
+        f"- ocr_source_type: {profile.get('ocr_source_type') or 'n/a'}",
         f"- ocr_confidence: {profile['ocr_confidence']}",
         f"- is_final_version: {'yes' if profile['is_final_version'] else 'no'}",
         f"- source_pages: {profile['source_pages']}",
+        f"- segment_count: {len(profile.get('evidence_segments') or [])}",
+        "",
+        "## 证据切片",
+        "| segment_id | segment_title | segment_type | segment_scope | segment_source_pages | segment_summary | segment_keywords |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for segment in profile.get("evidence_segments") or []:
+        lines.append(
+            "| {segment_id} | {segment_title} | {segment_type} | {segment_scope} | {segment_source_pages} | {segment_summary} | {segment_keywords} |".format(
+                **{key: md_escape(segment.get(key, "")) for key in (
+                    "segment_id",
+                    "segment_title",
+                    "segment_type",
+                    "segment_scope",
+                    "segment_source_pages",
+                    "segment_summary",
+                    "segment_keywords",
+                )}
+            )
+        )
+    lines.extend([
+        "",
+        "## OCR识别摘要",
+        profile.get("ocr_text_excerpt") or "- 未获得 OCR 文本；如为图片、扫描 PDF 或 Word 内嵌证书，请人工核验。",
         "",
         "## 清洗策略",
         f"- cleaning_strategy: {profile['cleaning_strategy']}",
-    ]
+    ])
     return "\n".join(lines) + "\n"
 
 

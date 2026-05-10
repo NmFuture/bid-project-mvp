@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "bid-business-gap-manifest-schema-v1",
+  "required": ["projectId", "projectName", "bidType", "workDir", "tocJsonPath", "parseResultPath", "businessWikiDir", "materialScope", "materialIndex", "selectedBusinessTurbineModel", "outputFile"],
+  "properties": {
+    "projectId": "string",
+    "projectName": "string",
+    "bidType": "商务标",
+    "workDir": "path",
+    "tocJsonPath": "path",
+    "parseResultPath": "path",
+    "businessWikiDir": "path-or-empty",
+    "materialScope": "object",
+    "materialIndex": "array",
+    "selectedBusinessTurbineModel": "object",
+    "outputFile": "path"
+  }
+}

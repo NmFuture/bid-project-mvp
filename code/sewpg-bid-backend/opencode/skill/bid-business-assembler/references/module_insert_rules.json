@@ -1,0 +1,5 @@
+{
+  "templatePreference": ["material_template", "parsed_template", "generated_draft"],
+  "businessScoringKeywords": ["商务评分", "评分标准", "评分索引", "评分表"],
+  "otherNotesKeywords": ["投标人需要说明", "其他内容", "其他说明", "附件9", "承诺"]
+}

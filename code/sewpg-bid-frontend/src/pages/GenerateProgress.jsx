@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { generateAPI, stagesAPI } from '../api'
+import { generateAPI, projectsAPI, stagesAPI } from '../api'
 import { PageError, PageLoading } from '../components/states/PageState'
 import DataCard from '../components/shared/DataCard'
 import PageHeader from '../components/shared/PageHeader'
@@ -79,6 +79,7 @@ export default function GenerateProgress({ showToast }) {
   const navigate = useNavigate()
   const workspaceSlug = useWorkspaceSlug()
   const [data, setData] = useState(null)
+  const [project, setProject] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [runningAction, setRunningAction] = useState(false)
@@ -90,8 +91,12 @@ export default function GenerateProgress({ showToast }) {
       setError('')
     }
     try {
-      const payload = await generateAPI.status(id)
+      const [payload, projectPayload] = await Promise.all([
+        generateAPI.status(id),
+        projectsAPI.get(id).catch(() => null),
+      ])
       setData(payload)
+      if (projectPayload) setProject(projectPayload)
     } catch (e) {
       if (!silent) setError(e?.message || '标书生成状态加载失败')
     } finally {
@@ -115,6 +120,28 @@ export default function GenerateProgress({ showToast }) {
   const opencodeOutput = data?.opencodeOutput || {}
   const opencodeParts = Array.isArray(opencodeOutput?.parts) ? opencodeOutput.parts : []
   const opencodeStatus = opencodeOutput?.status || 'idle'
+  const isBusinessBid = String(project?.bidType || '').includes('商务')
+  const generationLabels = isBusinessBid
+    ? {
+        outputTitle: '装配输出',
+        processName: '商务标响应文件装配',
+        waiting: '装配任务已创建，正在等待商务标响应文件装配结果。',
+        idleDescription: '点击“生成标书”后会异步调用后端商务标响应文件装配链路，并持续显示当前步骤、执行过程和装配原始输出。',
+        overviewTitle: '响应件结果概览',
+        emptySections: '商务响应件尚未输出装配结果。',
+        toast: '已开始装配商务标响应文件，请稍候。',
+        success: '装配成功',
+      }
+    : {
+        outputTitle: '拼装输出',
+        processName: '技术标正文拼装',
+        waiting: '拼装任务已创建，正在等待技术标正文组装结果。',
+        idleDescription: '点击“生成标书”后会异步调用后端正文拼装链路，并持续显示当前步骤、执行过程和拼装原始输出。',
+        overviewTitle: '章节结果概览',
+        emptySections: '正文尚未输出章节结果。',
+        toast: '已开始拼装正文，请稍候。',
+        success: '拼装成功',
+      }
 
   useEffect(() => {
     if (!isRunning) return undefined
@@ -132,7 +159,7 @@ export default function GenerateProgress({ showToast }) {
     try {
       const payload = await generateAPI.run(id)
       setData(payload)
-      showToast?.(payload?.message || '已开始拼装正文，请稍候。')
+      showToast?.(payload?.message || generationLabels.toast)
     } catch (e) {
       showToast?.(e?.message || '触发标书生成失败，请稍后重试', 'error')
     } finally {
@@ -243,9 +270,9 @@ export default function GenerateProgress({ showToast }) {
     <div className="rounded-lg border border-surface-container-high bg-surface-container-low p-4">
       <div className="flex items-center justify-between gap-3 mb-3">
         <div>
-          <h3 className="text-sm font-semibold text-on-surface">拼装输出</h3>
+          <h3 className="text-sm font-semibold text-on-surface">{generationLabels.outputTitle}</h3>
           <p className="text-xs text-on-surface-variant mt-1">
-            这里直接显示技术标正文拼装链路返回的原始片段；如果还没返回，会明确提示当前正在等待。
+            这里直接显示{generationLabels.processName}链路返回的原始片段；如果还没返回，会明确提示当前正在等待。
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -277,7 +304,7 @@ export default function GenerateProgress({ showToast }) {
 
       {opencodeStatus === 'waiting' && !opencodeParts.length ? (
         <div className="rounded-lg border border-dashed border-primary/20 bg-primary/5 px-3 py-4 text-sm text-on-surface">
-          <div className="font-medium">拼装任务已创建，正在等待技术标正文组装结果。</div>
+          <div className="font-medium">{generationLabels.waiting}</div>
           <div className="mt-2 text-on-surface-variant">
             {brandFutureCode(latestEvent?.message) || '当前还没有收到 reasoning/text 片段，请稍候。'}
           </div>
@@ -370,7 +397,7 @@ export default function GenerateProgress({ showToast }) {
             </div>
             <h4 className="text-lg font-headline font-bold text-on-surface mb-2">标书尚未生成</h4>
             <p className="text-sm text-on-surface-variant max-w-xl leading-relaxed">
-              点击“生成标书”后会异步调用后端正文拼装链路，并持续显示当前步骤、执行过程和拼装原始输出。
+              {generationLabels.idleDescription}
             </p>
             <button
               onClick={handleRunFill}
@@ -426,10 +453,10 @@ export default function GenerateProgress({ showToast }) {
               </div>
 
               <div className="xl:col-span-5 rounded-lg border border-surface-container-high bg-surface-container-low p-4">
-                <h3 className="text-sm font-semibold text-on-surface mb-3">章节结果概览</h3>
+                <h3 className="text-sm font-semibold text-on-surface mb-3">{generationLabels.overviewTitle}</h3>
                 {!Array.isArray(data?.sections) || data.sections.length === 0 ? (
                   <div className="rounded-lg border border-dashed border-surface-container-high px-3 py-4 text-sm text-on-surface-variant">
-                    正文尚未输出章节结果。
+                    {generationLabels.emptySections}
                   </div>
                 ) : (
                   <div
@@ -500,7 +527,7 @@ export default function GenerateProgress({ showToast }) {
                   <h3 className="text-sm font-semibold text-on-surface mb-3">运行信息</h3>
                   <div>
                     {[
-                      { label: '执行结果', value: '拼装成功' },
+                      { label: '执行结果', value: generationLabels.success },
                       { label: '运行时长', value: data?.runDuration || `${data?.runDurationSec || 0} 秒` },
                       { label: '完成时间', value: formatDateTime(data?.filledAt) },
                     ].map((row, index, rows) => (

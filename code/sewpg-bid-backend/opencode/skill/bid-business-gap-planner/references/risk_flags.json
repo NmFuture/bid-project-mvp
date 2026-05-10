@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "bid-business-gap-risk-flags-v1",
+  "riskFlags": [
+    {"key": "missing_material", "label": "缺少可用材料"},
+    {"key": "expiry_check_required", "label": "需核验证书有效期"},
+    {"key": "semantic_match_only", "label": "仅语义命中，需人工确认"},
+    {"key": "customer_specific", "label": "客户专项材料"},
+    {"key": "project_specific", "label": "项目专属材料"},
+    {"key": "duplicate_candidate", "label": "存在疑似重复候选"},
+    {"key": "technical_boundary_risk", "label": "可能属于技术标边界"},
+    {"key": "parser_generated_unconfirmed", "label": "解析生成稿尚未确认"},
+    {"key": "manual_placement_required", "label": "需人工确认目录落位"},
+    {"key": "section_module_conflict", "label": "章节默认模块与语义判断冲突"},
+    {"key": "parser_inferred_mapping", "label": "由解析证据推断映射"},
+    {"key": "model_mismatch", "label": "候选证书与所用机型冲突"},
+    {"key": "model_fit_review_required", "label": "机型适配需人工确认"},
+    {"key": "manual_model_input", "label": "项目机型由人工录入或未能关联 Wiki 卡片"}
+  ]
+}

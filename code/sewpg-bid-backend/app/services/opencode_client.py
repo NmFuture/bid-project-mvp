@@ -173,6 +173,62 @@ class OpencodeClient:
             "opencodeOutput": self._build_output_trace(session_id, response),
         }
 
+    def run_bid_business_assembler_with_trace(
+        self,
+        prompt_text: str,
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        session = self.create_session("S4 商务标响应文件装配")
+        session_id = str(session.get("id") or "")
+        if session_ready_callback:
+            session_ready_callback(
+                {
+                    "sessionId": session_id,
+                    "providerId": self.provider_id,
+                    "modelId": self.model_id,
+                }
+            )
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback,
+            early_tool_command="businessassemble",
+        )
+        parsed = self._extract_assembly_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
+    def run_bid_business_format_cleaner_with_trace(
+        self,
+        prompt_text: str,
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        session = self.create_session("S4 商务标格式规范化")
+        session_id = str(session.get("id") or "")
+        if session_ready_callback:
+            session_ready_callback(
+                {
+                    "sessionId": session_id,
+                    "providerId": self.provider_id,
+                    "modelId": self.model_id,
+                }
+            )
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback,
+            early_tool_command="businessformat",
+        )
+        parsed = self._extract_business_format_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
     def run_bid_tech_gap_planner_with_trace(
         self,
         prompt_text: str,
@@ -194,6 +250,34 @@ class OpencodeClient:
             prompt_text,
             stream_callback=stream_callback,
             early_tool_command="s4gap",
+        )
+        parsed = self._extract_gap_plan_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
+    def run_bid_business_gap_planner_with_trace(
+        self,
+        prompt_text: str,
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        session = self.create_session("S3 商务标缺口处理")
+        session_id = str(session.get("id") or "")
+        if session_ready_callback:
+            session_ready_callback(
+                {
+                    "sessionId": session_id,
+                    "providerId": self.provider_id,
+                    "modelId": self.model_id,
+                }
+            )
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback,
+            early_tool_command="businessgap",
         )
         parsed = self._extract_gap_plan_json(response)
         return {
@@ -348,6 +432,16 @@ class OpencodeClient:
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("outputFile"), str):
             raise RuntimeError("futurecode 返回的正文拼装 JSON 结构不正确。")
+        return parsed
+
+    def _extract_business_format_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = self._extract_json_response(
+            response,
+            empty_message="futurecode 未返回商务标格式清洗结果。",
+            repair_kind="business_format",
+        )
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("outputFile"), str):
+            raise RuntimeError("futurecode 返回的商务标格式清洗 JSON 结构不正确。")
         return parsed
 
     def _extract_gap_plan_json(self, response: dict[str, Any]) -> dict[str, Any]:
@@ -677,6 +771,57 @@ class OpencodeClient:
         }
         if command_name == "business-outline":
             payload["businessOutlineFile"] = str(work_dir / "outline.json")
+        if command_name == "businessgap":
+            summary = {"tocRefCount": 0, "taskCount": 0, "coverageStatus": "complete"}
+            try:
+                plan = json.loads(output_file.read_text(encoding="utf-8"))
+                plan_summary = plan.get("summary") if isinstance(plan, dict) else None
+                if isinstance(plan_summary, dict):
+                    summary.update(plan_summary)
+                if isinstance(plan, dict):
+                    summary["tocRefCount"] = len(plan.get("tocRefs") or [])
+                    summary["taskCount"] = len(plan.get("tasks") or [])
+            except Exception:
+                pass
+            payload = {
+                "schemaVersion": "bid-business-gap-plan-v1",
+                "outputFile": str(output_file),
+                "tocRefCount": int(summary.get("tocRefCount") or 0),
+                "taskCount": int(summary.get("taskCount") or 0),
+                "coverageStatus": str(summary.get("coverageStatus") or "complete"),
+                "summary": summary,
+            }
+        if command_name == "businessassemble":
+            summary = {"sectionCount": 0, "assembledCount": 0, "placeholderCount": 0, "reviewRequiredCount": 0}
+            try:
+                plan = json.loads((work_dir / "business_assembly_plan.json").read_text(encoding="utf-8"))
+                plan_summary = plan.get("summary") if isinstance(plan, dict) else None
+                if isinstance(plan_summary, dict):
+                    summary.update(plan_summary)
+                if isinstance(plan, dict) and isinstance(plan.get("sections"), list):
+                    summary["sectionCount"] = len(plan["sections"])
+            except Exception:
+                pass
+            payload = {
+                "schema_version": "bid-business-assembly-v1",
+                "outputFile": str(output_file),
+                "assemblyReport": str(work_dir / "business_assembly_report.md"),
+                "needsReview": str(work_dir / "business_needs_review.md"),
+                "planFile": str(work_dir / "business_assembly_plan.json"),
+                "attachmentManifest": str(work_dir / "attachment_manifest.json"),
+                "fieldFillReport": str(work_dir / "field_fill_report.json"),
+                "summary": summary,
+            }
+        if command_name == "businessformat":
+            report_file = output_file.with_name("business_format_clean_report.md")
+            payload = {
+                "schema_version": "bid-business-format-clean-v1",
+                "inputFile": str(manifest.get("inputFile") or ""),
+                "outlineFile": str(manifest.get("outlineFile") or ""),
+                "outputFile": str(output_file),
+                "reportFile": str(report_file),
+                "summary": {},
+            }
         return json.dumps(payload, ensure_ascii=False)
 
     def _tool_output_response(
@@ -807,6 +952,16 @@ class OpencodeClient:
                 '{"schema_version":"bid-tech-table-fill-v1","outputFile":'
                 '"/data/documents/PRJ-0001/technical-workspace/s4_gap_workdir/ai_fill/GAP-0001/AI填写.docx",'
                 '"unfilledFields":[],"evidenceRefs":[{"type":"material","id":"RAW-0001"}]}'
+            )
+        elif repair_kind == "business_format":
+            schema_hint = (
+                '{"schema_version":"bid-business-format-clean-v1","inputFile":'
+                '"/data/documents/PRJ-0001/business-workspace/s4_assembly_workdir/商务投标文件.docx",'
+                '"outlineFile":"/data/documents/PRJ-0001/business-workspace/s4_assembly_workdir/business_format_outline.json",'
+                '"outputFile":"/data/documents/PRJ-0001/business-workspace/s4_assembly_workdir/商务投标文件.formatted.docx",'
+                '"reportFile":"/data/documents/PRJ-0001/business-workspace/s4_assembly_workdir/business_format_clean_report.md",'
+                '"summary":{"outlineCount":1,"matchedHeadingCount":1,"unmatchedHeadingCount":0,'
+                '"tocInserted":true,"tocPresent":true,"headerCleaned":true,"riskCount":0}}'
             )
         else:
             schema_hint = (

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "bid-business-assembly-manifest-v1",
+  "projectId": "PRJ-BIZ-S4-SAMPLE",
+  "projectName": "商务标S4样例项目",
+  "bidType": "商务标",
+  "workDir": "/tmp/business-s4-sample",
+  "tocJsonPath": "/tmp/business-s4-sample/toc.json",
+  "businessGapPlanPath": "/tmp/business-s4-sample/business_gap_plan.json",
+  "projectFactTablePath": "/tmp/business-s4-sample/project_fact_table.json",
+  "parseResultPath": "/tmp/business-s4-sample/parse_result.json",
+  "businessWikiDir": "",
+  "materialLibraryDir": "/tmp/business-s4-sample/materials",
+  "outputFile": "/tmp/business-s4-sample/商务投标文件.docx"
+}

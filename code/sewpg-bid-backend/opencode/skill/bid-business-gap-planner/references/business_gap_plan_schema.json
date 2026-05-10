@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "bid-business-gap-plan-schema-v1",
+  "outputSchemaVersion": "bid-business-gap-plan-v1",
+  "requiredTopLevel": ["schemaVersion", "projectId", "projectName", "bidType", "generatedAt", "views", "summary", "moduleGroups", "tocRefs", "tasks"],
+  "requiredTaskFields": ["id", "taskKey", "title", "moduleKey", "taskType", "decision", "status", "sourceType", "tocTarget", "assemblyMode", "materialUsage", "fillPlan", "selectedEvidenceSegments", "displayOrder", "fingerprint", "updatedAt"],
+  "assemblyModes": ["template_fill_docx", "table_fill_from_material", "attach_whole_file", "embed_scan_or_image", "extract_segment", "ai_draft", "manual_upload"]
+}

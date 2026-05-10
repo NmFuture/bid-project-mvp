@@ -177,6 +177,21 @@ def _build_qualification_support_fields(items: list[dict[str, Any]]) -> list[dic
     ]
 
 
+def _line_has_explicit_commitment_obligation(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(text or ""))
+    if not normalized:
+        return False
+    if "不得存在下列情形" in normalized:
+        return True
+    if any(hint in normalized for hint in COMMITMENT_GENERATION_HINTS):
+        return True
+    has_commitment = "承诺" in normalized
+    has_obligation = any(token in normalized for token in ("须", "应", "需", "必须", "无条件"))
+    has_doc_action = any(token in normalized for token in ("提供", "提交", "出具", "附", "另附", "递交"))
+    has_doc_name = any(token in normalized for token in (*COMMITMENT_DOC_KEYWORDS, "书面承诺", "承诺材料"))
+    return has_commitment and has_obligation and (has_doc_action or has_doc_name)
+
+
 def _find_commitment_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     matched: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -206,8 +221,10 @@ COMMITMENT_GENERATION_HINTS = (
     "应出具承诺书",
     "需提供承诺函",
     "需提供承诺书",
+    "需提供书面承诺",
     "须出具承诺函",
     "须出具承诺书",
+    "须无条件承诺",
 )
 COMMITMENT_REQUIREMENT_CONTEXT_HINTS = (
     "提供",
@@ -248,7 +265,14 @@ COMMITMENT_NON_REQUIREMENT_TITLE_HINTS = (
     "参考",
 )
 TECHNICAL_COMMITMENT_KEYWORDS = (
+    "等效满负荷小时",
+    "满负荷小时",
+    "保证年等效",
+    "保证小时",
+    "发电小时",
     "发电量",
+    "上网电量",
+    "电量",
     "功率曲线",
     "功率",
     "可利用率",
@@ -269,6 +293,7 @@ TECHNICAL_COMMITMENT_KEYWORDS = (
 COMMITMENT_TOPIC_TITLE_KEYWORDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("confidentiality", ("保密",), "保密承诺书"),
     ("disqualification", ("不得存在下列情形",), "投标人不存在下列情形之一承诺函"),
+    ("certificate_obtainment", ("取得本条", "取得材料", "取得证书", "取得认证", "供货前取得"), "材料取得承诺书"),
     ("delivery", ("交货", "供货周期", "交付"), "交货周期承诺书"),
     ("quality", ("质量", "质保", "售后", "服务"), "质量服务承诺书"),
     ("security", ("投标保证金", "保函", "保证金"), "投标保证金承诺书"),
@@ -279,6 +304,7 @@ COMMITMENT_TOPIC_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("compliance", ("合规", "守法", "违法", "违规", "信用")),
     ("security", ("投标保证金", "保函", "保证金")),
     ("disqualification", ("不得存在下列情形",)),
+    ("certificate_obtainment", ("取得本条", "取得材料", "取得证书", "取得认证", "供货前取得")),
     ("integrity", ("廉洁",)),
     ("performance_bond", ("履约保证", "履约承诺")),
     ("delivery_commitment", ("交货", "工期", "供货周期")),
@@ -367,6 +393,8 @@ def _extract_commitment_trigger_phrase(text: str) -> str:
     normalized = str(text or "").strip()
     if "不得存在下列情形" in normalized:
         return "投标人不得存在下列情形之一"
+    if "须无条件承诺" in normalized:
+        return "须无条件承诺"
     for hint in COMMITMENT_GENERATION_HINTS:
         if hint in normalized:
             return hint
@@ -382,6 +410,8 @@ def _is_commitment_doc_required(item: dict[str, Any]) -> bool:
     if "不得存在下列情形" in normalized:
         return True
     if any(hint in normalized for hint in COMMITMENT_GENERATION_HINTS):
+        return True
+    if _line_has_explicit_commitment_obligation(normalized):
         return True
     if any(keyword in normalized for keyword in COMMITMENT_DOC_KEYWORDS):
         if _looks_like_bare_commitment_title(item):
@@ -502,12 +532,15 @@ def _looks_like_section_heading(line: str) -> bool:
 def _scan_business_hint_items(documents: list[dict[str, Any]], texts_by_id: dict[str, str]) -> list[dict[str, Any]]:
     keywords = sorted(
         {
+            *[alias for spec in PROJECT_BASIC_FIELDS for alias in spec.aliases],
             *[alias for spec in BUSINESS_RESPONSE_FIELDS for alias in spec.aliases],
             *[alias for spec in QUALIFICATION_SUPPORT_FIELDS for alias in spec.aliases],
             *[alias for spec in COMMITMENT_REQUIREMENT_FIELDS for alias in spec.aliases],
             "投标人不得存在下列情形之一",
             "不得存在下列情形",
             "投标人需要说明的其他内容",
+            "书面承诺",
+            "无条件承诺",
         },
         key=len,
         reverse=True,
@@ -528,20 +561,21 @@ def _scan_business_hint_items(documents: list[dict[str, Any]], texts_by_id: dict
             if _looks_like_section_heading(line):
                 current_section = line
             matched_keyword = next((keyword for keyword in keywords if keyword and keyword in line), "")
-            if not matched_keyword:
+            is_commitment_obligation = _line_has_explicit_commitment_obligation(line)
+            if not matched_keyword and not is_commitment_obligation:
                 continue
             dedupe_key = (document_id, line)
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
-            label, value = _split_label_value(line, matched_keyword)
+            label, value = _split_label_value(line, matched_keyword or "承诺要求")
             items.append(
                 {
                     "id": f"RAW-{len(items) + 1:04d}",
                     "type": "商务提示",
                     "category": "business_hint",
-                    "title": label or matched_keyword,
-                    "keyEntity": matched_keyword,
+                    "title": label or matched_keyword or "承诺要求",
+                    "keyEntity": matched_keyword or "承诺要求",
                     "keyValue": value,
                     "value": value or line,
                     "sourceFile": source_file,
@@ -811,6 +845,72 @@ def _materialize_commitment_letters(manifest: dict[str, Any], letters: list[dict
     return prepared
 
 
+BUSINESS_PROJECT_FACT_FIELD_SPECS: tuple[dict[str, Any], ...] = (
+    {"fieldKey": "projectName", "label": "项目名称", "required": True},
+    {"fieldKey": "tenderNo", "label": "招标编号", "required": True},
+    {"fieldKey": "tenderer", "label": "招标人", "required": True},
+    {"fieldKey": "managementUnit", "label": "管理单位", "required": False},
+    {"fieldKey": "bidSectionScale", "label": "标段规模", "required": False},
+    {"fieldKey": "deliveryPeriod", "label": "交货周期", "required": False},
+    {"fieldKey": "warrantyPeriod", "label": "质保期", "required": False},
+)
+
+
+def _build_business_project_fact_fields(
+    field_groups: dict[str, Any],
+    project_dates: dict[str, Any],
+) -> list[dict[str, Any]]:
+    project_basics = field_groups.get("projectBasics") if isinstance(field_groups.get("projectBasics"), list) else []
+    fields_by_key = {
+        str(field.get("key") or ""): field
+        for field in project_basics
+        if isinstance(field, dict)
+    }
+    fact_fields: list[dict[str, Any]] = []
+    for spec in BUSINESS_PROJECT_FACT_FIELD_SPECS:
+        field_key = str(spec["fieldKey"])
+        source = fields_by_key.get(field_key) or {}
+        value = str(source.get("value") or "").strip()
+        fact_fields.append(
+            {
+                "fieldKey": field_key,
+                "label": str(spec["label"]),
+                "value": value,
+                "category": "项目基础信息",
+                "status": "found" if value else "missing",
+                "required": bool(spec.get("required", False)),
+                "confidence": float(source.get("confidence") or (0.86 if value else 0.0)),
+                "sourceFile": str(source.get("sourceFile") or ""),
+                "sourceDocumentId": str(source.get("sourceDocumentId") or ""),
+                "section": str(source.get("section") or ""),
+                "evidence": str(source.get("evidence") or ""),
+                "evidenceLocation": str(source.get("evidenceLocation") or ""),
+            }
+        )
+    for field_key, label, date_key, required in (
+        ("bidStartDate", "投标起始日期", "startDate", False),
+        ("bidDeadline", "投标截止日期", "endDate", True),
+    ):
+        value = str(project_dates.get(date_key) or "").strip()
+        fact_fields.append(
+            {
+                "fieldKey": field_key,
+                "label": label,
+                "value": value,
+                "category": "投标时间信息",
+                "status": "found" if value else "missing",
+                "required": required,
+                "confidence": 0.78 if value else 0.0,
+                "sourceFile": "",
+                "sourceDocumentId": "",
+                "section": "",
+                "evidence": "",
+                "evidenceLocation": "",
+            }
+        )
+    return fact_fields
+
+
 def _scoring_bucket_from_title(title: str) -> str:
     text = _clean(title)
     if not text:
@@ -1009,6 +1109,7 @@ def build_business_result(manifest: dict[str, Any], *, mode: str = "opencode-ski
     )
     commitment_clues = _build_business_commitment_clues(merged_items)
     project_dates = structured.get("projectDates") if isinstance(structured.get("projectDates"), dict) else {}
+    project_fact_fields = _build_business_project_fact_fields(field_groups, project_dates)
 
     return {
         "items": merged_items,
@@ -1028,6 +1129,7 @@ def build_business_result(manifest: dict[str, Any], *, mode: str = "opencode-ski
             "appendices": copy.deepcopy(structured.get("appendices") or []),
             "commitmentLetters": commitment_letters,
             "commitmentClues": commitment_clues,
+            "projectFactFields": project_fact_fields,
             "categoryCounts": {
                 "商务评分": len(scoring.get("business") or []),
                 "报价评分": len(scoring.get("price") or []),
