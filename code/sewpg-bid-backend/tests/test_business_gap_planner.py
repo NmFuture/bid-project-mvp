@@ -555,6 +555,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
 
         project = store.create_project({"name": "商务S3项目", "customerName": "华能集团", "bidType": "商务标"})
         project_id = project["id"]
+        store.update_template_fallback(project_id, {"enabled": False})
         business_workspace = business_workspace_dir(project_id)
         business_workspace.mkdir(parents=True, exist_ok=True)
         letter_path = business_workspace / "commitment-letters" / "保密承诺书.docx"
@@ -629,9 +630,15 @@ class BusinessGapPlannerTests(unittest.TestCase):
         store.confirm_outline(project_id)
         store.update_stage(project_id, 2, {"status": "completed"})
 
+        async def empty_raw_files(**kwargs):
+            return {"items": [], "total": 0}
+
         with patch(
             "app.services.business_gap_planning.OpencodeClient.run_bid_business_gap_planner_with_trace",
             side_effect=RuntimeError("offline test fallback"),
+        ), patch(
+            "app.services.business_gap_planning.material_store.raw_files",
+            side_effect=empty_raw_files,
         ):
             response = self.client.post(f"/api/projects/{project_id}/business-gaps/run")
         self.assertEqual(response.status_code, 200)
@@ -707,11 +714,12 @@ class BusinessGapPlannerTests(unittest.TestCase):
         )
         self.assertEqual(mode_response.status_code, 200)
         mode_task = mode_response.json()["task"]
-        self.assertEqual(mode_task["status"], "review_required")
-        self.assertEqual(mode_task["decision"], "review_required")
+        self.assertEqual(mode_task["status"], "needs_input")
+        self.assertEqual(mode_task["decision"], "fill_required")
         self.assertEqual(mode_task["materialUsage"], "fill_template")
-        self.assertIn("candidate_template_unconfirmed", mode_task["riskFlags"])
-        self.assertTrue(mode_task["templateCandidates"])
+        self.assertIn("missing_material", mode_task["riskFlags"])
+        self.assertIn("template_missing_for_fill", mode_task["riskFlags"])
+        self.assertFalse(mode_task.get("templateCandidates"))
 
         stored_plan = store._require(project_id)["business_gap_state"]["plan"]
         bid_letter_stored = next(item for item in stored_plan["tasks"] if item["id"] == bid_letter_task["id"])
