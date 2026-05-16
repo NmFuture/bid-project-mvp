@@ -397,12 +397,12 @@ async def approve_all_commitment_letter_assets(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@router.get("/api/projects/{project_id}/parse-results/appendices/{appendix_id}/file")
+@router.api_route("/api/projects/{project_id}/parse-results/appendices/{appendix_id}/file", methods=["GET", "HEAD"])
 async def get_appendix_file(project_id: str, appendix_id: str) -> FileResponse:
     return await get_appendix_file_by_name(project_id, appendix_id, "")
 
 
-@router.get("/api/projects/{project_id}/parse-results/appendices/{appendix_id}/file/{filename:path}")
+@router.api_route("/api/projects/{project_id}/parse-results/appendices/{appendix_id}/file/{filename:path}", methods=["GET", "HEAD"])
 async def get_appendix_file_by_name(project_id: str, appendix_id: str, filename: str) -> FileResponse:
     appendix, path = _resolve_appendix_docx(project_id, appendix_id)
     _ = filename
@@ -430,12 +430,12 @@ async def get_commitment_letter_preview(project_id: str, letter_id: str, request
     return _build_commitment_letter_preview(project_id, letter_id, request)
 
 
-@router.get("/api/projects/{project_id}/parse-results/commitment-letters/{letter_id}/file")
+@router.api_route("/api/projects/{project_id}/parse-results/commitment-letters/{letter_id}/file", methods=["GET", "HEAD"])
 async def get_commitment_letter_file(project_id: str, letter_id: str) -> FileResponse:
     return await get_commitment_letter_file_by_name(project_id, letter_id, "")
 
 
-@router.get("/api/projects/{project_id}/parse-results/commitment-letters/{letter_id}/file/{filename:path}")
+@router.api_route("/api/projects/{project_id}/parse-results/commitment-letters/{letter_id}/file/{filename:path}", methods=["GET", "HEAD"])
 async def get_commitment_letter_file_by_name(project_id: str, letter_id: str, filename: str) -> FileResponse:
     letter, path = _resolve_commitment_letter_docx(project_id, letter_id)
     _ = filename
