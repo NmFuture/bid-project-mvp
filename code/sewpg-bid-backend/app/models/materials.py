@@ -52,6 +52,14 @@ class RawFolder(Base):
         }
 
 
+class RawFolderDeletion(Base):
+    __tablename__ = "raw_folder_deletions"
+
+    path = Column(Text, primary_key=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_by = Column(VARCHAR(100))
+
+
 class RawFile(Base):
     __tablename__ = "raw_files"
 

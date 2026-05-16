@@ -73,6 +73,13 @@ export default function ProjectList({ showToast, viewMode = 'projects' }) {
   }
 
   const handleDelete = async (projectId) => {
+    const project = projects.find((item) => item.id === projectId)
+    const label = project?.name || projectId
+    const confirmed = window.confirm(`确认删除项目「${label}」？\n\n删除后该项目相关流程数据将不可恢复。`)
+    if (!confirmed) {
+      setActiveMenuId('')
+      return
+    }
     setActionLoadingId(projectId)
     try {
       await projectsAPI.delete(projectId)
@@ -91,6 +98,19 @@ export default function ProjectList({ showToast, viewMode = 'projects' }) {
       setActionLoadingId('')
       setActiveMenuId('')
     }
+  }
+
+  useEffect(() => {
+    if (!activeMenuId) return undefined
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setActiveMenuId('')
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [activeMenuId])
+
+  const openProject = (project) => {
+    navigate(getProjectEntryRoute(project))
   }
 
   if (loading) {
@@ -251,8 +271,14 @@ export default function ProjectList({ showToast, viewMode = 'projects' }) {
                   return (
                     <tr
                       key={project.id}
-                      className="cursor-pointer"
-                      onClick={() => navigate(getProjectEntryRoute(project))}
+                      className="project-row"
+                      tabIndex={0}
+                      role="link"
+                      aria-label={`打开项目 ${project.name || project.id}`}
+                      onClick={() => openProject(project)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') openProject(project)
+                      }}
                     >
                       <td className="px-6 text-[14px] text-on-surface-variant font-medium">{project.id}</td>
                       <td className="px-6 text-[14px] text-on-surface">{project.name || '-'}</td>
@@ -268,6 +294,10 @@ export default function ProjectList({ showToast, viewMode = 'projects' }) {
                       <td className="px-4 text-center relative">
                         <button
                           className="px-1 py-0 !border-0 !bg-transparent text-on-surface-variant hover:text-primary transition-colors"
+                          type="button"
+                          aria-label={`打开 ${project.name || project.id} 的操作菜单`}
+                          aria-haspopup="menu"
+                          aria-expanded={menuOpen}
                           onClick={(e) => {
                             e.stopPropagation()
                             setActiveMenuId(menuOpen ? '' : project.id)
@@ -278,9 +308,12 @@ export default function ProjectList({ showToast, viewMode = 'projects' }) {
                         {menuOpen && (
                           <div
                             className="absolute right-2 top-10 w-32 bg-surface-container-lowest border border-surface-container-high z-20 py-1 shadow-[0_1px_2px_rgba(11,27,44,0.08)]"
+                            role="menu"
                             onClick={(event) => event.stopPropagation()}
                           >
                             <button
+                              type="button"
+                              role="menuitem"
                               className="w-full text-left px-3 py-1.5 text-sm text-error hover:bg-error-container/20 transition-colors disabled:opacity-50"
                               disabled={isActionLoading}
                               onClick={() => handleDelete(project.id)}

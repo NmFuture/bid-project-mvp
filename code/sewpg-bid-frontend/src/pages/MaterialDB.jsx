@@ -8,7 +8,7 @@ import { PageError, PageLoading } from '../components/states/PageState'
 import { bidTypeFromWorkspace, useWorkspaceSlug, workspaceRoute } from '../utils/workspace'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
-const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
+const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.DS_Store'
 const UPLOAD_KIND_STORAGE_KEY = 'materials.raw.upload.kind'
 const MATERIAL_TIER_OPTIONS = [
   {
@@ -48,12 +48,31 @@ const BID_TYPE_TABS = [
   },
 ]
 const ALLOWED_EXTENSIONS = new Set([
-  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff', 'ds_store',
 ])
 const MATERIAL_ROOT_PATHS = ['技术标', '商务标']
 const PROTECTED_MOVE_FOLDER_PATHS = new Set([
   '技术标',
   '商务标',
+])
+const PROTECTED_DELETE_FOLDER_PATHS = new Set([
+  '技术标',
+  '商务标',
+])
+const BUSINESS_STANDARD_PROTECTED_FOLDER_PATHS = new Set([
+  '商务标/通用素材/01-资质合规库',
+  '商务标/通用素材/02-企业能力库',
+  '商务标/通用素材/03-业绩资产池',
+  '商务标/通用素材/04-财务资料库',
+  '商务标/通用素材/05-专题证书库',
+  '商务标/通用素材/05-专题证书库/01-机型认证证书',
+  '商务标/通用素材/05-专题证书库/02-大部件型式认证证书',
+  '商务标/通用素材/06-通用模板底稿库',
+])
+const BUSINESS_CUSTOMIZED_PROTECTED_FOLDER_NAMES = new Set([
+  '01-客户关系与专项证明',
+  '02-商务响应文件',
+  '03-模板底稿与过程文件',
 ])
 
 const MATERIAL_ROOT_LABELS = {
@@ -133,6 +152,7 @@ const toSizeLabel = (bytes) => {
 }
 
 const extOf = (name) => {
+  if (String(name || '').toLowerCase() === '.ds_store') return 'ds_store'
   const parts = String(name || '').split('.')
   if (parts.length < 2) return ''
   return String(parts.pop() || '').toLowerCase()
@@ -249,6 +269,20 @@ const expandPathInMap = (map, path) => {
 }
 
 const normalizePath = (path) => String(path || '').replace(/^\/+|\/+$/g, '')
+
+const isProtectedDeleteFolderPath = (path) => {
+  const normalized = normalizePath(path)
+  if (PROTECTED_DELETE_FOLDER_PATHS.has(normalized) || BUSINESS_STANDARD_PROTECTED_FOLDER_PATHS.has(normalized)) {
+    return true
+  }
+  const parts = normalized.split('/').filter(Boolean)
+  return (
+    parts.length === 4
+    && parts[0] === '商务标'
+    && (parts[1] === '客户素材' || parts[1] === '项目素材')
+    && BUSINESS_CUSTOMIZED_PROTECTED_FOLDER_NAMES.has(parts[3])
+  )
+}
 
 const parentPath = (path) => {
   const normalized = String(path || '').replace(/^\/+|\/+$/g, '')
@@ -398,6 +432,36 @@ const projectLabel = (option) => {
   return `${option.name}（${parts.join(' / ')}）`
 }
 
+function IconButton({
+  icon,
+  label,
+  title = label,
+  onClick,
+  disabled = false,
+  variant = 'neutral',
+  children,
+}) {
+  const tone = variant === 'primary'
+    ? 'bg-primary text-on-primary hover:bg-primary-container'
+    : variant === 'danger'
+      ? 'bg-error-container/45 text-error hover:bg-error-container'
+      : 'bg-surface-container-high text-on-surface-variant hover:bg-surface-dim'
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={label}
+      className={`inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded px-2 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${tone}`}
+    >
+      {icon ? <span aria-hidden="true" className="material-symbols-outlined text-[17px]">{icon}</span> : null}
+      {children ? <span className="leading-none">{children}</span> : null}
+    </button>
+  )
+}
+
 function TreeNode({
   node,
   selectedPath,
@@ -427,11 +491,12 @@ function TreeNode({
   const displayFileCount = directFiles.length || directFileCount
   const normalizedNodePath = normalizePath(node.path)
   const canDragFolder = !PROTECTED_MOVE_FOLDER_PATHS.has(normalizedNodePath)
-  const canDeleteThisFolder = Boolean(normalizedNodePath)
+  const canDeleteThisFolder = Boolean(normalizedNodePath) && !isProtectedDeleteFolderPath(normalizedNodePath)
   const isDropTarget = dragTargetPath === normalizedNodePath
   return (
     <div>
       <button
+        type="button"
         draggable={canDragFolder}
         onDragStart={(event) => {
           if (!canDragFolder) {
@@ -458,6 +523,18 @@ function TreeNode({
           onSelect(node.path)
           if (canExpand) onToggle(node.path, false)
         }}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowRight' && canExpand) {
+            event.preventDefault()
+            onSelect(node.path)
+            onToggle(node.path, false)
+          }
+          if (event.key === 'ArrowLeft' && canExpand) {
+            event.preventDefault()
+            onSelect(node.path)
+            onToggle(node.path, true)
+          }
+        }}
         style={{ paddingLeft: `${indent}px`, fontSize: `${Math.max(11, Math.min(14, 13 * (scale / 100)))}px` }}
         className={`group w-full text-left rounded-lg py-2 pr-2 transition-colors flex items-center justify-between gap-2 ${
           isDropTarget
@@ -471,12 +548,14 @@ function TreeNode({
         <span className="min-w-0 flex items-center gap-1.5">
           {canExpand ? (
             <span
+              role="presentation"
               onClick={(event) => {
                 event.stopPropagation()
                 onSelect(node.path)
                 onToggle(node.path)
               }}
-              className="material-symbols-outlined text-sm text-outline hover:text-primary"
+              aria-hidden="true"
+              className="material-symbols-outlined text-sm text-outline group-hover:text-primary"
             >
               {collapsed ? 'chevron_right' : 'expand_more'}
             </span>
@@ -493,25 +572,18 @@ function TreeNode({
             {displayFileCount ? `${displayFileCount}/${node.fileCount}` : node.fileCount}
           </span>
           {canDeleteThisFolder && (
-            <span
-              role="button"
-              tabIndex={0}
+            <button
+              type="button"
               title="删除此文件夹"
+              aria-label={`删除文件夹 ${node.name}`}
               onClick={(event) => {
                 event.stopPropagation()
                 onDeleteFolder(normalizedNodePath)
               }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault()
-                  event.stopPropagation()
-                  onDeleteFolder(normalizedNodePath)
-                }
-              }}
               className="hidden h-6 w-6 items-center justify-center rounded text-outline hover:bg-error-container/40 hover:text-error group-hover:inline-flex"
             >
-              <span className="material-symbols-outlined text-[16px]">delete</span>
-            </span>
+              <span aria-hidden="true" className="material-symbols-outlined text-[16px]">delete</span>
+            </button>
           )}
         </span>
       </button>
@@ -558,44 +630,30 @@ function TreeNode({
                   {meta.label}
                 </span>
                 <span className="hidden shrink-0 items-center gap-1 group-hover:inline-flex">
-                  <span
-                    role="button"
-                    tabIndex={0}
+                  <button
+                    type="button"
                     title="重命名文件"
+                    aria-label={`重命名文件 ${item.name || item.id}`}
                     onClick={(event) => {
                       event.stopPropagation()
                       onRenameFile?.(item)
                     }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        event.stopPropagation()
-                        onRenameFile?.(item)
-                      }
-                    }}
                     className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-surface-container-high hover:text-primary"
                   >
-                    <span className="material-symbols-outlined text-[15px]">drive_file_rename_outline</span>
-                  </span>
-                  <span
-                    role="button"
-                    tabIndex={0}
+                    <span aria-hidden="true" className="material-symbols-outlined text-[15px]">drive_file_rename_outline</span>
+                  </button>
+                  <button
+                    type="button"
                     title="删除文件"
+                    aria-label={`删除文件 ${item.name || item.id}`}
                     onClick={(event) => {
                       event.stopPropagation()
                       onDeleteFile?.(item)
                     }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        event.stopPropagation()
-                        onDeleteFile?.(item)
-                      }
-                    }}
                     className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-error-container/40 hover:text-error"
                   >
-                    <span className="material-symbols-outlined text-[15px]">delete</span>
-                  </span>
+                    <span aria-hidden="true" className="material-symbols-outlined text-[15px]">delete</span>
+                  </button>
                 </span>
               </div>
             )
@@ -655,6 +713,7 @@ export default function MaterialDB({ showToast = () => {} }) {
     materialTier: '',
     cleanStatus: '',
   })
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
@@ -687,7 +746,7 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   const canManageCurrentFolder = Boolean(selectedFolderPath)
   const canCreateFolder = Boolean(selectedFolderPath) && canManageCurrentFolder
-  const canDeleteFolder = Boolean(selectedFolderPath)
+  const canDeleteFolder = Boolean(selectedFolderPath) && !isProtectedDeleteFolderPath(selectedFolderPath)
 
   const fileItems = useMemo(() => filesPayload?.items || [], [filesPayload?.items])
   const totalCount = Number(filesPayload?.total || 0)
@@ -706,6 +765,13 @@ export default function MaterialDB({ showToast = () => {} }) {
           : '未选择'
   const selectedUploadCustomer = customerOptions.find((option) => option.customerId === uploadCustomerId)
   const selectedUploadProject = projectOptions.find((option) => option.id === uploadProjectId)
+  const activeFilterCount = [
+    filters.keyword,
+    filters.customerName,
+    filters.projectId,
+    filters.materialTier,
+    filters.cleanStatus,
+  ].filter((value) => String(value || '').trim()).length
 
   const loadLibrary = useCallback(async (options = {}) => {
     const silent = Boolean(options.silent || libraryLoadedRef.current)
@@ -878,6 +944,20 @@ export default function MaterialDB({ showToast = () => {} }) {
     }
   }
 
+  useEffect(() => {
+    if (!showUploadModal && !conflictContext) return undefined
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Escape') return
+      if (conflictContext) {
+        setConflictContext(null)
+        return
+      }
+      if (showUploadModal && !uploading) closeUploadModal()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [conflictContext, showUploadModal, uploading])
+
   const onUploadFilesChanged = (event) => {
     const files = Array.from(event.target.files || [])
     if (!files.length) return
@@ -1018,9 +1098,9 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   const handleDeleteFolder = async (path = selectedFolderPath) => {
     const targetPath = normalizePath(path)
-    const canDeleteTarget = Boolean(targetPath)
+    const canDeleteTarget = Boolean(targetPath) && !isProtectedDeleteFolderPath(targetPath)
     if (!canDeleteTarget) {
-      showToast('当前目录暂不支持删除。', 'error')
+      showToast('基础素材目录不允许删除。', 'error')
       return
     }
     const ok = window.confirm(`确认删除文件夹：${targetPath} ？\n\n该目录下的子文件夹和素材文件也会一起删除。`)
@@ -1215,6 +1295,16 @@ export default function MaterialDB({ showToast = () => {} }) {
     }))
   }
 
+  const clearFilters = () => {
+    setFilters({
+      keyword: '',
+      customerName: '',
+      projectId: '',
+      materialTier: '',
+      cleanStatus: '',
+    })
+  }
+
   if (loading) {
     return (
       <PageLoading
@@ -1337,90 +1427,127 @@ export default function MaterialDB({ showToast = () => {} }) {
             <div className="flex min-h-0 flex-1 flex-col">
               <div className="border-b border-surface-container-high bg-surface-container-lowest px-3 py-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-sm font-semibold text-on-surface">目录与文件</div>
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => setCollapseForAll(false)} title="展开全部" className="flex h-7 w-7 items-center justify-center rounded bg-surface-container-high hover:bg-surface-dim">
-                      <span className="material-symbols-outlined text-[18px]">unfold_more</span>
-                    </button>
-                    <button onClick={() => setCollapseForAll(true)} title="收起全部" className="flex h-7 w-7 items-center justify-center rounded bg-surface-container-high hover:bg-surface-dim">
-                      <span className="material-symbols-outlined text-[18px]">unfold_less</span>
-                    </button>
-                    <span className="mx-1 h-4 w-px bg-surface-container-high" />
-                    <button onClick={() => changeTreeScale(-10)} title="缩小目录" className="flex h-7 w-7 items-center justify-center rounded bg-surface-container-high hover:bg-surface-dim">-</button>
-                    <span className="w-9 text-center text-xs text-on-surface-variant">{treeScale}%</span>
-                    <button onClick={() => changeTreeScale(10)} title="放大目录" className="flex h-7 w-7 items-center justify-center rounded bg-surface-container-high hover:bg-surface-dim">+</button>
-                    <span className="mx-1 h-4 w-px bg-surface-container-high" />
-                    <button
-                      onClick={handleCreateFolder}
-                      disabled={!canCreateFolder}
-                      title="新建文件夹"
-                      className="flex h-7 w-7 items-center justify-center rounded bg-surface-container-high hover:bg-surface-dim disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <span className="material-symbols-outlined text-[17px]">create_new_folder</span>
-                    </button>
-                    <button
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-on-surface">目录与文件</div>
+                    <div className="mt-0.5 truncate text-xs text-outline">
+                      {selectedFolderPath || '请选择目录'}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-end gap-1" role="toolbar" aria-label="素材目录工具栏">
+                    <IconButton icon="unfold_more" label="展开全部" onClick={() => setCollapseForAll(false)} />
+                    <IconButton icon="unfold_less" label="收起全部" onClick={() => setCollapseForAll(true)} />
+                    <span className="mx-1 h-4 w-px bg-surface-container-high" aria-hidden="true" />
+                    <IconButton label="缩小目录" onClick={() => changeTreeScale(-10)}>-</IconButton>
+                    <span className="w-9 text-center text-xs text-on-surface-variant" aria-label={`目录缩放 ${treeScale}%`}>{treeScale}%</span>
+                    <IconButton label="放大目录" onClick={() => changeTreeScale(10)}>+</IconButton>
+                    <span className="mx-1 h-4 w-px bg-surface-container-high" aria-hidden="true" />
+                    <IconButton icon="create_new_folder" label="新建文件夹" onClick={handleCreateFolder} disabled={!canCreateFolder} />
+                    <IconButton
+                      icon="folder_delete"
+                      label="删除文件夹"
+                      title={selectedFolderPath && isProtectedDeleteFolderPath(selectedFolderPath) ? '基础素材目录不可删除' : '删除文件夹'}
                       onClick={handleDeleteFolder}
                       disabled={!canDeleteFolder}
-                      title="删除文件夹"
-                      className="flex h-7 w-7 items-center justify-center rounded bg-surface-container-high hover:bg-surface-dim disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <span className="material-symbols-outlined text-[17px]">folder_delete</span>
-                    </button>
-                    <button
+                      variant="danger"
+                    />
+                    <IconButton
+                      icon="upload_file"
+                      label="上传到当前目录"
                       onClick={() => openUploadModal({ mode: 'path', targetPath: selectedFolderPath })}
                       disabled={!canManageCurrentFolder || !selectedFolderPath}
-                      title="上传到此目录"
-                      className="flex h-7 w-7 items-center justify-center rounded bg-primary text-on-primary hover:bg-primary-container disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <span className="material-symbols-outlined text-[17px]">upload_file</span>
-                    </button>
+                      variant="primary"
+                    />
                   </div>
                 </div>
 
-                <details className="mt-2 rounded-md border border-surface-container-high bg-surface-container-low px-3 py-2">
-                  <summary className="cursor-pointer text-xs font-semibold text-on-surface marker:text-outline">
-                    筛选
-                  </summary>
-                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    <input
-                      value={filters.keyword}
-                      onChange={(e) => updateFilter('keyword', e.target.value)}
-                      placeholder="搜索文件名"
-                      className="h-9 px-3 rounded-md bg-surface-container-highest border-none text-xs"
-                    />
+                <div className="mt-3 rounded-md border border-surface-container-high bg-surface-container-low px-3 py-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-on-surface">筛选</span>
+                    <div className="flex items-center gap-2">
+                      {activeFilterCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={clearFilters}
+                          className="text-xs font-medium text-primary hover:text-on-primary-container"
+                        >
+                          清除 {activeFilterCount}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setShowAdvancedFilters((value) => !value)}
+                        aria-expanded={showAdvancedFilters}
+                        className="inline-flex items-center gap-0.5 rounded px-1.5 py-1 text-xs font-medium text-on-surface-variant hover:bg-surface-container-high"
+                      >
+                        高级
+                        <span aria-hidden="true" className="material-symbols-outlined text-[15px]">
+                          {showAdvancedFilters ? 'expand_less' : 'expand_more'}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_9rem]">
+                    <label className="relative">
+                      <span className="sr-only">搜索文件名</span>
+                      <span aria-hidden="true" className="material-symbols-outlined pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[17px] text-outline">search</span>
+                      <input
+                        value={filters.keyword}
+                        onChange={(e) => updateFilter('keyword', e.target.value)}
+                        placeholder="搜索文件名"
+                        className="h-9 w-full rounded-md border-none bg-surface-container-highest px-8 text-xs"
+                      />
+                      {filters.keyword && (
+                        <button
+                          type="button"
+                          aria-label="清空文件名搜索"
+                          onClick={() => updateFilter('keyword', '')}
+                          className="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-outline hover:bg-surface-container-high hover:text-on-surface"
+                        >
+                          <span aria-hidden="true" className="material-symbols-outlined text-[15px]">close</span>
+                        </button>
+                      )}
+                    </label>
                     <select
+                      aria-label="清洗状态"
                       value={filters.cleanStatus}
                       onChange={(e) => updateFilter('cleanStatus', e.target.value)}
-                      className="h-9 px-3 rounded-md bg-surface-container-highest border-none text-xs"
+                      className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-xs"
                     >
                       {CLEAN_STATUS_OPTIONS.map((option) => (
                         <option key={option.value || 'all'} value={option.value}>{option.label}</option>
                       ))}
                     </select>
-                    <input
-                      value={filters.customerName}
-                      onChange={(e) => updateFilter('customerName', e.target.value)}
-                      placeholder="按客户筛选"
-                      className="h-9 px-3 rounded-md bg-surface-container-highest border-none text-xs"
-                    />
-                    <input
-                      value={filters.projectId}
-                      onChange={(e) => updateFilter('projectId', e.target.value)}
-                      placeholder="按项目ID/编号筛选"
-                      className="h-9 px-3 rounded-md bg-surface-container-highest border-none text-xs"
-                    />
-                    <select
-                      value={filters.materialTier}
-                      onChange={(e) => updateFilter('materialTier', e.target.value)}
-                      className="h-9 px-3 rounded-md bg-surface-container-highest border-none text-xs"
-                    >
-                      <option value="">全部层级</option>
-                      {MATERIAL_TIER_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
+                    {showAdvancedFilters && (
+                      <>
+                        <select
+                          aria-label="素材层级"
+                          value={filters.materialTier}
+                          onChange={(e) => updateFilter('materialTier', e.target.value)}
+                          className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-xs"
+                        >
+                          <option value="">全部层级</option>
+                          {MATERIAL_TIER_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                        <input
+                          aria-label="按客户筛选"
+                          value={filters.customerName}
+                          onChange={(e) => updateFilter('customerName', e.target.value)}
+                          placeholder="客户"
+                          className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-xs"
+                        />
+                        <input
+                          aria-label="按项目筛选"
+                          value={filters.projectId}
+                          onChange={(e) => updateFilter('projectId', e.target.value)}
+                          placeholder="项目ID/编号"
+                          className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-xs"
+                        />
+                      </>
+                    )}
                   </div>
-                </details>
+                </div>
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto p-3">
@@ -1494,17 +1621,28 @@ export default function MaterialDB({ showToast = () => {} }) {
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-5 sm:p-6 space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <label className="text-sm text-on-surface-variant">
+                <div className="text-sm text-on-surface-variant">
                   <span className="block mb-1">落位方式</span>
-                  <select
-                    value={uploadMode}
-                    onChange={(e) => setUploadMode(e.target.value)}
-                    className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                  >
-                    <option value="tier">按素材层级</option>
-                    <option value="path">指定目录路径</option>
-                  </select>
-                </label>
+                  <div className="grid h-10 grid-cols-2 rounded-lg bg-surface-container-highest p-1" role="group" aria-label="落位方式">
+                    {[
+                      ['tier', '素材层级'],
+                      ['path', '当前目录'],
+                    ].map(([value, label]) => {
+                      const active = uploadMode === value
+                      return (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => setUploadMode(value)}
+                          aria-pressed={active}
+                          className={`rounded-md text-sm font-semibold transition-colors ${active ? 'bg-white text-primary shadow-[0_1px_2px_rgba(17,34,51,0.08)]' : 'text-on-surface-variant hover:bg-surface-container-high'}`}
+                        >
+                          {label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
                 <label className="text-sm text-on-surface-variant">
                   <span className="block mb-1">标书类型</span>
                   <select
@@ -1611,21 +1749,32 @@ export default function MaterialDB({ showToast = () => {} }) {
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <label className="text-sm text-on-surface-variant">
+                <div className="text-sm text-on-surface-variant">
                   <span className="block mb-1">上传内容</span>
-                  <select
-                    value={uploadKind}
-                    onChange={(e) => {
-                      setUploadKind(e.target.value)
-                      setUploadFiles([])
-                      setUploadError('')
-                    }}
-                    className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                  >
-                    <option value="files">文件</option>
-                    <option value="folder">文件夹</option>
-                  </select>
-                </label>
+                  <div className="grid h-10 grid-cols-2 rounded-lg bg-surface-container-highest p-1" role="group" aria-label="上传内容">
+                    {[
+                      ['files', '文件'],
+                      ['folder', '文件夹'],
+                    ].map(([value, label]) => {
+                      const active = uploadKind === value
+                      return (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => {
+                            setUploadKind(value)
+                            setUploadFiles([])
+                            setUploadError('')
+                          }}
+                          aria-pressed={active}
+                          className={`rounded-md text-sm font-semibold transition-colors ${active ? 'bg-white text-primary shadow-[0_1px_2px_rgba(17,34,51,0.08)]' : 'text-on-surface-variant hover:bg-surface-container-high'}`}
+                        >
+                          {label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
               </div>
 
               <input
@@ -1698,7 +1847,7 @@ export default function MaterialDB({ showToast = () => {} }) {
               )}
 
               <p className="text-xs text-outline">
-                白名单：pdf/doc/docx/xls/xlsx/xlsm/png/jpg/jpeg/webp/bmp/tif/tiff；单文件 1024MB。图片类素材仅保留原件，不触发自动清洗。
+                白名单：pdf/doc/docx/xls/xlsx/xlsm/png/jpg/jpeg/webp/bmp/tif/tiff/DS_Store；单文件 1024MB。图片类素材仅保留原件，不触发自动清洗。
               </p>
 
               {uploadError && (

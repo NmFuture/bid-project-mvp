@@ -80,6 +80,15 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
     window.sessionStorage.setItem(WORKSPACE_STORAGE_KEY, activeWorkspace)
   }, [activeWorkspace])
 
+  useEffect(() => {
+    if (!showUserMenu) return undefined
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setShowUserMenu(false)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [showUserMenu])
+
   const showSwitcher = canViewBothWorkspaces(currentUser)
   const workspaceForLinks = activeWorkspace
 
@@ -146,14 +155,16 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
           <span className="hidden lg:inline text-xs text-[#d6ebff]">{userName}</span>
           <div className="relative">
             <button
-              className="w-8 h-8 rounded-full overflow-hidden border border-[#8fb8d8] cursor-pointer bg-[#20679f] flex items-center justify-center text-white font-semibold text-sm"
+              className="w-8 h-8 rounded-full overflow-hidden border border-[#8fb8d8] bg-[#20679f] flex items-center justify-center text-white font-semibold text-sm"
               onClick={() => setShowUserMenu((v) => !v)}
               aria-label="用户菜单"
+              aria-haspopup="menu"
+              aria-expanded={showUserMenu}
             >
               {userInitial}
             </button>
             {showUserMenu && (
-              <div className="absolute right-0 top-12 w-56 bg-white rounded-xl shadow-[0_8px_24px_-8px_rgba(0,0,0,0.15)] border border-surface-container-high py-2 animate-fade-in z-50">
+              <div className="absolute right-0 top-12 w-56 bg-white rounded-xl shadow-[0_8px_24px_-8px_rgba(0,0,0,0.15)] border border-surface-container-high py-2 animate-fade-in z-50" role="menu">
                 <div className="px-4 py-3 border-b border-surface-container-high">
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-sm font-semibold text-on-surface truncate">{userName}</div>
@@ -164,6 +175,7 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
                 </div>
                 <button
                   type="button"
+                  role="menuitem"
                   className="w-full text-left flex items-center gap-3 px-4 py-2.5 text-sm text-on-surface hover:bg-surface-container-low transition-colors"
                   onClick={() => {
                     setShowUserMenu(false)
@@ -175,6 +187,7 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
                 </button>
                 <button
                   type="button"
+                  role="menuitem"
                   onClick={() => {
                     setShowUserMenu(false)
                     onLogout?.()

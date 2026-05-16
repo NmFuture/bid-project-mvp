@@ -16,6 +16,7 @@ from sqlalchemy import desc, func, or_, select, text
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.services.filename_utils import short_filename
 from app.models import async_session
 from app.models.materials import (
     AuditLog,
@@ -26,6 +27,7 @@ from app.models.materials import (
     RawFile,
     RawFileVersion,
     RawFolder,
+    RawFolderDeletion,
     StructuredRow,
     StructuredTable,
     SystemConfig,
@@ -72,8 +74,13 @@ def size_label(size: int) -> str:
 
 
 def ext_of(name: str) -> str:
-    suffix = PurePosixPath(name).suffix.lower().lstrip(".")
-    return suffix or "file"
+    return material_suffix(name).lstrip(".") or "file"
+
+
+def material_suffix(name: str) -> str:
+    if str(name or "").lower() == ".ds_store":
+        return ".ds_store"
+    return PurePosixPath(name).suffix.lower()
 
 
 def safe_segment(value: str, fallback: str) -> str:
@@ -98,7 +105,7 @@ MATERIAL_TIER_LABELS = {
     "project": "项目素材",
 }
 CLEANABLE_MATERIAL_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm", ".docx", ".doc"}
-ORIGINAL_ONLY_MATERIAL_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+ORIGINAL_ONLY_MATERIAL_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".ds_store"}
 MATERIAL_LIBRARY_ALLOWED_SUFFIXES = CLEANABLE_MATERIAL_SUFFIXES | ORIGINAL_ONLY_MATERIAL_SUFFIXES | {".md"}
 RAW_MATERIAL_ROOTS = (
     {"name": "技术标", "tier": "standard", "bid_type": "技术标", "sort_order": 1},
@@ -111,6 +118,15 @@ TECHNICAL_TIER_FOLDERS = (
     {"name": "项目素材", "tier": "project", "sort_order": 3},
 )
 BUSINESS_TIER_FOLDERS = TECHNICAL_TIER_FOLDERS
+RAW_MATERIAL_PROTECTED_BASE_FOLDER_PATHS = {
+    "技术标",
+    "商务标",
+}
+RAW_MATERIAL_DEFAULT_TIER_FOLDER_PATHS = {
+    f"{root['name']}/{folder['name']}"
+    for root in RAW_MATERIAL_ROOTS
+    for folder in TECHNICAL_TIER_FOLDERS
+}
 BUSINESS_STANDARD_SUBFOLDERS = (
     {
         "name": "01-资质合规库",
@@ -166,6 +182,36 @@ BUSINESS_CUSTOMIZED_SUBFOLDERS = (
 )
 
 
+def _business_standard_protected_folder_paths() -> set[str]:
+    protected: set[str] = set()
+    base_path = "商务标/通用素材"
+    for spec in BUSINESS_STANDARD_SUBFOLDERS:
+        folder_path = f"{base_path}/{spec['name']}"
+        protected.add(folder_path)
+        for child in spec.get("children") or ():
+            protected.add(f"{folder_path}/{child['name']}")
+    return protected
+
+
+RAW_MATERIAL_PROTECTED_FOLDER_PATHS = (
+    RAW_MATERIAL_PROTECTED_BASE_FOLDER_PATHS | _business_standard_protected_folder_paths()
+)
+BUSINESS_CUSTOMIZED_PROTECTED_FOLDER_NAMES = {str(spec["name"]) for spec in BUSINESS_CUSTOMIZED_SUBFOLDERS}
+
+
+def is_raw_material_protected_folder_path(folder_path: str) -> bool:
+    normalized = str(folder_path or "").replace("\\", "/").strip("/")
+    if normalized in RAW_MATERIAL_PROTECTED_FOLDER_PATHS:
+        return True
+    parts = [part for part in normalized.split("/") if part]
+    return (
+        len(parts) == 4
+        and parts[0] == "商务标"
+        and parts[1] in {"客户素材", "项目素材"}
+        and parts[3] in BUSINESS_CUSTOMIZED_PROTECTED_FOLDER_NAMES
+    )
+
+
 def business_customized_tier_from_path(folder_path: str) -> str:
     parts = [part for part in str(folder_path or "").replace("\\", "/").strip("/").split("/") if part]
     if len(parts) == 3 and parts[:2] == ["商务标", "客户素材"]:
@@ -219,7 +265,9 @@ def normalize_material_tier(value: str) -> str:
 
 
 def clean_status_for_new_file(file_name: str) -> tuple[str, str]:
-    suffix = PurePosixPath(str(file_name or "")).suffix.lower()
+    suffix = material_suffix(str(file_name or ""))
+    if suffix == ".ds_store":
+        return "original_only", "DS_Store 原件直接保留，不触发自动清洗。"
     if suffix in CLEANABLE_MATERIAL_SUFFIXES:
         return "pending", "等待清洗转换为 Word。"
     if suffix in ORIGINAL_ONLY_MATERIAL_SUFFIXES:
@@ -243,6 +291,17 @@ class MaterialStore:
         if self._runtime_tables_ready:
             return
 
+        await session.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS raw_folder_deletions (
+                    path TEXT PRIMARY KEY,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    created_by VARCHAR(100)
+                )
+                """
+            )
+        )
         await session.execute(
             text(
                 """
@@ -435,11 +494,12 @@ class MaterialStore:
 
     @staticmethod
     def _wiki_attachment_key(node_id: int, file_name: str) -> str:
-        return f"wiki/{node_id}/{uuid4().hex}-{file_name}"
+        safe_name = short_filename(file_name, "attachment.bin", max_bytes=96)
+        return f"wiki/{node_id}/{uuid4().hex}-{safe_name}"
 
     @staticmethod
     def _cleaned_object_key(file_id: int, file_name: str) -> str:
-        stem = PurePosixPath(safe_segment(PurePosixPath(file_name).stem, f"RAW-{file_id:04d}")).stem
+        stem = PurePosixPath(short_filename(file_name, f"RAW-{file_id:04d}.docx", max_bytes=64)).stem
         return f"cleaned/RAW-{file_id:04d}/{uuid4().hex}-{stem}.docx"
 
     @staticmethod
@@ -559,6 +619,7 @@ class MaterialStore:
 
     async def raw_tree(self) -> dict[str, Any]:
         async with async_session() as session:
+            await self._ensure_runtime_tables(session)
             root_folders = await self._ensure_raw_material_roots(session)
             await session.commit()
 
@@ -971,6 +1032,7 @@ class MaterialStore:
         )
 
         if tier == "standard":
+            await self._clear_default_folder_deletion(session, f"{normalized_bid_type}/通用素材")
             base_folder = await self._ensure_folder_path(
                 session,
                 "通用素材",
@@ -989,6 +1051,7 @@ class MaterialStore:
             clean_customer = safe_segment(customer_name, "")
             if not clean_customer:
                 raise PeripheralError(400, "客户素材必须填写客户名称。", "CUSTOMER_NAME_REQUIRED")
+            await self._clear_default_folder_deletion(session, f"{normalized_bid_type}/客户素材")
             root = await self._ensure_folder_path(session, "客户素材", root_folder.id, "customer", normalized_bid_type, None, 2)
             customer = await self._ensure_folder_path(
                 session,
@@ -1007,6 +1070,7 @@ class MaterialStore:
         clean_project_id = safe_segment(project_id, "")
         if not clean_project_id:
             raise PeripheralError(400, "项目素材必须填写项目 ID。", "PROJECT_ID_REQUIRED")
+        await self._clear_default_folder_deletion(session, f"{normalized_bid_type}/项目素材")
         root = await self._ensure_folder_path(session, "项目素材", root_folder.id, "project", normalized_bid_type, None, 3)
         project_folder = await self._ensure_folder_path(
             session,
@@ -1022,7 +1086,9 @@ class MaterialStore:
         return project_folder
 
     async def _ensure_raw_material_roots(self, session: Any) -> list[RawFolder]:
+        await self._ensure_runtime_tables(session)
         roots: list[RawFolder] = []
+        deleted_default_paths = await self._deleted_default_folder_paths(session)
         for spec in RAW_MATERIAL_ROOTS:
             root = await self._ensure_folder_path(
                 session,
@@ -1037,6 +1103,9 @@ class MaterialStore:
             bid_type = str(spec["name"])
             tier_folders = TECHNICAL_TIER_FOLDERS if bid_type == "技术标" else BUSINESS_TIER_FOLDERS
             for child in tier_folders:
+                child_path = f"{bid_type}/{child['name']}"
+                if child_path in deleted_default_paths:
+                    continue
                 await self._ensure_folder_path(
                     session,
                     str(child["name"]),
@@ -1054,6 +1123,33 @@ class MaterialStore:
                 await self._backfill_existing_business_customized_subfolders(session)
         await self._migrate_legacy_technical_folders(session)
         return roots
+
+    async def _deleted_default_folder_paths(self, session: Any) -> set[str]:
+        result = await session.execute(select(RawFolderDeletion.path))
+        return {
+            str(path or "").strip("/")
+            for path in result.scalars().all()
+            if str(path or "").strip("/") in RAW_MATERIAL_DEFAULT_TIER_FOLDER_PATHS
+        }
+
+    async def _mark_default_folder_deleted(self, session: Any, folder_path: str) -> None:
+        normalized = str(folder_path or "").replace("\\", "/").strip("/")
+        if normalized not in RAW_MATERIAL_DEFAULT_TIER_FOLDER_PATHS:
+            return
+        existing = await session.get(RawFolderDeletion, normalized)
+        if existing is not None:
+            return
+        session.add(RawFolderDeletion(path=normalized, created_by="当前用户"))
+        await session.flush()
+
+    async def _clear_default_folder_deletion(self, session: Any, folder_path: str) -> None:
+        normalized = str(folder_path or "").replace("\\", "/").strip("/")
+        if normalized not in RAW_MATERIAL_DEFAULT_TIER_FOLDER_PATHS:
+            return
+        existing = await session.get(RawFolderDeletion, normalized)
+        if existing is not None:
+            await session.delete(existing)
+            await session.flush()
 
     async def _find_folder(self, session: Any, folder_path: str) -> RawFolder | None:
         result = await session.execute(select(RawFolder).where(RawFolder.path == folder_path))
@@ -1155,6 +1251,7 @@ class MaterialStore:
         customer_name: str | None = None,
     ) -> RawFolder:
         path = f"{parent_id and (await session.get(RawFolder, parent_id)).path or ''}/{name}".lstrip("/")
+        await self._clear_default_folder_deletion(session, path)
         result = await session.execute(select(RawFolder).where(RawFolder.path == path))
         existing = result.scalar_one_or_none()
         if existing:
@@ -1285,6 +1382,8 @@ class MaterialStore:
         folder_path = str(path or "").strip().strip("/")
         if not folder_path:
             raise PeripheralError(400, "path 不能为空。", "RAW_FOLDER_PATH_REQUIRED")
+        if is_raw_material_protected_folder_path(folder_path):
+            raise PeripheralError(400, "基础素材目录不允许删除。", "RAW_FOLDER_DELETE_PROTECTED")
         async with async_session() as session:
             result = await session.execute(select(RawFolder).where(RawFolder.path == folder_path))
             folder = result.scalar_one_or_none()
@@ -1306,6 +1405,7 @@ class MaterialStore:
 
             for descendant in sorted(folders, key=lambda entry: len(str(entry.path or "").split("/")), reverse=True):
                 await session.delete(descendant)
+            await self._mark_default_folder_deleted(session, folder_path)
             await session.commit()
 
             tree = await self.raw_tree()
@@ -1427,7 +1527,7 @@ class MaterialStore:
                 file_name = safe_segment(relative_parts[-1] if relative_parts else item.get("name") or "", "")
                 if not file_name:
                     continue
-                suffix = PurePosixPath(file_name).suffix.lower()
+                suffix = material_suffix(file_name)
                 if suffix not in MATERIAL_LIBRARY_ALLOWED_SUFFIXES:
                     allowed = ", ".join(sorted(MATERIAL_LIBRARY_ALLOWED_SUFFIXES))
                     raise PeripheralError(

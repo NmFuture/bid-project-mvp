@@ -113,6 +113,7 @@ body {
   letter-spacing: 0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  -webkit-touch-callout: none;
 }
 
 html,
@@ -123,6 +124,27 @@ body,
 
 h1, h2, h3, h4, h5, h6, .font-headline {
   font-family: var(--font-headline);
+}
+
+button,
+a,
+label,
+summary,
+select,
+[role='button'],
+[role='menuitem'],
+.material-symbols-outlined,
+.app-chrome {
+  user-select: none;
+}
+
+p,
+td,
+textarea,
+input,
+[contenteditable='true'],
+.selectable-content {
+  user-select: text;
 }
 
 @layer utilities {
@@ -159,6 +181,21 @@ h1, h2, h3, h4, h5, h6, .font-headline {
   /* 控件统一：按钮无边框 */
   button {
     border: none;
+    touch-action: manipulation;
+  }
+
+  button:active:not(:disabled),
+  a:active {
+    transform: translateY(1px);
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  [role='button']:focus-visible,
+  [role='link']:focus-visible,
+  summary:focus-visible {
+    outline: 2px solid rgba(0, 104, 183, 0.72);
+    outline-offset: 2px;
   }
 
   /* 控件统一：输入框/下拉/文本域高度与边框 */
@@ -204,6 +241,11 @@ h1, h2, h3, h4, h5, h6, .font-headline {
     background: #F7F7F7;
   }
 
+  table tbody tr:focus-visible td,
+  table tbody tr:focus-within td {
+    background: #eef7ff;
+  }
+
   /* 扁平化：去渐变，阴影保持极弱 */
   main [class*="bg-gradient"],
   .dialog-overlay [class*="bg-gradient"] {
@@ -219,6 +261,14 @@ h1, h2, h3, h4, h5, h6, .font-headline {
 .project-table-frame {
   border-radius: 8px !important;
   overflow: hidden;
+}
+
+.project-row {
+  outline: none;
+}
+
+.project-row:focus-visible {
+  box-shadow: inset 3px 0 0 #0068b7;
 }
 
 .dialog-overlay .wizard-modal-surface {
@@ -411,6 +461,22 @@ h1, h2, h3, h4, h5, h6, .font-headline {
 
 .animate-slide-up {
   animation: slide-up 0.3s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  button:active:not(:disabled),
+  a:active {
+    transform: none;
+  }
 }
 
 /* ============ AI Marker ============ */
