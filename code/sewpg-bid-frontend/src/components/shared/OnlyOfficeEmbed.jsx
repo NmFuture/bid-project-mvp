@@ -6,6 +6,22 @@ const buildHostPath = () => {
   return `${base.endsWith('/') ? base : `${base}/`}onlyoffice-host.html`
 }
 
+const shortHash = (value) => {
+  const text = String(value || '')
+  let hash = 0
+  for (let index = 0; index < text.length; index += 1) {
+    hash = Math.imul(31, hash) + text.charCodeAt(index)
+    hash |= 0
+  }
+  return Math.abs(hash).toString(36)
+}
+
+const buildDocumentKey = (documentKey, fileUrl) => {
+  const baseKey = String(documentKey || 'document').replace(/[^A-Za-z0-9._=-]/g, '-')
+  const urlHash = shortHash(fileUrl)
+  return `${baseKey}-${urlHash}`.slice(0, 120)
+}
+
 const OnlyOfficeEmbed = forwardRef(function OnlyOfficeEmbed({
   session,
   mode = 'edit',
@@ -20,7 +36,7 @@ const OnlyOfficeEmbed = forwardRef(function OnlyOfficeEmbed({
     const fileUrl = session?.documentServerFileUrl || session?.fileUrl || session?.browserFileUrl
     const probeUrl = session?.browserFileUrl || session?.fileUrl
     const config = ONLYOFFICE_CONFIG.getEditorConfig({
-      documentKey: session?.documentKey,
+      documentKey: buildDocumentKey(session?.documentKey, fileUrl),
       title: session?.title,
       // OnlyOffice Document Server resolves document URLs server-side,
       // so prefer the container-reachable internal URL here.
