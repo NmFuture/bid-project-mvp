@@ -113,7 +113,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        expected_host = "192.168.31.148:8000"
+        expected_host = "host.docker.internal:8000" if platform.system() == "Darwin" else "192.168.31.148:8000"
         self.assertIn(expected_host, payload["onlyoffice"]["fileUrl"])
         self.assertIn(expected_host, payload["onlyoffice"]["callbackUrl"])
 
