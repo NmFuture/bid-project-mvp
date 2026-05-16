@@ -19,11 +19,9 @@ import BusinessTenderReview from './pages/BusinessTenderReview'
 import Settings from './pages/Settings'
 import Login from './pages/Login'
 import Toast from './components/shared/Toast'
-import { authAPI } from './api'
+import { AUTH_EXPIRED_EVENT, AUTH_STORAGE_KEY, authAPI } from './api'
 import { parseRouteFromBidType, projectRoute, useWorkspaceSlug, workspaceFromSlug, workspaceRoute } from './utils/workspace'
 import { canAccessWorkspace, defaultWorkspaceFor } from './utils/permissions'
-
-const AUTH_STORAGE_KEY = 'sewpg.auth.session'
 
 const readStoredSession = () => {
   if (typeof window === 'undefined') return null
@@ -31,16 +29,38 @@ const readStoredSession = () => {
     const raw = window.localStorage.getItem(AUTH_STORAGE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && parsed.token) return parsed
-    return null
+    if (!parsed || typeof parsed !== 'object' || !parsed.token) return null
+    if (Number.isFinite(parsed.expiresAt) && parsed.expiresAt <= Date.now()) {
+      window.localStorage.removeItem(AUTH_STORAGE_KEY)
+      return null
+    }
+    return parsed
   } catch {
+    window.localStorage.removeItem(AUTH_STORAGE_KEY)
     return null
+  }
+}
+
+const buildSession = (payload, fallback = {}) => {
+  const token = payload?.token || fallback.token || ''
+  const expiresIn = Number(payload?.expiresIn || fallback.expiresIn || 0)
+  const fallbackExpiresAt = Number(fallback.expiresAt || 0)
+  return {
+    token,
+    user: payload?.user || fallback.user || null,
+    expiresIn: Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : null,
+    expiresAt:
+      Number.isFinite(expiresIn) && expiresIn > 0
+        ? Date.now() + expiresIn * 1000
+        : Number.isFinite(fallbackExpiresAt) && fallbackExpiresAt > Date.now()
+          ? fallbackExpiresAt
+          : null,
   }
 }
 
 const persistSession = (session) => {
   if (typeof window === 'undefined') return
-  if (!session) {
+  if (!session?.token || !session?.user) {
     window.localStorage.removeItem(AUTH_STORAGE_KEY)
     return
   }
@@ -93,13 +113,16 @@ export default function App() {
       try {
         const payload = await authAPI.me(stored.token)
         if (!mounted) return
-        const next = { token: payload?.token || stored.token, user: stored.user || payload?.user || null }
+        const next = buildSession(payload, stored)
         setSession(next)
         persistSession(next)
-      } catch {
+      } catch (error) {
         if (!mounted) return
         setSession(null)
         persistSession(null)
+        if (error?.status === 401) {
+          showToast('登录已过期，请重新登录。', 'error')
+        }
       } finally {
         if (mounted) setAuthLoading(false)
       }
@@ -108,10 +131,20 @@ export default function App() {
     return () => {
       mounted = false
     }
-  }, [])
+  }, [showToast])
+
+  useEffect(() => {
+    const handleAuthExpired = (event) => {
+      setSession(null)
+      persistSession(null)
+      showToast(event?.detail?.message || '登录已过期，请重新登录。', 'error')
+    }
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired)
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired)
+  }, [showToast])
 
   const handleLogin = useCallback((payload) => {
-    const next = { token: payload?.token || '', user: payload?.user || null }
+    const next = buildSession(payload)
     setSession(next)
     persistSession(next)
     showToast('登录成功')

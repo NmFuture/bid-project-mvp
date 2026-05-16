@@ -64,19 +64,41 @@ const getErrorCode = (payload, status) => {
   return `HTTP_${status}`
 }
 
-const AUTH_STORAGE_KEY = 'sewpg.auth.session'
+export const AUTH_STORAGE_KEY = 'sewpg.auth.session'
+export const AUTH_EXPIRED_EVENT = 'sewpg.auth.expired'
 
-const readAuthToken = () => {
-  if (typeof window === 'undefined') return ''
+const dispatchAuthExpired = (detail = {}) => {
+  if (typeof window === 'undefined') return
+  window.localStorage.removeItem(AUTH_STORAGE_KEY)
+  window.dispatchEvent(
+    new CustomEvent(AUTH_EXPIRED_EVENT, {
+      detail: {
+        message: '登录已过期，请重新登录。',
+        ...detail,
+      },
+    }),
+  )
+}
+
+const readAuthSession = () => {
+  if (typeof window === 'undefined') return null
   try {
     const raw = window.localStorage.getItem(AUTH_STORAGE_KEY)
-    if (!raw) return ''
+    if (!raw) return null
     const parsed = JSON.parse(raw)
-    return typeof parsed?.token === 'string' ? parsed.token : ''
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.token !== 'string') return null
+    if (Number.isFinite(parsed.expiresAt) && parsed.expiresAt <= Date.now()) {
+      dispatchAuthExpired({ reason: 'expired' })
+      return null
+    }
+    return parsed
   } catch {
-    return ''
+    window.localStorage.removeItem(AUTH_STORAGE_KEY)
+    return null
   }
 }
+
+const readAuthToken = () => readAuthSession()?.token || ''
 
 class ApiError extends Error {
   constructor(message, options = {}) {
@@ -138,12 +160,13 @@ async function request(path, options = {}) {
 
   while (attempt <= maxRetries) {
     const { controller, didTimeout, cleanup } = createController(timeoutMs, options.signal)
+    let requestAuthToken = ''
     try {
       const headers = new Headers(options.headers || {})
       if (ENV.API_ENABLE_TRACE) headers.set('x-trace-id', traceId)
-      const authToken = options.authToken ?? readAuthToken()
-      if (authToken && !headers.has('Authorization')) {
-        headers.set('Authorization', `Bearer ${authToken}`)
+      requestAuthToken = options.authToken ?? readAuthToken()
+      if (requestAuthToken && !headers.has('Authorization')) {
+        headers.set('Authorization', `Bearer ${requestAuthToken}`)
       }
 
       const hasBody = options.body !== undefined && options.body !== null
@@ -197,6 +220,12 @@ async function request(path, options = {}) {
       }
 
       if (!shouldRetry(normalized, method, attempt, maxRetries)) {
+        if (normalized.status === 401 && requestAuthToken && !options.skipAuthExpired) {
+          dispatchAuthExpired({
+            reason: 'unauthorized',
+            message: normalized.message || '登录已过期，请重新登录。',
+          })
+        }
         throw normalized
       }
 
@@ -592,9 +621,9 @@ export const settingsAPI = {
 
 // ===== Auth =====
 export const authAPI = {
-  login: (data) => request('/auth/login', { method: 'POST', body: data }),
-  me: (token) => request('/auth/me', { authToken: token }),
-  logout: () => request('/auth/logout', { method: 'POST' }),
+  login: (data) => request('/auth/login', { method: 'POST', body: data, skipAuthExpired: true }),
+  me: (token) => request('/auth/me', { authToken: token, skipAuthExpired: true }),
+  logout: () => request('/auth/logout', { method: 'POST', skipAuthExpired: true }),
 }
 
 // ===== Dashboard =====
