@@ -5,12 +5,16 @@ export default function StageProgress({
 }) {
   const activeStageIndex = stages.findIndex((stage) => stage.status === 'active')
   const denominator = Math.max(1, stages.length - 1)
-  const progressRatio = activeStageIndex > 0 ? activeStageIndex / denominator : 0
-  const nodeSlotWidthPx = stages.length <= 6 ? 128 : 94
+  const completedFallbackIndex = stages.reduce((highest, stage, index) => (
+    stage.status === 'completed' ? index : highest
+  ), -1)
+  const progressIndex = activeStageIndex >= 0 ? activeStageIndex : completedFallbackIndex
+  const progressRatio = progressIndex > 0 ? progressIndex / denominator : 0
+  const nodeSlotWidthPx = stages.length <= 4 ? 132 : stages.length <= 6 ? 128 : 94
   const nodeCenterOffsetPx = nodeSlotWidthPx / 2
 
   return (
-    <section className="stage-progress-shell bg-white px-0 py-2">
+    <section className="stage-progress-shell bg-white px-0 py-3">
       <div className="relative">
         <div
           className="absolute top-[14px] h-[2px] bg-[#cfd9e3] -z-0"
@@ -65,9 +69,7 @@ export default function StageProgress({
                         : 'text-[#8095aa]'
                   }`}
                 >
-                  {stage.isHuman && '['}
                   {stage.name}
-                  {stage.isHuman && ']'}
                 </span>
               </div>
             )

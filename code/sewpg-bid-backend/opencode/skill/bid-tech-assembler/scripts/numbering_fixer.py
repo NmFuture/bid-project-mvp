@@ -384,6 +384,202 @@ def demote_headings_to_body(
     return stats
 
 
+def remap_material_headings_to_navigation(
+    doc,
+    *,
+    toc_title: Optional[str] = None,
+    remove_first_if_match: bool = True,
+    keep_heading_map: Optional[dict] = None,
+    parent_level: int = 2,
+    max_target_level: int = 4,
+    promote_bold_subheadings: bool = True,
+) -> dict:
+    """Preserve source-material structure as final Heading 3/4 navigation.
+
+    S7 inserts the official S2 TOC heading before each material. The source
+    material may also contain a real Word heading tree. Instead of flattening
+    that tree and trying to guess it later in the format cleaner, remap it
+    relative to the inserted parent heading:
+
+    - material root heading matching ``toc_title`` is removed as a duplicate
+    - headings matching official S2 children keep their official level/number
+    - remaining material headings become children under ``parent_level``
+    - short bold body subheadings become one level deeper, capped at H4
+    - captions/table titles stay as body text
+    """
+    normalized_keep: dict[str, dict] = {}
+    for key, value in (keep_heading_map or {}).items():
+        if not isinstance(value, dict):
+            continue
+        normalized_keep[_normalize_title_key(str(key))] = value
+
+    max_target_level = max(1, min(int(max_target_level or 4), 9))
+    parent_level = max(1, min(int(parent_level or 1), max_target_level))
+    base_child_level = min(parent_level + 1, max_target_level)
+
+    stats = {
+        "remapped": 0,
+        "kept": 0,
+        "removed": 0,
+        "demoted": 0,
+        "bold_subheadings": 0,
+        "skipped_first": False,
+    }
+
+    heading_entries: list[tuple] = []
+    for para in doc.paragraphs:
+        lvl = _paragraph_heading_level(para)
+        if lvl is None:
+            continue
+        raw = _clean_text_for_heading_shape(para.text)
+        pure = strip_prefix(raw)
+        if not pure:
+            continue
+        heading_entries.append((para, lvl, raw, pure))
+
+    first_to_remove = None
+    first_to_remove_key = None
+    if heading_entries and remove_first_if_match and toc_title:
+        first_para, _first_level, _first_raw, first_pure = heading_entries[0]
+        if _normalize_for_match(first_pure) == _normalize_for_match(toc_title):
+            first_to_remove = first_para
+            first_to_remove_key = id(first_para._p)
+            stats["skipped_first"] = True
+
+    heading_stack: list[tuple[int, int]] = []
+    current_target_level = parent_level
+    heading_by_para = {id(para._p): (lvl, raw, pure) for para, lvl, raw, pure in heading_entries}
+
+    for para in list(doc.paragraphs):
+        entry = heading_by_para.get(id(para._p))
+        if entry is not None:
+            source_level, raw, pure = entry
+            if id(para._p) == first_to_remove_key:
+                continue
+
+            if _looks_like_caption_or_table_title(raw) or _looks_like_caption_or_table_title(pure):
+                if para.text != pure:
+                    _replace_paragraph_text_preserve_format(para, pure)
+                _set_body_style_or_clear(para, doc)
+                _clear_direct_outline_and_numbering(para)
+                stats["demoted"] += 1
+                continue
+
+            keep = normalized_keep.get(_normalize_title_key(pure))
+            while heading_stack and heading_stack[-1][0] >= source_level:
+                heading_stack.pop()
+
+            if keep:
+                title = str(keep.get("title") or pure).strip()
+                chapter_no = str(keep.get("chapter_no") or "").strip()
+                try:
+                    target_level = int(keep.get("level") or parent_level)
+                except (TypeError, ValueError):
+                    target_level = parent_level
+                target_level = max(1, min(target_level, max_target_level))
+                new_text = f"{chapter_no}  {title}" if chapter_no else title
+                _replace_paragraph_text_preserve_format(para, new_text)
+                _set_heading_style(para, target_level, doc)
+                stats["kept"] += 1
+            else:
+                target_level = min(
+                    heading_stack[-1][1] + 1 if heading_stack else base_child_level,
+                    max_target_level,
+                )
+                if para.text != pure:
+                    _replace_paragraph_text_preserve_format(para, pure)
+                _set_heading_style(para, target_level, doc)
+                stats["remapped"] += 1
+
+            heading_stack.append((source_level, target_level))
+            current_target_level = target_level
+            continue
+
+        text = _clean_text_for_heading_shape(para.text)
+        if not (
+            promote_bold_subheadings
+            and current_target_level < max_target_level
+            and _looks_like_bold_body_subheading(para, text)
+        ):
+            continue
+        target_level = min(max_target_level, max(3, current_target_level + 1))
+        _set_heading_style(para, target_level, doc)
+        stats["bold_subheadings"] += 1
+        current_target_level = target_level
+
+    if first_to_remove is not None:
+        first_to_remove._p.getparent().remove(first_to_remove._p)
+        stats["removed"] = 1
+
+    return stats
+
+
+def _clean_text_for_heading_shape(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").replace("\u3000", " ")).strip()
+
+
+def _looks_like_caption_or_table_title(text: str) -> bool:
+    clean = _clean_text_for_heading_shape(text)
+    compact = re.sub(r"\s+", "", clean)
+    if not compact:
+        return False
+    if re.match(r"^(?:图|表)\s+\S", clean):
+        return True
+    if re.match(r"^(?:图|表)[：:]\S", clean):
+        return True
+    if re.match(r"^(?:图|表)[A-Za-z]?[.-]?\d", compact):
+        return True
+    if re.match(r"^(?:图|表)[一二三四五六七八九十]+", compact):
+        return True
+    if re.match(r"^图[\u4e00-\u9fffA-Za-z0-9]{2,40}(?:示意图|结构图|流程图|布置图|接线图|曲线图|照片)$", compact):
+        return True
+    if "一览表" in compact or "统计表" in compact or "参数表" in compact:
+        return True
+    if compact.endswith(("表", "清单")) and len(compact) <= 28:
+        return True
+    return False
+
+
+def _looks_like_bold_body_subheading(para, text: str) -> bool:
+    if not text:
+        return False
+    if len(text) > 48:
+        return False
+    if text.startswith(("[", "【", "*")):
+        return False
+    if re.match(r"^(?:备注|注|说明)[:：]", text):
+        return False
+    if re.search(r"[。；;！!？?：:]$", text):
+        return False
+    if _looks_like_caption_or_table_title(text):
+        return False
+    if re.match(r"^[（(][一二三四五六七八九十\d]+[）)]\s*\S", text):
+        return False
+    if re.match(r"^\d+[）)、.]\s*\S", text):
+        return False
+    if re.match(r"^[一二三四五六七八九十]+[、.]\s*\S", text):
+        return False
+    if _bold_text_ratio(para) < 0.65:
+        return False
+    if re.search(r"[，,。；;！!？?：:]", text):
+        return False
+    return len(re.findall(r"[\u4e00-\u9fff]", text)) >= 2
+
+
+def _bold_text_ratio(para) -> float:
+    total = 0
+    bold = 0
+    for run in para.runs:
+        text = str(run.text or "")
+        visible = len(re.sub(r"\s+", "", text))
+        if not visible:
+            continue
+        total += visible
+        if run.bold is True or getattr(run.font, "bold", None) is True:
+            bold += visible
+    return bold / total if total else 0.0
+
+
 # ---------- 正文手写编号擦除 ----------
 
 # 常见单位字（开头一个字就能判定是单位的）；后接其它字也不应被当章节号

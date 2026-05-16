@@ -7,6 +7,7 @@ import OnlyOfficeWorkspace from '../components/shared/OnlyOfficeWorkspace'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
+import StageGroupNav from '../components/shared/StageGroupNav'
 import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const formatDateTime = (value) => {
@@ -38,7 +39,7 @@ export default function CoCreationEditor({ showToast }) {
       setFallbackContent(payload?.fallback?.content || '')
       setOnlyofficeError('')
     } catch (e) {
-      setError(e?.message || 'S5 共创文档加载失败')
+      setError(e?.message || '共创导出文档加载失败')
     } finally {
       setLoading(false)
     }
@@ -91,22 +92,29 @@ export default function CoCreationEditor({ showToast }) {
     setFinishingStage(true)
     try {
       await stagesAPI.update(id, 5, { status: 'completed' })
-      showToast?.('S5 共创已完成，已进入 S6 导出')
+      showToast?.('共创已完成，已进入导出')
       navigate(projectRoute(id, '/export', workspaceSlug))
     } catch (e) {
-      showToast?.(e?.message || 'S5 共创完成失败，请稍后重试', 'error')
+      showToast?.(e?.message || '共创完成失败，请稍后重试', 'error')
     } finally {
       setFinishingStage(false)
     }
   }
 
-  if (loading) return <PageLoading title="正在加载 S5 人机共创文档..." />
-  if (error) return <PageError title="S5 文档加载失败" description={error} onRetry={loadDocument} />
+  if (loading) return <PageLoading title="正在加载共创导出文档..." />
+  if (error) return <PageError title="共创导出文档加载失败" description={error} onRetry={loadDocument} />
 
   return (
     <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
       <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
+      <StageGroupNav
+        current="editor"
+        items={[
+          { key: 'editor', label: '共创编辑', icon: 'edit_document', path: '/editor' },
+          { key: 'export', label: '最终导出', icon: 'download', path: '/export' },
+        ]}
+      />
 
       <PageHeader
         actionsClassName="stage-header-actions"
@@ -123,7 +131,7 @@ export default function CoCreationEditor({ showToast }) {
               disabled={finishingStage}
               className="px-4 py-2.5 bg-secondary text-on-secondary text-sm font-medium rounded-lg hover:bg-secondary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {finishingStage ? '进入中...' : '进入下一阶段'}
+              {finishingStage ? '进入中...' : '进入导出'}
             </button>
           </>
         )}

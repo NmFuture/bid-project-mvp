@@ -7,6 +7,7 @@ import DataCard from '../components/shared/DataCard'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
+import StageGroupNav from '../components/shared/StageGroupNav'
 import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const statusLabels = {
@@ -605,16 +606,16 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
   const advanceToS4 = async () => {
     if (actionLoading) return
     if (!hasBusinessGapPlan) {
-      showToast?.('请先点击“生成/更新商务缺口计划”，生成完成后再进入 S4。', 'error')
+      showToast?.('请先点击“生成/更新商务缺口计划”，生成完成后再进入标书生成。', 'error')
       return
     }
     setActionLoading('advance-s4')
     try {
       await stagesAPI.update(id, 3, { status: 'completed', allowUnconfirmedBusinessGap: true })
-      showToast?.('已进入 S4 生成标书；未完成确认的缺口会在 S4 复核清单中提示。')
+      showToast?.('已进入标书生成；未完成确认的缺口会在生成阶段复核清单中提示。')
       navigate(projectRoute(id, '/generate', workspaceSlug))
     } catch (e) {
-      showToast?.(e?.message || '进入 S4 失败', 'error')
+      showToast?.(e?.message || '进入标书生成失败', 'error')
     } finally {
       setActionLoading('')
     }
@@ -919,9 +920,16 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
   return (
     <div className="flex flex-col gap-6">
       <ProjectStageProgress projectId={id} showToast={showToast} />
-      <StageBreadcrumb currentLabel="S3 商务标缺口处理" />
+      <StageBreadcrumb currentLabel="商务标素材匹配" />
+      <StageGroupNav
+        current="matching"
+        items={[
+          { key: 'matching', label: '素材匹配', icon: 'rule_settings', path: '/gaps' },
+          { key: 'generate', label: '标书生成', icon: 'draw', path: '/generate' },
+        ]}
+      />
       <PageHeader
-        title="商务标 S3 缺口处理"
+        title="商务标素材匹配"
         description="按商务目录展示响应件任务，处理承诺函、附件模板、证书、表格和支撑材料缺口。"
         actions={(
           <div className="flex flex-wrap items-center gap-2">
@@ -956,11 +964,11 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
               type="button"
               onClick={advanceToS4}
               disabled={running || !!actionLoading || !hasBusinessGapPlan}
-              title={!hasBusinessGapPlan ? '生成商务缺口计划后可进入 S4' : '允许带未确认项进入 S4，后续生成标书会输出复核清单'}
+              title={!hasBusinessGapPlan ? '生成商务缺口计划后可进入标书生成' : '允许带未确认项进入标书生成，后续会输出复核清单'}
               className="inline-flex h-10 items-center gap-2 rounded-md bg-secondary px-4 text-sm font-semibold text-on-secondary hover:bg-secondary/90 disabled:opacity-50"
             >
               <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
-              {actionLoading === 'advance-s4' ? '进入中...' : '进入 S4 生成标书'}
+              {actionLoading === 'advance-s4' ? '进入中...' : '进入标书生成'}
             </button>
           </div>
         )}

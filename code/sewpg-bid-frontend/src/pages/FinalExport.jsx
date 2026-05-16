@@ -6,6 +6,7 @@ import DataCard from '../components/shared/DataCard'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
+import StageGroupNav from '../components/shared/StageGroupNav'
 
 const formatDateTime = (value) => {
   if (!value) return '未保存'
@@ -27,7 +28,7 @@ export default function FinalExport({ showToast }) {
       const payload = await documentAPI.final(id)
       setData(payload)
     } catch (e) {
-      setError(e?.message || 'S6 最终文件加载失败')
+      setError(e?.message || '共创导出最终文件加载失败')
     } finally {
       setLoading(false)
     }
@@ -40,8 +41,8 @@ export default function FinalExport({ showToast }) {
     return () => clearTimeout(timer)
   }, [loadData])
 
-  if (loading) return <PageLoading title="正在加载 S6 最终文档..." />
-  if (error) return <PageError title="S6 最终文档加载失败" description={error} onRetry={loadData} />
+  if (loading) return <PageLoading title="正在加载最终文档..." />
+  if (error) return <PageError title="最终文档加载失败" description={error} onRetry={loadData} />
 
   const downloadUrl = data?.fileUrl || '#'
   const fileName = data?.fileName || '投标文件_终版.docx'
@@ -50,6 +51,13 @@ export default function FinalExport({ showToast }) {
     <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
       <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
+      <StageGroupNav
+        current="export"
+        items={[
+          { key: 'editor', label: '共创编辑', icon: 'edit_document', path: '/editor' },
+          { key: 'export', label: '最终导出', icon: 'download', path: '/export' },
+        ]}
+      />
 
       <PageHeader
         actionsClassName="stage-header-actions"

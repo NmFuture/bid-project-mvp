@@ -13,8 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from docx import Document
+from docx.enum.section import WD_ORIENT
+from docx.enum.style import WD_STYLE_TYPE
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import Cm
 from docx.shared import Pt
 
 
@@ -23,6 +27,23 @@ SKILL_DIR = SCRIPT_DIR.parent
 ASSEMBLER_SCRIPTS_DIR = SKILL_DIR.parent / "bid-tech-assembler" / "scripts"
 ASSEMBLER_REFERENCES_DIR = SKILL_DIR.parent / "bid-tech-assembler" / "references"
 sys.path.insert(0, str(ASSEMBLER_SCRIPTS_DIR))
+
+
+def _drop_foreign_module(module_name: str, expected_path: Path) -> None:
+    module = sys.modules.get(module_name)
+    if module is None:
+        return
+    loaded_file = getattr(module, "__file__", None)
+    if not loaded_file:
+        return
+    try:
+        if Path(loaded_file).resolve() != expected_path.resolve():
+            sys.modules.pop(module_name, None)
+    except OSError:
+        sys.modules.pop(module_name, None)
+
+
+_drop_foreign_module("verify", ASSEMBLER_SCRIPTS_DIR / "verify.py")
 
 from finalize import force_update_fields, insert_toc_field, reapply_heading_fonts, replace_header_text  # noqa: E402
 from numbering_fixer import strip_numPr_from_body, strip_numPr_from_heading_styles  # noqa: E402
@@ -64,10 +85,13 @@ def run_manifest(manifest_path: str | Path, response: str = "summary") -> dict[s
         "outlineCount": int(report["outlineCount"]),
         "matchedHeadingCount": int(report["matchedHeadingCount"]),
         "unmatchedHeadingCount": len(report["unmatchedHeadings"]),
+        "internalHeadingCount": int(report["internalHeadingCount"]),
+        "headingLevelCounts": report["headingLevelCounts"],
         "tocInserted": bool(clean_result["tocInserted"]),
         "tocPresent": bool(report["tocPresent"]),
         "headerCleaned": bool(report["headerCleaned"]),
         "placeholderCount": int(report["placeholderCount"]),
+        "orientation": report["orientation"],
         "riskCount": len(report["formatRisks"]),
     }
     result = {
@@ -122,10 +146,13 @@ def clean_docx(
         insert_toc_field(doc)
         toc_inserted = True
 
+    heading_style_result = _configure_heading_styles(doc, style_spec)
     heading_result = _promote_existing_headings(doc, outline_items, style_spec)
+    internal_heading_result = _promote_body_internal_headings(doc, style_spec)
     reapply_heading_fonts(doc, style_spec)
     strip_numPr_from_heading_styles(doc)
     strip_numPr_from_body(doc)
+    orientation_result = _normalize_section_orientations(doc)
     doc.save(str(output_path))
 
     if project_name:
@@ -143,6 +170,10 @@ def clean_docx(
         "unmatchedHeadingCount": len(heading_result["unmatched_headings"]),
         "matchedHeadings": heading_result["matched_headings"],
         "unmatchedHeadings": heading_result["unmatched_headings"],
+        "internalHeadingCount": len(internal_heading_result["promoted_headings"]),
+        "internalHeadings": internal_heading_result["promoted_headings"],
+        "headingStylesConfigured": heading_style_result,
+        "orientation": orientation_result,
         "tocInserted": toc_inserted,
         "tocPresent": toc_present_before or toc_inserted,
     }
@@ -163,8 +194,11 @@ def verify_cleaned_docx(
     doc = Document(str(output_path))
     toc_present = document_has_toc(doc)
     header_cleaned = _header_cleaned(output_path)
+    heading_level_counts = _heading_level_counts(scan)
+    orientation_summary = dict((clean_result or {}).get("orientation") or _section_orientation_summary(doc))
     matched = list((clean_result or {}).get("matchedHeadings") or [])
     unmatched = list((clean_result or {}).get("unmatchedHeadings") or [])
+    internal_heading_count = int((clean_result or {}).get("internalHeadingCount") or 0)
     if not matched and not unmatched:
         heading_texts = {text.strip() for _, text in scan.get("heading_list", []) if text.strip()}
         matched, unmatched = _infer_matches_from_doc(outline_items, heading_texts)
@@ -180,9 +214,12 @@ def verify_cleaned_docx(
         "outlineCount": len(outline_items),
         "matchedHeadingCount": len(matched),
         "unmatchedHeadings": unmatched,
+        "internalHeadingCount": internal_heading_count,
+        "headingLevelCounts": heading_level_counts,
         "tocPresent": toc_present,
         "headerCleaned": header_cleaned,
         "placeholderCount": len(scan.get("placeholders") or []),
+        "orientation": orientation_summary,
         "formatRisks": risks,
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -273,6 +310,89 @@ def document_has_toc(doc: Document) -> bool:
     return any((node.text or "").upper().find("TOC") >= 0 for node in doc.element.iter(qn("w:instrText")))
 
 
+def _configure_heading_styles(doc: Document, style_spec: dict[str, Any], max_level: int = 4) -> dict[str, Any]:
+    configured: list[dict[str, Any]] = []
+    heading_cfg = style_spec.get("heading", {})
+    if not isinstance(heading_cfg, dict):
+        return {"levels": configured}
+
+    for level in range(1, max_level + 1):
+        cfg = heading_cfg.get(str(level))
+        if not isinstance(cfg, dict):
+            continue
+        style = _get_or_create_heading_style(doc, level)
+        _apply_style_format(style, cfg)
+        _ensure_style_outline_level(style, level)
+        configured.append({"level": level, "styleName": style.name, "styleId": style.style_id})
+    return {"levels": configured}
+
+
+def _get_or_create_heading_style(doc: Document, level: int):
+    for style_name in (f"Heading {level}", f"标题 {level}", f"标题{level}"):
+        try:
+            return doc.styles[style_name]
+        except KeyError:
+            continue
+    style = doc.styles.add_style(f"Heading {level}", WD_STYLE_TYPE.PARAGRAPH)
+    try:
+        style.base_style = doc.styles["Normal"]
+    except KeyError:
+        pass
+    return style
+
+
+def _apply_style_format(style, cfg: dict[str, Any]) -> None:
+    font = style.font
+    if "en_font" in cfg:
+        font.name = str(cfg["en_font"])
+    if "size_pt" in cfg:
+        font.size = Pt(float(cfg["size_pt"]))
+    font.bold = bool(cfg.get("bold", False))
+
+    r_pr = style.element.get_or_add_rPr()
+    r_fonts = r_pr.find(qn("w:rFonts"))
+    if r_fonts is None:
+        r_fonts = OxmlElement("w:rFonts")
+        r_pr.insert(0, r_fonts)
+    zh_font = str(cfg.get("zh_font") or cfg.get("en_font") or "")
+    en_font = str(cfg.get("en_font") or cfg.get("zh_font") or "")
+    if zh_font or en_font:
+        r_fonts.set(qn("w:eastAsia"), zh_font)
+        r_fonts.set(qn("w:ascii"), en_font)
+        r_fonts.set(qn("w:hAnsi"), en_font)
+        r_fonts.set(qn("w:cs"), en_font)
+
+    paragraph_format = style.paragraph_format
+    align = str(cfg.get("align") or "").lower()
+    if align == "center":
+        paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    elif align == "right":
+        paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    elif align in {"both", "justify"}:
+        paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    elif align == "left":
+        paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    if "space_before_pt" in cfg:
+        paragraph_format.space_before = Pt(float(cfg["space_before_pt"]))
+    if "space_after_pt" in cfg:
+        paragraph_format.space_after = Pt(float(cfg["space_after_pt"]))
+    if "line_spacing" in cfg:
+        paragraph_format.line_spacing = float(cfg["line_spacing"])
+    if "left_indent_cm" in cfg:
+        paragraph_format.left_indent = Cm(float(cfg["left_indent_cm"]))
+    if "first_line_indent_chars" in cfg and "size_pt" in cfg:
+        paragraph_format.first_line_indent = Pt(float(cfg["first_line_indent_chars"]) * float(cfg["size_pt"]))
+
+
+def _ensure_style_outline_level(style, level: int) -> None:
+    p_pr = style.element.get_or_add_pPr()
+    outline = p_pr.find(qn("w:outlineLvl"))
+    if outline is None:
+        outline = OxmlElement("w:outlineLvl")
+        p_pr.append(outline)
+    outline.set(qn("w:val"), str(max(0, min(level - 1, 8))))
+
+
 def _promote_existing_headings(
     doc: Document,
     outline_items: list[dict[str, Any]],
@@ -290,7 +410,7 @@ def _promote_existing_headings(
             continue
         index, mode = found
         paragraph = paragraphs[index]
-        level = max(1, min(int(item["level"]), 9))
+        level = _effective_outline_level(item)
         _set_heading_style(paragraph, level, doc)
         _strip_paragraph_numpr(paragraph)
         _clear_direct_outline_level(paragraph)
@@ -306,6 +426,145 @@ def _promote_existing_headings(
         cursor = index + 1
 
     return {"matched_headings": matched, "unmatched_headings": unmatched}
+
+
+def _promote_body_internal_headings(doc: Document, style_spec: dict[str, Any]) -> dict[str, Any]:
+    promoted: list[dict[str, Any]] = []
+    current_outline_level = 1
+
+    for index, paragraph in enumerate(doc.paragraphs):
+        existing_level = _paragraph_heading_level(paragraph)
+        if existing_level:
+            current_outline_level = max(1, min(existing_level, 4))
+            continue
+
+        text = _clean_paragraph_text(paragraph.text)
+        if not _looks_like_body_internal_heading(paragraph, text):
+            continue
+
+        level = _infer_body_internal_heading_level(text, current_outline_level)
+        if not level:
+            continue
+
+        _set_heading_style(paragraph, level, doc)
+        _strip_paragraph_numpr(paragraph)
+        _clear_direct_outline_level(paragraph)
+        _apply_heading_run_format(paragraph, _heading_cfg(style_spec, level))
+        promoted.append(
+            {
+                "paragraphIndex": index,
+                "level": level,
+                "text": text,
+                "matchMode": "body-internal",
+            }
+        )
+
+    return {"promoted_headings": promoted}
+
+
+def _paragraph_heading_level(paragraph) -> int:
+    style = getattr(paragraph, "style", None)
+    candidates = (
+        str(getattr(style, "name", "") or ""),
+        str(getattr(style, "style_id", "") or ""),
+    )
+    for value in candidates:
+        normalized = value.strip().lower()
+        match = re.search(r"heading\s*(\d+)", normalized)
+        if match:
+            return max(1, min(int(match.group(1)), 9))
+        match = re.search(r"标题\s*(\d+)", value)
+        if match:
+            return max(1, min(int(match.group(1)), 9))
+    return 0
+
+
+def _clean_paragraph_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").replace("\u3000", " ")).strip()
+
+
+def _looks_like_body_internal_heading(paragraph, text: str) -> bool:
+    if not text:
+        return False
+    if len(text) > 48:
+        return False
+    if text.startswith(("[", "【", "*")):
+        return False
+    if re.match(r"^(?:备注|注|说明)[:：]", text):
+        return False
+    if re.search(r"[。；;！!？?：:]$", text):
+        return False
+    if _looks_like_caption_or_table_title(text):
+        return False
+
+    explicit_level = _infer_level_from_number(text)
+    if explicit_level >= 3:
+        return True
+    if _is_short_ordered_heading(text):
+        return _bold_text_ratio(paragraph) >= 0.65 and _has_title_shape(text)
+    return _bold_text_ratio(paragraph) >= 0.65 and _has_title_shape(text)
+
+
+def _looks_like_caption_or_table_title(text: str) -> bool:
+    clean = _clean_paragraph_text(text)
+    compact = re.sub(r"\s+", "", clean)
+    if re.match(r"^(?:图|表)\s+\S", clean):
+        return True
+    if re.match(r"^(?:图|表)[：:]\S", clean):
+        return True
+    if re.match(r"^(?:图|表)[A-Za-z]?[.-]?\d", compact):
+        return True
+    if re.match(r"^(?:图|表)[一二三四五六七八九十]+", compact):
+        return True
+    if re.match(r"^图[\u4e00-\u9fffA-Za-z0-9]{2,40}(?:示意图|结构图|流程图|布置图|接线图|曲线图|照片)$", compact):
+        return True
+    if "一览表" in compact or "统计表" in compact or "参数表" in compact:
+        return True
+    if compact.endswith(("表", "清单")) and len(compact) <= 28:
+        return True
+    return False
+
+
+def _is_short_ordered_heading(text: str) -> bool:
+    if len(text) > 34:
+        return False
+    return bool(
+        re.match(r"^[（(][一二三四五六七八九十\d]+[）)]\s*\S", text)
+        or re.match(r"^\d+[）)、.]\s*\S", text)
+        or re.match(r"^[一二三四五六七八九十]+[、.]\s*\S", text)
+    )
+
+
+def _has_title_shape(text: str) -> bool:
+    if len(text) < 2:
+        return False
+    if re.search(r"[，,。；;！!？?：:]", text):
+        return False
+    cjk_count = len(re.findall(r"[\u4e00-\u9fff]", text))
+    return cjk_count >= 2
+
+
+def _bold_text_ratio(paragraph) -> float:
+    total = 0
+    bold = 0
+    for run in paragraph.runs:
+        text = str(run.text or "")
+        visible = len(re.sub(r"\s+", "", text))
+        if not visible:
+            continue
+        total += visible
+        if run.bold is True or getattr(run.font, "bold", None) is True:
+            bold += visible
+    return bold / total if total else 0.0
+
+
+def _infer_body_internal_heading_level(text: str, current_outline_level: int) -> int:
+    explicit_level = _infer_level_from_number(text)
+    if explicit_level >= 3:
+        return max(3, min(explicit_level, 4))
+    if _is_short_ordered_heading(text):
+        return max(3, min(current_outline_level + 2, 4))
+    return max(2, min(current_outline_level + 1, 4))
 
 
 def _find_outline_item(paragraphs, item: dict[str, Any], start_index: int) -> tuple[int, str] | None:
@@ -340,9 +599,49 @@ def _outline_report_item(item: dict[str, Any]) -> dict[str, Any]:
         "id": item.get("id"),
         "number": item.get("number", ""),
         "title": item.get("title", ""),
-        "level": item.get("level"),
+        "level": _effective_outline_level(item),
         "order": item.get("order"),
     }
+
+
+def _effective_outline_level(item: dict[str, Any]) -> int:
+    try:
+        level = int(item.get("level") or 1)
+    except (TypeError, ValueError):
+        level = 1
+    inferred = max(
+        (
+            _infer_level_from_number(str(value or ""))
+            for value in (
+                item.get("number"),
+                item.get("title"),
+                _format_heading_text(item),
+            )
+        ),
+        default=0,
+    )
+    if inferred:
+        level = max(level, inferred)
+    return max(1, min(level, 9))
+
+
+def _infer_level_from_number(value: str) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    first_token = re.split(r"\s+", text, maxsplit=1)[0].strip("：:、")
+    if re.fullmatch(r"第[一二三四五六七八九十百\d]+章", first_token):
+        return 1
+    if re.fullmatch(r"\d+(?:\.\d+)*", first_token):
+        return first_token.count(".") + 1
+    appendix = re.fullmatch(r"(?:技术)?附表\s*([A-Za-z])((?:[.-]\d+)*)", first_token)
+    if appendix:
+        suffix = appendix.group(2) or ""
+        parts = [part for part in re.split(r"[.-]", suffix) if part]
+        return 1 + len(parts)
+    if re.fullmatch(r"附表\d+", first_token) or re.fullmatch(r"技术附表[A-Za-z]", first_token):
+        return 1
+    return 0
 
 
 def _set_heading_style(paragraph, level: int, doc: Document) -> None:
@@ -434,6 +733,86 @@ def _infer_matches_from_doc(outline_items: list[dict[str, Any]], heading_texts: 
     return matched, unmatched
 
 
+def _heading_level_counts(scan: dict[str, Any]) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for key, value in dict(scan.get("heading_counts") or {}).items():
+        level = _parse_heading_count_key(key)
+        if level is None:
+            continue
+        result[str(level)] = int(value)
+    return {str(level): result.get(str(level), 0) for level in range(1, 5)}
+
+
+def _parse_heading_count_key(value: Any) -> int | None:
+    match = re.search(r"(\d+)$", str(value or "").strip())
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _normalize_section_orientations(doc: Document) -> dict[str, Any]:
+    summary = {"sections": len(doc.sections), "portrait": 0, "landscape": 0, "normalized": 0}
+    for section in doc.sections:
+        changed = False
+        width = int(section.page_width or 0)
+        height = int(section.page_height or 0)
+        declared = _section_declared_orientation(section)
+        is_landscape = declared == "landscape" or (width > height > 0)
+
+        if is_landscape:
+            summary["landscape"] += 1
+            if declared != "landscape":
+                section.orientation = WD_ORIENT.LANDSCAPE
+                changed = True
+            if width < height:
+                old_width = section.page_width
+                old_height = section.page_height
+                section.page_width = old_height
+                section.page_height = old_width
+                changed = True
+        else:
+            summary["portrait"] += 1
+            if declared == "landscape":
+                section.orientation = WD_ORIENT.PORTRAIT
+                changed = True
+            if width > height > 0:
+                old_width = section.page_width
+                old_height = section.page_height
+                section.page_width = old_height
+                section.page_height = old_width
+                changed = True
+
+        if changed:
+            summary["normalized"] += 1
+    return summary
+
+
+def _section_orientation_summary(doc: Document) -> dict[str, Any]:
+    summary = {"sections": len(doc.sections), "portrait": 0, "landscape": 0, "normalized": 0}
+    for section in doc.sections:
+        width = int(section.page_width or 0)
+        height = int(section.page_height or 0)
+        declared = _section_declared_orientation(section)
+        if declared == "landscape" or (width > height > 0):
+            summary["landscape"] += 1
+        else:
+            summary["portrait"] += 1
+    return summary
+
+
+def _section_declared_orientation(section) -> str:
+    sect_pr = getattr(section, "_sectPr", None)
+    if sect_pr is None:
+        return ""
+    pg_sz = sect_pr.find(qn("w:pgSz"))
+    if pg_sz is None:
+        return ""
+    return str(pg_sz.get(qn("w:orient")) or "").lower()
+
+
 def _structural_risks(
     *,
     scan: dict[str, Any],
@@ -484,9 +863,19 @@ def _render_report(report: dict[str, Any], output_path: Path, outline_path: Path
         f"- outline 总数：{report['outlineCount']}",
         f"- 成功匹配标题数：{report['matchedHeadingCount']}",
         f"- 未匹配标题数：{len(report['unmatchedHeadings'])}",
+        f"- 正文内部标题识别数：{report.get('internalHeadingCount', 0)}",
         f"- TOC 是否存在：{'是' if report['tocPresent'] else '否'}",
         f"- 页眉是否清理：{'是' if report['headerCleaned'] else '否'}",
         f"- 占位符数量：{report['placeholderCount']}",
+        "- 标题层级统计："
+        + " / ".join(
+            f"{level}级 {count}"
+            for level, count in sorted(report.get("headingLevelCounts", {}).items(), key=lambda item: int(item[0]))
+        ),
+        "- 横竖版小节："
+        + f"竖版 {report.get('orientation', {}).get('portrait', 0)} / "
+        + f"横版 {report.get('orientation', {}).get('landscape', 0)} / "
+        + f"已规范化 {report.get('orientation', {}).get('normalized', 0)}",
         "",
         "## 未匹配标题清单",
         "",

@@ -1129,7 +1129,7 @@ def _tech_format_sections_from_toc_items(items: list[Any]) -> list[dict[str, Any
             level = int(raw.get("level") or 1)
         except (TypeError, ValueError):
             level = 1
-        level = max(1, min(level, 9))
+        level = _infer_tech_format_level(raw, default=level)
         section = {
             "id": str(raw.get("itemId") or raw.get("nodeId") or raw.get("id") or f"TECH-FORMAT-{index:04d}"),
             "title": title,
@@ -1145,6 +1145,44 @@ def _tech_format_sections_from_toc_items(items: list[Any]) -> list[dict[str, Any
             roots.append(section)
         stack.append(section)
     return roots
+
+
+def _infer_tech_format_level(item: dict[str, Any], *, default: int = 1) -> int:
+    level = max(1, min(int(default or 1), 9))
+    candidates = [
+        str(item.get("number") or item.get("tocNumber") or "").strip(),
+        str(item.get("chapter_no_flat") or item.get("chapterNoFlat") or "").strip(),
+        str(item.get("chapter_no") or item.get("chapterNo") or "").strip(),
+    ]
+    title = str(item.get("title") or item.get("name") or "").strip()
+    if title:
+        candidates.append(title)
+    inferred = max((_infer_tech_format_level_from_number(value) or 0 for value in candidates), default=0)
+    if inferred:
+        level = max(level, inferred)
+    return max(1, min(level, 9))
+
+
+def _infer_tech_format_level_from_number(value: str) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    first_token = re.split(r"\s+", text, maxsplit=1)[0]
+    candidate = first_token.strip("：:、")
+    if re.fullmatch(r"第[一二三四五六七八九十百\d]+章", candidate):
+        return 1
+    if re.fullmatch(r"\d+(?:\.\d+)*", candidate):
+        return candidate.count(".") + 1
+
+    appendix = re.fullmatch(r"(?:技术)?附表\s*([A-Za-z])((?:[.-]\d+)*)", candidate)
+    if appendix:
+        suffix = appendix.group(2) or ""
+        parts = [part for part in re.split(r"[.-]", suffix) if part]
+        return 1 + len(parts)
+
+    if re.fullmatch(r"附表\d+", candidate) or re.fullmatch(r"技术附表[A-Za-z]", candidate):
+        return 1
+    return None
 
 
 def _build_assembler_prompt(manifest_path: Path) -> str:

@@ -336,7 +336,7 @@ export default function OutlineReview({ showToast }) {
       const stageResult = await stagesAPI.update(id, 2, { status: 'completed' })
       const nextStageId = Number(stageResult?.currentStage) || 3
       const nextRoute = getStageRoute(id, nextStageId, workspaceSlug) || projectRoute(id, '/gaps', workspaceSlug)
-      showToast?.(nextStageId >= 4 ? '目录审核已完成，已进入 S4 生成标书' : '目录审核已完成，已进入 S3 缺口处理')
+      showToast?.('目录确认已完成，已进入素材匹配')
       navigate(nextRoute)
     } catch (e) {
       showToast?.(e?.message || '目录确认失败，请稍后重试', 'error')
@@ -583,12 +583,12 @@ export default function OutlineReview({ showToast }) {
     </div>
   )
 
-  if (loading) return <PageLoading title="正在加载 S3 目录审核..." />
+  if (loading) return <PageLoading title="正在加载目录确认..." />
 
   if (error) {
     return (
       <PageError
-        title="S3 目录审核加载失败"
+        title="目录确认加载失败"
         description={error}
         onRetry={loadData}
       />
@@ -606,6 +606,13 @@ export default function OutlineReview({ showToast }) {
       <ProjectStageProgress projectId={id} showToast={showToast} />
 
       <PageHeader
+        leftExtra={(
+          <div>
+            <p className="text-xs font-semibold text-primary">审核目录</p>
+            <h1 className="mt-1 text-lg font-headline font-bold text-on-surface">确认投标文件目录</h1>
+          </div>
+        )}
+        className="rounded-md border border-outline-variant/50 bg-white px-5 py-4 shadow-[0_1px_3px_rgba(13,33,55,0.06)]"
         actionsClassName="stage-header-actions"
         actions={(
           <>
@@ -618,7 +625,7 @@ export default function OutlineReview({ showToast }) {
             <button
               onClick={handleReject}
               disabled={rejecting}
-              className="px-4 py-2.5 text-sm font-medium text-error bg-error-container/30 hover:bg-error-container/50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-4 py-2.5 text-sm font-medium text-on-surface-variant bg-surface-container-high hover:bg-surface-dim rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {rejecting ? '处理中...' : '驳回重生成'}
             </button>
@@ -634,7 +641,7 @@ export default function OutlineReview({ showToast }) {
               disabled={confirming}
               className="px-4 py-2.5 text-sm font-medium text-on-secondary bg-secondary hover:bg-secondary/90 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {confirming ? '进入中...' : '进入下一阶段'}
+              {confirming ? '进入中...' : '确认目录并进入素材匹配'}
             </button>
           </>
         )}
@@ -643,8 +650,8 @@ export default function OutlineReview({ showToast }) {
       <OnlyOfficeWorkspace
         heightClass="h-[calc(100vh-16rem)] min-h-[620px] max-h-[860px]"
         gridClassName="grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-rows-none lg:grid-cols-[minmax(24rem,38rem)_minmax(0,1fr)]"
-        documentTitle="招标文件"
-        documentSubtitle={`当前文件：${activeTenderFileName}`}
+        documentTitle="招标文件预览"
+        documentSubtitle={activeTenderFileName}
         documentMeta={(
           <span className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${hasOnlyOfficeSession && !onlyofficeError ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
             {hasOnlyOfficeSession && !onlyofficeError ? '可预览' : '无预览'}
@@ -654,7 +661,7 @@ export default function OutlineReview({ showToast }) {
         sidebar={(
           <section className="flex h-full min-h-0 flex-col overflow-hidden">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
-              <h3 className="text-base font-semibold text-on-surface">目录文档</h3>
+              <h3 className="text-base font-semibold text-on-surface">投标文件目录</h3>
               <div className="flex items-center gap-3">
                 <button
                   onClick={handleToggleAllCollapse}
@@ -667,7 +674,7 @@ export default function OutlineReview({ showToast }) {
                   onClick={handleAddRoot}
                   className="stage-action-btn px-3 py-1.5 rounded-lg bg-primary text-on-primary text-xs font-semibold hover:bg-primary-container transition-colors"
                 >
-                  新增一级章节
+                  新增一级
                 </button>
               </div>
             </div>

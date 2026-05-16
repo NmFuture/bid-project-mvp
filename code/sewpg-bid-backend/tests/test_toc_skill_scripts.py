@@ -2366,6 +2366,33 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertIsNone(extra_p_pr.find(qn("w:pStyle")))
         self.assertIsNone(extra_p_pr.find(qn("w:outlineLvl")))
 
+    def test_bid_assembler_remaps_material_headings_to_navigation(self) -> None:
+        numbering_fixer = load_assembler_script("numbering_fixer")
+
+        doc = Document()
+        doc.add_paragraph("设备运行和维护专题", style="Heading 2")
+        project_flow = doc.add_paragraph("项目流程", style="Heading 1")
+        list_item = doc.add_paragraph("（3）机组调试")
+        static = doc.add_paragraph()
+        static.add_run("静态调试").bold = True
+        table_heading = doc.add_paragraph("表C.1 总体技术参数与规格", style="Heading 2")
+
+        stats = numbering_fixer.remap_material_headings_to_navigation(
+            doc,
+            toc_title="设备运行和维护专题",
+            remove_first_if_match=True,
+            parent_level=2,
+        )
+
+        self.assertEqual(stats["removed"], 1)
+        self.assertEqual(stats["remapped"], 1)
+        self.assertEqual(stats["bold_subheadings"], 1)
+        self.assertEqual(stats["demoted"], 1)
+        self.assertEqual(project_flow.style.name, "Heading 3")
+        self.assertFalse((list_item.style.name or "").startswith("Heading"))
+        self.assertEqual(static.style.name, "Heading 4")
+        self.assertFalse((table_heading.style.name or "").startswith("Heading"))
+
     def test_bid_assembler_strips_heading_style_numbering(self) -> None:
         numbering_fixer = load_assembler_script("numbering_fixer")
 
@@ -2542,7 +2569,7 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertNotIn("大素材跳过", text)
         self.assertIn("这里是业绩正文", text)
 
-    def test_bid_assembler_merger_keeps_only_toc_heading_in_navigation(self) -> None:
+    def test_bid_assembler_merger_remaps_material_headings_in_navigation(self) -> None:
         merger = load_assembler_script("merger")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2588,7 +2615,10 @@ class TocSkillScriptTests(unittest.TestCase):
             ]
             text = "\n".join(para.text for para in result.paragraphs)
 
-        self.assertEqual(headings, ["1.9 上海电气优势简介"])
+        self.assertEqual(
+            headings,
+            ["1.9 上海电气优势简介", "基本情况", "载荷仿真分析能力"],
+        )
         self.assertIn("基本情况", text)
         self.assertIn("载荷仿真分析能力", text)
 

@@ -5,7 +5,7 @@ merger v2（方案 B）：按 assembly_plan.json 合并素材到技术标母版�
 关键特性：
 - 使用 docxcompose 做 section 级合并（媒体/样式自动处理）
 - 手插 toc heading：text="{chapter_no}  {title}"，样式=Heading N
-- 素材内部 Heading 降级为正文小标题并清除 outlineLvl，不进入 Word/OnlyOffice 导航
+- 素材内部 Heading 按父章节相对映射为 3/4 级标题，保留正文结构
 - 素材首 Heading 若匹配 toc_title 则去重（物理移除）
 - 前言段特殊：style=Heading 1，text="前言  投标说明函"
 - 封面段：attach_mode=cover 的卡片优先 compose，放在文档最前
@@ -45,7 +45,7 @@ from copy import deepcopy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from preprocess import preprocess
-from numbering_fixer import demote_headings_to_body, strip_numPr_from_body, strip_numPr_from_heading_styles
+from numbering_fixer import remap_material_headings_to_navigation, strip_numPr_from_body, strip_numPr_from_heading_styles
 
 
 def _path_exists(path: Path) -> bool:
@@ -364,8 +364,8 @@ def merge(
                     continue
 
                 # 关键：S2 TOC 条目由 merger 手插为真正的导航 Heading。
-                # 素材内部 Heading 只作为正文小标题保留，不进入 Word/OnlyOffice
-                # 左侧导航；否则运行时 TOC 会被素材内部结构撑爆。
+                # 素材内部 Heading 不能再整体降级；这里按当前 TOC 父级
+                # 相对映射到最终 3/4 级，避免最后 cleaner 从正文里猜层级。
                 # remove_first_if_match 只对本条 entry 的第一份素材启用（避免叠加场景下
                 # 两份素材首 heading 都被删）。
                 try:
@@ -374,18 +374,24 @@ def merge(
                         sub_doc,
                         seen_titles_by_parent.setdefault(parent_chapter, set()),
                     )
-                    demote_stats = demote_headings_to_body(
+                    remap_stats = remap_material_headings_to_navigation(
                         sub_doc,
                         toc_title=title,
                         remove_first_if_match=(path_idx == 0),
                         keep_heading_map=toc_children_by_parent.get(parent_chapter, {}),
+                        parent_level=heading_level,
+                        max_target_level=4,
                     )
-                    if demote_stats["skipped_first"]:
+                    if remap_stats["skipped_first"]:
                         stats["inject_skipped_first"] += 1
-                    stats.setdefault("material_headings_demoted", 0)
-                    stats["material_headings_demoted"] += demote_stats["demoted"]
+                    stats.setdefault("material_headings_remapped", 0)
+                    stats["material_headings_remapped"] += remap_stats["remapped"]
+                    stats.setdefault("material_bold_subheadings_promoted", 0)
+                    stats["material_bold_subheadings_promoted"] += remap_stats["bold_subheadings"]
                     stats.setdefault("material_headings_kept", 0)
-                    stats["material_headings_kept"] += demote_stats.get("kept", 0)
+                    stats["material_headings_kept"] += remap_stats.get("kept", 0)
+                    stats.setdefault("material_headings_demoted", 0)
+                    stats["material_headings_demoted"] += remap_stats.get("demoted", 0)
 
                     # 保存处理后的副本
                     inj_path = prep_dir / f"inj_{_hash_path(src)}_{src.name}"

@@ -5,6 +5,69 @@ import StageProgress from './StageProgress'
 import { getStageNavigationRoute, getStrictStageLockReason } from '../../utils/stageFlow'
 import { useWorkspaceSlug } from '../../utils/workspace'
 
+const COMPACT_STAGE_GROUPS = [
+  { id: 1, name: '目录生成', stageIds: [1], pendingRouteStageId: 1, completedRouteStageId: 1 },
+  { id: 2, name: '目录确认', stageIds: [2], pendingRouteStageId: 2, completedRouteStageId: 2 },
+  { id: 3, name: '素材匹配', stageIds: [3, 4], pendingRouteStageId: 3, completedRouteStageId: 4 },
+  { id: 4, name: '共创导出', stageIds: [5, 6], pendingRouteStageId: 5, completedRouteStageId: 6 },
+]
+
+const toStageId = (value) => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0
+}
+
+const stageStatusRank = {
+  completed: 3,
+  active: 2,
+  running: 2,
+  pending: 1,
+}
+
+const compactProjectStages = (rawStages = []) => {
+  if (!Array.isArray(rawStages) || !rawStages.length) return []
+
+  const rawById = new Map(rawStages.map((stage) => [toStageId(stage?.id), stage]).filter(([id]) => id))
+  const activeRawStage = rawStages.find((stage) => stage?.status === 'active')
+  const activeRawStageId = toStageId(activeRawStage?.id)
+
+  return COMPACT_STAGE_GROUPS.map((group) => {
+    const groupStages = group.stageIds.map((stageId) => rawById.get(stageId)).filter(Boolean)
+    const activeStage = groupStages.find((stage) => stage?.status === 'active')
+    const hasActiveStage = Boolean(activeStage)
+    const hasKnownStage = groupStages.length > 0
+    const isCompleted = hasKnownStage && groupStages.every((stage) => stage?.status === 'completed')
+    const isPastGroup = activeRawStageId > Math.max(...group.stageIds)
+
+    let status = 'pending'
+    if (hasActiveStage) {
+      status = 'active'
+    } else if (isCompleted || isPastGroup) {
+      status = 'completed'
+    }
+
+    const routeStageId = activeStage
+      ? toStageId(activeStage.routeStageId || activeStage.id)
+      : status === 'completed'
+        ? group.completedRouteStageId
+        : group.pendingRouteStageId
+
+    const strongestStage = groupStages
+      .slice()
+      .sort((a, b) => (stageStatusRank[b?.status] || 0) - (stageStatusRank[a?.status] || 0))[0]
+
+    return {
+      id: group.id,
+      name: group.name,
+      status,
+      routeStageId,
+      sourceStageIds: group.stageIds,
+      isSkipped: groupStages.length > 0 && groupStages.every((stage) => Boolean(stage?.isSkipped)),
+      sourceStatus: strongestStage?.status || status,
+    }
+  })
+}
+
 export default function ProjectStageProgress({
   projectId,
   showToast,
@@ -22,7 +85,7 @@ export default function ProjectStageProgress({
     setError('')
     try {
       const payload = await stagesAPI.list(projectId)
-      setStages(Array.isArray(payload) ? payload : [])
+      setStages(compactProjectStages(payload))
     } catch (e) {
       setError(e?.message || '进度加载失败')
     } finally {

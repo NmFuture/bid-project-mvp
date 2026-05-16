@@ -280,7 +280,7 @@ export default function ParseResult({ showToast }) {
     try {
       await stagesAPI.update(id, 1, { status: 'completed' })
       if (isDirectoryCompleted) {
-        showToast?.('已进入目录审核')
+        showToast?.('已进入目录确认')
         navigate(projectRoute(id, '/outline', workspaceSlug))
       } else {
         showToast?.('请先在当前页生成目录')
@@ -339,11 +339,11 @@ export default function ParseResult({ showToast }) {
             </button>
             <button
               onClick={handleGoNextStage}
-              disabled={!canGoNextStage || !isDirectoryCompleted || advancing}
-              title={!isDirectoryCompleted ? '目录生成完成后可进入审核' : ''}
+      disabled={!canGoNextStage || !isDirectoryCompleted || advancing}
+      title={!isDirectoryCompleted ? '目录生成完成后可进入目录确认' : ''}
               className="px-5 py-2.5 bg-secondary text-on-secondary font-medium rounded-lg shadow-sm hover:bg-secondary/90 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {advancing ? '进入中...' : '进入目录审核'}
+              {advancing ? '进入中...' : '进入目录确认'}
             </button>
           </>
         )}

@@ -4,6 +4,7 @@ import { generateAPI, projectsAPI, stagesAPI } from '../api'
 import { PageError, PageLoading } from '../components/states/PageState'
 import DataCard from '../components/shared/DataCard'
 import PageHeader from '../components/shared/PageHeader'
+import StageGroupNav from '../components/shared/StageGroupNav'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 import { brandFutureCode, brandFutureCodeOrFallback } from '../utils/branding'
@@ -175,7 +176,7 @@ export default function GenerateProgress({ showToast }) {
     setAdvancing(true)
     try {
       await stagesAPI.update(id, 4, { status: 'completed' })
-      showToast?.('已进入 S5 共创')
+      showToast?.('已进入共创导出')
       navigate(projectRoute(id, '/editor', workspaceSlug))
     } catch (e) {
       showToast?.(e?.message || '进入下一阶段失败', 'error')
@@ -184,8 +185,8 @@ export default function GenerateProgress({ showToast }) {
     }
   }
 
-  if (loading) return <PageLoading title="正在加载 S4 生成标书状态..." />
-  if (error) return <PageError title="S4 生成标书状态加载失败" description={error} onRetry={loadData} />
+  if (loading) return <PageLoading title="正在加载素材匹配状态..." />
+  if (error) return <PageError title="素材匹配状态加载失败" description={error} onRetry={loadData} />
 
   const taskStatusLabelMap = {
     pending: '待处理',
@@ -342,6 +343,13 @@ export default function GenerateProgress({ showToast }) {
     <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
       <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
+      <StageGroupNav
+        current="generate"
+        items={[
+          { key: 'matching', label: '素材匹配', icon: 'rule_settings', path: '/gaps' },
+          { key: 'generate', label: '标书生成', icon: 'draw', path: '/generate' },
+        ]}
+      />
 
       <PageHeader
         actionsClassName="stage-header-actions"
@@ -363,10 +371,10 @@ export default function GenerateProgress({ showToast }) {
             <button
               onClick={handleGoEditor}
               disabled={!isCompleted || advancing}
-              title={!isCompleted ? '标书生成完成后可进入共创' : ''}
+              title={!isCompleted ? '标书生成完成后可进入共创导出' : ''}
               className="px-4 py-2.5 bg-secondary text-on-secondary text-sm font-medium rounded-lg hover:bg-secondary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {advancing ? '进入中...' : '进入共创'}
+              {advancing ? '进入中...' : '进入共创导出'}
             </button>
           </>
         )}

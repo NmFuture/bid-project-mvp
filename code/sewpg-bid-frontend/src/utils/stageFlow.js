@@ -9,10 +9,23 @@ export const STAGE_ROUTE_BUILDERS = {
   6: (projectId, workspaceSlug = '') => projectRoute(projectId, '/export', workspaceSlug),
 }
 
+export const COMPACT_STAGE_LABELS = {
+  1: '目录生成',
+  2: '目录确认',
+  3: '素材匹配',
+  4: '素材匹配',
+  5: '共创导出',
+  6: '共创导出',
+}
+
 const toStageId = (value) => {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0
 }
+
+export const getCompactStageLabel = (stageId, fallback = '') => (
+  COMPACT_STAGE_LABELS[toStageId(stageId)] || fallback
+)
 
 export const getStageRoute = (projectId, stageId, workspaceSlug = '') => {
   const resolvedStageId = toStageId(stageId)

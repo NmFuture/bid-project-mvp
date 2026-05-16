@@ -5,7 +5,7 @@ import Pagination from '../components/shared/Pagination'
 import ProjectWizardModal from '../components/modals/ProjectWizardModal'
 import { PageLoading, PageEmpty, PageError } from '../components/states/PageState'
 import FilterBar from '../components/shared/FilterBar'
-import { getStageRoute } from '../utils/stageFlow'
+import { getCompactStageLabel, getStageRoute } from '../utils/stageFlow'
 import { bidTypeFromWorkspace, parseRouteFromBidType, projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 export default function ProjectList({ showToast, viewMode = 'projects' }) {
@@ -259,7 +259,9 @@ export default function ProjectList({ showToast, viewMode = 'projects' }) {
                       <td className="px-6 text-[14px] text-on-surface-variant">{project.owner || project.customerName || '-'}</td>
                       <td className="px-6 text-[14px] text-on-surface-variant">{project.manager || '-'}</td>
                       <td className="px-6 text-[14px] text-on-surface-variant">{project.bidType || '-'}</td>
-                      <td className="px-6 text-[14px] text-on-surface">{project.stageLabel || '-'}</td>
+                      <td className="px-6 text-[14px] text-on-surface">
+                        {getCompactStageLabel(project.currentStage, project.stageLabel || '-')}
+                      </td>
                       <td className="px-6 text-[14px] text-on-surface-variant">{project.startDate || '-'}</td>
                       <td className="px-6 text-[14px] text-on-surface-variant">{project.endDate || project.deadline || '-'}</td>
                       <td className="px-6 text-[14px] text-on-surface-variant">{formatDateTime(project.updatedAt)}</td>

@@ -129,10 +129,10 @@ export default function CoverageHeatmap({ showToast }) {
     setAdvancing(true)
     try {
       await stagesAPI.update(id, 4, { status: 'completed' })
-      showToast('已进入 S5 人机共创编辑')
+      showToast('已进入共创导出')
       navigate(projectRoute(id, '/editor', workspaceSlug))
     } catch (e) {
-      showToast(e?.message || '进入 S5 失败', 'error')
+      showToast(e?.message || '进入共创导出失败', 'error')
     } finally {
       setAdvancing(false)
     }
@@ -166,7 +166,7 @@ export default function CoverageHeatmap({ showToast }) {
           disabled={advancing}
           className="stage-action-btn px-4 py-2 bg-secondary text-on-secondary text-sm font-medium rounded-lg hover:bg-secondary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {advancing ? '进入中...' : '进入下一阶段'}
+          {advancing ? '进入中...' : '进入共创导出'}
         </button>
       </div>
 

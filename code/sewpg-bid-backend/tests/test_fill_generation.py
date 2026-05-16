@@ -552,6 +552,38 @@ class FillGenerationTests(unittest.TestCase):
         self.assertGreaterEqual(score, 8)
         self.assertEqual(section, "5.10")
 
+    def test_tech_format_outline_restores_appendix_depth_from_numbering(self) -> None:
+        from app.services.tech_assembly import _tech_format_sections_from_toc_items
+
+        sections = _tech_format_sections_from_toc_items(
+            [
+                {"number": "第1章", "title": "正文", "level": 1},
+                {"number": "1.1", "title": "二级标题", "level": 2},
+                {"number": "1.1.1", "title": "三级标题", "level": 1},
+                {"number": "1.1.1.1", "title": "四级标题", "level": 1},
+                {"number": "附表B.1", "title": "供货范围", "level": 1},
+                {"number": "附表B.1.1", "title": "风机供货范围", "level": 1},
+                {"number": "附表B.1.1.1", "title": "叶片供货范围", "level": 1},
+                {"number": "附表F.5-2", "title": "认证未完成项", "level": 1},
+            ]
+        )
+
+        flattened: list[dict] = []
+
+        def visit(nodes):
+            for node in nodes:
+                flattened.append(node)
+                visit(node.get("children") or [])
+
+        visit(sections)
+        by_number = {item["number"]: item["level"] for item in flattened}
+        self.assertEqual(by_number["1.1.1"], 3)
+        self.assertEqual(by_number["1.1.1.1"], 4)
+        self.assertEqual(by_number["附表B.1"], 2)
+        self.assertEqual(by_number["附表B.1.1"], 3)
+        self.assertEqual(by_number["附表B.1.1.1"], 4)
+        self.assertEqual(by_number["附表F.5-2"], 3)
+
     def test_runtime_material_card_writes_clean_name_for_custom_override_rules(self) -> None:
         from app.services.tech_assembly import _render_runtime_material_card
 
