@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import { materialsAPI } from '../api'
 import MaterialsViewSwitch from '../components/shared/MaterialsViewSwitch'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
@@ -690,7 +690,6 @@ function TreeNode({
 }
 
 export default function MaterialDB({ showToast = () => {} }) {
-  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const workspaceSlug = useWorkspaceSlug()
   const lockedBidType = bidTypeFromWorkspace(workspaceSlug)
@@ -735,7 +734,6 @@ export default function MaterialDB({ showToast = () => {} }) {
   const [uploadFiles, setUploadFiles] = useState([])
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
-  const [creatingWiki, setCreatingWiki] = useState(false)
   const [previewItem, setPreviewItem] = useState(null)
   const [previewSession, setPreviewSession] = useState(null)
   const [previewLoading, setPreviewLoading] = useState(false)
@@ -1243,23 +1241,6 @@ export default function MaterialDB({ showToast = () => {} }) {
     }
   }
 
-  const runWikiBootstrap = async (mode = activeBidType === '商务标' ? 'replace' : 'update') => {
-    if (mode === 'replace') {
-      const ok = window.confirm(`确认重建${activeBidType} Wiki？现有自动生成根树会被重新生成。`)
-      if (!ok) return
-    }
-    setCreatingWiki(true)
-    try {
-      const payload = await materialsAPI.wiki.bootstrap({ mode, bidType: activeBidType })
-      showToast(payload?.generation?.summary || payload?.message || `${activeBidType} Wiki 已处理`)
-      navigate(`${materialsBasePath}/wiki?bidType=${encodeURIComponent(activeBidType)}`)
-    } catch (e) {
-      showToast(safeMessage(e, `${activeBidType} Wiki 处理失败`), 'error')
-    } finally {
-      setCreatingWiki(false)
-    }
-  }
-
   const handleBidTypeChange = (value) => {
     if (lockedBidType) return
     const next = normalizeBidTypeTab(value)
@@ -1334,25 +1315,11 @@ export default function MaterialDB({ showToast = () => {} }) {
         title="原始材料库"
         subtitle={refreshing || error ? (error || '正在刷新...') : (
           activeBidType === '技术标'
-            ? '管理技术标通用、客户、项目三档原始素材，并创建技术标 Wiki。'
-            : '管理商务标通用、客户、项目三档原始素材，并生成商务标 Wiki。'
+            ? '管理技术标通用、客户、项目三档原始素材。'
+            : '管理商务标通用、客户、项目三档原始素材。'
         )}
         actions={(
           <div className="flex flex-nowrap gap-2">
-            <button
-              onClick={() => runWikiBootstrap('update')}
-              disabled={creatingWiki}
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-secondary-container text-on-secondary-container hover:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {creatingWiki ? '处理中...' : `生成/更新${activeBidType}Wiki`}
-            </button>
-            <button
-              onClick={() => runWikiBootstrap('replace')}
-              disabled={creatingWiki}
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              重建Wiki
-            </button>
             <button
               onClick={() => loadLibrary({ silent: true })}
               className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors"
