@@ -3,6 +3,8 @@ import { materialsAPI, projectsAPI } from '../../api'
 
 const STEPS = ['基本信息', '确认创建']
 const MANUAL_TURBINE_VALUE = '__manual_turbine_model__'
+const PROJECT_WIZARD_DRAFT_VERSION = 1
+const PROJECT_WIZARD_DRAFT_PREFIX = 'sewpg.projectWizardDraft'
 
 const normalizeCustomers = (list = []) =>
   (Array.isArray(list) ? list : [])
@@ -71,6 +73,50 @@ const buildInitialForm = (project = null, defaultBidType = '') => ({
   endDate: String(project?.endDate || project?.deadline || ''),
 })
 
+const buildDraftKey = ({ mode = 'create', project = null, defaultBidType = '' }) => [
+  PROJECT_WIZARD_DRAFT_PREFIX,
+  mode,
+  project?.id || 'new',
+  project?.bidType || defaultBidType || 'unknown',
+].join(':')
+
+const readDraft = (key) => {
+  if (typeof window === 'undefined' || !key) return null
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) || 'null')
+    if (!parsed || parsed.version !== PROJECT_WIZARD_DRAFT_VERSION || !parsed.form) return null
+    return {
+      ...parsed,
+      step: Number.isInteger(parsed.step) ? Math.min(Math.max(parsed.step, 0), STEPS.length - 1) : 0,
+      form: {
+        ...parsed.form,
+        turbineModel: normalizeTurbineModel(parsed.form.turbineModel),
+      },
+      turbineEntryMode: parsed.turbineEntryMode === 'manual' ? 'manual' : 'library',
+      customerMode: parsed.customerMode === 'library' ? 'library' : 'ordinary',
+      materialProjectMode: parsed.materialProjectMode === 'library' ? 'library' : 'ordinary',
+      selectedMaterialCustomerId: String(parsed.selectedMaterialCustomerId || ''),
+      selectedMaterialProjectId: String(parsed.selectedMaterialProjectId || ''),
+    }
+  } catch {
+    return null
+  }
+}
+
+const writeDraft = (key, data) => {
+  if (typeof window === 'undefined' || !key) return
+  window.localStorage.setItem(key, JSON.stringify({
+    version: PROJECT_WIZARD_DRAFT_VERSION,
+    ...data,
+    updatedAt: new Date().toISOString(),
+  }))
+}
+
+const clearDraft = (key) => {
+  if (typeof window === 'undefined' || !key) return
+  window.localStorage.removeItem(key)
+}
+
 const customerLabel = (item) => `${item.name}${item.customerId ? ` / ${item.customerId}` : ''}`
 
 const materialProjectLabel = (item) => {
@@ -92,17 +138,21 @@ export default function ProjectWizardModal({
   lockBidType = false,
 }) {
   const isUpdateMode = mode === 'update' && Boolean(project?.id)
-  const [step, setStep] = useState(0)
-  const [form, setForm] = useState(() => buildInitialForm(project, defaultBidType))
+  const draftKey = useMemo(() => buildDraftKey({ mode, project, defaultBidType }), [defaultBidType, mode, project])
+  const draft = useMemo(() => readDraft(draftKey), [draftKey])
+  const hasDraft = Boolean(draft)
+  const [step, setStep] = useState(() => draft?.step || 0)
+  const [form, setForm] = useState(() => draft?.form || buildInitialForm(project, defaultBidType))
   const [turbineEntryMode, setTurbineEntryMode] = useState(() => {
+    if (draft?.turbineEntryMode) return draft.turbineEntryMode
     const initial = normalizeTurbineModel(project?.turbineModel || project?.selectedTurbineModel)
     return initial.model && initial.source === 'manual' ? 'manual' : 'library'
   })
   const [customerMode, setCustomerMode] = useState(
-    project?.materialCustomerId || project?.customerId || project?.isKeyAccount ? 'library' : 'ordinary',
+    draft?.customerMode || (project?.materialCustomerId || project?.customerId || project?.isKeyAccount ? 'library' : 'ordinary'),
   )
   const [materialProjectMode, setMaterialProjectMode] = useState(
-    project?.materialProjectMode || (project?.materialProjectId ? 'library' : 'ordinary'),
+    draft?.materialProjectMode || project?.materialProjectMode || (project?.materialProjectId ? 'library' : 'ordinary'),
   )
   const [materialCustomers, setMaterialCustomers] = useState([])
   const [materialProjects, setMaterialProjects] = useState([])
@@ -110,10 +160,10 @@ export default function ProjectWizardModal({
   const [loadingTurbines, setLoadingTurbines] = useState(false)
   const [turbineError, setTurbineError] = useState('')
   const [selectedMaterialCustomerId, setSelectedMaterialCustomerId] = useState(
-    String(project?.materialCustomerId || project?.customerId || project?.keyAccountId || ''),
+    draft?.selectedMaterialCustomerId || String(project?.materialCustomerId || project?.customerId || project?.keyAccountId || ''),
   )
   const [selectedMaterialProjectId, setSelectedMaterialProjectId] = useState(
-    String(project?.materialProjectId || ''),
+    draft?.selectedMaterialProjectId || String(project?.materialProjectId || ''),
   )
   const [loadingIdentities, setLoadingIdentities] = useState(false)
   const [identityError, setIdentityError] = useState('')
@@ -137,12 +187,38 @@ export default function ProjectWizardModal({
       : ''
 
   useEffect(() => {
-    if (isUpdateMode || !defaultBidType) return
+    if (hasDraft || isUpdateMode || !defaultBidType) return
     const timer = setTimeout(() => {
       setForm((prev) => ({ ...prev, bidType: defaultBidType }))
     }, 0)
     return () => clearTimeout(timer)
-  }, [defaultBidType, isUpdateMode])
+  }, [defaultBidType, hasDraft, isUpdateMode])
+
+  useEffect(() => {
+    if (creating) return undefined
+    const timer = setTimeout(() => {
+      writeDraft(draftKey, {
+        step,
+        form,
+        turbineEntryMode,
+        customerMode,
+        materialProjectMode,
+        selectedMaterialCustomerId,
+        selectedMaterialProjectId,
+      })
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [
+    creating,
+    customerMode,
+    draftKey,
+    form,
+    materialProjectMode,
+    selectedMaterialCustomerId,
+    selectedMaterialProjectId,
+    step,
+    turbineEntryMode,
+  ])
 
   useEffect(() => {
     let mounted = true
@@ -157,6 +233,7 @@ export default function ProjectWizardModal({
         setMaterialCustomers(customers)
         setMaterialProjects(projects)
         if (isUpdateMode) {
+          if (hasDraft) return
           const selectedCustomer = customers.find((item) => item.id === String(project?.materialCustomerId || project?.customerId || project?.keyAccountId || ''))
             || customers.find((item) => item.name === String(project?.customerName || ''))
           if (selectedCustomer) {
@@ -181,7 +258,7 @@ export default function ProjectWizardModal({
           }
           return
         }
-        if (customers.length > 0) {
+        if (customers.length > 0 && !hasDraft) {
           const defaultCustomer = customers[0]
           setCustomerMode('library')
           setSelectedMaterialCustomerId(defaultCustomer.id)
@@ -216,7 +293,7 @@ export default function ProjectWizardModal({
     return () => {
       mounted = false
     }
-  }, [form.bidType, isUpdateMode, project?.customerId, project?.customerName, project?.keyAccountId, project?.materialCustomerId, project?.materialProjectId, project?.materialProjectMode])
+  }, [form.bidType, hasDraft, isUpdateMode, project?.customerId, project?.customerName, project?.keyAccountId, project?.materialCustomerId, project?.materialProjectId, project?.materialProjectMode])
 
   useEffect(() => {
     let mounted = true
@@ -309,9 +386,11 @@ export default function ProjectWizardModal({
 
       if (isUpdateMode) {
         const updatedProject = await projectsAPI.update(project.id, payload)
+        clearDraft(draftKey)
         onCreated(updatedProject)
       } else {
         const createdProject = await projectsAPI.create(payload)
+        clearDraft(draftKey)
         onCreated(createdProject)
       }
     } catch (e) {
