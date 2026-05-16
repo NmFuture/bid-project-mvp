@@ -135,8 +135,8 @@
         const configured = normalizeBaseUrl(documentServerUrl)
         if (configured) candidates.push(configured)
 
-        // 兜底：开发态常见场景是前端跑在 :5173，而 OnlyOffice 经由 :80 的 /ds 反代。
-        const hostFallback = `${window.location.protocol}//${window.location.hostname}/ds`
+        // 兜底：开发态常见场景是前端跑在 :5173，由同源 Vite 代理或 Web 容器的 /ds 转发。
+        const hostFallback = `${window.location.origin}/ds`
         if (!candidates.includes(hostFallback)) candidates.push(hostFallback)
 
         return candidates.map((base) => `${base}/web-apps/apps/api/documents/api.js`)

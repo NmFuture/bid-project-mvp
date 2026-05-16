@@ -19,8 +19,7 @@ export const ENV = {
   API_RETRY_COUNT: toNumber(import.meta.env.VITE_API_RETRY_COUNT, 1),
   API_ENABLE_TRACE: toBoolean(import.meta.env.VITE_API_ENABLE_TRACE, true),
   ONLYOFFICE_DOCUMENT_SERVER_URL: trimSlash(
-    import.meta.env.VITE_ONLYOFFICE_DOCUMENT_SERVER_URL || 'http://localhost:8080',
+    import.meta.env.VITE_ONLYOFFICE_DOCUMENT_SERVER_URL || '/ds',
   ),
   ONLYOFFICE_HEALTHCHECK_PATH: import.meta.env.VITE_ONLYOFFICE_HEALTHCHECK_PATH || '/healthcheck',
 };
-
