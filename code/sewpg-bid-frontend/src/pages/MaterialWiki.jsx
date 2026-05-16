@@ -503,34 +503,6 @@ export default function MaterialWiki({ showToast = () => {} }) {
             >
               {rebuildingWiki ? '重建中...' : '重建Wiki'}
             </button>
-            <button
-              onClick={handleRefreshSummary}
-              disabled={!selectedNodeId || refreshingSummary}
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {refreshingSummary ? '生成中...' : '刷新摘要'}
-            </button>
-            <button
-              onClick={() => uploadInputRef.current?.click()}
-              disabled={!selectedNodeId || uploadingAttachment}
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {uploadingAttachment ? '上传中...' : '上传附件'}
-            </button>
-            <button
-              onClick={() => handleDeleteNode()}
-              disabled={!selectedNodeId || deletingNode}
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-error-container text-on-error-container hover:bg-error-container/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {deletingNode ? '删除中...' : '删除节点'}
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={!isDirty || saving || deletingNode}
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {saving ? '保存中...' : '保存'}
-            </button>
           </div>
         )}
         meta={(
@@ -592,6 +564,35 @@ export default function MaterialWiki({ showToast = () => {} }) {
 
         <div className="xl:col-span-9 flex flex-col gap-4 min-w-0">
           <div className="bg-surface-container-lowest rounded-xl border border-surface-container-high p-4 space-y-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-on-surface">节点内容</h3>
+                <p className="mt-1 truncate text-xs text-outline">
+                  {selectedNode?.pathText || selectedNode?.title || '当前节点'}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleDeleteNode()}
+                  disabled={!selectedNodeId || deletingNode}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-error/20 bg-error-container px-3 py-2 text-xs font-medium text-on-error-container hover:bg-error-container/80 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span className="material-symbols-outlined text-[16px]">delete</span>
+                  {deletingNode ? '删除中...' : '删除节点'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={!isDirty || saving || deletingNode}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span className="material-symbols-outlined text-[16px]">save</span>
+                  {saving ? '保存中...' : '保存'}
+                </button>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
               <label className="text-xs text-on-surface-variant">
                 节点标题
@@ -685,7 +686,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
                         className="text-primary flex items-center gap-1 hover:underline disabled:opacity-50 text-xs shrink-0"
                       >
                         <span className="material-symbols-outlined text-sm">refresh</span>
-                        {refreshingSummary ? '生成中' : '刷新'}
+                        {refreshingSummary ? '生成中' : '重新生成'}
                       </button>
                     </div>
                     <p className="text-xs text-on-surface-variant leading-relaxed whitespace-pre-wrap break-words">
@@ -701,6 +702,15 @@ export default function MaterialWiki({ showToast = () => {} }) {
                       附件列表
                       <span className="text-xs bg-surface-container-high rounded-full px-2 py-0.5">{attachments.length}</span>
                     </h4>
+                    <button
+                      type="button"
+                      onClick={() => uploadInputRef.current?.click()}
+                      disabled={!selectedNodeId || uploadingAttachment}
+                      className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-surface-container-high bg-white px-2.5 text-xs font-medium text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">upload_file</span>
+                      {uploadingAttachment ? '上传中' : '上传附件'}
+                    </button>
                   </div>
                   <div className="flex flex-col gap-2">
                     {attachments.map((att) => (
