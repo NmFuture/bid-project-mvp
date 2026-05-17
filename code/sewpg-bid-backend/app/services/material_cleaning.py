@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import BASE_DIR, settings
 from app.models import async_session
 from app.models.materials import RawFile
+from app.services.filename_utils import short_filename
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
 
@@ -46,12 +47,17 @@ def _safe_file_name(name: str, fallback: str = "material.bin") -> str:
     return safe or fallback
 
 
+def _short_file_name_for_path(name: str, fallback: str = "material.docx") -> str:
+    return short_filename(name, fallback, max_bytes=96)
+
+
 def is_cleanable_material(name: str) -> bool:
     return PurePosixPath(str(name or "")).suffix.lower() in CLEANABLE_SUFFIXES
 
 
 def cleaned_object_key(raw_file_id: int, file_name: str) -> str:
-    stem = PurePosixPath(_safe_file_name(file_name, f"RAW-{raw_file_id:04d}.docx")).stem
+    short_name = _short_file_name_for_path(file_name, f"RAW-{raw_file_id:04d}.docx")
+    stem = short_filename(PurePosixPath(short_name).stem, f"RAW-{raw_file_id:04d}", max_bytes=82)
     return f"cleaned/RAW-{raw_file_id:04d}/{uuid4().hex}-{stem}.docx"
 
 
