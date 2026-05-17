@@ -155,6 +155,7 @@ export default function OutlineReview({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
   const workspaceSlug = useWorkspaceSlug()
+  const isBusinessWorkspace = workspaceSlug === 'business'
   const [nodes, setNodes] = useState([])
   const [activeNodeId, setActiveNodeId] = useState('')
   const [loading, setLoading] = useState(true)
@@ -486,7 +487,7 @@ export default function OutlineReview({ showToast }) {
               ) : (
                 <span className="w-6 shrink-0" />
               )}
-              <span className="w-9 shrink-0 text-xs font-semibold text-outline">{displayNumber}</span>
+              <span className={`${isBusinessWorkspace ? 'w-20' : 'w-9'} shrink-0 text-xs font-semibold text-outline`}>{displayNumber}</span>
               <input
                 value={node.title || ''}
                 onClick={(e) => e.stopPropagation()}

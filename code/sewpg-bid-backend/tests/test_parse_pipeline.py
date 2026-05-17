@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -90,6 +91,103 @@ def build_appendix_with_merges_docx_bytes() -> bytes:
     table.cell(3, 2).text = "/"
     table.cell(3, 3).text = "/"
     table.cell(2, 3).merge(table.cell(3, 3))
+    doc.save(file_obj)
+    return file_obj.getvalue()
+
+
+def build_business_attachment_templates_docx_bytes() -> bytes:
+    file_obj = io.BytesIO()
+    doc = Document()
+    doc.add_paragraph("第一章 招标公告")
+    doc.add_paragraph("此处为普通正文，不应被提取为商务附件模板。")
+    doc.add_paragraph("第六章 投标文件格式")
+    doc.add_paragraph("附件1 投标函")
+    doc.add_paragraph("致：华能集团")
+    doc.add_paragraph("我方已仔细研究招标文件的全部内容，愿意参加本项目投标。")
+    doc.add_paragraph("投标人（盖章）：____________")
+    doc.add_paragraph("附件2 开标价格表")
+    table = doc.add_table(rows=3, cols=3)
+    table.style = "Table Grid"
+    table.cell(0, 0).text = "开标价格表"
+    table.cell(0, 0).merge(table.cell(0, 2))
+    values = [
+        ["序号", "项目名称", "投标报价"],
+        ["1", "", ""],
+    ]
+    for row_index, row in enumerate(values, start=1):
+        for col_index, value in enumerate(row):
+            table.cell(row_index, col_index).text = value
+    doc.add_paragraph("附件3 法定代表人授权书")
+    doc.add_paragraph("本人授权以下代表作为我方合法代理人参加本项目投标。")
+    doc.add_paragraph("授权代表签字：____________")
+    doc.save(file_obj)
+    return file_obj.getvalue()
+
+
+def build_business_attachment_templates_with_toc_docx_bytes() -> bytes:
+    file_obj = io.BytesIO()
+    doc = Document()
+    doc.add_paragraph("目录")
+    doc.add_paragraph("第六章 投标文件格式 108")
+    doc.add_paragraph("附件1 投标函 109")
+    doc.add_paragraph("附件3 货物规格一览表 110")
+    doc.add_paragraph("附件6 履约保证函格式承诺书和质量保函 111")
+    doc.add_paragraph("第一章 招标公告")
+    doc.add_paragraph("普通招标公告正文。")
+    doc.add_paragraph("第六章 投标文件格式")
+    doc.add_paragraph("附件1 投标函")
+    doc.add_paragraph("致：华能集团")
+    doc.add_paragraph("投标人（盖章）：____________")
+    doc.add_paragraph("附件3 货物规格一览表")
+    table = doc.add_table(rows=3, cols=4)
+    table.style = "Table Grid"
+    values = [
+        ["序号", "货物名称", "规格型号", "数量"],
+        ["1", "风力发电机组", "", ""],
+        ["2", "塔筒", "", ""],
+    ]
+    for row_index, row in enumerate(values):
+        for col_index, value in enumerate(row):
+            table.cell(row_index, col_index).text = value
+    doc.add_paragraph("附件6 履约保证函格式承诺书和质量保函")
+    doc.add_paragraph("我方承诺按招标文件要求提交履约保证函并承担质量保函责任。")
+    doc.add_paragraph("投标人（盖章）：____________")
+    doc.save(file_obj)
+    return file_obj.getvalue()
+
+
+def build_business_fingerprint_only_tables_docx_bytes() -> bytes:
+    file_obj = io.BytesIO()
+    doc = Document()
+    doc.add_paragraph("第一章 招标公告")
+    doc.add_paragraph("本章为公告。")
+    doc.add_heading("商务标格式", level=1)
+    doc.add_paragraph("投标报价明细")
+    table = doc.add_table(rows=3, cols=4)
+    table.style = "Table Grid"
+    values = [
+        ["序号", "货物名称", "规格型号", "数量"],
+        ["1", "风力发电机组", "", ""],
+        ["2", "塔筒", "", ""],
+    ]
+    for row_index, row in enumerate(values):
+        for col_index, value in enumerate(row):
+            table.cell(row_index, col_index).text = value
+    doc.add_heading("合同条款", level=1)
+    doc.add_paragraph("本章不属于投标文件格式。")
+    doc.save(file_obj)
+    return file_obj.getvalue()
+
+
+def build_business_commitment_template_alignment_docx_bytes() -> bytes:
+    file_obj = io.BytesIO()
+    doc = Document()
+    doc.add_paragraph("第二章 投标人须知")
+    doc.add_paragraph("投标人须无条件承诺在本采购项目第一台合同设备供货前取得本条a和b所述材料，需提供承诺书。")
+    doc.add_heading("第六章 投标文件格式", level=1)
+    doc.add_paragraph("附件1 材料取得承诺书")
+    doc.add_paragraph("我方承诺在本采购项目第一台合同设备供货前取得本条a和b所述材料。")
+    doc.add_paragraph("投标人（盖章）：____________")
     doc.save(file_obj)
     return file_obj.getvalue()
 
@@ -1208,6 +1306,238 @@ class ParsePipelineTests(unittest.TestCase):
         doc = Document(str(Path(bid_letter["docxPath"])))
         self.assertIn("致：华能集团", [paragraph.text for paragraph in doc.paragraphs])
         self.assertNotIn("投标人须无条件承诺", "".join(titles))
+
+    def test_business_bid_docx_attachment_templates_are_sliced_with_quality_metadata(self) -> None:
+        project_id = self.create_business_project()
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "商务附件模板招标文件.docx",
+                        build_business_attachment_templates_docx_bytes(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        titles = [item["title"] for item in appendices]
+        self.assertEqual(
+            titles,
+            ["附件1 投标函", "附件2 开标价格表", "附件3 法定代表人授权书"],
+        )
+
+        bid_letter = appendices[0]
+        self.assertEqual(bid_letter["artifactType"], "business_attachment_template")
+        self.assertEqual(bid_letter["templateType"], "bid_letter")
+        self.assertEqual(bid_letter["templateSectionTitle"], "第六章 投标文件格式")
+        self.assertEqual(bid_letter["extractionMode"], "source_docx_slice")
+        self.assertEqual(bid_letter["extractionQuality"], "complete")
+        self.assertFalse(bid_letter["needsReview"])
+        self.assertEqual(bid_letter["assetReviewStatus"], "pending_review")
+        self.assertEqual(bid_letter["assetSyncStatus"], "pending")
+        self.assertEqual(bid_letter["previewType"], "onlyoffice")
+        self.assertIn("第六章 投标文件格式", bid_letter["sourceStart"])
+        self.assertIn("附件2 开标价格表", bid_letter["sourceEnd"])
+
+        bid_letter_doc = Document(str(Path(bid_letter["docxPath"])))
+        bid_letter_text = "\n".join(paragraph.text for paragraph in bid_letter_doc.paragraphs)
+        self.assertIn("附件1 投标函", bid_letter_text)
+        self.assertIn("致：华能集团", bid_letter_text)
+        self.assertIn("投标人（盖章）", bid_letter_text)
+        self.assertNotIn("开标价格表", bid_letter_text)
+
+        price_table = appendices[1]
+        self.assertEqual(price_table["templateType"], "opening_price")
+        self.assertEqual(price_table["extractionMode"], "source_docx_slice")
+        self.assertEqual(price_table["extractionQuality"], "complete")
+        price_docx_path = Path(price_table["docxPath"])
+        with zipfile.ZipFile(price_docx_path) as zf:
+            doc_xml = zf.read("word/document.xml").decode("utf-8")
+        self.assertIn("gridSpan", doc_xml)
+
+    def test_business_bid_docx_attachment_templates_ignore_toc_and_keep_following_table(self) -> None:
+        project_id = self.create_business_project()
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "商务附件模板含目录招标文件.docx",
+                        build_business_attachment_templates_with_toc_docx_bytes(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        titles = [item["title"] for item in appendices]
+        self.assertEqual(
+            titles,
+            ["附件1 投标函", "附件3 货物规格一览表", "附件6 履约保证函格式承诺书和质量保函"],
+        )
+        self.assertFalse(any(title.endswith("111") for title in titles))
+
+        spec_table = next(item for item in appendices if "货物规格" in item["title"])
+        self.assertEqual(spec_table["templateType"], "specification")
+        self.assertEqual(spec_table["extractionQuality"], "complete")
+        spec_doc = Document(str(Path(spec_table["docxPath"])))
+        self.assertEqual(len(spec_doc.tables), 1)
+        self.assertEqual(spec_doc.tables[0].cell(0, 1).text, "货物名称")
+        self.assertEqual(spec_doc.tables[0].cell(1, 1).text, "风力发电机组")
+
+    def test_business_bid_docx_table_fingerprint_extracts_template_without_attachment_title(self) -> None:
+        project_id = self.create_business_project()
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "商务表格指纹招标文件.docx",
+                        build_business_fingerprint_only_tables_docx_bytes(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        structured = response.json()["structured"]
+        appendices = structured["appendices"]
+        self.assertEqual([item["title"] for item in appendices], ["投标报价明细"])
+        table_item = appendices[0]
+        self.assertEqual(table_item["templateType"], "specification")
+        self.assertEqual(table_item["extractionMode"], "source_docx_slice")
+        self.assertEqual(table_item["tableFingerprint"]["type"], "specification")
+        self.assertGreaterEqual(table_item["tableFingerprint"]["confidence"], 0.62)
+        self.assertEqual(structured["businessFormatRegions"][0]["regionCount"], 1)
+        table_doc = Document(str(Path(table_item["docxPath"])))
+        self.assertEqual(len(table_doc.tables), 1)
+        self.assertEqual(table_doc.tables[0].cell(1, 1).text, "风力发电机组")
+
+    def test_business_bid_title_only_attachment_template_is_not_materialized(self) -> None:
+        project_id = self.create_business_project()
+        tender = build_docx_blocks_bytes(
+            "第六章 投标文件格式",
+            "附件1 投标函",
+            "附件2 开标价格表",
+            [
+                ["序号", "项目名称", "投标报价"],
+                ["1", "", ""],
+            ],
+        )
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "商务招标文件.docx",
+                        tender,
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        titles = [item["title"] for item in appendices]
+        self.assertNotIn("附件1 投标函", titles)
+        self.assertEqual(titles, ["附件2 开标价格表"])
+
+    def test_business_bid_probably_incomplete_attachment_template_is_not_materialized(self) -> None:
+        project_id = self.create_business_project()
+        tender = build_docx_blocks_bytes(
+            "第六章 投标文件格式",
+            "附件1 其他说明",
+            "本附件用于说明投标人认为需要说明的其他事项，具体内容由投标人结合项目实际情况自行说明",
+            "附件2 开标价格表",
+            [
+                ["序号", "项目名称", "投标报价"],
+                ["1", "", ""],
+            ],
+        )
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "商务招标文件.docx",
+                        tender,
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        titles = [item["title"] for item in appendices]
+        self.assertNotIn("附件1 其他说明", titles)
+        self.assertEqual(titles, ["附件2 开标价格表"])
+
+    def test_business_bid_existing_commitment_template_suppresses_generated_duplicate(self) -> None:
+        project_id = self.create_business_project()
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "商务承诺模板招标文件.docx",
+                        build_business_commitment_template_alignment_docx_bytes(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        structured = response.json()["structured"]
+        appendices = structured["appendices"]
+        self.assertEqual([item["title"] for item in appendices], ["附件1 材料取得承诺书"])
+        self.assertEqual(structured["commitmentLetters"], [])
+        alignments = structured["commitmentTemplateAlignments"]
+        self.assertEqual(len(alignments), 1)
+        self.assertEqual(alignments[0]["status"], "covered_by_existing_template")
+        self.assertEqual(alignments[0]["matchedTemplateTitle"], "附件1 材料取得承诺书")
+
+    def test_business_bid_unrelated_commitment_template_does_not_suppress_required_letter(self) -> None:
+        project_id = self.create_business_project()
+        tender = "\n".join(
+            [
+                "# 商务招标文件",
+                "投标人不得存在下列情形之一。",
+                "# 第六章 投标文件格式",
+                "附件6 履约保证函格式",
+                "我方承诺按招标文件要求提交履约保证函。",
+                "投标人（盖章）：____________",
+            ]
+        ).encode("utf-8")
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        structured = response.json()["structured"]
+        self.assertEqual([item["title"] for item in structured["appendices"]], ["附件6 履约保证函格式"])
+        titles = [item["title"] for item in structured["commitmentLetters"]]
+        self.assertIn("投标人不存在下列情形之一承诺函", titles)
+        self.assertEqual(structured["commitmentTemplateAlignments"], [])
 
     def test_business_bid_generates_semantic_business_commitment_and_filters_technical_commitments(self) -> None:
         project_id = self.create_business_project()

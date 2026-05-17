@@ -87,6 +87,9 @@ USAGE_MODE_TO_ASSEMBLY_MODE = {
     "embed_scan_or_image": "embed_scan_or_image",
     "image_embed": "embed_scan_or_image",
     "pdf_pages_embed": "embed_scan_or_image",
+    "extract_and_summarize": "extract_and_summarize",
+    "summarize": "extract_and_summarize",
+    "extract_summary": "extract_and_summarize",
     "extract_segment": "extract_segment",
     "excerpt": "extract_segment",
     "quote_segment": "extract_segment",
@@ -104,6 +107,7 @@ ASSEMBLY_MODE_TO_USAGE = {
     "table_fill_from_material": "fill_table",
     "attach_whole_file": "attach_whole",
     "embed_scan_or_image": "embed_scan",
+    "extract_and_summarize": "extract_and_summarize",
     "extract_segment": "extract_segment",
     "ai_draft": "generate_draft",
     "manual_upload": "manual_upload",
@@ -751,7 +755,7 @@ def assembly_mode_from_candidate(task: dict[str, Any], candidate: dict[str, Any]
     if task_type == "table":
         return "table_fill_from_material"
     if task_type == "bundle":
-        return "extract_segment" if candidate.get("evidenceSegmentId") else "attach_whole_file"
+        return "extract_and_summarize" if candidate.get("materialId") else "attach_whole_file"
     return ""
 
 
@@ -881,9 +885,12 @@ def merge_candidate_material(candidates_by_key: dict[str, dict[str, Any]], candi
     key = candidate_key(candidate)
     if not key:
         return
+    segment = candidate_evidence_segment(candidate)
     existing = candidates_by_key.get(key)
     if existing is None:
         stored = {name: value for name, value in candidate.items() if name != "riskFlags"}
+        if segment:
+            stored["evidenceSegments"] = [segment]
         candidates_by_key[key] = stored
         return
     if float(candidate.get("score") or 0) > float(existing.get("score") or 0):
@@ -900,14 +907,41 @@ def merge_candidate_material(candidates_by_key: dict[str, dict[str, Any]], candi
         existing["wikiEvidence"] = candidate["wikiEvidence"]
     if candidate.get("wikiCardId"):
         existing["wikiCardId"] = candidate["wikiCardId"]
+    if segment:
+        existing_segments = existing.setdefault("evidenceSegments", [])
+        if isinstance(existing_segments, list):
+            existing_ids = {str(item.get("evidenceSegmentId") or item.get("segmentId") or "") for item in existing_segments if isinstance(item, dict)}
+            segment_id = str(segment.get("evidenceSegmentId") or segment.get("segmentId") or "")
+            if segment_id and segment_id not in existing_ids:
+                existing_segments.append(segment)
     existing["score"] = round(min(float(existing.get("score") or 0), 0.99), 4)
 
 
 def candidate_key(candidate: dict[str, Any]) -> str:
-    segment_id = str(candidate.get("evidenceSegmentId") or "")
-    if segment_id:
-        return f"segment:{segment_id}"
     return str(candidate.get("materialId") or candidate.get("path") or candidate.get("materialName") or "")
+
+
+def candidate_evidence_segment(candidate: dict[str, Any]) -> dict[str, Any]:
+    segment_id = str(candidate.get("evidenceSegmentId") or "").strip()
+    if not segment_id:
+        return {}
+    return {
+        "segmentId": segment_id,
+        "evidenceSegmentId": segment_id,
+        "evidenceSegmentTitle": str(candidate.get("evidenceSegmentTitle") or ""),
+        "title": str(candidate.get("evidenceSegmentTitle") or ""),
+        "evidenceSegmentType": str(candidate.get("evidenceSegmentType") or ""),
+        "evidenceSourcePages": str(candidate.get("evidenceSourcePages") or ""),
+        "sourcePages": str(candidate.get("evidenceSourcePages") or ""),
+        "evidenceSummary": str(candidate.get("evidenceSummary") or ""),
+        "summary": str(candidate.get("evidenceSummary") or ""),
+        "wikiCardId": str(candidate.get("wikiCardId") or ""),
+        "wikiUsageMode": str(candidate.get("wikiUsageMode") or ""),
+        "materialId": str(candidate.get("materialId") or ""),
+        "materialName": str(candidate.get("materialName") or ""),
+        "folderPath": str(candidate.get("folderPath") or candidate.get("path") or ""),
+        "wikiEvidence": dict(candidate.get("wikiEvidence") or {}) if isinstance(candidate.get("wikiEvidence"), dict) else {},
+    }
 
 
 def wiki_material_candidates(
@@ -1601,21 +1635,21 @@ def default_assembly_mode(module_key: str, task_type: str, decision: str, title:
         return "attach_whole_file"
     if task_type == "bundle":
         if module_key in {"enterprise_finance_supply", "performance_cooperation_support"}:
-            return "extract_segment"
+            return "extract_and_summarize"
         return "attach_whole_file"
     if decision == "fill_required":
         return "template_fill_docx"
     if any(token in normalized for token in ["投标函", "授权", "廉洁", "承诺", "声明", "说明", "履约"]):
         return "template_fill_docx"
-    return "manual_upload"
+    return "extract_and_summarize"
 
 
 def build_fill_plan(task_type: str, decision: str, title: str, module_key: str) -> dict[str, Any]:
     mode = default_assembly_mode(module_key, task_type, decision, title)
     plan: dict[str, Any] = {
         "mode": mode,
-        "requiresProjectFacts": mode in {"template_fill_docx", "table_fill_from_material", "ai_draft"},
-        "requiresMaterialEvidence": mode in {"table_fill_from_material", "extract_segment", "attach_whole_file", "embed_scan_or_image"},
+        "requiresProjectFacts": mode in {"template_fill_docx", "table_fill_from_material", "extract_and_summarize", "ai_draft"},
+        "requiresMaterialEvidence": mode in {"table_fill_from_material", "extract_and_summarize", "extract_segment", "attach_whole_file", "embed_scan_or_image"},
         "requiresHumanReview": True,
         "expectedInputs": [],
         "outputArtifactType": "",
@@ -1629,6 +1663,9 @@ def build_fill_plan(task_type: str, decision: str, title: str, module_key: str) 
     elif mode == "extract_segment":
         plan["expectedInputs"] = ["已确认素材证据片段"]
         plan["outputArtifactType"] = "extracted_segment_docx"
+    elif mode == "extract_and_summarize":
+        plan["expectedInputs"] = ["素材清洗稿或原件", "证据片段定位", "项目事实表"]
+        plan["outputArtifactType"] = "extracted_summary_docx"
     elif mode == "embed_scan_or_image":
         plan["expectedInputs"] = ["证书/回单/PDF/图片原件"]
         plan["outputArtifactType"] = "embedded_scan"

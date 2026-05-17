@@ -163,6 +163,11 @@ export default function Settings({ showToast = () => {} }) {
         ...(gatewayDraft.apiKey.trim() ? { apiKey: gatewayDraft.apiKey.trim() } : {}),
       })
       setGateway(result.config)
+      setGatewayTestResult(result.opencodeRestartRequired ? {
+        success: true,
+        message: `配置已保存，并已生成 opencode 运行配置。请重启 opencode 容器后再生成目录。配置文件：${result.opencodeRuntimeConfigPath || '-'}`,
+        latencyMs: null,
+      } : null)
       setGatewayDraft({
         enabled: Boolean(result.config?.enabled),
         providerId: String(result.config?.providerId || ''),
@@ -175,7 +180,7 @@ export default function Settings({ showToast = () => {} }) {
         apiKey: '',
         apiKeyMasked: String(result.config?.apiKeyMasked || ''),
       })
-      showToast('LLM 模型配置已保存')
+      showToast(result.opencodeRestartRequired ? 'LLM 配置已保存，请重启 opencode 后生效' : 'LLM 模型配置已保存')
     } catch (e) {
       console.error(e)
       showToast(safeMessage(e, 'LLM 模型配置保存失败'), 'error')
@@ -197,7 +202,13 @@ export default function Settings({ showToast = () => {} }) {
         timeoutMs: Number(gatewayDraft.timeoutMs || 0),
         ...(gatewayDraft.apiKey.trim() ? { apiKey: gatewayDraft.apiKey.trim() } : {}),
       })
-      setGatewayTestResult({ success: true, message: result.message, latencyMs: result.latencyMs })
+      setGatewayTestResult({
+        success: true,
+        message: result.opencodeRestartRequired
+          ? `${result.message} 如需用于目录生成，请保存配置并重启 opencode 容器。`
+          : result.message,
+        latencyMs: result.latencyMs,
+      })
       showToast('LLM 模型连通性测试通过')
     } catch (e) {
       console.error(e)
@@ -374,7 +385,7 @@ export default function Settings({ showToast = () => {} }) {
                     value={gatewayDraft.providerId}
                     onChange={(event) => setGatewayDraft((prev) => ({ ...prev, providerId: event.target.value }))}
                     className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
-                    placeholder="opencode provider，例如 mimo"
+                    placeholder="opencode provider，例如 deepseek"
                   />
                 </label>
                 <label className="text-sm text-on-surface-variant">
@@ -384,7 +395,7 @@ export default function Settings({ showToast = () => {} }) {
                     value={gatewayDraft.model}
                     onChange={(event) => setGatewayDraft((prev) => ({ ...prev, model: event.target.value }))}
                     className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
-                    placeholder="opencode model，例如 mimo-v2.5"
+                    placeholder="DeepSeek 官方可填 deepseek-v4-flash"
                   />
                   <datalist id="llm-model-options">
                     {(gatewayDraft.modelOptions || []).map((item) => (
@@ -400,8 +411,9 @@ export default function Settings({ showToast = () => {} }) {
                     value={gatewayDraft.baseUrl}
                     onChange={(event) => setGatewayDraft((prev) => ({ ...prev, baseUrl: event.target.value }))}
                     className="mt-1 w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
-                    placeholder="OpenAI-compatible /v1 地址"
+                    placeholder="DeepSeek 官方填 https://api.deepseek.com"
                   />
+                  <span className="mt-1 block text-xs text-outline">支持填写根地址、/v1 地址或完整 /chat/completions 地址。</span>
                 </label>
                 <label className="text-sm text-on-surface-variant">
                   OpenCode Base URL
@@ -445,6 +457,9 @@ export default function Settings({ showToast = () => {} }) {
 
               <div className="rounded-lg bg-surface-container-low p-3 text-xs text-outline">
                 当前生效：Provider ID {gatewayDraft.providerId || '-'} · Model ID {gatewayDraft.model || '-'} · Provider Base URL {gatewayDraft.baseUrl || '-'} · OpenCode Base URL {gatewayDraft.opencodeBaseUrl || '-'} · API Key {gatewayDraft.apiKeyMasked || '-'} · 最近更新：{gateway?.updatedAt || '-'} / {gateway?.updatedBy || '-'}
+              </div>
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-6 text-amber-950">
+                说明：连接测试会验证 Provider 直连能力；目录生成实际走 FastAPI → opencode → Provider。保存 LLM 配置后需要重启 opencode 容器，opencode 才会加载新的 provider/model。
               </div>
 
               {gatewayTestResult && (

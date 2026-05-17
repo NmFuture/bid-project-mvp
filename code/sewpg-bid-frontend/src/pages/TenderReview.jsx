@@ -196,6 +196,22 @@ const assetSyncStatusLabel = (value = '') => {
   return '待确认参与后同步'
 }
 
+const appendixQualityLabel = (value = '') => {
+  if (value === 'complete') return '提取完整'
+  if (value === 'probably_incomplete') return '疑似不完整'
+  if (value === 'title_only') return '仅标题'
+  if (value === 'needs_review') return '需复核'
+  return value || '未校验'
+}
+
+const appendixExtractionModeLabel = (value = '') => {
+  if (value === 'source_docx_slice') return '原文切片'
+  if (value === 'source_docx_rebuild_fallback') return '切片失败重建'
+  if (value === 'markdown_slice') return '文本切片'
+  if (value === 'text_slice') return '文本识别'
+  return value || '未识别'
+}
+
 function FieldGroupTable({ title, fields = [], showEvidenceLocationColumn = true }) {
   return (
     <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
@@ -383,9 +399,11 @@ const commitmentLetterKey = (letter, index = 0) =>
   String(letter?.id || letter?.title || `commitment-letter-${index}`)
 
 export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONFIG }) {
-  const reviewConfig = normalizeBidType(config?.bidType) === '商务标'
-    ? { ...BUSINESS_REVIEW_CONFIG, ...config, bidType: '商务标' }
-    : { ...TECHNICAL_REVIEW_CONFIG, ...config, bidType: '技术标' }
+  const reviewConfig = useMemo(() => (
+    normalizeBidType(config?.bidType) === '商务标'
+      ? { ...BUSINESS_REVIEW_CONFIG, ...config, bidType: '商务标' }
+      : { ...TECHNICAL_REVIEW_CONFIG, ...config, bidType: '技术标' }
+  ), [config])
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const queryProjectId = String(searchParams.get('projectId') || '').trim()
@@ -647,6 +665,8 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
   const isParseCompleted = parseData?.status === 'completed'
   const reviewDecision = String(project?.reviewDecision || 'pending')
   const reviewDecisionLabel = REVIEW_DECISION_LABELS[reviewDecision] || REVIEW_DECISION_LABELS.pending
+  const isBusinessBid = reviewConfig.bidType === '商务标'
+  const showBusinessCompactUpload = isBusinessBid && !isParseCompleted
 
   useEffect(() => {
     const appendixId = selectedAppendix?.id
@@ -967,6 +987,38 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
     )
   }
 
+  const renderBusinessCompactProgress = () => {
+    const status = uploading ? 'running' : (parseProgress?.status || 'idle')
+    const percentage = Math.max(0, Math.min(100, Number(parseProgress?.percentage || (uploading ? 3 : 0))))
+    const statusText = status === 'completed' ? '解析完成' : status === 'failed' ? '解析失败' : status === 'running' ? '解析中' : '等待上传'
+    const summary = parseProgress?.summary || (uploading ? '正在上传并解析商务招标文件，请稍候。' : '上传商务招标文件后开始解析。')
+
+    return (
+      <div className="mt-4 rounded-md border border-surface-container-high bg-surface-container-low px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-on-surface">解析进度</p>
+            <p className="mt-1 text-xs text-outline">{summary}</p>
+          </div>
+          <span className={[
+            'shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold',
+            status === 'failed'
+              ? 'bg-error-container text-error'
+              : status === 'running'
+                ? 'bg-primary/10 text-primary'
+                : 'bg-surface-container-high text-on-surface-variant',
+          ].join(' ')}
+          >
+            {statusText} · {percentage}%
+          </span>
+        </div>
+        <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-container-high">
+          <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${percentage}%` }} />
+        </div>
+      </div>
+    )
+  }
+
   if (loadingProjects) return <PageLoading title="正在加载解析模块..." />
   if (error) return <PageError title="解析模块加载失败" description={error} onRetry={loadProjects} />
   if (!reviewProjects.length) {
@@ -1005,6 +1057,79 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
   }
   if (loadingDetail) return <PageLoading title="正在加载项目解析详情..." />
 
+  if (showBusinessCompactUpload) {
+    return (
+      <div className="review-page flex min-h-[calc(100vh-10rem)] justify-center pt-6 animate-fade-in">
+        <DataCard className="w-full max-w-[760px] !p-0 overflow-hidden">
+          <div className="border-b border-surface-container-high px-5 py-4">
+            <p className="text-xs font-semibold text-primary">商务解析</p>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-on-surface">上传招标文件</h3>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    loadProjects()
+                    loadCurrentProject()
+                  }}
+                  disabled={uploading}
+                  className="rounded-md bg-surface-container-high px-3 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  刷新
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUploadAndParse}
+                  disabled={uploading || reviewDecision === 'abandon'}
+                  className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {uploading ? '上传解析中...' : '上传并解析'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="px-5 py-5">
+            <label
+              htmlFor="business-review-tender-upload"
+              className={[
+                'flex min-h-[160px] cursor-pointer flex-col items-center justify-center rounded-md border border-dashed border-outline-variant bg-surface-container-lowest px-6 py-8 text-center transition-colors',
+                uploading || reviewDecision === 'abandon' ? 'pointer-events-none opacity-60' : 'hover:border-primary hover:bg-primary/5',
+              ].join(' ')}
+            >
+              <span className="material-symbols-outlined text-2xl text-primary">upload_file</span>
+              <span className="mt-2 text-sm font-semibold text-on-surface">选择商务招标文件</span>
+              <span className="mt-1 text-xs text-outline">支持 Word、PDF、Excel 等招标附件</span>
+            </label>
+            <input
+              id="business-review-tender-upload"
+              type="file"
+              className="hidden"
+              accept={FILE_ACCEPT}
+              multiple
+              disabled={uploading || reviewDecision === 'abandon'}
+              onChange={handleFilesPicked}
+            />
+            <div className="mt-3">
+              {renderPickedFiles()}
+            </div>
+            {uploadError && (
+              <div className="mt-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
+                {uploadError}
+              </div>
+            )}
+            {uploading && (
+              <div className="mt-3 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
+                正在上传并解析商务招标文件，请稍候。
+              </div>
+            )}
+            {renderBusinessCompactProgress()}
+          </div>
+        </DataCard>
+      </div>
+    )
+  }
+
   return (
     <div className="review-page flex flex-col gap-6 animate-fade-in max-w-none">
       <PageHeader
@@ -1033,83 +1158,85 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
         )}
       />
 
-      <DataCard className="!p-6 flex flex-col gap-5">
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-          <div className="xl:col-span-8 rounded-md bg-[#f7f7f7] border border-surface-container-high px-4 py-3">
-            <p className="text-xs text-outline mb-1">{reviewConfig.currentProjectLabel}</p>
-            <p className="text-sm font-semibold text-on-surface">{project?.id || '-'} · {project?.name || '未命名项目'}</p>
+      {!(isBusinessBid && isParseCompleted) ? (
+        <DataCard className="!p-6 flex flex-col gap-5">
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+            <div className="xl:col-span-8 rounded-md bg-[#f7f7f7] border border-surface-container-high px-4 py-3">
+              <p className="text-xs text-outline mb-1">{reviewConfig.currentProjectLabel}</p>
+              <p className="text-sm font-semibold text-on-surface">{project?.id || '-'} · {project?.name || '未命名项目'}</p>
+            </div>
+            <div className="xl:col-span-4 rounded-md bg-[#f7f7f7] border border-surface-container-high px-4 py-3 flex items-center justify-between">
+              <span className="text-sm text-on-surface-variant">解析状态</span>
+              <span className={`text-xs px-2.5 py-1 rounded-md font-semibold ${REVIEW_DECISION_BADGE_CLASSES[reviewDecision] || REVIEW_DECISION_BADGE_CLASSES.pending}`}>
+                {reviewDecisionLabel}
+              </span>
+            </div>
           </div>
-          <div className="xl:col-span-4 rounded-md bg-[#f7f7f7] border border-surface-container-high px-4 py-3 flex items-center justify-between">
-            <span className="text-sm text-on-surface-variant">解析状态</span>
-            <span className={`text-xs px-2.5 py-1 rounded-md font-semibold ${REVIEW_DECISION_BADGE_CLASSES[reviewDecision] || REVIEW_DECISION_BADGE_CLASSES.pending}`}>
-              {reviewDecisionLabel}
-            </span>
-          </div>
-        </div>
 
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <h3 className="text-sm font-semibold text-on-surface">{reviewConfig.uploadSectionTitle}</h3>
-            <p className="text-xs text-outline mt-1">{reviewConfig.uploadSectionDescription}</p>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold text-on-surface">{reviewConfig.uploadSectionTitle}</h3>
+              <p className="text-xs text-outline mt-1">{reviewConfig.uploadSectionDescription}</p>
+            </div>
+            <button
+              onClick={handleUploadAndParse}
+              disabled={uploading || reviewDecision === 'abandon'}
+              className="stage-action-btn px-5 py-2.5 bg-primary text-on-primary font-semibold rounded-lg transition-colors hover:bg-primary/90 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {uploading ? '上传并解析中...' : '上传并解析'}
+            </button>
           </div>
-          <button
-            onClick={handleUploadAndParse}
-            disabled={uploading || reviewDecision === 'abandon'}
-            className="stage-action-btn px-5 py-2.5 bg-primary text-on-primary font-semibold rounded-lg transition-colors hover:bg-primary/90 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {uploading ? '上传并解析中...' : '上传并解析'}
-          </button>
-        </div>
 
-        <div className="border border-surface-container-high rounded-md p-4 flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <h4 className="text-sm font-semibold text-on-surface">{reviewConfig.uploadFileLabel}</h4>
-            <span className="text-xs px-2 py-0.5 rounded-md bg-error-container/30 text-error">必选</span>
+          <div className="border border-surface-container-high rounded-md p-4 flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-semibold text-on-surface">{reviewConfig.uploadFileLabel}</h4>
+              <span className="text-xs px-2 py-0.5 rounded-md bg-error-container/30 text-error">必选</span>
+            </div>
+            <button
+              onClick={() => document.getElementById('review-tender-upload')?.click()}
+              className="stage-action-btn h-9 px-4 border border-dashed border-outline-variant hover:border-primary hover:bg-primary/5 transition-colors text-sm text-on-surface"
+            >
+              选择招标文件
+            </button>
+            <input
+              id="review-tender-upload"
+              type="file"
+              className="hidden"
+              accept={FILE_ACCEPT}
+              multiple
+              onChange={handleFilesPicked}
+            />
+            {renderPickedFiles()}
           </div>
-          <button
-            onClick={() => document.getElementById('review-tender-upload')?.click()}
-            className="stage-action-btn h-9 px-4 border border-dashed border-outline-variant hover:border-primary hover:bg-primary/5 transition-colors text-sm text-on-surface"
-          >
-            选择招标文件
-          </button>
-          <input
-            id="review-tender-upload"
-            type="file"
-            className="hidden"
-            accept={FILE_ACCEPT}
-            multiple
-            onChange={handleFilesPicked}
-          />
-          {renderPickedFiles()}
-        </div>
 
-        {uploadError && (
-          <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
-            {uploadError}
-          </div>
-        )}
+          {uploadError && (
+            <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
+              {uploadError}
+            </div>
+          )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 text-xs text-outline">
-          <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-            <p className="font-medium text-on-surface mb-1">{reviewConfig.sourceFilesLabel}</p>
-            <p>{sourceFiles.length ? sourceFiles.map((file) => file.name).join('，') : '暂无'}</p>
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 text-xs text-outline">
+            <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+              <p className="font-medium text-on-surface mb-1">{reviewConfig.sourceFilesLabel}</p>
+              <p>{sourceFiles.length ? sourceFiles.map((file) => file.name).join('，') : '暂无'}</p>
+            </div>
+            <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+              <p className="font-medium text-on-surface mb-1">解析时间</p>
+              <p>{formatDateTime(parseData?.parsedAt)}</p>
+            </div>
+            <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+              <p className="font-medium text-on-surface mb-1">投标起始日期</p>
+              <p>{parsedDates?.startDate || '-'}</p>
+            </div>
+            <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+              <p className="font-medium text-on-surface mb-1">投标截止日期</p>
+              <p>{parsedDates?.endDate || '-'}</p>
+            </div>
           </div>
-          <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-            <p className="font-medium text-on-surface mb-1">解析时间</p>
-            <p>{formatDateTime(parseData?.parsedAt)}</p>
-          </div>
-          <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-            <p className="font-medium text-on-surface mb-1">投标起始日期</p>
-            <p>{parsedDates?.startDate || '-'}</p>
-          </div>
-          <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-            <p className="font-medium text-on-surface mb-1">投标截止日期</p>
-            <p>{parsedDates?.endDate || '-'}</p>
-          </div>
-        </div>
-      </DataCard>
+        </DataCard>
+      ) : null}
 
-      {renderParseProgress()}
+      {!(isBusinessBid && isParseCompleted) ? renderParseProgress() : null}
 
       <DataCard className="!p-0 overflow-hidden">
         <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between">
@@ -1341,9 +1468,28 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
                   documentTitle={selectedAppendix?.title || '附表预览'}
                   documentSubtitle={selectedAppendix?.workspacePath || selectedAppendix?.sourceFile || ''}
                   documentMeta={(
-                    <span className="whitespace-nowrap rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant">
-                      {selectedAppendix?.rowCount ?? 0} 行
-                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="whitespace-nowrap rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant">
+                        {selectedAppendix?.rowCount ?? 0} 行
+                      </span>
+                      {selectedAppendix?.templateTypeLabel ? (
+                        <span className="whitespace-nowrap rounded-md bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+                          {selectedAppendix.templateTypeLabel}
+                        </span>
+                      ) : null}
+                      {selectedAppendix?.extractionQuality ? (
+                        <span
+                          className={[
+                            'whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-semibold',
+                            selectedAppendix.extractionQuality === 'complete'
+                              ? 'bg-secondary-container text-on-secondary-container'
+                              : 'bg-error-container text-error',
+                          ].join(' ')}
+                        >
+                          {appendixQualityLabel(selectedAppendix.extractionQuality)}
+                        </span>
+                      ) : null}
+                    </div>
                   )}
                   sidebar={(
                     <div className="appendix-preview-sidebar flex h-full min-h-0 flex-col">
@@ -1370,7 +1516,19 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
                             >
                               <span className="line-clamp-2 text-sm font-semibold">{appendix.title || '-'}</span>
                               <span className="text-xs text-on-surface-variant">{appendix.sourceFile || '-'}</span>
+                              {appendix.templateTypeLabel || appendix.extractionQuality || appendix.extractionMode ? (
+                                <span className="text-xs text-on-surface-variant">
+                                  {[appendix.templateTypeLabel, appendixExtractionModeLabel(appendix.extractionMode), appendixQualityLabel(appendix.extractionQuality)]
+                                    .filter(Boolean)
+                                    .join(' · ')}
+                                </span>
+                              ) : null}
                               <span className="text-xs text-outline">{appendix.workspacePath || appendix.docxPath || '-'}</span>
+                              {Array.isArray(appendix.qualityIssues) && appendix.qualityIssues.length ? (
+                                <span className="line-clamp-2 text-xs text-error">
+                                  {appendix.qualityIssues.join('；')}
+                                </span>
+                              ) : null}
                               {reviewConfig.showApproveAppendices ? (
                                 <span className="text-xs text-outline">
                                   {assetReviewStatusLabel(appendix.assetReviewStatus)}

@@ -28,11 +28,17 @@ DEFAULT_TEMPLATE_TYPES = {
 }
 
 DEFAULT_LLM_MODEL_OPTIONS = [
+    {"id": "deepseek-v4-flash", "label": "deepseek-v4-flash"},
+    {"id": "deepseek-v4-pro", "label": "deepseek-v4-pro"},
+    {"id": "deepseek-chat", "label": "deepseek-chat（DeepSeek 兼容名）"},
+    {"id": "deepseek-reasoner", "label": "deepseek-reasoner（DeepSeek 推理）"},
     {"id": "mimo-v2.5", "label": "mimo-v2.5"},
     {"id": "big-pickle", "label": "big-pickle"},
     {"id": "deepseek-ai/DeepSeek-V3", "label": "deepseek-ai/DeepSeek-V3"},
     {"id": "deepseek-ai/DeepSeek-R1", "label": "deepseek-ai/DeepSeek-R1"},
 ]
+
+OPENCODE_RUNTIME_CONFIG_PATH = settings.documents_dir / "_runtime" / "opencode" / "opencode.runtime.json"
 
 
 def now_display() -> str:
@@ -54,6 +60,18 @@ class SystemSettingsService:
             await material_store._ensure_runtime_tables(session)
             await session.commit()
         await self._ensure_model_defaults()
+        await self._sync_opencode_runtime_config()
+
+    async def _sync_opencode_runtime_config(self) -> None:
+        try:
+            async with async_session() as session:
+                row = (await session.execute(select(SystemConfig).where(SystemConfig.key == "llm"))).scalar_one_or_none()
+            config = self._normalize_model_config("llm", copy.deepcopy(row.value or {}) if row is not None else {})
+            self._write_opencode_runtime_config(config)
+        except Exception:
+            # Settings health and explicit save/test endpoints will surface model config issues;
+            # app startup should not fail only because a runtime config file cannot be written.
+            return
 
     async def _ensure_model_defaults(self) -> None:
         async with async_session() as session:
@@ -142,6 +160,63 @@ class SystemSettingsService:
         config["maxTokens"] = int(config.get("maxTokens") or 2048)
         config["enabled"] = bool(config.get("enabled"))
         return config
+
+    @staticmethod
+    def _opencode_runtime_config(config: dict[str, Any]) -> dict[str, Any]:
+        provider_id = str(config.get("providerId") or settings.opencode_provider_id or "opencode").strip()
+        model_id = str(config.get("modelId") or config.get("model") or settings.opencode_model_id or "big-pickle").strip()
+        base_url = str(config.get("baseUrl") or "").strip().rstrip("/")
+        api_key = str(config.get("apiKey") or "").strip()
+        headers = config.get("headers") if isinstance(config.get("headers"), dict) else {}
+
+        runtime = {
+            "$schema": "https://opencode.ai/config.json",
+            "autoupdate": False,
+            "share": "disabled",
+            "model": f"{provider_id}/{model_id}",
+            "provider": {
+                provider_id: {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": str(config.get("providerName") or provider_id or "Configured LLM Gateway"),
+                    "options": {
+                        "baseURL": base_url,
+                    },
+                    "models": {
+                        model_id: {
+                            "name": str(config.get("modelLabel") or model_id),
+                        }
+                    },
+                }
+            },
+            "permission": {
+                "skill": {
+                    "*": "allow",
+                },
+                "bash": "allow",
+                "edit": "deny",
+            },
+        }
+        if api_key:
+            runtime["provider"][provider_id]["options"]["apiKey"] = api_key
+        if headers:
+            runtime["provider"][provider_id]["options"]["headers"] = headers
+        return runtime
+
+    def _write_opencode_runtime_config(self, config: dict[str, Any]) -> str:
+        normalized = self._normalize_model_config("llm", config)
+        if not normalized.get("enabled"):
+            return ""
+        if not str(normalized.get("baseUrl") or "").strip():
+            return ""
+        if not str(normalized.get("modelId") or normalized.get("model") or "").strip():
+            return ""
+        OPENCODE_RUNTIME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        runtime = self._opencode_runtime_config(normalized)
+        OPENCODE_RUNTIME_CONFIG_PATH.write_text(
+            json.dumps(runtime, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return str(OPENCODE_RUNTIME_CONFIG_PATH)
 
     async def get_model_config(self, kind: str) -> dict[str, Any]:
         await self._ensure_tables()
@@ -249,7 +324,16 @@ class SystemSettingsService:
             user=user,
             diff={"before": before, "after": self._public_model_config(next_config)},
         )
-        return {"message": "Config updated", "config": await self.get_model_config(kind)}
+        opencode_runtime_config_path = ""
+        opencode_restart_required = False
+        if kind == "llm":
+            opencode_runtime_config_path = self._write_opencode_runtime_config(next_config)
+            opencode_restart_required = bool(opencode_runtime_config_path)
+        payload = {"message": "Config updated", "config": await self.get_model_config(kind)}
+        if kind == "llm":
+            payload["opencodeRuntimeConfigPath"] = opencode_runtime_config_path
+            payload["opencodeRestartRequired"] = opencode_restart_required
+        return payload
 
     async def test_model_config(
         self,
@@ -282,7 +366,7 @@ class SystemSettingsService:
             raise PeripheralError(400, "Base URL 与模型不能为空", f"{kind.upper()}_TEST_INVALID")
 
         timeout_ms = int(config.get("timeoutMs") or 30000)
-        url = f"{base_url.rstrip('/')}/chat/completions" if base_url.rstrip("/").endswith("/v1") else base_url.rstrip("/")
+        url = self._chat_completions_url(base_url)
         payload: dict[str, Any]
         if kind == "ocr":
             test_image = (
@@ -330,9 +414,10 @@ class SystemSettingsService:
             result = {
                 "success": True,
                 "latencyMs": latency_ms,
-                "message": "连接测试成功。",
+                "message": "Provider 直连测试成功。目录生成还需要 opencode 容器加载同一 provider/model 配置。",
                 "providerId": str(config.get("providerId") or ""),
                 "model": model,
+                "opencodeRestartRequired": kind == "llm",
             }
         except PeripheralError:
             raise
@@ -350,6 +435,17 @@ class SystemSettingsService:
                 diff={"before": {}, "after": {"success": True, "latencyMs": result["latencyMs"]}},
             )
         return result
+
+    @staticmethod
+    def _chat_completions_url(base_url: str) -> str:
+        url = str(base_url or "").strip().rstrip("/")
+        if not url:
+            return ""
+        if url.endswith("/chat/completions"):
+            return url
+        if url.endswith("/v1"):
+            return f"{url}/chat/completions"
+        return f"{url}/chat/completions"
 
     @staticmethod
     def _template_asset_to_dict(asset: TemplateAsset) -> dict[str, Any]:

@@ -42,7 +42,7 @@ python .\scripts\run_from_manifest.py .\examples\minimal_manifest.json --respons
 - 清洗正文、表格、TOC 和页眉；保留正文内容、图片、表格和横竖版 section，不重排章节。
 - 插入自动目录时，在 TOC 域前插入 `目 录` 标题；若文档存在封面分页符，目录插入在封面之后、商务评分索引表之前。
 - 目录结束处使用独立竖版下一页分节符，避免目录页继承后续商务评分索引表的横版 section。
-- TOC 只取 1-3 级，条目的缩进、点引导制表位和行距参考 `references/business_toc_style.json`。
+- TOC 取 1-4 级，条目的缩进、点引导制表位和行距参考 `references/business_toc_style.json`。
 - 运行 `scripts/pagination_cleaner.py` 清理多余空白页，并在每个有正文的小节正文结束后补齐分页符；正文可以是段落、图片或表格。
 - 父标题后若直接进入子标题且没有正文，不在父标题后加分页符；若正文后已有分页符，不重复增加。
 - 分页清理会把 `bookmarkStart/bookmarkEnd`、批注范围、修订范围、权限范围和校对标记等无版面 OOXML 节点视为透明节点，不因这些节点重复补分页符。
@@ -52,7 +52,7 @@ python .\scripts\run_from_manifest.py .\examples\minimal_manifest.json --respons
 
 ## 格式配置
 
-页面、标题、正文、表格、页眉模板和风险残留词从 `references/business_heading_style.json` 读取。自动目录的标题、TOC 域、条目缩进、点引导制表位和行距从 `references/business_toc_style.json` 读取，并由 `business_heading_style.json` 的 `toc.style_spec_path` 引用。目录格式按参考文档真实自动目录页设置：标题 `目 录`、TOC 域 `TOC \o "1-3" \h \z \u`、TOC 1/2/3 左缩进 0/420/840 twips、右侧点引导制表位 9060 twips、1.5 倍行距。业务说明见 `references/business_style_spec.md`。
+页面、标题、正文、表格、页眉模板和风险残留词从 `references/business_heading_style.json` 读取。自动目录的标题、TOC 域、条目缩进、点引导制表位和行距从 `references/business_toc_style.json` 读取，并由 `business_heading_style.json` 的 `toc.style_spec_path` 引用。目录格式按参考文档真实自动目录页设置：标题 `目 录`、TOC 域 `TOC \o "1-4" \h \z \u`、TOC 1/2/3/4 左缩进 0/420/840/1260 twips、右侧点引导制表位 9060 twips、1.5 倍行距。业务说明见 `references/business_style_spec.md`。
 
 v1 沿用现有技术标页面、标题、正文和表格格式规则；页眉模板改为：
 

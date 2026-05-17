@@ -10,6 +10,7 @@ import re
 import shutil
 import asyncio
 import threading
+import tempfile
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,7 +35,6 @@ from app.services.gap_planning import (
     TABLE_FILL_SKILL_NAME,
     WORD_FILL_SKILL_NAME,
     _artifact_onlyoffice_payload,
-    _allowed_material_index,
     build_gap_plan_for_project,
     check_gap_integrity,
     normalize_gap_plan_fill_task_skills,
@@ -72,6 +72,15 @@ STAGE_NAMES = {
 
 STAGE_PROGRESS_NAMES = STAGE_NAMES
 
+BUSINESS_STAGE_LABELS = {
+    1: "模板与目录",
+    2: "审核目录",
+    3: "素材匹配",
+    4: "素材匹配",
+    5: "共创导出",
+    6: "共创导出",
+}
+
 STAGE_PROGRESS_GROUPS = [
     {
         "id": 1,
@@ -108,6 +117,37 @@ STAGE_PROGRESS_GROUPS = [
         "name": "导出",
         "routeStageId": 6,
         "isHuman": False,
+    },
+]
+
+BUSINESS_STAGE_PROGRESS_GROUPS = [
+    {
+        "id": 1,
+        "name": "模板与目录",
+        "routeStageId": 1,
+        "isHuman": False,
+        "sourceStages": [1],
+    },
+    {
+        "id": 2,
+        "name": "审核目录",
+        "routeStageId": 2,
+        "isHuman": True,
+        "sourceStages": [2],
+    },
+    {
+        "id": 3,
+        "name": "素材匹配",
+        "routeStageId": 3,
+        "isHuman": True,
+        "sourceStages": [3, 4],
+    },
+    {
+        "id": 4,
+        "name": "共创导出",
+        "routeStageId": 5,
+        "isHuman": True,
+        "sourceStages": [5, 6],
     },
 ]
 
@@ -300,17 +340,45 @@ def default_fill_state(project: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def _run_async_material_upload(**kwargs: Any) -> dict[str, Any]:
-    awaitable = material_store.raw_upload(**kwargs)
+    async def call_upload() -> dict[str, Any]:
+        return await material_store.raw_upload(**kwargs)
+
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(awaitable)
+        return asyncio.run(call_upload())
     result: dict[str, Any] = {}
     error: dict[str, BaseException] = {}
 
     def runner() -> None:
         try:
-            result["value"] = asyncio.run(awaitable)
+            result["value"] = asyncio.run(call_upload())
+        except BaseException as exc:  # pragma: no cover
+            error["value"] = exc
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+    if error:
+        raise error["value"]
+    return result.get("value") if isinstance(result.get("value"), dict) else {}
+
+
+def _run_async_material_files(**kwargs: Any) -> dict[str, Any]:
+    async def call_raw_files() -> dict[str, Any]:
+        return await material_store.raw_files(**kwargs)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        result = asyncio.run(call_raw_files())
+        return result if isinstance(result, dict) else {}
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+
+    def runner() -> None:
+        try:
+            result["value"] = asyncio.run(call_raw_files())
         except BaseException as exc:  # pragma: no cover
             error["value"] = exc
 
@@ -756,7 +824,7 @@ class AppStore:
         review_decision = str(project.get("reviewDecision") or "participate")
         if review_decision not in REVIEW_DECISION_LABELS:
             review_decision = "pending"
-        stage_label = "审核终止" if review_decision == "abandon" else STAGE_NAMES[project["currentStage"]]
+        stage_label = "审核终止" if review_decision == "abandon" else self._stage_label(project)
         return {
             "id": project["id"],
             "projectCode": project.get("projectCode") or project["id"],
@@ -788,6 +856,13 @@ class AppStore:
             "updatedAt": project["updatedAt"],
             "identity": copy.deepcopy(identity),
         }
+
+    @staticmethod
+    def _stage_label(project: dict[str, Any]) -> str:
+        current_stage = int(project.get("currentStage") or 1)
+        if normalize_bid_type(str(project.get("bidType") or "")) == "商务标":
+            return BUSINESS_STAGE_LABELS.get(current_stage, STAGE_NAMES.get(current_stage, "未知阶段"))
+        return STAGE_NAMES.get(current_stage, "未知阶段")
 
     def _detail(self, project: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -1062,6 +1137,8 @@ class AppStore:
     def get_stages(self, project_id: str) -> list[dict[str, Any]]:
         project = self._require(project_id)
         current_stage = self._normalize_stage_value(project.get("currentStage"), scheme=STAGE_SCHEME)
+        if normalize_bid_type(str(project.get("bidType") or "")) == "商务标":
+            return self._business_progress_stages(current_stage)
         skip_technical_gap_stage = self._should_skip_technical_gap_stage(project)
         if skip_technical_gap_stage and current_stage == 3:
             current_stage = 4
@@ -1088,6 +1165,37 @@ class AppStore:
             )
         return stages
 
+    @staticmethod
+    def _business_progress_stages(current_stage: int) -> list[dict[str, Any]]:
+        stages: list[dict[str, Any]] = []
+        active_display_id = 1
+        for group in BUSINESS_STAGE_PROGRESS_GROUPS:
+            source_stages = [int(item) for item in group.get("sourceStages", [])]
+            if current_stage in source_stages:
+                active_display_id = int(group["id"])
+                break
+            if source_stages and current_stage > max(source_stages):
+                active_display_id = int(group["id"]) + 1
+        for group in BUSINESS_STAGE_PROGRESS_GROUPS:
+            stage_id = int(group["id"])
+            if stage_id < active_display_id:
+                status = "completed"
+            elif stage_id == active_display_id:
+                status = "active"
+            else:
+                status = "pending"
+            stages.append(
+                {
+                    "id": group["id"],
+                    "name": group["name"],
+                    "status": status,
+                    "isHuman": bool(group["isHuman"]),
+                    "routeStageId": group["routeStageId"],
+                    "sourceStages": copy.deepcopy(group.get("sourceStages") or []),
+                }
+            )
+        return stages
+
     def update_stage(self, project_id: str, stage: int, data: dict[str, Any]) -> dict[str, Any]:
         project = self._require(project_id)
         status = str(data.get("status") or "").strip()
@@ -1108,7 +1216,7 @@ class AppStore:
         return {
             "message": "阶段状态已更新",
             "currentStage": project["currentStage"],
-            "stageLabel": STAGE_NAMES[project["currentStage"]],
+            "stageLabel": self._stage_label(project),
         }
 
     def complete_parse(
@@ -1174,7 +1282,7 @@ class AppStore:
                 "endDate": project.get("endDate") or project.get("deadline") or "",
                 "deadline": project.get("deadline") or project.get("endDate") or "",
                 "currentStage": project["currentStage"],
-                "stageLabel": STAGE_NAMES[project["currentStage"]],
+                "stageLabel": self._stage_label(project),
             },
             "sourceFiles": source_files,
             "items": items,
@@ -1375,7 +1483,7 @@ class AppStore:
                 "id": project["id"],
                 "templateFiles": copy.deepcopy(project["templateFiles"]),
                 "currentStage": project["currentStage"],
-                "stageLabel": STAGE_NAMES[project["currentStage"]],
+                "stageLabel": self._stage_label(project),
             },
             "templateFiles": copy.deepcopy(project["templateFiles"]),
             "updatedAt": project["updatedAt"],
@@ -2166,6 +2274,7 @@ class AppStore:
             )
 
         selectable_segments: list[dict[str, Any]] = []
+        segments_by_material_id: dict[str, list[dict[str, Any]]] = {}
         for segment in segments:
             material_id = str(segment.get("material_id") or segment.get("materialId") or "").strip()
             material = material_by_id.get(material_id, {})
@@ -2186,8 +2295,7 @@ class AppStore:
             )
             if material_id and not matches(haystack):
                 continue
-            selectable_segments.append(
-                {
+            segment_item = {
                     "id": str(segment.get("segment_id") or ""),
                     "kind": "segment",
                     "materialId": material_id,
@@ -2214,7 +2322,8 @@ class AppStore:
                     "keywords": [str(item) for item in segment.get("keywords") or [] if str(item).strip()][:16],
                     "updatedAt": str(material.get("updatedAt") or ""),
                 }
-            )
+            selectable_segments.append(segment_item)
+            segments_by_material_id.setdefault(material_id, []).append(segment_item)
 
         material_ids_with_segments = {str(item.get("materialId") or "") for item in selectable_segments if str(item.get("materialId") or "")}
         selectable_materials: list[dict[str, Any]] = []
@@ -2241,7 +2350,8 @@ class AppStore:
                     "size": int(material.get("size") or 0),
                     "turbineModelLabel": str(material.get("turbineModelLabel") or ""),
                     "updatedAt": str(material.get("updatedAt") or ""),
-                    "segmentCount": sum(1 for item in selectable_segments if str(item.get("materialId") or "") == material_id),
+                    "segmentCount": len(segments_by_material_id.get(material_id) or []),
+                    "evidenceSegments": copy.deepcopy((segments_by_material_id.get(material_id) or [])[:8]),
                     "hasSegments": material_id in material_ids_with_segments,
                 }
             )
@@ -2263,6 +2373,83 @@ class AppStore:
             "materialScope": copy.deepcopy(picker.get("materialScope") or {}),
             "selectedBusinessTurbineModel": copy.deepcopy(picker.get("selectedBusinessTurbineModel") or {}),
         }
+
+    async def get_business_gap_material_preview(
+        self,
+        project_id: str,
+        material_id: str,
+        *,
+        mode: str = "quick",
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        material = self._business_gap_readable_material(project_id, material_id)
+        payload = await material_store.raw_download_content(str(material["id"]))
+        file_name = str(payload.get("fileName") or material.get("name") or material["id"])
+        mime_type = str(payload.get("mimeType") or mimetypes.guess_type(file_name)[0] or "application/octet-stream")
+        renderer = self._business_gap_preview_renderer(file_name, mime_type)
+        file_path = f"/api/projects/{project_id}/business-gaps/materials/{material['id']}/content/{safe_filename(file_name, 'material.bin')}"
+        browser_file_url = f"{browser_base_url.rstrip('/')}{file_path}" if browser_base_url else file_path
+        quick_summary = self._business_gap_material_preview_summary(material)
+        base = {
+            "schemaVersion": "bid-business-material-preview-v1",
+            "projectId": project_id,
+            "materialId": str(material["id"]),
+            "materialName": str(material.get("name") or file_name),
+            "fileName": file_name,
+            "folderPath": str(material.get("folderPath") or ""),
+            "materialTier": str(material.get("materialTier") or ""),
+            "mimeType": mime_type,
+            "renderer": renderer,
+            "browserFileUrl": browser_file_url,
+            "quickSummary": quick_summary,
+            "cleanStatus": str(material.get("cleanStatus") or ""),
+            "hasCleanedWord": bool(material.get("hasCleanedWord")),
+            "cleanedFileName": str(material.get("cleanedFileName") or ""),
+            "officeAvailable": False,
+            "message": "",
+        }
+        if renderer in {"image", "pdf"}:
+            return {**base, "previewMode": "native", "message": "已生成浏览器原件预览。"}
+
+        if bool(material.get("hasCleanedWord")):
+            if str(mode or "").lower() == "office":
+                cleaned = await material_store.raw_cleaned_preview(
+                    str(material["id"]),
+                    browser_base_url=browser_base_url,
+                    onlyoffice_base_url=onlyoffice_base_url,
+                )
+                return {
+                    **base,
+                    "previewMode": "onlyoffice",
+                    "renderer": "word",
+                    "officeAvailable": True,
+                    "onlyoffice": cleaned.get("onlyoffice") or {},
+                    "cleanedPreview": cleaned,
+                    "message": "已生成清洗稿完整 Word 预览。",
+                }
+            try:
+                snippets = await self._business_gap_cleaned_docx_snippets(str(material["id"]))
+            except Exception:
+                snippets = []
+            return {
+                **base,
+                "previewMode": "text",
+                "renderer": "word",
+                "officeAvailable": True,
+                "snippets": snippets,
+                "message": "已生成清洗稿文本快照；如需保留格式可打开完整 Word 预览。",
+            }
+
+        return {
+            **base,
+            "previewMode": "download",
+            "message": "该素材暂无可直接预览的清洗稿，可打开或下载原件核对。",
+        }
+
+    async def get_business_gap_material_preview_content(self, project_id: str, material_id: str) -> dict[str, Any]:
+        material = self._business_gap_readable_material(project_id, material_id)
+        return await material_store.raw_download_content(str(material["id"]))
 
     def get_business_gap_fact_table(self, project_id: str) -> dict[str, Any]:
         project = self._require(project_id)
@@ -2675,6 +2862,7 @@ class AppStore:
                 "sourceMode": "uploaded_in_business_s3",
                 "assemblyMode": self._assembly_mode_for_business_artifact(task, {"fileName": target_path.name, "mimeType": mime_type}),
                 "materialUsage": "",
+                "materialSourceType": "manual_upload",
                 "materialSyncStatus": "not_synced",
                 "materialSyncPolicy": "manual_project_only",
                 "materialTargetPath": self._default_business_gap_material_target_path(project_id, task),
@@ -2749,16 +2937,36 @@ class AppStore:
             material_id = str(material.get("id") or material.get("materialId") or "").strip()
             if not material_id:
                 continue
-            payload, source_kind = await self._business_material_download_payload(material_id)
-            file_name = safe_filename(
-                str(material.get("cleanedFileName") or payload.get("fileName") or material.get("materialName") or material.get("name") or f"{material_id}.bin"),
+            raw_payload, source_kind = await self._business_material_download_payload(material_id)
+            raw_name = safe_filename(
+                str(raw_payload.get("fileName") or material.get("materialName") or material.get("name") or f"{material_id}.bin"),
                 f"{material_id}.bin",
             )
-            target_path = self._unique_business_gap_path(work_dir, f"{index:02d}-{file_name}")
-            minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
+            target_path = self._unique_business_gap_path(work_dir, f"{index:02d}-{raw_name}")
+            minio_client.download_file(str(raw_payload["bucket"]), str(raw_payload["key"]), target_path)
+            file_name = target_path.name
+            mime_type = str(raw_payload.get("mimeType") or mimetypes.guess_type(target_path.name)[0] or "application/octet-stream")
+            cleaned_snapshot: dict[str, Any] = {}
+            try:
+                cleaned_payload = await material_store.raw_download_cleaned_content(material_id)
+                cleaned_name = safe_filename(
+                    str(cleaned_payload.get("fileName") or material.get("cleanedFileName") or f"{material_id}-cleaned.docx"),
+                    f"{material_id}-cleaned.docx",
+                )
+                cleaned_target_path = self._unique_business_gap_path(work_dir, f"{index:02d}-清洗稿-{cleaned_name}")
+                minio_client.download_file(str(cleaned_payload["bucket"]), str(cleaned_payload["key"]), cleaned_target_path)
+                if cleaned_target_path.exists():
+                    cleaned_snapshot = {
+                        "cleanedFileName": cleaned_target_path.name,
+                        "cleanedFilePath": str(cleaned_target_path),
+                        "cleanedMimeType": str(cleaned_payload.get("mimeType") or mimetypes.guess_type(cleaned_target_path.name)[0] or "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+                    }
+                    source_kind = "raw_with_cleaned"
+            except Exception:
+                cleaned_snapshot = {}
             ref = {
                 "materialId": material_id,
-                "materialName": str(material.get("materialName") or material.get("name") or payload.get("fileName") or material_id),
+                "materialName": str(material.get("materialName") or material.get("name") or raw_payload.get("fileName") or material_id),
                 "folderPath": str(material.get("folderPath") or material.get("path") or ""),
                 "materialTier": str(material.get("materialTier") or material.get("libraryScope") or ""),
                 "sourceKind": source_kind,
@@ -2771,8 +2979,9 @@ class AppStore:
                 "fileName": target_path.name,
                 "filePath": str(target_path),
                 "sourceMode": "selected_from_business_material_library",
-                "assemblyMode": self._assembly_mode_for_business_artifact(task, {**material, "fileName": target_path.name, "mimeType": payload.get("mimeType")}),
+                "assemblyMode": self._assembly_mode_for_business_artifact(task, {**material, "fileName": target_path.name, "mimeType": mime_type}),
                 "materialUsage": str(material.get("wikiUsageMode") or ""),
+                "materialSourceType": "material_library",
                 "materialId": material_id,
                 "materialName": ref["materialName"],
                 "folderPath": ref["folderPath"],
@@ -2785,7 +2994,7 @@ class AppStore:
                 "confirmedAt": created_at,
                 "selectedAt": created_at,
                 "operator": str(data.get("operator") or "当前用户"),
-                "mimeType": str(payload.get("mimeType") or mimetypes.guess_type(target_path.name)[0] or "application/octet-stream"),
+                "mimeType": mime_type,
                 "wikiCardId": str(material.get("wikiCardId") or ""),
                 "wikiUsageMode": str(material.get("wikiUsageMode") or ""),
                 "evidenceSegmentId": str(material.get("evidenceSegmentId") or ""),
@@ -2793,7 +3002,12 @@ class AppStore:
                 "evidenceSegmentType": str(material.get("evidenceSegmentType") or ""),
                 "evidenceSourcePages": str(material.get("evidenceSourcePages") or ""),
                 "evidenceSummary": str(material.get("evidenceSummary") or ""),
+                "selectedEvidenceSegments": copy.deepcopy(material.get("evidenceSegments") if isinstance(material.get("evidenceSegments"), list) else []),
                 "wikiEvidence": copy.deepcopy(material.get("wikiEvidence") or {}),
+                "rawFileName": target_path.name,
+                "rawFilePath": str(target_path),
+                "rawMimeType": mime_type,
+                **cleaned_snapshot,
             }
             if not artifact["materialUsage"]:
                 artifact["materialUsage"] = self._business_material_usage_for_assembly_mode(str(artifact.get("assemblyMode") or ""))
@@ -3676,6 +3890,24 @@ class AppStore:
         self._persist_project(project)
         return copy.deepcopy(state)
 
+    def apply_business_document_format(self, project_id: str, format_result: dict[str, Any]) -> dict[str, Any]:
+        project = self._require(project_id)
+        state = project["document_state"]
+        next_version = int(state.get("version") or 1) + 1
+        updated_at = now_iso()
+        state["version"] = next_version
+        state["lastSavedAt"] = updated_at
+        state.setdefault("onlyoffice", {})["documentKey"] = f"{project_id}-v{next_version}"
+        state["businessFormatPreset"] = str(format_result.get("preset") or "standard")
+        state["businessFormatLabel"] = str(format_result.get("label") or "")
+        state["businessFormatSummary"] = copy.deepcopy(format_result.get("summary") or {})
+        fill_state = project.get("fill_state") if isinstance(project.get("fill_state"), dict) else {}
+        fill_state["lastBusinessFormat"] = copy.deepcopy(format_result)
+        project["fill_state"] = fill_state
+        project["updatedAt"] = updated_at
+        self._persist_project(project)
+        return copy.deepcopy(state)
+
     def get_final_document(self, project_id: str) -> dict[str, Any]:
         state = self._require(project_id)["document_state"]
         return {
@@ -4527,7 +4759,43 @@ class AppStore:
                     )
         if not materials:
             try:
-                materials = _allowed_material_index(build_project_material_scope(project), project_turbine_model(project))
+                material_scope = build_project_material_scope(project)
+                selected_model = project_turbine_model(project)
+                seen: set[str] = set()
+                for scope in material_scope.get("readableScopes") or []:
+                    if not isinstance(scope, dict):
+                        continue
+                    folder_path = str(scope.get("path") or "").strip()
+                    if not folder_path:
+                        continue
+                    payload = _run_async_material_files(
+                        folder_path=folder_path,
+                        bid_type=str(material_scope.get("bidType") or normalize_bid_type(str(project.get("bidType") or "")) or "技术标"),
+                        material_tier=str(scope.get("materialTier") or ""),
+                        turbine_model=selected_model,
+                        recursive=True,
+                        page=1,
+                        page_size=1000,
+                    )
+                    for raw in payload.get("items") or []:
+                        if not isinstance(raw, dict):
+                            continue
+                        material_id = str(raw.get("id") or "")
+                        if not material_id or material_id in seen:
+                            continue
+                        seen.add(material_id)
+                        materials.append(
+                            {
+                                "id": material_id,
+                                "name": str(raw.get("name") or ""),
+                                "folderPath": str(raw.get("folderPath") or ""),
+                                "materialTier": str(raw.get("materialTier") or scope.get("materialTier") or ""),
+                                "hasCleanedWord": bool(raw.get("hasCleanedWord")),
+                                "cleanedFileName": str(raw.get("cleanedFileName") or ""),
+                                "turbineModelLabel": str(raw.get("turbineModelLabel") or ""),
+                                "size": int(raw.get("size") or 0),
+                            }
+                        )
             except Exception:
                 materials = []
         return [item for item in materials if self._material_is_fact_relevant(item)]
@@ -5170,6 +5438,12 @@ class AppStore:
             return artifact_mode == mode or usage == "embed_scan" or suffix in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
         if mode == "attach_whole_file":
             return artifact_mode == mode or usage == "attach_whole"
+        if mode == "extract_and_summarize":
+            return (
+                artifact_mode == mode
+                or usage in {"extract_and_summarize", "summarize", "extract_summary", "extract_segment"}
+                or bool(artifact.get("materialId"))
+            )
         if mode == "extract_segment":
             return artifact_mode == mode or usage == "extract_segment" or bool(artifact.get("evidenceSegmentId"))
         if mode == "ai_draft":
@@ -5198,6 +5472,8 @@ class AppStore:
             return usage == "embed_scan" or suffix in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"} or bool(re.search(r"证书|扫描|图片|回单|保函", text))
         if mode == "attach_whole_file":
             return usage == "attach_whole"
+        if mode == "extract_and_summarize":
+            return usage in {"extract_and_summarize", "summarize", "extract_summary", "extract_segment"} or bool(candidate.get("materialId"))
         if mode == "extract_segment":
             return usage == "extract_segment" or bool(candidate.get("evidenceSegmentId"))
         if mode == "ai_draft":
@@ -5249,13 +5525,13 @@ class AppStore:
             return "attach_whole_file"
         if task_type == "bundle":
             if module_key in {"enterprise_finance_supply", "performance_cooperation_support"}:
-                return "extract_segment"
+                return "extract_and_summarize"
             return "attach_whole_file"
         if decision == "fill_required":
             return "template_fill_docx"
         if any(token in normalized for token in ["投标函", "授权", "廉洁", "承诺", "声明", "说明", "履约"]):
             return "template_fill_docx"
-        return "manual_upload"
+        return "extract_and_summarize"
 
     @staticmethod
     def _business_material_usage_for_assembly_mode(assembly_mode: str) -> str:
@@ -5264,6 +5540,7 @@ class AppStore:
             "table_fill_from_material": "fill_table",
             "attach_whole_file": "attach_whole",
             "embed_scan_or_image": "embed_scan",
+            "extract_and_summarize": "extract_and_summarize",
             "extract_segment": "extract_segment",
             "ai_draft": "generate_draft",
             "manual_upload": "manual_upload",
@@ -5280,14 +5557,15 @@ class AppStore:
         plan = {
             "mode": mode,
             "materialUsage": str(task.get("materialUsage") or cls._business_material_usage_for_assembly_mode(mode)),
-            "requiresProjectFacts": mode in {"template_fill_docx", "table_fill_from_material", "ai_draft"},
-            "requiresMaterialEvidence": mode in {"table_fill_from_material", "extract_segment", "attach_whole_file", "embed_scan_or_image"},
+            "requiresProjectFacts": mode in {"template_fill_docx", "table_fill_from_material", "extract_and_summarize", "ai_draft"},
+            "requiresMaterialEvidence": mode in {"table_fill_from_material", "extract_and_summarize", "extract_segment", "attach_whole_file", "embed_scan_or_image"},
             "requiresHumanReview": True,
             "outputArtifactType": {
                 "template_fill_docx": "filled_docx",
                 "table_fill_from_material": "filled_table_docx",
                 "attach_whole_file": "whole_file_attachment",
                 "embed_scan_or_image": "embedded_scan",
+                "extract_and_summarize": "extracted_summary_docx",
                 "extract_segment": "extracted_segment_docx",
                 "ai_draft": "ai_draft_docx",
             }.get(mode, "manual_artifact"),
@@ -5304,6 +5582,9 @@ class AppStore:
             "attach_whole_file": "attach_whole_file",
             "embed_scan": "embed_scan_or_image",
             "embed_scan_or_image": "embed_scan_or_image",
+            "extract_and_summarize": "extract_and_summarize",
+            "summarize": "extract_and_summarize",
+            "extract_summary": "extract_and_summarize",
             "extract_segment": "extract_segment",
             "fill_template": "template_fill_docx",
             "template_fill_docx": "template_fill_docx",
@@ -5316,7 +5597,7 @@ class AppStore:
         mime_type = str(artifact.get("mimeType") or "").lower()
         task_mode = str(task.get("assemblyMode") or "")
         if suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".pdf"} or "image/" in mime_type or "pdf" in mime_type:
-            if task_mode in {"attach_whole_file", "extract_segment"}:
+            if task_mode in {"attach_whole_file", "extract_segment", "extract_and_summarize"}:
                 return task_mode
             return "embed_scan_or_image"
         if task_mode:
@@ -5345,24 +5626,62 @@ class AppStore:
             task["materialUsage"] = cls._business_material_usage_for_assembly_mode(str(task.get("assemblyMode") or ""))
         segments: list[dict[str, Any]] = []
         seen: set[str] = set()
+
+        def add_segment_from_values(
+            *,
+            segment_id: str,
+            title: str = "",
+            material_id: str = "",
+            material_name: str = "",
+            wiki_card_id: str = "",
+            source_pages: str = "",
+            summary: str = "",
+            usage_mode: str = "",
+        ) -> None:
+            clean_id = str(segment_id or "").strip()
+            if not clean_id or clean_id in seen:
+                return
+            seen.add(clean_id)
+            segments.append(
+                {
+                    "segmentId": clean_id,
+                    "title": str(title or ""),
+                    "materialId": str(material_id or ""),
+                    "materialName": str(material_name or ""),
+                    "wikiCardId": str(wiki_card_id or ""),
+                    "sourcePages": str(source_pages or ""),
+                    "summary": str(summary or ""),
+                    "usageMode": str(usage_mode or ""),
+                }
+            )
+
         for artifact in artifacts:
             if not isinstance(artifact, dict):
                 continue
+            nested_segments = artifact.get("selectedEvidenceSegments") if isinstance(artifact.get("selectedEvidenceSegments"), list) else []
+            for raw_segment in nested_segments:
+                if not isinstance(raw_segment, dict):
+                    continue
+                add_segment_from_values(
+                    segment_id=str(raw_segment.get("segmentId") or raw_segment.get("evidenceSegmentId") or ""),
+                    title=str(raw_segment.get("title") or raw_segment.get("evidenceSegmentTitle") or ""),
+                    material_id=str(raw_segment.get("materialId") or artifact.get("materialId") or ""),
+                    material_name=str(raw_segment.get("materialName") or artifact.get("materialName") or ""),
+                    wiki_card_id=str(raw_segment.get("wikiCardId") or artifact.get("wikiCardId") or ""),
+                    source_pages=str(raw_segment.get("sourcePages") or raw_segment.get("evidenceSourcePages") or ""),
+                    summary=str(raw_segment.get("summary") or raw_segment.get("evidenceSummary") or ""),
+                    usage_mode=str(raw_segment.get("usageMode") or raw_segment.get("wikiUsageMode") or artifact.get("wikiUsageMode") or artifact.get("materialUsage") or ""),
+                )
             segment_id = str(artifact.get("evidenceSegmentId") or "").strip()
-            if not segment_id or segment_id in seen:
-                continue
-            seen.add(segment_id)
-            segments.append(
-                {
-                    "segmentId": segment_id,
-                    "title": str(artifact.get("evidenceSegmentTitle") or ""),
-                    "materialId": str(artifact.get("materialId") or ""),
-                    "materialName": str(artifact.get("materialName") or ""),
-                    "wikiCardId": str(artifact.get("wikiCardId") or ""),
-                    "sourcePages": str(artifact.get("evidenceSourcePages") or ""),
-                    "summary": str(artifact.get("evidenceSummary") or ""),
-                    "usageMode": str(artifact.get("wikiUsageMode") or artifact.get("materialUsage") or ""),
-                }
+            add_segment_from_values(
+                segment_id=segment_id,
+                title=str(artifact.get("evidenceSegmentTitle") or ""),
+                material_id=str(artifact.get("materialId") or ""),
+                material_name=str(artifact.get("materialName") or ""),
+                wiki_card_id=str(artifact.get("wikiCardId") or ""),
+                source_pages=str(artifact.get("evidenceSourcePages") or ""),
+                summary=str(artifact.get("evidenceSummary") or ""),
+                usage_mode=str(artifact.get("wikiUsageMode") or artifact.get("materialUsage") or ""),
             )
         if segments:
             current = [item for item in task.get("selectedEvidenceSegments") or [] if isinstance(item, dict)]
@@ -5806,6 +6125,79 @@ class AppStore:
         except Exception:
             payload = await material_store.raw_download_content(material_id)
             return payload, "raw"
+
+    def _business_gap_readable_material(self, project_id: str, material_id: str) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标候选素材预览仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        if business_gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先生成商务标缺口计划。")
+        normalized_id = str(material_id or "").strip()
+        if not normalized_id:
+            raise KeyError("material_id")
+        picker = build_business_gap_material_picker_index(project)
+        for material in picker.get("materialIndex") or []:
+            if not isinstance(material, dict):
+                continue
+            current_id = str(material.get("id") or material.get("materialId") or "").strip()
+            if current_id == normalized_id:
+                return {**material, "id": current_id}
+        raise KeyError(normalized_id)
+
+    @staticmethod
+    def _business_gap_preview_renderer(file_name: str, mime_type: str) -> str:
+        suffix = Path(str(file_name or "")).suffix.lower()
+        lowered_mime = str(mime_type or "").lower()
+        if lowered_mime.startswith("image/") or suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
+            return "image"
+        if lowered_mime == "application/pdf" or suffix == ".pdf":
+            return "pdf"
+        if suffix in {".doc", ".docx"} or "word" in lowered_mime:
+            return "word"
+        if suffix in {".xls", ".xlsx"} or "spreadsheet" in lowered_mime or "excel" in lowered_mime:
+            return "spreadsheet"
+        return "download"
+
+    @staticmethod
+    def _business_gap_material_preview_summary(material: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "name": str(material.get("name") or material.get("fileName") or material.get("materialId") or material.get("id") or ""),
+            "folderPath": str(material.get("folderPath") or ""),
+            "materialTier": str(material.get("materialTier") or material.get("libraryScope") or ""),
+            "cleanStatus": str(material.get("cleanStatus") or ""),
+            "hasCleanedWord": bool(material.get("hasCleanedWord")),
+            "cleanedFileName": str(material.get("cleanedFileName") or ""),
+            "turbineModelLabel": str(material.get("turbineModelLabel") or ""),
+            "updatedAt": str(material.get("updatedAt") or ""),
+        }
+
+    @staticmethod
+    async def _business_gap_cleaned_docx_snippets(material_id: str, *, limit: int = 12) -> list[str]:
+        payload = await material_store.raw_download_cleaned_content(material_id)
+        snippets: list[str] = []
+        with tempfile.TemporaryDirectory(prefix="business-gap-preview-") as tmp:
+            path = Path(tmp) / safe_filename(str(payload.get("fileName") or "cleaned.docx"), "cleaned.docx")
+            minio_client.download_file(str(payload["bucket"]), str(payload["key"]), path)
+            document = Document(str(path))
+            for paragraph in document.paragraphs:
+                text = re.sub(r"\s+", " ", paragraph.text or "").strip()
+                if text:
+                    snippets.append(text)
+                if len(snippets) >= limit:
+                    break
+            if len(snippets) < limit:
+                for table in document.tables:
+                    for row in table.rows:
+                        cells = [re.sub(r"\s+", " ", cell.text or "").strip() for cell in row.cells]
+                        text = " | ".join(cell for cell in cells if cell)
+                        if text:
+                            snippets.append(text)
+                        if len(snippets) >= limit:
+                            break
+                    if len(snippets) >= limit:
+                        break
+        return snippets
 
     def _finalize_business_gap_plan_update(
         self,

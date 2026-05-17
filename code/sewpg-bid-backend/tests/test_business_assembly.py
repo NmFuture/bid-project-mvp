@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import subprocess
 import sys
 import tempfile
@@ -622,6 +623,245 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
         self.assertNotIn("这是不应整份拼入正文的大文件正文", text)
         self.assertEqual(attachment_manifest["items"][0]["mode"], "extract_segment_reference")
         self.assertEqual(attachment_manifest["items"][0]["assemblyMode"], "extract_segment")
+
+    def test_business_assembler_embeds_certificate_images_without_wiki_locator_text(self) -> None:
+        backend_root = Path(__file__).resolve().parents[1]
+        script_path = backend_root / "opencode" / "skill" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            materials = root / "materials"
+            materials.mkdir(parents=True)
+            image_path = root / "certificate.png"
+            image_path.write_bytes(
+                base64.b64decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/luzD4gAAAABJRU5ErkJggg=="
+                )
+            )
+            raw_docx = root / "机型认证证书.docx"
+            doc = Document()
+            doc.add_paragraph("机型认证证书")
+            doc.add_picture(str(image_path))
+            doc.save(raw_docx)
+            cleaned_docx = root / "机型认证证书-清洗稿.docx"
+            doc = Document()
+            doc.add_paragraph("[embedded_image_1 image1.png]")
+            doc.add_paragraph("EW6.25-220型式认证")
+            doc.add_paragraph("清洗稿标题片段：EW6.25-220型式认证")
+            doc.save(cleaned_docx)
+
+            toc_path = root / "toc.json"
+            gap_path = root / "business_gap_plan.json"
+            facts_path = root / "project_fact_table.json"
+            parse_path = root / "parse_result.json"
+            output_path = root / "商务投标文件.docx"
+            toc_path.write_text(
+                json.dumps({"schema_version": "bid-toc-json-v1", "items": [{"number": "七", "title": "机型认证证书", "level": 1}]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            gap_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-gap-plan-v1",
+                        "tasks": [
+                            {
+                                "id": "BTASK-CERT-IMAGE",
+                                "title": "机型认证证书",
+                                "status": "ready",
+                                "decision": "ready",
+                                "taskType": "certificate",
+                                "assemblyMode": "extract_and_summarize",
+                                "materialUsage": "extract_and_summarize",
+                                "tocTarget": {"title": "机型认证证书"},
+                                "selectedEvidenceSegments": [
+                                    {
+                                        "segmentId": "SEG-CERT-001",
+                                        "title": "EW6.25-220型式认证",
+                                        "sourcePages": "清洗稿标题/待页码定位",
+                                        "summary": "清洗稿标题片段：EW6.25-220型式认证",
+                                    }
+                                ],
+                                "resolvedArtifacts": [
+                                    {
+                                        "artifactId": "BART-CERT-001",
+                                        "artifactType": "selected_material",
+                                        "fileName": cleaned_docx.name,
+                                        "filePath": str(cleaned_docx),
+                                        "rawFileName": raw_docx.name,
+                                        "rawFilePath": str(raw_docx),
+                                        "materialName": "机型认证证书.docx",
+                                        "folderPath": "商务标/通用素材/05-专题证书库/01-机型认证证书",
+                                        "sourceMode": "selected_from_business_material_library",
+                                        "assemblyMode": "extract_and_summarize",
+                                        "materialUsage": "extract_and_summarize",
+                                        "evidenceSegmentId": "SEG-CERT-001",
+                                        "evidenceSegmentTitle": "EW6.25-220型式认证",
+                                        "evidenceSourcePages": "清洗稿标题/待页码定位",
+                                        "evidenceSummary": "清洗稿标题片段：EW6.25-220型式认证",
+                                        "wikiEvidence": {
+                                            "summary": "[embedded_image_1 image1.png]\n清洗稿标题片段：EW6.25-220型式认证",
+                                            "sourcePages": "原始文档未分页索引",
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                        "tocRefs": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            facts_path.write_text(json.dumps({"schemaVersion": "bid-project-fact-table-v1", "status": "confirmed", "fields": []}, ensure_ascii=False), encoding="utf-8")
+            parse_path.write_text(json.dumps({"status": "completed", "structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest_path = root / "business_assembly_input.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-BIZ-S4-CERT-IMAGE",
+                        "projectName": "证书图片项目",
+                        "bidType": "商务标",
+                        "workDir": str(root),
+                        "tocJsonPath": str(toc_path),
+                        "businessGapPlanPath": str(gap_path),
+                        "projectFactTablePath": str(facts_path),
+                        "parseResultPath": str(parse_path),
+                        "materialLibraryDir": str(materials),
+                        "outputFile": str(output_path),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [sys.executable, str(script_path), "--manifest", str(manifest_path), "--response", "summary"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            output_doc = Document(str(output_path))
+            text = "\n".join(paragraph.text for paragraph in output_doc.paragraphs)
+            image_rel_count = len(output_doc.part._package.image_parts)
+            attachment_manifest = json.loads((root / "attachment_manifest.json").read_text(encoding="utf-8"))
+
+        self.assertGreaterEqual(image_rel_count, 1)
+        self.assertNotIn("支撑材料来源", text)
+        self.assertNotIn("根据已确认素材", text)
+        self.assertNotIn("清洗稿标题片段", text)
+        self.assertNotIn("原始文档未分页索引", text)
+        self.assertEqual(attachment_manifest["items"][0]["mode"], "extract_and_summarize")
+
+    def test_business_assembler_extract_summary_prefers_raw_docx_over_cleaned_locator_segments(self) -> None:
+        backend_root = Path(__file__).resolve().parents[1]
+        script_path = backend_root / "opencode" / "skill" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            materials = root / "materials"
+            materials.mkdir(parents=True)
+            raw_docx = root / "18.公司生产能力介绍.docx"
+            doc = Document()
+            doc.add_paragraph("公司生产能力介绍")
+            doc.add_paragraph("公司拥有完善的风电设备生产体系，具备叶片、塔筒、机舱等关键环节协同制造能力。")
+            doc.add_paragraph("公司配置多条自动化装配产线，能够满足本项目供货周期及质量控制要求。")
+            doc.save(raw_docx)
+            cleaned_docx = root / "18.公司生产能力介绍-清洗稿.docx"
+            doc = Document()
+            doc.add_paragraph("18.公司生产能力介绍（清洗稿段落3）")
+            doc.add_paragraph("18.公司生产能力介绍（清洗稿段落4）")
+            doc.save(cleaned_docx)
+
+            toc_path = root / "toc.json"
+            gap_path = root / "business_gap_plan.json"
+            facts_path = root / "project_fact_table.json"
+            parse_path = root / "parse_result.json"
+            output_path = root / "商务投标文件.docx"
+            toc_path.write_text(
+                json.dumps({"schema_version": "bid-toc-json-v1", "items": [{"number": "四", "title": "生产能力介绍", "level": 1}]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            gap_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-gap-plan-v1",
+                        "tasks": [
+                            {
+                                "id": "BTASK-CAPACITY",
+                                "title": "生产能力介绍",
+                                "status": "ready",
+                                "decision": "ready",
+                                "taskType": "attachment",
+                                "assemblyMode": "extract_and_summarize",
+                                "materialUsage": "extract_and_summarize",
+                                "tocTarget": {"title": "生产能力介绍"},
+                                "selectedEvidenceSegments": [
+                                    {
+                                        "segmentId": "SEG-CAP-003",
+                                        "title": "18.公司生产能力介绍（清洗稿段落3）",
+                                        "summary": "18.公司生产能力介绍（清洗稿段落4）",
+                                    }
+                                ],
+                                "resolvedArtifacts": [
+                                    {
+                                        "artifactId": "BART-CAPACITY",
+                                        "artifactType": "selected_material",
+                                        "fileName": cleaned_docx.name,
+                                        "filePath": str(cleaned_docx),
+                                        "rawFileName": raw_docx.name,
+                                        "rawFilePath": str(raw_docx),
+                                        "cleanedFileName": cleaned_docx.name,
+                                        "cleanedFilePath": str(cleaned_docx),
+                                        "materialName": raw_docx.name,
+                                        "sourceMode": "selected_from_business_material_library",
+                                        "assemblyMode": "extract_and_summarize",
+                                        "materialUsage": "extract_and_summarize",
+                                        "selectedEvidenceSegments": [
+                                            {
+                                                "segmentId": "SEG-CAP-003",
+                                                "title": "18.公司生产能力介绍（清洗稿段落3）",
+                                                "summary": "18.公司生产能力介绍（清洗稿段落4）",
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                        "tocRefs": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            facts_path.write_text(json.dumps({"schemaVersion": "bid-project-fact-table-v1", "status": "confirmed", "fields": []}, ensure_ascii=False), encoding="utf-8")
+            parse_path.write_text(json.dumps({"status": "completed", "structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest_path = root / "business_assembly_input.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-BIZ-S4-CAPACITY",
+                        "projectName": "生产能力项目",
+                        "bidType": "商务标",
+                        "workDir": str(root),
+                        "tocJsonPath": str(toc_path),
+                        "businessGapPlanPath": str(gap_path),
+                        "projectFactTablePath": str(facts_path),
+                        "parseResultPath": str(parse_path),
+                        "materialLibraryDir": str(materials),
+                        "outputFile": str(output_path),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run([sys.executable, str(script_path), "--manifest", str(manifest_path), "--response", "summary"], check=True, capture_output=True, text=True)
+            output_doc = Document(str(output_path))
+            text = "\n".join(paragraph.text for paragraph in output_doc.paragraphs)
+
+        self.assertIn("风电设备生产体系", text)
+        self.assertIn("自动化装配产线", text)
+        self.assertNotIn("根据已确认素材", text)
+        self.assertNotIn("支撑材料来源", text)
+        self.assertNotIn("清洗稿段落3", text)
+        self.assertNotIn("清洗稿段落4", text)
 
 
 class BusinessAssemblyServiceTests(unittest.TestCase):

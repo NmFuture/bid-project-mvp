@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import importlib.util
 import json
 import sys
@@ -90,6 +92,13 @@ def _style_size(style: ET.Element) -> ET.Element:
     return size
 
 
+def _style_color(style: ET.Element) -> ET.Element:
+    color = style.find("w:rPr/w:color", W_NS)
+    if color is None:
+        raise AssertionError("style color not found")
+    return color
+
+
 def _wval(element: ET.Element, attr: str = "val") -> str | None:
     return element.attrib.get(f"{{{W_NS['w']}}}{attr}")
 
@@ -143,6 +152,20 @@ def _heading_style_value(element: ET.Element) -> str | None:
     if p_style is None:
         return None
     return _wval(p_style)
+
+
+def _paragraph_by_text(document_xml: str, text: str) -> ET.Element:
+    for child in _document_body_children(document_xml):
+        if child.tag == f"{{{W_NS['w']}}}p" and text in _element_text(child):
+            return child
+    raise AssertionError(f"paragraph not found: {text}")
+
+
+def _first_run_rpr(element: ET.Element) -> ET.Element:
+    r_pr = element.find(".//w:rPr", W_NS)
+    if r_pr is None:
+        raise AssertionError("run properties not found")
+    return r_pr
 
 
 def _index_by_text(children: list[ET.Element], text: str) -> int:
@@ -209,6 +232,7 @@ def _write_style(path: Path) -> None:
                 "zh_font": "黑体",
                 "en_font": "Arial",
                 "size_pt": 16,
+                "font_color": "000000",
                 "bold": True,
                 "align": "center",
                 "space_before_pt": 6,
@@ -221,6 +245,7 @@ def _write_style(path: Path) -> None:
                 "zh_font": "楷体",
                 "en_font": "Arial",
                 "size_pt": 14,
+                "font_color": "000000",
                 "bold": True,
                 "align": "left",
                 "space_before_pt": 6,
@@ -234,6 +259,7 @@ def _write_style(path: Path) -> None:
             "zh_font": "仿宋",
             "en_font": "Arial",
             "size_pt": 12,
+            "font_color": "000000",
             "bold": False,
             "align": "both",
             "space_before_pt": 0,
@@ -245,6 +271,7 @@ def _write_style(path: Path) -> None:
             "zh_font": "宋体",
             "en_font": "宋体",
             "size_pt": 10.5,
+            "font_color": "000000",
             "bold": False,
             "align": "center",
             "line_spacing": 1.0,
@@ -253,7 +280,7 @@ def _write_style(path: Path) -> None:
         "toc": {
             "title": "目 录",
             "title_style": "TOC Heading",
-            "field_instruction": " TOC \\o \"1-3\" \\h \\z \\u ",
+            "field_instruction": " TOC \\o \"1-4\" \\h \\z \\u ",
             "placeholder": "目录将在 Word 打开时自动更新",
             "insert_when_missing": True,
             "style_spec_path": str(toc_style_path),
@@ -262,6 +289,7 @@ def _write_style(path: Path) -> None:
             "zh_font": "宋体",
             "en_font": "宋体",
             "size_pt": 7.5,
+            "font_color": "000000",
             "bold": False,
             "align": "right",
             "line_spacing": 1.5,
@@ -282,13 +310,14 @@ def _write_toc_style(path: Path) -> None:
             "zh_font": "宋体",
             "en_font": "Times New Roman",
             "size_pt": 16,
+            "font_color": "000000",
             "bold": True,
             "align": "center",
             "first_line_indent_chars": 0,
             "left_indent_cm": 0,
         },
         "field": {
-            "instruction": " TOC \\o \"1-3\" \\h \\z \\u ",
+            "instruction": " TOC \\o \"1-4\" \\h \\z \\u ",
             "placeholder": "目录将在 Word 打开时自动更新",
             "style_name": "TOC 1",
             "level": "1",
@@ -300,6 +329,7 @@ def _write_toc_style(path: Path) -> None:
                 "zh_font": "宋体",
                 "en_font": "Times New Roman",
                 "size_pt": 12,
+                "font_color": "000000",
                 "bold": False,
                 "align": "left",
                 "space_before_pt": 0,
@@ -317,6 +347,7 @@ def _write_toc_style(path: Path) -> None:
                 "zh_font": "宋体",
                 "en_font": "Times New Roman",
                 "size_pt": 12,
+                "font_color": "000000",
                 "bold": False,
                 "align": "left",
                 "space_before_pt": 0,
@@ -334,6 +365,7 @@ def _write_toc_style(path: Path) -> None:
                 "zh_font": "宋体",
                 "en_font": "Times New Roman",
                 "size_pt": 12,
+                "font_color": "000000",
                 "bold": False,
                 "align": "left",
                 "space_before_pt": 0,
@@ -342,6 +374,24 @@ def _write_toc_style(path: Path) -> None:
                 "line_spacing_rule": "auto",
                 "first_line_indent_twips": 0,
                 "left_indent_twips": 840,
+                "tab_stops": [
+                    {"alignment": "right", "leader": "dot", "position_twips": 9060}
+                ],
+            },
+            "4": {
+                "style_name": "TOC 4",
+                "zh_font": "宋体",
+                "en_font": "Times New Roman",
+                "size_pt": 12,
+                "font_color": "000000",
+                "bold": False,
+                "align": "left",
+                "space_before_pt": 0,
+                "space_after_pt": 0,
+                "line_spacing": 1.5,
+                "line_spacing_rule": "auto",
+                "first_line_indent_twips": 0,
+                "left_indent_twips": 1260,
                 "tab_stops": [
                     {"alignment": "right", "leader": "dot", "position_twips": 9060}
                 ],
@@ -575,7 +625,7 @@ def _write_docx_for_toc_trailing_blank_page(path: Path) -> None:
     run_end = xml.index("</w:r>", insert_at) + len("</w:r>")
     toc_run = (
         '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
-        '<w:r><w:instrText xml:space="preserve"> TOC \\\\o "1-3" \\\\h \\\\z \\\\u </w:instrText></w:r>'
+        '<w:r><w:instrText xml:space="preserve"> TOC \\\\o "1-4" \\\\h \\\\z \\\\u </w:instrText></w:r>'
         '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
         + xml[run_start:run_end]
         + '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
@@ -718,6 +768,10 @@ class BusinessFormatCleanerTest(unittest.TestCase):
         self.assertNotIn("<w:numPr>", document_xml)
         self.assertIn("仿宋", document_xml)
         self.assertIn("宋体", document_xml)
+        styles_xml = _read_docx_part(output_docx, "word/styles.xml")
+        heading1_style = _style_by_name(styles_xml, "heading 1")
+        self.assertEqual(_wval(_style_color(heading1_style)), "000000")
+        self.assertIsNone(_wval(_style_color(heading1_style), "themeColor"))
 
         report = report_path.read_text(encoding="utf-8")
         self.assertIn("outline 总数：3", report)
@@ -725,6 +779,65 @@ class BusinessFormatCleanerTest(unittest.TestCase):
         self.assertIn("1.2 未出现标题", report)
         self.assertIn("TOC 是否插入：是", report)
         self.assertIn("页眉是否清理：是", report)
+
+    def test_run_manifest_fuzzy_matches_numbered_headings_and_cleans_residual_heading_styles(self):
+        input_docx = self.tmp_path / "input_fuzzy.docx"
+        outline_path = self.tmp_path / "outline.json"
+        style_path = self.tmp_path / "style.json"
+        output_docx = self.tmp_path / "output_fuzzy.docx"
+        manifest_path = self.tmp_path / "manifest_fuzzy.json"
+
+        doc = Document()
+        first = doc.add_paragraph()
+        first.add_run("1. 投标函：").bold = False
+        first.add_run(" 附加说明").italic = True
+        stale_heading = doc.add_paragraph("旧模板残留标题")
+        stale_heading.style = doc.styles["Heading 2"]
+        stale_heading.add_run("，应转为正文").bold = True
+        body = doc.add_paragraph()
+        run = body.add_run("正文应统一格式")
+        run.bold = True
+        run.italic = True
+        doc.save(input_docx)
+
+        outline = {
+            "schema_version": "business_bid_outline.v1",
+            "sections": [{"id": "sec-001", "title": "投标函", "number": "一、", "level": 1, "children": []}],
+        }
+        outline_path.write_text(json.dumps(outline, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_style(style_path)
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "inputFile": str(input_docx),
+                    "outlineFile": str(outline_path),
+                    "outputFile": str(output_docx),
+                    "projectName": "测试项目",
+                    "styleSpecPath": str(style_path),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        response = _run_manifest(manifest_path, response="summary")
+
+        self.assertEqual(response["summary"]["matchedHeadingCount"], 1)
+        document_xml = _read_docx_part(output_docx, "word/document.xml")
+        promoted = _paragraph_by_text(document_xml, "一、 投标函")
+        stale = _paragraph_by_text(document_xml, "旧模板残留标题")
+        body_para = _paragraph_by_text(document_xml, "正文应统一格式")
+        self.assertEqual(_heading_style_value(promoted), "Heading1")
+        promoted_color = _first_run_rpr(promoted).find("w:color", W_NS)
+        self.assertIsNotNone(promoted_color)
+        self.assertEqual(_wval(promoted_color), "000000")
+        self.assertIsNone(_wval(promoted_color, "themeColor"))
+        self.assertNotEqual(_heading_style_value(stale), "Heading2")
+        body_rpr = _first_run_rpr(body_para)
+        self.assertEqual(_wval(body_rpr.find("w:b", W_NS)), "0")
+        self.assertEqual(_wval(body_rpr.find("w:i", W_NS)), "0")
+        self.assertEqual(_wval(body_rpr.find("w:rFonts", W_NS), "eastAsia"), "仿宋")
 
     def test_toc_title_and_entry_styles_are_loaded_from_reference(self):
 
@@ -755,7 +868,7 @@ class BusinessFormatCleanerTest(unittest.TestCase):
         self.assertIn("目 录", document_xml)
         self.assertIn("目录将在 Word 打开时自动更新", document_xml)
         self.assertIn('w:val="TOC1"', document_xml)
-        self.assertEqual(_toc_instruction(document_xml), " TOC \\o \"1-3\" \\h \\z \\u ")
+        self.assertEqual(_toc_instruction(document_xml), " TOC \\o \"1-4\" \\h \\z \\u ")
         self.assertLess(document_xml.index("目 录"), document_xml.index("目录将在 Word 打开时自动更新"))
 
         toc1 = _style_by_name(styles_xml, "TOC 1")
@@ -774,6 +887,9 @@ class BusinessFormatCleanerTest(unittest.TestCase):
         self.assertEqual(_wval(_style_indent(toc1), "firstLine"), "0")
         self.assertEqual(_wval(_style_indent(toc2), "left"), "420")
         self.assertEqual(_wval(_style_indent(toc3), "left"), "840")
+        toc4 = _style_by_name(styles_xml, "TOC 4")
+        if toc4 is not None:
+            self.assertEqual(_wval(_style_indent(toc4), "left"), "1260")
 
     def test_builtin_toc_reference_matches_reference_document_format(self):
         style = json.loads((ROOT / "references" / "business_toc_style.json").read_text(encoding="utf-8"))
@@ -781,11 +897,12 @@ class BusinessFormatCleanerTest(unittest.TestCase):
         self.assertEqual(style["title"]["text"], "目 录")
         self.assertEqual(style["title"]["zh_font"], "宋体")
         self.assertEqual(style["title"]["size_pt"], 16)
-        self.assertEqual(style["field"]["instruction"], " TOC \\o \"1-3\" \\h \\z \\u ")
-        self.assertEqual(set(style["entry_styles"].keys()), {"1", "2", "3"})
+        self.assertEqual(style["field"]["instruction"], " TOC \\o \"1-4\" \\h \\z \\u ")
+        self.assertEqual(set(style["entry_styles"].keys()), {"1", "2", "3", "4"})
         self.assertEqual(style["entry_styles"]["1"]["left_indent_twips"], 0)
         self.assertEqual(style["entry_styles"]["2"]["left_indent_twips"], 420)
         self.assertEqual(style["entry_styles"]["3"]["left_indent_twips"], 840)
+        self.assertEqual(style["entry_styles"]["4"]["left_indent_twips"], 1260)
         for entry in style["entry_styles"].values():
             self.assertEqual(entry["zh_font"], "宋体")
             self.assertEqual(entry["size_pt"], 12)

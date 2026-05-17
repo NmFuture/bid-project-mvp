@@ -8,6 +8,10 @@ from fastapi import APIRouter, Body, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.api.utils import onlyoffice_backend_base_url
+from app.services.business_material_splitter import (
+    confirm_business_material_split,
+    preview_business_material_split,
+)
 from app.services.material_store import material_store
 from app.services.minio_client import minio_client
 from app.services.wiki_generation import generate_platform_wiki
@@ -163,6 +167,25 @@ async def raw_delete_file(file_id: str) -> dict[str, Any]:
 @router.get("/api/materials/raw/{file_id}/download")
 async def raw_download_file(file_id: str) -> dict[str, Any]:
     return await material_store.raw_download_file(file_id)
+
+
+@router.post("/api/materials/raw/{file_id}/business-split/preview")
+async def raw_preview_business_split(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await preview_business_material_split(
+        file_id,
+        target_path=str(data.get("targetPath") or ""),
+        ai_mode=str(data.get("aiMode") or "auto"),
+    )
+
+
+@router.post("/api/materials/raw/{file_id}/business-split/confirm")
+async def raw_confirm_business_split(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await confirm_business_material_split(
+        file_id,
+        fragments=list(data.get("fragments") or []),
+        default_target_path=str(data.get("targetPath") or ""),
+        on_conflict=str(data.get("onConflict") or ""),
+    )
 
 
 @router.get("/api/materials/raw/{file_id}/content")

@@ -154,7 +154,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertIn("不使用 user_confirmed_inputs.json", prompt)
         self.assertIn('"schema_version": "business_bid_outline.v1"', prompt)
         self.assertTrue(any(line.strip().startswith("business-outline ") for line in prompt.splitlines()))
-        self.assertEqual(kwargs.get("early_tool_command"), "")
+        self.assertEqual(kwargs.get("early_tool_command"), "business-outline")
         manifest_line = next(line for line in prompt.splitlines() if line.strip().startswith("business-outline "))
         manifest_path = Path(manifest_line.strip().split(" ", 1)[1])
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

@@ -282,6 +282,8 @@ def body_bookmark_metadata(blocks):
         item = {"block_id": block.get("block_id")}
         if block.get("heading_level"):
             item["level"] = block.get("heading_level")
+        if block.get("paragraph_index"):
+            item["paragraph_index"] = block.get("paragraph_index")
         result[bookmark] = item
     return result
 
@@ -303,8 +305,8 @@ def extract_auto_toc_candidates(body_elements, blocks, style_names=None):
             continue
         style = paragraph_style(paragraph)
         body_meta = bookmark_metadata.get(bookmark, {})
-        level = toc_style_level(style, style_names) or paragraph_outline_level(paragraph) or body_meta.get("level") or 1
         number, title_hint = split_heading_number(title)
+        level = infer_level_from_number(number) or toc_style_level(style, style_names) or paragraph_outline_level(paragraph) or body_meta.get("level") or 1
         candidate = {
             "candidate_id": f"hist-cand-{len(candidates) + 1:03d}",
             "title_hint": title_hint,
@@ -317,6 +319,9 @@ def extract_auto_toc_candidates(body_elements, blocks, style_names=None):
         matched_block_id = body_meta.get("block_id")
         if matched_block_id:
             candidate["matched_body_block_id"] = matched_block_id
+        matched_paragraph_index = body_meta.get("paragraph_index")
+        if matched_paragraph_index:
+            candidate["matched_body_paragraph_index"] = matched_paragraph_index
         candidates.append(candidate)
     return candidates, source_blocks
 
@@ -370,6 +375,7 @@ NUMBER_PATTERNS = [
     r"^(?P<number>[（(][一二三四五六七八九十百]+[）)])\s*(?P<title>\S.*)$",
     r"^(?P<number>[（(]\d+[）)])\s*(?P<title>\S.*)$",
     r"^(?P<number>\d+(?:\.\d+)+)\s*(?P<title>\S.*)$",
+    r"^(?P<number>\d+)\s+(?P<title>\S.*)$",
     r"^(?P<number>\d+[、．.])\s*(?P<title>\S.*)$",
     r"^(?P<number>附件\s*\d+[A-Z]?(?:[-－]?\d+)?)\s*(?P<title>\S.*)$",
 ]
@@ -386,20 +392,31 @@ def split_heading_number(text):
 
 def infer_toc_level(text, style="", style_names=None):
     style_level = toc_style_level(style, style_names)
+    stripped = strip_page_number(text)
+    number, _ = split_heading_number(stripped)
+    number_level = infer_level_from_number(number)
+    if number_level:
+        return number_level
     if style_level:
         return style_level
-    stripped = strip_page_number(text)
     if re.match(r"^[一二三四五六七八九十]+[、．.]", stripped):
         return 1
     if re.match(r"^附件\s*\d+[A-Z]?(?:[-－]?\d+)?", stripped):
         return 1
     if re.match(r"^[（(][一二三四五六七八九十]+[）)]", stripped):
         return 2
-    if re.match(r"^\d+\.\d+", stripped):
-        return 3
     if re.match(r"^\d+[、．.]", stripped):
         return 2
     return 2
+
+
+def infer_level_from_number(number):
+    clean = str(number or "").strip()
+    if re.fullmatch(r"\d+(?:\.\d+)+", clean):
+        return max(1, min(clean.count(".") + 1, 9))
+    if re.fullmatch(r"\d+", clean):
+        return 1
+    return None
 
 
 def title_from_toc_line(text):
@@ -421,6 +438,7 @@ def candidate_from_block(block, index, source_type, title_hint, level, number=No
         "source_text": block.get("text", ""),
         "source_type": source_type,
         "block_id": block.get("block_id"),
+        "paragraph_index": block.get("paragraph_index"),
         "heading_path": block.get("heading_path", []),
     }
     if block.get("bookmark_name"):
@@ -463,6 +481,84 @@ def candidates_from_headings(blocks):
     return candidates
 
 
+def numeric_number_tuple(number):
+    text = str(number or "").strip()
+    if not re.fullmatch(r"\d+(?:\.\d+)*", text):
+        return None
+    try:
+        return tuple(int(part) for part in text.split("."))
+    except ValueError:
+        return None
+
+
+def candidate_identity(candidate):
+    number = str(candidate.get("number") or "").strip()
+    title = normalize(str(candidate.get("title_hint") or ""))
+    return number, title
+
+
+def candidate_body_order(candidate):
+    for key in ("matched_body_paragraph_index", "paragraph_index"):
+        value = candidate.get(key)
+        try:
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def should_backfill_deep_heading(candidate, existing_identities):
+    number_tuple = numeric_number_tuple(candidate.get("number"))
+    if not number_tuple or len(number_tuple) < 4:
+        return False
+    if candidate_identity(candidate) in existing_identities:
+        return False
+    # Only use headings backed by Word heading/outline evidence. Plain body
+    # paragraphs such as "7.9.2.100 ..." must not become directory nodes.
+    if str(candidate.get("source_type") or "") != "history_bid_headings":
+        return False
+    return True
+
+
+def insert_candidate_by_number_or_body_order(candidates, candidate):
+    candidate_tuple = numeric_number_tuple(candidate.get("number"))
+    candidate_order = candidate_body_order(candidate)
+    if candidate_tuple:
+        for index, current in enumerate(candidates):
+            current_tuple = numeric_number_tuple(current.get("number"))
+            if current_tuple and current_tuple > candidate_tuple:
+                candidates.insert(index, candidate)
+                return
+    if candidate_order is not None:
+        for index, current in enumerate(candidates):
+            current_order = candidate_body_order(current)
+            if current_order is not None and current_order > candidate_order:
+                candidates.insert(index, candidate)
+                return
+    candidates.append(candidate)
+
+
+def merge_auto_toc_with_deep_body_headings(auto_candidates, heading_candidates):
+    if not auto_candidates:
+        return heading_candidates
+    result = [dict(candidate) for candidate in auto_candidates]
+    existing = {candidate_identity(candidate) for candidate in result}
+    additions = [
+        dict(candidate)
+        for candidate in heading_candidates
+        if should_backfill_deep_heading(candidate, existing)
+    ]
+    additions.sort(key=lambda candidate: (
+        numeric_number_tuple(candidate.get("number")) or (999999,),
+        candidate_body_order(candidate) or 999999,
+    ))
+    for candidate in additions:
+        insert_candidate_by_number_or_body_order(result, candidate)
+        existing.add(candidate_identity(candidate))
+    return result
+
+
 def make_outline_source(document_name, source_type, source_blocks, candidates):
     source_text = "\n".join(block.get("text", "") for block in source_blocks) if source_blocks else ""
     if source_type in {"history_bid_auto_toc", "history_bid_toc"}:
@@ -488,7 +584,7 @@ def build_output(docx_path):
     if auto_candidates:
         source_type = "history_bid_auto_toc"
         source_blocks = auto_source_blocks
-        candidates = auto_candidates
+        candidates = merge_auto_toc_with_deep_body_headings(auto_candidates, candidates_from_headings(blocks))
     else:
         toc_blocks = find_plain_toc_blocks(blocks, style_names)
         if toc_blocks:

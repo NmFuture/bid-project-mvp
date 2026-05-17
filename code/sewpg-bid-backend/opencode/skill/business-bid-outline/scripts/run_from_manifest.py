@@ -31,6 +31,20 @@ HEADING_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^[（(](?P<num>\d+)[）)]\s*(?P<title>.+)$"),
 )
 REQUIREMENT_PATTERN = re.compile(r"(?:投标人|供应商|响应方|报价人|申请人)?(?:应|须|必须|需|需要|应当|提供|提交|编制|说明|承诺|响应)(?P<title>[^。；;\n]{2,90})")
+GENERIC_CANDIDATE_TITLES = {
+    "文件",
+    "资料",
+    "材料",
+    "证明",
+    "相关",
+    "有关",
+    "相应",
+    "要求",
+    "说明",
+    "响应",
+    "承诺",
+    "用",
+}
 
 
 def main() -> int:
@@ -321,11 +335,17 @@ def first_matching_candidate(title: str, candidates: list[dict[str, Any]]) -> di
     key = title_key(title)
     if not key:
         return None
+    best: tuple[float, int, dict[str, Any]] | None = None
     for candidate in candidates:
         candidate_key = title_key(str(candidate.get("title") or ""))
-        if candidate_key and (key in candidate_key or candidate_key in key):
-            return candidate
-    return None
+        score = candidate_match_score(key, candidate_key)
+        if score <= 0:
+            continue
+        raw_text_len = len(str(candidate.get("rawText") or ""))
+        current = (score, -raw_text_len, candidate)
+        if best is None or current > best:
+            best = current
+    return best[2] if best else None
 
 
 def extract_outline(path: Path) -> list[dict[str, Any]]:
@@ -372,7 +392,7 @@ def parse_heading(text: str) -> tuple[str, str, int] | None:
             continue
         number = str(match.group("num") or "").strip()
         title = str(match.group("title") or "").strip()
-        level = 1 if text.startswith("第") else min(number.count(".") + 1, 4)
+        level = 1 if text.startswith("第") else min(number.count(".") + 1, 9)
         if title:
             return number, title, level
     return None
@@ -416,12 +436,76 @@ def normalize_candidate_title(value: str) -> str:
     return text[:60]
 
 
+def candidate_match_score(history_key: str, candidate_key: str) -> float:
+    if not history_key or not candidate_key:
+        return 0.0
+    if candidate_key in GENERIC_CANDIDATE_TITLES or len(candidate_key) < 4:
+        return 0.0
+    if history_key == candidate_key:
+        return 1.0
+    if len(candidate_key) >= 6 and candidate_key in history_key:
+        return min(0.95, len(candidate_key) / max(len(history_key), 1) + 0.25)
+    if len(history_key) >= 6 and history_key in candidate_key:
+        return min(0.92, len(history_key) / max(len(candidate_key), 1) + 0.2)
+    history_terms = title_terms(history_key)
+    candidate_terms = title_terms(candidate_key)
+    if not history_terms or not candidate_terms:
+        return 0.0
+    overlap = history_terms & candidate_terms
+    if not overlap:
+        return 0.0
+    weighted_overlap = sum(len(term) for term in overlap)
+    weighted_history = sum(len(term) for term in history_terms)
+    weighted_candidate = sum(len(term) for term in candidate_terms)
+    recall = weighted_overlap / max(weighted_history, 1)
+    precision = weighted_overlap / max(weighted_candidate, 1)
+    score = (recall * 0.6) + (precision * 0.4)
+    return score if score >= 0.52 and weighted_overlap >= 4 else 0.0
+
+
+def title_terms(value: str) -> set[str]:
+    text = re.sub(r"\d+", "", str(value or ""))
+    terms = {
+        part
+        for part in re.split(r"(?:及|和|与|或|的|其|是|为|在|中|内|对|按|将|并|以及|包括|包含)", text)
+        if len(part) >= 2 and part not in GENERIC_CANDIDATE_TITLES
+    }
+    for keyword in (
+        "投标专用章",
+        "股权结构",
+        "信用中国",
+        "经营异常",
+        "严重违法",
+        "失信被执行人",
+        "履约保证",
+        "投标保证金",
+        "商务偏差",
+        "货物规格",
+        "商务部分摘要表",
+        "企业资质",
+        "营业执照",
+        "纳税信用",
+        "财务审计",
+        "业绩证明",
+        "保密承诺",
+        "授权委托",
+    ):
+        key = title_key(keyword)
+        if key and key in value:
+            terms.add(key)
+    return terms
+
+
 def source_ref(candidate: dict[str, Any]) -> dict[str, Any]:
     return {
+        "type": "tender",
+        "role": "basis",
         "fileId": str(candidate.get("fileId") or ""),
         "fileName": str(candidate.get("fileName") or candidate.get("sourceFile") or ""),
         "paragraphIndex": candidate.get("paragraphIndex"),
         "searchText": str(candidate.get("rawText") or candidate.get("title") or ""),
+        "rawText": str(candidate.get("rawText") or ""),
+        "basisText": str(candidate.get("rawText") or candidate.get("title") or ""),
         "reason": "商务标招标要求依据",
     }
 

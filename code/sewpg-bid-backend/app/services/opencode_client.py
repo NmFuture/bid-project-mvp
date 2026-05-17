@@ -15,12 +15,20 @@ from app.services.system_settings import system_settings_service
 
 
 class OpencodeClient:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        provider_id: str | None = None,
+        model_id: str | None = None,
+        timeout_ms: int | float | None = None,
+    ) -> None:
         config = system_settings_service.get_opencode_model_config_sync()
-        self.base_url = str(config.get("opencodeBaseUrl") or settings.opencode_base_url).rstrip("/")
-        self.provider_id = str(config.get("providerId") or settings.opencode_provider_id)
-        self.model_id = str(config.get("modelId") or config.get("model") or settings.opencode_model_id)
-        timeout_sec = max(1.0, float(config.get("timeoutMs") or settings.opencode_timeout_sec * 1000) / 1000)
+        self.base_url = str(base_url or config.get("opencodeBaseUrl") or settings.opencode_base_url).rstrip("/")
+        self.provider_id = str(provider_id or config.get("providerId") or settings.opencode_provider_id)
+        self.model_id = str(model_id or config.get("modelId") or config.get("model") or settings.opencode_model_id)
+        raw_timeout_ms = timeout_ms if timeout_ms is not None else config.get("timeoutMs")
+        timeout_sec = max(1.0, float(raw_timeout_ms or settings.opencode_timeout_sec * 1000) / 1000)
         self.timeout = httpx.Timeout(timeout_sec, connect=10.0)
 
     def create_session(self, title: str) -> dict[str, Any]:
@@ -75,6 +83,21 @@ class OpencodeClient:
             ) from exc
         except httpx.HTTPError as exc:
             raise RuntimeError(f"futurecode 生成失败：{self._short_http_error(exc)}") from exc
+
+    def send_text_prompt(self, title: str, prompt_text: str) -> dict[str, Any]:
+        session = self.create_session(title)
+        session_id = str(session.get("id") or "")
+        response = self.send_prompt(session_id, prompt_text)
+        info = response.get("info") if isinstance(response.get("info"), dict) else {}
+        if info.get("error"):
+            raise RuntimeError(self._format_response_error(info["error"]))
+        return {
+            "sessionId": session_id,
+            "providerId": self.provider_id,
+            "modelId": self.model_id,
+            "reply": self.extract_text_response(response),
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
 
     def generate_outline(self, prompt_text: str) -> dict[str, Any]:
         result = self.generate_outline_with_trace(prompt_text)
@@ -373,6 +396,19 @@ class OpencodeClient:
             "opencodeOutput": self._build_output_trace(session_id, response),
         }
 
+    def review_business_attachment_templates_with_trace(
+        self,
+        prompt_text: str,
+    ) -> dict[str, Any]:
+        session = self.create_session("商务标附件模板语义校验")
+        session_id = str(session.get("id") or "")
+        response = self._send_prompt_with_session_polling(session_id, prompt_text)
+        parsed = self._extract_business_template_review_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
     def list_session_messages(self, session_id: str) -> list[dict[str, Any]]:
         try:
             with httpx.Client(timeout=httpx.Timeout(5.0, connect=5.0)) as client:
@@ -479,6 +515,16 @@ class OpencodeClient:
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("decisions"), list):
             raise RuntimeError("futurecode 返回的承诺复核 JSON 结构不正确。")
+        return parsed
+
+    def _extract_business_template_review_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = self._extract_json_response(
+            response,
+            empty_message="futurecode 未返回附件模板校验结果。",
+            repair_kind="business_template_review",
+        )
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("decisions"), list):
+            raise RuntimeError("futurecode 返回的附件模板校验 JSON 结构不正确。")
         return parsed
 
     def _extract_table_fill_json(self, response: dict[str, Any]) -> dict[str, Any]:
@@ -751,6 +797,20 @@ class OpencodeClient:
         work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
         output_file = Path(str(manifest.get("outputFile") or work_dir / "toc.json")).expanduser()
         evidence_file = Path(str(manifest.get("evidenceFile") or work_dir / "toc_evidence.json")).expanduser()
+        if command_name == "business-outline":
+            business_outline_file = work_dir / "outline.json"
+            if not business_outline_file.exists():
+                return ""
+            return json.dumps(
+                {
+                    "schema_version": "business_bid_outline.v1",
+                    "businessOutlineFile": str(business_outline_file),
+                    "outputFile": str(output_file),
+                    "evidenceFile": str(evidence_file),
+                    "summary": {"total_sections": 0},
+                },
+                ensure_ascii=False,
+            )
         if not output_file.exists():
             return ""
         summary: dict[str, Any] = {"total_items": 0}
@@ -769,8 +829,6 @@ class OpencodeClient:
             "evidenceFile": str(evidence_file),
             "summary": summary,
         }
-        if command_name == "business-outline":
-            payload["businessOutlineFile"] = str(work_dir / "outline.json")
         if command_name == "businessgap":
             summary = {"tocRefCount": 0, "taskCount": 0, "coverageStatus": "complete"}
             try:
@@ -888,6 +946,50 @@ class OpencodeClient:
         return any(marker in text for marker in failure_markers) and not OpencodeClient._looks_like_json_object(text)
 
     @staticmethod
+    def extract_text_response(response: dict[str, Any]) -> str:
+        info = response.get("info") if isinstance(response.get("info"), dict) else {}
+        if info.get("error"):
+            return OpencodeClient._format_response_error(info["error"])
+        text_parts = [
+            str(part.get("text") or part.get("reasoning") or "").strip()
+            for part in response.get("parts") or []
+            if isinstance(part, dict) and str(part.get("type") or "") == "text"
+        ]
+        if text_parts:
+            return "\n".join(part for part in text_parts if part).strip()
+        reasoning_parts = [
+            str(part.get("reasoning") or "").strip()
+            for part in response.get("parts") or []
+            if isinstance(part, dict) and str(part.get("type") or "") == "reasoning"
+        ]
+        return "\n".join(part for part in reasoning_parts if part).strip()
+
+    @staticmethod
+    def _format_response_error(error: Any) -> str:
+        if not isinstance(error, dict):
+            return str(error or "futurecode 调用失败。")
+        name = str(error.get("name") or "futurecode 调用失败").strip()
+        data = error.get("data") if isinstance(error.get("data"), dict) else {}
+        message = str(data.get("message") or error.get("message") or "").strip()
+        details = []
+        provider_id = str(data.get("providerID") or data.get("providerId") or "").strip()
+        model_id = str(data.get("modelID") or data.get("modelId") or "").strip()
+        if provider_id:
+            details.append(f"providerID={provider_id}")
+        if model_id:
+            details.append(f"modelID={model_id}")
+        if message and message != name:
+            name = f"{name}: {message}"
+        if details:
+            return f"{name} ({', '.join(details)})"
+        return name or "futurecode 调用失败。"
+
+    @staticmethod
+    def is_model_not_found_error(error_text: Any) -> bool:
+        text = str(error_text or "").lower()
+        return "providermodelnotfound" in text or "modelnotfound" in text or "model not found" in text
+
+    @staticmethod
     def _short_http_error(exc: Exception) -> str:
         detail = str(exc).replace("\n", " ").strip()
         return detail or "服务调用异常。"
@@ -946,6 +1048,12 @@ class OpencodeClient:
                 '{"decisions":[{"id":"RAW-0001","action":"generate",'
                 '"topicKey":"confidentiality","preferredTitle":"保密承诺书",'
                 '"reason":"明确要求投标人单独提供保密承诺书。"}]}'
+            )
+        elif repair_kind == "business_template_review":
+            schema_hint = (
+                '{"decisions":[{"id":"APPX-0001","action":"accept|review|reject",'
+                '"templateType":"bid_letter","quality":"complete|probably_incomplete|title_only",'
+                '"reason":"一句简短原因"}]}'
             )
         elif repair_kind == "table_fill":
             schema_hint = (

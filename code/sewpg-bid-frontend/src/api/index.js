@@ -411,6 +411,10 @@ export const businessGapsAPI = {
     const qs = new URLSearchParams(cleanQuery(params)).toString()
     return request(`/projects/${projectId}/business-gaps/selectable-materials${qs ? `?${qs}` : ''}`)
   },
+  previewMaterial: (projectId, materialId, params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/projects/${projectId}/business-gaps/materials/${encodeURIComponent(materialId)}/preview${qs ? `?${qs}` : ''}`)
+  },
   buildFacts: (projectId) =>
     request(`/projects/${projectId}/business-gaps/facts/build`, { method: 'POST' }),
   saveFacts: (projectId, data) =>
@@ -484,6 +488,14 @@ export const documentAPI = {
     request(`/projects/${projectId}/document/save`, { method: 'PUT', body: data }),
   forceSave: (projectId) =>
     request(`/projects/${projectId}/document/force-save`, { method: 'POST' }),
+  businessChat: (projectId, data) =>
+    request(`/projects/${projectId}/document/business-chat`, { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
+  businessRewriteSuggest: (projectId, data) =>
+    request(`/projects/${projectId}/document/business-rewrite/suggest`, { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
+  businessRewriteApply: (projectId, data) =>
+    request(`/projects/${projectId}/document/business-rewrite/apply`, { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
+  businessFormat: (projectId, data) =>
+    request(`/projects/${projectId}/document/business-format`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
   final: (projectId) => request(`/projects/${projectId}/final-document`),
 }
 
@@ -532,6 +544,10 @@ export const materialsAPI = {
     moveFile: (data) => request('/materials/raw/move', { method: 'POST', body: data }),
     deleteFile: (id) => request(`/materials/raw/${id}`, { method: 'DELETE' }),
     downloadFile: (id) => request(`/materials/raw/${id}/download`),
+    previewBusinessSplit: (id, data) =>
+      request(`/materials/raw/${id}/business-split/preview`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
+    confirmBusinessSplit: (id, data) =>
+      request(`/materials/raw/${id}/business-split/confirm`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     cleanFile: (id) => request(`/materials/raw/${id}/clean`, { method: 'POST' }),
     downloadCleanedFile: (id) => request(`/materials/raw/${id}/cleaned/download`),
     previewCleanedFile: (id) => request(`/materials/raw/${id}/cleaned/preview`),

@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { projectsAPI } from '../api'
 import { PageLoading, PageError } from '../components/states/PageState'
 import { getStageRoute } from '../utils/stageFlow'
-import { parseRouteFromBidType, projectRoute, useWorkspaceSlug } from '../utils/workspace'
+import { normalizeBidType, parseRouteFromBidType, projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const resolveStage = (value) => {
   const parsed = Number(value)
@@ -35,7 +35,8 @@ export default function ProjectEntryRedirect() {
         return
       }
       const stage = resolveStage(project?.currentStage)
-      const route = getStageRoute(id, stage, workspaceSlug) || projectRoute(id, '/template-directory', workspaceSlug)
+      const routeWorkspaceSlug = workspaceSlug || (normalizeBidType(project?.bidType) === '商务标' ? 'business' : '')
+      const route = getStageRoute(id, stage, routeWorkspaceSlug) || projectRoute(id, '/template-directory', routeWorkspaceSlug)
       navigate(route, { replace: true })
     } catch (e) {
       setError(e?.message || '项目加载失败，请稍后重试。')

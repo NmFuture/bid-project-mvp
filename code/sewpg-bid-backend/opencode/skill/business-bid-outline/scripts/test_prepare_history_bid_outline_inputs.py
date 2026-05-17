@@ -213,6 +213,58 @@ class PrepareHistoryBidOutlineInputsTest(unittest.TestCase):
         self.assertEqual([candidate["number"] for candidate in output["outline_candidates"]], [None, "1.1", "1.2"])
         self.assertEqual([candidate["title_hint"] for candidate in output["outline_candidates"]], ["投标函及授权文件", "投标函", "法定代表人授权委托书"])
 
+    def test_dot_number_depth_overrides_toc_style_for_fourth_level(self):
+        output = self.run_script([
+            paragraph("封面"),
+            auto_toc_sdt([
+                {"title": "7 资格证明文件", "bookmark": "_Toc4001", "page": 1, "style": "TOC1"},
+                {"title": "7.2 认证证书", "bookmark": "_Toc4002", "page": 2, "style": "TOC2"},
+                {"title": "7.2.2 机型认证", "bookmark": "_Toc4003", "page": 3, "style": "TOC3"},
+                {"title": "7.2.2.1 EW10.0-220 设计认证证书", "bookmark": "_Toc4004", "page": 4, "style": "TOC3"},
+            ]),
+        ])
+
+        self.assertEqual(
+            [(candidate["number"], candidate["level"], candidate["title_hint"]) for candidate in output["outline_candidates"]],
+            [
+                ("7", 1, "资格证明文件"),
+                ("7.2", 2, "认证证书"),
+                ("7.2.2", 3, "机型认证"),
+                ("7.2.2.1", 4, "EW10.0-220 设计认证证书"),
+            ],
+        )
+
+    def test_backfills_fourth_level_body_headings_when_auto_toc_stops_at_third_level(self):
+        output = self.run_script([
+            paragraph("封面"),
+            auto_toc_sdt([
+                {"title": "7 资格证明文件", "bookmark": "_Toc5001", "page": 1, "style": "TOC1"},
+                {"title": "7.1 资格证明材料", "bookmark": "_Toc5002", "page": 2, "style": "TOC2"},
+                {"title": "7.1.1 认证证书", "bookmark": "_Toc5003", "page": 3, "style": "TOC3"},
+                {"title": "8 商务偏差表", "bookmark": "_Toc5004", "page": 8, "style": "TOC1"},
+            ]),
+            paragraph("7 资格证明文件", outline_level=0, runs=[bookmark_start("_Toc5001"), run_text("7 资格证明文件")]),
+            paragraph("7.1 资格证明材料", outline_level=1, runs=[bookmark_start("_Toc5002"), run_text("7.1 资格证明材料")]),
+            paragraph("7.1.1 认证证书", outline_level=2, runs=[bookmark_start("_Toc5003"), run_text("7.1.1 认证证书")]),
+            paragraph("7.1.1.1 EW10.0-220 设计认证证书", outline_level=3),
+            paragraph("7.1.1.2 EW6.25-220 型式认证证书", outline_level=3),
+            paragraph("8 商务偏差表", outline_level=0, runs=[bookmark_start("_Toc5004"), run_text("8 商务偏差表")]),
+            paragraph("7.9.2.100 这是正文编号，不应进入目录"),
+        ])
+
+        self.assertEqual(
+            [(candidate["number"], candidate["level"], candidate["title_hint"]) for candidate in output["outline_candidates"]],
+            [
+                ("7", 1, "资格证明文件"),
+                ("7.1", 2, "资格证明材料"),
+                ("7.1.1", 3, "认证证书"),
+                ("7.1.1.1", 4, "EW10.0-220 设计认证证书"),
+                ("7.1.1.2", 4, "EW6.25-220 型式认证证书"),
+                ("8", 1, "商务偏差表"),
+            ],
+        )
+        self.assertNotIn("这是正文编号", "\n".join(candidate["title_hint"] for candidate in output["outline_candidates"]))
+
 
     def test_extracts_outline_candidates_from_plain_toc_page_and_stops_at_body(self):
         output = self.run_script([

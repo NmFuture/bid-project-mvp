@@ -8,7 +8,11 @@ if [ -f /bootstrap/opencode-host/auth.json ]; then
   cp /bootstrap/opencode-host/auth.json "${OPENCODE_HOME_DIR}/auth.json"
 fi
 
-if [ -n "${INTERNAL_LLM_BASE_URL:-}" ]; then
+RUNTIME_CONFIG_PATH="${OPENCODE_RUNTIME_CONFIG_PATH:-/data/documents/_runtime/opencode/opencode.runtime.json}"
+
+if [ -f "${RUNTIME_CONFIG_PATH}" ]; then
+  export OPENCODE_CONFIG="${RUNTIME_CONFIG_PATH}"
+elif [ -n "${INTERNAL_LLM_BASE_URL:-}" ]; then
   python3 - <<'PY'
 import json
 import os

@@ -95,6 +95,7 @@ const OnlyOfficeEmbed = forwardRef(function OnlyOfficeEmbed({
 
   return (
     <iframe
+      key={`${session?.documentKey || ''}-${session?.fileUrl || ''}`}
       ref={iframeRef}
       title={mode === 'view' ? 'OnlyOffice 文档预览' : 'OnlyOffice 文档编辑器'}
       src={iframeSrc}

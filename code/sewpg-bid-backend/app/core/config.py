@@ -55,7 +55,23 @@ def _bool_env(name: str, default: bool) -> bool:
 def _upload_extensions() -> tuple[str, ...]:
     raw = _csv_env(
         "ALLOWED_UPLOAD_EXTENSIONS",
-        (".pdf", ".docx", ".md", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"),
+        (
+            ".pdf",
+            ".doc",
+            ".docx",
+            ".md",
+            ".txt",
+            ".xls",
+            ".xlsx",
+            ".xlsm",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".bmp",
+            ".tif",
+            ".tiff",
+        ),
     )
     normalized: list[str] = []
     for item in raw:
@@ -65,7 +81,7 @@ def _upload_extensions() -> tuple[str, ...]:
         if not ext.startswith("."):
             ext = f".{ext}"
         normalized.append(ext)
-    return tuple(dict.fromkeys(normalized)) or (".pdf", ".docx", ".md")
+    return tuple(dict.fromkeys(normalized)) or (".pdf", ".docx", ".md", ".png", ".jpg", ".jpeg")
 
 
 @dataclass
