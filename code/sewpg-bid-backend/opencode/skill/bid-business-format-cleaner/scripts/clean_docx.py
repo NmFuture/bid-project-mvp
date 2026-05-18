@@ -19,7 +19,7 @@ from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING, WD_TAB_ALIGNMENT, WD_TAB_LEADER
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Pt, Twips
+from docx.shared import Cm, Pt, RGBColor, Twips
 
 try:
     from outline_matcher import flatten_outline, load_outline
@@ -256,6 +256,9 @@ def _apply_font_to_style(style, cfg: dict[str, Any]) -> None:
     if "size_pt" in cfg:
         font.size = Pt(float(cfg["size_pt"]))
     font.bold = bool(cfg.get("bold", False))
+    color = _font_color(cfg)
+    if color:
+        font.color.rgb = RGBColor.from_string(color)
     r_pr = style.element.get_or_add_rPr()
     r_fonts = r_pr.find(qn("w:rFonts"))
     if r_fonts is None:
@@ -263,6 +266,8 @@ def _apply_font_to_style(style, cfg: dict[str, Any]) -> None:
         r_pr.insert(0, r_fonts)
     if "zh_font" in cfg or "en_font" in cfg:
         _set_rfonts(r_fonts, cfg)
+    if color:
+        _set_rpr_color(r_pr, color)
 
 
 def _apply_paragraph_format(paragraph_format, cfg: dict[str, Any]) -> None:
@@ -288,6 +293,10 @@ def _apply_paragraph_format(paragraph_format, cfg: dict[str, Any]) -> None:
         paragraph_format.first_line_indent = Twips(
             int(cfg.get("first_line_indent_twips", cfg.get("firstLineIndentTwips")))
         )
+    if "left_indent_cm" not in cfg and "left_indent_twips" not in cfg and "leftIndentTwips" not in cfg:
+        paragraph_format.left_indent = Pt(0)
+    if "first_line_indent_chars" not in cfg and "first_line_indent_twips" not in cfg and "firstLineIndentTwips" not in cfg:
+        paragraph_format.first_line_indent = Pt(0)
     _apply_tab_stops(paragraph_format, cfg)
 
 
@@ -378,12 +387,39 @@ def _set_rfonts(r_fonts, cfg: dict[str, Any]) -> None:
     r_fonts.set(qn("w:cs"), en_font)
 
 
+def _font_color(cfg: dict[str, Any]) -> str | None:
+    raw = cfg.get("font_color", cfg.get("fontColor", cfg.get("color")))
+    if raw is None:
+        return None
+    value = str(raw).strip().lstrip("#").upper()
+    if re.fullmatch(r"[0-9A-F]{6}", value):
+        return value
+    return None
+
+
+def _set_rpr_color(r_pr, color: str) -> None:
+    color_el = r_pr.find(qn("w:color"))
+    if color_el is None:
+        color_el = OxmlElement("w:color")
+        r_pr.append(color_el)
+    color_el.set(qn("w:val"), color)
+    # Word built-in Heading styles often carry theme colors. Remove them so
+    # OnlyOffice/WPS cannot render cleaned business headings as theme blue.
+    for attr in ("themeColor", "themeTint", "themeShade"):
+        color_el.attrib.pop(qn(f"w:{attr}"), None)
+
+
 def _apply_run_format(run, cfg: dict[str, Any]) -> None:
     if "en_font" in cfg:
         run.font.name = str(cfg["en_font"])
     if "size_pt" in cfg:
         run.font.size = Pt(float(cfg["size_pt"]))
     run.font.bold = bool(cfg.get("bold", False))
+    run.font.italic = False
+    run.font.underline = False
+    color = _font_color(cfg)
+    if color:
+        run.font.color.rgb = RGBColor.from_string(color)
     r_pr = run._element.get_or_add_rPr()
     r_fonts = r_pr.find(qn("w:rFonts"))
     if r_fonts is None:
@@ -391,18 +427,14 @@ def _apply_run_format(run, cfg: dict[str, Any]) -> None:
         r_pr.insert(0, r_fonts)
     if "zh_font" in cfg or "en_font" in cfg:
         _set_rfonts(r_fonts, cfg)
+    if color:
+        _set_rpr_color(r_pr, color)
 
 
 def _apply_direct_paragraph_format(paragraph, cfg: dict[str, Any]) -> None:
     paragraph.alignment = _paragraph_alignment(cfg.get("align"))
     fmt = paragraph.paragraph_format
-    fmt.space_before = Pt(float(cfg.get("space_before_pt", 0)))
-    fmt.space_after = Pt(float(cfg.get("space_after_pt", 0)))
-    fmt.line_spacing = float(cfg.get("line_spacing", 1.0))
-    if "left_indent_cm" in cfg:
-        fmt.left_indent = Cm(float(cfg.get("left_indent_cm", 0)))
-    if "first_line_indent_chars" in cfg:
-        fmt.first_line_indent = _char_indent(cfg)
+    _apply_paragraph_format(fmt, cfg)
     for run in paragraph.runs:
         _apply_run_format(run, cfg)
 
@@ -420,6 +452,8 @@ def _match_and_promote_headings(
 
     for item in outline_items:
         found = _find_outline_item(paragraphs, item, cursor)
+        if found is None:
+            found = _find_outline_item(paragraphs, item, cursor, allow_fuzzy=True)
         if found is None:
             unmatched.append(_outline_report_item(item))
             continue
@@ -451,11 +485,20 @@ def _match_and_promote_headings(
     }
 
 
-def _find_outline_item(paragraphs, item: dict[str, Any], start_index: int) -> tuple[int, str] | None:
+def _find_outline_item(
+    paragraphs,
+    item: dict[str, Any],
+    start_index: int,
+    *,
+    end_index: int | None = None,
+    allow_fuzzy: bool = False,
+) -> tuple[int, str] | None:
     full_key = _normalize_match_text(_format_heading_text(item)) if item.get("number") else ""
     title_key = _normalize_match_text(str(item.get("title") or ""))
+    number_key = _normalize_match_text(str(item.get("number") or ""))
 
-    for index in range(start_index, len(paragraphs)):
+    end = len(paragraphs) if end_index is None else max(0, min(end_index, len(paragraphs)))
+    for index in range(start_index, end):
         text_key = _normalize_match_text(paragraphs[index].text)
         if not text_key:
             continue
@@ -463,14 +506,31 @@ def _find_outline_item(paragraphs, item: dict[str, Any], start_index: int) -> tu
             return index, "number+title"
         if title_key and text_key == title_key:
             return index, "title"
+        if allow_fuzzy and _is_probable_heading_match(text_key, title_key, number_key, full_key):
+            return index, "fuzzy"
     return None
 
 
 def _normalize_match_text(text: str) -> str:
     normalized = str(text or "").strip()
     normalized = normalized.replace("\u3000", " ")
+    normalized = re.sub(r"^[一二三四五六七八九十]+[、.．]\s*", "", normalized)
+    normalized = re.sub(r"^\d+(?:[.．]\d+)*[、.．]?\s*", "", normalized)
     normalized = re.sub(r"\s+", "", normalized)
+    normalized = re.sub(r"[：:；;。,.，、（）()【】\\[\\]《》<>]+", "", normalized)
     return normalized
+
+
+def _is_probable_heading_match(text_key: str, title_key: str, number_key: str, full_key: str) -> bool:
+    if not text_key or len(text_key) > 80:
+        return False
+    if full_key and (text_key.startswith(full_key) or full_key.startswith(text_key)):
+        return True
+    if title_key and (text_key.startswith(title_key) or title_key.startswith(text_key)):
+        return True
+    if number_key and title_key and number_key in text_key and title_key in text_key:
+        return True
+    return False
 
 
 def _format_heading_text(item: dict[str, Any]) -> str:
@@ -560,14 +620,26 @@ def _clear_direct_outline_level(paragraph) -> bool:
 def _apply_body_format(doc: Document, style_spec: dict[str, Any], matched_indexes: set[int]) -> None:
     body_cfg = style_spec["body"]
     for index, paragraph in enumerate(doc.paragraphs):
-        if index in matched_indexes or _is_heading_paragraph(paragraph) or _paragraph_has_toc_field(paragraph):
+        if index in matched_indexes or _paragraph_has_toc_field(paragraph):
             continue
+        # Whole-file mounted Word materials can carry arbitrary Heading/Title
+        # styles from the source document. Non-outline paragraphs must be
+        # normalized before direct formatting, otherwise style-level title
+        # attributes may leak into the final business bid.
+        _set_paragraph_style_safe(paragraph, "Normal")
         _apply_direct_paragraph_format(paragraph, body_cfg)
 
 
 def _is_heading_paragraph(paragraph) -> bool:
     style_name = paragraph.style.name if paragraph.style else ""
     return bool(re.match(r"^(Heading|标题)\s*\d+$", style_name or "", flags=re.IGNORECASE))
+
+
+def _set_paragraph_style_safe(paragraph, style_name: str) -> None:
+    try:
+        paragraph.style = style_name
+    except Exception:
+        pass
 
 
 def _paragraph_has_toc_field(paragraph) -> bool:

@@ -1594,6 +1594,9 @@ class MaterialStore:
                     "cleanMessage": clean_message,
                     "cleanUpdatedAt": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
                 }
+                extra_ext_fields = item.get("extFields") if isinstance(item.get("extFields"), dict) else {}
+                if extra_ext_fields:
+                    common_ext.update(copy.deepcopy(extra_ext_fields))
                 if turbine_hint:
                     common_ext.update(
                         {

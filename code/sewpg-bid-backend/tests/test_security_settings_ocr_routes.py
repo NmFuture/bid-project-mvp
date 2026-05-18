@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 import os
@@ -13,6 +14,7 @@ from docx import Document
 from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.main import app
+from app.services.system_settings import system_settings_service
 from app.services.store import store
 
 
@@ -134,6 +136,14 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
         self.assertEqual(llm_config["modelId"], "demo-model")
         self.assertEqual(llm_config["opencodeBaseUrl"], "http://opencode:4096")
         self.assertTrue(any(item["id"] == "demo-model" for item in llm_config["modelOptions"]))
+        self.assertTrue(update_llm.json()["opencodeRestartRequired"])
+        runtime_config_path = update_llm.json()["opencodeRuntimeConfigPath"]
+        self.assertTrue(runtime_config_path.endswith("_runtime/opencode/opencode.runtime.json"))
+        self.assertTrue(Path(runtime_config_path).exists())
+        runtime_config = json.loads(Path(runtime_config_path).read_text(encoding="utf-8"))
+        self.assertEqual(runtime_config["model"], "mimo/demo-model")
+        self.assertEqual(runtime_config["provider"]["mimo"]["options"]["baseURL"], "https://llm.example.com/v1/chat/completions")
+        self.assertEqual(runtime_config["provider"]["mimo"]["options"]["apiKey"], "sk-test-secret")
 
         update_ocr = self.client.put(
             "/api/settings/ocr",
@@ -148,6 +158,20 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
         )
         self.assertEqual(update_ocr.status_code, 200)
         self.assertNotIn("ocr-secret-key", update_ocr.text)
+
+    def test_llm_chat_completions_url_normalization_supports_deepseek_base_url(self) -> None:
+        self.assertEqual(
+            system_settings_service._chat_completions_url("https://api.deepseek.com"),
+            "https://api.deepseek.com/chat/completions",
+        )
+        self.assertEqual(
+            system_settings_service._chat_completions_url("https://api.deepseek.com/v1"),
+            "https://api.deepseek.com/v1/chat/completions",
+        )
+        self.assertEqual(
+            system_settings_service._chat_completions_url("https://api.deepseek.com/chat/completions"),
+            "https://api.deepseek.com/chat/completions",
+        )
 
     def test_enabled_system_default_template_is_used_as_project_fallback(self) -> None:
         project = self.client.post(

@@ -131,6 +131,17 @@ class RawFile(Base):
             "turbineModelLabel": ext.get("turbineModelLabel") or ext.get("turbineModel") or "",
             "turbinePlatform": ext.get("turbinePlatform") or "",
             "turbineAliases": ext.get("turbineAliases") or [],
+            "splitParentMaterialId": ext.get("splitParentMaterialId") or "",
+            "splitParentFileName": ext.get("splitParentFileName") or "",
+            "splitParentFolderPath": ext.get("splitParentFolderPath") or "",
+            "splitMethod": ext.get("splitMethod") or "",
+            "splitFragmentId": ext.get("splitFragmentId") or "",
+            "splitFragmentTitle": ext.get("splitFragmentTitle") or "",
+            "splitMaterialType": ext.get("splitMaterialType") or "",
+            "splitSourceLocation": ext.get("splitSourceLocation") or {},
+            "splitConfidence": ext.get("splitConfidence"),
+            "splitRiskTips": ext.get("splitRiskTips") or [],
+            "reviewStatus": ext.get("reviewStatus") or "",
             "updatedAt": self.updated_at.isoformat() if self.updated_at else "",
         }
 

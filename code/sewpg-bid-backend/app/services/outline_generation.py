@@ -201,7 +201,7 @@ def _run_business_outline_skill(
                 if progress_callback
                 else None
             ),
-            early_tool_command="",
+            early_tool_command=BUSINESS_OUTLINE_SKILL_COMMAND,
         )
     except Exception as exc:
         if progress_callback:

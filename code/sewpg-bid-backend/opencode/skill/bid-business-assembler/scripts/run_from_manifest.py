@@ -10,6 +10,7 @@ import re
 import shutil
 import sys
 import tempfile
+import zipfile
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,7 +38,9 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 DOCX_SUFFIXES = {".docx"}
 PDF_SUFFIXES = {".pdf"}
 FIELD_PATTERN = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}|\[\[\s*([^\[\]]+?)\s*\]\]")
+EMBEDDED_IMAGE_MARKER_RE = re.compile(r"\[embedded_image_\d+\s+([^\]\r\n]+)\]")
 MAX_TEMPLATE_WHOLE_MERGE_BYTES = 50 * 1024 * 1024
+MAX_EXTRACT_SUMMARY_IMAGES = 6
 
 
 class AssemblyContext:
@@ -176,6 +179,15 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
                 if task_artifacts:
                     for artifact in task_artifacts:
                         artifact = artifact_with_task_intent(task, artifact)
+                        if is_business_scoring_artifact(artifact) and emitted_scoring:
+                            ctx.add_review(
+                                "business_scoring_duplicate_skipped",
+                                "已跳过重复的商务评分/审查表材料，最终稿仅保留首个确认来源。",
+                                section=title,
+                                source=str(artifact.get("filePath") or artifact.get("path") or ""),
+                                level="info",
+                            )
+                            continue
                         if emit_artifact(doc, artifact, facts, ctx, section_title=title):
                             assembled_count += 1
                             section_status = "assembled"
@@ -203,7 +215,7 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
                             risk_flags.append(f"assembly_mode_{assembly_mode}")
                         ctx.add_review("missing_material", f"任务缺少可装配材料：{task.get('title') or title}", section=title)
 
-        if is_scoring_section(title) and scoring_artifacts and not section_emitted_scoring:
+        if is_scoring_section(title) and scoring_artifacts and not emitted_scoring and not section_emitted_scoring:
             for artifact in scoring_artifacts:
                 if artifact_key(artifact) in ctx.used_artifact_keys:
                     continue
@@ -705,8 +717,8 @@ def emit_artifact(doc: Document, artifact: dict[str, Any], facts: dict[str, str]
         ok = append_business_scoring_table(doc, artifact, ctx, section_title=section_title)
         record_attachment(ctx, artifact, section_title, status="embedded" if ok else "missing", mode="structured_scoring_table")
         return ok
-    path = as_path(artifact.get("filePath") or artifact.get("path") or artifact.get("docxPath"), required=False)
-    file_name = str(artifact.get("fileName") or (path.name if path else "附件材料"))
+    path = preferred_artifact_path(artifact, assembly_mode)
+    file_name = preferred_artifact_file_name(artifact, path)
     if not path or not path.exists():
         doc.add_paragraph(f"[待补充附件：{file_name}]")
         ctx.add_review("artifact_file_missing", f"附件文件不存在：{file_name}", section=section_title, source=str(path or ""), level="error")
@@ -734,6 +746,11 @@ def emit_artifact(doc: Document, artifact: dict[str, Any], facts: dict[str, str]
         ctx.counters["referenced"] += 1
         record_attachment(ctx, artifact, section_title, status="referenced", mode="extract_segment_fallback_reference")
         return False
+
+    if assembly_mode == "extract_and_summarize":
+        ok = append_extracted_summary(doc, path, artifact, facts, ctx, section_title=section_title)
+        record_attachment(ctx, artifact, section_title, status="embedded" if ok else "referenced", mode="extract_and_summarize")
+        return ok
 
     if assembly_mode == "attach_whole_file":
         if suffix in DOCX_SUFFIXES:
@@ -775,6 +792,21 @@ def emit_artifact(doc: Document, artifact: dict[str, Any], facts: dict[str, str]
     ctx.counters["referenced"] += 1
     record_attachment(ctx, artifact, section_title, status="referenced", mode="fallback_reference")
     return False
+
+
+def preferred_artifact_path(artifact: dict[str, Any], assembly_mode: str) -> Path | None:
+    raw_path = as_path(artifact.get("rawFilePath"), required=False)
+    default_path = as_path(artifact.get("filePath") or artifact.get("path") or artifact.get("docxPath"), required=False)
+    if assembly_mode in {"attach_whole_file", "embed_scan_or_image", "extract_and_summarize", ""} and raw_path and raw_path.exists():
+        return raw_path
+    return default_path
+
+
+def preferred_artifact_file_name(artifact: dict[str, Any], path: Path | None) -> str:
+    raw_path = as_path(artifact.get("rawFilePath"), required=False)
+    if raw_path and path and raw_path == path:
+        return str(artifact.get("rawFileName") or path.name or artifact.get("fileName") or "附件材料")
+    return str(artifact.get("fileName") or (path.name if path else "附件材料"))
 
 
 def append_docx(doc: Document, path: Path, facts: dict[str, str], ctx: AssemblyContext, *, section_title: str) -> bool:
@@ -1057,12 +1089,390 @@ def normalize_assembly_mode(value: str) -> str:
         "embed_scan": "embed_scan_or_image",
         "image_embed": "embed_scan_or_image",
         "pdf_pages_embed": "embed_scan_or_image",
+        "extract_summary": "extract_and_summarize",
+        "summarize": "extract_and_summarize",
+        "summary": "extract_and_summarize",
+        "extract_and_rewrite": "extract_and_summarize",
+        "rewrite": "extract_and_summarize",
         "excerpt": "extract_segment",
         "partial_extract": "extract_segment",
         "fill_template": "template_fill_docx",
         "fill_table": "table_fill_from_material",
     }
     return aliases.get(mode, mode)
+
+
+def append_extracted_summary(
+    doc: Document,
+    path: Path,
+    artifact: dict[str, Any],
+    facts: dict[str, str],
+    ctx: AssemblyContext,
+    *,
+    section_title: str,
+) -> bool:
+    file_name = str(artifact.get("fileName") or path.name)
+    text_source_path = summary_text_source_path(path, artifact)
+    snippets = material_summary_snippets(text_source_path, artifact, facts, ctx, section_title=section_title)
+    image_names = embedded_image_names_from_artifact(artifact)
+    image_source_path = embedded_image_source_path(path, artifact)
+    prefer_certificate_images = should_embed_certificate_images(artifact, section_title, image_source_path)
+    if not image_names and prefer_certificate_images:
+        image_names = docx_media_image_names(image_source_path)
+    source_name = str(artifact.get("materialName") or file_name)
+    if prefer_certificate_images and image_names:
+        embedded_images = append_docx_embedded_images_by_name(doc, image_source_path, image_names, ctx, section_title=section_title)
+        if embedded_images == 0:
+            fallback_names = [name for name in docx_media_image_names(image_source_path) if name not in set(image_names)]
+            if fallback_names:
+                embedded_images = append_docx_embedded_images_by_name(doc, image_source_path, fallback_names, ctx, section_title=section_title)
+        if embedded_images:
+            ctx.add_review(
+                "extract_summary_certificate_images_embedded",
+                f"证书类提取总结已优先嵌入 Word 内部图片，未将 OCR/清洗稿定位碎片作为正文：{source_name}",
+                section=section_title,
+                source=str(image_source_path),
+                level="info",
+            )
+            return True
+    if not snippets:
+        embedded_images = append_docx_embedded_images_by_name(doc, image_source_path, image_names, ctx, section_title=section_title) if image_names else 0
+        if embedded_images:
+            ctx.add_review(
+                "extract_summary_images_only",
+                f"提取总结仅识别到图片证据，已尝试嵌入 Word 内部图片；如需保留完整版式，建议改为整件挂载/嵌入：{file_name}",
+                section=section_title,
+                source=str(path),
+            )
+            return True
+        doc.add_paragraph(f"详见附件：{file_name}")
+        ctx.counters["referenced"] += 1
+        ctx.add_review(
+            "extract_summary_source_unreadable",
+            f"提取总结未能读取到可用文本，已退化为附件引用：{file_name}",
+            section=section_title,
+            source=str(path),
+        )
+        return False
+
+    for text in snippets[:6]:
+        doc.add_paragraph(text, style=None)
+    embedded_images = append_docx_embedded_images_by_name(doc, image_source_path, image_names, ctx, section_title=section_title) if image_names else 0
+    if embedded_images:
+        ctx.add_review(
+            "extract_summary_embedded_docx_images",
+            f"提取总结中检测到 Word 内嵌图片标记，已尝试同步嵌入相关图片；图片位置和版式需复核：{source_name}",
+            section=section_title,
+            source=str(path),
+            level="info",
+        )
+    ctx.counters["embedded"] += 1
+    ctx.add_review(
+        "extract_summary_review_required",
+        f"已按 S3 决策对素材进行提取总结/转写，需在共创阶段核对表述、数字和原文依据：{source_name}",
+        section=section_title,
+        source=str(path),
+    )
+    return True
+
+
+def embedded_image_source_path(path: Path, artifact: dict[str, Any]) -> Path:
+    raw_path = as_path(artifact.get("rawFilePath"), required=False)
+    if raw_path and raw_path.exists() and raw_path.suffix.lower() in DOCX_SUFFIXES:
+        return raw_path
+    return path
+
+
+def summary_text_source_path(path: Path, artifact: dict[str, Any]) -> Path:
+    raw_path = as_path(artifact.get("rawFilePath"), required=False)
+    if raw_path and raw_path.exists() and raw_path.suffix.lower() in DOCX_SUFFIXES:
+        return raw_path
+    return path
+
+
+def should_embed_certificate_images(artifact: dict[str, Any], section_title: str, path: Path) -> bool:
+    if path.suffix.lower() not in DOCX_SUFFIXES:
+        return False
+    text = normalize_text(
+        " ".join(
+            [
+                section_title,
+                str(artifact.get("title") or ""),
+                str(artifact.get("materialName") or ""),
+                str(artifact.get("fileName") or ""),
+                str(artifact.get("rawFileName") or ""),
+                str(artifact.get("folderPath") or ""),
+            ]
+        )
+    )
+    return any(token in text for token in ["证书", "认证", "证明", "型式认证", "大部件", "机型认证"])
+
+
+def material_summary_snippets(
+    path: Path,
+    artifact: dict[str, Any],
+    facts: dict[str, str],
+    ctx: AssemblyContext,
+    *,
+    section_title: str,
+) -> list[str]:
+    segment_snippets = snippets_from_selected_segments(artifact)
+    document_snippets: list[str] = []
+    suffix = path.suffix.lower()
+    if suffix in DOCX_SUFFIXES:
+        document_snippets = docx_relevant_snippets(path, artifact, facts, ctx, section_title=section_title)
+    elif suffix in PDF_SUFFIXES or suffix in IMAGE_SUFFIXES:
+        document_snippets = snippets_from_artifact_metadata(artifact)
+        if suffix in PDF_SUFFIXES or suffix in IMAGE_SUFFIXES:
+            ctx.add_review(
+                "extract_summary_ocr_not_run_in_s4",
+                f"S4 不在正文装配阶段重新 OCR 扫描件，提取总结仅使用已沉淀的证据摘要：{path.name}",
+                section=section_title,
+                source=str(path),
+                level="info",
+            )
+    else:
+        document_snippets = snippets_from_artifact_metadata(artifact)
+
+    merged: list[str] = []
+    for value in [*document_snippets, *segment_snippets]:
+        text = clean_summary_text(replace_field_text(str(value or ""), facts, ctx, section_title=section_title, source=str(path)))
+        if len(text) < 6:
+            continue
+        if text not in merged:
+            merged.append(text)
+    if not merged and artifact.get("evidenceSummary"):
+        fallback = clean_summary_text(str(artifact.get("evidenceSummary") or ""))
+        if fallback:
+            merged.append(fallback)
+    return merged[:8]
+
+
+def snippets_from_selected_segments(artifact: dict[str, Any]) -> list[str]:
+    segments = artifact.get("selectedEvidenceSegments") if isinstance(artifact.get("selectedEvidenceSegments"), list) else []
+    snippets: list[str] = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        title = clean_summary_text(str(segment.get("title") or segment.get("evidenceSegmentTitle") or ""))
+        raw_pages = str(segment.get("sourcePages") or segment.get("evidenceSourcePages") or "").strip()
+        pages = "" if is_wiki_locator_text(raw_pages) else raw_pages
+        summary = clean_summary_text(str(segment.get("summary") or segment.get("evidenceSummary") or ""))
+        if is_wiki_locator_text(summary):
+            summary = ""
+        if title and not summary and not pages and is_wiki_locator_text(raw_pages):
+            continue
+        line = ""
+        if title:
+            line = f"{title}"
+            if pages:
+                line += f"（{pages}）"
+        if summary:
+            line = f"{line}：{summary}" if line else summary
+        if line:
+            snippets.append(line)
+    return snippets
+
+
+def snippets_from_artifact_metadata(artifact: dict[str, Any]) -> list[str]:
+    snippets: list[str] = []
+    for key in ("evidenceSummary", "summary", "description", "reason"):
+        value = clean_summary_text(str(artifact.get(key) or ""))
+        if value:
+            snippets.append(value)
+    evidence = artifact.get("wikiEvidence") if isinstance(artifact.get("wikiEvidence"), dict) else {}
+    for key in ("summary", "riskTips", "validityStatus", "expiryDate", "issuer", "subject"):
+        value = clean_summary_text(str(evidence.get(key) or ""))
+        if value:
+            snippets.append(value)
+    return snippets
+
+
+def docx_relevant_snippets(
+    path: Path,
+    artifact: dict[str, Any],
+    facts: dict[str, str],
+    ctx: AssemblyContext,
+    *,
+    section_title: str,
+) -> list[str]:
+    try:
+        source = Document(str(path))
+    except Exception as exc:
+        ctx.add_review("extract_summary_docx_open_failed", f"提取总结打开 Word 失败：{path.name}；原因：{exc}", section=section_title, source=str(path))
+        return []
+    query_terms = summary_query_terms(artifact, section_title)
+    paragraphs: list[str] = []
+    for paragraph in source.paragraphs:
+        text = clean_summary_text(paragraph.text)
+        if useful_summary_text(text):
+            paragraphs.append(text)
+    table_snippets = table_summary_snippets(source, facts, ctx, section_title=section_title, source_path=str(path))
+    scored: list[tuple[int, int, str]] = []
+    has_segment_anchor = bool(artifact.get("selectedEvidenceSegments"))
+    for index, text in enumerate([*paragraphs, *table_snippets]):
+        score = summary_match_score(text, query_terms)
+        if score > 0 or (not has_segment_anchor and index < 6):
+            scored.append((score, index, text))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    selected: list[str] = []
+    for score, _index, text in scored:
+        if score <= 0 and len(selected) >= 4:
+            continue
+        if text not in selected:
+            selected.append(text)
+        if len(selected) >= 8:
+            break
+    return selected
+
+
+def table_summary_snippets(source: Document, facts: dict[str, str], ctx: AssemblyContext, *, section_title: str, source_path: str) -> list[str]:
+    snippets: list[str] = []
+    for table in source.tables[:8]:
+        rows: list[list[str]] = []
+        for row in table.rows[:6]:
+            cells = [compact_sentence(replace_field_text(cell.text, facts, ctx, section_title=section_title, source=source_path)) for cell in row.cells[:6]]
+            cells = [cell for cell in cells if cell]
+            if cells:
+                rows.append(cells)
+        if not rows:
+            continue
+        header = " / ".join(rows[0])[:120]
+        body = "；".join(" / ".join(row) for row in rows[1:4])[:260]
+        text = f"表格信息：{header}"
+        if body:
+            text += f"；{body}"
+        snippets.append(text)
+    return snippets
+
+
+def summary_query_terms(artifact: dict[str, Any], section_title: str) -> list[str]:
+    raw_values = [
+        section_title,
+        str(artifact.get("title") or ""),
+        str(artifact.get("materialName") or ""),
+        str(artifact.get("fileName") or ""),
+        str(artifact.get("folderPath") or ""),
+    ]
+    for segment in artifact.get("selectedEvidenceSegments") or []:
+        if isinstance(segment, dict):
+            raw_values.extend([str(segment.get("title") or ""), str(segment.get("summary") or "")])
+    terms: list[str] = []
+    for value in raw_values:
+        for token in business_tokens(value):
+            normalized = normalize_text(token)
+            if len(normalized) >= 2 and normalized not in terms:
+                terms.append(normalized)
+        normalized = normalize_text(value)
+        if 2 <= len(normalized) <= 24 and normalized not in terms:
+            terms.append(normalized)
+    return terms[:16]
+
+
+def useful_summary_text(text: str) -> bool:
+    clean = clean_summary_text(text)
+    if len(clean) < 8:
+        return False
+    if is_wiki_locator_text(text) or is_wiki_locator_text(clean):
+        return False
+    if embedded_image_marker_names(text) and not clean:
+        return False
+    if re.fullmatch(r"[\d\s.．、\-—_]+", clean):
+        return False
+    if len(clean) <= 40 and re.search(r"^(目录|附件目录|页码|第[一二三四五六七八九十\d]+章)$", clean):
+        return False
+    return True
+
+
+def summary_match_score(text: str, query_terms: list[str]) -> int:
+    normalized = normalize_text(text)
+    if not normalized:
+        return 0
+    score = 0
+    for term in query_terms:
+        if term and term in normalized:
+            score += max(2, len(term))
+    for token in ["承诺", "声明", "证明", "证书", "业绩", "资质", "能力", "质量", "服务", "供货", "财务", "信用", "专利", "荣誉", "协议"]:
+        if token in normalized:
+            score += 1
+    if len(normalized) > 500:
+        score -= 2
+    return score
+
+
+def compact_sentence(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def embedded_image_marker_names(text: str) -> list[str]:
+    names: list[str] = []
+    for match in EMBEDDED_IMAGE_MARKER_RE.finditer(str(text or "")):
+        name = Path(match.group(1).strip()).name
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def strip_embedded_image_markers(text: str) -> str:
+    return EMBEDDED_IMAGE_MARKER_RE.sub(" ", str(text or ""))
+
+
+def clean_summary_text(text: str) -> str:
+    raw = compact_sentence(strip_embedded_image_markers(text))
+    if re.search(r"清洗稿段落\s*\d+", raw) and not re.search(r"[。；，,].{8,}", raw):
+        return ""
+    clean = raw
+    clean = re.sub(r"^[^:：]{0,80}（清洗稿段落\s*\d+）\s*[:：]\s*", "", clean).strip()
+    clean = re.sub(r"（清洗稿段落\s*\d+）", "", clean).strip()
+    clean = re.sub(r"^(清洗稿标题片段|推荐片段定位|证据片段|片段)\s*[:：]\s*", "", clean).strip()
+    clean = re.sub(r"（(?:原始文档未分页索引|清洗稿标题/待页码定位|待页码回填)）", "", clean).strip()
+    clean = re.sub(r"(?:原始文档未分页索引|清洗稿标题/待页码定位|待页码回填)\s*[:：]?", "", clean).strip()
+    # OCR for logo-only images can leave isolated English logo words. Avoid
+    # promoting those as body evidence when no substantive Chinese text exists.
+    if re.fullmatch(r"[A-Za-z\s&.,'-]{1,40}", clean or ""):
+        return ""
+    if is_wiki_locator_text(clean):
+        return ""
+    return clean
+
+
+def is_wiki_locator_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    locator_tokens = [
+        "清洗稿标题片段",
+        "清洗稿标题/待页码定位",
+        "原始文档未分页索引",
+        "待页码回填",
+        "推荐片段定位",
+    ]
+    if any(token in value for token in locator_tokens):
+        return True
+    normalized = normalize_text(value)
+    if normalized in {"清洗稿标题", "待页码定位", "原始文档未分页索引", "待页码回填"}:
+        return True
+    return False
+
+
+def embedded_image_names_from_artifact(artifact: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+
+    def collect(value: Any) -> None:
+        for name in embedded_image_marker_names(str(value or "")):
+            if name not in names:
+                names.append(name)
+
+    for key in ("evidenceSummary", "summary", "description", "reason"):
+        collect(artifact.get(key))
+    evidence = artifact.get("wikiEvidence") if isinstance(artifact.get("wikiEvidence"), dict) else {}
+    for key in ("summary", "riskTips", "validityStatus", "expiryDate", "issuer", "subject"):
+        collect(evidence.get(key))
+    for segment in artifact.get("selectedEvidenceSegments") or []:
+        if isinstance(segment, dict):
+            for key in ("title", "evidenceSegmentTitle", "summary", "evidenceSummary"):
+                collect(segment.get(key))
+    return names[:MAX_EXTRACT_SUMMARY_IMAGES]
 
 
 def append_evidence_segment_reference(doc: Document, artifact: dict[str, Any], ctx: AssemblyContext, *, section_title: str) -> bool:
@@ -1255,6 +1665,82 @@ def append_image(doc: Document, path: Path, ctx: AssemblyContext, *, section_tit
         return False
 
 
+def append_docx_embedded_images_by_name(
+    doc: Document,
+    path: Path,
+    image_names: list[str],
+    ctx: AssemblyContext,
+    *,
+    section_title: str,
+) -> int:
+    if path.suffix.lower() not in DOCX_SUFFIXES or not image_names:
+        return 0
+    wanted = {Path(name).name for name in image_names if str(name).strip()}
+    if not wanted:
+        return 0
+    embedded = 0
+    embedded_names: set[str] = set()
+    try:
+        with zipfile.ZipFile(path) as archive:
+            media_names = [name for name in archive.namelist() if name.startswith("word/media/")]
+            by_basename = {Path(name).name: name for name in media_names}
+            for image_name in image_names[:MAX_EXTRACT_SUMMARY_IMAGES]:
+                base_name = Path(image_name).name
+                archive_name = by_basename.get(base_name)
+                if not archive_name:
+                    continue
+                suffix = Path(base_name).suffix.lower() or ".png"
+                image_path = ctx.assets_dir / safe_filename(f"{path.stem}-{base_name}", f"embedded{suffix}")
+                image_path.write_bytes(archive.read(archive_name))
+                if append_image(doc, image_path, ctx, section_title=section_title):
+                    embedded += 1
+                    embedded_names.add(base_name)
+    except Exception as exc:
+        ctx.add_review(
+            "extract_summary_docx_image_embed_failed",
+            f"提取总结尝试嵌入 Word 内部图片失败：{path.name}；原因：{exc}",
+            section=section_title,
+            source=str(path),
+        )
+    missing = sorted(wanted - embedded_names)
+    if embedded == 0 and wanted:
+        ctx.add_review(
+            "extract_summary_docx_image_not_found",
+            f"提取总结识别到图片占位符，但未在 Word 内部媒体目录找到对应图片：{', '.join(sorted(wanted)[:3])}",
+            section=section_title,
+            source=str(path),
+        )
+    elif missing:
+        ctx.add_review(
+            "extract_summary_docx_image_partial",
+            f"部分 Word 内部图片未能嵌入，需人工复核：{', '.join(missing[:3])}",
+            section=section_title,
+            source=str(path),
+        )
+    return embedded
+
+
+def docx_media_image_names(path: Path) -> list[str]:
+    if path.suffix.lower() not in DOCX_SUFFIXES or not path.exists():
+        return []
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = [
+                Path(name).name
+                for name in archive.namelist()
+                if name.startswith("word/media/") and Path(name).suffix.lower() in IMAGE_SUFFIXES
+            ]
+    except Exception:
+        return []
+    result: list[str] = []
+    for name in names:
+        if name not in result:
+            result.append(name)
+        if len(result) >= MAX_EXTRACT_SUMMARY_IMAGES:
+            break
+    return result
+
+
 def append_pdf(doc: Document, path: Path, ctx: AssemblyContext, *, section_title: str) -> bool:
     if fitz is None:
         ctx.add_review("pdf_renderer_unavailable", f"PyMuPDF 不可用，无法将 PDF 转图片嵌入：{path.name}", section=section_title, source=str(path))
@@ -1338,13 +1824,13 @@ def append_business_scoring_table(doc: Document, artifact: dict[str, Any], ctx: 
 
 
 def collect_scoring_artifacts(parse_result: dict[str, Any], tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    artifacts: list[dict[str, Any]] = []
+    parsed_artifacts: list[dict[str, Any]] = []
     structured = parse_result.get("structured") if isinstance(parse_result.get("structured"), dict) else {}
     scoring = structured.get("businessScoringAsset") if isinstance(structured.get("businessScoringAsset"), dict) else {}
     if scoring:
         path = str(scoring.get("docxPath") or scoring.get("filePath") or scoring.get("path") or "")
         if path:
-            artifacts.append(
+            parsed_artifacts.append(
                 {
                     "artifactId": str(scoring.get("id") or "BIZ-SCORING-ASSET"),
                     "artifactType": "parse_business_scoring",
@@ -1355,8 +1841,8 @@ def collect_scoring_artifacts(parse_result: dict[str, Any], tasks: list[dict[str
                 }
             )
     scoring_groups = structured.get("scoringCriteria") if isinstance(structured.get("scoringCriteria"), dict) else {}
-    if scoring_groups and not any(str(item.get("artifactType") or "") == "parse_business_scoring" for item in artifacts):
-        artifacts.append(
+    if scoring_groups and not any(str(item.get("artifactType") or "") == "parse_business_scoring" for item in parsed_artifacts):
+        parsed_artifacts.append(
             {
                 "artifactId": "BIZ-SCORING-STRUCTURED",
                 "artifactType": "parse_business_scoring_json",
@@ -1367,12 +1853,20 @@ def collect_scoring_artifacts(parse_result: dict[str, Any], tasks: list[dict[str
                 "scoringCriteria": scoring_groups,
             }
         )
+    if parsed_artifacts:
+        return dedupe_artifacts(parsed_artifacts)
+
+    task_artifacts: list[dict[str, Any]] = []
     for task in tasks:
         if not is_scoring_section(str(task.get("title") or "")):
             continue
         for artifact in task.get("resolvedArtifacts") or []:
             if isinstance(artifact, dict) and str(artifact.get("filePath") or artifact.get("path") or ""):
-                artifacts.append(artifact)
+                task_artifacts.append(artifact)
+    return dedupe_artifacts(task_artifacts)
+
+
+def dedupe_artifacts(artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     unique: dict[str, dict[str, Any]] = {}
     for artifact in artifacts:
         unique[artifact_dedupe_key(artifact)] = artifact

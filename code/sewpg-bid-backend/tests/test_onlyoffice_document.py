@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 from fastapi.testclient import TestClient
 
@@ -143,14 +143,18 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
 
         document_payload = document_response.json()
         review_payload = review_response.json()
+        document_file_url = urlparse(document_payload["onlyoffice"]["fileUrl"])
         self.assertEqual(
-            document_payload["onlyoffice"]["fileUrl"],
+            f"{document_file_url.scheme}://{document_file_url.netloc}{document_file_url.path}",
             f"http://fastapi:8000/api/projects/{project_id}/document/file/{quote(document_payload['fileName'])}",
         )
+        self.assertEqual(parse_qs(document_file_url.query).get("doc_version"), ["1"])
+        document_callback_url = urlparse(document_payload["onlyoffice"]["callbackUrl"])
         self.assertEqual(
-            document_payload["onlyoffice"]["callbackUrl"],
+            f"{document_callback_url.scheme}://{document_callback_url.netloc}{document_callback_url.path}",
             f"http://fastapi:8000/api/projects/{project_id}/document/callback",
         )
+        self.assertEqual(parse_qs(document_callback_url.query).get("oo_doc_version"), ["1"])
         self.assertEqual(
             review_payload["onlyoffice"]["fileUrl"],
             f"http://fastapi:8000/api/projects/{project_id}/review-items/document/file/{quote(review_payload['fileName'])}",

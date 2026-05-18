@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.api.utils import onlyoffice_backend_base_url
 from app.services.peripheral import PeripheralError
+from app.services.minio_client import minio_client
 from app.services.store import store
 
 router = APIRouter()
@@ -58,10 +61,60 @@ async def get_business_gap_selectable_materials(project_id: str, keyword: str = 
         raise _value_error(exc) from exc
 
 
+@router.get("/api/projects/{project_id}/business-gaps/materials/{material_id}/preview")
+async def preview_business_gap_material(
+    project_id: str,
+    material_id: str,
+    request: Request,
+    mode: str = "quick",
+) -> dict[str, Any]:
+    try:
+        return await store.get_business_gap_material_preview(
+            project_id,
+            material_id,
+            mode=mode,
+            browser_base_url=str(request.base_url).rstrip("/"),
+            onlyoffice_base_url=onlyoffice_backend_base_url(request),
+        )
+    except ValueError as exc:
+        raise _value_error(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Business gap material not found") from exc
+    except PeripheralError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.get("/api/projects/{project_id}/business-gaps/materials/{material_id}/content/{filename:path}")
+async def business_gap_material_preview_content(project_id: str, material_id: str, filename: str) -> StreamingResponse:
+    try:
+        payload = await store.get_business_gap_material_preview_content(project_id, material_id)
+    except ValueError as exc:
+        raise _value_error(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Business gap material not found") from exc
+    except PeripheralError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    response = minio_client.get_object_response(payload["bucket"], payload["key"])
+
+    def iterate_chunks():
+        try:
+            for chunk in response.stream(64 * 1024):
+                yield chunk
+        finally:
+            response.close()
+            response.release_conn()
+
+    return StreamingResponse(
+        iterate_chunks(),
+        media_type=str(payload.get("mimeType") or "application/octet-stream"),
+        headers={"Content-Disposition": f"inline; filename*=UTF-8''{quote(str(payload.get('fileName') or filename or 'preview.bin'))}"},
+    )
+
+
 @router.post("/api/projects/{project_id}/business-gaps/facts/build")
 async def build_business_gap_project_facts(project_id: str) -> dict[str, Any]:
     try:
-        return store.build_business_gap_fact_table(project_id)
+        return await asyncio.to_thread(store.build_business_gap_fact_table, project_id)
     except ValueError as exc:
         raise _value_error(exc) from exc
 
@@ -72,7 +125,7 @@ async def save_business_gap_project_facts(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     try:
-        return store.save_business_gap_fact_table(project_id, data)
+        return await asyncio.to_thread(store.save_business_gap_fact_table, project_id, data)
     except ValueError as exc:
         raise _value_error(exc) from exc
 
@@ -252,7 +305,8 @@ async def ai_draft_business_gap_task(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     try:
-        return store.run_business_gap_ai_draft(
+        return await asyncio.to_thread(
+            store.run_business_gap_ai_draft,
             project_id,
             task_id,
             data,

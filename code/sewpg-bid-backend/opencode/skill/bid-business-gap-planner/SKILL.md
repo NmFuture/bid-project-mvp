@@ -117,15 +117,16 @@ S3 是装配决策层，必须为每个 task 明确 S4 的执行意图。S4 只�
 - `table_fill_from_material`：使用空表模板、项目事实表和素材证据填表。
 - `attach_whole_file`：完整附件引用或整份 Word 合入，适合协议、评分标准、说明附件。
 - `embed_scan_or_image`：将证书、回单、保函、图片或 PDF 扫描件嵌入正文。
-- `extract_segment`：只引用素材中的证据片段，避免把大 Word/PDF 整份拼入正文。
+- `extract_and_summarize`：以素材/清洗稿为主输入，结合证据片段定位和项目事实表，供 S4 提取总结、转写为当前章节正文。
+- `extract_segment`：只引用素材中的证据片段摘要、页码/位置和原件引用，不做提取总结。
 - `ai_draft`：S3 已判断可由 AI 起草，生成受控草稿。
-- `manual_upload`：必须人工补料。
+- `manual_upload`：兼容旧数据。人工补料是材料来源，不应作为新任务的优先装配方式。
 
-`materialUsage` 记录 Wiki 或规则推导出的素材用法，例如 `fill_template`、`fill_table`、`attach_whole`、`embed_scan`、`extract_segment`。
+`materialUsage` 记录 Wiki 或规则推导出的素材用法，例如 `fill_template`、`fill_table`、`attach_whole`、`embed_scan`、`extract_and_summarize`、`extract_segment`。
 
 `fillPlan` 记录 S4 所需输入、输出产物类型、是否依赖项目事实表、是否依赖素材证据。
 
-`selectedEvidenceSegments` 记录已经命中的 Wiki/素材证据片段。若 `assemblyMode=extract_segment`，必须尽量填充该字段；否则需要追加 `segment_location_required` 风险。
+`selectedEvidenceSegments` 记录已经命中的 Wiki/素材证据片段。若 `assemblyMode=extract_segment`，必须尽量填充该字段；否则需要追加 `segment_location_required` 风险。若 `assemblyMode=extract_and_summarize`，该字段作为提取总结的定位锚点，不代表只粘贴该片段。
 
 ### Module Groups
 

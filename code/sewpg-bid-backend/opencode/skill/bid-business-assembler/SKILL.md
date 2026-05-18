@@ -102,8 +102,10 @@ stdout summary 格式：
 8. S3 未完全确认也允许生成，但必须写入待复核清单。
 9. 商务评分标准必须进入最终 Word；目录无明确位置时，落入“投标人需要说明的其他内容”或文末评分标准章节。
 10. 图片/PDF/扫描件尽量嵌入 Word。PDF 通过 PyMuPDF 按页渲染为图片后插入。
-11. `assemblyMode=extract_segment` 时，只输出证据片段摘要、页码/位置和原件引用；第一版不整份合入大材料。
-12. 无法合并或嵌入的材料，在正文保留附件引用，并写入 `business_needs_review.md`。
+11. `assemblyMode=extract_and_summarize` 时，以素材/清洗稿为主输入，结合 `selectedEvidenceSegments` 作为定位锚点，提取相关段落/表格摘要并转写为当前章节正文，不得整份合入大材料。
+12. `assemblyMode=extract_segment` 时，只输出证据片段摘要、页码/位置和原件引用；第一版不整份合入大材料。
+13. `manual_upload` 仅表示材料来源或旧数据兼容值，上传补料的装配方式仍以 task/artifact 的 `assemblyMode` 为准。
+14. 无法合并或嵌入的材料，在正文保留附件引用，并写入 `business_needs_review.md`。
 
 ## Failure Policy
 

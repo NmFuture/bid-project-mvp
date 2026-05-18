@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { businessGapsAPI, stagesAPI } from '../api'
+import { businessGapsAPI, generateAPI, stagesAPI } from '../api'
 import { PageLoading, PageError } from '../components/states/PageState'
 import PageHeader from '../components/shared/PageHeader'
 import DataCard from '../components/shared/DataCard'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
-import StageGroupNav from '../components/shared/StageGroupNav'
 import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const statusLabels = {
@@ -62,41 +61,41 @@ const usageModeLabels = {
   fill_table: '填表',
   fill_template: '填模板',
   embed_scan: '嵌入扫描件',
-  extract_segment: '摘取片段',
+  extract_and_summarize: '提取总结',
   generate_draft: 'AI起草',
-  manual_upload: '人工补料',
+  manual_upload: '人工上传来源',
   reference_only: '仅参考',
 }
 
 const assemblyModeLabels = {
-  template_fill_docx: '模板填充 Word',
-  table_fill_from_material: '素材填表',
-  attach_whole_file: '整件挂载',
-  embed_scan_or_image: '扫描件/图片嵌入',
-  extract_segment: '证据片段摘取',
-  ai_draft: 'AI 起草',
-  manual_upload: '人工补料',
+  template_fill_docx: '模板填充',
+  attach_whole_file: '整件挂载/嵌入',
+  embed_scan_or_image: '整件挂载/嵌入',
+  extract_and_summarize: '整件挂载/嵌入',
+  ai_draft: 'AI 自主填写',
+  manual_upload: '人工上传来源',
 }
 
 const assemblyModeDescriptions = {
-  template_fill_docx: '用于投标函、授权书、廉洁承诺等模板类文件，S4 会基于模板和项目事实表填充。',
-  table_fill_from_material: '用于价格表、开标一览表、规格表等结构化表格，S4 会按字段/表格填入内容。',
-  attach_whole_file: '用于合同、审计报告、证明文件等整份附件，S4 直接作为完整附件挂载。',
-  embed_scan_or_image: '用于证书、保函、回单等扫描件/图片，S4 将图片或扫描页嵌入对应位置。',
-  extract_segment: '用于大文件中的局部章节或证据片段，S4 只引用/摘取已确认片段，不拼整份文件。',
-  ai_draft: '用于需要系统起草的说明、承诺或补充文本，S4 使用 S3 生成并确认的起草稿。',
-  manual_upload: '用于人工直接补充的成品文件，S4 按补料结果使用。',
+  template_fill_docx: '用于投标函、授权书、廉洁承诺等模板类文件，系统会基于模板和项目事实表填充。',
+  attach_whole_file: '用于证书、扫描件、图片或内容已经完整的 Word/PDF，按整件挂载或嵌入处理。',
+  embed_scan_or_image: '用于证书、扫描件、图片或内容已经完整的 Word/PDF，按整件挂载或嵌入处理。',
+  extract_and_summarize: '兼容旧数据：后续商务素材按最小单元拆分后，不再单独提供提取总结/转写选项，旧任务按整件挂载/嵌入处理。',
+  ai_draft: '用于无明确素材时由系统根据目录任务和项目事实表自主生成说明性文字。',
+  manual_upload: '兼容旧数据：人工上传是材料来源，不建议作为处理方式。',
 }
 
 const assemblyModeOptions = [
   'template_fill_docx',
-  'table_fill_from_material',
   'attach_whole_file',
-  'embed_scan_or_image',
-  'extract_segment',
   'ai_draft',
-  'manual_upload',
 ]
+
+const editableAssemblyMode = (mode) => {
+  if (mode === 'embed_scan_or_image') return 'attach_whole_file'
+  if (mode === 'extract_and_summarize' || mode === 'extract_segment' || mode === 'table_fill_from_material') return 'attach_whole_file'
+  return mode || ''
+}
 
 const sourceModeLabels = {
   uploaded_in_business_s3: '人工上传补料',
@@ -108,18 +107,6 @@ const sourceModeLabels = {
   project_uploaded_bid_template: '项目上传投标模板',
   system_default_bid_template: '系统默认商务模板',
   selected_from_bid_template: '已选投标模板',
-}
-
-const riskFlagLabels = {
-  missing_material: '缺少可用材料',
-  manual_upload_required: '需要人工上传',
-  template_missing_for_fill: '缺少可填充 Word 模板',
-  candidate_template_unconfirmed: '有候选模板待确认',
-  parser_generated_unconfirmed: '解析产物待确认',
-  manual_placement_required: '需人工确认落位',
-  fact_table_unconfirmed: '项目事实表未确认',
-  ai_draft_required: '需生成AI起草稿',
-  segment_location_required: '需确认片段位置',
 }
 
 const looksLikeTemplateAsset = (item) => {
@@ -136,12 +123,111 @@ const looksLikeTemplateAsset = (item) => {
     || (/\.docx?$/i.test(name) && /模板|格式|底稿|投标函|授权|廉洁|承诺|声明|说明|履约/.test(name))
 }
 
-const canAiDraftTask = (task) => {
-  if (!task) return false
-  if (['certificate', 'attachment', 'bundle'].includes(task.taskType)) return false
-  if (task.decision === 'fill_required' || task.decision === 'ai_draft_required') return true
-  if (['generate_or_fill', 'ai_draft'].includes(task.assigneeMode)) return true
-  return /投标函|授权|廉洁|承诺|声明|说明|专用章|履约/.test(task.title || '')
+const materialPreviewKey = (item) => item?.materialId || item?.id || ''
+
+const materialPreviewTitle = (item) =>
+  item?.materialName || item?.name || item?.fileName || item?.evidenceSegmentTitle || item?.id || item?.materialId || '候选素材'
+
+const candidateMaterialKey = (material) =>
+  material?.materialId || material?.id || material?.path || material?.folderPath || material?.materialName || material?.evidenceSegmentId || material?.wikiCardId || ''
+
+const pickerItemKey = (tab, item) => {
+  if (tab === 'templates') return item?.templateId || item?.filePath || item?.id || ''
+  if (tab === 'segments') return item?.evidenceSegmentId || item?.id || ''
+  return item?.materialId || item?.id || ''
+}
+
+const materialSelectionPayload = (item, tab) => {
+  if (!item) return null
+  if (tab === 'segments') {
+    return {
+      id: item.id || item.materialId,
+      materialId: item.materialId || item.id,
+      materialName: item.materialName,
+      folderPath: item.folderPath,
+      materialTier: item.materialTier,
+      cleanedFileName: item.cleanedFileName,
+      evidenceSegmentId: item.evidenceSegmentId,
+      evidenceSegmentTitle: item.evidenceSegmentTitle,
+      evidenceSegmentType: item.evidenceSegmentType,
+      evidenceSourcePages: item.evidenceSourcePages,
+      evidenceSummary: item.evidenceSummary,
+      wikiCardId: item.wikiCardId,
+      wikiUsageMode: item.wikiUsageMode,
+      wikiEvidence: item.wikiEvidence,
+    }
+  }
+  return {
+    id: item.id || item.materialId,
+    materialId: item.materialId || item.id,
+    materialName: item.materialName,
+    folderPath: item.folderPath,
+    materialTier: item.materialTier,
+    cleanedFileName: item.cleanedFileName,
+    evidenceSegments: item.evidenceSegments,
+    wikiCardId: item.wikiCardId,
+    wikiUsageMode: item.wikiUsageMode,
+    wikiEvidence: item.wikiEvidence,
+  }
+}
+
+const evidenceSegmentFromCandidate = (material) => {
+  if (!material?.evidenceSegmentId) return null
+  return {
+    segmentId: material.evidenceSegmentId,
+    evidenceSegmentId: material.evidenceSegmentId,
+    title: material.evidenceSegmentTitle || '',
+    evidenceSegmentTitle: material.evidenceSegmentTitle || '',
+    sourcePages: material.evidenceSourcePages || material.wikiEvidence?.sourcePages || '',
+    evidenceSourcePages: material.evidenceSourcePages || material.wikiEvidence?.sourcePages || '',
+    summary: material.evidenceSummary || material.wikiEvidence?.summary || '',
+    evidenceSummary: material.evidenceSummary || material.wikiEvidence?.summary || '',
+    wikiCardId: material.wikiCardId || '',
+    wikiUsageMode: material.wikiUsageMode || '',
+    materialId: material.materialId || '',
+    materialName: material.materialName || '',
+    folderPath: material.folderPath || material.path || '',
+    wikiEvidence: material.wikiEvidence || {},
+  }
+}
+
+const mergeCandidateMaterials = (materials) => {
+  const grouped = new Map()
+  asArray(materials).forEach((material) => {
+    if (!material) return
+    const key = candidateMaterialKey(material)
+    if (!key) return
+    const current = grouped.get(key)
+    const segment = evidenceSegmentFromCandidate(material)
+    if (!current) {
+      const evidenceSegments = [...asArray(material.evidenceSegments)]
+      if (segment && !evidenceSegments.some((item) => (item.evidenceSegmentId || item.segmentId) === segment.evidenceSegmentId)) {
+        evidenceSegments.push(segment)
+      }
+      grouped.set(key, { ...material, evidenceSegments })
+      return
+    }
+    if ((material.score || 0) > (current.score || 0)) current.score = material.score
+    if (material.reason && !String(current.reason || '').includes(material.reason)) {
+      current.reason = [current.reason, material.reason].filter(Boolean).join(' + ')
+    }
+    ;['cleanStatus', 'cleanedFileName', 'folderPath', 'path', 'wikiCardId', 'wikiUsageMode', 'validityStatus', 'expiryDate'].forEach((field) => {
+      if (!current[field] && material[field]) current[field] = material[field]
+    })
+    if (!current.wikiEvidence && material.wikiEvidence) current.wikiEvidence = material.wikiEvidence
+    const evidenceSegments = current.evidenceSegments || []
+    asArray(material.evidenceSegments).forEach((item) => {
+      const segmentId = item?.evidenceSegmentId || item?.segmentId
+      if (segmentId && !evidenceSegments.some((existing) => (existing.evidenceSegmentId || existing.segmentId) === segmentId)) {
+        evidenceSegments.push(item)
+      }
+    })
+    if (segment && !evidenceSegments.some((item) => (item.evidenceSegmentId || item.segmentId) === segment.evidenceSegmentId)) {
+      evidenceSegments.push(segment)
+    }
+    current.evidenceSegments = evidenceSegments
+  })
+  return Array.from(grouped.values()).sort((a, b) => (b.score || 0) - (a.score || 0))
 }
 
 function StatCard({ label, value }) {
@@ -158,6 +244,25 @@ function TaskStatusBadge({ status }) {
     <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(status)}`}>
       {statusLabels[status] || status || '待处理'}
     </span>
+  )
+}
+
+function AssemblyModeButton({ mode, active, disabled, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-md border px-3 py-2 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+        active
+          ? 'border-primary bg-primary/10 text-primary'
+          : 'border-surface-container-high bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container-low'
+      }`}
+      title={assemblyModeDescriptions[mode] || ''}
+    >
+      <span className="block font-semibold">{assemblyModeLabels[mode] || mode}</span>
+      <span className="mt-0.5 block line-clamp-2 text-[11px] opacity-80">{assemblyModeDescriptions[mode] || ''}</span>
+    </button>
   )
 }
 
@@ -300,6 +405,128 @@ function FactMaintenanceModal({
   )
 }
 
+function BusinessMaterialPreviewDrawer({
+  open,
+  loading,
+  payload,
+  source,
+  onClose,
+  onOpenOffice,
+}) {
+  if (!open) return null
+  const summary = payload?.quickSummary || {}
+  const snippets = asArray(payload?.snippets)
+  const title = payload?.materialName || materialPreviewTitle(source)
+  return (
+    <div className="fixed inset-0 z-[60] flex justify-end bg-black/30">
+      <div className="flex h-full w-full max-w-4xl flex-col overflow-hidden bg-surface shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="truncate text-lg font-headline font-bold text-on-surface">{title}</h3>
+              {payload?.previewMode && (
+                <span className="rounded-md bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
+                  {payload.previewMode === 'native' ? '原件预览' : payload.previewMode === 'text' ? '清洗稿快照' : payload.previewMode === 'onlyoffice' ? '完整 Word' : '下载核对'}
+                </span>
+              )}
+            </div>
+            <p className="mt-1 truncate text-xs text-on-surface-variant">{payload?.folderPath || source?.folderPath || '商务标素材库候选材料'}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-surface-container-high text-on-surface-variant hover:bg-surface-dim"
+            aria-label="关闭"
+          >
+            <span className="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-auto p-5">
+          {loading ? (
+            <div className="space-y-3">
+              <div className="h-16 animate-pulse rounded-md bg-surface-container-low" />
+              <div className="h-[420px] animate-pulse rounded-md bg-surface-container-low" />
+            </div>
+          ) : !payload ? (
+            <div className="rounded-md border border-dashed border-surface-container-high p-8 text-center text-sm text-on-surface-variant">暂无预览数据。</div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid gap-3 rounded-lg border border-surface-container-high bg-surface-container-lowest p-3 text-xs text-on-surface-variant sm:grid-cols-2">
+                <div>文件：<span className="font-semibold text-on-surface">{payload.fileName || summary.name || '-'}</span></div>
+                <div>类型：{payload.mimeType || '-'}</div>
+                <div>层级：{payload.materialTier || summary.materialTier || '-'}</div>
+                <div>清洗：{payload.cleanStatus || summary.cleanStatus || '-'}</div>
+                {summary.turbineModelLabel && <div>机型：{summary.turbineModelLabel}</div>}
+                {payload.cleanedFileName && <div className="truncate">清洗稿：{payload.cleanedFileName}</div>}
+              </div>
+
+              {payload.message && (
+                <div className="rounded-md bg-primary/5 px-3 py-2 text-sm text-on-surface-variant">{payload.message}</div>
+              )}
+
+              {payload.previewMode === 'native' && payload.renderer === 'image' && payload.browserFileUrl ? (
+                <div className="rounded-lg border border-surface-container-high bg-surface-container-lowest p-3">
+                  <img src={payload.browserFileUrl} alt={title} className="max-h-[68vh] w-full object-contain" />
+                </div>
+              ) : payload.previewMode === 'native' && payload.renderer === 'pdf' && payload.browserFileUrl ? (
+                <div className="h-[68vh] overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest">
+                  <iframe title={title} src={payload.browserFileUrl} className="h-full w-full" />
+                </div>
+              ) : payload.previewMode === 'onlyoffice' && payload.onlyoffice ? (
+                <div className="h-[68vh] overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest">
+                  <OnlyOfficeEmbed
+                    session={payload.onlyoffice}
+                    mode="view"
+                    className="h-full min-h-[68vh] w-full bg-white"
+                  />
+                </div>
+              ) : snippets.length ? (
+                <div className="rounded-lg border border-surface-container-high bg-surface-container-lowest p-4">
+                  <div className="mb-3 text-sm font-semibold text-on-surface">清洗稿文本快照</div>
+                  <div className="space-y-2">
+                    {snippets.map((snippet, index) => (
+                      <p key={`${index}-${snippet.slice(0, 16)}`} className="rounded bg-surface px-3 py-2 text-sm leading-6 text-on-surface-variant">{snippet}</p>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-md border border-dashed border-surface-container-high p-8 text-center text-sm text-on-surface-variant">
+                  当前文件类型暂不支持内嵌预览，可打开原件核对。
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-surface-container-high bg-surface-container-low px-5 py-4">
+          <div className="text-xs text-on-surface-variant">预览只用于核对候选材料，不会自动选择或修改缺口任务。</div>
+          <div className="flex flex-wrap items-center gap-2">
+            {payload?.browserFileUrl && (
+              <a href={payload.browserFileUrl} target="_blank" rel="noreferrer" className="rounded-md bg-surface-container-high px-3 py-2 text-sm font-semibold text-on-surface-variant hover:bg-surface-dim">
+                打开原件
+              </a>
+            )}
+            {payload?.officeAvailable && payload?.previewMode !== 'onlyoffice' && (
+              <button
+                type="button"
+                onClick={onOpenOffice}
+                disabled={loading}
+                className="rounded-md bg-secondary-container px-3 py-2 text-sm font-semibold text-on-secondary-container hover:bg-secondary-fixed disabled:opacity-50"
+              >
+                完整预览 Word
+              </button>
+            )}
+            <button type="button" onClick={onClose} className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container">
+              关闭
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function BusinessMaterialPickerModal({
   open,
   task,
@@ -307,26 +534,29 @@ function BusinessMaterialPickerModal({
   loading,
   keyword,
   activeTab,
-  selectedKey,
+  selectedKeys,
   onKeywordChange,
   onTabChange,
-  onSelectKey,
+  onToggleKey,
   onClose,
   onConfirm,
+  onPreview,
 }) {
   if (!open || !task) return null
   const templates = asArray(payload?.templates)
   const materials = asArray(payload?.items)
-  const segments = asArray(payload?.segments)
-  const selectedList = activeTab === 'templates' ? templates : activeTab === 'segments' ? segments : materials
-  const selectedItem = selectedList.find((item) => {
-    const key = activeTab === 'templates'
-      ? item.templateId || item.filePath || item.id
-      : activeTab === 'segments'
-      ? item.evidenceSegmentId || item.id
-      : item.materialId || item.id
-    return key === selectedKey
-  })
+  const selectedList = activeTab === 'templates' ? templates : materials
+  const normalizedSelectedKeys = asArray(selectedKeys)
+  const selectedItems = selectedList.filter((item) => normalizedSelectedKeys.includes(pickerItemKey(activeTab, item)))
+  const selectedItem = selectedItems[0] || null
+  const multiSelect = activeTab !== 'templates'
+  const selectedCount = multiSelect ? selectedItems.length : (selectedItem ? 1 : 0)
+  const selectAllVisible = () => {
+    if (!multiSelect) return
+    const visibleKeys = selectedList.map((item) => pickerItemKey(activeTab, item)).filter(Boolean)
+    const allSelected = visibleKeys.length > 0 && visibleKeys.every((key) => normalizedSelectedKeys.includes(key))
+    onToggleKey(allSelected ? [] : visibleKeys, { replace: true })
+  }
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
       <div className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
@@ -334,7 +564,7 @@ function BusinessMaterialPickerModal({
           <div className="min-w-0">
             <h3 className="text-lg font-headline font-bold text-on-surface">人工指定素材库材料/模板</h3>
             <p className="mt-1 text-xs text-on-surface-variant">
-              当前任务：{task.title}。当系统候选漏识别时，可从当前商务标项目可读范围中手动指定模板、整件素材或证据片段。
+              当前任务：{task.title}。模板保持单选；素材/清洗稿支持多选，会一次性快照到当前商务 S3 任务。
             </p>
           </div>
           <button
@@ -355,7 +585,7 @@ function BusinessMaterialPickerModal({
                 value={keyword}
                 onChange={(event) => onKeywordChange(event.target.value)}
                 className="h-10 w-full rounded-md border border-surface-container-high bg-surface-container-lowest pl-10 pr-3 text-sm text-on-surface"
-                placeholder="搜索模板、素材名称、路径、证据片段、关键词..."
+                placeholder="搜索模板、素材名称、清洗稿、路径、关键词..."
               />
             </div>
             <div className="inline-flex overflow-hidden rounded-md border border-surface-container-high bg-surface-container-lowest text-xs font-semibold">
@@ -368,19 +598,21 @@ function BusinessMaterialPickerModal({
               </button>
               <button
                 type="button"
-                onClick={() => onTabChange('segments')}
-                className={`px-3 py-2 ${activeTab === 'segments' ? 'bg-primary text-on-primary' : 'text-on-surface-variant hover:bg-surface-container-low'}`}
-              >
-                证据片段 {segments.length}
-              </button>
-              <button
-                type="button"
                 onClick={() => onTabChange('materials')}
                 className={`px-3 py-2 ${activeTab === 'materials' ? 'bg-primary text-on-primary' : 'text-on-surface-variant hover:bg-surface-container-low'}`}
               >
-                整件素材 {materials.length}
+                素材/清洗稿 {materials.length}
               </button>
             </div>
+            {multiSelect && !!selectedList.length && (
+              <button
+                type="button"
+                onClick={selectAllVisible}
+                className="rounded-md bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim"
+              >
+                {selectedList.every((item) => normalizedSelectedKeys.includes(pickerItemKey(activeTab, item))) ? '取消本页全选' : '选择本页全部'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -397,13 +629,13 @@ function BusinessMaterialPickerModal({
                 {templates.map((template) => {
                   const key = template.templateId || template.filePath || template.id
                   return (
-                    <label key={key} className={`block cursor-pointer rounded-md border p-3 transition-colors ${selectedKey === key ? 'border-primary bg-primary/5' : 'border-surface-container-high bg-surface-container-lowest hover:bg-surface-container-low'}`}>
+                    <label key={key} className={`block cursor-pointer rounded-md border p-3 transition-colors ${normalizedSelectedKeys.includes(key) ? 'border-primary bg-primary/5' : 'border-surface-container-high bg-surface-container-lowest hover:bg-surface-container-low'}`}>
                       <div className="flex items-start gap-3">
                         <input
                           type="radio"
                           name="business-template-select"
-                          checked={selectedKey === key}
-                          onChange={() => onSelectKey(key)}
+                          checked={normalizedSelectedKeys.includes(key)}
+                          onChange={() => onToggleKey(key, { replace: true })}
                           className="mt-1 h-4 w-4"
                         />
                         <div className="min-w-0 flex-1">
@@ -419,68 +651,52 @@ function BusinessMaterialPickerModal({
             ) : (
               <div className="rounded-md border border-dashed border-surface-container-high p-8 text-center text-sm text-on-surface-variant">暂无可选模板。请确认 S1/S2 已上传模板，或系统设置中已配置商务标默认模板。</div>
             )
-          ) : activeTab === 'segments' ? (
-            segments.length ? (
-              <div className="space-y-2">
-                {segments.map((segment) => {
-                  const key = segment.evidenceSegmentId || segment.id
-                  return (
-                    <label key={key} className={`block cursor-pointer rounded-md border p-3 transition-colors ${selectedKey === key ? 'border-primary bg-primary/5' : 'border-surface-container-high bg-surface-container-lowest hover:bg-surface-container-low'}`}>
-                      <div className="flex items-start gap-3">
-                        <input
-                          type="radio"
-                          name="business-segment-select"
-                          checked={selectedKey === key}
-                          onChange={() => onSelectKey(key)}
-                          className="mt-1 h-4 w-4"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-semibold text-on-surface">{segment.evidenceSegmentTitle || segment.materialName}</span>
-                            {segment.evidenceSourcePages && <span className="rounded bg-surface-container-high px-1.5 py-0.5 text-[11px] text-outline">{segment.evidenceSourcePages}</span>}
-                            {segment.wikiUsageMode && <span className="rounded bg-secondary-container px-1.5 py-0.5 text-[11px] text-on-secondary-container">{usageModeLabels[segment.wikiUsageMode] || segment.wikiUsageMode}</span>}
-                          </div>
-                          <div className="mt-1 truncate text-xs text-outline">{segment.materialName} · {segment.folderPath}</div>
-                          {segment.evidenceSummary && <div className="mt-1 line-clamp-2 text-xs text-on-surface-variant">{segment.evidenceSummary}</div>}
-                          {(segment.wikiEvidence?.validityStatus || segment.wikiEvidence?.expiryDate || segment.wikiEvidence?.ocrConfidence) && (
-                            <div className="mt-1 text-[11px] text-outline">
-                              有效期：{segment.wikiEvidence?.validityStatus || '未标注'}
-                              {segment.wikiEvidence?.expiryDate ? ` · ${segment.wikiEvidence.expiryDate}` : ''}
-                              {segment.wikiEvidence?.ocrConfidence ? ` · OCR ${segment.wikiEvidence.ocrConfidence}` : ''}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </label>
-                  )
-                })}
-              </div>
-            ) : (
-              <div className="rounded-md border border-dashed border-surface-container-high p-8 text-center text-sm text-on-surface-variant">暂无匹配证据片段。可切换到整件素材，或更新商务 Wiki/清洗素材后重试。</div>
-            )
           ) : materials.length ? (
             <div className="space-y-2">
               {materials.map((material) => {
                 const key = material.materialId || material.id
+                const evidenceSegments = asArray(material.evidenceSegments)
                 return (
-                  <label key={key} className={`block cursor-pointer rounded-md border p-3 transition-colors ${selectedKey === key ? 'border-primary bg-primary/5' : 'border-surface-container-high bg-surface-container-lowest hover:bg-surface-container-low'}`}>
+                  <label key={key} className={`block cursor-pointer rounded-md border p-3 transition-colors ${normalizedSelectedKeys.includes(key) ? 'border-primary bg-primary/5' : 'border-surface-container-high bg-surface-container-lowest hover:bg-surface-container-low'}`}>
                     <div className="flex items-start gap-3">
                       <input
-                        type="radio"
-                        name="business-material-select"
-                        checked={selectedKey === key}
-                        onChange={() => onSelectKey(key)}
+                        type="checkbox"
+                        checked={normalizedSelectedKeys.includes(key)}
+                        onChange={() => onToggleKey(key)}
                         className="mt-1 h-4 w-4"
                       />
                       <div className="min-w-0 flex-1">
-                        <div className="font-semibold text-on-surface">{material.materialName}</div>
-                        <div className="mt-1 truncate text-xs text-outline">{material.folderPath}</div>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-semibold text-on-surface">{material.materialName}</div>
+                            <div className="mt-1 truncate text-xs text-outline">{material.folderPath}</div>
+                          </div>
+                          {materialPreviewKey(material) && (
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.preventDefault()
+                                event.stopPropagation()
+                                onPreview?.(material)
+                              }}
+                              className="shrink-0 rounded-md bg-surface-container-high px-2 py-1 text-[11px] font-semibold text-on-surface-variant hover:bg-surface-dim"
+                            >
+                              预览
+                            </button>
+                          )}
+                        </div>
                         <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-on-surface-variant">
                           <span>层级：{material.materialTier || '-'}</span>
                           <span>清洗：{material.cleanStatus || '-'}</span>
-                          <span>片段：{material.segmentCount || 0}</span>
+                          <span>依据：{material.segmentCount || 0}</span>
                           {material.turbineModelLabel && <span>机型：{material.turbineModelLabel}</span>}
                         </div>
+                        {!!evidenceSegments.length && (
+                          <div className="mt-2 rounded bg-primary/5 px-2 py-1 text-[11px] text-on-surface-variant">
+                            推荐依据：{evidenceSegments.slice(0, 2).map((segment) => segment.evidenceSegmentTitle || segment.materialName || segment.evidenceSegmentId).filter(Boolean).join('；')}
+                            {evidenceSegments.length > 2 ? `；另有 ${evidenceSegments.length - 2} 个` : ''}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </label>
@@ -494,17 +710,18 @@ function BusinessMaterialPickerModal({
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-surface-container-high bg-surface-container-low px-5 py-4">
           <div className="text-xs text-on-surface-variant">
-            {payload?.summary ? `可选模板 ${payload.summary.templateCount || 0} 个 · 可选整件 ${payload.summary.materialCount || 0} 个 · 可选片段 ${payload.summary.segmentCount || 0} 个` : '从当前商务标可读范围加载'}
+            {payload?.summary ? `可选模板 ${payload.summary.templateCount || 0} 个 · 可选素材/清洗稿 ${payload.summary.materialCount || 0} 个` : '从当前商务标可读范围加载'}
+            {selectedCount ? ` · 已选 ${selectedCount} 个` : ''}
           </div>
           <div className="flex items-center gap-2">
             <button type="button" onClick={onClose} className="rounded-md bg-surface-container-high px-4 py-2 text-sm font-semibold text-on-surface-variant hover:bg-surface-dim">取消</button>
             <button
               type="button"
-              onClick={() => onConfirm(selectedItem, activeTab)}
-              disabled={!selectedItem || loading}
+              onClick={() => onConfirm(multiSelect ? selectedItems : selectedItem, activeTab)}
+              disabled={!selectedCount || loading}
               className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
             >
-              指定为当前任务素材/模板
+              {activeTab === 'templates' ? '指定为当前任务模板' : `指定 ${selectedCount || ''} 个素材`}
             </button>
           </div>
         </div>
@@ -532,8 +749,15 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
   const [materialPickerPayload, setMaterialPickerPayload] = useState(null)
   const [materialPickerLoading, setMaterialPickerLoading] = useState(false)
   const [materialPickerKeyword, setMaterialPickerKeyword] = useState('')
-  const [materialPickerTab, setMaterialPickerTab] = useState('segments')
-  const [materialPickerSelectedKey, setMaterialPickerSelectedKey] = useState('')
+  const [materialPickerTab, setMaterialPickerTab] = useState('materials')
+  const [materialPickerSelectedKeys, setMaterialPickerSelectedKeys] = useState([])
+  const [candidateSelectionByTask, setCandidateSelectionByTask] = useState({})
+  const [materialPreviewOpen, setMaterialPreviewOpen] = useState(false)
+  const [materialPreviewLoading, setMaterialPreviewLoading] = useState(false)
+  const [materialPreviewPayload, setMaterialPreviewPayload] = useState(null)
+  const [materialPreviewSource, setMaterialPreviewSource] = useState(null)
+  const [generationStatus, setGenerationStatus] = useState(null)
+  const [generationLoading, setGenerationLoading] = useState(false)
   const selectedTocIdRef = useRef('')
 
   const load = useCallback(async () => {
@@ -559,12 +783,26 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
     }
   }, [id])
 
+  const loadGenerationStatus = useCallback(async () => {
+    setGenerationLoading(true)
+    try {
+      const data = await generateAPI.status(id)
+      setGenerationStatus(data)
+      return data
+    } catch {
+      return null
+    } finally {
+      setGenerationLoading(false)
+    }
+  }, [id])
+
   useEffect(() => {
     const timer = setTimeout(() => {
       load()
+      loadGenerationStatus()
     }, 0)
     return () => clearTimeout(timer)
-  }, [load])
+  }, [load, loadGenerationStatus])
 
   useEffect(() => {
     selectedTocIdRef.current = selectedTocId
@@ -584,6 +822,17 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
   const hasBusinessGapPlan = payload?.status === 'completed' && plan?.schemaVersion === 'bid-business-gap-plan-v1'
   const factConfirmed = factTable?.status === 'confirmed'
   const factSummary = factTable?.summary || {}
+  const generationRunning = generationStatus?.status === 'running'
+  const generationCompleted = generationStatus?.status === 'completed'
+  const generationProgress = Math.max(0, Math.min(100, Number(generationStatus?.percentage) || 0))
+
+  useEffect(() => {
+    if (!generationRunning) return undefined
+    const timer = window.setInterval(() => {
+      loadGenerationStatus()
+    }, 1200)
+    return () => window.clearInterval(timer)
+  }, [generationRunning, loadGenerationStatus])
 
   const runPlan = async () => {
     setRunning(true)
@@ -603,19 +852,37 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
     }
   }
 
-  const advanceToS4 = async () => {
+  const runBusinessAssembly = async () => {
     if (actionLoading) return
     if (!hasBusinessGapPlan) {
-      showToast?.('请先点击“生成/更新商务缺口计划”，生成完成后再进入标书生成。', 'error')
+      showToast?.('请先点击“生成/更新商务缺口计划”，生成完成后再生成商务标正文。', 'error')
       return
     }
-    setActionLoading('advance-s4')
+    setActionLoading('business-generate')
     try {
-      await stagesAPI.update(id, 3, { status: 'completed', allowUnconfirmedBusinessGap: true })
-      showToast?.('已进入标书生成；未完成确认的缺口会在生成阶段复核清单中提示。')
-      navigate(projectRoute(id, '/generate', workspaceSlug))
+      const data = await generateAPI.run(id)
+      setGenerationStatus(data)
+      showToast?.(data?.message || '已开始生成商务标正文。')
     } catch (e) {
-      showToast?.(e?.message || '进入标书生成失败', 'error')
+      showToast?.(e?.message || '生成商务标正文失败', 'error')
+    } finally {
+      setActionLoading('')
+    }
+  }
+
+  const advanceToBusinessS4 = async () => {
+    if (actionLoading) return
+    if (!generationCompleted) {
+      showToast?.('请先完成商务标正文生成，再进入 S4 共创导出。', 'error')
+      return
+    }
+    setActionLoading('advance-business-s4')
+    try {
+      await stagesAPI.update(id, 4, { status: 'completed', allowUnconfirmedBusinessGap: true })
+      showToast?.('已进入 S4 共创导出。')
+      navigate(projectRoute(id, '/editor', workspaceSlug))
+    } catch (e) {
+      showToast?.(e?.message || '进入 S4 共创导出失败', 'error')
     } finally {
       setActionLoading('')
     }
@@ -711,20 +978,24 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
     }))
   }
 
-  const selectMaterial = async (task, material) => {
-    if (!task || !material) return
-    const materialKey = material.evidenceSegmentId || material.wikiCardId || material.materialId || material.materialName
+  const selectMaterials = async (task, materials) => {
+    const selectedMaterials = asArray(materials).filter(Boolean)
+    if (!task || !selectedMaterials.length) return
+    const materialKey = selectedMaterials.map((material) => material.evidenceSegmentId || material.wikiCardId || material.materialId || material.materialName).filter(Boolean).join(',')
     setActionLoading(`select:${materialKey}`)
     try {
-      const data = await businessGapsAPI.selectMaterial(id, task.id, { materials: [material] })
+      const data = await businessGapsAPI.selectMaterial(id, task.id, { materials: selectedMaterials })
       mergePlanPayload(data)
-      showToast?.('已选择素材并快照到商务 S3 工作区')
+      setCandidateSelectionByTask((current) => ({ ...current, [task.id]: [] }))
+      showToast?.(`已选择 ${selectedMaterials.length} 个素材并快照到商务 S3 工作区`)
     } catch (e) {
       showToast?.(e?.message || '选择素材失败', 'error')
     } finally {
       setActionLoading('')
     }
   }
+
+  const selectMaterial = async (task, material) => selectMaterials(task, [material])
 
   const selectTemplate = async (task, template) => {
     if (!task || !template) return
@@ -741,17 +1012,45 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
     }
   }
 
+  const openMaterialPreview = async (material, mode = 'quick') => {
+    const materialId = materialPreviewKey(material)
+    if (!materialId) {
+      showToast?.('该候选素材缺少素材 ID，暂不能预览。', 'error')
+      return
+    }
+    setMaterialPreviewOpen(true)
+    setMaterialPreviewLoading(true)
+    setMaterialPreviewSource(material)
+    if (mode === 'quick') setMaterialPreviewPayload(null)
+    try {
+      const data = await businessGapsAPI.previewMaterial(id, materialId, { mode })
+      setMaterialPreviewPayload(data)
+    } catch (e) {
+      showToast?.(e?.message || '候选素材预览失败', 'error')
+      if (mode === 'quick') setMaterialPreviewOpen(false)
+    } finally {
+      setMaterialPreviewLoading(false)
+    }
+  }
+
+  const closeMaterialPreview = () => {
+    setMaterialPreviewOpen(false)
+    setMaterialPreviewPayload(null)
+    setMaterialPreviewSource(null)
+    setMaterialPreviewLoading(false)
+  }
+
   const loadSelectableMaterials = useCallback(async (keyword = '') => {
     setMaterialPickerLoading(true)
     try {
       const data = await businessGapsAPI.selectableMaterials(id, { keyword: keyword.trim() })
       setMaterialPickerPayload(data)
-      const preferredTab = asArray(data?.templates).length ? 'templates' : asArray(data?.segments).length ? 'segments' : 'materials'
+      const preferredTab = asArray(data?.templates).length ? 'templates' : 'materials'
       setMaterialPickerTab((current) => current || preferredTab)
-      setMaterialPickerSelectedKey('')
+      setMaterialPickerSelectedKeys([])
     } catch (e) {
       showToast?.(e?.message || '商务素材库可选材料加载失败', 'error')
-      setMaterialPickerPayload({ templates: [], items: [], segments: [] })
+      setMaterialPickerPayload({ templates: [], items: [] })
     } finally {
       setMaterialPickerLoading(false)
     }
@@ -762,44 +1061,58 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
     setMaterialPickerTaskId(task.id)
     setMaterialPickerOpen(true)
     setMaterialPickerKeyword('')
-    setMaterialPickerSelectedKey('')
-    setMaterialPickerTab('templates')
+    setMaterialPickerSelectedKeys([])
+    setMaterialPickerTab('materials')
     await loadSelectableMaterials('')
   }
 
-  const confirmMaterialPicker = async (item, tab) => {
-    const task = materialPickerTask
-    if (!task || !item) return
-    if (tab === 'templates') {
-      setMaterialPickerOpen(false)
-      await selectTemplate(task, item)
+  const toggleMaterialPickerKey = (value, options = {}) => {
+    const keys = Array.isArray(value) ? value.filter(Boolean) : [value].filter(Boolean)
+    if (options.replace) {
+      setMaterialPickerSelectedKeys(keys)
       return
     }
-    const material = tab === 'segments'
-      ? {
-          materialId: item.materialId,
-          materialName: item.materialName,
-          folderPath: item.folderPath,
-          materialTier: item.materialTier,
-          cleanedFileName: item.cleanedFileName,
-          evidenceSegmentId: item.evidenceSegmentId,
-          evidenceSegmentTitle: item.evidenceSegmentTitle,
-          evidenceSegmentType: item.evidenceSegmentType,
-          evidenceSourcePages: item.evidenceSourcePages,
-          evidenceSummary: item.evidenceSummary,
-          wikiCardId: item.wikiCardId,
-          wikiUsageMode: item.wikiUsageMode,
-          wikiEvidence: item.wikiEvidence,
-        }
-      : {
-          materialId: item.materialId,
-          materialName: item.materialName,
-          folderPath: item.folderPath,
-          materialTier: item.materialTier,
-          cleanedFileName: item.cleanedFileName,
-        }
+    const key = keys[0]
+    if (!key) return
+    setMaterialPickerSelectedKeys((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key])
+  }
+
+  const setCandidateSelectionForTask = (taskId, keys) => {
+    if (!taskId) return
+    setCandidateSelectionByTask((current) => ({
+      ...current,
+      [taskId]: asArray(keys).filter(Boolean),
+    }))
+  }
+
+  const toggleCandidateSelection = (taskId, key) => {
+    if (!taskId || !key) return
+    setCandidateSelectionByTask((current) => {
+      const existing = asArray(current[taskId])
+      return {
+        ...current,
+        [taskId]: existing.includes(key) ? existing.filter((item) => item !== key) : [...existing, key],
+      }
+    })
+  }
+
+  const selectCandidateMaterials = async (task, materials) => {
+    const selectedMaterials = asArray(materials).map((material) => materialSelectionPayload(material, 'materials')).filter(Boolean)
+    await selectMaterials(task, selectedMaterials)
+  }
+
+  const confirmMaterialPicker = async (selection, tab) => {
+    const task = materialPickerTask
+    const selectedItems = asArray(selection).filter(Boolean)
+    if (!task || !selectedItems.length) return
+    if (tab === 'templates') {
+      setMaterialPickerOpen(false)
+      await selectTemplate(task, selectedItems[0])
+      return
+    }
+    const materials = selectedItems.map((item) => materialSelectionPayload(item, tab)).filter(Boolean)
     setMaterialPickerOpen(false)
-    await selectMaterial(task, material)
+    await selectMaterials(task, materials)
   }
 
   const changeMaterialPickerKeyword = (value) => {
@@ -914,23 +1227,16 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
     }
   }
 
-  if (loading) return <PageLoading title="正在加载商务标缺口处理" description="正在读取商务目录、解析产物和素材推荐。" />
+  if (loading) return <PageLoading title="正在加载商务标素材匹配" description="正在读取商务目录、解析产物和素材推荐。" />
   if (error && !payload) return <PageError title="加载失败" description={error} onRetry={load} />
 
   return (
     <div className="flex flex-col gap-6">
       <ProjectStageProgress projectId={id} showToast={showToast} />
-      <StageBreadcrumb currentLabel="商务标素材匹配" />
-      <StageGroupNav
-        current="matching"
-        items={[
-          { key: 'matching', label: '素材匹配', icon: 'rule_settings', path: '/gaps' },
-          { key: 'generate', label: '标书生成', icon: 'draw', path: '/generate' },
-        ]}
-      />
+      <StageBreadcrumb currentLabel="S3 商务标素材匹配" />
       <PageHeader
-        title="商务标素材匹配"
-        description="按商务目录展示响应件任务，处理承诺函、附件模板、证书、表格和支撑材料缺口。"
+        title="商务标 S3 素材匹配"
+        description="按商务目录展示响应件任务，完成素材匹配、补料、AI 起草和商务标正文生成。缺口处理方式保持不变。"
         actions={(
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -962,13 +1268,23 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
             </button>
             <button
               type="button"
-              onClick={advanceToS4}
-              disabled={running || !!actionLoading || !hasBusinessGapPlan}
-              title={!hasBusinessGapPlan ? '生成商务缺口计划后可进入标书生成' : '允许带未确认项进入标书生成，后续会输出复核清单'}
+              onClick={runBusinessAssembly}
+              disabled={running || !!actionLoading || !hasBusinessGapPlan || generationRunning}
+              title={!hasBusinessGapPlan ? '生成商务缺口计划后可生成正文' : '允许带未确认项生成正文，生成结果会保留复核提示'}
               className="inline-flex h-10 items-center gap-2 rounded-md bg-secondary px-4 text-sm font-semibold text-on-secondary hover:bg-secondary/90 disabled:opacity-50"
             >
+              <span className="material-symbols-outlined text-[18px]">draw</span>
+              {generationRunning ? '生成中...' : generationCompleted ? '重新生成正文' : '生成商务标正文'}
+            </button>
+            <button
+              type="button"
+              onClick={advanceToBusinessS4}
+              disabled={running || !!actionLoading || !generationCompleted}
+              title={!generationCompleted ? '商务标正文生成完成后可进入 S4 共创导出' : ''}
+              className="inline-flex h-10 items-center gap-2 rounded-md bg-tertiary px-4 text-sm font-semibold text-on-tertiary hover:bg-tertiary/90 disabled:opacity-50"
+            >
               <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
-              {actionLoading === 'advance-s4' ? '进入中...' : '进入标书生成'}
+              {actionLoading === 'advance-business-s4' ? '进入中...' : '进入 S4 共创导出'}
             </button>
           </div>
         )}
@@ -984,6 +1300,50 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
         <StatCard label="待处理" value={(summary.needsInputCount || 0) + (summary.reviewRequiredCount || 0)} />
         <StatCard label="已就绪" value={summary.readyCount || 0} />
       </div>
+
+      <DataCard title="商务标正文生成" subtitle="S3 已合并原生成标书阶段；素材匹配完成后可直接生成商务标正文，再进入 S4 共创导出。">
+        <div className="flex flex-col gap-4 p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-on-surface">
+                状态：{generationRunning ? '生成中' : generationCompleted ? '已生成' : generationStatus?.status === 'failed' ? '生成失败' : '未生成'}
+              </div>
+              <div className="mt-1 text-xs text-on-surface-variant">
+                {generationStatus?.summary || (hasBusinessGapPlan ? '可基于当前商务素材匹配结果生成正文。' : '请先生成/更新商务缺口计划。')}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={loadGenerationStatus}
+                disabled={generationLoading || generationRunning}
+                className="rounded-md bg-surface-container-high px-4 py-2 text-sm font-semibold text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
+              >
+                {generationLoading ? '刷新中...' : '刷新生成状态'}
+              </button>
+              <button
+                type="button"
+                onClick={runBusinessAssembly}
+                disabled={running || !!actionLoading || !hasBusinessGapPlan || generationRunning}
+                className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
+              >
+                {generationRunning ? '生成中...' : generationCompleted ? '重新生成正文' : '生成商务标正文'}
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-[#e8eef2]">
+              <div className="h-full bg-primary transition-all duration-700" style={{ width: `${generationProgress}%` }} />
+            </div>
+            <span className="whitespace-nowrap text-xs text-outline">{generationProgress}%</span>
+          </div>
+          {generationCompleted && (
+            <div className="rounded-md border border-secondary/20 bg-secondary-container/40 px-3 py-2 text-sm text-on-secondary-container">
+              商务标正文已生成。可继续在本页调整素材匹配并重新生成，或进入 S4 共创导出进行在线编辑和下载。
+            </div>
+          )}
+        </div>
+      </DataCard>
 
       {payload?.status === 'completed' && (
         <DataCard title="商务标项目事实表" subtitle="供 S4 填写投标函、授权书、报价表、承诺书等项目字段使用。">
@@ -1054,17 +1414,6 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
               <div className="p-8 text-sm text-on-surface-variant">请选择左侧商务目录章节。</div>
             ) : (
               <div className="max-h-[720px] overflow-auto p-4">
-                <div className="mb-4 rounded-lg border border-surface-container-high bg-surface-container-lowest p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-base font-headline font-bold text-on-surface">章节处理</h3>
-                      <p className="mt-1 text-sm text-on-surface-variant">
-                        本页只围绕当前目录章节处理材料缺口。若系统没有生成任务，可在空章节提示区上传补料，系统会自动创建人工补料任务。人工补料默认只进入当前项目 S3 工作区，点击“同步到项目素材库”后才沉淀为项目素材，不会自动进入通用素材库。
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
                 {!visibleTasks.length ? (
                   <div className="rounded-xl border border-dashed border-surface-container-high bg-surface-container-lowest p-8 text-center">
                     <span className="material-symbols-outlined text-4xl text-outline">inventory_2</span>
@@ -1085,13 +1434,17 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
                   </div>
                 ) : visibleTasks.map((task) => {
                   const fillPlan = task.fillPlan || {}
-                  const evidenceSegments = asArray(task.selectedEvidenceSegments)
-                  const assemblyMode = task.assemblyMode || fillPlan.mode || ''
+                  const rawAssemblyMode = task.assemblyMode || fillPlan.mode || ''
+                  const assemblyMode = editableAssemblyMode(rawAssemblyMode)
                   const materialUsage = task.materialUsage || fillPlan.materialUsage || ''
-                  const resolvedArtifacts = asArray(task.resolvedArtifacts)
-                  const templateArtifacts = resolvedArtifacts.filter(looksLikeTemplateAsset)
-                  const templateCandidates = asArray(task.templateCandidates)
-                  const materialCandidates = asArray(task.candidateMaterials)
+	                  const resolvedArtifacts = asArray(task.resolvedArtifacts)
+	                  const aiDraftArtifacts = resolvedArtifacts.filter((artifact) => artifact.sourceMode === 'generated_by_business_s3_ai_draft')
+	                  const templateArtifacts = resolvedArtifacts.filter(looksLikeTemplateAsset)
+	                  const materialCandidates = mergeCandidateMaterials(task.candidateMaterials)
+                  const candidateSelectedKeys = asArray(candidateSelectionByTask[task.id])
+                  const candidateSelectedMaterials = materialCandidates.filter((material) => candidateSelectedKeys.includes(candidateMaterialKey(material)))
+                  const allCandidatesSelected = materialCandidates.length > 0
+                    && materialCandidates.every((material) => candidateSelectedKeys.includes(candidateMaterialKey(material)))
                   return (
                   <section
                     key={task.id}
@@ -1113,16 +1466,6 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
                         </div>
                       </div>
 	                      <div className="flex flex-wrap gap-2">
-	                        {canAiDraftTask(task) && (
-	                          <button
-	                            type="button"
-	                            onClick={() => runAiDraft(task)}
-	                            disabled={!!actionLoading}
-	                            className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
-	                          >
-	                            {actionLoading === `ai-draft:${task.id}` ? '起草中...' : 'AI起草'}
-	                          </button>
-	                        )}
 		                        <button
 		                          type="button"
 		                          onClick={() => openMaterialPicker(task)}
@@ -1150,138 +1493,159 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
                     <div className="mt-4 rounded-lg border border-surface-container-high bg-surface p-3">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <h4 className="text-sm font-semibold text-on-surface">S4 拼装方式</h4>
+                          <h4 className="text-sm font-semibold text-on-surface">素材处理方式</h4>
                           <p className="mt-1 text-xs text-on-surface-variant">
-                            {assemblyModeDescriptions[assemblyMode] || '用于告诉 S4 生成标书时，这个任务应整件挂载、摘取片段、填表、嵌入扫描件还是由 AI 起草。'}
+                            {assemblyModeDescriptions[assemblyMode] || '请选择当前任务的材料处理方式。'}
                           </p>
                         </div>
-                        <select
-                          value={assemblyMode}
-                          onChange={(event) => updateTaskAssemblyMode(task, event.target.value)}
-                          disabled={!!actionLoading}
-                          className="h-9 min-w-[180px] rounded-md border border-surface-container-high bg-surface-container-lowest px-2 text-xs font-semibold text-on-surface disabled:opacity-50"
-                        >
-                          <option value="">未指定</option>
-                          {assemblyModeOptions.map((mode) => (
-                            <option key={mode} value={mode}>{assemblyModeLabels[mode]}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="mt-3 grid gap-2 text-xs text-on-surface-variant sm:grid-cols-3">
-                        <div className="rounded-md bg-surface-container-low px-2 py-1.5">
-                          使用方式：<span className="font-semibold text-on-surface">{usageModeLabels[materialUsage] || materialUsage || '待确定'}</span>
-                        </div>
-                        <div className="rounded-md bg-surface-container-low px-2 py-1.5">
-                          输出类型：<span className="font-semibold text-on-surface">{fillPlan.outputArtifactType || '待确定'}</span>
-                        </div>
-                        <div className="rounded-md bg-surface-container-low px-2 py-1.5">
-                          已选片段：<span className="font-semibold text-on-surface">{evidenceSegments.length}</span>
+                        <div className="flex flex-wrap gap-2 text-[11px] text-outline">
+                          <span>输出：{fillPlan.outputArtifactType || '待确定'}</span>
+                          {materialUsage && <span>建议：{usageModeLabels[materialUsage] || materialUsage}</span>}
                         </div>
                       </div>
-                      {assemblyMode === 'template_fill_docx' && !templateArtifacts.length && (
-                        <div className="mt-3 rounded-md border border-error/25 bg-error/5 px-3 py-2 text-xs text-error">
-                          仅选择“模板填充 Word”不会自动完成任务。{templateCandidates.length ? `当前有 ${templateCandidates.length} 个候选模板待选择确认。` : '当前未绑定可填充 Word 模板。'}请在下方“模板候选”中选择模板，或点击“指定素材库材料/模板”“上传补料”绑定一份可填充 Word 模板；绑定并确认后任务才会变为已就绪。
-                        </div>
-                      )}
-                      {!!asArray(task.riskFlags).length && (
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {asArray(task.riskFlags).map((flag) => (
-                            <span key={flag} className="rounded-full bg-surface-container-low px-2 py-1 text-[11px] font-semibold text-on-surface-variant">
-                              {riskFlagLabels[flag] || flag}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      {!!evidenceSegments.length && (
-                        <div className="mt-2 space-y-1">
-                          {evidenceSegments.slice(0, 2).map((segment, index) => (
-                            <div key={segment.segmentId || `${task.id}-segment-${index}`} className="rounded bg-primary/5 px-2 py-1 text-[11px] text-on-surface-variant">
-                              片段：{segment.title || segment.segmentId || '未命名片段'}
-                              {segment.sourcePages ? ` · ${segment.sourcePages}` : ''}
-                            </div>
-                          ))}
-                          {evidenceSegments.length > 2 && (
-                            <div className="text-[11px] text-outline">另有 {evidenceSegments.length - 2} 个片段已选择。</div>
-                          )}
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2 2xl:grid-cols-4">
+                        {assemblyModeOptions.map((mode) => (
+                          <AssemblyModeButton
+                            key={mode}
+                            mode={mode}
+                            active={assemblyMode === mode}
+                            disabled={!!actionLoading}
+                            onClick={() => updateTaskAssemblyMode(task, mode)}
+                          />
+                        ))}
+                      </div>
+	                      {assemblyMode === 'template_fill_docx' && !templateArtifacts.length && (
+	                        <div className="mt-3 rounded-md border border-error/25 bg-error/5 px-3 py-2 text-xs text-error">
+	                          当前未绑定可填充 Word 模板。请点击“指定素材库材料/模板”或“上传补料”绑定一份可填充 Word 模板；绑定并确认后任务才会变为已就绪。
+	                        </div>
+	                      )}
+                      {assemblyMode === 'ai_draft' && (
+                        <div className="mt-3 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-on-surface-variant">
+                          {aiDraftArtifacts.length
+                            ? `已生成 ${aiDraftArtifacts.length} 份 AI 填写结果，可在下方“AI填写结果”直接预览和确认。`
+                            : '选择 AI 自主填写后，请点击“生成AI填写结果”，系统会基于目录任务和项目事实表生成 Word 草稿。'}
                         </div>
                       )}
                     </div>
 
                     <div className="mt-4 grid gap-3">
-                      <div className="rounded-lg border border-surface-container-high bg-surface-container-low p-3 text-xs text-on-surface-variant">
-                        人工补料不会自动进入通用素材库。上传后默认只服务当前 S3/S4；如需复用到本项目素材库，请在产物右侧点击“同步到项目素材库”。
-                      </div>
-                      <div className="rounded-lg border border-surface-container-high bg-surface p-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <h4 className="text-sm font-semibold text-on-surface">模板候选</h4>
-                          <span className="text-xs text-outline">{templateCandidates.length} 个</span>
-                        </div>
-                        {!templateCandidates.length ? (
-                          <p className="mt-2 text-sm text-on-surface-variant">暂无模板候选。若 S1 上传了模板或启用了默认商务模板，刷新本页后系统会自动尝试回填；也可以点击“指定素材库材料/模板”或“上传补料”手动绑定。</p>
-                        ) : templateCandidates.map((template) => {
-                          const templateKey = template.templateId || template.filePath || template.templateName || template.fileName
-                          return (
-                            <div key={templateKey} className="mt-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2">
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="truncate text-sm font-semibold text-on-surface">{template.templateName || template.fileName}</div>
-                                  <div className="mt-1 text-xs text-outline">
-                                    {template.sourceLabel || sourceModeLabels[template.sourceMode] || template.sourceMode || '投标模板'} · 匹配度 {Math.round((template.score || 0) * 100)}%
-                                  </div>
-                                  {template.reason && <div className="mt-1 text-[11px] text-on-surface-variant">{template.reason}</div>}
-                                  {template.filePath && <div className="mt-1 truncate text-[11px] text-outline">{template.filePath}</div>}
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => selectTemplate(task, template)}
-                                  disabled={!!actionLoading}
-                                  className="shrink-0 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
-                                >
-                                  {actionLoading === `select-template:${templateKey}` ? '选择中...' : '选择模板'}
-                                </button>
-                              </div>
+                      {assemblyMode === 'ai_draft' && (
+                        <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <h4 className="text-sm font-semibold text-on-surface">AI填写结果</h4>
+                              <p className="mt-1 text-xs text-outline">可在当前任务中直接生成、预览并确认 AI 填写稿。</p>
                             </div>
-                          )
-                        })}
-                      </div>
-                      <div className="rounded-lg border border-surface-container-high bg-surface p-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <h4 className="text-sm font-semibold text-on-surface">候选素材</h4>
-                          <span className="text-xs text-outline">{materialCandidates.length} 个</span>
+                            <button
+                              type="button"
+                              onClick={() => runAiDraft(task)}
+                              disabled={!!actionLoading}
+                              className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
+                            >
+                              {actionLoading === `ai-draft:${task.id}` ? '生成中...' : aiDraftArtifacts.length ? '重新生成AI填写结果' : '生成AI填写结果'}
+                            </button>
+                          </div>
+                          {!aiDraftArtifacts.length && (
+                            <p className="mt-2 text-sm text-on-surface-variant">暂无 AI 填写结果。生成后会作为 Word 产物显示在下方，可确认后进入正文生成。</p>
+                          )}
+                        </div>
+                      )}
+	                      <div className="rounded-lg border border-surface-container-high bg-surface p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <h4 className="text-sm font-semibold text-on-surface">候选素材</h4>
+                            <p className="mt-1 text-xs text-outline">
+                              {materialCandidates.length} 个候选
+                              {candidateSelectedMaterials.length ? ` · 已勾选 ${candidateSelectedMaterials.length} 个` : ''}
+                            </p>
+                          </div>
+                          {!!materialCandidates.length && (
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setCandidateSelectionForTask(
+                                  task.id,
+                                  allCandidatesSelected ? [] : materialCandidates.map(candidateMaterialKey).filter(Boolean),
+                                )}
+                                disabled={!!actionLoading}
+                                className="rounded-md bg-surface-container-high px-3 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
+                              >
+                                {allCandidatesSelected ? '取消全选' : '全选候选'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => selectCandidateMaterials(task, candidateSelectedMaterials)}
+                                disabled={!!actionLoading || !candidateSelectedMaterials.length}
+                                className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
+                              >
+                                {actionLoading === `select:${candidateSelectedMaterials.map(candidateMaterialKey).filter(Boolean).join(',')}` ? '选择中...' : `选择已勾选${candidateSelectedMaterials.length ? ` ${candidateSelectedMaterials.length}` : ''}`}
+                              </button>
+                            </div>
+                          )}
                         </div>
                         {!materialCandidates.length ? (
-                          <p className="mt-2 text-sm text-on-surface-variant">暂无候选素材。可上传补料，或后续更新 Wiki 映射。</p>
+                          <p className="mt-2 text-sm text-on-surface-variant">暂无候选素材。可上传补料，或后续更新 Wiki 映射/素材清洗稿。</p>
                         ) : materialCandidates.map((material) => {
                           const evidence = material.wikiEvidence || {}
-                          const segmentTitle = material.evidenceSegmentTitle || evidence.segmentTitle || ''
-                          const sourcePages = material.evidenceSourcePages || evidence.sourcePages || ''
-                          const evidenceSummary = material.evidenceSummary || evidence.summary || ''
-                          const materialKey = material.evidenceSegmentId || material.wikiCardId || material.materialId || material.materialName
+                          const evidenceSegments = asArray(material.evidenceSegments)
+                          const primarySegment = evidenceSegments[0] || {}
+                          const segmentTitle = primarySegment.evidenceSegmentTitle || primarySegment.title || material.evidenceSegmentTitle || evidence.segmentTitle || ''
+                          const sourcePages = primarySegment.evidenceSourcePages || primarySegment.sourcePages || material.evidenceSourcePages || evidence.sourcePages || ''
+                          const evidenceSummary = primarySegment.evidenceSummary || primarySegment.summary || material.evidenceSummary || evidence.summary || ''
+                          const materialKey = candidateMaterialKey(material)
+                          const checked = candidateSelectedKeys.includes(materialKey)
                           return (
-                            <div key={materialKey} className="mt-2 rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2">
+                            <div key={materialKey} className={`mt-2 rounded-md border px-3 py-2 ${checked ? 'border-primary bg-primary/5' : 'border-surface-container-high bg-surface-container-lowest'}`}>
                               <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="truncate text-sm font-semibold text-on-surface">{material.materialName || material.materialId}</div>
-                                  <div className="mt-1 text-xs text-outline">匹配度 {Math.round((material.score || 0) * 100)}% · {material.reason}</div>
-                                  {segmentTitle && (
-                                    <div className="mt-1 rounded bg-primary/5 px-2 py-1 text-[11px] text-on-surface-variant">
-                                      证据片段：<span className="font-semibold text-primary">{segmentTitle}</span>
-                                      {sourcePages ? ` · ${sourcePages}` : ''}
+                                <div className="flex min-w-0 flex-1 items-start gap-3">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => toggleCandidateSelection(task.id, materialKey)}
+                                    disabled={!!actionLoading}
+                                    aria-label={`勾选候选素材 ${material.materialName || material.materialId || materialKey}`}
+                                    className="mt-1 h-4 w-4 shrink-0"
+                                  />
+                                  <div className="min-w-0">
+                                    <div className="truncate text-sm font-semibold text-on-surface">{material.materialName || material.materialId}</div>
+                                    <div className="mt-1 text-xs text-outline">匹配度 {Math.round((material.score || 0) * 100)}% · {material.reason}</div>
+                                    <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-on-surface-variant">
+                                      {material.cleanStatus && <span>清洗：{material.cleanStatus}</span>}
+                                      {material.cleanedFileName && <span>清洗稿：{material.cleanedFileName}</span>}
                                     </div>
-                                  )}
-                                  {evidenceSummary && <div className="mt-1 line-clamp-2 text-[11px] text-on-surface-variant">{evidenceSummary}</div>}
-                                  {material.wikiCardId && <div className="mt-1 text-[11px] text-primary">Wiki证据：{material.wikiCardId} · {usageModeLabels[material.wikiUsageMode] || material.wikiUsageMode || '未标注用法'}</div>}
-                                  {evidence.validityStatus && <div className="mt-1 text-[11px] text-outline">有效期状态：{evidence.validityStatus}{evidence.expiryDate ? ` · ${evidence.expiryDate}` : ''}</div>}
-                                  {material.folderPath && <div className="mt-1 truncate text-[11px] text-outline">{material.folderPath}</div>}
+                                    {segmentTitle && (
+                                      <div className="mt-1 rounded bg-primary/5 px-2 py-1 text-[11px] text-on-surface-variant">
+                                        Wiki依据：<span className="font-semibold text-primary">{segmentTitle}</span>
+                                        {sourcePages ? ` · ${sourcePages}` : ''}
+                                        {evidenceSegments.length > 1 ? ` · 另有 ${evidenceSegments.length - 1} 条依据` : ''}
+                                      </div>
+                                    )}
+                                    {evidenceSummary && <div className="mt-1 line-clamp-2 text-[11px] text-on-surface-variant">{evidenceSummary}</div>}
+                                    {material.wikiCardId && <div className="mt-1 text-[11px] text-primary">Wiki证据：{material.wikiCardId} · {usageModeLabels[material.wikiUsageMode] || material.wikiUsageMode || '未标注用法'}</div>}
+                                    {evidence.validityStatus && <div className="mt-1 text-[11px] text-outline">有效期状态：{evidence.validityStatus}{evidence.expiryDate ? ` · ${evidence.expiryDate}` : ''}</div>}
+                                    {material.folderPath && <div className="mt-1 truncate text-[11px] text-outline">{material.folderPath}</div>}
+                                  </div>
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => selectMaterial(task, material)}
-                                  disabled={!!actionLoading}
-                                  className="shrink-0 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
-                                >
-                                  {actionLoading === `select:${materialKey}` ? '选择中...' : '选择'}
-                                </button>
+                                <div className="flex shrink-0 flex-col gap-2">
+                                  {materialPreviewKey(material) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => openMaterialPreview(material)}
+                                      disabled={!!actionLoading}
+                                      className="rounded-md bg-surface-container-high px-3 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
+                                    >
+                                      预览
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => selectMaterial(task, material)}
+                                    disabled={!!actionLoading}
+                                    className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
+                                  >
+                                    {actionLoading === `select:${materialKey}` ? '选择中...' : '选择'}
+                                  </button>
+                                </div>
                               </div>
                             </div>
                           )
@@ -1305,7 +1669,7 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
 	                              </div>
 	                              {(artifact.evidenceSegmentTitle || artifact.evidenceSummary || artifact.wikiCardId) && (
 	                                <div className="mt-2 rounded bg-primary/5 px-2 py-1 text-[11px] text-on-surface-variant">
-	                                  {artifact.evidenceSegmentTitle ? `证据片段：${artifact.evidenceSegmentTitle}` : artifact.wikiCardId ? `Wiki证据：${artifact.wikiCardId}` : '证据片段'}
+	                                  {artifact.evidenceSegmentTitle ? `Wiki依据：${artifact.evidenceSegmentTitle}` : artifact.wikiCardId ? `Wiki证据：${artifact.wikiCardId}` : 'Wiki依据'}
 	                                  {artifact.evidenceSourcePages ? ` · ${artifact.evidenceSourcePages}` : ''}
 	                                  {artifact.evidenceSummary ? ` · ${artifact.evidenceSummary}` : ''}
 	                                </div>
@@ -1344,7 +1708,11 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
                           )}
                           {artifact.onlyoffice ? (
                             <div className="mt-3 h-[320px] overflow-hidden rounded-md border border-surface-container-high">
-                              <OnlyOfficeEmbed config={artifact.onlyoffice} minHeight="320px" />
+                              <OnlyOfficeEmbed
+                                session={artifact.onlyoffice}
+                                mode="view"
+                                className="h-full min-h-[320px] w-full bg-white"
+                              />
                             </div>
                           ) : artifact.browserFileUrl ? (
                             <a className="mt-3 inline-flex text-sm font-semibold text-primary" href={artifact.browserFileUrl} target="_blank" rel="noreferrer">打开文件</a>
@@ -1377,15 +1745,24 @@ export default function BusinessGapRecognition({ showToast, project: initialProj
         loading={materialPickerLoading}
         keyword={materialPickerKeyword}
         activeTab={materialPickerTab}
-        selectedKey={materialPickerSelectedKey}
+        selectedKeys={materialPickerSelectedKeys}
         onKeywordChange={changeMaterialPickerKeyword}
         onTabChange={(tab) => {
           setMaterialPickerTab(tab)
-          setMaterialPickerSelectedKey('')
+          setMaterialPickerSelectedKeys([])
         }}
-        onSelectKey={setMaterialPickerSelectedKey}
+        onToggleKey={toggleMaterialPickerKey}
         onClose={() => setMaterialPickerOpen(false)}
         onConfirm={confirmMaterialPicker}
+        onPreview={openMaterialPreview}
+      />
+      <BusinessMaterialPreviewDrawer
+        open={materialPreviewOpen}
+        loading={materialPreviewLoading}
+        payload={materialPreviewPayload}
+        source={materialPreviewSource}
+        onClose={closeMaterialPreview}
+        onOpenOffice={() => openMaterialPreview(materialPreviewSource, 'office')}
       />
     </div>
   )

@@ -470,6 +470,7 @@ function TreeNode({
   onFileSelect,
   onRenameFile,
   onDeleteFile,
+  onSplitFile,
   onDeleteFolder,
   onMoveDrop,
   dragTargetPath,
@@ -593,6 +594,7 @@ function TreeNode({
             const fileSelected = selectedFileId === item.id
             const previewable = canPreviewCleaned(item)
             const meta = cleanStatusMeta(item.cleanStatus)
+            const canSplit = item.bidType === '商务标' && extOf(item.name) === 'docx'
             return (
               <div
                 key={item.id}
@@ -642,6 +644,20 @@ function TreeNode({
                   >
                     <span aria-hidden="true" className="material-symbols-outlined text-[15px]">drive_file_rename_outline</span>
                   </button>
+                  {canSplit && (
+                    <button
+                      type="button"
+                      title="切分商务素材"
+                      aria-label={`切分商务素材 ${item.name || item.id}`}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onSplitFile?.(item)
+                      }}
+                      className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-primary/10 hover:text-primary"
+                    >
+                      <span className="material-symbols-outlined text-[15px]">call_split</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     title="删除文件"
@@ -672,6 +688,7 @@ function TreeNode({
               onFileSelect={onFileSelect}
               onRenameFile={onRenameFile}
               onDeleteFile={onDeleteFile}
+              onSplitFile={onSplitFile}
               onDeleteFolder={onDeleteFolder}
               onMoveDrop={onMoveDrop}
               dragTargetPath={dragTargetPath}
@@ -732,6 +749,7 @@ export default function MaterialDB({ showToast = () => {} }) {
   const [uploadProjectName, setUploadProjectName] = useState('')
   const [uploadBidType, setUploadBidType] = useState('技术标')
   const [uploadFiles, setUploadFiles] = useState([])
+  const [uploadAfterSplit, setUploadAfterSplit] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
   const [previewItem, setPreviewItem] = useState(null)
@@ -739,6 +757,12 @@ export default function MaterialDB({ showToast = () => {} }) {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
   const [onlyofficePreviewError, setOnlyofficePreviewError] = useState('')
+  const [splitModalOpen, setSplitModalOpen] = useState(false)
+  const [splitLoading, setSplitLoading] = useState(false)
+  const [splitConfirming, setSplitConfirming] = useState(false)
+  const [splitError, setSplitError] = useState('')
+  const [splitPlan, setSplitPlan] = useState(null)
+  const [splitSourceItem, setSplitSourceItem] = useState(null)
 
   const [conflictContext, setConflictContext] = useState(null)
 
@@ -930,6 +954,7 @@ export default function MaterialDB({ showToast = () => {} }) {
     setUploadProjectName(options.projectName || '')
     setUploadBidType(activeBidType)
     setUploadFiles([])
+    setUploadAfterSplit(false)
     setUploadError('')
   }
 
@@ -1062,6 +1087,13 @@ export default function MaterialDB({ showToast = () => {} }) {
       setConflictContext(null)
       closeUploadModal()
       await loadLibrary({ silent: true })
+      const uploadedDocx = (result?.items || []).find((item) => item?.bidType === '商务标' && extOf(item?.name) === 'docx')
+      if (uploadAfterSplit && uploadedDocx) {
+        showToast('上传完成，正在打开商务素材切分审核。')
+        await openBusinessSplitModal(uploadedDocx)
+      } else if (uploadAfterSplit) {
+        showToast('上传完成，但未找到可切分的商务 docx 文件。', 'warning')
+      }
     } catch (e) {
       if (e?.status === 409 && e?.code === 'MATERIAL_CONFLICT') {
         setConflictContext({ type: 'upload', payload: null, detail: e?.payload?.conflict || null })
@@ -1148,6 +1180,110 @@ export default function MaterialDB({ showToast = () => {} }) {
       await loadLibrary({ silent: true })
     } catch (e) {
       showToast(safeMessage(e, '文件删除失败'), 'error')
+    }
+  }
+
+  const loadBusinessSplitPlan = async (item, { aiMode = 'auto' } = {}) => {
+    const payload = await materialsAPI.raw.previewBusinessSplit(item.id, { targetPath: item.folderPath || selectedFolderPath, aiMode })
+    setSplitPlan({
+      ...payload,
+      fragments: (payload?.fragments || []).map((fragment) => ({
+        ...fragment,
+        selected: fragment.selected !== false,
+        targetPath: fragment.suggestedPath || item.folderPath || selectedFolderPath,
+        fileName: fragment.suggestedFileName || `${fragment.title || '商务素材片段'}.docx`,
+      })),
+    })
+  }
+
+  const openBusinessSplitModal = async (item) => {
+    if (!item?.id) return
+    if (activeBidType !== '商务标' || item.bidType !== '商务标') {
+      showToast('素材切分入口当前仅支持商务标素材。', 'error')
+      return
+    }
+    if (extOf(item.name) !== 'docx') {
+      showToast('第一版素材切分仅支持 Word docx 文件。', 'error')
+      return
+    }
+    setSplitSourceItem(item)
+    setSplitModalOpen(true)
+    setSplitLoading(true)
+    setSplitError('')
+    setSplitPlan(null)
+    try {
+      await loadBusinessSplitPlan(item, { aiMode: 'auto' })
+    } catch (e) {
+      setSplitError(safeMessage(e, '生成切分建议失败。'))
+    } finally {
+      setSplitLoading(false)
+    }
+  }
+
+  const rerunBusinessSplitWithAi = async () => {
+    if (!splitSourceItem?.id) return
+    setSplitLoading(true)
+    setSplitError('')
+    try {
+      await loadBusinessSplitPlan(splitSourceItem, { aiMode: 'force' })
+      showToast('AI 增强识别完成，请审核切分片段。')
+    } catch (e) {
+      setSplitError(safeMessage(e, 'AI 增强识别失败。'))
+    } finally {
+      setSplitLoading(false)
+    }
+  }
+
+  const closeBusinessSplitModal = () => {
+    setSplitModalOpen(false)
+    setSplitLoading(false)
+    setSplitConfirming(false)
+    setSplitError('')
+    setSplitPlan(null)
+    setSplitSourceItem(null)
+  }
+
+  const updateSplitFragment = (fragmentId, patch) => {
+    setSplitPlan((current) => ({
+      ...(current || {}),
+      fragments: (current?.fragments || []).map((fragment) => (
+        fragment.id === fragmentId ? { ...fragment, ...patch } : fragment
+      )),
+    }))
+  }
+
+  const confirmBusinessSplit = async () => {
+    const fragments = (splitPlan?.fragments || []).filter((fragment) => fragment.selected)
+    if (!splitSourceItem?.id || !fragments.length) {
+      setSplitError('请至少勾选一个切分片段。')
+      return
+    }
+    setSplitConfirming(true)
+    setSplitError('')
+    try {
+      const result = await materialsAPI.raw.confirmBusinessSplit(splitSourceItem.id, {
+        fragments: fragments.map((fragment) => ({
+          id: fragment.id,
+          selected: true,
+          title: fragment.title,
+          fileName: fragment.fileName,
+          targetPath: fragment.targetPath,
+          materialType: fragment.materialType,
+          sourceLocation: fragment.sourceLocation,
+          suggestedPath: fragment.suggestedPath,
+          suggestedFileName: fragment.suggestedFileName,
+          contentPreview: fragment.contentPreview,
+          confidence: fragment.confidence,
+          riskTips: fragment.riskTips,
+        })),
+      })
+      showToast(result?.message || `已生成 ${fragments.length} 个子素材`)
+      closeBusinessSplitModal()
+      await loadLibrary({ silent: true })
+    } catch (e) {
+      setSplitError(safeMessage(e, '确认切分入库失败。'))
+    } finally {
+      setSplitConfirming(false)
     }
   }
 
@@ -1532,6 +1668,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                       }}
                       onRenameFile={handleRenameFile}
                       onDeleteFile={handleDeleteFile}
+                      onSplitFile={openBusinessSplitModal}
                       onDeleteFolder={handleDeleteFolder}
                       onMoveDrop={handleMoveDrop}
                       dragTargetPath={dragTargetPath}
@@ -1742,6 +1879,21 @@ export default function MaterialDB({ showToast = () => {} }) {
                     })}
                   </div>
                 </div>
+                {uploadBidType === '商务标' && (
+                  <label className="rounded-lg bg-primary/5 px-3 py-2 text-sm text-on-surface-variant">
+                    <span className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={uploadAfterSplit}
+                        onChange={(event) => setUploadAfterSplit(event.target.checked)}
+                      />
+                      上传后打开切分审核
+                    </span>
+                    <span className="mt-1 block text-xs text-outline">
+                      仅对商务标 docx 生效；原文件保留，审核后生成子素材。
+                    </span>
+                  </label>
+                )}
               </div>
 
               <input
@@ -1870,6 +2022,144 @@ export default function MaterialDB({ showToast = () => {} }) {
               >
                 生成 v2
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {splitModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">
+          <div className="w-full max-w-5xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-2xl flex flex-col overflow-hidden">
+            <div className="px-5 sm:px-6 py-4 border-b border-surface-container-high flex items-center justify-between shrink-0">
+              <div className="min-w-0">
+                <h2 className="text-lg font-headline font-bold text-on-surface">商务素材切分审核</h2>
+                <p className="mt-1 truncate text-xs text-outline">
+                  母文件：{splitSourceItem?.name || '-'}；确认后将生成子素材并进入商务标原始素材库。
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={rerunBusinessSplitWithAi}
+                  disabled={splitLoading || splitConfirming}
+                  className="rounded-lg bg-primary/10 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/15 disabled:opacity-50"
+                >
+                  {splitLoading ? '识别中...' : 'AI增强识别'}
+                </button>
+                <button onClick={closeBusinessSplitModal} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-y-auto p-5 sm:p-6">
+              {splitLoading ? (
+                <div className="flex min-h-[360px] items-center justify-center rounded-lg border border-dashed border-surface-container-high text-sm text-on-surface-variant">
+                  正在生成切分建议...
+                </div>
+              ) : splitError && !splitPlan ? (
+                <div className="rounded-lg border border-error/30 bg-error-container/20 px-4 py-3 text-sm text-error">
+                  {splitError}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 text-xs leading-5 text-on-surface-variant">
+                    系统会先用规则和本地语义切分；如果文件像订单/业绩集合且切分数量偏少，会自动调用 AI 增强。若结果仍少，可点击右上角“AI增强识别”强制复核。
+                    <span className="ml-2 font-semibold">当前策略：{splitPlan?.diagnostics?.strategy || '-'}</span>
+                    {splitPlan?.diagnostics?.aiAttempted ? <span className="ml-2">AI 已尝试</span> : null}
+                    {splitPlan?.diagnostics?.aiError ? <span className="ml-2 text-error">AI错误：{splitPlan.diagnostics.aiError}</span> : null}
+                  </div>
+
+                  {splitError && (
+                    <div className="rounded-lg border border-error/30 bg-error-container/20 px-4 py-3 text-sm text-error">
+                      {splitError}
+                    </div>
+                  )}
+
+                  {(splitPlan?.fragments || []).length ? (
+                    <div className="space-y-3">
+                      {(splitPlan?.fragments || []).map((fragment, index) => (
+                        <div key={fragment.id || index} className={`rounded-lg border p-4 ${fragment.selected ? 'border-primary/30 bg-white' : 'border-surface-container-high bg-surface-container-low'}`}>
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <label className="flex min-w-0 flex-1 items-start gap-2">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(fragment.selected)}
+                                onChange={(event) => updateSplitFragment(fragment.id, { selected: event.target.checked })}
+                                className="mt-1"
+                              />
+                              <span className="min-w-0">
+                                <span className="block text-sm font-semibold text-on-surface">{fragment.title || `片段 ${index + 1}`}</span>
+                                <span className="mt-1 block text-xs text-outline">
+                                  {fragment.materialType || '商务素材片段'} · 置信度 {Math.round(Number(fragment.confidence || 0) * 100)}%
+                                </span>
+                              </span>
+                            </label>
+                            <span className="rounded-full bg-surface-container-high px-2 py-1 text-[11px] font-semibold text-on-surface-variant">
+                              {fragment.id}
+                            </span>
+                          </div>
+
+                          <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                            <label className="text-xs text-on-surface-variant">
+                              子素材文件名
+                              <input
+                                value={fragment.fileName || ''}
+                                onChange={(event) => updateSplitFragment(fragment.id, { fileName: event.target.value })}
+                                className="mt-1 h-9 w-full rounded-md border border-surface-container-high bg-white px-3 text-sm text-on-surface"
+                              />
+                            </label>
+                            <label className="text-xs text-on-surface-variant">
+                              入库路径
+                              <input
+                                value={fragment.targetPath || ''}
+                                onChange={(event) => updateSplitFragment(fragment.id, { targetPath: event.target.value })}
+                                className="mt-1 h-9 w-full rounded-md border border-surface-container-high bg-white px-3 text-sm text-on-surface"
+                              />
+                            </label>
+                          </div>
+
+                          <div className="mt-3 rounded-md bg-surface-container-low px-3 py-2">
+                            <div className="text-[11px] font-semibold text-on-surface-variant">片段预览</div>
+                            <pre className="mt-1 max-h-28 overflow-y-auto whitespace-pre-wrap text-xs leading-5 text-on-surface-variant">
+                              {fragment.contentPreview || '暂无预览文本'}
+                            </pre>
+                          </div>
+
+                          {!!(fragment.riskTips || []).length && (
+                            <div className="mt-3 rounded-md bg-warning/10 px-3 py-2 text-xs leading-5 text-on-surface">
+                              {(fragment.riskTips || []).map((tip) => (
+                                <div key={tip}>风险提示：{tip}</div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-surface-container-high px-4 py-8 text-center text-sm text-on-surface-variant">
+                      未识别到可切分边界。建议人工拆分后再上传，或后续接入 OCR/AI 边界增强。
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="px-5 sm:px-6 py-4 border-t border-surface-container-high flex flex-wrap items-center justify-between gap-3 bg-surface-container-low rounded-b-xl shrink-0">
+              <div className="text-xs text-on-surface-variant">
+                已勾选 {(splitPlan?.fragments || []).filter((fragment) => fragment.selected).length} / {(splitPlan?.fragments || []).length} 个片段
+              </div>
+              <div className="flex justify-end gap-3">
+                <button onClick={closeBusinessSplitModal} className="px-4 py-2 text-sm text-on-surface-variant hover:bg-surface-container-high rounded-lg">
+                  取消
+                </button>
+                <button
+                  onClick={confirmBusinessSplit}
+                  disabled={splitLoading || splitConfirming || !(splitPlan?.fragments || []).some((fragment) => fragment.selected)}
+                  className="px-4 py-2 text-sm bg-primary text-on-primary rounded-lg hover:bg-primary-container disabled:opacity-50"
+                >
+                  {splitConfirming ? '入库中...' : '确认生成子素材'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

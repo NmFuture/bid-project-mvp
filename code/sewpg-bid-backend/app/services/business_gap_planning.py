@@ -257,6 +257,22 @@ def _write_state_snapshot(state: Any, state_path: Path) -> None:
 def _resolve_business_toc_json(project: dict[str, Any], work_dir: Path) -> Path:
     project_id = str(project.get("id") or "")
     parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
+    outline_nodes = list((project.get("outline_state") or {}).get("nodes") or [])
+    if outline_nodes:
+        output = {
+            "schema_version": "bid-toc-json-v1",
+            "document_title": f"{project.get('name') or project_id}商务投标文件目录",
+            "project": {
+                "owner": project.get("customerName") or project.get("owner") or "",
+                "name": project.get("name") or project_id,
+                "code": project.get("projectCode") or project_id,
+            },
+            "items": _outline_nodes_to_toc_items(outline_nodes),
+        }
+        target = work_dir / settings.s2_toc_output_file_name
+        target.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+        return target
+
     candidates: list[Path] = []
     directory_output = ((project.get("directory_state") or {}).get("opencodeOutput") or {})
     for value in (directory_output.get("tocJsonPath"), directory_output.get("outputFile")):
@@ -274,7 +290,6 @@ def _resolve_business_toc_json(project: dict[str, Any], work_dir: Path) -> Path:
                 shutil.copy2(candidate, target)
             return target
 
-    outline_nodes = list((project.get("outline_state") or {}).get("nodes") or [])
     output = {
         "schema_version": "bid-toc-json-v1",
         "document_title": f"{project.get('name') or project_id}商务投标文件目录",
