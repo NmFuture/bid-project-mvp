@@ -28,8 +28,8 @@ export const COMPACT_STAGE_LABELS = {
   2: '目录确认',
   3: '素材匹配',
   4: '素材匹配',
-  5: '共创导出',
-  6: '共创导出',
+  5: '编辑导出',
+  6: '编辑导出',
 }
 
 const toStageId = (value) => {
@@ -75,7 +75,7 @@ export const getActiveStageId = (stages = []) => {
 
 export const getStrictStageLockReason = (stages = [], targetStageId) => {
   const resolvedTarget = toStageId(targetStageId)
-  if (!resolvedTarget) return '阶段信息异常，请刷新后重试。'
+  if (!resolvedTarget) return '阶段信息异常，请稍后重试。'
 
   const targetIndex = stages.findIndex((stage) => toStageId(stage?.id) === resolvedTarget)
   const activeIndex = stages.findIndex((stage) => stage?.status === 'active')

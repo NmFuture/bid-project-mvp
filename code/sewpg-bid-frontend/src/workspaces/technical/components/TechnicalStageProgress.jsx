@@ -10,7 +10,7 @@ export default function TechnicalStageProgress({
   ), -1)
   const progressIndex = activeStageIndex >= 0 ? activeStageIndex : completedFallbackIndex
   const progressRatio = progressIndex > 0 ? progressIndex / denominator : 0
-  const nodeSlotWidthPx = stages.length <= 4 ? 112 : stages.length <= 6 ? 106 : 88
+  const nodeSlotWidthPx = stages.length <= 4 ? 112 : stages.length <= 6 ? 100 : 88
   const nodeCenterOffsetPx = nodeSlotWidthPx / 2
   const shellClassName = 'stage-progress-shell min-h-[74px] rounded-md border border-outline-variant/45 bg-[#f7fbff] px-4 py-3'
 

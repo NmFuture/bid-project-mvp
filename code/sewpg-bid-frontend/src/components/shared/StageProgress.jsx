@@ -10,7 +10,7 @@ export default function StageProgress({
   ), -1)
   const progressIndex = activeStageIndex >= 0 ? activeStageIndex : completedFallbackIndex
   const progressRatio = progressIndex > 0 ? progressIndex / denominator : 0
-  const nodeSlotWidthPx = stages.length <= 4 ? 132 : stages.length <= 6 ? 128 : 94
+  const nodeSlotWidthPx = stages.length <= 4 ? 132 : stages.length <= 6 ? 112 : 94
   const nodeCenterOffsetPx = nodeSlotWidthPx / 2
 
   return (

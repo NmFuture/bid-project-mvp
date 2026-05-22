@@ -43,7 +43,7 @@ const localizeExecutionStep = (step) => {
     init: '初始化',
     initialize: '初始化',
     prepare: '准备数据',
-    parse: '解析内容',
+    parse: '解析文档',
     parse_outline: '解析目录',
     write: '写入文档',
     write_doc: '写入文档',
@@ -67,6 +67,7 @@ export default function GenerateProgress({ showToast }) {
   const [error, setError] = useState('')
   const [runningAction, setRunningAction] = useState(false)
   const [advancing, setAdvancing] = useState(false)
+  const [confirmGenerateOpen, setConfirmGenerateOpen] = useState(false)
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
     if (!silent) {
@@ -129,8 +130,9 @@ export default function GenerateProgress({ showToast }) {
     return () => window.clearInterval(timer)
   }, [isRunning, loadData])
 
-  const handleRunFill = async () => {
+  const runFill = async () => {
     if (runningAction || isRunning) return
+    setConfirmGenerateOpen(false)
     setRunningAction(true)
     try {
       const payload = await generateAPI.run(id)
@@ -143,15 +145,20 @@ export default function GenerateProgress({ showToast }) {
     }
   }
 
+  const handleRunFill = () => {
+    if (runningAction || isRunning) return
+    setConfirmGenerateOpen(true)
+  }
+
   const handleGoEditor = async () => {
     if (!isCompleted) {
-      showToast?.('请先完成标书生成后再进入共创。', 'error')
+      showToast?.('请先完成标书生成后再进入文档编辑。', 'error')
       return
     }
     setAdvancing(true)
     try {
       await stagesAPI.update(id, 4, { status: 'completed' })
-      showToast?.('已进入共创导出')
+      showToast?.('已进入文档编辑')
       navigate(projectRoute(id, '/editor', workspaceSlug))
     } catch (e) {
       showToast?.(e?.message || '进入下一阶段失败', 'error')
@@ -262,13 +269,6 @@ export default function GenerateProgress({ showToast }) {
 
               <div className="flex shrink-0 flex-wrap items-center gap-2.5 xl:justify-end">
                 <button
-                  onClick={() => loadData()}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-md bg-surface-container-high px-3.5 text-xs font-semibold text-on-surface-variant transition-colors hover:bg-surface-dim"
-                >
-                  <span className="material-symbols-outlined text-[16px] leading-none">refresh</span>
-                  刷新
-                </button>
-                <button
                   onClick={handleRunFill}
                   disabled={runningAction || isRunning}
                   className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3.5 text-xs font-semibold text-on-primary transition-colors hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
@@ -279,11 +279,11 @@ export default function GenerateProgress({ showToast }) {
                 <button
                   onClick={handleGoEditor}
                   disabled={!isCompleted || advancing}
-                  title={!isCompleted ? '标书生成完成后可进入共创导出' : ''}
+                  title={!isCompleted ? '标书生成完成后可进入文档编辑' : ''}
                   className="inline-flex h-9 items-center gap-1.5 rounded-md bg-secondary px-3.5 text-xs font-semibold text-on-secondary transition-colors hover:bg-secondary/90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <span className="material-symbols-outlined text-[16px] leading-none">arrow_forward</span>
-                  {advancing ? '进入中...' : '进入共创导出'}
+                  {advancing ? '进入中...' : '进入文档编辑'}
                 </button>
               </div>
             </div>
@@ -491,6 +491,37 @@ export default function GenerateProgress({ showToast }) {
           </div>
         )}
       </DataCard>
+      {confirmGenerateOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
+          <div className="w-full max-w-md overflow-hidden rounded-lg border border-surface-container-high bg-white shadow-2xl">
+            <div className="border-b border-surface-container-high px-5 py-4">
+              <h3 className="text-base font-headline font-bold text-on-surface">
+                确认生成标书
+              </h3>
+            </div>
+            <div className="px-5 py-4 text-sm leading-relaxed text-on-surface-variant">
+              本次生成将使用当前已确认素材和已完成的 Word 填写结果；人工处理项会在后续文档编辑中继续提示。
+            </div>
+            <div className="flex justify-end gap-2 border-t border-surface-container-high px-5 py-4">
+              <button
+                type="button"
+                onClick={() => setConfirmGenerateOpen(false)}
+                className="h-9 rounded-md bg-surface-container-high px-4 text-sm font-semibold text-on-surface-variant hover:bg-surface-dim"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={runFill}
+                disabled={runningAction || isRunning}
+                className="h-9 rounded-md bg-primary px-4 text-sm font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {runningAction ? '提交中...' : '确认生成'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -121,6 +121,13 @@ const REVIEW_DECISION_LABELS = {
   abandon: '不参与',
 }
 
+const statusPillClass = (status) => {
+  if (status === 'success') return 'bg-secondary-container text-on-secondary-container'
+  if (status === 'error') return 'bg-error-container text-error'
+  if (status === 'running') return 'bg-primary/10 text-primary'
+  return 'bg-surface-container-high text-on-surface-variant'
+}
+
 export default function ParseResult({ showToast }) {
   const navigate = useNavigate()
   const { id } = useParams()
@@ -189,7 +196,6 @@ export default function ParseResult({ showToast }) {
   const reviewDecision = String(project?.reviewDecision || 'participate')
   const reviewDecisionLabel = REVIEW_DECISION_LABELS[reviewDecision] || REVIEW_DECISION_LABELS.pending
   const isParseCompleted = data?.status === 'completed'
-  const parsedDates = data?.structured?.projectDates || data?.summary?.projectDates || {}
   const isReviewApproved = reviewDecision === 'participate' || (isParseCompleted && sourceFiles.length > 0)
   const isProjectInfoComplete = Boolean(
     String(project?.name || '').trim()
@@ -226,15 +232,11 @@ export default function ParseResult({ showToast }) {
   const uploadedTemplateSummary = uploadedTemplateFiles.length
     ? uploadedTemplateFiles.map((file) => file.name).join('，')
     : (isBusinessBid && fallbackWillBeUsed ? '暂无，生成目录时将使用默认模板' : '暂无')
-  const selectedTemplateSummary = templateFiles.length
-    ? `${templateFiles.length} 个文件待上传`
-    : '尚未选择模板文件'
   const preflightItems = [
-    { label: '解析决策', value: reviewDecisionLabel },
-    { label: '招标解析', value: isParseCompleted ? `已完成 ${formatDateTime(data?.parsedAt)}` : '未完成' },
-    { label: '招标文件', value: sourceFileSummary },
-    { label: '起始日期', value: parsedDates?.startDate || '-' },
-    { label: '截止日期', value: parsedDates?.endDate || '-' },
+    { label: '解析决策', value: reviewDecisionLabel, status: isReviewApproved ? 'success' : 'error' },
+    { label: '招标解析', value: isParseCompleted ? `已完成 ${formatDateTime(data?.parsedAt)}` : '未完成', status: isParseCompleted ? 'success' : 'error' },
+    { label: '项目信息', value: isProjectInfoComplete ? '已补全' : '待补全', status: isProjectInfoComplete ? 'success' : 'error' },
+    { label: '招标文件', value: sourceFileSummary, status: sourceFiles.length ? 'success' : 'error' },
   ]
 
   useEffect(() => {
@@ -244,7 +246,7 @@ export default function ParseResult({ showToast }) {
         const payload = await directoryAPI.status(id)
         setDirectoryState(payload)
       } catch {
-        // 保持页面可操作，用户可手动刷新查看失败原因
+        // 保持页面可操作，避免轮询失败中断当前操作。
       }
     }, 1000)
     return () => window.clearInterval(timer)
@@ -405,12 +407,6 @@ export default function ParseResult({ showToast }) {
               目录：{directoryStatusLabel}
             </span>
             <button
-              onClick={loadData}
-              className="stage-action-btn h-7 rounded-md bg-surface-container-high px-3 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-dim"
-            >
-              刷新
-            </button>
-            <button
               onClick={handleGoNextStage}
               disabled={!canGoNextStage || !isDirectoryCompleted || advancing}
               title={!isDirectoryCompleted ? '目录生成完成后可进入目录确认' : ''}
@@ -424,56 +420,27 @@ export default function ParseResult({ showToast }) {
       </div>
 
       <DataCard className="!p-4 flex flex-col gap-4">
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(420px,0.8fr)]">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(20rem,1fr)_minmax(22rem,0.95fr)_minmax(20rem,0.9fr)]">
           <section className="rounded-md border border-surface-container-high bg-[#fbfdff] p-3">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-semibold text-on-surface">生成前准备</h3>
-                <p className="mt-0.5 text-xs text-on-surface-variant">确认解析结果、模板来源和项目文件后生成目录。</p>
+                <h3 className="text-sm font-semibold text-on-surface">项目状态</h3>
               </div>
               <span className="rounded-md bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
                 {canGoNextStage ? '可生成' : '需补全'}
               </span>
             </div>
 
-            {!isBusinessBid ? (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {preflightItems.map((item) => (
                   <div key={item.label} className="min-h-[56px] rounded-md border border-surface-container-high bg-white px-3 py-2">
-                    <p className="text-[11px] font-medium text-outline">{item.label}</p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[11px] font-medium text-outline">{item.label}</p>
+                      <span className={`h-2 w-2 rounded-full ${item.status === 'success' ? 'bg-secondary' : 'bg-error'}`} />
+                    </div>
                     <p className="mt-1 truncate text-xs font-medium text-on-surface" title={item.value}>{item.value}</p>
                   </div>
                 ))}
-              </div>
-            ) : null}
-
-            <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-3">
-              <div className="rounded-md border border-surface-container-high bg-white px-3 py-2">
-                <p className="text-[11px] font-medium text-outline">当前项目模板</p>
-                <p className="mt-1 truncate text-xs font-medium text-on-surface" title={uploadedTemplateSummary}>{uploadedTemplateSummary}</p>
-              </div>
-              {!isBusinessBid ? (
-                <div className="rounded-md border border-surface-container-high bg-white px-3 py-2 lg:col-span-2">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-medium text-outline">系统默认模板</p>
-                      <p className="mt-1 truncate text-xs font-medium text-on-surface" title={fallbackTemplate?.name || ''}>
-                        {fallbackTemplate?.name || '未配置，请到设置页维护'}
-                      </p>
-                      <p className="mt-1 truncate text-[11px] text-on-surface-variant" title={`${fallbackStatus} / ${fallbackTemplate?.minioBucket || '-'} / ${fallbackTemplate?.minioKey || '-'}`}>
-                        {fallbackStatus} · {fallbackTemplate?.minioBucket || '-'}
-                      </p>
-                    </div>
-                    <button
-                      onClick={handleToggleFallback}
-                      disabled={savingFallback || (!fallbackAvailable && !fallbackEnabled)}
-                      className="stage-action-btn h-7 shrink-0 rounded-md bg-surface-container-high px-3 text-xs font-semibold text-on-surface transition-colors hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {savingFallback ? '保存中...' : fallbackEnabled ? '停用' : '启用'}
-                    </button>
-                  </div>
-                </div>
-              ) : null}
             </div>
           </section>
 
@@ -481,7 +448,6 @@ export default function ParseResult({ showToast }) {
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-semibold text-on-surface">模板文件</h3>
-                <p className="mt-0.5 text-xs text-on-surface-variant">{selectedTemplateSummary}</p>
               </div>
               {isBusinessBid ? (
                 <span className="rounded-md bg-surface-container-high px-2 py-1 text-xs text-on-surface-variant">商务模板</span>
@@ -489,7 +455,7 @@ export default function ParseResult({ showToast }) {
                 <span className="rounded-md bg-surface-container-high px-2 py-1 text-xs text-on-surface-variant">可选</span>
               )}
             </div>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto_auto]">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
               <button
                 onClick={() => document.getElementById('s1-template-upload')?.click()}
                 className="stage-action-btn h-9 rounded-md border border-dashed border-[#8eb8de] bg-[#f2f8fd] px-4 text-sm font-semibold text-[#0067B6] transition-colors hover:bg-[#e6f2fb]"
@@ -502,17 +468,6 @@ export default function ParseResult({ showToast }) {
                 className="stage-action-btn h-9 rounded-md bg-primary px-4 text-sm font-semibold text-on-primary transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {uploading ? '上传中...' : '上传模板'}
-              </button>
-              <button
-                onClick={handleGenerateDirectory}
-                disabled={!canGoNextStage || generatingDirectory || isDirectoryRunning}
-                className="stage-action-btn h-9 rounded-md bg-secondary px-4 text-sm font-semibold text-on-secondary transition-colors hover:bg-secondary/90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {generatingDirectory || isDirectoryRunning
-                  ? '生成中...'
-                  : isDirectoryCompleted || isDirectoryFailed
-                    ? '重新生成'
-                    : '生成目录'}
               </button>
             </div>
             <input
@@ -550,6 +505,96 @@ export default function ParseResult({ showToast }) {
                 {uploadError}
               </div>
             )}
+            <div className="mt-3 rounded-md border border-surface-container-high bg-surface-container-low px-3 py-2">
+              <p className="text-[11px] font-medium text-outline">当前项目模板</p>
+              <p className="mt-1 truncate text-xs font-medium text-on-surface" title={uploadedTemplateSummary}>{uploadedTemplateSummary}</p>
+            </div>
+            {!isBusinessBid ? (
+              <div className="mt-2 rounded-md border border-surface-container-high bg-surface-container-low px-3 py-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-medium text-outline">系统默认模板</p>
+                    <p className="mt-1 truncate text-xs font-medium text-on-surface" title={fallbackTemplate?.name || ''}>
+                      {fallbackTemplate?.name || '未配置，请到设置页维护'}
+                    </p>
+                    <p className="mt-1 truncate text-[11px] text-on-surface-variant" title={fallbackStatus}>
+                      {fallbackStatus}
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleToggleFallback}
+                    disabled={savingFallback || (!fallbackAvailable && !fallbackEnabled)}
+                    className="stage-action-btn h-7 shrink-0 rounded-md bg-surface-container-high px-3 text-xs font-semibold text-on-surface transition-colors hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {savingFallback ? '保存中...' : fallbackEnabled ? '停用' : '启用'}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </section>
+
+          <section className="rounded-md border border-surface-container-high bg-white p-3">
+            <div className="mb-3 flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-semibold text-on-surface">目录生成</h3>
+                    {isBusinessBid ? (
+                      <span
+                        className={[
+                          'inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold',
+                          directorySourceMeta.className,
+                        ].join(' ')}
+                        title={directorySourceMeta.title}
+                      >
+                        {directorySourceMeta.label}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+                <span className={`inline-flex h-7 items-center rounded-md px-2.5 text-xs font-semibold ${statusPillClass(isDirectoryCompleted ? 'success' : isDirectoryFailed ? 'error' : isDirectoryRunning ? 'running' : 'idle')}`}>
+                  {directoryStatusLabel}
+                </span>
+              </div>
+              <button
+                onClick={handleGenerateDirectory}
+                disabled={!canGoNextStage || generatingDirectory || isDirectoryRunning}
+                className="stage-action-btn h-9 rounded-md bg-secondary px-4 text-sm font-semibold text-on-secondary transition-colors hover:bg-secondary/90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {generatingDirectory || isDirectoryRunning
+                  ? '生成中...'
+                  : isDirectoryCompleted || isDirectoryFailed
+                    ? '重新生成目录'
+                    : '生成目录'}
+              </button>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex-1 h-2.5 bg-[#e8eef2] rounded-full overflow-hidden">
+                <div className="h-full bg-primary transition-all duration-700" style={{ width: `${directoryProgress}%` }} />
+              </div>
+              <span className="text-xs text-outline whitespace-nowrap">{directoryProgress}%</span>
+            </div>
+            {isDirectoryFailed ? (
+              <div className="mt-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
+                {directoryState?.summary || (isBusinessBid ? '目录生成失败，请检查模板文件后重新生成。' : '目录生成失败，请重新生成目录或联系管理员排查。')}
+              </div>
+            ) : null}
+            {!isBusinessBid ? (
+              <div className="mt-3 grid grid-cols-1 gap-2">
+                {directoryTasks.length ? directoryTasks.slice(0, 3).map((task) => (
+                  <div key={task.id} className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
+                    <p className="text-sm font-medium text-on-surface">{directoryTaskLabel(task)}</p>
+                    <p className="text-xs text-on-surface-variant mt-1">
+                      {task.status === 'done' ? '已完成' : task.status === 'running' ? '进行中' : task.status === 'failed' ? '失败' : '待处理'}
+                    </p>
+                  </div>
+                )) : (
+                  <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high text-sm text-on-surface-variant">
+                    尚未生成目录。
+                  </div>
+                )}
+              </div>
+            ) : null}
           </section>
         </div>
 
@@ -577,77 +622,6 @@ export default function ParseResult({ showToast }) {
         )}
       </DataCard>
 
-      <DataCard className="!p-4 flex flex-col gap-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-base font-headline font-bold text-on-surface">目录生成</h3>
-              {isBusinessBid ? (
-                <span
-                  className={[
-                    'inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-semibold',
-                    directorySourceMeta.className,
-                  ].join(' ')}
-                  title={directorySourceMeta.title}
-                >
-                  {directorySourceMeta.label}
-                </span>
-              ) : null}
-            </div>
-            <p className="text-sm text-on-surface-variant mt-1">
-              使用招标文件要求和投标文件模板生成目录审核稿。
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {!isBusinessBid ? (
-              <span className={[
-                'inline-flex h-7 items-center rounded-md px-2.5 text-xs font-semibold',
-                isDirectoryCompleted
-                  ? 'bg-secondary-container text-on-secondary-container'
-                  : isDirectoryFailed
-                    ? 'bg-error-container text-error'
-                    : isDirectoryRunning
-                      ? 'bg-primary/10 text-primary'
-                      : 'bg-surface-container-high text-on-surface-variant',
-              ].join(' ')}
-              >
-                {directoryStatusLabel}
-              </span>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <div className="flex-1 h-2.5 bg-[#e8eef2] rounded-full overflow-hidden">
-            <div className="h-full bg-primary transition-all duration-700" style={{ width: `${directoryProgress}%` }} />
-          </div>
-          <span className="text-xs text-outline whitespace-nowrap">{directoryProgress}%</span>
-        </div>
-
-        {isDirectoryFailed ? (
-          <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
-            {directoryState?.summary || (isBusinessBid ? '目录生成失败，请检查模板文件后重新生成。' : '目录生成失败，请重新生成目录或联系管理员排查。')}
-          </div>
-        ) : null}
-
-        {!isBusinessBid ? (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-            {directoryTasks.length ? directoryTasks.map((task) => (
-              <div key={task.id} className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-                <p className="text-sm font-medium text-on-surface">{directoryTaskLabel(task)}</p>
-                <p className="text-xs text-on-surface-variant mt-1">
-                  {task.status === 'done' ? '已完成' : task.status === 'running' ? '进行中' : task.status === 'failed' ? '失败' : '待处理'}
-                </p>
-              </div>
-            )) : (
-              <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high text-sm text-on-surface-variant">
-                尚未生成目录。
-              </div>
-            )}
-          </div>
-        ) : null}
-
-      </DataCard>
     </div>
   )
 }

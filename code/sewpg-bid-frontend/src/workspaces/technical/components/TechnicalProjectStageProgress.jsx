@@ -8,8 +8,9 @@ import TechnicalStageProgress from './TechnicalStageProgress'
 const COMPACT_STAGE_GROUPS = [
   { id: 1, name: '目录生成', stageIds: [1], pendingRouteStageId: 1, completedRouteStageId: 1 },
   { id: 2, name: '目录确认', stageIds: [2], pendingRouteStageId: 2, completedRouteStageId: 2 },
-  { id: 3, name: '素材匹配', stageIds: [3, 4], pendingRouteStageId: 3, completedRouteStageId: 4 },
-  { id: 4, name: '共创导出', stageIds: [5, 6], pendingRouteStageId: 5, completedRouteStageId: 6 },
+  { id: 3, name: '事实表', stageIds: [3], pendingRouteStageId: 3, completedRouteStageId: 3, routePath: '/facts', pseudo: true },
+  { id: 4, name: '素材匹配', stageIds: [3, 4], pendingRouteStageId: 3, completedRouteStageId: 4, routePath: '/gaps' },
+  { id: 5, name: '编辑导出', stageIds: [5, 6], pendingRouteStageId: 5, completedRouteStageId: 6 },
 ]
 
 const toStageId = (value) => {
@@ -34,13 +35,16 @@ const compactProjectStages = (rawStages = []) => {
   return COMPACT_STAGE_GROUPS.map((group) => {
     const groupStages = group.stageIds.map((stageId) => rawById.get(stageId)).filter(Boolean)
     const activeStage = groupStages.find((stage) => stage?.status === 'active')
+    const isPseudoFactStage = group.pseudo && group.routePath === '/facts'
     const hasActiveStage = Boolean(activeStage)
     const hasKnownStage = groupStages.length > 0
     const isCompleted = hasKnownStage && groupStages.every((stage) => stage?.status === 'completed')
     const isPastGroup = activeRawStageId > Math.max(...group.stageIds)
 
     let status = 'pending'
-    if (hasActiveStage) {
+    if (isPseudoFactStage) {
+      status = activeRawStageId >= 3 ? 'completed' : 'pending'
+    } else if (hasActiveStage) {
       status = 'active'
     } else if (isCompleted || isPastGroup) {
       status = 'completed'
@@ -62,6 +66,8 @@ const compactProjectStages = (rawStages = []) => {
       status,
       routeStageId,
       sourceStageIds: group.stageIds,
+      routePath: group.routePath || '',
+      pseudo: Boolean(group.pseudo),
       isSkipped: groupStages.length > 0 && groupStages.every((stage) => Boolean(stage?.isSkipped)),
       sourceStatus: strongestStage?.status || status,
     }
@@ -120,7 +126,9 @@ export default function TechnicalProjectStageProgress({
         }
       }
 
-      const route = getStageNavigationRoute(projectId, stage, workspaceSlug)
+      const route = stage.routePath
+        ? `/workspace/${workspaceSlug || 'tech'}/projects/${projectId}${stage.routePath}`
+        : getStageNavigationRoute(projectId, stage, workspaceSlug)
       if (!route) {
         showToast?.(`${stage.name || `S${stage.id}`} 页面正在建设中`, 'error')
         return

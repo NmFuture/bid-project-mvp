@@ -1,4 +1,4 @@
-import { useParams } from 'react-router-dom'
+import { useLocation, useParams } from 'react-router-dom'
 
 export const WORKSPACE_TYPES = {
   tech: {
@@ -56,5 +56,6 @@ export const workspaceFromPathname = (pathname = '') => {
 
 export const useWorkspaceSlug = () => {
   const params = useParams()
-  return workspaceFromSlug(params.workspace || '')?.slug || ''
+  const location = useLocation()
+  return workspaceFromSlug(params.workspace || '')?.slug || workspaceFromPathname(location.pathname)
 }

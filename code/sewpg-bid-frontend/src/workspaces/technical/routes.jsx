@@ -6,6 +6,7 @@ import TechnicalProjectList from './pages/TechnicalProjectList'
 import TechnicalProjectEntryRedirect from './pages/TechnicalProjectEntryRedirect'
 import TechnicalParseResult from './pages/TechnicalParseResult'
 import TechnicalOutlineReview from './pages/TechnicalOutlineReview'
+import TechnicalFactTable from './pages/TechnicalFactTable'
 import TechnicalGapRecognition from './pages/TechnicalGapRecognition'
 import TechnicalGenerateProgress from './pages/TechnicalGenerateProgress'
 import TechnicalCoverageHeatmap from './pages/TechnicalCoverageHeatmap'
@@ -64,6 +65,10 @@ export function renderTechnicalRoutes({ user, showToast }) {
       <Route
         path="/workspace/tech/projects/:id/outline"
         element={withAccess(user, <TechnicalOutlineReview showToast={showToast} />)}
+      />
+      <Route
+        path="/workspace/tech/projects/:id/facts"
+        element={withAccess(user, <TechnicalFactTable showToast={showToast} />)}
       />
       <Route
         path="/workspace/tech/projects/:id/gaps"

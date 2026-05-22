@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { materialsAPI, projectsAPI } from '../../api'
 
-const STEPS = ['基本信息', '确认创建']
 const MANUAL_TURBINE_VALUE = '__manual_turbine_model__'
 const PROJECT_WIZARD_DRAFT_VERSION = 1
 const PROJECT_WIZARD_DRAFT_PREFIX = 'sewpg.projectWizardDraft'
+const FORM_REQUIRED_STEP = 0
 
 const normalizeCustomers = (list = []) =>
   (Array.isArray(list) ? list : [])
@@ -87,7 +87,7 @@ const readDraft = (key) => {
     if (!parsed || parsed.version !== PROJECT_WIZARD_DRAFT_VERSION || !parsed.form) return null
     return {
       ...parsed,
-      step: Number.isInteger(parsed.step) ? Math.min(Math.max(parsed.step, 0), STEPS.length - 1) : 0,
+      step: FORM_REQUIRED_STEP,
       form: {
         ...parsed.form,
         turbineModel: normalizeTurbineModel(parsed.form.turbineModel),
@@ -141,7 +141,6 @@ export default function ProjectWizardModal({
   const draftKey = useMemo(() => buildDraftKey({ mode, project, defaultBidType }), [defaultBidType, mode, project])
   const draft = useMemo(() => readDraft(draftKey), [draftKey])
   const hasDraft = Boolean(draft)
-  const [step, setStep] = useState(() => draft?.step || 0)
   const [form, setForm] = useState(() => draft?.form || buildInitialForm(project, defaultBidType))
   const [turbineEntryMode, setTurbineEntryMode] = useState(() => {
     if (draft?.turbineEntryMode) return draft.turbineEntryMode
@@ -198,7 +197,7 @@ export default function ProjectWizardModal({
     if (creating) return undefined
     const timer = setTimeout(() => {
       writeDraft(draftKey, {
-        step,
+        step: FORM_REQUIRED_STEP,
         form,
         turbineEntryMode,
         customerMode,
@@ -216,7 +215,6 @@ export default function ProjectWizardModal({
     materialProjectMode,
     selectedMaterialCustomerId,
     selectedMaterialProjectId,
-    step,
     turbineEntryMode,
   ])
 
@@ -330,7 +328,6 @@ export default function ProjectWizardModal({
   }, [form.bidType])
 
   const missingRequiredItems = useMemo(() => {
-    if (step !== 0) return []
     const items = []
     if (!form.name.trim()) items.push('项目名称')
     if (customerMode === 'library') {
@@ -344,8 +341,8 @@ export default function ProjectWizardModal({
     if (!form.startDate) items.push('起始日期')
     if (!form.endDate) items.push('截止日期')
     return items
-  }, [customerMode, form, materialProjectMode, selectedMaterialCustomerId, selectedMaterialProjectId, step])
-  const canNextStep = step !== 0 || missingRequiredItems.length === 0
+  }, [customerMode, form, materialProjectMode, selectedMaterialCustomerId, selectedMaterialProjectId])
+  const canSubmit = missingRequiredItems.length === 0
   const nextDisabledReason = missingRequiredItems.length ? `请先补全：${missingRequiredItems.join('、')}` : ''
 
   const archivePathPreview = useMemo(() => {
@@ -423,32 +420,8 @@ export default function ProjectWizardModal({
           </button>
         </div>
 
-        {/* Step Indicator */}
-        <div className="flex items-center gap-3 px-5 py-3 bg-white border-b border-[#d7e0ea]">
-          {STEPS.map((label, i) => (
-            <div key={i} className="flex items-center gap-2 flex-1">
-              <div
-                className={`step-circle w-8 h-8 flex items-center justify-center text-sm font-semibold ${
-                  i < step
-                    ? 'bg-[#0068b7] text-white'
-                    : i === step
-                      ? 'bg-[#0068b7] text-white'
-                      : 'bg-[#dbe4ee] text-[#8193a8]'
-                }`}
-              >
-                {i < step ? <span className="material-symbols-outlined text-[16px]">check</span> : i + 1}
-              </div>
-              <span className={`text-sm font-medium ${i === step || i < step ? 'text-[#0068b7]' : 'text-[#8193a8]'}`}>{label}</span>
-              {i < STEPS.length - 1 && (
-                <div className={`flex-1 h-[1px] ${i < step ? 'bg-[#0068b7]' : 'bg-[#d0dbe7]'}`}></div>
-              )}
-            </div>
-          ))}
-        </div>
-
         {/* Step Content */}
         <div className="px-5 py-5 min-h-[410px] bg-white">
-          {step === 0 && (
             <div className="flex flex-col gap-4 animate-fade-in">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
@@ -698,13 +671,14 @@ export default function ProjectWizardModal({
                     <div className="min-h-[104px] border border-[#d2dce8] bg-[#f8fbfd] px-3 py-2 text-xs text-on-surface">
                       {form.turbineModel?.model ? (
                         <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                          <span className="text-outline">机型</span><span className="font-semibold text-primary">{form.turbineModel.model || '—'}</span>
                           <span className="text-outline">平台</span><span>{form.turbineModel.platform || '—'}</span>
                           <span className="text-outline">功率</span><span>{form.turbineModel.ratedPowerKw ? `${form.turbineModel.ratedPowerKw} kW` : '—'}</span>
                           <span className="text-outline">叶轮</span><span>{form.turbineModel.rotorDiameterM ? `${form.turbineModel.rotorDiameterM} m` : '—'}</span>
                           <span className="text-outline">状态</span><span>{form.turbineModel.statusLabel || form.turbineModel.status || '—'}</span>
                         </div>
                       ) : (
-                        <span className="text-outline">选择或录入投标机型后，后续缺口处理和 AI 填写会自动带入。</span>
+                        <span className="text-outline">选择或录入投标机型后，后续素材匹配和 Word 填写会自动带入。</span>
                       )}
                     </div>
                   </div>
@@ -738,39 +712,9 @@ export default function ProjectWizardModal({
                   {nextDisabledReason}
                 </div>
               )}
-            </div>
-          )}
-
-          {step === 1 && (
-            <div className="flex flex-col gap-4 animate-fade-in">
-              <div className="bg-[#ffffff] border border-[#d2dce8] rounded-[4px] p-5">
-                <h3 className="text-[16px] font-semibold text-on-surface mb-4">
-                  {isUpdateMode ? '项目信息确认' : '项目概览'}
-                </h3>
-                <div className="grid grid-cols-2 gap-4">
-                  {[
-	                    ['项目名称', form.name || '—'],
-	                    ['业务项目编号', form.projectCode || (project?.id || '创建后生成')],
-	                    ['业主单位', form.customerName || '—'],
-	                    ['客户来源', customerMode === 'library' ? '重点客户' : '普通客户'],
-	                    ['项目', materialProjectMode === 'library' ? selectedMaterialProject?.name || '—' : form.materialProjectName || form.name || '普通项目'],
-	                    ['项目ID', materialProjectMode === 'library' ? selectedMaterialProjectId || '—' : project?.materialProjectId || '创建后生成'],
-	                    ['投标机型', form.bidType === '技术标' ? turbineModelLabel(form.turbineModel) || '—' : '—'],
-	                    ['负责人', form.manager || '—'],
-	                    ['标书类型', form.bidType],
-	                    ['起始日期', form.startDate || '—'],
-	                    ['截止日期', form.endDate || '—'],
-                  ].map(([label, value], i) => (
-                    <div key={i} className="flex flex-col gap-1">
-                      <span className="text-xs text-outline">{label}</span>
-                      <span className="text-sm font-medium text-on-surface">{value}</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-4 pt-4 border-t border-[#cfdae7]">
-                  <p className="text-xs text-outline">材料归档路径预览</p>
-                  <p className="text-sm font-medium text-on-surface mt-1">{archivePathPreview}</p>
-                </div>
+              <div className="rounded-md border border-[#d2dce8] bg-[#f8fbfd] px-3 py-2">
+                <p className="text-xs text-outline">材料归档路径预览</p>
+                <p className="mt-1 text-sm font-medium text-on-surface">{archivePathPreview}</p>
               </div>
               {createError && (
                 <div className="bg-error-container/30 border border-error/30 rounded-[4px] p-3 text-sm text-error">
@@ -778,36 +722,25 @@ export default function ProjectWizardModal({
                 </div>
               )}
             </div>
-          )}
         </div>
 
         {/* Footer */}
         <div className="flex justify-between items-center px-5 py-4 border-t border-[#d7e0ea] bg-white">
           <button
-            onClick={() => (step === 0 ? onClose() : setStep(step - 1))}
+            onClick={onClose}
             className="h-8 px-6 text-sm font-medium text-white border border-[#a8acaf] bg-[#b6babd] hover:bg-[#a9adb0] transition-colors"
           >
-            {step === 0 ? '取消' : '上一步'}
+            取消
           </button>
-          {step < 1 ? (
-            <button
-              onClick={() => setStep(step + 1)}
-              disabled={!canNextStep}
-              title={!canNextStep ? nextDisabledReason : undefined}
-              aria-describedby={!canNextStep ? 'project-wizard-required-hint' : undefined}
-              className="h-8 px-6 bg-[#0bafff] text-on-primary text-sm font-medium border border-[#0aa3ea] hover:bg-[#07a3ef] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              下一步
-            </button>
-          ) : (
-            <button
-              onClick={handleCreate}
-              disabled={creating}
-              className="h-8 px-7 bg-[#0bafff] text-on-primary text-sm font-semibold border border-[#0aa3ea] hover:bg-[#07a3ef] transition-colors disabled:opacity-50"
-            >
-              {creating ? (isUpdateMode ? '保存中...' : '创建中...') : (isUpdateMode ? '确认提交' : '确认创建')}
-            </button>
-          )}
+          <button
+            onClick={handleCreate}
+            disabled={creating || !canSubmit}
+            title={!canSubmit ? nextDisabledReason : undefined}
+            aria-describedby={!canSubmit ? 'project-wizard-required-hint' : undefined}
+            className="h-8 px-7 bg-[#0bafff] text-on-primary text-sm font-semibold border border-[#0aa3ea] hover:bg-[#07a3ef] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {creating ? (isUpdateMode ? '保存中...' : '创建中...') : (isUpdateMode ? '保存项目信息' : '创建项目')}
+          </button>
         </div>
       </div>
     </div>

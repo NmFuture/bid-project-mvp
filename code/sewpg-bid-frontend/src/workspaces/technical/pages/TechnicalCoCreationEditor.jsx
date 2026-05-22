@@ -98,7 +98,7 @@ export default function CoCreationEditor({ showToast }) {
       setFallbackContent(payload?.fallback?.content || '')
       setOnlyofficeError('')
     } catch (e) {
-      setError(e?.message || '共创导出文档加载失败')
+      setError(e?.message || '文档编辑加载失败')
     } finally {
       setLoading(false)
     }
@@ -120,7 +120,7 @@ export default function CoCreationEditor({ showToast }) {
   const useFallbackEditor = !hasOnlyOfficeSession || Boolean(onlyofficeError)
   const editorModeLabel = useFallbackEditor ? '文本兜底' : 'OnlyOffice 在线编辑'
   const isBusinessBid = String(project?.bidType || '').includes('商务')
-  const pageTitle = isBusinessBid ? '商务标 S4 共创导出' : 'S5 人机共创'
+  const pageTitle = isBusinessBid ? '商务标 S4 文档编辑' : 'S5 文档编辑'
   const pageDescription = isBusinessBid
     ? '在线编辑商务标正文，并在同一界面下载最终版 Word。'
     : '在线编辑生成后的投标文件正文，确认后进入导出阶段。'
@@ -149,9 +149,9 @@ export default function CoCreationEditor({ showToast }) {
     try {
       const response = await documentAPI.forceSave(id)
       setData(response?.payload || data)
-      showToast?.('已刷新真实文档状态')
+      showToast?.('已同步真实文档状态')
     } catch (e) {
-      showToast?.(e?.message || '刷新文档状态失败', 'error')
+      showToast?.(e?.message || '同步文档状态失败', 'error')
     } finally {
       setForceSaving(false)
     }
@@ -295,10 +295,10 @@ export default function CoCreationEditor({ showToast }) {
     try {
       await stagesAPI.update(id, 5, { status: 'completed' })
       if (isBusinessBid) {
-        showToast?.('商务标共创导出已完成。')
+        showToast?.('商务标文档编辑已完成。')
         setFinalData(await documentAPI.final(id).catch(() => finalData))
       } else {
-        showToast?.('S5 共创已完成，已进入 S6 导出')
+        showToast?.('S5 文档编辑已完成，已进入 S6 导出')
         navigate(projectRoute(id, '/export', workspaceSlug))
       }
     } catch (e) {
@@ -601,7 +601,7 @@ export default function CoCreationEditor({ showToast }) {
               disabled={forceSaving}
               className="rounded-md bg-surface-container-high px-3 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
             >
-              {forceSaving ? '刷新中...' : '刷新文档'}
+              {forceSaving ? '同步中...' : '同步文档'}
             </button>
             <a
               href={finalData?.fileUrl || data?.fileUrl || '#'}
@@ -656,7 +656,7 @@ export default function CoCreationEditor({ showToast }) {
     </div>
   )
 
-  if (loading) return <PageLoading title={isBusinessBid ? '正在加载 S4 共创导出文档...' : '正在加载 S5 人机共创文档...'} />
+  if (loading) return <PageLoading title={isBusinessBid ? '正在加载 S4 文档编辑...' : '正在加载 S5 文档编辑...'} />
   if (error) return <PageError title="文档加载失败" description={error} onRetry={loadDocument} />
 
   return (
@@ -670,7 +670,7 @@ export default function CoCreationEditor({ showToast }) {
               current="editor"
               variant="compact"
               items={[
-                { key: 'editor', label: '共创编辑', icon: 'edit_document', path: '/editor' },
+                { key: 'editor', label: '文档编辑', icon: 'edit_document', path: '/editor' },
                 { key: 'export', label: '最终导出', icon: 'download', path: '/export' },
               ]}
             />
@@ -689,19 +689,12 @@ export default function CoCreationEditor({ showToast }) {
 
           <div className="flex shrink-0 flex-wrap items-center gap-2.5 xl:justify-end">
             <button
-              onClick={loadDocument}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-surface-container-high px-3.5 text-xs font-semibold text-on-surface-variant transition-colors hover:bg-surface-dim"
-            >
-              <span className="material-symbols-outlined text-[16px] leading-none">refresh</span>
-              刷新
-            </button>
-            <button
               onClick={handleFinishCoCreation}
               disabled={finishingStage}
               className="inline-flex h-9 items-center gap-1.5 rounded-md bg-secondary px-3.5 text-xs font-semibold text-on-secondary transition-colors hover:bg-secondary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <span className="material-symbols-outlined text-[16px] leading-none">arrow_forward</span>
-              {finishingStage ? '处理中...' : isBusinessBid ? '完成共创导出' : '进入下一阶段'}
+              {finishingStage ? '处理中...' : isBusinessBid ? '完成文档编辑' : '进入下一阶段'}
             </button>
           </div>
         </div>
@@ -768,7 +761,7 @@ export default function CoCreationEditor({ showToast }) {
                 disabled={forceSaving}
                 className="flex h-8 w-full items-center justify-center rounded-md bg-primary px-3 text-xs font-semibold text-on-primary transition-colors hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {forceSaving ? '刷新中...' : '刷新文档状态'}
+                {forceSaving ? '同步中...' : '同步文档状态'}
               </button>
 
               {isBusinessBid && (

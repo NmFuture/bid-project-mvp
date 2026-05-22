@@ -312,6 +312,35 @@ function ReviewInfoTile({
   )
 }
 
+function ParseModeSwitch({ activeBidType, onSwitch }) {
+  const items = [
+    { bidType: '技术标', label: '技术标解析', icon: 'engineering', path: '/parse/technical' },
+    { bidType: '商务标', label: '商务标解析', icon: 'request_quote', path: '/parse/business' },
+  ]
+  return (
+    <div className="inline-grid grid-flow-col auto-cols-[7.5rem] gap-1 rounded-md border border-outline-variant/50 bg-white p-1">
+      {items.map((item) => {
+        const active = item.bidType === activeBidType
+        return (
+          <button
+            key={item.bidType}
+            type="button"
+            onClick={() => onSwitch(item.path)}
+            className={`inline-flex h-8 items-center justify-center gap-1.5 rounded px-2 text-xs font-semibold transition-colors ${
+              active
+                ? 'bg-primary text-on-primary'
+                : 'text-on-surface-variant hover:bg-surface-container-high'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[15px]">{item.icon}</span>
+            {item.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function FieldGroupTable({ title, fields = [], showEvidenceLocationColumn = true }) {
   return (
     <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
@@ -323,7 +352,7 @@ function FieldGroupTable({ title, fields = [], showEvidenceLocationColumn = true
           <thead>
             <tr className="border-b border-surface-container-high">
               <th className="px-4 py-2 text-left font-semibold text-on-surface">字段</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">解析内容</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">提取结果</th>
               <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
               {showEvidenceLocationColumn ? (
                 <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
@@ -1131,27 +1160,11 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
       <div className="review-page flex flex-col gap-6 animate-fade-in max-w-none">
         <PageHeader
           title={reviewConfig.pageTitle}
-          description={reviewConfig.pageDescription}
+          leftExtra={<ParseModeSwitch activeBidType={reviewConfig.bidType} onSwitch={navigate} />}
           className="command-surface rounded-xl px-5 py-4"
           titleClassName="!text-[22px] !font-bold !text-ink-strong"
-          descriptionClassName="!max-w-3xl"
           actionsClassName="stage-header-actions"
           actions={(
-            <ReviewActionButton
-              icon="refresh"
-              onClick={loadProjects}
-              variant="secondary"
-            >
-              刷新
-            </ReviewActionButton>
-          )}
-        />
-        <DataCard className="!p-6 flex flex-col gap-4">
-          <PageEmpty
-            title={reviewConfig.emptyTitle}
-            description={reviewConfig.emptyDescription}
-          />
-          <div className="flex justify-center">
             <ReviewActionButton
               icon="add"
               onClick={handleCreateReviewProject}
@@ -1160,7 +1173,13 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
             >
               {creatingReview ? '新建中...' : reviewConfig.createButtonLabel}
             </ReviewActionButton>
-          </div>
+          )}
+        />
+        <DataCard className="!p-6 flex flex-col gap-4 items-center text-center">
+          <PageEmpty
+            title={reviewConfig.emptyTitle}
+            description=""
+          />
         </DataCard>
       </div>
     )
@@ -1176,17 +1195,6 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
             <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-sm font-semibold text-on-surface">上传招标文件</h3>
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    loadProjects()
-                    loadCurrentProject()
-                  }}
-                  disabled={uploading}
-                  className="rounded-md bg-surface-container-high px-3 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  刷新
-                </button>
                 <button
                   type="button"
                   onClick={handleUploadAndParse}
@@ -1244,101 +1252,64 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
     <div className="review-page flex flex-col gap-5 animate-fade-in max-w-none">
       <PageHeader
         title={reviewConfig.pageTitle}
-        description={reviewConfig.pageDescription}
+        leftExtra={<ParseModeSwitch activeBidType={reviewConfig.bidType} onSwitch={navigate} />}
         className="command-surface rounded-xl px-5 py-4 md:!items-center"
         titleClassName="!text-[22px] !font-bold !text-ink-strong"
-        descriptionClassName="!max-w-3xl"
         actionsClassName="items-center self-start md:self-center"
         actions={(
-          <>
-            <ReviewActionButton
-              icon="add"
-              onClick={handleCreateReviewProject}
-              disabled={creatingReview}
-              variant="primary"
-            >
-              {creatingReview ? '新建中...' : reviewConfig.createButtonLabel}
-            </ReviewActionButton>
-            <ReviewActionButton
-              icon="refresh"
-              onClick={() => {
-                loadProjects()
-                loadCurrentProject()
-              }}
-              variant="secondary"
-            >
-              刷新
-            </ReviewActionButton>
-          </>
+          <ReviewActionButton
+            icon="add"
+            onClick={handleCreateReviewProject}
+            disabled={creatingReview}
+            variant="primary"
+          >
+            {creatingReview ? '新建中...' : reviewConfig.createButtonLabel}
+          </ReviewActionButton>
         )}
       />
 
       {!(isBusinessBid && isParseCompleted) ? (
         <DataCard className="!p-0 overflow-hidden">
-          <div className="grid min-h-[82px] gap-4 border-b border-outline-variant/45 px-5 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-            <div className="flex min-w-0 items-start gap-3">
-              <ReviewIconBox icon="document_scanner" />
-              <div className="min-w-0">
-                <h2 className="text-base font-headline font-semibold text-ink-strong">{reviewConfig.uploadSectionTitle}</h2>
-                <p className="mt-1 max-w-4xl text-xs leading-6 text-on-surface-variant">{reviewConfig.uploadSectionDescription}</p>
+          <div className="grid gap-5 p-5">
+            <section className="mx-auto flex w-full max-w-[760px] flex-col items-center gap-4 rounded-lg border border-dashed border-outline-variant/70 bg-white px-5 py-7 text-center">
+              <ReviewIconBox icon="upload_file" />
+              <div>
+                <h2 className="text-base font-headline font-semibold text-ink-strong">{reviewConfig.uploadFileLabel}</h2>
               </div>
-            </div>
-            <span className="hidden rounded-full bg-primary-fixed px-3 py-1 text-xs font-semibold text-primary lg:inline-flex">
-              入口数据准备
-            </span>
-          </div>
-
-          <div className="grid gap-4 p-5">
-            <section className="grid min-w-0 gap-3 rounded-lg border border-outline-variant/55 bg-white p-4 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_auto] lg:items-center">
-              <div className="flex min-w-0 items-start gap-3">
-                <ReviewIconBox icon="upload_file" />
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-sm font-semibold text-on-surface">{reviewConfig.uploadFileLabel}</h3>
-                    <span className="rounded-full bg-error-container/35 px-2.5 py-1 text-xs font-semibold text-error">必选</span>
-                  </div>
-                  <p className="mt-0.5 text-xs text-outline">单文件 500MB 内，单次最多 {MAX_BATCH_FILES} 个；解析前不改变项目参与状态。</p>
-                </div>
-              </div>
-
-              <div className="min-w-0">
-                <button
-                  type="button"
-                  onClick={() => document.getElementById('review-tender-upload')?.click()}
-                  disabled={uploading || reviewDecision === 'abandon'}
-                  className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-lg border border-dashed border-outline-variant/80 bg-surface-container-low/45 px-4 text-sm font-semibold text-on-surface transition-colors hover:border-primary hover:bg-primary-fixed/50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <span className="material-symbols-outlined text-[22px] text-primary">add_to_drive</span>
-                  选择招标文件
-                </button>
-                <input
-                  id="review-tender-upload"
-                  type="file"
-                  className="hidden"
-                  accept={FILE_ACCEPT}
-                  multiple
-                  disabled={uploading || reviewDecision === 'abandon'}
-                  onChange={handleFilesPicked}
-                />
-              </div>
-
+              <button
+                type="button"
+                onClick={() => document.getElementById('review-tender-upload')?.click()}
+                disabled={uploading || reviewDecision === 'abandon'}
+                className="flex min-h-[56px] w-full max-w-[420px] items-center justify-center gap-2 rounded-lg border border-dashed border-primary/70 bg-primary-fixed/35 px-4 text-sm font-semibold text-primary transition-colors hover:bg-primary-fixed disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <span className="material-symbols-outlined text-[22px] text-primary">add_to_drive</span>
+                选择招标文件
+              </button>
+              <input
+                id="review-tender-upload"
+                type="file"
+                className="hidden"
+                accept={FILE_ACCEPT}
+                multiple
+                disabled={uploading || reviewDecision === 'abandon'}
+                onChange={handleFilesPicked}
+              />
               <ReviewActionButton
                 icon={uploading ? 'progress_activity' : 'upload_file'}
                 onClick={handleUploadAndParse}
                 disabled={uploading || reviewDecision === 'abandon'}
                 variant="primary"
-                className="w-full lg:w-auto"
+                className="w-full max-w-[420px]"
               >
                 {uploading ? '上传解析中' : '上传并解析'}
               </ReviewActionButton>
-
               {uploadError && (
-                <div className="rounded-lg border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error lg:col-span-3">
+                <div className="w-full max-w-[620px] rounded-lg border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
                   {uploadError}
                 </div>
               )}
               {tenderFiles.length ? (
-                <div className="lg:col-span-3">{renderPickedFiles()}</div>
+                <div className="w-full max-w-[620px] text-left">{renderPickedFiles()}</div>
               ) : null}
             </section>
 
@@ -1346,7 +1317,6 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-semibold text-ink-strong">技术标信息</h3>
-                  <p className="mt-0.5 text-xs text-outline">当前项目与解析任务状态</p>
                 </div>
                 <ReviewStatusBadge reviewDecision={reviewDecision}>
                   {reviewDecisionLabel}
@@ -1404,9 +1374,6 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
               <ReviewIconBox icon="fact_check" tone={isParseCompleted ? 'success' : 'primary'} />
               <div>
                 <h3 className="text-base font-headline font-semibold text-ink-strong">{reviewConfig.resultTitle}</h3>
-                <p className="mt-0.5 text-xs text-outline">
-                  {isParseCompleted ? '已提取评分标准、项目参数、附表与证据线索。' : '上传并解析后在此核对结构化结果。'}
-                </p>
               </div>
             </div>
             <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${isParseCompleted ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
@@ -1450,7 +1417,11 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
               </div>
             )}
 
-            <div className="flex flex-col gap-4">
+            <section className="flex flex-col gap-4">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-[18px] text-primary">grading</span>
+                <h4 className="text-sm font-semibold text-on-surface">评分条款</h4>
+              </div>
               {scoringGroups.map((group) => (
                 <ScoringCriteriaTable
                   key={group.key}
@@ -1459,28 +1430,36 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
                   showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
                 />
               ))}
-            </div>
+            </section>
 
-            {reviewConfig.fieldGroupSections.length ? (
-              <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
-                {reviewConfig.fieldGroupSections.map(([key, title]) => (
-                  <FieldGroupTable
-                    key={key}
-                    title={title}
-                    fields={fieldGroups[key] || []}
+            {reviewConfig.fieldGroupSections.length || reviewConfig.showPresence !== false ? (
+              <section className="flex flex-col gap-4">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px] text-primary">tune</span>
+                  <h4 className="text-sm font-semibold text-on-surface">项目参数</h4>
+                </div>
+                {reviewConfig.fieldGroupSections.length ? (
+                  <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
+                    {reviewConfig.fieldGroupSections.map(([key, title]) => (
+                      <FieldGroupTable
+                        key={key}
+                        title={title}
+                        fields={fieldGroups[key] || []}
+                        showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+
+                {reviewConfig.showPresence !== false && (
+                  <PresenceTable
+                    title={reviewConfig.presenceTitle}
+                    rows={presenceRows}
                     showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
                   />
-                ))}
-              </div>
+                )}
+              </section>
             ) : null}
-
-            {reviewConfig.showPresence !== false && (
-              <PresenceTable
-                title={reviewConfig.presenceTitle}
-                rows={presenceRows}
-                showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
-              />
-            )}
 
             {reviewConfig.bidType === '商务标' ? (
               <>
@@ -1606,9 +1585,12 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
               </>
             ) : null}
 
-            <div className="border border-surface-container-high rounded-md overflow-hidden">
+            <section className="border border-surface-container-high rounded-md overflow-hidden">
               <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
-                <h4 className="text-sm font-semibold text-on-surface">{reviewConfig.appendixTitle}</h4>
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px] text-primary">article</span>
+                  <h4 className="text-sm font-semibold text-on-surface">附表 Word</h4>
+                </div>
                 <div className="flex items-center gap-2">
                   {reviewConfig.showApproveAppendices && appendices.length ? (
                     <>
@@ -1670,7 +1652,6 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
                     <div className="appendix-preview-sidebar flex h-full min-h-0 flex-col">
                       <div className="border-b border-surface-container-high px-4 py-3">
                         <p className="text-sm font-semibold text-on-surface">附表条目</p>
-                        <p className="mt-1 text-xs text-outline">{reviewConfig.appendixSwitchHint}</p>
                       </div>
                       <div className="appendix-preview-list min-h-0 flex-1 overflow-y-auto p-2">
                         {appendices.map((appendix, index) => {
@@ -1748,11 +1729,14 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
               ) : (
                 <div className="px-4 py-3 text-sm text-outline">{reviewConfig.appendixEmptyHint}</div>
               )}
-            </div>
+            </section>
 
             {reviewConfig.showEvidenceDetails !== false && (
               <details className="rounded-md border border-surface-container-high bg-white">
-                <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-on-surface">证据明细</summary>
+                <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-on-surface">
+                  <span className="mr-2 align-middle material-symbols-outlined text-[18px] text-primary">travel_explore</span>
+                  证据明细
+                </summary>
                 <div className="overflow-x-auto border-t border-surface-container-high">
                   <table className="w-full text-sm min-w-[1120px]">
                     <thead>

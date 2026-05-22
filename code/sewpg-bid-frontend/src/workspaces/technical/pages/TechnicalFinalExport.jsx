@@ -27,7 +27,7 @@ export default function FinalExport({ showToast }) {
       const payload = await documentAPI.final(id)
       setData(payload)
     } catch (e) {
-      setError(e?.message || '共创导出最终文件加载失败')
+      setError(e?.message || '最终文件加载失败')
     } finally {
       setLoading(false)
     }
@@ -57,7 +57,7 @@ export default function FinalExport({ showToast }) {
               current="export"
               variant="compact"
               items={[
-                { key: 'editor', label: '共创编辑', icon: 'edit_document', path: '/editor' },
+                { key: 'editor', label: '文档编辑', icon: 'edit_document', path: '/editor' },
                 { key: 'export', label: '最终导出', icon: 'download', path: '/export' },
               ]}
             />
@@ -75,13 +75,6 @@ export default function FinalExport({ showToast }) {
           </div>
 
           <div className="flex shrink-0 flex-wrap items-center gap-2.5 xl:justify-end">
-            <button
-              onClick={loadData}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-surface-container-high px-3.5 text-xs font-semibold text-on-surface-variant transition-colors hover:bg-surface-dim"
-            >
-              <span className="material-symbols-outlined text-[16px] leading-none">refresh</span>
-              刷新
-            </button>
             <a
               href={downloadUrl}
               download={fileName}
