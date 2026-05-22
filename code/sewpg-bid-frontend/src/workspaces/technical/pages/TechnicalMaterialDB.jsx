@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { materialsAPI } from '../api'
-import MaterialsViewSwitch from '../components/shared/MaterialsViewSwitch'
-import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
-import OnlyOfficeWorkspace from '../components/shared/OnlyOfficeWorkspace'
-import { PageError, PageLoading } from '../components/states/PageState'
-import { bidTypeFromWorkspace, useWorkspaceSlug, workspaceRoute } from '../utils/workspace'
+import { materialsAPI } from '../../../api'
+import MaterialsViewSwitch from '../components/TechnicalMaterialsViewSwitch'
+import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
+import OnlyOfficeWorkspace from '../components/TechnicalOnlyOfficeWorkspace'
+import { PageError, PageLoading } from '../components/TechnicalPageState'
+import { bidTypeFromWorkspace, useWorkspaceSlug, workspaceRoute } from '../../../utils/workspace'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
 const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.DS_Store'
@@ -462,6 +462,81 @@ function IconButton({
   )
 }
 
+function MaterialPreviewEmptyState({
+  message,
+  selectedFolderPath,
+  activeBidType,
+  fileCount,
+  cleanedCount,
+  originalOnlyCount,
+  failedCount,
+  onUpload,
+}) {
+  const stats = [
+    { label: '当前文件', value: fileCount },
+    { label: '已清洗', value: cleanedCount },
+    { label: '仅原件', value: originalOnlyCount },
+    { label: '异常', value: failedCount },
+  ]
+
+  return (
+    <div className="flex min-h-[560px] flex-1 flex-col rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_17rem]">
+        <div className="flex min-h-0 flex-col justify-between rounded-md border border-dashed border-surface-container-high bg-white px-5 py-5">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                <span aria-hidden="true" className="material-symbols-outlined text-[18px]">preview</span>
+              </span>
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-on-surface">选择清洗稿后预览</div>
+                <p className="mt-0.5 truncate text-xs text-outline">
+                  {selectedFolderPath || `${activeBidType}素材目录`}
+                </p>
+              </div>
+            </div>
+
+            <p className="mt-5 max-w-xl text-sm leading-6 text-on-surface-variant">
+              {message}
+            </p>
+          </div>
+
+          <div className="mt-6 grid grid-cols-2 gap-2 xl:grid-cols-4">
+            {stats.map((item) => (
+              <div key={item.label} className="rounded-md bg-surface-container-low px-3 py-2">
+                <div className="text-[11px] font-medium text-outline">{item.label}</div>
+                <div className="mt-1 font-mono text-base font-semibold text-on-surface">{item.value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex min-h-0 flex-col rounded-md border border-surface-container-high bg-surface-container-low px-4 py-4">
+          <div className="text-xs font-semibold text-on-surface">下一步</div>
+          <div className="mt-3 space-y-2 text-xs text-on-surface-variant">
+            <div className="flex gap-2 rounded-md bg-white px-3 py-2">
+              <span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+              <span>在左侧目录中点选已清洗文件，右侧会直接打开清洗稿。</span>
+            </div>
+            <div className="flex gap-2 rounded-md bg-white px-3 py-2">
+              <span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-secondary" />
+              <span>若目录为空，可以先上传原始素材，系统完成清洗后再预览。</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onUpload}
+            className="command-button command-button-primary mt-auto h-8 min-h-8 w-full text-xs"
+          >
+            <span aria-hidden="true" className="material-symbols-outlined text-[16px]">upload_file</span>
+            上传到当前目录
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function TreeNode({
   node,
   selectedPath,
@@ -706,10 +781,9 @@ function TreeNode({
   )
 }
 
-export default function MaterialDB({ showToast = () => {}, workspaceKind = '' }) {
+export default function MaterialDB({ showToast = () => {} }) {
   const [searchParams, setSearchParams] = useSearchParams()
-  const routeWorkspaceSlug = useWorkspaceSlug()
-  const workspaceSlug = workspaceKind || routeWorkspaceSlug
+  const workspaceSlug = useWorkspaceSlug()
   const lockedBidType = bidTypeFromWorkspace(workspaceSlug)
   const materialsBasePath = workspaceSlug ? workspaceRoute(workspaceSlug, '/materials') : '/materials'
   const queryBidType = normalizeBidTypeTab(searchParams.get('bidType') || '')
@@ -775,6 +849,18 @@ export default function MaterialDB({ showToast = () => {}, workspaceKind = '' })
   const totalCount = Number(filesPayload?.total || 0)
   const filesByFolderPath = useMemo(() => groupFilesByFolderPath(fileItems), [fileItems])
   const visibleTreeFileCount = useMemo(() => getVisibleFileCount(tree), [tree])
+  const cleanedFileCount = useMemo(
+    () => fileItems.filter((item) => item?.cleanStatus === 'cleaned').length,
+    [fileItems],
+  )
+  const originalOnlyFileCount = useMemo(
+    () => fileItems.filter((item) => item?.cleanStatus === 'original_only').length,
+    [fileItems],
+  )
+  const failedFileCount = useMemo(
+    () => fileItems.filter((item) => item?.cleanStatus === 'failed').length,
+    [fileItems],
+  )
   const previewTitle = previewSession?.fileName || previewItem?.cleanedFileName || previewItem?.name || '未选择清洗稿'
   const hasPreviewSession = Boolean(previewSession?.onlyoffice?.fileUrl) && !onlyofficePreviewError
   const previewModeLabel = previewLoading
@@ -1443,7 +1529,7 @@ export default function MaterialDB({ showToast = () => {}, workspaceKind = '' })
   }
 
   return (
-    <div className="flex flex-col gap-6 animate-fade-in">
+    <div className="flex flex-col gap-3 animate-fade-in">
       <MaterialsViewSwitch
         active="structured"
         activeBidType={activeBidType}
@@ -1458,31 +1544,38 @@ export default function MaterialDB({ showToast = () => {}, workspaceKind = '' })
         actions={(
           <div className="flex flex-nowrap gap-2">
             <button
+              type="button"
               onClick={() => loadLibrary({ silent: true })}
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors"
+              className="command-button command-button-secondary h-8 min-h-8 whitespace-nowrap px-3 text-xs"
             >
+              <span aria-hidden="true" className="material-symbols-outlined text-[16px]">refresh</span>
               刷新
             </button>
             <button
+              type="button"
               onClick={() => openUploadModal({ mode: 'tier' })}
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="command-button command-button-primary h-8 min-h-8 whitespace-nowrap px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
             >
+              <span aria-hidden="true" className="material-symbols-outlined text-[16px]">upload_file</span>
               上传文件
             </button>
           </div>
         )}
         meta={(
-          <div className="flex flex-nowrap gap-2 text-xs xl:justify-end">
-            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-primary/10 text-primary">
+          <div className="flex flex-nowrap items-center gap-1.5 text-xs">
+            <span className="whitespace-nowrap rounded px-2 py-1 font-semibold text-primary">
               {activeBidType}
             </span>
-            <span className="max-w-[260px] truncate whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+            <span className="h-4 w-px shrink-0 bg-surface-container-high" aria-hidden="true" />
+            <span className="max-w-[280px] truncate whitespace-nowrap rounded px-2 py-1 text-on-surface-variant">
               当前目录 {selectedFolderPath || '-'}
             </span>
-            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+            <span className="h-4 w-px shrink-0 bg-surface-container-high" aria-hidden="true" />
+            <span className="whitespace-nowrap rounded px-2 py-1 text-on-surface-variant">
               文件 {fileItems.length}/{visibleTreeFileCount || totalCount}
             </span>
-            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+            <span className="h-4 w-px shrink-0 bg-surface-container-high" aria-hidden="true" />
+            <span className="whitespace-nowrap rounded px-2 py-1 text-on-surface-variant">
               权限 可编辑
             </span>
           </div>
@@ -1518,7 +1611,7 @@ export default function MaterialDB({ showToast = () => {}, workspaceKind = '' })
         documentAreaClassName="flex flex-col"
         sidebar={(
           <section className="flex h-full min-h-0 flex-col">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
+            <div className="flex min-h-[69px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
               <div className="min-w-0">
                 <h3 className="text-base font-semibold text-on-surface">素材目录</h3>
                 <p className="mt-1 truncate text-xs text-outline">{selectedFolderPath || '未选择目录'}</p>
@@ -1529,15 +1622,16 @@ export default function MaterialDB({ showToast = () => {}, workspaceKind = '' })
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col">
-              <div className="border-b border-surface-container-high bg-surface-container-lowest px-3 py-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-on-surface">目录与文件</div>
-                    <div className="mt-0.5 truncate text-xs text-outline">
+              <div className="border-b border-surface-container-high bg-surface-container-lowest px-4 py-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <div className="flex min-w-[8rem] flex-1 items-center gap-2">
+                    <div className="shrink-0 text-sm font-semibold text-on-surface">目录与文件</div>
+                    <span className="h-3.5 w-px shrink-0 bg-surface-container-high" aria-hidden="true" />
+                    <div className="truncate text-xs text-outline">
                       {selectedFolderPath || '请选择目录'}
                     </div>
                   </div>
-                  <div className="flex flex-wrap items-center justify-end gap-1" role="toolbar" aria-label="素材目录工具栏">
+                  <div className="flex shrink-0 flex-nowrap items-center justify-end gap-1" role="toolbar" aria-label="素材目录工具栏">
                     <IconButton icon="unfold_more" label="展开全部" onClick={() => setCollapseForAll(false)} />
                     <IconButton icon="unfold_less" label="收起全部" onClick={() => setCollapseForAll(true)} />
                     <span className="mx-1 h-4 w-px bg-surface-container-high" aria-hidden="true" />
@@ -1564,33 +1658,8 @@ export default function MaterialDB({ showToast = () => {}, workspaceKind = '' })
                   </div>
                 </div>
 
-                <div className="mt-3 rounded-md border border-surface-container-high bg-surface-container-low px-3 py-3">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <span className="text-xs font-semibold text-on-surface">筛选</span>
-                    <div className="flex items-center gap-2">
-                      {activeFilterCount > 0 && (
-                        <button
-                          type="button"
-                          onClick={clearFilters}
-                          className="text-xs font-medium text-primary hover:text-on-primary-container"
-                        >
-                          清除 {activeFilterCount}
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setShowAdvancedFilters((value) => !value)}
-                        aria-expanded={showAdvancedFilters}
-                        className="inline-flex items-center gap-0.5 rounded px-1.5 py-1 text-xs font-medium text-on-surface-variant hover:bg-surface-container-high"
-                      >
-                        高级
-                        <span aria-hidden="true" className="material-symbols-outlined text-[15px]">
-                          {showAdvancedFilters ? 'expand_less' : 'expand_more'}
-                        </span>
-                      </button>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_9rem]">
+                <div className="mt-1.5 rounded-md border border-surface-container-high bg-surface-container-low px-2 py-1.5">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_8.5rem_auto]">
                     <label className="relative">
                       <span className="sr-only">搜索文件名</span>
                       <span aria-hidden="true" className="material-symbols-outlined pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[17px] text-outline">search</span>
@@ -1598,7 +1667,7 @@ export default function MaterialDB({ showToast = () => {}, workspaceKind = '' })
                         value={filters.keyword}
                         onChange={(e) => updateFilter('keyword', e.target.value)}
                         placeholder="搜索文件名"
-                        className="h-9 w-full rounded-md border-none bg-surface-container-highest px-8 text-xs"
+                        className="h-7 w-full rounded-md border-none bg-surface-container-highest px-8 text-xs"
                       />
                       {filters.keyword && (
                         <button
@@ -1615,46 +1684,68 @@ export default function MaterialDB({ showToast = () => {}, workspaceKind = '' })
                       aria-label="清洗状态"
                       value={filters.cleanStatus}
                       onChange={(e) => updateFilter('cleanStatus', e.target.value)}
-                      className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-xs"
+                      className="h-7 rounded-md border-none bg-surface-container-highest px-3 text-xs"
                     >
                       {CLEAN_STATUS_OPTIONS.map((option) => (
                         <option key={option.value || 'all'} value={option.value}>{option.label}</option>
                       ))}
                     </select>
-                    {showAdvancedFilters && (
-                      <>
-                        <select
-                          aria-label="素材层级"
-                          value={filters.materialTier}
-                          onChange={(e) => updateFilter('materialTier', e.target.value)}
-                          className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-xs"
+                    <div className="flex items-center justify-end gap-1">
+                      {activeFilterCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={clearFilters}
+                          className="inline-flex h-7 items-center justify-center rounded-md px-2 text-xs font-medium text-primary hover:bg-primary/10"
                         >
-                          <option value="">全部层级</option>
-                          {MATERIAL_TIER_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>{option.label}</option>
-                          ))}
-                        </select>
-                        <input
-                          aria-label="按客户筛选"
-                          value={filters.customerName}
-                          onChange={(e) => updateFilter('customerName', e.target.value)}
-                          placeholder="客户"
-                          className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-xs"
-                        />
-                        <input
-                          aria-label="按项目筛选"
-                          value={filters.projectId}
-                          onChange={(e) => updateFilter('projectId', e.target.value)}
-                          placeholder="项目ID/编号"
-                          className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-xs"
-                        />
-                      </>
-                    )}
+                          清除 {activeFilterCount}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setShowAdvancedFilters((value) => !value)}
+                        aria-expanded={showAdvancedFilters}
+                        className="inline-flex h-7 items-center justify-center gap-0.5 rounded-md px-2 text-xs font-medium text-on-surface-variant hover:bg-surface-container-high"
+                      >
+                        高级
+                        <span aria-hidden="true" className="material-symbols-outlined text-[15px]">
+                          {showAdvancedFilters ? 'expand_less' : 'expand_more'}
+                        </span>
+                      </button>
+                    </div>
                   </div>
+                  {showAdvancedFilters && (
+                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      <select
+                        aria-label="素材层级"
+                        value={filters.materialTier}
+                        onChange={(e) => updateFilter('materialTier', e.target.value)}
+                        className="h-7 rounded-md border-none bg-surface-container-highest px-3 text-xs"
+                      >
+                        <option value="">全部层级</option>
+                        {MATERIAL_TIER_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                      <input
+                        aria-label="按客户筛选"
+                        value={filters.customerName}
+                        onChange={(e) => updateFilter('customerName', e.target.value)}
+                        placeholder="客户"
+                        className="h-7 rounded-md border-none bg-surface-container-highest px-3 text-xs"
+                      />
+                      <input
+                        aria-label="按项目筛选"
+                        value={filters.projectId}
+                        onChange={(e) => updateFilter('projectId', e.target.value)}
+                        placeholder="项目ID/编号"
+                        className="h-7 rounded-md border-none bg-surface-container-highest px-3 text-xs"
+                      />
+                    </div>
+                    )}
                 </div>
               </div>
 
-              <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
                 <div className="min-h-full rounded-md border border-surface-container-high bg-surface-container-lowest p-2">
                   {tree.map((node) => (
                     <TreeNode
@@ -1707,11 +1798,16 @@ export default function MaterialDB({ showToast = () => {}, workspaceKind = '' })
             onError={(message) => setOnlyofficePreviewError(message || 'OnlyOffice 清洗稿加载失败')}
           />
         ) : (
-          <div className="flex min-h-[560px] flex-1 items-center justify-center rounded-md border border-dashed border-surface-container-high px-6 text-center">
-            <p className="max-w-md text-sm text-on-surface-variant">
-              {onlyofficePreviewError || previewError || cleanedPreviewBlockedMessage(previewItem)}
-            </p>
-          </div>
+          <MaterialPreviewEmptyState
+            message={onlyofficePreviewError || previewError || cleanedPreviewBlockedMessage(previewItem)}
+            selectedFolderPath={selectedFolderPath}
+            activeBidType={activeBidType}
+            fileCount={fileItems.length}
+            cleanedCount={cleanedFileCount}
+            originalOnlyCount={originalOnlyFileCount}
+            failedCount={failedFileCount}
+            onUpload={() => openUploadModal({ mode: 'path', targetPath: selectedFolderPath })}
+          />
         )}
       </OnlyOfficeWorkspace>
 

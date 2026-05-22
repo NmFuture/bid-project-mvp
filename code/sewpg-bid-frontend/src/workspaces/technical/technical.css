@@ -1,0 +1,98 @@
+.technical-shell-main {
+  background:
+    linear-gradient(180deg, rgba(246, 248, 251, 0.98), rgba(255, 255, 255, 0.92) 260px),
+    #f6f8fb;
+}
+
+.technical-shell-frame {
+  width: 100%;
+  max-width: 1400px;
+  margin-inline: auto;
+}
+
+.technical-workspace .command-surface {
+  border: 1px solid rgba(196, 208, 220, 0.68);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 10px 30px -24px rgba(16, 52, 82, 0.28);
+}
+
+.technical-workspace .command-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-height: 34px;
+  border-radius: 8px;
+  padding: 0 0.875rem;
+  font-size: 13px;
+  font-weight: 600;
+  transition:
+    transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 0.18s ease,
+    color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.technical-workspace .command-button-primary {
+  background: #0068b7;
+  color: #ffffff;
+  box-shadow: 0 8px 20px -16px rgba(0, 104, 183, 0.55);
+}
+
+.technical-workspace .command-button-primary:hover {
+  background: #075f9e;
+}
+
+.technical-workspace .command-button-secondary {
+  background: #eef4f9;
+  color: #2a4258;
+}
+
+.technical-workspace .command-button-secondary:hover {
+  background: #e1eaf3;
+  color: #17334a;
+}
+
+.technical-workspace .interactive-lift {
+  transition:
+    transform 0.24s cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 0.18s ease,
+    background-color 0.18s ease,
+    box-shadow 0.24s ease;
+}
+
+.technical-workspace .interactive-lift:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 30px -24px rgba(0, 73, 128, 0.45);
+}
+
+.technical-workspace .text-ink-strong {
+  color: #17334a;
+}
+
+.technical-workspace .page-frame {
+  width: 100%;
+  max-width: 1400px;
+  margin-inline: auto;
+}
+
+.technical-workspace .project-list-page {
+  background: transparent !important;
+}
+
+.technical-workspace .material-symbols-outlined.text-\[12px\] { font-size: 12px; }
+.technical-workspace .material-symbols-outlined.text-\[13px\] { font-size: 13px; }
+.technical-workspace .material-symbols-outlined.text-\[14px\] { font-size: 14px; }
+.technical-workspace .material-symbols-outlined.text-\[15px\] { font-size: 15px; }
+.technical-workspace .material-symbols-outlined.text-\[16px\] { font-size: 16px; }
+.technical-workspace .material-symbols-outlined.text-\[17px\] { font-size: 17px; }
+.technical-workspace .material-symbols-outlined.text-\[18px\] { font-size: 18px; }
+.technical-workspace .material-symbols-outlined.text-\[20px\] { font-size: 20px; }
+.technical-workspace .material-symbols-outlined.text-\[21px\] { font-size: 21px; }
+.technical-workspace .material-symbols-outlined.text-\[22px\] { font-size: 22px; }
+.technical-workspace .material-symbols-outlined.text-\[24px\] { font-size: 24px; }
+.technical-workspace .material-symbols-outlined.text-\[26px\] { font-size: 26px; }
+.technical-workspace .material-symbols-outlined.text-lg { font-size: 18px; }
+.technical-workspace .material-symbols-outlined.text-2xl { font-size: 24px; }
+.technical-workspace .material-symbols-outlined.text-5xl { font-size: 48px; }

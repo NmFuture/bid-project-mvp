@@ -4,24 +4,17 @@ import AppShell from './components/layout/AppShell'
 import Dashboard from './pages/Dashboard'
 import ProjectList from './pages/ProjectList'
 import ProjectEntryRedirect from './pages/ProjectEntryRedirect'
-import ParseResult from './pages/ParseResult'
-import OutlineReview from './pages/OutlineReview'
-import GapEntry from './pages/GapEntry'
-import GenerateProgress from './pages/GenerateProgress'
-import CoverageHeatmap from './pages/CoverageHeatmap'
-import CoCreationEditor from './pages/CoCreationEditor'
-import FinalExport from './pages/FinalExport'
 import MaterialDB from './pages/MaterialDB'
 import MaterialWiki from './pages/MaterialWiki'
 import AuditLog from './pages/AuditLog'
-import TenderReview from './pages/TenderReview'
-import BusinessTenderReview from './pages/BusinessTenderReview'
 import Settings from './pages/Settings'
 import Login from './pages/Login'
 import Toast from './components/shared/Toast'
 import { AUTH_EXPIRED_EVENT, AUTH_STORAGE_KEY, authAPI } from './api'
-import { parseRouteFromBidType, projectRoute, useWorkspaceSlug, workspaceFromSlug, workspaceRoute } from './utils/workspace'
-import { canAccessWorkspace, defaultWorkspaceFor } from './utils/permissions'
+import { parseRouteFromBidType, workspaceFromSlug, workspaceRoute } from './utils/workspace'
+import { renderTechnicalRoutes } from './workspaces/technical/routes'
+import { renderBusinessRoutes } from './workspaces/business/routes'
+import LegacyProjectPathRedirect from './workspaces/shared/LegacyProjectPathRedirect'
 
 const readStoredSession = () => {
   if (typeof window === 'undefined') return null
@@ -72,21 +65,6 @@ function WorkspaceRedirect() {
   const resolved = workspaceFromSlug(workspace)
   if (!resolved) return <Navigate to="/dashboard" replace />
   return <Navigate to={workspaceRoute(resolved.slug, '/projects')} replace />
-}
-
-function ProjectPathRedirect({ path }) {
-  const { id } = useParams()
-  const workspaceSlug = useWorkspaceSlug()
-  return <Navigate to={projectRoute(id, path, workspaceSlug)} replace />
-}
-
-// 角色级 workspace 守卫：T 用户进 /workspace/business/* 强制回到自己的 workspace，反之亦然。
-function WorkspaceGuard({ user, children }) {
-  const { workspace } = useParams()
-  if (!workspace) return children
-  if (canAccessWorkspace(user, workspace)) return children
-  const fallback = defaultWorkspaceFor(user)
-  return <Navigate to={`/workspace/${fallback}/projects`} replace />
 }
 
 export default function App() {
@@ -181,40 +159,25 @@ export default function App() {
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard currentUser={session?.user} />} />
           <Route path="/parse" element={<Navigate to="/parse/technical" replace />} />
-          <Route path="/parse/technical" element={<TenderReview showToast={showToast} />} />
-          <Route path="/parse/business" element={<BusinessTenderReview showToast={showToast} />} />
           <Route path="/review" element={<Navigate to={parseRouteFromBidType('技术标')} replace />} />
-          <Route path="/workspace/:workspace" element={<WorkspaceGuard user={session?.user}><WorkspaceRedirect /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/projects" element={<WorkspaceGuard user={session?.user}><ProjectList showToast={showToast} /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/flow" element={<WorkspaceGuard user={session?.user}><WorkspaceRedirect /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/projects/:id" element={<WorkspaceGuard user={session?.user}><ProjectEntryRedirect /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/projects/:id/template-directory" element={<WorkspaceGuard user={session?.user}><ParseResult showToast={showToast} /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/projects/:id/parse" element={<WorkspaceGuard user={session?.user}><ProjectPathRedirect path="/template-directory" /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/projects/:id/directory" element={<WorkspaceGuard user={session?.user}><ProjectPathRedirect path="/template-directory" /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/projects/:id/outline" element={<WorkspaceGuard user={session?.user}><OutlineReview showToast={showToast} /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/projects/:id/gaps" element={<WorkspaceGuard user={session?.user}><GapEntry showToast={showToast} /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/projects/:id/gaps-fill" element={<WorkspaceGuard user={session?.user}><ProjectPathRedirect path="/gaps" /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/projects/:id/gaps/review" element={<WorkspaceGuard user={session?.user}><ProjectPathRedirect path="/gaps" /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/projects/:id/generate" element={<WorkspaceGuard user={session?.user}><GenerateProgress showToast={showToast} /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/projects/:id/coverage" element={<WorkspaceGuard user={session?.user}><CoverageHeatmap showToast={showToast} /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/projects/:id/editor" element={<WorkspaceGuard user={session?.user}><CoCreationEditor showToast={showToast} /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/projects/:id/export" element={<WorkspaceGuard user={session?.user}><FinalExport showToast={showToast} /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/materials/structured" element={<WorkspaceGuard user={session?.user}><MaterialDB showToast={showToast} /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/materials/wiki" element={<WorkspaceGuard user={session?.user}><MaterialWiki showToast={showToast} /></WorkspaceGuard>} />
-          <Route path="/workspace/:workspace/logs" element={<WorkspaceGuard user={session?.user}><AuditLog showToast={showToast} /></WorkspaceGuard>} />
+
+          {renderTechnicalRoutes({ user: session?.user, showToast })}
+          {renderBusinessRoutes({ user: session?.user, showToast })}
+
+          <Route path="/workspace/:workspace" element={<WorkspaceRedirect />} />
           <Route path="/projects" element={<ProjectList showToast={showToast} />} />
           <Route path="/projects/:id" element={<ProjectEntryRedirect />} />
-          <Route path="/projects/:id/template-directory" element={<ParseResult showToast={showToast} />} />
-          <Route path="/projects/:id/parse" element={<ProjectPathRedirect path="/template-directory" />} />
-          <Route path="/projects/:id/directory" element={<ProjectPathRedirect path="/template-directory" />} />
-          <Route path="/projects/:id/outline" element={<OutlineReview showToast={showToast} />} />
-          <Route path="/projects/:id/gaps" element={<GapEntry showToast={showToast} />} />
-          <Route path="/projects/:id/gaps-fill" element={<ProjectPathRedirect path="/gaps" />} />
-          <Route path="/projects/:id/gaps/review" element={<ProjectPathRedirect path="/gaps" />} />
-          <Route path="/projects/:id/generate" element={<GenerateProgress showToast={showToast} />} />
-          <Route path="/projects/:id/coverage" element={<CoverageHeatmap showToast={showToast} />} />
-          <Route path="/projects/:id/editor" element={<CoCreationEditor showToast={showToast} />} />
-          <Route path="/projects/:id/export" element={<FinalExport showToast={showToast} />} />
+          <Route path="/projects/:id/template-directory" element={<LegacyProjectPathRedirect path="/template-directory" />} />
+          <Route path="/projects/:id/parse" element={<LegacyProjectPathRedirect path="/template-directory" />} />
+          <Route path="/projects/:id/directory" element={<LegacyProjectPathRedirect path="/template-directory" />} />
+          <Route path="/projects/:id/outline" element={<LegacyProjectPathRedirect path="/outline" />} />
+          <Route path="/projects/:id/gaps" element={<LegacyProjectPathRedirect path="/gaps" />} />
+          <Route path="/projects/:id/gaps-fill" element={<LegacyProjectPathRedirect path="/gaps" />} />
+          <Route path="/projects/:id/gaps/review" element={<LegacyProjectPathRedirect path="/gaps" />} />
+          <Route path="/projects/:id/generate" element={<LegacyProjectPathRedirect path="/generate" />} />
+          <Route path="/projects/:id/coverage" element={<LegacyProjectPathRedirect path="/coverage" />} />
+          <Route path="/projects/:id/editor" element={<LegacyProjectPathRedirect path="/editor" />} />
+          <Route path="/projects/:id/export" element={<LegacyProjectPathRedirect path="/export" />} />
           <Route path="/materials/structured" element={<MaterialDB showToast={showToast} />} />
           <Route path="/materials/wiki" element={<MaterialWiki showToast={showToast} />} />
           <Route path="/audit" element={<AuditLog showToast={showToast} />} />

@@ -1,10 +1,10 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { materialsAPI } from '../api'
-import MaterialsViewSwitch from '../components/shared/MaterialsViewSwitch'
-import MarkdownLite from '../components/shared/MarkdownLite'
-import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
-import { bidTypeFromWorkspace, useWorkspaceSlug, workspaceRoute } from '../utils/workspace'
+import { materialsAPI } from '../../../api'
+import MaterialsViewSwitch from '../components/TechnicalMaterialsViewSwitch'
+import MarkdownLite from '../../../components/shared/MarkdownLite'
+import { PageEmpty, PageError, PageLoading } from '../components/TechnicalPageState'
+import { bidTypeFromWorkspace, useWorkspaceSlug, workspaceRoute } from '../../../utils/workspace'
 
 const normalizeArray = (value) =>
   Array.isArray(value) ? [...new Set(value)].filter(Boolean).sort() : []
@@ -44,10 +44,9 @@ const normalizeDraft = (node) => ({
   applicableTypes: Array.isArray(node?.applicableTypes) ? node.applicableTypes : [],
 })
 
-export default function MaterialWiki({ showToast = () => {}, workspaceKind = '' }) {
+export default function MaterialWiki({ showToast = () => {} }) {
   const [searchParams, setSearchParams] = useSearchParams()
-  const routeWorkspaceSlug = useWorkspaceSlug()
-  const workspaceSlug = workspaceKind || routeWorkspaceSlug
+  const workspaceSlug = useWorkspaceSlug()
   const lockedBidType = bidTypeFromWorkspace(workspaceSlug)
   const materialsBasePath = workspaceSlug ? workspaceRoute(workspaceSlug, '/materials') : '/materials'
   const queryBidType = normalizeBidTypeTab(searchParams.get('bidType') || '')
@@ -480,7 +479,7 @@ export default function MaterialWiki({ showToast = () => {}, workspaceKind = '' 
   }
 
   return (
-    <div className="flex flex-col gap-6 animate-fade-in">
+    <div className="flex flex-col gap-3 animate-fade-in">
       <MaterialsViewSwitch
         active="wiki"
         activeBidType={activeBidType}
@@ -491,43 +490,51 @@ export default function MaterialWiki({ showToast = () => {}, workspaceKind = '' 
         actions={(
           <div className="flex flex-nowrap gap-2">
             <button
+              type="button"
               onClick={handleRefreshWiki}
               disabled={refreshingWiki || rebuildingWiki}
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-secondary-container text-on-secondary-container hover:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="command-button command-button-secondary h-8 min-h-8 whitespace-nowrap px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
             >
+              <span aria-hidden="true" className="material-symbols-outlined text-[16px]">refresh</span>
               {refreshingWiki ? '刷新中...' : '刷新Wiki'}
             </button>
             <button
+              type="button"
               onClick={handleRebuildWiki}
               disabled={refreshingWiki || rebuildingWiki}
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="command-button command-button-primary h-8 min-h-8 whitespace-nowrap px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
             >
+              <span aria-hidden="true" className="material-symbols-outlined text-[16px]">sync</span>
               {rebuildingWiki ? '重建中...' : '重建Wiki'}
             </button>
           </div>
         )}
         meta={(
-          <div className="flex flex-nowrap gap-2 text-xs xl:justify-end">
-            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+          <div className="flex flex-nowrap items-center gap-1.5 text-xs">
+            <span className="whitespace-nowrap rounded px-2 py-1 font-semibold text-primary">
               标类 {activeBidType}
             </span>
-            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+            <span className="h-4 w-px shrink-0 bg-surface-container-high" aria-hidden="true" />
+            <span className="whitespace-nowrap rounded px-2 py-1 text-on-surface-variant">
               标签 {draft.tags.length}
             </span>
-            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+            <span className="h-4 w-px shrink-0 bg-surface-container-high" aria-hidden="true" />
+            <span className="whitespace-nowrap rounded px-2 py-1 text-on-surface-variant">
               适用类型 {draft.applicableTypes.length}
             </span>
-            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+            <span className="h-4 w-px shrink-0 bg-surface-container-high" aria-hidden="true" />
+            <span className="whitespace-nowrap rounded px-2 py-1 text-on-surface-variant">
               附件 {attachments.length}
             </span>
-            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
+            <span className="h-4 w-px shrink-0 bg-surface-container-high" aria-hidden="true" />
+            <span className="whitespace-nowrap rounded px-2 py-1 text-on-surface-variant">
               更新 {selectedNode?.updatedAt ? selectedNode.updatedAt.replace('T', ' ').slice(0, 19) : '-'}
             </span>
           </div>
         )}
         basePath={materialsBasePath}
       />
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-12">
         <div className="xl:col-span-3 bg-surface-container-lowest rounded-xl border border-surface-container-high flex flex-col min-h-[720px] max-h-[720px] overflow-hidden">
           <div className="px-4 py-4 border-b border-surface-container-high space-y-3">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">

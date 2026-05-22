@@ -10,6 +10,104 @@
 
 ## 进度记录
 
+### 2026-05-22 11:31 移除技术标 S4 生成页拼装输出详情区
+
+改动目标：
+
+- 按页面标注移除技术标 `/workspace/tech/projects/:id/generate` 中不需要展示的 `拼装输出` 详情区域。
+- 仅调整技术标生成页，不修改商务标生成页。
+
+改动内容：
+
+- `TechnicalGenerateProgress.jsx` 删除拼装输出卡片，不再展示 Provider、Model、Session 和原始片段文本。
+- 同步收敛空闲态说明文案，去掉“拼装原始输出”相关描述。
+- 删除该输出卡片专用的格式化函数和状态映射，避免残留未使用逻辑。
+
+验证结果：
+
+- `npm run lint` 通过。
+- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的提示。
+- `docker compose build web && docker compose up -d web` 已重建并启动前端服务。
+- 浏览器复查 `http://localhost/workspace/tech/projects/PRJ-0003/generate`，确认不再出现 `拼装输出`、Provider、Model、Session 和 `原始文本`。
+
+遗留问题：
+
+- 无。
+
+### 2026-05-22 11:22 移除技术标 S1 页面生成输出详情区
+
+改动目标：
+
+- 按页面标注移除技术标 `/workspace/tech/projects/:id/template-directory` 中不需要展示的两块详情内容。
+- 仅调整技术标 S1 页面，不修改商务标页面。
+
+改动内容：
+
+- `TechnicalParseResult.jsx` 删除 `futurecode 生成输出` 面板。
+- `TechnicalParseResult.jsx` 删除 `futurecode 流式输出` 面板。
+- 同步调整技术标目录生成失败提示，避免继续引导用户查看已移除的流式输出区。
+
+验证结果：
+
+- `npm run lint` 通过。
+- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的提示。
+- `docker compose build web && docker compose up -d web` 已重建并启动前端服务。
+- 浏览器复查 `http://localhost/workspace/tech/projects/PRJ-0003/template-directory`，确认页面不再出现 `futurecode 生成输出`、`futurecode 流式输出` 和相关失败提示。
+
+遗留问题：
+
+- 无。
+
+### 2026-05-22 00:23 同步 f291d5d 技术标前端 polish 到技术标工作区
+
+改动目标：
+
+- 将更靠前提交 `f291d5d feat(frontend): polish bidding workspace UI` 中与技术标相关的前端界面更新同步到当前 `Dev` 技术标工作区。
+- 只更新技术标前端链路，避免把该提交中的商务标、全局共享组件和全局 CSS 改动直接带入商务标界面。
+
+改动内容：
+
+- 在 `src/workspaces/technical/pages` 下落地技术标页面独立实现，覆盖解析、项目列表、S1 模板与目录、S2 目录确认、S3 缺口/素材匹配、S4 生成、S5 共创、S6 导出、素材库、Wiki、日志等页面。
+- 新增技术标局部组件：阶段分组导航、项目阶段进度、卡片、素材视图切换、OnlyOffice 工作区、加载/空/错误状态。
+- 将技术标页面导入切换到 `src/workspaces/technical/components`，不再依赖会把 `f291d5d` 视觉变化扩散到商务标的共享组件。
+- `AppShell.jsx` 仅对 `/workspace/tech` 和 `/parse/technical` 启用技术标新版画布、移动端底部导航和轻量导航阴影；商务标路径保持原外壳。
+- `technical.css` 承接 `f291d5d` 中原本属于全局 CSS 的按钮、卡片、图标字号、技术标画布等样式，并限定在技术标工作区作用域内。
+
+验证结果：
+
+- `npm run lint` 通过。
+- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的提示。
+- `git diff --check` 通过。
+
+遗留问题：
+
+- `f291d5d` 中纯全局页面（Dashboard、Settings）和商务标相关 polish 未同步，本轮按用户要求只迁移技术标界面。
+
+### 2026-05-21 20:48 前端技术标/商务标工作区入口拆分
+
+改动目标：
+
+- 将技术标和商务标前端从同一组动态 workspace 路由中拆开，形成两套可独立维护的页面入口和路由树。
+- 先建立低风险边界：技术标改动默认进入 `src/workspaces/technical`，商务标改动默认进入 `src/workspaces/business`，共享实现继续留在兼容层逐步抽离。
+- 删除 S3 缺口页的混合入口，技术标直接进入技术缺口页，商务标直接进入商务缺口页。
+
+改动内容：
+
+- 新增 `src/workspaces/technical/routes.jsx` 和 `src/workspaces/business/routes.jsx`，分别声明两套解析、项目、阶段、素材库、Wiki、日志路由。
+- 新增技术标/商务标页面入口文件，当前先包裹既有共享实现，并通过 `workspaceKind` 固定标类上下文。
+- `App.jsx` 改为挂载双线路由模块；旧 `/projects/:id/...` 深链接通过 `LegacyProjectPathRedirect` 自动迁移到对应标类工作区。
+- `stageFlow.js` 拆出 `TECHNICAL_STAGE_ROUTE_BUILDERS` 与 `BUSINESS_STAGE_ROUTE_BUILDERS`，避免商务标阶段路由特殊规则继续散落在通用函数里。
+- 删除未再使用的 `src/pages/GapEntry.jsx` 混合分发页，并新增 `src/workspaces/README.md` 记录后续维护边界。
+
+验证结果：
+
+- `npm run lint` 通过。
+- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的既有提示。
+
+遗留问题：
+
+- 本轮是路由和页面入口级拆分，部分底层实现仍复用 `src/pages` 旧文件；后续修改某个标类的具体页面时，应优先把对应实现迁移到该标类目录，再继续改业务细节。
+
 ### 2026-05-10 商务标目录生成 Skill 编号链路适配
 
 改动目标：

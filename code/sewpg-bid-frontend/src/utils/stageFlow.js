@@ -1,12 +1,26 @@
 import { projectRoute } from './workspace'
 
-export const STAGE_ROUTE_BUILDERS = {
+export const TECHNICAL_STAGE_ROUTE_BUILDERS = {
   1: (projectId, workspaceSlug = '') => projectRoute(projectId, '/template-directory', workspaceSlug),
   2: (projectId, workspaceSlug = '') => projectRoute(projectId, '/outline', workspaceSlug),
   3: (projectId, workspaceSlug = '') => projectRoute(projectId, '/gaps', workspaceSlug),
   4: (projectId, workspaceSlug = '') => projectRoute(projectId, '/generate', workspaceSlug),
   5: (projectId, workspaceSlug = '') => projectRoute(projectId, '/editor', workspaceSlug),
   6: (projectId, workspaceSlug = '') => projectRoute(projectId, '/export', workspaceSlug),
+}
+
+export const BUSINESS_STAGE_ROUTE_BUILDERS = {
+  1: (projectId, workspaceSlug = 'business') => projectRoute(projectId, '/template-directory', workspaceSlug),
+  2: (projectId, workspaceSlug = 'business') => projectRoute(projectId, '/outline', workspaceSlug),
+  3: (projectId, workspaceSlug = 'business') => projectRoute(projectId, '/gaps', workspaceSlug),
+  4: (projectId, workspaceSlug = 'business') => projectRoute(projectId, '/editor', workspaceSlug),
+  5: (projectId, workspaceSlug = 'business') => projectRoute(projectId, '/editor', workspaceSlug),
+  6: (projectId, workspaceSlug = 'business') => projectRoute(projectId, '/editor', workspaceSlug),
+}
+
+export const STAGE_ROUTE_BUILDERS_BY_WORKSPACE = {
+  tech: TECHNICAL_STAGE_ROUTE_BUILDERS,
+  business: BUSINESS_STAGE_ROUTE_BUILDERS,
 }
 
 export const COMPACT_STAGE_LABELS = {
@@ -29,11 +43,8 @@ export const getCompactStageLabel = (stageId, fallback = '') => (
 
 export const getStageRoute = (projectId, stageId, workspaceSlug = '') => {
   const resolvedStageId = toStageId(stageId)
-  if (workspaceSlug === 'business') {
-    if (resolvedStageId === 4) return projectRoute(projectId, '/editor', workspaceSlug)
-    if (resolvedStageId === 5 || resolvedStageId === 6) return projectRoute(projectId, '/editor', workspaceSlug)
-  }
-  const builder = STAGE_ROUTE_BUILDERS[resolvedStageId]
+  const routeBuilders = STAGE_ROUTE_BUILDERS_BY_WORKSPACE[workspaceSlug] || TECHNICAL_STAGE_ROUTE_BUILDERS
+  const builder = routeBuilders[resolvedStageId]
   if (!builder || !projectId) return ''
   return builder(projectId, workspaceSlug)
 }

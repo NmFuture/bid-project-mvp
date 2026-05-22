@@ -1,15 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { outlineAPI, stagesAPI } from '../api'
-import { PageLoading, PageError } from '../components/states/PageState'
-import PageHeader from '../components/shared/PageHeader'
-import ProjectStageProgress from '../components/shared/ProjectStageProgress'
-import StageBreadcrumb from '../components/shared/StageBreadcrumb'
-import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
-import OnlyOfficeWorkspace from '../components/shared/OnlyOfficeWorkspace'
-import { getOutlineDisplayNumber } from '../utils/outlineNumber'
-import { getStageRoute } from '../utils/stageFlow'
-import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
+import { outlineAPI, stagesAPI } from '../../../api'
+import { PageLoading, PageError } from '../components/TechnicalPageState'
+import PageHeader from '../../../components/shared/PageHeader'
+import ProjectStageProgress from '../components/TechnicalProjectStageProgress'
+import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
+import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
+import OnlyOfficeWorkspace from '../components/TechnicalOnlyOfficeWorkspace'
+import { getOutlineDisplayNumber } from '../../../utils/outlineNumber'
+import { getStageRoute } from '../../../utils/stageFlow'
+import { projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
 
 const cloneNodes = (nodes = []) => JSON.parse(JSON.stringify(nodes))
 
@@ -151,11 +151,10 @@ const sendOnlyOfficeSearch = (text, onlyofficeEmbedRef = null, beforeSend = null
   return payload.nonce
 }
 
-export default function OutlineReview({ showToast, workspaceKind = '' }) {
+export default function OutlineReview({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
-  const routeWorkspaceSlug = useWorkspaceSlug()
-  const workspaceSlug = workspaceKind || routeWorkspaceSlug
+  const workspaceSlug = useWorkspaceSlug()
   const isBusinessWorkspace = workspaceSlug === 'business'
   const [nodes, setNodes] = useState([])
   const [activeNodeId, setActiveNodeId] = useState('')
@@ -662,26 +661,26 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
         documentAreaClassName="flex flex-col"
         sidebar={(
           <section className="flex h-full min-h-0 flex-col overflow-hidden">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
+            <div className="flex min-h-[58px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
               <h3 className="text-base font-semibold text-on-surface">投标文件目录</h3>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
                 <button
                   onClick={handleToggleAllCollapse}
                   disabled={!collectExpandableNodeIds(nodes).length}
-                  className="stage-action-btn px-3 py-1.5 rounded-lg bg-surface-container-high text-on-surface-variant text-xs font-semibold hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="stage-action-btn h-8 rounded-md bg-surface-container-high px-3 text-xs font-semibold text-on-surface-variant transition-colors hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {collapsedNodeIds.size ? '展开全部' : '收起全部'}
                 </button>
                 <button
                   onClick={handleAddRoot}
-                  className="stage-action-btn px-3 py-1.5 rounded-lg bg-primary text-on-primary text-xs font-semibold hover:bg-primary-container transition-colors"
+                  className="stage-action-btn h-8 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary transition-colors hover:bg-primary-container"
                 >
                   新增一级
                 </button>
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
               {nodes.length ? (
                 renderRows(nodes)
               ) : (

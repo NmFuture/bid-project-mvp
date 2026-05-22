@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { auditAPI } from '../api'
-import AuditDetailModal from '../components/modals/AuditDetailModal'
-import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
-import { bidTypeFromWorkspace, useWorkspaceSlug } from '../utils/workspace'
+import { auditAPI } from '../../../api'
+import AuditDetailModal from '../../../components/modals/AuditDetailModal'
+import { PageEmpty, PageError, PageLoading } from '../components/TechnicalPageState'
+import { bidTypeFromWorkspace, useWorkspaceSlug } from '../../../utils/workspace'
 
 const defaultFilters = {
   user: '',
@@ -22,6 +22,9 @@ const actionColors = {
   config: 'bg-tertiary-fixed text-on-tertiary-fixed',
   import: 'bg-primary/10 text-primary',
 }
+
+const filterLabelClass = 'mb-1.5 block text-xs font-semibold text-outline'
+const filterControlClass = 'h-9 w-full rounded-md border border-transparent bg-surface-container-low px-3 text-sm text-on-surface transition-colors focus:border-primary/30 focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary/10'
 
 const csvEscape = (value) => {
   const text = String(value ?? '')
@@ -56,9 +59,8 @@ const downloadCsv = (csv, fileName) => {
 const safeMessage = (error, fallback) =>
   error?.payload?.detail || error?.message || fallback
 
-export default function AuditLog({ showToast = () => {}, workspaceKind = '' }) {
-  const routeWorkspaceSlug = useWorkspaceSlug()
-  const workspaceSlug = workspaceKind || routeWorkspaceSlug
+export default function AuditLog({ showToast = () => {} }) {
+  const workspaceSlug = useWorkspaceSlug()
   const lockedBidType = bidTypeFromWorkspace(workspaceSlug)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -161,44 +163,54 @@ export default function AuditLog({ showToast = () => {}, workspaceKind = '' }) {
   }
 
   return (
-    <div className="flex flex-col gap-6 animate-fade-in">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
-        <div>
-          <h1 className="text-3xl font-headline font-bold text-primary">{lockedBidType ? `${lockedBidType}日志` : '日志'}</h1>
-          <p className="text-sm text-on-surface-variant mt-1">支持筛选、diff 查看与 CSV 导出，满足联调追踪需求。</p>
-          {(refreshing || error) && (
-            <p className={`text-xs mt-1 ${error ? 'text-error' : 'text-outline'}`}>
-              {error || '正在刷新数据...'}
-            </p>
-          )}
+    <div className="flex flex-col gap-3 animate-fade-in">
+      <div className="overflow-hidden rounded-xl border border-outline-variant/55 bg-white shadow-[0_12px_28px_-24px_rgba(13,33,55,0.35)]">
+        <div className="flex flex-col gap-3 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span aria-hidden="true" className="h-5 w-1 rounded-full bg-primary" />
+              <h1 className="text-xl font-headline font-bold text-ink-strong">{lockedBidType ? `${lockedBidType}日志` : '日志'}</h1>
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
+                {data?.total || items.length} 条
+              </span>
+            </div>
+            <p className="mt-1 text-sm text-on-surface-variant">支持筛选、diff 查看与 CSV 导出，满足联调追踪需求。</p>
+            {(refreshing || error) && (
+              <p className={`mt-1 text-xs ${error ? 'text-error' : 'text-outline'}`}>
+                {error || '正在刷新数据...'}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={handleExportCsv}
+            disabled={exporting}
+            className="command-button command-button-primary h-9 min-h-9 whitespace-nowrap px-4 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-[17px]">download</span>
+            {exporting ? '导出中...' : '导出 CSV'}
+          </button>
         </div>
-        <button
-          onClick={handleExportCsv}
-          disabled={exporting}
-          className="px-4 py-2 text-sm font-medium text-on-primary bg-primary hover:bg-primary-container rounded-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <span className="material-symbols-outlined text-sm">download</span>
-          {exporting ? '导出中...' : '导出 CSV'}
-        </button>
       </div>
 
-      <div className="bg-surface-container-low rounded-xl p-5 flex flex-wrap gap-4 items-end">
-        <div className="flex-1 min-w-[220px]">
-          <label className="block text-xs font-medium text-outline mb-1.5">关键字</label>
+      <div className="rounded-xl border border-outline-variant/50 bg-white p-4 shadow-[0_12px_28px_-24px_rgba(13,33,55,0.35)]">
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(16rem,1.4fr)_repeat(4,minmax(8rem,1fr))]">
+          <div>
+          <label className={filterLabelClass}>关键字</label>
           <input
             value={draftFilters.keyword}
             onChange={(event) => setDraftFilters((prev) => ({ ...prev, keyword: event.target.value }))}
             placeholder="搜索用户、动作、目标"
-            className="w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
+            className={filterControlClass}
           />
         </div>
 
-        <div className="flex-1 min-w-[160px]">
-          <label className="block text-xs font-medium text-outline mb-1.5">用户</label>
+          <div>
+          <label className={filterLabelClass}>用户</label>
           <select
             value={draftFilters.user}
             onChange={(event) => setDraftFilters((prev) => ({ ...prev, user: event.target.value }))}
-            className="w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0 cursor-pointer"
+            className={`${filterControlClass} cursor-pointer`}
           >
             <option value="">所有用户</option>
             {filterOptions.users.map((item) => (
@@ -207,12 +219,12 @@ export default function AuditLog({ showToast = () => {}, workspaceKind = '' }) {
           </select>
         </div>
 
-        <div className="flex-1 min-w-[160px]">
-          <label className="block text-xs font-medium text-outline mb-1.5">项目/模块</label>
+          <div>
+          <label className={filterLabelClass}>项目/模块</label>
           <select
             value={draftFilters.module}
             onChange={(event) => setDraftFilters((prev) => ({ ...prev, module: event.target.value }))}
-            className="w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0 cursor-pointer"
+            className={`${filterControlClass} cursor-pointer`}
           >
             <option value="">所有模块</option>
             {filterOptions.modules.map((item) => (
@@ -221,12 +233,12 @@ export default function AuditLog({ showToast = () => {}, workspaceKind = '' }) {
           </select>
         </div>
 
-        <div className="flex-1 min-w-[160px]">
-          <label className="block text-xs font-medium text-outline mb-1.5">动作类型</label>
+          <div>
+          <label className={filterLabelClass}>动作类型</label>
           <select
             value={draftFilters.action}
             onChange={(event) => setDraftFilters((prev) => ({ ...prev, action: event.target.value }))}
-            className="w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0 cursor-pointer"
+            className={`${filterControlClass} cursor-pointer`}
           >
             <option value="">所有动作</option>
             {filterOptions.actions.map((item) => (
@@ -235,12 +247,12 @@ export default function AuditLog({ showToast = () => {}, workspaceKind = '' }) {
           </select>
         </div>
 
-        <div className="flex-1 min-w-[140px]">
-          <label className="block text-xs font-medium text-outline mb-1.5">状态</label>
+          <div>
+          <label className={filterLabelClass}>状态</label>
           <select
             value={draftFilters.status}
             onChange={(event) => setDraftFilters((prev) => ({ ...prev, status: event.target.value }))}
-            className="w-full h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0 cursor-pointer"
+            className={`${filterControlClass} cursor-pointer`}
           >
             <option value="">全部状态</option>
             {filterOptions.statuses.map((item) => (
@@ -248,40 +260,45 @@ export default function AuditLog({ showToast = () => {}, workspaceKind = '' }) {
             ))}
           </select>
         </div>
+        </div>
 
-        <div className="flex-1 min-w-[220px]">
-          <label className="block text-xs font-medium text-outline mb-1.5">时间范围</label>
-          <div className="flex items-center gap-2">
+        <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(20rem,1fr)_auto] lg:items-end">
+          <div>
+            <label className={filterLabelClass}>时间范围</label>
+            <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
             <input
               type="date"
               value={draftFilters.startDate}
               onChange={(event) => setDraftFilters((prev) => ({ ...prev, startDate: event.target.value }))}
-              className="flex-1 h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
+                className={filterControlClass}
             />
             <span className="text-outline">-</span>
             <input
               type="date"
               value={draftFilters.endDate}
               onChange={(event) => setDraftFilters((prev) => ({ ...prev, endDate: event.target.value }))}
-              className="flex-1 h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm focus:ring-0"
+                className={filterControlClass}
             />
+            </div>
           </div>
-        </div>
 
-        <div className="flex gap-2 ml-auto">
+          <div className="flex justify-end gap-2">
           <button
+              type="button"
             onClick={handleResetFilters}
-            className="h-10 px-4 bg-surface-container-highest text-on-surface text-sm rounded-md hover:bg-surface-dim transition-colors"
+              className="command-button command-button-secondary h-9 min-h-9 px-4 text-sm"
           >
             重置
           </button>
           <button
+              type="button"
             onClick={handleApplyFilters}
-            className="h-10 px-4 bg-primary text-on-primary text-sm rounded-md hover:bg-primary-container transition-colors flex items-center gap-1"
+              className="command-button command-button-primary h-9 min-h-9 px-4 text-sm"
           >
-            <span className="material-symbols-outlined text-sm">tune</span>
+              <span className="material-symbols-outlined text-[17px]">tune</span>
             应用筛选
           </button>
+          </div>
         </div>
       </div>
 
@@ -293,13 +310,13 @@ export default function AuditLog({ showToast = () => {}, workspaceKind = '' }) {
           onAction={hasActiveFilters ? handleResetFilters : undefined}
         />
       ) : (
-        <div className="bg-surface-container-lowest rounded-xl shadow-[0_8px_24px_-12px_rgba(0,62,111,0.06)] overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-surface-container-high bg-surface-container-low">
+        <div className="overflow-hidden rounded-xl border border-outline-variant/50 bg-white shadow-[0_12px_28px_-24px_rgba(13,33,55,0.35)]">
+          <div className="max-h-[calc(100vh-22rem)] min-h-[420px] overflow-auto">
+            <table className="w-full min-w-[980px] text-sm">
+              <thead className="sticky top-0 z-[1]">
+                <tr className="border-b border-surface-container-high bg-surface-container-lowest/95 backdrop-blur">
                   {['时间戳', '用户', '动作', '目标/模块', '状态', '操作'].map((header) => (
-                    <th key={header} className="px-5 py-3 text-left text-xs font-semibold text-on-surface-variant uppercase tracking-wider">
+                    <th key={header} className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant">
                       {header}
                     </th>
                   ))}
@@ -307,35 +324,36 @@ export default function AuditLog({ showToast = () => {}, workspaceKind = '' }) {
               </thead>
               <tbody>
                 {items.map((log) => (
-                  <tr key={log.id} className="border-b border-surface-container-high/50 hover:bg-surface-container-low transition-colors">
-                    <td className="px-5 py-4 text-on-surface-variant font-mono text-xs">{log.time || '-'}</td>
-                    <td className="px-5 py-4">
+                  <tr key={log.id} className="border-b border-surface-container-high/60 transition-colors hover:bg-surface-container-lowest">
+                    <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-on-surface-variant">{log.time || '-'}</td>
+                    <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <div className="w-7 h-7 rounded-full bg-primary-container text-on-primary flex items-center justify-center text-xs font-bold">{log.userAvatar || '人'}</div>
+                        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary-container text-xs font-bold text-on-primary">{log.userAvatar || '人'}</div>
                         <span className="text-on-surface font-medium">{log.user || '-'}</span>
                       </div>
                     </td>
-                    <td className="px-5 py-4">
-                      <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${actionColors[log.actionType] || 'bg-surface-container-high text-on-surface-variant'}`}>
+                    <td className="px-4 py-3">
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${actionColors[log.actionType] || 'bg-surface-container-high text-on-surface-variant'}`}>
                         {log.action || '-'}
                       </span>
                     </td>
-                    <td className="px-5 py-4">
-                      <p className="text-on-surface">{log.target || '-'}</p>
-                      <p className="text-xs text-outline mt-1">{log.moduleLabel || '-'}</p>
+                    <td className="px-4 py-3">
+                      <p className="max-w-[32rem] truncate text-on-surface">{log.target || '-'}</p>
+                      <p className="mt-1 text-xs text-outline">{log.moduleLabel || '-'}</p>
                     </td>
-                    <td className="px-5 py-4">
-                      <span className={`flex items-center gap-1 text-xs font-medium ${log.status === '成功' ? 'text-secondary' : 'text-error'}`}>
-                        <span className="material-symbols-outlined text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex items-center gap-1 text-xs font-medium ${log.status === '成功' ? 'text-secondary' : 'text-error'}`}>
+                        <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 1" }}>
                           {log.status === '成功' ? 'check_circle' : 'error'}
                         </span>
                         {log.status || '-'}
                       </span>
                     </td>
-                    <td className="px-5 py-4">
+                    <td className="px-4 py-3">
                       <button
+                        type="button"
                         onClick={() => setDetailAuditId(log.id)}
-                        className="text-primary text-xs hover:underline"
+                        className="inline-flex h-7 items-center rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10"
                       >
                         查看
                       </button>
@@ -345,13 +363,14 @@ export default function AuditLog({ showToast = () => {}, workspaceKind = '' }) {
               </tbody>
             </table>
           </div>
-          <div className="px-6 py-4 border-t border-surface-container-high flex items-center justify-between text-sm text-outline">
+          <div className="flex items-center justify-between border-t border-surface-container-high bg-surface-container-lowest px-4 py-3 text-sm text-outline">
             <span>显示 {items.length} 条，共 {data?.total || items.length} 条记录</span>
             <button
+              type="button"
               onClick={() => loadData(queryFilters, { silent: true })}
-              className="inline-flex items-center gap-1 text-primary hover:underline"
+              className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-primary hover:bg-primary/10"
             >
-              <span className="material-symbols-outlined text-sm">refresh</span>
+              <span className="material-symbols-outlined text-[16px]">refresh</span>
               刷新
             </button>
           </div>

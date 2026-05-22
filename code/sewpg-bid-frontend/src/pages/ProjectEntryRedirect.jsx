@@ -11,10 +11,11 @@ const resolveStage = (value) => {
   return Math.max(1, Math.min(6, Math.floor(parsed)))
 }
 
-export default function ProjectEntryRedirect() {
+export default function ProjectEntryRedirect({ workspaceKind = '' }) {
   const { id } = useParams()
   const navigate = useNavigate()
-  const workspaceSlug = useWorkspaceSlug()
+  const routeWorkspaceSlug = useWorkspaceSlug()
+  const workspaceSlug = workspaceKind || routeWorkspaceSlug
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 

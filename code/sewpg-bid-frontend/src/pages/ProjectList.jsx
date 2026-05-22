@@ -6,11 +6,12 @@ import ProjectWizardModal from '../components/modals/ProjectWizardModal'
 import { PageLoading, PageEmpty, PageError } from '../components/states/PageState'
 import FilterBar from '../components/shared/FilterBar'
 import { getCompactStageLabel, getStageRoute } from '../utils/stageFlow'
-import { bidTypeFromWorkspace, parseRouteFromBidType, projectRoute, useWorkspaceSlug } from '../utils/workspace'
+import { bidTypeFromWorkspace, parseRouteFromBidType, projectRoute, slugFromBidType, useWorkspaceSlug } from '../utils/workspace'
 
-export default function ProjectList({ showToast, viewMode = 'projects' }) {
+export default function ProjectList({ showToast, viewMode = 'projects', workspaceKind = '' }) {
   const navigate = useNavigate()
-  const workspaceSlug = useWorkspaceSlug()
+  const routeWorkspaceSlug = useWorkspaceSlug()
+  const workspaceSlug = workspaceKind || routeWorkspaceSlug
   const lockedBidType = bidTypeFromWorkspace(workspaceSlug)
   const [projects, setProjects] = useState([])
   const [loading, setLoading] = useState(true)
@@ -58,10 +59,11 @@ export default function ProjectList({ showToast, viewMode = 'projects' }) {
   const getProjectEntryRoute = (project) => {
     const reviewDecision = String(project?.reviewDecision || 'participate')
     if (reviewDecision !== 'participate') return parseRouteFromBidType(project?.bidType || '技术标', project?.id || '')
+    const routeWorkspaceSlug = workspaceSlug || slugFromBidType(project?.bidType || '技术标')
     const stage = Number(project?.currentStage) || 1
-    const stageRoute = getStageRoute(project?.id, stage, workspaceSlug)
+    const stageRoute = getStageRoute(project?.id, stage, routeWorkspaceSlug)
     if (stageRoute) return stageRoute
-    return projectRoute(project.id, '', workspaceSlug)
+    return projectRoute(project.id, '', routeWorkspaceSlug)
   }
 
   const formatDateTime = (value) => {

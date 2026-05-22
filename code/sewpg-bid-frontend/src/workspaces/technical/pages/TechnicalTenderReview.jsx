@@ -1,0 +1,1854 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { parseAPI, projectsAPI } from '../../../api'
+import { PageEmpty, PageError, PageLoading } from '../components/TechnicalPageState'
+import DataCard from '../components/TechnicalDataCard'
+import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
+import OnlyOfficeWorkspace from '../components/TechnicalOnlyOfficeWorkspace'
+import PageHeader from '../../../components/shared/PageHeader'
+import ProjectWizardModal from '../../../components/modals/ProjectWizardModal'
+import { normalizeBidType, projectRoute, slugFromBidType } from '../../../utils/workspace'
+
+const MAX_FILE_SIZE = 500 * 1024 * 1024
+const MAX_BATCH_FILES = 5
+const FILE_ACCEPT = '.pdf,.doc,.docx,.md,.xls,.xlsx,.zip,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
+const ALLOWED_EXTENSIONS = new Set([
+  'pdf', 'doc', 'docx', 'md', 'xls', 'xlsx', 'zip',
+  'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
+])
+
+const REVIEW_DECISION_LABELS = {
+  pending: '待解析',
+  participate: '参与投标',
+  abandon: '不参与',
+}
+
+const REVIEW_DECISION_BADGE_CLASSES = {
+  pending: 'bg-[#e8eef2] text-on-surface-variant',
+  participate: 'bg-secondary-container text-on-secondary-container',
+  abandon: 'bg-error-container text-error',
+}
+
+const REVIEW_ACTION_VARIANTS = {
+  primary: 'command-button-primary disabled:bg-primary/55 disabled:text-white',
+  secondary: 'command-button-secondary disabled:bg-surface-container-high disabled:text-outline',
+  danger: 'bg-error-container text-error hover:bg-error-container/80 disabled:text-error/55',
+  muted: 'bg-surface-container-high text-on-surface-variant hover:bg-surface-dim disabled:text-outline',
+}
+
+const EMPTY_APPENDICES = []
+
+const extensionOf = (name) => {
+  const parts = String(name || '').split('.')
+  if (parts.length < 2) return ''
+  return String(parts.pop() || '').toLowerCase()
+}
+
+const getFileTypeLabel = (fileName = '') => {
+  const ext = extensionOf(fileName)
+  if (ext === 'pdf') return 'PDF'
+  if (ext === 'docx' || ext === 'doc') return 'DOCX'
+  if (ext === 'md') return 'MD'
+  if (ext === 'xlsx' || ext === 'xls') return 'XLSX'
+  return '文件'
+}
+
+const fileSizeLabel = (size) => {
+  const value = Number(size || 0)
+  if (!Number.isFinite(value) || value <= 0) return '0 MB'
+  return `${(value / 1024 / 1024).toFixed(1)} MB`
+}
+
+const formatDateTime = (value) => {
+  if (!value) return '未解析'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '未解析'
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+const validatePickedFiles = (picked = []) => {
+  if (picked.length > MAX_BATCH_FILES) return `单次最多上传 ${MAX_BATCH_FILES} 个文件。`
+
+  for (const file of picked) {
+    if (Number(file.size || 0) > MAX_FILE_SIZE) return `文件 ${file.name} 超过 500MB 上限。`
+    const ext = extensionOf(file.name)
+    if (!ALLOWED_EXTENSIONS.has(ext)) return `文件 ${file.name} 类型不在白名单中。`
+  }
+
+  return ''
+}
+
+const buildFallbackSourceFiles = (fileNames = []) =>
+  fileNames.map((name, index) => ({
+    id: `SRC-${index + 1}`,
+    name,
+    type: getFileTypeLabel(name),
+    pageCount: '-',
+    size: '-',
+  }))
+
+const groupValue = (field) => {
+  if (!field) return '-'
+  const value = String(field.value || '').trim()
+  return value || '未识别'
+}
+
+const presenceLabel = (status) => (status === 'present' ? '有明确要求' : '未识别')
+
+const appendixKey = (appendix, index = 0) =>
+  String(appendix?.id || appendix?.title || `appendix-${index}`)
+
+const TECHNICAL_REVIEW_CONFIG = {
+  bidType: '技术标',
+  pageTitle: '技术标解析模块',
+  pageDescription: '上传技术招标文件，提取评分标准、项目基础参数、附表与关键技术要求，为技术标项目后续链路提供入口数据。',
+  createProjectNamePrefix: '技术标待解析项目',
+  createButtonLabel: '新建技术标解析项目',
+  createSuccessMessage: '已新建技术标解析项目，请上传招标文件并解析。',
+  emptyTitle: '暂无待解析技术标项目',
+  emptyDescription: '你可以在这里先新建技术标解析项目，再上传技术招标文件进行判断。',
+  currentProjectLabel: '当前技术标解析项目',
+  uploadSectionTitle: '技术招标文件上传与关键参数解析',
+  uploadSectionDescription: '本模块负责上传技术招标文件并解析结构化要求，供技术标项目立项和后续目录生成使用。',
+  uploadFileLabel: '技术招标文件（必选）',
+  sourceFilesLabel: '已上传技术招标文件（当前项目）',
+  resultTitle: '技术标结构化解析结果',
+  pendingParseHint: '请点击上方“上传并解析”开始提取技术标结构化要求。',
+  noSourceHint: '当前项目尚未上传技术招标文件。',
+  appendixTitle: '附表空表产物',
+  appendixSwitchHint: '空表 Word 已生成，可切换预览。',
+  appendixEmptyHint: '未识别到附表要求。',
+  scoringGroups: [
+    ['technical', '技术评分标准'],
+    ['business', '商务评分标准'],
+    ['price', '投标报价评分标准'],
+    ['lcoe', '投标度电成本评分标准'],
+    ['compliance', '符合性审查标准'],
+  ],
+  fallbackScoringTitle: '评分细则',
+  fieldGroupSections: [
+    ['projectBasics', '项目基础信息'],
+    ['turbineCoreParameters', '风机核心参数'],
+    ['performanceGuarantees', '性能保证指标'],
+    ['environmentAdaptation', '环境适应性'],
+  ],
+  presenceTitle: '专题方案 / 供货范围 / 考核条款',
+  buildPresenceRows: (presence = {}) => ([
+    { label: '专题方案', item: presence.topicPlans },
+    { label: '供货范围', item: presence.supplyScope },
+    { label: '考核条款', item: presence.assessmentTerms },
+  ]),
+}
+
+const BUSINESS_REVIEW_CONFIG = {
+  bidType: '商务标',
+  pageTitle: '商务标解析模块',
+  pageDescription: '上传商务招标文件，提取商务评分、响应要求、资格支撑、保证金与承诺函线索，为商务标项目后续编制提供入口数据。',
+  createProjectNamePrefix: '商务标待解析项目',
+  createButtonLabel: '新建商务标解析项目',
+  createSuccessMessage: '已新建商务标解析项目，请上传商务招标文件并解析。',
+  emptyTitle: '暂无待解析商务标项目',
+  emptyDescription: '你可以在这里先新建商务标解析项目，再上传商务招标文件进行判断。',
+  currentProjectLabel: '当前商务标解析项目',
+  uploadSectionTitle: '商务招标文件上传与关键参数解析',
+  uploadSectionDescription: '本模块负责上传商务招标文件并解析商务响应、资格支撑、附表与承诺函要求，供商务标项目后续使用。',
+  uploadFileLabel: '商务招标文件（必选）',
+  sourceFilesLabel: '已上传商务招标文件（当前项目）',
+  resultTitle: '商务标结构化解析结果',
+  pendingParseHint: '请点击上方“上传并解析”开始提取商务标结构化要求。',
+  noSourceHint: '当前项目尚未上传商务招标文件。',
+  appendixTitle: '商务附件模板产物',
+  appendixSwitchHint: '已提取招标文件中的商务附件模板，可切换预览并审核；确认参与投标后自动同步至项目素材库。',
+  appendixEmptyHint: '未识别到可保存的商务附件模板。',
+  scoringGroups: [
+    ['business', '商务评分标准'],
+    ['price', '投标报价评分标准'],
+    ['compliance', '符合性审查标准'],
+  ],
+  fallbackScoringTitle: '商务评分细则',
+  fieldGroupSections: [],
+  showPresence: false,
+  showCommitmentClues: false,
+  showEvidenceDetails: false,
+  showEvidenceLocationColumn: false,
+  showApproveBusinessScoring: true,
+  showApproveAppendices: true,
+  showApproveCommitmentLetters: true,
+  buildPresenceRows: () => [],
+}
+
+const commitmentTypeLabel = (value = '') => {
+  if (value === 'disqualification') return '否决项承诺函'
+  if (value === 'general_commitment') return '一般承诺函/承诺书'
+  return value || '-'
+}
+
+const commitmentStatusLabel = (value = '') => {
+  if (value === 'generated') return '已生成'
+  if (value === 'pending_review') return '待复核'
+  if (value === 'needs_review') return '待确认'
+  return value || '-'
+}
+
+const assetReviewStatusLabel = (value = '') => {
+  if (value === 'approved') return '已审核'
+  if (value === 'pending_review') return '待审核'
+  return '待审核'
+}
+
+const assetSyncStatusLabel = (value = '') => {
+  if (value === 'synced') return '已同步素材库'
+  if (value === 'failed') return '同步失败'
+  if (value === 'pending') return '待同步'
+  return '待确认参与后同步'
+}
+
+const appendixQualityLabel = (value = '') => {
+  if (value === 'complete') return '提取完整'
+  if (value === 'probably_incomplete') return '疑似不完整'
+  if (value === 'title_only') return '仅标题'
+  if (value === 'needs_review') return '需复核'
+  return value || '未校验'
+}
+
+const appendixExtractionModeLabel = (value = '') => {
+  if (value === 'source_docx_slice') return '原文切片'
+  if (value === 'source_docx_rebuild_fallback') return '切片失败重建'
+  if (value === 'markdown_slice') return '文本切片'
+  if (value === 'text_slice') return '文本识别'
+  return value || '未识别'
+}
+
+function ReviewActionButton({
+  icon,
+  variant = 'secondary',
+  children,
+  className = '',
+  type = 'button',
+  ...props
+}) {
+  return (
+    <button
+      type={type}
+      className={`command-button ${REVIEW_ACTION_VARIANTS[variant] || REVIEW_ACTION_VARIANTS.secondary} disabled:cursor-not-allowed disabled:opacity-70 ${className}`.trim()}
+      {...props}
+    >
+      {icon && (
+        <span
+          className="material-symbols-outlined shrink-0 text-[18px]"
+          style={{ fontVariationSettings: "'FILL' 0" }}
+        >
+          {icon}
+        </span>
+      )}
+      <span>{children}</span>
+    </button>
+  )
+}
+
+function ReviewIconBox({ icon, tone = 'primary' }) {
+  const toneClass = tone === 'success'
+    ? 'bg-secondary-container text-on-secondary-container'
+    : tone === 'warn'
+      ? 'bg-tertiary-container text-on-tertiary-container'
+      : 'bg-primary-fixed text-primary'
+  return (
+    <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${toneClass}`}>
+      <span
+        className="material-symbols-outlined text-[21px]"
+        style={{ fontVariationSettings: "'FILL' 1" }}
+      >
+        {icon}
+      </span>
+    </span>
+  )
+}
+
+function ReviewStatusBadge({ reviewDecision, children }) {
+  return (
+    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${REVIEW_DECISION_BADGE_CLASSES[reviewDecision] || REVIEW_DECISION_BADGE_CLASSES.pending}`}>
+      {children}
+    </span>
+  )
+}
+
+function ReviewInfoTile({
+  label,
+  value,
+  icon,
+  tone = 'neutral',
+  children,
+  className = '',
+  valueClassName = '',
+}) {
+  const toneClass = tone === 'primary'
+    ? 'bg-primary-fixed text-primary'
+    : tone === 'success'
+      ? 'bg-secondary-container text-on-secondary-container'
+      : 'bg-surface-container-low text-on-surface-variant'
+  const title = typeof value === 'string' ? value : undefined
+
+  return (
+    <div className={`flex min-h-[82px] items-start gap-3 rounded-lg border border-outline-variant/55 bg-white px-4 py-3 ${className}`.trim()}>
+      {icon && (
+        <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-md ${toneClass}`}>
+          <span
+            className="material-symbols-outlined text-[18px]"
+            style={{ fontVariationSettings: "'FILL' 0" }}
+          >
+            {icon}
+          </span>
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium text-outline">{label}</p>
+        {children || (
+          <p className={`mt-1 truncate text-sm font-semibold text-on-surface ${valueClassName}`.trim()} title={title}>
+            {value || '-'}
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function FieldGroupTable({ title, fields = [], showEvidenceLocationColumn = true }) {
+  return (
+    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
+      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low">
+        <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[640px]">
+          <thead>
+            <tr className="border-b border-surface-container-high">
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">字段</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">解析内容</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
+              {showEvidenceLocationColumn ? (
+                <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+              ) : null}
+            </tr>
+          </thead>
+          <tbody>
+            {fields.map((field) => (
+              <tr key={field.key || field.label} className="border-b border-surface-container-high last:border-b-0">
+                <td className="px-4 py-2 text-on-surface whitespace-nowrap">{field.label || '-'}</td>
+                <td className={`px-4 py-2 min-w-[220px] ${field.status === 'found' ? 'text-primary font-medium' : 'text-outline'}`}>
+                  {groupValue(field)}
+                </td>
+                <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{field.sourceFile || '-'}</td>
+                {showEvidenceLocationColumn ? (
+                  <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{field.evidenceLocation || '-'}</td>
+                ) : null}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function ScoringCriteriaTable({ title, rows = [], emptyText = '未识别到相关评分细则。', showEvidenceLocationColumn = true }) {
+  return (
+    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
+      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
+        <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
+        <span className="text-xs text-outline">{rows.length} 条</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[980px]">
+          <thead>
+            <tr className="border-b border-surface-container-high">
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">序号</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">评分/审查项</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">分值</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">得分点/要求</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">证明材料要求</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">章节</th>
+              {showEvidenceLocationColumn ? (
+                <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+              ) : null}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map((item, index) => (
+              <tr key={item.id || `${title}-${index}`} className="border-b border-surface-container-high last:border-b-0">
+                <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.order || index + 1}</td>
+                <td className="px-4 py-2 text-on-surface font-medium min-w-[160px]">{item.scoringItem || '-'}</td>
+                <td className="px-4 py-2 text-primary whitespace-nowrap">{item.score || '-'}</td>
+                <td className="px-4 py-2 text-on-surface-variant min-w-[260px]">{item.scorePoint || '-'}</td>
+                <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{item.proofRequirement || '-'}</td>
+                <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{item.sourceFile || '-'}</td>
+                <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{item.section || '-'}</td>
+                {showEvidenceLocationColumn ? (
+                  <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.evidenceLocation || '-'}</td>
+                ) : null}
+              </tr>
+            )) : (
+              <tr>
+                <td className="px-4 py-3 text-outline" colSpan={showEvidenceLocationColumn ? 8 : 7}>{emptyText}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function PresenceTable({ title = '专题方案 / 供货范围 / 考核条款', rows = [], showEvidenceLocationColumn = true }) {
+  return (
+    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
+      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low">
+        <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[860px]">
+          <thead>
+            <tr className="border-b border-surface-container-high">
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">项目</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">识别结果</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">摘要</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
+              {showEvidenceLocationColumn ? (
+                <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+              ) : null}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const evidence = Array.isArray(row.item?.evidences) ? row.item.evidences[0] : null
+              return (
+                <tr key={row.label} className="border-b border-surface-container-high last:border-b-0">
+                  <td className="px-4 py-2 text-on-surface font-medium whitespace-nowrap">{row.label}</td>
+                  <td className="px-4 py-2 whitespace-nowrap">
+                    <span className={`text-xs px-2 py-0.5 rounded-md font-semibold ${row.item?.status === 'present' ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
+                      {presenceLabel(row.item?.status)}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 text-on-surface-variant min-w-[340px]">{row.item?.summary || '未识别到明确要求。'}</td>
+                  <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{evidence?.sourceFile || '-'}</td>
+                  {showEvidenceLocationColumn ? (
+                    <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{evidence?.evidenceLocation || '-'}</td>
+                  ) : null}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function CommitmentClueTable({ clues = [], showEvidenceLocationColumn = true }) {
+  return (
+    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
+      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
+        <h4 className="text-sm font-semibold text-on-surface">待确认承诺线索</h4>
+        <span className="text-xs text-outline">{clues.length} 个</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[1040px]">
+          <thead>
+            <tr className="border-b border-surface-container-high">
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">线索</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">状态</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">触发词</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">建议动作</th>
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
+              {showEvidenceLocationColumn ? (
+                <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+              ) : null}
+              <th className="px-4 py-2 text-left font-semibold text-on-surface">风险标记</th>
+            </tr>
+          </thead>
+          <tbody>
+            {clues.length ? clues.map((item) => (
+              <tr key={item.id || item.title} className="border-b border-surface-container-high last:border-b-0">
+                <td className="px-4 py-2 text-on-surface font-medium min-w-[220px]">{item.title || '-'}</td>
+                <td className="px-4 py-2 whitespace-nowrap">
+                  <span className="text-xs px-2 py-0.5 rounded-md font-semibold bg-surface-container-high text-on-surface-variant">
+                    {commitmentStatusLabel(item.status)}
+                  </span>
+                </td>
+                <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.triggerText || '-'}</td>
+                <td className="px-4 py-2 text-on-surface-variant min-w-[260px]">{item.recommendedAction || '-'}</td>
+                <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{item.sourceFile || '-'}</td>
+                {showEvidenceLocationColumn ? (
+                  <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.evidenceLocation || '-'}</td>
+                ) : null}
+                <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{Array.isArray(item.riskFlags) && item.riskFlags.length ? item.riskFlags.join('，') : '-'}</td>
+              </tr>
+            )) : (
+              <tr>
+                <td className="px-4 py-3 text-outline" colSpan={showEvidenceLocationColumn ? 7 : 6}>未识别到待确认承诺线索。</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+const commitmentLetterKey = (letter, index = 0) =>
+  String(letter?.id || letter?.title || `commitment-letter-${index}`)
+
+export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONFIG }) {
+  const reviewConfig = useMemo(() => (
+    normalizeBidType(config?.bidType) === '商务标'
+      ? { ...BUSINESS_REVIEW_CONFIG, ...config, bidType: '商务标' }
+      : { ...TECHNICAL_REVIEW_CONFIG, ...config, bidType: '技术标' }
+  ), [config])
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const queryProjectId = String(searchParams.get('projectId') || '').trim()
+  const [projects, setProjects] = useState([])
+  const [selectedProjectId, setSelectedProjectId] = useState('')
+  const [project, setProject] = useState(null)
+  const [parseData, setParseData] = useState(null)
+  const [loadingProjects, setLoadingProjects] = useState(true)
+  const [loadingDetail, setLoadingDetail] = useState(false)
+  const [error, setError] = useState('')
+  const [uploadError, setUploadError] = useState('')
+  const [tenderFiles, setTenderFiles] = useState([])
+  const [uploading, setUploading] = useState(false)
+  const [parseProgress, setParseProgress] = useState(null)
+  const [deciding, setDeciding] = useState('')
+  const [creatingReview, setCreatingReview] = useState(false)
+  const [showProjectInfoModal, setShowProjectInfoModal] = useState(false)
+  const [projectToComplete, setProjectToComplete] = useState(null)
+  const [selectedAppendixId, setSelectedAppendixId] = useState('')
+  const [appendixPreview, setAppendixPreview] = useState(null)
+  const [appendixPreviewLoading, setAppendixPreviewLoading] = useState(false)
+  const [appendixPreviewError, setAppendixPreviewError] = useState('')
+  const [selectedCommitmentLetterId, setSelectedCommitmentLetterId] = useState('')
+  const [commitmentLetterPreview, setCommitmentLetterPreview] = useState(null)
+  const [commitmentLetterPreviewLoading, setCommitmentLetterPreviewLoading] = useState(false)
+  const [commitmentLetterPreviewError, setCommitmentLetterPreviewError] = useState('')
+  const [savingAppendixId, setSavingAppendixId] = useState('')
+  const [savingAllAppendices, setSavingAllAppendices] = useState(false)
+  const [savingBusinessScoring, setSavingBusinessScoring] = useState(false)
+  const [savingCommitmentLetterId, setSavingCommitmentLetterId] = useState('')
+  const [savingAllCommitmentLetters, setSavingAllCommitmentLetters] = useState(false)
+
+  const refreshParseResult = useCallback(async () => {
+    if (!selectedProjectId) return null
+    const data = await parseAPI.results(selectedProjectId)
+    setParseData(data)
+    return data
+  }, [selectedProjectId])
+
+  const loadProjects = useCallback(async () => {
+    setLoadingProjects(true)
+    setError('')
+    try {
+      const data = await projectsAPI.list({ page: 1, pageSize: 200, bidType: reviewConfig.bidType })
+      const items = (Array.isArray(data?.items) ? data.items : []).filter(
+        (item) => normalizeBidType(item?.bidType || reviewConfig.bidType) === reviewConfig.bidType,
+      )
+      const reviewItemsBase = items.filter((item) => String(item?.reviewDecision || 'pending') !== 'participate')
+      const forced = queryProjectId ? items.find((item) => item.id === queryProjectId) : null
+      const reviewItems = forced && !reviewItemsBase.some((item) => item.id === forced.id)
+        ? [forced, ...reviewItemsBase]
+        : reviewItemsBase
+      setProjects(items)
+      setSelectedProjectId((current) => {
+        if (queryProjectId && reviewItems.some((item) => item.id === queryProjectId)) return queryProjectId
+        if (current && reviewItems.some((item) => item.id === current)) return current
+        return reviewItems[0]?.id || ''
+      })
+    } catch (e) {
+      setError(e?.message || '解析项目列表加载失败')
+    } finally {
+      setLoadingProjects(false)
+    }
+  }, [queryProjectId, reviewConfig.bidType])
+
+  const loadCurrentProject = useCallback(async () => {
+    if (!selectedProjectId) {
+      setProject(null)
+      setParseData(null)
+      return
+    }
+    setLoadingDetail(true)
+    setError('')
+    try {
+      const [projectData, parseResult, progressResult] = await Promise.all([
+        projectsAPI.get(selectedProjectId),
+        parseAPI.results(selectedProjectId),
+        parseAPI.progress(selectedProjectId).catch(() => null),
+      ])
+      setProject(projectData)
+      setParseData(parseResult)
+      setParseProgress(progressResult)
+    } catch (e) {
+      setError(e?.message || '解析详情加载失败')
+    } finally {
+      setLoadingDetail(false)
+    }
+  }, [selectedProjectId])
+
+  const createReviewProject = useCallback(async ({ toastMessage } = {}) => {
+    setCreatingReview(true)
+    try {
+      const now = new Date()
+      const pad = (num) => String(num).padStart(2, '0')
+      const created = await projectsAPI.create({
+        name: `${reviewConfig.createProjectNamePrefix}-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`,
+        customerName: '',
+        owner: '',
+        manager: '',
+        bidType: reviewConfig.bidType,
+        deadline: '',
+        reviewDecision: 'pending',
+      })
+      await loadProjects()
+      setSelectedProjectId(created?.id || '')
+      if (toastMessage) {
+        showToast?.(toastMessage)
+      } else {
+        showToast?.(reviewConfig.createSuccessMessage)
+      }
+      return created
+    } catch (e) {
+      showToast?.(e?.message || '新建解析项目失败', 'error')
+      return null
+    } finally {
+      setCreatingReview(false)
+    }
+  }, [loadProjects, reviewConfig.bidType, reviewConfig.createProjectNamePrefix, reviewConfig.createSuccessMessage, showToast])
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      loadProjects()
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [loadProjects])
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      loadCurrentProject()
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [loadCurrentProject])
+
+  useEffect(() => {
+    if (!uploading || !selectedProjectId) return undefined
+    let stopped = false
+    const loadProgress = async () => {
+      try {
+        const progress = await parseAPI.progress(selectedProjectId)
+        if (!stopped) setParseProgress(progress)
+      } catch {
+        // Keep the previous progress snapshot while the upload request owns the main path.
+      }
+    }
+    loadProgress()
+    const timer = setInterval(loadProgress, 1000)
+    return () => {
+      stopped = true
+      clearInterval(timer)
+    }
+  }, [selectedProjectId, uploading])
+
+  const sourceFiles = Array.isArray(parseData?.sourceFiles) && parseData.sourceFiles.length
+    ? parseData.sourceFiles
+    : buildFallbackSourceFiles(project?.files || [])
+  const reviewProjects = useMemo(() => {
+    const base = projects.filter((item) => String(item?.reviewDecision || 'pending') !== 'participate')
+    const forced = queryProjectId ? projects.find((item) => item.id === queryProjectId) : null
+    if (forced && !base.some((item) => item.id === forced.id)) return [forced, ...base]
+    return base
+  }, [projects, queryProjectId])
+
+  const parsedItems = useMemo(() => parseData?.items || [], [parseData?.items])
+  const fieldGroups = parseData?.structured?.fieldGroups || {}
+  const structuredScoring = useMemo(
+    () => parseData?.structured?.scoringCriteria || {},
+    [parseData?.structured?.scoringCriteria],
+  )
+  const scoringGroups = useMemo(() => {
+    const fallbackRows = Array.isArray(fieldGroups.scoringCriteria) ? fieldGroups.scoringCriteria : []
+    const groups = reviewConfig.scoringGroups.map(([key, title]) => ({
+      key,
+      title,
+      rows: Array.isArray(structuredScoring[key]) ? structuredScoring[key] : [],
+    }))
+    if (groups.some((group) => group.rows.length)) return groups
+    return [{ key: 'flat', title: reviewConfig.fallbackScoringTitle, rows: fallbackRows }]
+  }, [fieldGroups.scoringCriteria, reviewConfig.fallbackScoringTitle, reviewConfig.scoringGroups, structuredScoring])
+  const requirementPresence = useMemo(
+    () => parseData?.structured?.requirementPresence || {},
+    [parseData?.structured?.requirementPresence],
+  )
+  const presenceRows = useMemo(
+    () => reviewConfig.buildPresenceRows(requirementPresence),
+    [requirementPresence, reviewConfig],
+  )
+  const appendices = Array.isArray(parseData?.structured?.appendices)
+    ? parseData.structured.appendices
+    : EMPTY_APPENDICES
+  const businessScoringAsset = parseData?.structured?.businessScoringAsset || {}
+  const commitmentLetters = Array.isArray(parseData?.structured?.commitmentLetters)
+    ? parseData.structured.commitmentLetters
+    : EMPTY_APPENDICES
+  const commitmentClues = Array.isArray(parseData?.structured?.commitmentClues)
+    ? parseData.structured.commitmentClues
+    : EMPTY_APPENDICES
+  const activeCommitmentLetterId = commitmentLetters.length
+    && commitmentLetters.some((letter, index) => commitmentLetterKey(letter, index) === selectedCommitmentLetterId)
+    ? selectedCommitmentLetterId
+    : commitmentLetters.length
+      ? commitmentLetterKey(commitmentLetters[0], 0)
+      : ''
+  const selectedCommitmentLetter = useMemo(
+    () => commitmentLetters.find((letter, index) => commitmentLetterKey(letter, index) === activeCommitmentLetterId)
+      || commitmentLetters[0]
+      || null,
+    [activeCommitmentLetterId, commitmentLetters],
+  )
+  const activeAppendixId = appendices.length && appendices.some((appendix, index) => appendixKey(appendix, index) === selectedAppendixId)
+    ? selectedAppendixId
+    : appendices.length
+      ? appendixKey(appendices[0], 0)
+      : ''
+  const selectedAppendix = useMemo(
+    () => appendices.find((appendix, index) => appendixKey(appendix, index) === activeAppendixId) || appendices[0] || null,
+    [activeAppendixId, appendices],
+  )
+  const structuredCategories = useMemo(
+    () => (Array.isArray(parseData?.structured?.categories) ? parseData.structured.categories : []),
+    [parseData],
+  )
+  const parsedDates = parseData?.structured?.projectDates || parseData?.summary?.projectDates || {}
+  const structuredRows = useMemo(() => {
+    if (!parsedItems.length) return []
+    return parsedItems.map((item, index) => {
+      const fileName = item.sourceFile || sourceFiles[0]?.name || '-'
+      const fileMeta = sourceFiles.find((file) => file.name === fileName)
+      const value = item.keyEntity && item.keyValue
+        ? `${item.keyEntity}：${item.keyValue}`
+        : item.keyValue || item.keyEntity || item.title || '-'
+      return {
+        id: item.id || `TP-${index + 1}`,
+        category: item.type || item.category || '-',
+        field: item.keyEntity || item.title || '-',
+        value,
+        fileName,
+        fileType: fileMeta?.type || getFileTypeLabel(fileName),
+        evidenceLocation: item.evidenceLocation || (item.page ? `P.${item.page}` : '-'),
+        evidence: item.evidence || '-',
+      }
+    })
+  }, [parsedItems, sourceFiles])
+
+  const fallbackRows = useMemo(() => {
+    if (!sourceFiles.length) return []
+    return sourceFiles.map((file) => ({
+      id: file.id || file.name,
+      category: '-',
+      field: file.name,
+      value: parseData?.status === 'completed' ? '未提取到结构化结果' : '待触发解析',
+      fileName: file.name,
+      fileType: file.type || getFileTypeLabel(file.name),
+      evidenceLocation: file.pageCount || '-',
+      evidence: '-',
+    }))
+  }, [sourceFiles, parseData?.status])
+
+  const rows = structuredRows.length ? structuredRows : fallbackRows
+  const isParseCompleted = parseData?.status === 'completed'
+  const reviewDecision = String(project?.reviewDecision || 'pending')
+  const reviewDecisionLabel = REVIEW_DECISION_LABELS[reviewDecision] || REVIEW_DECISION_LABELS.pending
+  const isBusinessBid = reviewConfig.bidType === '商务标'
+  const showBusinessCompactUpload = isBusinessBid && !isParseCompleted
+
+  useEffect(() => {
+    const appendixId = selectedAppendix?.id
+    if (!selectedProjectId || !appendixId) {
+      return undefined
+    }
+
+    let cancelled = false
+    const timer = setTimeout(() => {
+      setAppendixPreviewLoading(true)
+      setAppendixPreview(null)
+      setAppendixPreviewError('')
+      parseAPI.appendixPreview(selectedProjectId, appendixId)
+        .then((data) => {
+          if (!cancelled) setAppendixPreview(data)
+        })
+        .catch((e) => {
+          if (!cancelled) {
+            setAppendixPreview(null)
+            setAppendixPreviewError(e?.message || '附表 Word 预览加载失败')
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setAppendixPreviewLoading(false)
+        })
+    }, 0)
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [selectedProjectId, selectedAppendix?.docxPath, selectedAppendix?.id])
+
+  useEffect(() => {
+    const letterId = selectedCommitmentLetter?.id
+    if (!selectedProjectId || !letterId || reviewConfig.bidType !== '商务标') {
+      return undefined
+    }
+
+    let cancelled = false
+    const timer = setTimeout(() => {
+      setCommitmentLetterPreviewLoading(true)
+      setCommitmentLetterPreview(null)
+      setCommitmentLetterPreviewError('')
+      parseAPI.commitmentLetterPreview(selectedProjectId, letterId)
+        .then((data) => {
+          if (!cancelled) setCommitmentLetterPreview(data)
+        })
+        .catch((e) => {
+          if (!cancelled) {
+            setCommitmentLetterPreview(null)
+            setCommitmentLetterPreviewError(e?.message || '承诺函 Word 预览加载失败')
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setCommitmentLetterPreviewLoading(false)
+        })
+    }, 0)
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [reviewConfig.bidType, selectedCommitmentLetter?.docxPath, selectedCommitmentLetter?.id, selectedProjectId])
+
+  const handleFilesPicked = (event) => {
+    const picked = Array.from(event.target.files || [])
+    event.target.value = ''
+    if (!picked.length) return
+
+    const validationError = validatePickedFiles(picked)
+    if (validationError) {
+      setUploadError(validationError)
+      return
+    }
+    setUploadError('')
+    setTenderFiles(picked)
+  }
+
+  const removePickedFile = (index) => {
+    setTenderFiles((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  const handleUploadAndParse = async () => {
+    if (!selectedProjectId) {
+      showToast?.(`当前没有可解析${reviewConfig.bidType}项目，请先新建解析项目。`, 'error')
+      return
+    }
+    if (reviewDecision === 'abandon') {
+      showToast?.('当前项目已标记为不参与，如需继续请先切换为“参与投标”。', 'error')
+      return
+    }
+    if (!tenderFiles.length) {
+      const message = `请先上传${reviewConfig.bidType === '商务标' ? '商务' : '技术'}招标文件后再解析。`
+      setUploadError(message)
+      showToast?.(message, 'error')
+      return
+    }
+
+    setUploading(true)
+    setUploadError('')
+    setParseProgress({
+      status: 'running',
+      percentage: 3,
+      summary: `正在上传${reviewConfig.bidType === '商务标' ? '商务' : '技术'}招标文件。`,
+      events: [{ step: 'upload', level: 'info', message: `正在上传${reviewConfig.bidType === '商务标' ? '商务' : '技术'}招标文件。` }],
+      opencodeOutput: { parts: [] },
+    })
+    try {
+      const formData = new FormData()
+      tenderFiles.forEach((file) => formData.append('tenderFiles', file))
+      const response = await parseAPI.uploadAndRun(selectedProjectId, { formData })
+      setParseData(response)
+      const latestProgress = await parseAPI.progress(selectedProjectId).catch(() => null)
+      if (latestProgress) setParseProgress(latestProgress)
+      const latestProject = await projectsAPI.get(selectedProjectId)
+      setProject(latestProject)
+      setProjects((prev) => prev.map((item) => (
+        item.id === latestProject.id ? { ...item, ...latestProject } : item
+      )))
+      setTenderFiles([])
+      showToast?.(response?.message || `${reviewConfig.bidType}招标文件解析完成。`)
+    } catch (e) {
+      const message = e?.message || '上传并解析失败'
+      setUploadError(message)
+      showToast?.(message, 'error')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const handleDecision = async (decision) => {
+    if (!selectedProjectId) return
+    if (decision === 'participate' && !isParseCompleted) {
+      showToast?.('请先完成招标文件解析，再确认参与投标。', 'error')
+      return
+    }
+    if (decision === 'participate') {
+      setProjectToComplete(project)
+      setShowProjectInfoModal(true)
+      return
+    }
+
+    setDeciding(decision)
+    try {
+      await projectsAPI.delete(selectedProjectId)
+      setProjects((prev) => prev.filter((item) => item.id !== selectedProjectId))
+      setProject(null)
+      setParseData(null)
+      setTenderFiles([])
+      setUploadError('')
+      await createReviewProject({
+        toastMessage: `该${reviewConfig.bidType}项目已设为不参与并移出项目总览，已自动新建解析项目。`,
+      })
+    } catch (e) {
+      showToast?.(e?.message || '处理不参与流程失败', 'error')
+    } finally {
+      setDeciding('')
+    }
+  }
+
+  const handleCreateReviewProject = async () => {
+    await createReviewProject()
+  }
+
+  const handleApproveAppendixAsset = async (appendixId) => {
+    if (!selectedProjectId || !appendixId) return
+    setSavingAppendixId(appendixId)
+    try {
+      const result = await parseAPI.approveAppendixAsset(selectedProjectId, appendixId)
+      if (result?.parseResult) setParseData(result.parseResult)
+      else await refreshParseResult()
+      showToast?.(result?.message || '商务附件模板已审核通过。')
+    } catch (e) {
+      showToast?.(e?.message || '商务附件模板审核失败', 'error')
+    } finally {
+      setSavingAppendixId('')
+    }
+  }
+
+  const handleApproveAllAppendixAssets = async () => {
+    if (!selectedProjectId || !appendices.length) return
+    setSavingAllAppendices(true)
+    try {
+      const result = await parseAPI.approveAllAppendixAssets(selectedProjectId)
+      if (result?.parseResult) setParseData(result.parseResult)
+      else await refreshParseResult()
+      showToast?.(result?.message || '商务附件模板已批量审核通过。')
+    } catch (e) {
+      showToast?.(e?.message || '商务附件模板批量审核失败', 'error')
+    } finally {
+      setSavingAllAppendices(false)
+    }
+  }
+
+  const handleApproveBusinessScoringAsset = async () => {
+    if (!selectedProjectId) return
+    setSavingBusinessScoring(true)
+    try {
+      const result = await parseAPI.approveBusinessScoringAsset(selectedProjectId)
+      if (result?.parseResult) setParseData(result.parseResult)
+      else await refreshParseResult()
+      showToast?.(result?.message || '商务评分标准已审核通过。')
+    } catch (e) {
+      showToast?.(e?.message || '商务评分标准审核失败', 'error')
+    } finally {
+      setSavingBusinessScoring(false)
+    }
+  }
+
+  const handleApproveCommitmentLetterAsset = async (letterId) => {
+    if (!selectedProjectId || !letterId) return
+    setSavingCommitmentLetterId(letterId)
+    try {
+      const result = await parseAPI.approveCommitmentLetterAsset(selectedProjectId, letterId)
+      if (result?.parseResult) setParseData(result.parseResult)
+      else await refreshParseResult()
+      showToast?.(result?.message || '承诺函已审核通过。')
+    } catch (e) {
+      showToast?.(e?.message || '承诺函审核失败', 'error')
+    } finally {
+      setSavingCommitmentLetterId('')
+    }
+  }
+
+  const handleApproveAllCommitmentLetterAssets = async () => {
+    if (!selectedProjectId || !commitmentLetters.length) return
+    setSavingAllCommitmentLetters(true)
+    try {
+      const result = await parseAPI.approveAllCommitmentLetterAssets(selectedProjectId)
+      if (result?.parseResult) setParseData(result.parseResult)
+      else await refreshParseResult()
+      showToast?.(result?.message || '承诺函已批量审核通过。')
+    } catch (e) {
+      showToast?.(e?.message || '承诺函批量审核失败', 'error')
+    } finally {
+      setSavingAllCommitmentLetters(false)
+    }
+  }
+
+  const renderPickedFiles = () => {
+    if (!tenderFiles.length) return null
+    return (
+      <div className="flex flex-col gap-2">
+        {tenderFiles.map((file, index) => (
+          <div key={`${file.name}-${index}`} className="flex items-center gap-3 rounded-lg border border-outline-variant/55 bg-white px-3 py-2">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-primary-fixed text-primary">
+              <span className="material-symbols-outlined text-[18px]">description</span>
+            </span>
+            <span className="min-w-0 flex-1 truncate text-sm font-medium text-on-surface" title={file.name}>{file.name}</span>
+            <span className="shrink-0 rounded-full bg-surface-container-low px-2 py-0.5 text-xs text-outline">{fileSizeLabel(file.size)}</span>
+            <button
+              type="button"
+              onClick={() => removePickedFile(index)}
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-error hover:bg-error-container/30"
+              aria-label={`移除文件 ${file.name}`}
+            >
+              <span className="material-symbols-outlined text-[17px]">close</span>
+            </button>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  const renderParseProgress = () => {
+    if (!parseProgress || (parseProgress.status === 'idle' && !uploading)) return null
+    const events = Array.isArray(parseProgress.events) ? parseProgress.events.slice(-6).reverse() : []
+    const parts = Array.isArray(parseProgress.opencodeOutput?.parts)
+      ? parseProgress.opencodeOutput.parts.filter((part) => part?.text).slice(-3)
+      : []
+    const percentage = Math.max(0, Math.min(100, Number(parseProgress.percentage || 0)))
+    return (
+      <DataCard className="!p-5 flex flex-col gap-4">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-on-surface">解析进度</h3>
+            <p className="text-xs text-outline mt-1">{parseProgress.summary || `正在解析${reviewConfig.bidType}招标文件。`}</p>
+          </div>
+          <span className={`text-xs px-2.5 py-1 rounded-md font-semibold ${
+            parseProgress.status === 'completed'
+              ? 'bg-secondary-container text-on-secondary-container'
+              : parseProgress.status === 'failed'
+                ? 'bg-error-container text-error'
+                : 'bg-surface-container-high text-on-surface-variant'
+          }`}>
+            {parseProgress.status === 'completed' ? '完成' : parseProgress.status === 'failed' ? '失败' : '进行中'} · {percentage}%
+          </span>
+        </div>
+        <div className="h-2 bg-surface-container-high overflow-hidden">
+          <div className="h-full bg-primary transition-all" style={{ width: `${percentage}%` }} />
+        </div>
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <div className="rounded-md border border-surface-container-high bg-[#f7f7f7] p-3">
+            <p className="text-xs font-semibold text-on-surface mb-2">步骤记录</p>
+            <div className="flex flex-col gap-2">
+              {events.length ? events.map((event, index) => (
+                <div key={`${event.at || ''}-${index}`} className="text-xs text-on-surface-variant flex items-start gap-2">
+                  <span className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${event.level === 'success' ? 'bg-secondary' : event.level === 'warning' ? 'bg-tertiary' : 'bg-primary'}`} />
+                  <span>{event.message || '-'}</span>
+                </div>
+              )) : (
+                <p className="text-xs text-outline">等待解析服务返回进度。</p>
+              )}
+            </div>
+          </div>
+          <div className="rounded-md border border-surface-container-high bg-[#f7f7f7] p-3">
+            <p className="text-xs font-semibold text-on-surface mb-2">futurecode 输出</p>
+            {parts.length ? (
+              <div className="flex flex-col gap-2">
+                {parts.map((part, index) => (
+                  <pre key={`${part.type || 'text'}-${index}`} className="max-h-24 overflow-auto whitespace-pre-wrap break-words rounded bg-white px-2 py-1 text-[11px] leading-relaxed text-on-surface-variant">
+                    {part.text}
+                  </pre>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-outline">尚未收到 futurecode 流式片段；当前显示后端真实步骤进度。</p>
+            )}
+          </div>
+        </div>
+      </DataCard>
+    )
+  }
+
+  const renderBusinessCompactProgress = () => {
+    const status = uploading ? 'running' : (parseProgress?.status || 'idle')
+    const percentage = Math.max(0, Math.min(100, Number(parseProgress?.percentage || (uploading ? 3 : 0))))
+    const statusText = status === 'completed' ? '解析完成' : status === 'failed' ? '解析失败' : status === 'running' ? '解析中' : '等待上传'
+    const summary = parseProgress?.summary || (uploading ? '正在上传并解析商务招标文件，请稍候。' : '上传商务招标文件后开始解析。')
+
+    return (
+      <div className="mt-4 rounded-md border border-surface-container-high bg-surface-container-low px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-on-surface">解析进度</p>
+            <p className="mt-1 text-xs text-outline">{summary}</p>
+          </div>
+          <span className={[
+            'shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold',
+            status === 'failed'
+              ? 'bg-error-container text-error'
+              : status === 'running'
+                ? 'bg-primary/10 text-primary'
+                : 'bg-surface-container-high text-on-surface-variant',
+          ].join(' ')}
+          >
+            {statusText} · {percentage}%
+          </span>
+        </div>
+        <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-container-high">
+          <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${percentage}%` }} />
+        </div>
+      </div>
+    )
+  }
+
+  if (loadingProjects) return <PageLoading title="正在加载解析模块..." />
+  if (error) return <PageError title="解析模块加载失败" description={error} onRetry={loadProjects} />
+  if (!reviewProjects.length) {
+    return (
+      <div className="review-page flex flex-col gap-6 animate-fade-in max-w-none">
+        <PageHeader
+          title={reviewConfig.pageTitle}
+          description={reviewConfig.pageDescription}
+          className="command-surface rounded-xl px-5 py-4"
+          titleClassName="!text-[22px] !font-bold !text-ink-strong"
+          descriptionClassName="!max-w-3xl"
+          actionsClassName="stage-header-actions"
+          actions={(
+            <ReviewActionButton
+              icon="refresh"
+              onClick={loadProjects}
+              variant="secondary"
+            >
+              刷新
+            </ReviewActionButton>
+          )}
+        />
+        <DataCard className="!p-6 flex flex-col gap-4">
+          <PageEmpty
+            title={reviewConfig.emptyTitle}
+            description={reviewConfig.emptyDescription}
+          />
+          <div className="flex justify-center">
+            <ReviewActionButton
+              icon="add"
+              onClick={handleCreateReviewProject}
+              disabled={creatingReview}
+              variant="primary"
+            >
+              {creatingReview ? '新建中...' : reviewConfig.createButtonLabel}
+            </ReviewActionButton>
+          </div>
+        </DataCard>
+      </div>
+    )
+  }
+  if (loadingDetail) return <PageLoading title="正在加载项目解析详情..." />
+
+  if (showBusinessCompactUpload) {
+    return (
+      <div className="review-page flex min-h-[calc(100vh-10rem)] justify-center pt-6 animate-fade-in">
+        <DataCard className="w-full max-w-[760px] !p-0 overflow-hidden">
+          <div className="border-b border-surface-container-high px-5 py-4">
+            <p className="text-xs font-semibold text-primary">商务解析</p>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-on-surface">上传招标文件</h3>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    loadProjects()
+                    loadCurrentProject()
+                  }}
+                  disabled={uploading}
+                  className="rounded-md bg-surface-container-high px-3 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  刷新
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUploadAndParse}
+                  disabled={uploading || reviewDecision === 'abandon'}
+                  className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {uploading ? '上传解析中...' : '上传并解析'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="px-5 py-5">
+            <label
+              htmlFor="business-review-tender-upload"
+              className={[
+                'flex min-h-[160px] cursor-pointer flex-col items-center justify-center rounded-md border border-dashed border-outline-variant bg-surface-container-lowest px-6 py-8 text-center transition-colors',
+                uploading || reviewDecision === 'abandon' ? 'pointer-events-none opacity-60' : 'hover:border-primary hover:bg-primary/5',
+              ].join(' ')}
+            >
+              <span className="material-symbols-outlined text-2xl text-primary">upload_file</span>
+              <span className="mt-2 text-sm font-semibold text-on-surface">选择商务招标文件</span>
+              <span className="mt-1 text-xs text-outline">支持 Word、PDF、Excel 等招标附件</span>
+            </label>
+            <input
+              id="business-review-tender-upload"
+              type="file"
+              className="hidden"
+              accept={FILE_ACCEPT}
+              multiple
+              disabled={uploading || reviewDecision === 'abandon'}
+              onChange={handleFilesPicked}
+            />
+            <div className="mt-3">
+              {renderPickedFiles()}
+            </div>
+            {uploadError && (
+              <div className="mt-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
+                {uploadError}
+              </div>
+            )}
+            {uploading && (
+              <div className="mt-3 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
+                正在上传并解析商务招标文件，请稍候。
+              </div>
+            )}
+            {renderBusinessCompactProgress()}
+          </div>
+        </DataCard>
+      </div>
+    )
+  }
+
+  return (
+    <div className="review-page flex flex-col gap-5 animate-fade-in max-w-none">
+      <PageHeader
+        title={reviewConfig.pageTitle}
+        description={reviewConfig.pageDescription}
+        className="command-surface rounded-xl px-5 py-4 md:!items-center"
+        titleClassName="!text-[22px] !font-bold !text-ink-strong"
+        descriptionClassName="!max-w-3xl"
+        actionsClassName="items-center self-start md:self-center"
+        actions={(
+          <>
+            <ReviewActionButton
+              icon="add"
+              onClick={handleCreateReviewProject}
+              disabled={creatingReview}
+              variant="primary"
+            >
+              {creatingReview ? '新建中...' : reviewConfig.createButtonLabel}
+            </ReviewActionButton>
+            <ReviewActionButton
+              icon="refresh"
+              onClick={() => {
+                loadProjects()
+                loadCurrentProject()
+              }}
+              variant="secondary"
+            >
+              刷新
+            </ReviewActionButton>
+          </>
+        )}
+      />
+
+      {!(isBusinessBid && isParseCompleted) ? (
+        <DataCard className="!p-0 overflow-hidden">
+          <div className="grid min-h-[82px] gap-4 border-b border-outline-variant/45 px-5 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+            <div className="flex min-w-0 items-start gap-3">
+              <ReviewIconBox icon="document_scanner" />
+              <div className="min-w-0">
+                <h2 className="text-base font-headline font-semibold text-ink-strong">{reviewConfig.uploadSectionTitle}</h2>
+                <p className="mt-1 max-w-4xl text-xs leading-6 text-on-surface-variant">{reviewConfig.uploadSectionDescription}</p>
+              </div>
+            </div>
+            <span className="hidden rounded-full bg-primary-fixed px-3 py-1 text-xs font-semibold text-primary lg:inline-flex">
+              入口数据准备
+            </span>
+          </div>
+
+          <div className="grid gap-4 p-5">
+            <section className="grid min-w-0 gap-3 rounded-lg border border-outline-variant/55 bg-white p-4 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_auto] lg:items-center">
+              <div className="flex min-w-0 items-start gap-3">
+                <ReviewIconBox icon="upload_file" />
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-semibold text-on-surface">{reviewConfig.uploadFileLabel}</h3>
+                    <span className="rounded-full bg-error-container/35 px-2.5 py-1 text-xs font-semibold text-error">必选</span>
+                  </div>
+                  <p className="mt-0.5 text-xs text-outline">单文件 500MB 内，单次最多 {MAX_BATCH_FILES} 个；解析前不改变项目参与状态。</p>
+                </div>
+              </div>
+
+              <div className="min-w-0">
+                <button
+                  type="button"
+                  onClick={() => document.getElementById('review-tender-upload')?.click()}
+                  disabled={uploading || reviewDecision === 'abandon'}
+                  className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-lg border border-dashed border-outline-variant/80 bg-surface-container-low/45 px-4 text-sm font-semibold text-on-surface transition-colors hover:border-primary hover:bg-primary-fixed/50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <span className="material-symbols-outlined text-[22px] text-primary">add_to_drive</span>
+                  选择招标文件
+                </button>
+                <input
+                  id="review-tender-upload"
+                  type="file"
+                  className="hidden"
+                  accept={FILE_ACCEPT}
+                  multiple
+                  disabled={uploading || reviewDecision === 'abandon'}
+                  onChange={handleFilesPicked}
+                />
+              </div>
+
+              <ReviewActionButton
+                icon={uploading ? 'progress_activity' : 'upload_file'}
+                onClick={handleUploadAndParse}
+                disabled={uploading || reviewDecision === 'abandon'}
+                variant="primary"
+                className="w-full lg:w-auto"
+              >
+                {uploading ? '上传解析中' : '上传并解析'}
+              </ReviewActionButton>
+
+              {uploadError && (
+                <div className="rounded-lg border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error lg:col-span-3">
+                  {uploadError}
+                </div>
+              )}
+              {tenderFiles.length ? (
+                <div className="lg:col-span-3">{renderPickedFiles()}</div>
+              ) : null}
+            </section>
+
+            <aside className="grid gap-3 border-t border-outline-variant/45 pt-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-ink-strong">技术标信息</h3>
+                  <p className="mt-0.5 text-xs text-outline">当前项目与解析任务状态</p>
+                </div>
+                <ReviewStatusBadge reviewDecision={reviewDecision}>
+                  {reviewDecisionLabel}
+                </ReviewStatusBadge>
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.8fr)]">
+                <ReviewInfoTile
+                  label={reviewConfig.currentProjectLabel}
+                  value={`${project?.id || '-'} · ${project?.name || '未命名项目'}`}
+                  icon="folder_open"
+                  tone="primary"
+                  className="bg-surface-container-low/70"
+                  valueClassName="text-ink-strong"
+                />
+                <ReviewInfoTile
+                  label={reviewConfig.sourceFilesLabel}
+                  icon="draft"
+                  tone="primary"
+                >
+                  <p className="mt-1 line-clamp-2 text-sm font-medium text-on-surface">
+                    {sourceFiles.length ? sourceFiles.map((file) => file.name).join('，') : '暂无'}
+                  </p>
+                </ReviewInfoTile>
+                <ReviewInfoTile
+                  label="解析时间"
+                  value={formatDateTime(parseData?.parsedAt)}
+                  icon="schedule"
+                  valueClassName="font-mono tabular-nums"
+                />
+                <ReviewInfoTile
+                  label="投标起始日期"
+                  value={parsedDates?.startDate || '-'}
+                  icon="event_available"
+                  valueClassName="font-mono tabular-nums"
+                />
+                <ReviewInfoTile
+                  label="投标截止日期"
+                  value={parsedDates?.endDate || '-'}
+                  icon="event_busy"
+                  valueClassName="font-mono tabular-nums"
+                />
+              </div>
+            </aside>
+          </div>
+        </DataCard>
+      ) : null}
+
+      {!(isBusinessBid && isParseCompleted) ? renderParseProgress() : null}
+
+      <DataCard className="!p-0 overflow-hidden">
+        <div className="border-b border-outline-variant/45 px-5 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <ReviewIconBox icon="fact_check" tone={isParseCompleted ? 'success' : 'primary'} />
+              <div>
+                <h3 className="text-base font-headline font-semibold text-ink-strong">{reviewConfig.resultTitle}</h3>
+                <p className="mt-0.5 text-xs text-outline">
+                  {isParseCompleted ? '已提取评分标准、项目参数、附表与证据线索。' : '上传并解析后在此核对结构化结果。'}
+                </p>
+              </div>
+            </div>
+            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${isParseCompleted ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
+              {isParseCompleted ? `解析完成${structuredCategories.length ? ` · ${structuredCategories.length} 类` : ''}` : '待解析'}
+            </span>
+          </div>
+        </div>
+
+        {!sourceFiles.length ? (
+          <div className="flex min-h-[72px] items-center gap-3 bg-surface-container-lowest px-5 py-4 text-sm text-on-surface-variant">
+            <ReviewIconBox icon="upload_file" />
+            <span>{reviewConfig.noSourceHint}</span>
+          </div>
+        ) : !isParseCompleted ? (
+          <div className="flex min-h-[72px] items-center gap-3 bg-surface-container-lowest px-5 py-4 text-sm text-on-surface-variant">
+            <ReviewIconBox icon="pending_actions" />
+            <span>{reviewConfig.pendingParseHint}</span>
+          </div>
+        ) : (
+          <div className="p-5 flex flex-col gap-5">
+            {reviewConfig.showApproveBusinessScoring && (
+              <div className="rounded-md border border-surface-container-high bg-surface-container-low px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-on-surface">商务评分标准审核</p>
+                  <p className="mt-1 text-xs text-outline">
+                    复核无误后先标记为后续可用资产；确认参与投标并完善项目信息后，自动同步到项目素材库的“03-模板底稿与过程文件”。
+                  </p>
+                  <p className="mt-1 text-xs text-outline">
+                    状态：{assetReviewStatusLabel(businessScoringAsset.reviewStatus || businessScoringAsset.status)}
+                    {' · '}
+                    {assetSyncStatusLabel(businessScoringAsset.syncStatus)}
+                  </p>
+                </div>
+                <button
+                  onClick={handleApproveBusinessScoringAsset}
+                  disabled={savingBusinessScoring || !isParseCompleted}
+                  className="whitespace-nowrap rounded-md bg-primary px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {savingBusinessScoring ? '审核中...' : '审核通过'}
+                </button>
+              </div>
+            )}
+
+            <div className="flex flex-col gap-4">
+              {scoringGroups.map((group) => (
+                <ScoringCriteriaTable
+                  key={group.key}
+                  title={group.title}
+                  rows={group.rows}
+                  showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
+                />
+              ))}
+            </div>
+
+            {reviewConfig.fieldGroupSections.length ? (
+              <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
+                {reviewConfig.fieldGroupSections.map(([key, title]) => (
+                  <FieldGroupTable
+                    key={key}
+                    title={title}
+                    fields={fieldGroups[key] || []}
+                    showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
+                  />
+                ))}
+              </div>
+            ) : null}
+
+            {reviewConfig.showPresence !== false && (
+              <PresenceTable
+                title={reviewConfig.presenceTitle}
+                rows={presenceRows}
+                showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
+              />
+            )}
+
+            {reviewConfig.bidType === '商务标' ? (
+              <>
+                {reviewConfig.showCommitmentClues !== false && (
+                  <CommitmentClueTable
+                    clues={commitmentClues}
+                    showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
+                  />
+                )}
+                <div className="border border-surface-container-high rounded-md overflow-hidden">
+                  <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-on-surface">承诺函 Word 预览</h4>
+                    <div className="flex items-center gap-2">
+                      {reviewConfig.showApproveCommitmentLetters && commitmentLetters.length ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleApproveCommitmentLetterAsset(selectedCommitmentLetter?.id)}
+                            disabled={savingAllCommitmentLetters || Boolean(savingCommitmentLetterId) || !selectedCommitmentLetter?.id}
+                            className="rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {savingCommitmentLetterId ? '审核中...' : '审核当前'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleApproveAllCommitmentLetterAssets}
+                            disabled={savingAllCommitmentLetters || Boolean(savingCommitmentLetterId)}
+                            className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {savingAllCommitmentLetters ? '审核中...' : '审核全部'}
+                          </button>
+                        </>
+                      ) : null}
+                      <span className="text-xs text-outline">{commitmentLetters.length} 个</span>
+                    </div>
+                  </div>
+                  {commitmentLetters.length ? (
+                    <OnlyOfficeWorkspace
+                      className="m-4 appendix-preview-workspace"
+                      heightClass="appendix-preview-shell"
+                      gridClassName="grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]"
+                      sidebarClassName="appendix-preview-aside"
+                      documentAreaClassName="appendix-preview-document"
+                      documentTitle={selectedCommitmentLetter?.title || '承诺函预览'}
+                      documentSubtitle={selectedCommitmentLetter?.workspacePath || selectedCommitmentLetter?.sourceFile || ''}
+                      documentMeta={(
+                        <span className="whitespace-nowrap rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant">
+                          {commitmentStatusLabel(selectedCommitmentLetter?.status)}
+                          {reviewConfig.showApproveCommitmentLetters ? ` · ${assetReviewStatusLabel(selectedCommitmentLetter?.assetReviewStatus)} · ${assetSyncStatusLabel(selectedCommitmentLetter?.assetSyncStatus)}` : ''}
+                        </span>
+                      )}
+                      sidebar={(
+                        <div className="appendix-preview-sidebar flex h-full min-h-0 flex-col">
+                          <div className="border-b border-surface-container-high px-4 py-3">
+                            <p className="text-sm font-semibold text-on-surface">承诺函条目</p>
+                            <p className="mt-1 text-xs text-outline">已生成解析草稿，可切换预览并复核。</p>
+                          </div>
+                          <div className="appendix-preview-list min-h-0 flex-1 overflow-y-auto p-2">
+                            {commitmentLetters.map((letter, index) => {
+                              const key = commitmentLetterKey(letter, index)
+                              const active = key === activeCommitmentLetterId
+                              return (
+                                <button
+                                  key={key}
+                                  type="button"
+                                  aria-pressed={active}
+                                  onClick={() => setSelectedCommitmentLetterId(key)}
+                                  className={[
+                                    'mb-2 flex w-full flex-col items-start gap-1 rounded-md border px-3 py-2 text-left transition-colors',
+                                    active
+                                      ? 'border-primary bg-primary/5 text-primary'
+                                      : 'border-surface-container-high bg-white text-on-surface hover:border-outline-variant hover:bg-surface-container-low',
+                                  ].join(' ')}
+                                >
+                                  <span className="line-clamp-2 text-sm font-semibold">{letter.title || '-'}</span>
+                                  <span className="text-xs text-on-surface-variant">{commitmentTypeLabel(letter.commitmentType)}</span>
+                                  <span className="text-xs text-outline">{letter.workspacePath || letter.docxPath || '-'}</span>
+                                  {reviewConfig.showApproveCommitmentLetters ? (
+                                    <span className="text-xs text-outline">
+                                      {assetReviewStatusLabel(letter.assetReviewStatus)}
+                                      {' · '}
+                                      {assetSyncStatusLabel(letter.assetSyncStatus)}
+                                    </span>
+                                  ) : null}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    >
+                      {commitmentLetterPreviewLoading ? (
+                        <div className="flex h-full min-h-0 items-center justify-center text-sm text-on-surface-variant">
+                          正在加载承诺函预览...
+                        </div>
+                      ) : commitmentLetterPreview?.onlyoffice?.fileUrl && commitmentLetterPreview?.onlyoffice?.callbackUrl && !commitmentLetterPreviewError ? (
+                        <OnlyOfficeEmbed
+                          session={commitmentLetterPreview.onlyoffice}
+                          mode="view"
+                          className="h-full min-h-0 w-full rounded-md border border-surface-container-high bg-white"
+                          onError={(message) => setCommitmentLetterPreviewError(message || 'OnlyOffice 承诺函预览加载失败')}
+                        />
+                      ) : (
+                        <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 text-center text-sm text-on-surface-variant">
+                          <p>{commitmentLetterPreviewError || '当前承诺函暂时无法载入 OnlyOffice 预览。'}</p>
+                          {commitmentLetterPreview?.onlyoffice?.browserFileUrl ? (
+                            <a
+                              href={commitmentLetterPreview.onlyoffice.browserFileUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-on-primary"
+                            >
+                              打开 Word 文件
+                            </a>
+                          ) : null}
+                        </div>
+                      )}
+                    </OnlyOfficeWorkspace>
+                  ) : (
+                    <div className="px-4 py-3 text-sm text-outline">未识别到可自动生成的承诺文件。</div>
+                  )}
+                </div>
+              </>
+            ) : null}
+
+            <div className="border border-surface-container-high rounded-md overflow-hidden">
+              <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-on-surface">{reviewConfig.appendixTitle}</h4>
+                <div className="flex items-center gap-2">
+                  {reviewConfig.showApproveAppendices && appendices.length ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleApproveAppendixAsset(selectedAppendix?.id)}
+                        disabled={savingAllAppendices || Boolean(savingAppendixId) || !selectedAppendix?.id}
+                        className="rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {savingAppendixId ? '审核中...' : '审核当前'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleApproveAllAppendixAssets}
+                        disabled={savingAllAppendices || Boolean(savingAppendixId)}
+                        className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {savingAllAppendices ? '审核中...' : '审核全部'}
+                      </button>
+                    </>
+                  ) : null}
+                  <span className="text-xs text-outline">{appendices.length} 个</span>
+                </div>
+              </div>
+              {appendices.length ? (
+                <OnlyOfficeWorkspace
+                  className="m-4 appendix-preview-workspace"
+                  heightClass="appendix-preview-shell"
+                  gridClassName="grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]"
+                  sidebarClassName="appendix-preview-aside"
+                  documentAreaClassName="appendix-preview-document"
+                  documentTitle={selectedAppendix?.title || '附表预览'}
+                  documentSubtitle={selectedAppendix?.workspacePath || selectedAppendix?.sourceFile || ''}
+                  documentMeta={(
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="whitespace-nowrap rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant">
+                        {selectedAppendix?.rowCount ?? 0} 行
+                      </span>
+                      {selectedAppendix?.templateTypeLabel ? (
+                        <span className="whitespace-nowrap rounded-md bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+                          {selectedAppendix.templateTypeLabel}
+                        </span>
+                      ) : null}
+                      {selectedAppendix?.extractionQuality ? (
+                        <span
+                          className={[
+                            'whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-semibold',
+                            selectedAppendix.extractionQuality === 'complete'
+                              ? 'bg-secondary-container text-on-secondary-container'
+                              : 'bg-error-container text-error',
+                          ].join(' ')}
+                        >
+                          {appendixQualityLabel(selectedAppendix.extractionQuality)}
+                        </span>
+                      ) : null}
+                    </div>
+                  )}
+                  sidebar={(
+                    <div className="appendix-preview-sidebar flex h-full min-h-0 flex-col">
+                      <div className="border-b border-surface-container-high px-4 py-3">
+                        <p className="text-sm font-semibold text-on-surface">附表条目</p>
+                        <p className="mt-1 text-xs text-outline">{reviewConfig.appendixSwitchHint}</p>
+                      </div>
+                      <div className="appendix-preview-list min-h-0 flex-1 overflow-y-auto p-2">
+                        {appendices.map((appendix, index) => {
+                          const key = appendixKey(appendix, index)
+                          const active = key === activeAppendixId
+                          return (
+                            <button
+                              key={key}
+                              type="button"
+                              aria-pressed={active}
+                              onClick={() => setSelectedAppendixId(key)}
+                              className={[
+                                'mb-2 flex w-full flex-col items-start gap-1 rounded-md border px-3 py-2 text-left transition-colors',
+                                active
+                                  ? 'border-primary bg-primary/5 text-primary'
+                                  : 'border-surface-container-high bg-white text-on-surface hover:border-outline-variant hover:bg-surface-container-low',
+                              ].join(' ')}
+                            >
+                              <span className="line-clamp-2 text-sm font-semibold">{appendix.title || '-'}</span>
+                              <span className="text-xs text-on-surface-variant">{appendix.sourceFile || '-'}</span>
+                              {appendix.templateTypeLabel || appendix.extractionQuality || appendix.extractionMode ? (
+                                <span className="text-xs text-on-surface-variant">
+                                  {[appendix.templateTypeLabel, appendixExtractionModeLabel(appendix.extractionMode), appendixQualityLabel(appendix.extractionQuality)]
+                                    .filter(Boolean)
+                                    .join(' · ')}
+                                </span>
+                              ) : null}
+                              <span className="text-xs text-outline">{appendix.workspacePath || appendix.docxPath || '-'}</span>
+                              {Array.isArray(appendix.qualityIssues) && appendix.qualityIssues.length ? (
+                                <span className="line-clamp-2 text-xs text-error">
+                                  {appendix.qualityIssues.join('；')}
+                                </span>
+                              ) : null}
+                              {reviewConfig.showApproveAppendices ? (
+                                <span className="text-xs text-outline">
+                                  {assetReviewStatusLabel(appendix.assetReviewStatus)}
+                                  {' · '}
+                                  {assetSyncStatusLabel(appendix.assetSyncStatus)}
+                                </span>
+                              ) : null}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                >
+                  {appendixPreviewLoading ? (
+                    <div className="flex h-full min-h-0 items-center justify-center text-sm text-on-surface-variant">
+                      正在加载附表预览...
+                    </div>
+                  ) : appendixPreview?.onlyoffice?.fileUrl && appendixPreview?.onlyoffice?.callbackUrl && !appendixPreviewError ? (
+                    <OnlyOfficeEmbed
+                      session={appendixPreview.onlyoffice}
+                      mode="view"
+                      className="h-full min-h-0 w-full rounded-md border border-surface-container-high bg-white"
+                      onError={(message) => setAppendixPreviewError(message || 'OnlyOffice 附表预览加载失败')}
+                    />
+                  ) : (
+                    <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 text-center text-sm text-on-surface-variant">
+                      <p>{appendixPreviewError || '当前附表暂时无法载入 OnlyOffice 预览。'}</p>
+                      {appendixPreview?.onlyoffice?.browserFileUrl ? (
+                        <a
+                          href={appendixPreview.onlyoffice.browserFileUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-on-primary"
+                        >
+                          打开 Word 文件
+                        </a>
+                      ) : null}
+                    </div>
+                  )}
+                </OnlyOfficeWorkspace>
+              ) : (
+                <div className="px-4 py-3 text-sm text-outline">{reviewConfig.appendixEmptyHint}</div>
+              )}
+            </div>
+
+            {reviewConfig.showEvidenceDetails !== false && (
+              <details className="rounded-md border border-surface-container-high bg-white">
+                <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-on-surface">证据明细</summary>
+                <div className="overflow-x-auto border-t border-surface-container-high">
+                  <table className="w-full text-sm min-w-[1120px]">
+                    <thead>
+                      <tr className="bg-surface-container-low border-b border-surface-container-high">
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">类别</th>
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">字段</th>
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">提取值</th>
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">来源文件</th>
+                        {reviewConfig.showEvidenceLocationColumn !== false ? (
+                          <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+                        ) : null}
+                        <th className="px-4 py-2 text-left font-semibold text-on-surface">证据文本</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((row) => (
+                        <tr key={row.id} className="border-b border-surface-container-high hover:bg-surface-container-low/60">
+                          <td className="px-4 py-2 text-on-surface whitespace-nowrap">{row.category}</td>
+                          <td className="px-4 py-2 text-on-surface-variant min-w-[160px]">{row.field}</td>
+                          <td className="px-4 py-2 text-primary font-medium min-w-[220px]">{row.value}</td>
+                          <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{row.fileName}</td>
+                          {reviewConfig.showEvidenceLocationColumn !== false ? (
+                            <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{row.evidenceLocation}</td>
+                          ) : null}
+                          <td className="px-4 py-2 text-on-surface-variant min-w-[300px]">{row.evidence}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            )}
+          </div>
+        )}
+      </DataCard>
+
+      <DataCard className="!p-0 overflow-hidden">
+        <div className="grid min-h-[86px] gap-4 px-5 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <div className="flex min-w-0 items-start gap-3">
+            <ReviewIconBox icon="how_to_reg" tone={isParseCompleted ? 'success' : 'primary'} />
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-ink-strong">项目参与决策</h3>
+              <p className="mt-1 text-xs text-on-surface-variant">
+                解析完成后确认是否进入后续工作区；不参与会结束当前解析项目。
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center lg:justify-end">
+            <ReviewActionButton
+              icon="block"
+              onClick={() => handleDecision('abandon')}
+              disabled={Boolean(deciding)}
+              variant="danger"
+            >
+              {deciding === 'abandon' ? '提交中...' : '不参与该项目'}
+            </ReviewActionButton>
+            <ReviewActionButton
+              icon="login"
+              onClick={() => handleDecision('participate')}
+              disabled={Boolean(deciding) || !isParseCompleted}
+              variant="primary"
+            >
+              {deciding === 'participate' ? '提交中...' : '参与该项目并进入工作区'}
+            </ReviewActionButton>
+          </div>
+        </div>
+        {reviewDecision === 'abandon' && (
+          <div className="mx-5 mb-4 rounded-md border border-error/25 bg-error-container/20 px-3 py-2 text-sm text-error">
+            当前项目已标记为不参与，流程在解析阶段结束。
+          </div>
+        )}
+      </DataCard>
+
+      {showProjectInfoModal && projectToComplete && (
+        <ProjectWizardModal
+          mode="update"
+          project={projectToComplete}
+          forceReviewDecision="participate"
+          defaultBidType={reviewConfig.bidType}
+          lockBidType
+          onClose={() => {
+            setShowProjectInfoModal(false)
+            setProjectToComplete(null)
+          }}
+          onCreated={(updatedProject) => {
+            setShowProjectInfoModal(false)
+            setProjectToComplete(null)
+            setProject(updatedProject)
+            setProjects((prev) => prev.map((item) => (
+              item.id === updatedProject.id ? { ...item, ...updatedProject } : item
+            )))
+            showToast?.('已确认参与投标，正在进入对应工作区。')
+            navigate(projectRoute(updatedProject.id, '/template-directory', slugFromBidType(updatedProject.bidType)))
+          }}
+        />
+      )}
+    </div>
+  )
+}
