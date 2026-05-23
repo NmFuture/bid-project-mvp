@@ -7,6 +7,8 @@ import PageHeader from '../components/shared/PageHeader'
 import StageGroupNav from '../components/shared/StageGroupNav'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
+import Button from '../components/ui/Button'
+import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../components/ui/Dialog'
 import { brandFutureCode, brandFutureCodeOrFallback } from '../utils/branding'
 import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
@@ -85,6 +87,7 @@ export default function GenerateProgress({ showToast }) {
   const [error, setError] = useState('')
   const [runningAction, setRunningAction] = useState(false)
   const [advancing, setAdvancing] = useState(false)
+  const [businessProgressOpen, setBusinessProgressOpen] = useState(false)
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
     if (!silent) {
@@ -127,7 +130,7 @@ export default function GenerateProgress({ showToast }) {
         outputTitle: '装配输出',
         processName: '商务标响应文件装配',
         waiting: '装配任务已创建，正在等待商务标响应文件装配结果。',
-        idleDescription: '点击“生成标书”后会异步调用后端商务标响应文件装配链路，并持续显示当前步骤、执行过程和装配原始输出。',
+        idleDescription: '点击“生成标书”后会异步调用后端商务标响应文件装配链路，并用弹窗持续展示当前步骤、执行过程和结果概览。',
         overviewTitle: '响应件结果概览',
         emptySections: '商务响应件尚未输出装配结果。',
         toast: '已开始装配商务标响应文件，请稍候。',
@@ -142,7 +145,7 @@ export default function GenerateProgress({ showToast }) {
         emptySections: '正文尚未输出章节结果。',
         toast: '已开始拼装正文，请稍候。',
         success: '拼装成功',
-      }
+    }
 
   useEffect(() => {
     if (!isRunning) return undefined
@@ -154,8 +157,17 @@ export default function GenerateProgress({ showToast }) {
     return () => window.clearInterval(timer)
   }, [isRunning, loadData])
 
+  useEffect(() => {
+    if (!isBusinessBid || (!isRunning && !runningAction)) return undefined
+    const timer = window.setTimeout(() => {
+      setBusinessProgressOpen(true)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [isBusinessBid, isRunning, runningAction])
+
   const handleRunFill = async () => {
     if (runningAction || isRunning) return
+    if (isBusinessBid) setBusinessProgressOpen(true)
     setRunningAction(true)
     try {
       const payload = await generateAPI.run(id)
@@ -339,6 +351,167 @@ export default function GenerateProgress({ showToast }) {
     </div>
   )
 
+  const renderBusinessProgressDialog = () => {
+    if (!isBusinessBid) return null
+
+    const failed = status === 'failed' || opencodeStatus === 'failed'
+    const dialogTitle = failed
+      ? '商务标正文生成失败'
+      : isCompleted
+        ? '商务标正文已生成'
+        : isRunning || runningAction
+          ? '正在生成商务标正文'
+          : '商务标正文生成进度'
+    const dialogSummary = failed
+      ? latestEvent?.message || '生成任务未完成，请检查执行过程后重新生成。'
+      : isCompleted
+        ? '已完成商务标响应文件装配，可进入共创导出继续核对和定稿。'
+        : isRunning || runningAction
+          ? latestEvent?.message || '系统正在根据当前素材匹配和事实表结果装配商务标正文。'
+          : '当前没有运行中的商务标正文生成任务。'
+    const dialogCanClose = !isRunning && !runningAction
+    const closeDialog = () => {
+      if (dialogCanClose) setBusinessProgressOpen(false)
+    }
+    const visibleTasks = tasks.slice(0, 8)
+    const visibleEvents = executionEvents.slice(-5)
+    const sections = Array.isArray(data?.sections) ? data.sections : []
+
+    return (
+      <Dialog open={businessProgressOpen} onClose={closeDialog} size="lg">
+        <DialogHeader onClose={dialogCanClose ? closeDialog : undefined}>
+          <div className="flex min-w-0 flex-col gap-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-lg font-headline font-bold text-on-surface">{dialogTitle}</h3>
+              <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${
+                failed
+                  ? 'bg-error-container text-on-error-container'
+                  : isCompleted
+                    ? 'bg-secondary-container text-on-secondary-container'
+                    : 'bg-primary/15 text-primary'
+              }`}>
+                {failed ? '失败' : isCompleted ? '已完成' : isRunning || runningAction ? '生成中' : '待生成'}
+              </span>
+            </div>
+            <p className="text-sm text-on-surface-variant">{brandFutureCode(dialogSummary)}</p>
+          </div>
+        </DialogHeader>
+
+        <DialogBody className="space-y-5">
+          <div className="rounded-md border border-surface-container-high bg-surface-container-lowest p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm font-semibold text-on-surface">生成进度</div>
+              <span className="text-xs text-outline">当前完成度：{progress}%</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="h-3 flex-1 overflow-hidden rounded-full bg-surface-container-high">
+                <div
+                  className={`h-full transition-all duration-700 ${failed ? 'bg-error' : 'bg-primary'}`}
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              <span className="w-12 text-right text-xs font-semibold text-outline">{progress}%</span>
+            </div>
+            {latestEvent ? (
+              <div className="mt-3 rounded-md bg-surface-container-low px-3 py-2 text-sm text-on-surface">
+                <span className="mr-2 text-xs font-semibold text-primary">{localizeExecutionStep(latestEvent.step)}</span>
+                {brandFutureCode(latestEvent.message) || '-'}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <div className="rounded-md border border-surface-container-high bg-surface-container-lowest p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h4 className="text-sm font-semibold text-on-surface">任务进度</h4>
+                <span className="text-xs text-outline">{tasks.length} 项</span>
+              </div>
+              {visibleTasks.length ? (
+                <div className="space-y-2">
+                  {visibleTasks.map((task, index) => (
+                    <div key={task.id || `${task.label || 'task'}-${index}`} className="flex items-center justify-between gap-3 rounded-md bg-surface-container-low px-3 py-2">
+                      <div className="min-w-0 truncate text-sm font-medium text-on-surface">{task.label || `任务 ${index + 1}`}</div>
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${taskStatusClassMap[task.status] || taskStatusClassMap.pending}`}>
+                        {taskStatusLabelMap[task.status] || '待处理'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-md border border-dashed border-surface-container-high px-3 py-6 text-center text-sm text-on-surface-variant">
+                  暂无任务进度数据。
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-md border border-surface-container-high bg-surface-container-lowest p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h4 className="text-sm font-semibold text-on-surface">执行事件</h4>
+                <span className="text-xs text-outline">最近 {visibleEvents.length} 条</span>
+              </div>
+              {visibleEvents.length ? (
+                <div className="space-y-3">
+                  {visibleEvents.map((event, index) => (
+                    <div key={`${event.step || 'event'}-${index}-${event.at || ''}`} className="rounded-md bg-surface-container-low px-3 py-2">
+                      <div className="mb-1 flex items-center justify-between gap-3">
+                        <span className={`text-xs font-semibold ${(eventLevelToneMap[event.level] || eventLevelToneMap.info).label}`}>
+                          {localizeExecutionStep(event.step)}
+                        </span>
+                        <span className="text-[11px] text-outline">{formatEventTime(event.at)}</span>
+                      </div>
+                      <div className="text-sm leading-relaxed text-on-surface">{brandFutureCode(event.message) || '-'}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-md border border-dashed border-surface-container-high px-3 py-6 text-center text-sm text-on-surface-variant">
+                  暂无执行事件。
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-md border border-surface-container-high bg-surface-container-lowest p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h4 className="text-sm font-semibold text-on-surface">结果概览</h4>
+              <span className="text-xs text-outline">{sections.length} 个章节/附件</span>
+            </div>
+            {sections.length ? (
+              <div className="grid max-h-56 grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
+                {sections.slice(0, 12).map((section, index) => (
+                  <div key={section.nodeId || `${section.title || 'section'}-${index}`} className="flex items-center justify-between gap-3 rounded-md bg-surface-container-low px-3 py-2">
+                    <div className="min-w-0 truncate text-sm text-on-surface">
+                      <span className="mr-2 text-xs font-semibold text-outline">{String(index + 1).padStart(2, '0')}</span>
+                      {section.title || '未命名章节'}
+                    </div>
+                    <span className={`shrink-0 rounded-md px-2 py-0.5 text-[11px] ${sectionStatusClassMap[section.generationMode] || sectionStatusClassMap.generated_with_placeholder}`}>
+                      {sectionStatusLabelMap[section.generationMode] || section.generationMode || '未知'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-md border border-dashed border-surface-container-high px-3 py-6 text-center text-sm text-on-surface-variant">
+                {generationLabels.emptySections}
+              </div>
+            )}
+          </div>
+        </DialogBody>
+
+        <DialogFooter>
+          {isCompleted ? (
+            <Button type="button" onClick={handleGoEditor} disabled={advancing} variant="primary">
+              {advancing ? '进入中...' : '进入共创导出'}
+            </Button>
+          ) : null}
+          <Button type="button" onClick={closeDialog} disabled={!dialogCanClose} variant={isCompleted ? 'quiet' : 'primary'}>
+            {dialogCanClose ? '关闭' : '生成中...'}
+          </Button>
+        </DialogFooter>
+      </Dialog>
+    )
+  }
+
   return (
     <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
       <StageBreadcrumb />
@@ -361,6 +534,14 @@ export default function GenerateProgress({ showToast }) {
             >
               刷新
             </button>
+            {isBusinessBid && status !== 'idle' ? (
+              <button
+                onClick={() => setBusinessProgressOpen(true)}
+                className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors"
+              >
+                查看进度
+              </button>
+            ) : null}
             <button
               onClick={handleRunFill}
               disabled={runningAction || isRunning}
@@ -578,11 +759,12 @@ export default function GenerateProgress({ showToast }) {
             ) : null}
 
             <div>
-              {renderOpencodeOutputCard()}
+              {isBusinessBid ? null : renderOpencodeOutputCard()}
             </div>
           </div>
         )}
       </DataCard>
+      {renderBusinessProgressDialog()}
     </div>
   )
 }
