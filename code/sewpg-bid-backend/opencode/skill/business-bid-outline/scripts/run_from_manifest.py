@@ -79,8 +79,6 @@ def run_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any
     history_inputs = build_history_outline_inputs(template_file)
     history_inputs_file.write_text(json.dumps(history_inputs, ensure_ascii=False, indent=2), encoding="utf-8")
     template_outline = history_candidates_for_toc(history_inputs)
-    if not template_outline:
-        raise SystemExit("templateFile has no usable outline entries")
 
     tender_map_inputs = build_tender_map_inputs(tender_files[0], work_dir)
     tender_map_inputs_file.write_text(json.dumps(tender_map_inputs, ensure_ascii=False, indent=2), encoding="utf-8")

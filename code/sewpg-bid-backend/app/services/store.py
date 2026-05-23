@@ -29,12 +29,15 @@ from app.services.business_gap_planning import (
     build_business_gap_material_picker_index,
     build_business_gap_plan_for_project,
     refresh_business_gap_artifact_urls,
+    run_business_table_fill_skill,
     summarize_business_gap_plan,
 )
 from app.services.gap_planning import (
     TABLE_FILL_SKILL_NAME,
     WORD_FILL_SKILL_NAME,
     _artifact_onlyoffice_payload,
+    _downloadable_fill_source_payload,
+    _run_async,
     build_gap_plan_for_project,
     check_gap_integrity,
     normalize_gap_plan_fill_task_skills,
@@ -49,6 +52,7 @@ from app.services.gap_planning import (
 from app.services.minio_client import minio_client
 from app.services.parse_profiles import normalize_bid_type
 from app.services.material_store import material_store
+from app.services.peripheral import PeripheralError
 from app.services.workspace_artifacts import (
     business_workspace_dir,
     cleanup_parse_temp_workspace,
@@ -390,6 +394,32 @@ def _run_async_material_files(**kwargs: Any) -> dict[str, Any]:
     return result.get("value") if isinstance(result.get("value"), dict) else {}
 
 
+def _run_async_material_delete_folder(path: str) -> dict[str, Any]:
+    async def call_delete_folder() -> dict[str, Any]:
+        return await material_store.raw_delete_folder(path)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        result = asyncio.run(call_delete_folder())
+        return result if isinstance(result, dict) else {}
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+
+    def runner() -> None:
+        try:
+            result["value"] = asyncio.run(call_delete_folder())
+        except BaseException as exc:  # pragma: no cover
+            error["value"] = exc
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+    if error:
+        raise error["value"]
+    return result.get("value") if isinstance(result.get("value"), dict) else {}
+
+
 class AppStore:
     def __init__(self, storage_backend: str | None = None) -> None:
         settings.ensure_dirs()
@@ -590,7 +620,7 @@ class AppStore:
             project["parse_progress"] = {
                 "status": "completed" if status == "completed" else "idle",
                 "percentage": 100 if status == "completed" else 0,
-                "summary": "已从项目工作区恢复解析结果。" if status == "completed" else "尚未触发招标文件解析。",
+                "summary": "已从项目工作区恢复解析结果。" if status == "completed" else "",
                 "startedAt": "",
                 "completedAt": str((project.get("parse_result") or {}).get("parsedAt") or ""),
                 "events": [],
@@ -975,7 +1005,7 @@ class AppStore:
             "parse_progress": {
                 "status": "idle",
                 "percentage": 0,
-                "summary": "尚未触发招标文件解析。",
+                "summary": "",
                 "startedAt": "",
                 "completedAt": "",
                 "events": [],
@@ -1129,10 +1159,28 @@ class AppStore:
         return self._detail(project)
 
     def delete_project(self, project_id: str) -> None:
-        self._require(project_id)
+        project = self._require(project_id)
         cleanup_parse_temp_workspace(project_id)
+        self._delete_project_material_folder(project)
         self._projects.pop(project_id, None)
         self._delete_project_record(project_id)
+
+    @staticmethod
+    def _delete_project_material_folder(project: dict[str, Any]) -> None:
+        scope = build_project_material_scope(project)
+        for item in scope.get("readableScopes") or []:
+            if str(item.get("key") or "") != "project":
+                continue
+            path = str(item.get("path") or "").strip().strip("/")
+            if not path or not path.startswith("商务标/项目素材/"):
+                continue
+            try:
+                _run_async_material_delete_folder(path)
+            except PeripheralError as exc:
+                if exc.code == "RAW_FOLDER_NOT_FOUND":
+                    return
+                raise
+            return
 
     def get_stages(self, project_id: str) -> list[dict[str, Any]]:
         project = self._require(project_id)
@@ -1325,7 +1373,7 @@ class AppStore:
             progress = {
                 "status": "idle",
                 "percentage": 0,
-                "summary": "尚未触发招标文件解析。",
+                "summary": "",
                 "startedAt": "",
                 "completedAt": "",
                 "events": [],
@@ -2208,6 +2256,8 @@ class AppStore:
             return self._build_business_gap_payload(project, business_gap_state)
         if self._refresh_business_gap_template_candidates(project, business_gap_state):
             business_gap_state = self._ensure_business_gap_state(project)
+        if self._refresh_business_gap_material_kind_labels(project, business_gap_state):
+            business_gap_state = self._ensure_business_gap_state(project)
         payload = self._build_business_gap_payload(project, business_gap_state)
         plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
         refresh_business_gap_artifact_urls(
@@ -2302,6 +2352,8 @@ class AppStore:
                     "materialName": name,
                     "folderPath": folder_path,
                     "materialTier": str(material.get("materialTier") or segment.get("material_tier") or ""),
+                    "businessMaterialKind": str(material.get("businessMaterialKind") or ""),
+                    "businessMaterialKindLabel": str(material.get("businessMaterialKindLabel") or ""),
                     "cleanStatus": str(material.get("cleanStatus") or ""),
                     "hasCleanedWord": bool(material.get("hasCleanedWord")),
                     "cleanedFileName": str(material.get("cleanedFileName") or ""),
@@ -2344,6 +2396,8 @@ class AppStore:
                     "materialName": name,
                     "folderPath": folder_path,
                     "materialTier": str(material.get("materialTier") or ""),
+                    "businessMaterialKind": str(material.get("businessMaterialKind") or ""),
+                    "businessMaterialKindLabel": str(material.get("businessMaterialKindLabel") or ""),
                     "cleanStatus": str(material.get("cleanStatus") or ""),
                     "hasCleanedWord": bool(material.get("hasCleanedWord")),
                     "cleanedFileName": str(material.get("cleanedFileName") or ""),
@@ -2399,6 +2453,8 @@ class AppStore:
             "fileName": file_name,
             "folderPath": str(material.get("folderPath") or ""),
             "materialTier": str(material.get("materialTier") or ""),
+            "businessMaterialKind": str(material.get("businessMaterialKind") or ""),
+            "businessMaterialKindLabel": str(material.get("businessMaterialKindLabel") or ""),
             "mimeType": mime_type,
             "renderer": renderer,
             "browserFileUrl": browser_file_url,
@@ -2412,39 +2468,39 @@ class AppStore:
         if renderer in {"image", "pdf"}:
             return {**base, "previewMode": "native", "message": "已生成浏览器原件预览。"}
 
-        if bool(material.get("hasCleanedWord")):
-            if str(mode or "").lower() == "office":
-                cleaned = await material_store.raw_cleaned_preview(
-                    str(material["id"]),
-                    browser_base_url=browser_base_url,
-                    onlyoffice_base_url=onlyoffice_base_url,
-                )
-                return {
-                    **base,
-                    "previewMode": "onlyoffice",
-                    "renderer": "word",
-                    "officeAvailable": True,
-                    "onlyoffice": cleaned.get("onlyoffice") or {},
-                    "cleanedPreview": cleaned,
-                    "message": "已生成清洗稿完整 Word 预览。",
-                }
-            try:
-                snippets = await self._business_gap_cleaned_docx_snippets(str(material["id"]))
-            except Exception:
-                snippets = []
+        if renderer in {"word", "spreadsheet", "presentation"}:
+            suffix = Path(file_name).suffix.lower().lstrip(".") or "docx"
+            document_type = self._business_gap_onlyoffice_document_type(file_name, renderer)
+            document_server_url = (
+                f"{onlyoffice_base_url.rstrip('/')}{file_path}"
+                if onlyoffice_base_url
+                else browser_file_url
+            )
             return {
                 **base,
-                "previewMode": "text",
-                "renderer": "word",
+                "previewMode": "onlyoffice",
+                "renderer": renderer,
                 "officeAvailable": True,
-                "snippets": snippets,
-                "message": "已生成清洗稿文本快照；如需保留格式可打开完整 Word 预览。",
+                "onlyoffice": {
+                    "documentKey": f"business-gap-material-{material['id']}-v{payload.get('version') or material.get('version') or 1}",
+                    "title": file_name,
+                    "fileUrl": document_server_url,
+                    "browserFileUrl": browser_file_url,
+                    "documentServerFileUrl": document_server_url,
+                    "fileType": suffix,
+                    "documentType": document_type,
+                    "user": {
+                        "id": "user-1",
+                        "name": "当前用户",
+                    },
+                },
+                "message": "已生成原素材 OnlyOffice 预览。",
             }
 
         return {
             **base,
             "previewMode": "download",
-            "message": "该素材暂无可直接预览的清洗稿，可打开或下载原件核对。",
+            "message": "该素材类型暂不支持内嵌预览，可打开或下载原件核对。",
         }
 
     async def get_business_gap_material_preview_content(self, project_id: str, material_id: str) -> dict[str, Any]:
@@ -2514,6 +2570,17 @@ class AppStore:
         business_gap_state = self._ensure_business_gap_state(project)
         plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
         task = self._find_business_gap_task(plan, task_id)
+        status = str(data.get("status") or "").strip()
+        if status == "ignored":
+            task["status"] = "ignored"
+            task["decision"] = str(data.get("decision") or task.get("decision") or "ready")
+            task["handlingMode"] = "ignored"
+            task["ignoredReason"] = str(data.get("reason") or data.get("notes") or task.get("ignoredReason") or "人工忽略")
+            if "notes" in data:
+                task["notes"] = str(data.get("notes") or "")
+            task["updatedAt"] = now_iso()
+            self._finalize_business_gap_plan_update(project, business_gap_state, plan, updated_at=task["updatedAt"])
+            return {"task": copy.deepcopy(task), "plan": copy.deepcopy(plan), "integrity": copy.deepcopy(business_gap_state["integrity"])}
         allowed = {
             "status",
             "decision",
@@ -2525,6 +2592,7 @@ class AppStore:
             "materialUsage",
             "fillPlan",
             "selectedEvidenceSegments",
+            "handlingMode",
         }
         for key in allowed:
             if key in data:
@@ -2883,6 +2951,7 @@ class AppStore:
         self._apply_business_task_artifact_intent(task, artifacts)
         task["decision"] = "ready"
         task["status"] = "ready"
+        task["handlingMode"] = "manual_upload"
         task["updatedAt"] = created_at
         task["resolvedAt"] = created_at
         task["resolvedSource"] = artifacts[0]["fileName"]
@@ -2969,6 +3038,8 @@ class AppStore:
                 "materialName": str(material.get("materialName") or material.get("name") or raw_payload.get("fileName") or material_id),
                 "folderPath": str(material.get("folderPath") or material.get("path") or ""),
                 "materialTier": str(material.get("materialTier") or material.get("libraryScope") or ""),
+                "businessMaterialKind": str(material.get("businessMaterialKind") or ""),
+                "businessMaterialKindLabel": str(material.get("businessMaterialKindLabel") or ""),
                 "sourceKind": source_kind,
                 "selectedAt": created_at,
             }
@@ -2986,6 +3057,8 @@ class AppStore:
                 "materialName": ref["materialName"],
                 "folderPath": ref["folderPath"],
                 "materialTier": ref["materialTier"],
+                "businessMaterialKind": ref["businessMaterialKind"],
+                "businessMaterialKindLabel": ref["businessMaterialKindLabel"],
                 "sourceKind": source_kind,
                 "version": 1,
                 "previewable": True,
@@ -3029,6 +3102,16 @@ class AppStore:
         )
         task["decision"] = "ready"
         task["status"] = "ready"
+        explicit_mode = str(data.get("handlingMode") or "")
+        if not explicit_mode:
+            explicit_mode = next((str(material.get("handlingMode") or "") for material in selected if str(material.get("handlingMode") or "")), "")
+        explicit_mode = explicit_mode.strip()
+        if explicit_mode:
+            task["handlingMode"] = explicit_mode
+        elif any(str(artifact.get("businessMaterialKind") or "") == "fixed" for artifact in artifacts):
+            task["handlingMode"] = "fixed_material"
+        else:
+            task["handlingMode"] = "manual_select"
         task["updatedAt"] = created_at
         task["resolvedAt"] = created_at
         task["resolvedSource"] = artifacts[0]["fileName"]
@@ -3102,11 +3185,12 @@ class AppStore:
             "confirmedAt": created_at,
             "selectedAt": created_at,
             "operator": str(data.get("operator") or "当前用户"),
-            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "mimeType": str(mimetypes.guess_type(target_path.name)[0] or "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
         }
         task.setdefault("resolvedArtifacts", []).append(artifact)
         self._apply_business_task_artifact_intent(task, [artifact])
         self._recompute_business_gap_task_after_artifact_change(task)
+        task["handlingMode"] = "manual_select"
         task["updatedAt"] = created_at
         task["resolvedAt"] = created_at
         task["resolvedSource"] = artifact["fileName"]
@@ -3123,6 +3207,121 @@ class AppStore:
             "artifact": copy.deepcopy(artifact),
             "plan": copy.deepcopy(plan),
             "integrity": copy.deepcopy(business_gap_state["integrity"]),
+        }
+
+    def run_business_gap_table_fill(
+        self,
+        project_id: str,
+        task_id: str,
+        data: dict[str, Any],
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        project = self._require(project_id)
+        if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
+            raise ValueError("商务标 AI 填表仅支持商务标项目。")
+        business_gap_state = self._ensure_business_gap_state(project)
+        if business_gap_state["recognitionStatus"] != "completed":
+            raise ValueError("请先生成商务标缺口计划。")
+        plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
+        task = self._find_business_gap_task(plan, task_id)
+
+        target = self._business_table_fill_target(task, data)
+        fact_table = business_gap_state.get("projectFactTable")
+        if not isinstance(fact_table, dict) or fact_table.get("schemaVersion") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
+            fact_table = self._build_project_fact_table(project, business_gap_state)
+            business_gap_state["projectFactTable"] = fact_table
+        source_materials = self._business_table_fill_source_materials(project, data)
+
+        created_at = now_iso()
+        work_dir = business_workspace_dir(project_id) / "gaps" / "table-fill" / safe_filename(task_id, "task")
+        work_dir.mkdir(parents=True, exist_ok=True)
+        target = self._prepare_business_table_fill_target(target, work_dir)
+        prepared_sources = self._prepare_business_table_fill_sources(source_materials, work_dir)
+        output_name = f"{safe_filename(str(target.get('name') or target.get('fileName') or task.get('title') or '商务填表'), '商务填表')}-AI填表.docx"
+        output_path = self._unique_business_gap_path(work_dir, output_name)
+        manifest_path = work_dir / "business_table_fill_input.json"
+        manifest = {
+            "schemaVersion": "bid-business-table-fill-v1",
+            "projectId": project_id,
+            "projectName": str(project.get("name") or ""),
+            "task": {
+                "id": str(task.get("id") or ""),
+                "title": str(task.get("title") or ""),
+                "requirement": str(task.get("requirement") or task.get("gapReason") or ""),
+                "moduleKey": str(task.get("moduleKey") or ""),
+            },
+            "target": target,
+            "sourceMaterials": prepared_sources,
+            "projectFactTable": fact_table,
+            "facts": self._fact_table_value_map(fact_table),
+            "operator": str(data.get("operator") or "当前用户"),
+            "outputFile": str(output_path),
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        result = run_business_table_fill_skill(manifest_path)
+        resolved_output = Path(str(result.get("outputFile") or output_path))
+        if not resolved_output.exists():
+            raise RuntimeError(f"AI 填表未生成输出文件：{resolved_output}")
+
+        existing_count = len(task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else [])
+        artifact_id = f"BART-{safe_filename(task_id, 'TASK')}-TBL-{existing_count + 1}"
+        artifact = {
+            "artifactId": artifact_id,
+            "artifactType": "business_table_fill",
+            "fileName": resolved_output.name,
+            "filePath": str(resolved_output),
+            "sourceMode": "generated_by_business_table_fill",
+            "assemblyMode": "table_fill_from_material",
+            "materialUsage": "fill_table",
+            "version": 1,
+            "previewable": True,
+            "confirmed": True,
+            "reviewStatus": "approved",
+            "confirmedAt": created_at,
+            "createdAt": created_at,
+            "operator": str(data.get("operator") or "当前用户"),
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "target": copy.deepcopy(target),
+            "sourceMaterials": copy.deepcopy(source_materials),
+            "manifestPath": str(manifest_path),
+            "fillReport": copy.deepcopy(result.get("fillReport") if isinstance(result.get("fillReport"), dict) else {}),
+            "unfilledFields": copy.deepcopy(result.get("unfilledFields") if isinstance(result.get("unfilledFields"), list) else []),
+            "evidenceRefs": copy.deepcopy(result.get("evidenceRefs") if isinstance(result.get("evidenceRefs"), list) else []),
+            "opencodeOutput": copy.deepcopy(result.get("opencodeOutput") if isinstance(result.get("opencodeOutput"), dict) else {}),
+        }
+        task.setdefault("resolvedArtifacts", []).append(artifact)
+        self._apply_business_task_artifact_intent(task, [artifact])
+        task["decision"] = "ready"
+        task["status"] = "ready"
+        task["handlingMode"] = "ai_table_fill"
+        task["updatedAt"] = created_at
+        task["resolvedAt"] = created_at
+        task["resolvedSource"] = artifact["fileName"]
+        task["riskFlags"] = [
+            flag
+            for flag in (task.get("riskFlags") if isinstance(task.get("riskFlags"), list) else [])
+            if flag not in {"missing_material", "manual_upload_required", "ai_draft_required", "fact_table_unconfirmed"}
+        ]
+        if str(fact_table.get("status") or "") != "confirmed":
+            flags = task.setdefault("riskFlags", [])
+            if isinstance(flags, list) and "fact_table_unconfirmed" not in flags:
+                flags.append("fact_table_unconfirmed")
+        self._finalize_business_gap_plan_update(project, business_gap_state, plan, updated_at=created_at)
+        self._refresh_business_gap_urls_for_result(
+            project_id,
+            plan,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+        )
+        return {
+            "message": "AI 填表产物已生成。",
+            "task": copy.deepcopy(task),
+            "artifact": copy.deepcopy(artifact),
+            "plan": copy.deepcopy(plan),
+            "integrity": copy.deepcopy(business_gap_state["integrity"]),
+            "projectFactTable": copy.deepcopy(fact_table),
         }
 
     def run_business_gap_ai_draft(
@@ -5940,6 +6139,159 @@ class AppStore:
             return copy.deepcopy(raw)
         raise ValueError("请选择一份有效模板候选。")
 
+    @classmethod
+    def _business_table_fill_target(cls, task: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+        raw = data.get("target") if isinstance(data.get("target"), dict) else {}
+        target_id = str(raw.get("artifactId") or raw.get("templateId") or raw.get("id") or data.get("targetId") or "").strip()
+        candidates = [
+            item
+            for item in [
+                *(task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else []),
+                *(task.get("templateCandidates") if isinstance(task.get("templateCandidates"), list) else []),
+                *(task.get("candidateMaterials") if isinstance(task.get("candidateMaterials"), list) else []),
+            ]
+            if isinstance(item, dict)
+        ]
+        if target_id:
+            for candidate in candidates:
+                ids = {
+                    str(candidate.get("artifactId") or ""),
+                    str(candidate.get("templateId") or ""),
+                    str(candidate.get("materialId") or ""),
+                    str(candidate.get("id") or ""),
+                    str(candidate.get("filePath") or ""),
+                    str(candidate.get("path") or ""),
+                }
+                if target_id in ids:
+                    return copy.deepcopy(candidate)
+        if raw:
+            return copy.deepcopy(raw)
+        for candidate in candidates:
+            if cls._business_table_fill_target_looks_fillable(candidate):
+                return copy.deepcopy(candidate)
+        raise ValueError("请先选择一个待填表模板或附件。")
+
+    @staticmethod
+    def _business_table_fill_target_looks_fillable(item: dict[str, Any]) -> bool:
+        name = (
+            f"{item.get('fileName') or ''} {item.get('templateName') or ''} "
+            f"{item.get('materialName') or ''} {item.get('name') or ''} "
+            f"{item.get('title') or ''} {item.get('path') or ''} {item.get('folderPath') or ''}"
+        )
+        usage = str(item.get("materialUsage") or item.get("wikiUsageMode") or "")
+        mode = str(item.get("assemblyMode") or "")
+        return (
+            mode in {"template_fill_docx", "table_fill_from_material"}
+            or usage in {"fill_template", "fill_table"}
+            or bool(re.search(r"表|报价|分项|偏差|规格|附件|模板|格式", name))
+        )
+
+    @staticmethod
+    def _prepare_business_table_fill_target(target: dict[str, Any], work_dir: Path) -> dict[str, Any]:
+        item = copy.deepcopy(target)
+        for key in ("filePath", "path", "docxPath", "workspacePath"):
+            value = str(item.get(key) or "").strip()
+            if value and Path(value).exists():
+                return item
+        material_id = str(item.get("materialId") or item.get("id") or "").strip()
+        if not material_id:
+            return item
+        cache_dir = work_dir / "target"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, Any] = {}
+        source_kind = "raw"
+        try:
+            payload, source_kind = _run_async(_downloadable_fill_source_payload(material_id))
+        except Exception:
+            payload = {}
+        if not payload:
+            return item
+        file_name = safe_filename(
+            str(payload.get("fileName") or item.get("fileName") or item.get("materialName") or f"{material_id}.docx"),
+            f"{material_id}.docx",
+        )
+        target_path = cache_dir / f"{material_id}-{file_name}"
+        if not target_path.exists():
+            minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
+        item.update(
+            {
+                "filePath": str(target_path),
+                "path": str(target_path),
+                "fileName": target_path.name,
+                "sourceKind": str(item.get("sourceKind") or source_kind),
+                "mimeType": str(payload.get("mimeType") or item.get("mimeType") or mimetypes.guess_type(target_path.name)[0] or "application/octet-stream"),
+            }
+        )
+        return item
+
+    def _business_table_fill_source_materials(self, project: dict[str, Any], data: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_sources = data.get("sourceMaterials")
+        if raw_sources is None:
+            raw_sources = data.get("materials") or data.get("sourceMaterialIds") or data.get("materialIds") or []
+        entries = raw_sources if isinstance(raw_sources, list) else []
+        picker = build_business_gap_material_picker_index(project)
+        index = {
+            str(item.get("id") or item.get("materialId") or ""): item
+            for item in picker.get("materialIndex") or []
+            if isinstance(item, dict) and str(item.get("id") or item.get("materialId") or "")
+        }
+        result: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for entry in entries:
+            if isinstance(entry, str):
+                material_id = entry
+                item = copy.deepcopy(index.get(material_id) or {"id": material_id, "materialId": material_id})
+            elif isinstance(entry, dict):
+                material_id = str(entry.get("id") or entry.get("materialId") or "").strip()
+                item = {**copy.deepcopy(index.get(material_id) or {}), **copy.deepcopy(entry)}
+            else:
+                continue
+            material_id = str(item.get("id") or item.get("materialId") or "").strip()
+            if not material_id or material_id in seen:
+                continue
+            seen.add(material_id)
+            item["id"] = material_id
+            item["materialId"] = material_id
+            item["materialName"] = str(item.get("materialName") or item.get("name") or item.get("fileName") or material_id)
+            if not str(item.get("businessMaterialKind") or ""):
+                item["businessMaterialKind"] = str((index.get(material_id) or {}).get("businessMaterialKind") or "")
+            if not str(item.get("businessMaterialKindLabel") or ""):
+                item["businessMaterialKindLabel"] = str((index.get(material_id) or {}).get("businessMaterialKindLabel") or "")
+            result.append(item)
+        return result
+
+    @staticmethod
+    def _prepare_business_table_fill_sources(source_materials: list[dict[str, Any]], work_dir: Path) -> list[dict[str, Any]]:
+        cache_dir = work_dir / "source-materials"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        prepared: list[dict[str, Any]] = []
+        for index, material in enumerate(source_materials, start=1):
+            item = copy.deepcopy(material)
+            material_id = str(item.get("id") or item.get("materialId") or "").strip()
+            if not material_id:
+                continue
+            try:
+                payload, source_kind = _run_async(_downloadable_fill_source_payload(material_id))
+                file_name = safe_filename(
+                    str(payload.get("fileName") or item.get("materialName") or item.get("name") or f"{material_id}.bin"),
+                    f"{material_id}.bin",
+                )
+                target_path = cache_dir / f"{index:02d}-{material_id}-{file_name}"
+                if not target_path.exists():
+                    minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
+                item.update(
+                    {
+                        "path": str(target_path),
+                        "fileName": target_path.name,
+                        "sourceKind": source_kind,
+                        "mimeType": str(payload.get("mimeType") or ""),
+                    }
+                )
+            except Exception as exc:
+                item["prepareError"] = str(exc)
+            prepared.append(item)
+        return prepared
+
     @staticmethod
     def _merge_business_material_refs(current: list[Any], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
         merged: list[dict[str, Any]] = []
@@ -6117,6 +6469,59 @@ class AppStore:
         self._finalize_business_gap_plan_update(project, business_gap_state, plan, updated_at=updated_at)
         return True
 
+    def _refresh_business_gap_material_kind_labels(
+        self,
+        project: dict[str, Any],
+        business_gap_state: dict[str, Any],
+    ) -> bool:
+        plan = business_gap_state.get("plan") if isinstance(business_gap_state.get("plan"), dict) else {}
+        tasks = plan.get("tasks") if isinstance(plan.get("tasks"), list) else []
+        if not tasks:
+            return False
+        picker = build_business_gap_material_picker_index(project)
+        material_by_id = {
+            str(item.get("id") or item.get("materialId") or ""): item
+            for item in picker.get("materialIndex") or []
+            if isinstance(item, dict) and str(item.get("id") or item.get("materialId") or "")
+        }
+        changed = False
+
+        def apply_kind(target: dict[str, Any], material_id: str) -> None:
+            nonlocal changed
+            current = material_by_id.get(str(material_id or ""))
+            if not current:
+                return
+            for field in ("businessMaterialKind", "businessMaterialKindLabel"):
+                next_value = str(current.get(field) or "")
+                if next_value and str(target.get(field) or "") != next_value:
+                    target[field] = next_value
+                    changed = True
+
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            for candidate in task.get("candidateMaterials") or []:
+                if isinstance(candidate, dict):
+                    apply_kind(candidate, str(candidate.get("materialId") or candidate.get("id") or ""))
+            for ref in task.get("selectedMaterialRefs") or []:
+                if isinstance(ref, dict):
+                    apply_kind(ref, str(ref.get("materialId") or ref.get("id") or ""))
+            for artifact in task.get("resolvedArtifacts") or []:
+                if isinstance(artifact, dict):
+                    apply_kind(artifact, str(artifact.get("materialId") or ""))
+            artifacts = task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else []
+            if str(task.get("handlingMode") or "") == "manual_select" and any(
+                str(item.get("businessMaterialKind") or "") == "fixed"
+                for item in artifacts
+                if isinstance(item, dict)
+            ):
+                task["handlingMode"] = "fixed_material"
+                changed = True
+        if not changed:
+            return False
+        self._finalize_business_gap_plan_update(project, business_gap_state, plan, updated_at=now_iso())
+        return True
+
     @staticmethod
     async def _business_material_download_payload(material_id: str) -> tuple[dict[str, Any], str]:
         try:
@@ -6157,7 +6562,18 @@ class AppStore:
             return "word"
         if suffix in {".xls", ".xlsx"} or "spreadsheet" in lowered_mime or "excel" in lowered_mime:
             return "spreadsheet"
+        if suffix in {".ppt", ".pptx"} or "presentation" in lowered_mime or "powerpoint" in lowered_mime:
+            return "presentation"
         return "download"
+
+    @staticmethod
+    def _business_gap_onlyoffice_document_type(file_name: str, renderer: str) -> str:
+        suffix = Path(str(file_name or "")).suffix.lower()
+        if renderer == "spreadsheet" or suffix in {".xls", ".xlsx", ".csv"}:
+            return "cell"
+        if renderer == "presentation" or suffix in {".ppt", ".pptx"}:
+            return "slide"
+        return "word"
 
     @staticmethod
     def _business_gap_material_preview_summary(material: dict[str, Any]) -> dict[str, Any]:
@@ -6165,6 +6581,8 @@ class AppStore:
             "name": str(material.get("name") or material.get("fileName") or material.get("materialId") or material.get("id") or ""),
             "folderPath": str(material.get("folderPath") or ""),
             "materialTier": str(material.get("materialTier") or material.get("libraryScope") or ""),
+            "businessMaterialKind": str(material.get("businessMaterialKind") or ""),
+            "businessMaterialKindLabel": str(material.get("businessMaterialKindLabel") or ""),
             "cleanStatus": str(material.get("cleanStatus") or ""),
             "hasCleanedWord": bool(material.get("hasCleanedWord")),
             "cleanedFileName": str(material.get("cleanedFileName") or ""),

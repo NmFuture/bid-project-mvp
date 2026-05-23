@@ -4,6 +4,11 @@ import copy
 import asyncio
 import json
 import re
+import hashlib
+import subprocess
+import tempfile
+import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
@@ -30,6 +35,8 @@ from app.services.parse_profiles import normalize_bid_type
 from app.services.store import store
 
 router = APIRouter()
+
+PDF_MEDIA_TYPE = "application/pdf"
 
 
 def _add_callback_token(url: str) -> str:
@@ -76,6 +83,83 @@ def _validate_download_url(download_url: str) -> str:
         allowed = ", ".join(settings.onlyoffice_download_allowed_hosts)
         raise HTTPException(status_code=400, detail=f"OnlyOffice 回写 URL 主机不在白名单内：{allowed}")
     return download_url
+
+
+async def _convert_document_to_pdf_via_onlyoffice(source_url: str, source_path: Path, target_path: Path) -> Path:
+    base_url = settings.onlyoffice_internal_url.rstrip("/")
+    if not base_url:
+        raise RuntimeError("OnlyOffice 内部服务地址未配置。")
+    source_ext = source_path.suffix.lower().lstrip(".") or "docx"
+    async with httpx.AsyncClient(timeout=120) as client:
+        payload = {
+            "async": False,
+            "filetype": source_ext,
+            "key": hashlib.sha256(f"{source_path}:{source_path.stat().st_mtime_ns}:pdf".encode("utf-8")).hexdigest(),
+            "outputtype": "pdf",
+            "title": source_path.name,
+            "url": source_url,
+        }
+        response = await client.post(f"{base_url}/ConvertService.ashx", json=payload)
+        response.raise_for_status()
+        content_type = str(response.headers.get("content-type") or "").lower()
+        if "json" in content_type:
+            result = response.json()
+        else:
+            root = ET.fromstring(response.text)
+            result = {
+                "error": root.findtext("Error") or root.findtext("error") or "",
+                "fileUrl": root.findtext("FileUrl") or root.findtext("fileUrl") or root.findtext("fileurl") or "",
+            }
+        if result.get("error"):
+            raise RuntimeError(f"OnlyOffice PDF 转换失败：{result.get('error')}")
+        pdf_url = result.get("fileUrl") or result.get("fileurl")
+        if not pdf_url:
+            raise RuntimeError("OnlyOffice 未返回 PDF 下载地址。")
+        download = await client.get(str(pdf_url))
+        download.raise_for_status()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(download.content)
+    return target_path
+
+
+async def _convert_document_to_pdf_locally(source_path: Path, target_path: Path) -> Path:
+    with tempfile.TemporaryDirectory(prefix="business-pdf-") as tmp:
+        output_dir = Path(tmp)
+        command = [
+            "libreoffice",
+            "--headless",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(output_dir),
+            str(source_path),
+        ]
+        try:
+            await asyncio.to_thread(
+                subprocess.run,
+                command,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=120,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError("本地 PDF 兜底失败：未安装 libreoffice。") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("本地 PDF 兜底失败：转换超时。") from exc
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or "").strip()
+            raise RuntimeError(f"本地 PDF 兜底失败：{detail or exc}") from exc
+        converted = output_dir / f"{source_path.stem}.pdf"
+        if not converted.exists():
+            matches = list(output_dir.glob("*.pdf"))
+            converted = matches[0] if matches else converted
+        if not converted.exists():
+            raise RuntimeError("本地 PDF 兜底失败：未生成 PDF 文件。")
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(converted.read_bytes())
+        return target_path
 
 
 def build_document_payload(project_id: str, request: Request) -> dict[str, Any]:
@@ -513,4 +597,41 @@ async def download_final_document_file(project_id: str) -> FileResponse:
         path=doc_path,
         media_type=WORD_MEDIA_TYPE,
         filename=payload["fileName"],
+    )
+
+
+@router.get("/api/projects/{project_id}/final-document/pdf")
+async def prepare_final_document_pdf(project_id: str, request: Request) -> dict[str, Any]:
+    payload = store.get_document_state(project_id)
+    doc_path = ensure_document(project_id, payload["fileName"], payload["fallback"]["content"])
+    pdf_name = f"{Path(payload['fileName']).stem}.pdf"
+    pdf_path = doc_path.with_suffix(".pdf")
+    if not pdf_path.exists() or pdf_path.stat().st_mtime_ns < doc_path.stat().st_mtime_ns:
+        source_url = f"{onlyoffice_backend_base_url(request).rstrip('/')}/api/projects/{project_id}/final-document/file"
+        try:
+            await _convert_document_to_pdf_via_onlyoffice(source_url, doc_path, pdf_path)
+        except Exception as exc:
+            try:
+                await _convert_document_to_pdf_locally(doc_path, pdf_path)
+            except Exception as fallback_exc:
+                raise HTTPException(status_code=502, detail=f"PDF 生成失败：{exc}；本地兜底也失败：{fallback_exc}") from fallback_exc
+    return {
+        "message": "PDF 已生成。",
+        "fileUrl": absolute_url(request, f"/api/projects/{project_id}/final-document/pdf/file"),
+        "fileName": pdf_name,
+        "format": "pdf",
+    }
+
+
+@router.get("/api/projects/{project_id}/final-document/pdf/file")
+async def download_final_document_pdf(project_id: str) -> FileResponse:
+    payload = store.get_document_state(project_id)
+    doc_path = ensure_document(project_id, payload["fileName"], payload["fallback"]["content"])
+    pdf_path = doc_path.with_suffix(".pdf")
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="PDF 尚未生成，请先点击下载 PDF。")
+    return FileResponse(
+        path=pdf_path,
+        media_type=PDF_MEDIA_TYPE,
+        filename=f"{Path(payload['fileName']).stem}.pdf",
     )

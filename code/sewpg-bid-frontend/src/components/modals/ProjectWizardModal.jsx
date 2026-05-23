@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { materialsAPI, projectsAPI } from '../../api'
+import Button from '../ui/Button'
 
-const STEPS = ['基本信息', '确认创建']
 const MANUAL_TURBINE_VALUE = '__manual_turbine_model__'
 const PROJECT_WIZARD_DRAFT_VERSION = 1
 const PROJECT_WIZARD_DRAFT_PREFIX = 'sewpg.projectWizardDraft'
@@ -87,7 +87,6 @@ const readDraft = (key) => {
     if (!parsed || parsed.version !== PROJECT_WIZARD_DRAFT_VERSION || !parsed.form) return null
     return {
       ...parsed,
-      step: Number.isInteger(parsed.step) ? Math.min(Math.max(parsed.step, 0), STEPS.length - 1) : 0,
       form: {
         ...parsed.form,
         turbineModel: normalizeTurbineModel(parsed.form.turbineModel),
@@ -141,7 +140,6 @@ export default function ProjectWizardModal({
   const draftKey = useMemo(() => buildDraftKey({ mode, project, defaultBidType }), [defaultBidType, mode, project])
   const draft = useMemo(() => readDraft(draftKey), [draftKey])
   const hasDraft = Boolean(draft)
-  const [step, setStep] = useState(() => draft?.step || 0)
   const [form, setForm] = useState(() => draft?.form || buildInitialForm(project, defaultBidType))
   const [turbineEntryMode, setTurbineEntryMode] = useState(() => {
     if (draft?.turbineEntryMode) return draft.turbineEntryMode
@@ -198,7 +196,6 @@ export default function ProjectWizardModal({
     if (creating) return undefined
     const timer = setTimeout(() => {
       writeDraft(draftKey, {
-        step,
         form,
         turbineEntryMode,
         customerMode,
@@ -216,7 +213,6 @@ export default function ProjectWizardModal({
     materialProjectMode,
     selectedMaterialCustomerId,
     selectedMaterialProjectId,
-    step,
     turbineEntryMode,
   ])
 
@@ -298,11 +294,6 @@ export default function ProjectWizardModal({
   useEffect(() => {
     let mounted = true
     const loadTurbineOptions = async () => {
-      if (form.bidType !== '技术标') {
-        setTurbineOptions([])
-        setTurbineError('')
-        return
-      }
       setLoadingTurbines(true)
       setTurbineError('')
       try {
@@ -312,13 +303,14 @@ export default function ProjectWizardModal({
         setTurbineOptions(options)
         setForm((prev) => {
           if (prev.turbineModel?.model) return prev
+          if (form.bidType !== '技术标') return prev
           const first = options.find((item) => item.status !== 'deprecated') || options[0]
           return first ? { ...prev, turbineModel: first } : prev
         })
       } catch (e) {
         if (!mounted) return
         setTurbineOptions([])
-        setTurbineError(e?.message || '投标机型候选加载失败，可手工录入。')
+        setTurbineError(e?.message || '风机机型候选加载失败，可手工录入。')
       } finally {
         if (mounted) setLoadingTurbines(false)
       }
@@ -330,7 +322,6 @@ export default function ProjectWizardModal({
   }, [form.bidType])
 
   const missingRequiredItems = useMemo(() => {
-    if (step !== 0) return []
     const items = []
     if (!form.name.trim()) items.push('项目名称')
     if (customerMode === 'library') {
@@ -339,22 +330,14 @@ export default function ProjectWizardModal({
       items.push('普通客户')
     }
     if (materialProjectMode === 'library' && !selectedMaterialProjectId) items.push('重点项目')
-    if (form.bidType === '技术标' && !String(form.turbineModel?.model || '').trim()) items.push('投标机型')
+    if (!String(form.turbineModel?.model || '').trim()) items.push('风机机型')
     if (!form.manager.trim()) items.push('负责人')
     if (!form.startDate) items.push('起始日期')
     if (!form.endDate) items.push('截止日期')
     return items
-  }, [customerMode, form, materialProjectMode, selectedMaterialCustomerId, selectedMaterialProjectId, step])
-  const canNextStep = step !== 0 || missingRequiredItems.length === 0
+  }, [customerMode, form, materialProjectMode, selectedMaterialCustomerId, selectedMaterialProjectId])
+  const canSubmit = missingRequiredItems.length === 0
   const nextDisabledReason = missingRequiredItems.length ? `请先补全：${missingRequiredItems.join('、')}` : ''
-
-  const archivePathPreview = useMemo(() => {
-    const customer = form.customerName.trim() || '客户名'
-    const projectIdentity = materialProjectMode === 'library'
-      ? selectedMaterialProject?.projectId || selectedMaterialProjectId || '项目ID'
-      : project?.materialProjectId || '系统生成项目ID'
-    return `技术标/客户素材/${customer}；技术标/项目素材/${projectIdentity}`
-  }, [form.customerName, materialProjectMode, project?.materialProjectId, selectedMaterialProject?.projectId, selectedMaterialProjectId])
 
   const handleCreate = async () => {
     setCreating(true)
@@ -374,7 +357,7 @@ export default function ProjectWizardModal({
         materialProjectId: materialProjectMode === 'library' ? selectedMaterialProject?.projectId || selectedMaterialProjectId : '',
         materialProjectCode: materialProjectMode === 'library' ? selectedMaterialProject?.projectCode || selectedMaterialProjectId : form.projectCode,
         materialProjectName: materialProjectMode === 'library' ? selectedMaterialProject?.name || selectedMaterialProjectId : (form.materialProjectName || form.name),
-        turbineModel: form.bidType === '技术标'
+        turbineModel: String(form.turbineModel?.model || '').trim()
           ? {
               ...form.turbineModel,
               model: String(form.turbineModel?.model || '').trim(),
@@ -423,33 +406,9 @@ export default function ProjectWizardModal({
           </button>
         </div>
 
-        {/* Step Indicator */}
-        <div className="flex items-center gap-3 px-5 py-3 bg-white border-b border-[#d7e0ea]">
-          {STEPS.map((label, i) => (
-            <div key={i} className="flex items-center gap-2 flex-1">
-              <div
-                className={`step-circle w-8 h-8 flex items-center justify-center text-sm font-semibold ${
-                  i < step
-                    ? 'bg-[#0068b7] text-white'
-                    : i === step
-                      ? 'bg-[#0068b7] text-white'
-                      : 'bg-[#dbe4ee] text-[#8193a8]'
-                }`}
-              >
-                {i < step ? <span className="material-symbols-outlined text-[16px]">check</span> : i + 1}
-              </div>
-              <span className={`text-sm font-medium ${i === step || i < step ? 'text-[#0068b7]' : 'text-[#8193a8]'}`}>{label}</span>
-              {i < STEPS.length - 1 && (
-                <div className={`flex-1 h-[1px] ${i < step ? 'bg-[#0068b7]' : 'bg-[#d0dbe7]'}`}></div>
-              )}
-            </div>
-          ))}
-        </div>
-
-        {/* Step Content */}
+        {/* Content */}
         <div className="px-5 py-5 min-h-[410px] bg-white">
-          {step === 0 && (
-            <div className="flex flex-col gap-4 animate-fade-in">
+          <div className="flex flex-col gap-4 animate-fade-in">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-semibold text-on-surface mb-2">标书类型</label>
@@ -635,10 +594,11 @@ export default function ProjectWizardModal({
                   )}
                 </div>
               </div>
-              {form.bidType === '技术标' && (
-                <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-                  <div className="lg:col-span-3">
-                    <label className="block text-sm font-semibold text-on-surface mb-2">投标机型 *</label>
+              <div className="grid grid-cols-1 gap-4">
+                  <div>
+                    <label className="block text-sm font-semibold text-on-surface mb-2">
+                      风机机型 *
+                    </label>
                     <select
                       className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
                       value={turbineSelectValue}
@@ -665,7 +625,7 @@ export default function ProjectWizardModal({
                       }}
                       disabled={loadingTurbines && turbineOptions.length === 0}
                     >
-                      <option value="">{loadingTurbines ? '正在加载机型...' : '选择投标机型'}</option>
+                      <option value="">{loadingTurbines ? '正在加载机型...' : '选择风机机型'}</option>
                       {turbineOptions.map((item) => (
                         <option key={`${item.id || item.model}-${item.platform}-${item.layout}`} value={item.id || item.model}>
                           {turbineModelLabel(item)}
@@ -676,7 +636,7 @@ export default function ProjectWizardModal({
                     {turbineSelectValue === MANUAL_TURBINE_VALUE && (
                       <input
                         className="mt-2 w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                        placeholder="输入投标机型，例如 EW10.0-220下置"
+                        placeholder="输入风机机型，例如 EW10.0-220下置"
                         value={form.turbineModel?.model || ''}
                         onChange={(e) => updateForm('turbineModel', normalizeTurbineModel({
                           ...form.turbineModel,
@@ -693,23 +653,7 @@ export default function ProjectWizardModal({
                       </p>
                     )}
                   </div>
-                  <div className="lg:col-span-2">
-                    <label className="block text-sm font-semibold text-on-surface mb-2">机型参数</label>
-                    <div className="min-h-[104px] border border-[#d2dce8] bg-[#f8fbfd] px-3 py-2 text-xs text-on-surface">
-                      {form.turbineModel?.model ? (
-                        <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-                          <span className="text-outline">平台</span><span>{form.turbineModel.platform || '—'}</span>
-                          <span className="text-outline">功率</span><span>{form.turbineModel.ratedPowerKw ? `${form.turbineModel.ratedPowerKw} kW` : '—'}</span>
-                          <span className="text-outline">叶轮</span><span>{form.turbineModel.rotorDiameterM ? `${form.turbineModel.rotorDiameterM} m` : '—'}</span>
-                          <span className="text-outline">状态</span><span>{form.turbineModel.statusLabel || form.turbineModel.status || '—'}</span>
-                        </div>
-                      ) : (
-                        <span className="text-outline">选择或录入投标机型后，后续缺口处理和 AI 填写会自动带入。</span>
-                      )}
-                    </div>
-                  </div>
                 </div>
-              )}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-semibold text-on-surface mb-2">起始日期 *</label>
@@ -738,76 +682,33 @@ export default function ProjectWizardModal({
                   {nextDisabledReason}
                 </div>
               )}
-            </div>
-          )}
-
-          {step === 1 && (
-            <div className="flex flex-col gap-4 animate-fade-in">
-              <div className="bg-[#ffffff] border border-[#d2dce8] rounded-[4px] p-5">
-                <h3 className="text-[16px] font-semibold text-on-surface mb-4">
-                  {isUpdateMode ? '项目信息确认' : '项目概览'}
-                </h3>
-                <div className="grid grid-cols-2 gap-4">
-                  {[
-	                    ['项目名称', form.name || '—'],
-	                    ['业务项目编号', form.projectCode || (project?.id || '创建后生成')],
-	                    ['业主单位', form.customerName || '—'],
-	                    ['客户来源', customerMode === 'library' ? '重点客户' : '普通客户'],
-	                    ['项目', materialProjectMode === 'library' ? selectedMaterialProject?.name || '—' : form.materialProjectName || form.name || '普通项目'],
-	                    ['项目ID', materialProjectMode === 'library' ? selectedMaterialProjectId || '—' : project?.materialProjectId || '创建后生成'],
-	                    ['投标机型', form.bidType === '技术标' ? turbineModelLabel(form.turbineModel) || '—' : '—'],
-	                    ['负责人', form.manager || '—'],
-	                    ['标书类型', form.bidType],
-	                    ['起始日期', form.startDate || '—'],
-	                    ['截止日期', form.endDate || '—'],
-                  ].map(([label, value], i) => (
-                    <div key={i} className="flex flex-col gap-1">
-                      <span className="text-xs text-outline">{label}</span>
-                      <span className="text-sm font-medium text-on-surface">{value}</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-4 pt-4 border-t border-[#cfdae7]">
-                  <p className="text-xs text-outline">材料归档路径预览</p>
-                  <p className="text-sm font-medium text-on-surface mt-1">{archivePathPreview}</p>
-                </div>
+            {createError && (
+              <div className="bg-error-container/30 border border-error/30 rounded-[4px] p-3 text-sm text-error">
+                {createError}
               </div>
-              {createError && (
-                <div className="bg-error-container/30 border border-error/30 rounded-[4px] p-3 text-sm text-error">
-                  {createError}
-                </div>
-              )}
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         {/* Footer */}
         <div className="flex justify-between items-center px-5 py-4 border-t border-[#d7e0ea] bg-white">
-          <button
-            onClick={() => (step === 0 ? onClose() : setStep(step - 1))}
-            className="h-8 px-6 text-sm font-medium text-white border border-[#a8acaf] bg-[#b6babd] hover:bg-[#a9adb0] transition-colors"
+          <Button
+            onClick={onClose}
+            size="sm"
+            variant="quiet"
           >
-            {step === 0 ? '取消' : '上一步'}
-          </button>
-          {step < 1 ? (
-            <button
-              onClick={() => setStep(step + 1)}
-              disabled={!canNextStep}
-              title={!canNextStep ? nextDisabledReason : undefined}
-              aria-describedby={!canNextStep ? 'project-wizard-required-hint' : undefined}
-              className="h-8 px-6 bg-[#0bafff] text-on-primary text-sm font-medium border border-[#0aa3ea] hover:bg-[#07a3ef] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              下一步
-            </button>
-          ) : (
-            <button
-              onClick={handleCreate}
-              disabled={creating}
-              className="h-8 px-7 bg-[#0bafff] text-on-primary text-sm font-semibold border border-[#0aa3ea] hover:bg-[#07a3ef] transition-colors disabled:opacity-50"
-            >
-              {creating ? (isUpdateMode ? '保存中...' : '创建中...') : (isUpdateMode ? '确认提交' : '确认创建')}
-            </button>
-          )}
+            取消
+          </Button>
+          <Button
+            onClick={handleCreate}
+            disabled={creating || !canSubmit}
+            title={!canSubmit ? nextDisabledReason : undefined}
+            aria-describedby={!canSubmit ? 'project-wizard-required-hint' : undefined}
+            size="stage"
+            variant="primary"
+          >
+            {creating ? (isUpdateMode ? '保存中...' : '创建中...') : '确认提交'}
+          </Button>
         </div>
       </div>
     </div>

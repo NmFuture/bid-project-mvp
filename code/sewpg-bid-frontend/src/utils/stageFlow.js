@@ -30,7 +30,7 @@ export const getCompactStageLabel = (stageId, fallback = '') => (
 export const getStageRoute = (projectId, stageId, workspaceSlug = '') => {
   const resolvedStageId = toStageId(stageId)
   if (workspaceSlug === 'business') {
-    if (resolvedStageId === 4) return projectRoute(projectId, '/editor', workspaceSlug)
+    if (resolvedStageId === 3 || resolvedStageId === 4) return projectRoute(projectId, '/gaps', workspaceSlug)
     if (resolvedStageId === 5 || resolvedStageId === 6) return projectRoute(projectId, '/editor', workspaceSlug)
   }
   const builder = STAGE_ROUTE_BUILDERS[resolvedStageId]
