@@ -4,12 +4,12 @@ import { generateAPI, projectsAPI, stagesAPI } from '../api'
 import { PageError, PageLoading } from '../components/states/PageState'
 import DataCard from '../components/shared/DataCard'
 import PageHeader from '../components/shared/PageHeader'
-import StageGroupNav from '../components/shared/StageGroupNav'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 import Button from '../components/ui/Button'
 import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../components/ui/Dialog'
-import { brandFutureCode, brandFutureCodeOrFallback } from '../utils/branding'
+import Toolbar from '../components/ui/Toolbar'
+import { brandFutureCode } from '../utils/branding'
 import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const formatDateTime = (value) => {
@@ -37,23 +37,6 @@ const formatElapsedSince = (value) => {
   const seconds = totalSec % 60
   if (minutes <= 0) return `${seconds} 秒`
   return `${minutes} 分 ${seconds} 秒`
-}
-
-const formatOpencodePartText = (part) => {
-  const rawText = String(part?.text || '').trim()
-  if (!rawText) {
-    if (part?.type === 'step-start') return 'step-start'
-    if (part?.type === 'step-finish') return 'step-finish'
-    return '（空片段）'
-  }
-  if (part?.type === 'text') {
-    try {
-      return brandFutureCode(JSON.stringify(JSON.parse(rawText), null, 2))
-    } catch {
-      return brandFutureCode(rawText)
-    }
-  }
-  return brandFutureCode(rawText)
 }
 
 const localizeExecutionStep = (step) => {
@@ -122,14 +105,11 @@ export default function GenerateProgress({ showToast }) {
   const executionEvents = Array.isArray(data?.events) ? data.events : []
   const latestEvent = executionEvents.length ? executionEvents[executionEvents.length - 1] : null
   const opencodeOutput = data?.opencodeOutput || {}
-  const opencodeParts = Array.isArray(opencodeOutput?.parts) ? opencodeOutput.parts : []
   const opencodeStatus = opencodeOutput?.status || 'idle'
   const isBusinessBid = String(project?.bidType || '').includes('商务')
+  const bidLabel = isBusinessBid ? '商务标' : '技术标'
   const generationLabels = isBusinessBid
     ? {
-        outputTitle: '装配输出',
-        processName: '商务标响应文件装配',
-        waiting: '装配任务已创建，正在等待商务标响应文件装配结果。',
         idleDescription: '点击“生成标书”后会异步调用后端商务标响应文件装配链路，并用弹窗持续展示当前步骤、执行过程和结果概览。',
         overviewTitle: '响应件结果概览',
         emptySections: '商务响应件尚未输出装配结果。',
@@ -137,10 +117,7 @@ export default function GenerateProgress({ showToast }) {
         success: '装配成功',
       }
     : {
-        outputTitle: '拼装输出',
-        processName: '技术标正文拼装',
-        waiting: '拼装任务已创建，正在等待技术标正文组装结果。',
-        idleDescription: '点击“生成标书”后会异步调用后端正文拼装链路，并持续显示当前步骤、执行过程和拼装原始输出。',
+        idleDescription: '点击“生成标书”后会异步调用后端技术标正文拼装链路，并用弹窗持续展示当前步骤、执行过程和结果概览。',
         overviewTitle: '章节结果概览',
         emptySections: '正文尚未输出章节结果。',
         toast: '已开始拼装正文，请稍候。',
@@ -158,16 +135,16 @@ export default function GenerateProgress({ showToast }) {
   }, [isRunning, loadData])
 
   useEffect(() => {
-    if (!isBusinessBid || (!isRunning && !runningAction)) return undefined
+    if (!isRunning && !runningAction) return undefined
     const timer = window.setTimeout(() => {
       setBusinessProgressOpen(true)
     }, 0)
     return () => window.clearTimeout(timer)
-  }, [isBusinessBid, isRunning, runningAction])
+  }, [isRunning, runningAction])
 
   const handleRunFill = async () => {
     if (runningAction || isRunning) return
-    if (isBusinessBid) setBusinessProgressOpen(true)
+    setBusinessProgressOpen(true)
     setRunningAction(true)
     try {
       const payload = await generateAPI.run(id)
@@ -233,12 +210,6 @@ export default function GenerateProgress({ showToast }) {
     failed: 'bg-error-container text-on-error-container',
   }
 
-  const eventLevelClassMap = {
-    info: 'bg-primary/15 text-primary border-primary/20',
-    success: 'bg-secondary-container text-on-secondary-container border-secondary/20',
-    error: 'bg-error/10 text-error border-error/20',
-  }
-
   const eventLevelToneMap = {
     info: {
       dot: 'bg-primary',
@@ -254,121 +225,26 @@ export default function GenerateProgress({ showToast }) {
     },
   }
 
-  const opencodeStatusLabelMap = {
-    idle: '未开始',
-    waiting: '等待返回',
-    received: '已返回',
-    failed: '调用失败',
-  }
-
-  const opencodePartLabelMap = {
-    reasoning: '思考片段',
-    text: '原始文本',
-    'step-start': 'Step Start',
-    'step-finish': 'Step Finish',
-  }
-
-  const opencodePartClassMap = {
-    reasoning: 'border-amber-200 bg-amber-50 text-amber-950',
-    text: 'border-primary/20 bg-primary/5 text-on-surface',
-    'step-start': 'border-surface-container-high bg-surface-container-low text-on-surface-variant',
-    'step-finish': 'border-surface-container-high bg-surface-container-low text-on-surface-variant',
-  }
-
   const tasks = Array.isArray(data?.tasks) ? data.tasks : []
   const taskCount = tasks.length
   const taskTimelineInset = taskCount > 0 ? (340 / taskCount) / 2 : 0
 
-  const renderOpencodeOutputCard = () => (
-    <div className="rounded-lg border border-surface-container-high bg-surface-container-low p-4">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <div>
-          <h3 className="text-sm font-semibold text-on-surface">{generationLabels.outputTitle}</h3>
-          <p className="text-xs text-on-surface-variant mt-1">
-            这里直接显示{generationLabels.processName}链路返回的原始片段；如果还没返回，会明确提示当前正在等待。
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className={`text-[11px] px-2 py-1 rounded-full border ${eventLevelClassMap[opencodeStatus === 'failed' ? 'error' : opencodeStatus === 'received' ? 'success' : 'info']}`}>
-            {opencodeStatusLabelMap[opencodeStatus] || '未开始'}
-          </span>
-          {isRunning && latestEvent ? (
-            <span className="text-xs text-outline whitespace-nowrap">
-              已停留 {formatElapsedSince(latestEvent.at)}
-            </span>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
-        <div className="rounded-lg bg-surface-container-lowest px-3 py-2">
-          <div className="text-[11px] text-outline mb-1">Provider</div>
-          <div className="text-sm text-on-surface break-all">{brandFutureCodeOrFallback(opencodeOutput?.providerId)}</div>
-        </div>
-        <div className="rounded-lg bg-surface-container-lowest px-3 py-2">
-          <div className="text-[11px] text-outline mb-1">Model</div>
-          <div className="text-sm text-on-surface break-all">{opencodeOutput?.modelId || '-'}</div>
-        </div>
-        <div className="rounded-lg bg-surface-container-lowest px-3 py-2">
-          <div className="text-[11px] text-outline mb-1">Session</div>
-          <div className="text-sm text-on-surface break-all">{opencodeOutput?.sessionId || '-'}</div>
-        </div>
-      </div>
-
-      {opencodeStatus === 'waiting' && !opencodeParts.length ? (
-        <div className="rounded-lg border border-dashed border-primary/20 bg-primary/5 px-3 py-4 text-sm text-on-surface">
-          <div className="font-medium">{generationLabels.waiting}</div>
-          <div className="mt-2 text-on-surface-variant">
-            {brandFutureCode(latestEvent?.message) || '当前还没有收到 reasoning/text 片段，请稍候。'}
-          </div>
-        </div>
-      ) : !opencodeParts.length ? (
-        <div className="rounded-lg border border-dashed border-surface-container-high px-3 py-4 text-sm text-on-surface-variant">
-          暂无拼装原始输出。
-        </div>
-      ) : (
-        <div className="flex flex-col gap-3 max-h-[360px] overflow-y-auto pr-1">
-          {opencodeParts.map((part, index) => (
-            <div
-              key={`${part.type || 'part'}-${index}`}
-              className={`rounded-lg border p-3 ${opencodePartClassMap[part.type] || opencodePartClassMap.text}`}
-            >
-              <div className="flex items-center justify-between gap-3 mb-2">
-                <span className="text-xs font-semibold uppercase tracking-wide">
-                  {opencodePartLabelMap[part.type] || part.type || 'Part'}
-                </span>
-                <span className="text-[11px] opacity-70">
-                  {opencodeOutput?.receivedAt ? formatEventTime(opencodeOutput.receivedAt) : '--:--:--'}
-                </span>
-              </div>
-              <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed font-mono">
-                {formatOpencodePartText(part)}
-              </pre>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-
-  const renderBusinessProgressDialog = () => {
-    if (!isBusinessBid) return null
-
+  const renderProgressDialog = () => {
     const failed = status === 'failed' || opencodeStatus === 'failed'
     const dialogTitle = failed
-      ? '商务标正文生成失败'
+      ? `${bidLabel}正文生成失败`
       : isCompleted
-        ? '商务标正文已生成'
+        ? `${bidLabel}正文已生成`
         : isRunning || runningAction
-          ? '正在生成商务标正文'
-          : '商务标正文生成进度'
+          ? `正在生成${bidLabel}正文`
+          : `${bidLabel}正文生成进度`
     const dialogSummary = failed
       ? latestEvent?.message || '生成任务未完成，请检查执行过程后重新生成。'
       : isCompleted
-        ? '已完成商务标响应文件装配，可进入共创导出继续核对和定稿。'
+        ? `已完成${bidLabel}正文生成，可进入共创导出继续核对和定稿。`
         : isRunning || runningAction
-          ? latestEvent?.message || '系统正在根据当前素材匹配和事实表结果装配商务标正文。'
-          : '当前没有运行中的商务标正文生成任务。'
+          ? latestEvent?.message || `系统正在根据当前素材匹配和事实表结果生成${bidLabel}正文。`
+          : `当前没有运行中的${bidLabel}正文生成任务。`
     const dialogCanClose = !isRunning && !runningAction
     const closeDialog = () => {
       if (dialogCanClose) setBusinessProgressOpen(false)
@@ -513,56 +389,57 @@ export default function GenerateProgress({ showToast }) {
   }
 
   return (
-    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
+    <div className="stage-page business-ui-shell flex flex-col gap-6 animate-fade-in w-full max-w-none">
       <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
-      <StageGroupNav
-        current="generate"
-        items={[
-          { key: 'matching', label: '素材匹配', icon: 'rule_settings', path: '/gaps' },
-          { key: 'generate', label: '标书生成', icon: 'draw', path: '/generate' },
-        ]}
-      />
 
       <PageHeader
         actionsClassName="stage-header-actions"
         actions={(
-          <>
-            <button
+          <Toolbar>
+            <Button
+              type="button"
               onClick={loadData}
-              className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors"
+              size="stage"
+              variant="quiet"
             >
               刷新
-            </button>
-            {isBusinessBid && status !== 'idle' ? (
-              <button
+            </Button>
+            {status !== 'idle' ? (
+              <Button
+                type="button"
                 onClick={() => setBusinessProgressOpen(true)}
-                className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors"
+                size="stage"
+                variant="quiet"
               >
                 查看进度
-              </button>
+              </Button>
             ) : null}
-            <button
+            <Button
+              type="button"
               onClick={handleRunFill}
               disabled={runningAction || isRunning}
-              className="px-4 py-2.5 bg-primary text-on-primary text-sm font-medium rounded-lg hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              size="stage"
+              variant="primary"
             >
               {isRunning ? '生成中...' : isCompleted ? '重新生成标书' : '生成标书'}
-            </button>
-            <button
+            </Button>
+            <Button
+              type="button"
               onClick={handleGoEditor}
               disabled={!isCompleted || advancing}
               title={!isCompleted ? '标书生成完成后可进入共创导出' : ''}
-              className="px-4 py-2.5 bg-secondary text-on-secondary text-sm font-medium rounded-lg hover:bg-secondary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              size="stage"
+              variant="success"
             >
               {advancing ? '进入中...' : '进入共创导出'}
-            </button>
-          </>
+            </Button>
+          </Toolbar>
         )}
       />
 
-      <DataCard className="!p-0 !bg-white !border-0 !shadow-none overflow-visible min-h-[360px]">
-        <div className="px-0 py-1 bg-white">
+      <DataCard className="!p-0 overflow-hidden business-panel min-h-[360px]">
+        <div className="business-section-head border-b border-surface-container-high px-4 py-3">
           <div className="flex flex-col lg:flex-row lg:items-center gap-3">
             <div className="flex items-center gap-3 shrink-0">
               <h2 className="text-lg font-headline font-bold text-on-surface">标书生成状态</h2>
@@ -597,9 +474,9 @@ export default function GenerateProgress({ showToast }) {
             </button>
           </div>
         ) : (
-          <div className="pt-12 pb-1 flex flex-col gap-10">
+          <div className="bg-surface-container-low px-4 py-4 flex flex-col gap-4">
             <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-              <div className="xl:col-span-7 rounded-lg border border-surface-container-high bg-surface-container-low p-4">
+              <div className="business-panel xl:col-span-7 rounded-md border border-surface-container-high bg-surface-container-lowest p-4">
                 <div className="flex items-center justify-between gap-3 mb-4">
                   <h3 className="text-sm font-semibold text-on-surface">任务进度</h3>
                   {isRunning && latestEvent ? (
@@ -641,7 +518,7 @@ export default function GenerateProgress({ showToast }) {
                 )}
               </div>
 
-              <div className="xl:col-span-5 rounded-lg border border-surface-container-high bg-surface-container-low p-4">
+              <div className="business-panel xl:col-span-5 rounded-md border border-surface-container-high bg-surface-container-lowest p-4">
                 <h3 className="text-sm font-semibold text-on-surface mb-3">{generationLabels.overviewTitle}</h3>
                 {!Array.isArray(data?.sections) || data.sections.length === 0 ? (
                   <div className="rounded-lg border border-dashed border-surface-container-high px-3 py-4 text-sm text-on-surface-variant">
@@ -677,7 +554,7 @@ export default function GenerateProgress({ showToast }) {
               </div>
             </div>
 
-            <div className="rounded-lg border border-surface-container-high bg-surface-container-low p-4">
+            <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest p-4">
               <div className="flex items-center justify-between gap-3 mb-4">
                 <h3 className="text-sm font-semibold text-on-surface">执行过程</h3>
                 <span className="text-xs text-outline">{executionEvents.length} 条事件</span>
@@ -712,7 +589,7 @@ export default function GenerateProgress({ showToast }) {
 
             {isCompleted ? (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="rounded-lg border border-surface-container-high bg-white p-4">
+                <div className="business-panel rounded-md border border-surface-container-high bg-white p-4">
                   <h3 className="text-sm font-semibold text-on-surface mb-3">运行信息</h3>
                   <div>
                     {[
@@ -734,7 +611,7 @@ export default function GenerateProgress({ showToast }) {
                   </div>
                 </div>
 
-                <div className="rounded-lg border border-surface-container-high bg-white p-4">
+                <div className="business-panel rounded-md border border-surface-container-high bg-white p-4">
                   <h3 className="text-sm font-semibold text-on-surface mb-3">输出文件信息</h3>
                   <div>
                     {[
@@ -758,13 +635,10 @@ export default function GenerateProgress({ showToast }) {
               </div>
             ) : null}
 
-            <div>
-              {isBusinessBid ? null : renderOpencodeOutputCard()}
-            </div>
           </div>
         )}
       </DataCard>
-      {renderBusinessProgressDialog()}
+      {renderProgressDialog()}
     </div>
   )
 }

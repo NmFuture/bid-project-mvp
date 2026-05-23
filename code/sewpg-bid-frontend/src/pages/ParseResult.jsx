@@ -7,7 +7,6 @@ import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 import Button from '../components/ui/Button'
-import { brandFutureCodeOrFallback } from '../utils/branding'
 import { bidTypeFromWorkspace, projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
@@ -47,16 +46,6 @@ const fileSizeLabel = (size) => {
   return `${(value / 1024 / 1024).toFixed(1)} MB`
 }
 
-const formatDirectoryPartText = (part) => {
-  const text = String(part?.text || '')
-  if (!text.trim()) return '(空片段)'
-  try {
-    return JSON.stringify(JSON.parse(text), null, 2)
-  } catch {
-    return text
-  }
-}
-
 const formatDateTime = (value) => {
   if (!value) return '未解析'
   const date = new Date(value)
@@ -70,8 +59,8 @@ const directoryGenerationSourceMeta = (output = {}, status = 'idle') => {
   const outputStatus = String(output?.status || '').trim()
   const hasSession = Boolean(output?.sessionId)
   const detailParts = [
-    providerId ? `provider: ${brandFutureCodeOrFallback(providerId)}` : '',
-    modelId ? `model/skill: ${brandFutureCodeOrFallback(modelId)}` : '',
+    providerId ? `provider: ${providerId}` : '',
+    modelId ? `model/skill: ${modelId}` : '',
     outputStatus ? `status: ${outputStatus}` : '',
   ].filter(Boolean)
   const detail = detailParts.length ? detailParts.join(' / ') : '暂无生成来源信息'
@@ -139,7 +128,7 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
   const routeWorkspaceSlug = useWorkspaceSlug()
   const workspaceSlug = workspaceKind || routeWorkspaceSlug
   const workspaceBidType = bidTypeFromWorkspace(workspaceSlug)
-  const isBusinessBid = workspaceBidType === '商务标'
+  const bidLabel = workspaceBidType || '技术标'
   const [project, setProject] = useState(null)
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -227,22 +216,12 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
         : '待生成'
   const directoryTaskLabel = (task) => {
     const label = String(task?.label || '')
-    if (!isBusinessBid) return label || '-'
     if (label.includes('futurecode')) return '目录语义审核'
     if (label.includes('准备目录候选')) return '准备目录材料'
     if (label.includes('保存审核目录')) return '保存目录结果'
     return label || '-'
   }
-  const ruleEvidence = directoryState?.ruleEvidence || {}
-  const ruleDecisions = Array.isArray(ruleEvidence?.decisions) ? ruleEvidence.decisions : []
-  const tenderCandidateDecisions = ruleDecisions
-    .filter((item) => item?.source === 'tender')
-    .slice(0, 8)
-  const directoryFutureCodeOutput = directoryState?.opencodeOutput || {}
-  const directoryFutureCodeParts = Array.isArray(directoryFutureCodeOutput?.parts)
-    ? directoryFutureCodeOutput.parts.slice(-8)
-    : []
-  const directorySourceMeta = directoryGenerationSourceMeta(directoryFutureCodeOutput, directoryStatus)
+  const directorySourceMeta = directoryGenerationSourceMeta(directoryState?.opencodeOutput || {}, directoryStatus)
 
   useEffect(() => {
     if (!isDirectoryRunning) return undefined
@@ -374,8 +353,8 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
       if (templateFiles.length) {
         await uploadSelectedTemplateFiles()
         showToast?.('模板文件已上传，开始生成目录。')
-      } else if (isBusinessBid && !uploadedTemplateFiles.length && !fallbackWillBeUsed) {
-        showToast?.('请先上传商务标模板文件。', 'error')
+      } else if (!uploadedTemplateFiles.length && !fallbackWillBeUsed) {
+        showToast?.(`请先上传${bidLabel}模板文件。`, 'error')
         return
       }
       await stagesAPI.update(id, 1, { status: 'completed' })
@@ -402,14 +381,6 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
         actionsClassName="stage-header-actions"
         actions={(
           <>
-            {!isBusinessBid ? (
-              <button
-                onClick={loadData}
-                className="px-5 py-2.5 bg-surface-container-high text-on-surface-variant font-medium rounded-lg hover:bg-surface-dim transition-colors text-sm"
-              >
-                刷新
-              </button>
-            ) : null}
             <Button
               onClick={handleGoNextStage}
               disabled={!canGoNextStage || !isDirectoryCompleted || advancing}
@@ -423,18 +394,15 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
         )}
       />
 
-      <div className={isBusinessBid ? 'business-ui-shell mx-auto w-full max-w-[1120px]' : 'flex flex-col gap-6'}>
-        <DataCard className={isBusinessBid ? '!p-0 overflow-hidden' : '!p-6 flex h-full flex-col gap-5'}>
-        {isBusinessBid ? (
+      <div className="business-ui-shell mx-auto w-full max-w-[1120px]">
+        <DataCard className="!p-0 overflow-hidden">
           <div className="business-section-head flex items-center px-6 py-5">
             <div className="flex items-center">
               <h2 className="text-2xl font-headline font-extrabold text-primary">生成投标文件目录</h2>
             </div>
           </div>
-        ) : null}
-        <div className={isBusinessBid ? 'grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.82fr)]' : 'contents'}>
-          <div className={isBusinessBid ? 'flex min-h-[388px] flex-col gap-4 border-b border-surface-container-high p-6 lg:border-b-0 lg:border-r' : 'contents'}>
-        {!isBusinessBid ? (
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.82fr)]">
+          <div className="flex min-h-[388px] flex-col gap-4 border-b border-surface-container-high p-6 lg:border-b-0 lg:border-r">
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 text-xs">
             <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
               <p className="font-medium text-on-surface mb-1">解析决策状态</p>
@@ -457,7 +425,6 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
               <p className="text-on-surface-variant">{parsedDates?.endDate || '-'}</p>
             </div>
           </div>
-        ) : null}
 
         {!isReviewApproved && (
           <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error flex items-center justify-between gap-3">
@@ -484,23 +451,21 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
           </div>
         )}
 
-        <div className={isBusinessBid ? 'business-panel flex min-h-[208px] flex-col gap-3 rounded-md border border-surface-container-high bg-surface-container-lowest p-4' : 'border border-surface-container-high rounded-md p-4 flex flex-col gap-3'}>
+        <div className="business-panel flex min-h-[208px] flex-col gap-3 rounded-md border border-surface-container-high bg-surface-container-lowest p-4">
           <div className="flex items-center justify-between">
             <div>
               <h4 className="text-sm font-semibold text-on-surface">模板文件</h4>
-              {isBusinessBid ? (
-                <p className="mt-1 text-xs text-outline">未上传时使用默认模板兜底。</p>
-              ) : null}
+              <p className="mt-1 text-xs text-outline">未上传时使用默认模板兜底。</p>
             </div>
             <span className="text-xs px-2 py-0.5 rounded-md bg-surface-container-high text-on-surface-variant">可选</span>
           </div>
-          <div className={isBusinessBid ? 'business-dropzone flex min-h-[116px] flex-1 items-center justify-center rounded-md border border-dashed' : 'rounded-md border border-dashed border-[#8eb8de] bg-[#f2f8fd] p-3 flex justify-center'}>
+          <div className="business-dropzone flex min-h-[116px] flex-1 items-center justify-center rounded-md border border-dashed">
             <Button
               onClick={() => document.getElementById('s1-template-upload')?.click()}
-              className={isBusinessBid ? 'min-w-[180px] bg-white text-on-surface shadow-sm hover:bg-surface-container-low' : 'min-w-[220px]'}
+              className="min-w-[180px] bg-white text-on-surface shadow-sm hover:bg-surface-container-low"
               icon="upload_file"
               size="lg"
-              variant={isBusinessBid ? 'quiet' : 'primary'}
+              variant="quiet"
             >
               选择模板文件
             </Button>
@@ -529,9 +494,9 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
               ))}
             </div>
           )}
-          {isBusinessBid && !uploadedTemplateFiles.length && !fallbackWillBeUsed ? (
+          {!uploadedTemplateFiles.length && !fallbackWillBeUsed ? (
             <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
-              未检测到项目模板，且默认模板不可用。请先上传商务标模板文件。
+              未检测到项目模板，且默认模板不可用。请先上传{bidLabel}模板文件。
             </div>
           ) : null}
         </div>
@@ -546,7 +511,6 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
           </Button>
         </div>
 
-        {!isBusinessBid ? (
           <div className="border border-surface-container-high rounded-md p-4 flex flex-col gap-3">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div className="min-w-0">
@@ -579,7 +543,6 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
               </div>
             </div>
           </div>
-        ) : null}
 
         {uploadError && (
           <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
@@ -589,16 +552,15 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
 
         <div className="business-panel rounded-md bg-surface-container-low p-3 border border-surface-container-high text-xs text-outline">
           <p className="font-medium text-on-surface mb-1">已上传模板文件（当前项目）</p>
-          <p>{uploadedTemplateFiles.length ? uploadedTemplateFiles.map((file) => file.name).join('，') : (isBusinessBid && fallbackWillBeUsed ? '暂无，生成目录时将使用默认模板' : '暂无')}</p>
+          <p>{uploadedTemplateFiles.length ? uploadedTemplateFiles.map((file) => file.name).join('，') : (fallbackWillBeUsed ? '暂无，生成目录时将使用默认模板' : '暂无')}</p>
         </div>
           </div>
 
-          <div className={isBusinessBid ? 'flex min-h-[388px] flex-col gap-4 p-6' : 'contents'}>
+          <div className="flex min-h-[388px] flex-col gap-4 p-6">
         <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-base font-headline font-bold text-on-surface">目录生成</h3>
-              {isBusinessBid ? (
                 <span
                   className={[
                     'inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-semibold',
@@ -608,16 +570,9 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
                 >
                   {directorySourceMeta.label}
                 </span>
-              ) : null}
             </div>
-            {!isBusinessBid ? (
-              <p className="text-sm text-on-surface-variant mt-1">
-                使用招标文件要求和投标文件模板生成目录审核稿。
-              </p>
-            ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            {!isBusinessBid ? (
               <span className={[
                 'rounded-md px-2.5 py-1 text-xs font-semibold',
                 isDirectoryCompleted
@@ -631,25 +586,9 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
               >
                 {directoryStatusLabel}
               </span>
-            ) : null}
-            {!isBusinessBid ? (
-              <Button
-                onClick={handleGenerateDirectory}
-                disabled={!canGoNextStage || generatingDirectory || isDirectoryRunning}
-                size="lg"
-                variant="primary"
-              >
-                {generatingDirectory || isDirectoryRunning
-                  ? '生成中...'
-                  : isDirectoryCompleted || isDirectoryFailed
-                    ? '重新生成目录'
-                    : '生成目录'}
-              </Button>
-            ) : null}
           </div>
         </div>
 
-        {isBusinessBid ? (
           <div className="flex min-h-[164px] items-center">
             {(isDirectoryRunning || isDirectoryCompleted || isDirectoryFailed) ? (
               <div className="business-panel flex w-full items-center gap-3 rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-3">
@@ -660,16 +599,7 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
               </div>
             ) : null}
           </div>
-        ) : (isDirectoryRunning || isDirectoryCompleted || isDirectoryFailed) ? (
-          <div className="flex items-center gap-3">
-            <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-[#e8eef2]">
-              <div className={`h-full transition-all duration-700 ${isDirectoryFailed ? 'bg-error' : 'bg-primary'}`} style={{ width: `${directoryProgress}%` }} />
-            </div>
-            <span className="whitespace-nowrap text-xs text-outline">{directoryProgress}%</span>
-          </div>
-        ) : null}
 
-        {isBusinessBid ? (
           <div className="flex h-[34px] justify-center">
             <Button
               onClick={handleGenerateDirectory}
@@ -681,18 +611,16 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
                 ? '生成中...'
                 : isDirectoryCompleted || isDirectoryFailed
                   ? '重新生成目录'
-                  : '生成目录'}
+                : '生成目录'}
             </Button>
           </div>
-        ) : null}
 
         {isDirectoryFailed ? (
           <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
-            {directoryState?.summary || (isBusinessBid ? '目录生成失败，请检查模板文件后重新生成。' : '目录生成失败，请查看 futurecode 流式输出后重新生成。')}
+            {directoryState?.summary || '目录生成失败，请检查模板文件后重新生成。'}
           </div>
         ) : null}
 
-        {!isBusinessBid ? (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
             {directoryTasks.length ? directoryTasks.map((task) => (
               <div key={task.id} className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
@@ -707,69 +635,6 @@ export default function ParseResult({ showToast, workspaceKind = '' }) {
               </div>
             )}
           </div>
-        ) : null}
-
-        {!isBusinessBid && directoryState?.opencodeOutput?.tocJsonPath ? (
-          <div className="rounded-md border border-surface-container-high bg-white p-4 max-h-64 overflow-auto">
-            <h4 className="text-sm font-semibold text-on-surface mb-3">futurecode 生成输出</h4>
-            <div className="grid grid-cols-1 gap-2 text-xs text-on-surface-variant">
-              <div className="break-all">目录 JSON：{directoryState.opencodeOutput.tocJsonPath}</div>
-              {directoryState.opencodeOutput.evidencePath ? (
-                <div className="break-all">证据 JSON：{directoryState.opencodeOutput.evidencePath}</div>
-              ) : null}
-              <div>执行引擎：{brandFutureCodeOrFallback(directoryState.opencodeOutput.engine || directoryState.opencodeOutput.providerId)}</div>
-              {ruleEvidence?.tenderCandidateCount !== undefined ? (
-                <div>招标候选要求：{ruleEvidence.tenderCandidateCount} 条，模板目录线索：{ruleEvidence.templateOutlineCount || 0} 条</div>
-              ) : null}
-            </div>
-            {tenderCandidateDecisions.length ? (
-              <div className="mt-4 border-t border-surface-container-high pt-3">
-                <h5 className="text-xs font-semibold text-on-surface mb-2">招标要求处理决策</h5>
-                <div className="grid grid-cols-1 gap-2">
-                  {tenderCandidateDecisions.map((item, index) => (
-                    <div key={`${item.title || 'decision'}-${index}`} className="rounded bg-[#f7f7f7] px-3 py-2 text-xs text-on-surface-variant">
-                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
-                        <span className="font-medium text-on-surface">{item.title || '未命名要求'}</span>
-                        <span>{item.action === 'candidate' ? '保留证据，不自动入目录' : item.action === 'covered' ? '模板已覆盖' : item.action || '-'}</span>
-                      </div>
-                      {item.reason ? <div className="mt-1">{item.reason}</div> : null}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        {!isBusinessBid && (isDirectoryRunning || directoryFutureCodeParts.length || directoryFutureCodeOutput?.sessionId) ? (
-          <div className="rounded-md border border-surface-container-high bg-white p-4">
-            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-              <h4 className="text-sm font-semibold text-on-surface">futurecode 流式输出</h4>
-              <span className="text-xs text-outline break-all">
-                {brandFutureCodeOrFallback(directoryFutureCodeOutput?.providerId)}
-                {directoryFutureCodeOutput?.modelId ? ` / ${directoryFutureCodeOutput.modelId}` : ''}
-              </span>
-            </div>
-            {directoryFutureCodeParts.length ? (
-              <div className="mt-3 flex max-h-72 flex-col gap-2 overflow-y-auto pr-1">
-                {directoryFutureCodeParts.map((part, index) => (
-                  <div key={`${part.type || 'part'}-${index}`} className="rounded-md border border-primary/15 bg-primary/5 p-3">
-                    <div className="mb-1 text-[11px] font-semibold uppercase text-primary">
-                      {part.type || 'text'}
-                    </div>
-                    <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-on-surface">
-                      {formatDirectoryPartText(part)}
-                    </pre>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="mt-3 text-xs text-outline">
-                futurecode session 已创建，正在等待目录生成片段。
-              </p>
-            )}
-          </div>
-        ) : null}
           </div>
         </div>
         </DataCard>

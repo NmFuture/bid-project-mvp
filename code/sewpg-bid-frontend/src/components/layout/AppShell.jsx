@@ -91,7 +91,10 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
 
   const showSwitcher = canViewBothWorkspaces(currentUser)
   const workspaceForLinks = activeWorkspace
-  const isTechnicalExperience = location.pathname.startsWith('/workspace/tech') || location.pathname.startsWith('/parse/technical')
+  const isWorkspaceExperience = location.pathname.startsWith('/workspace/tech')
+    || location.pathname.startsWith('/parse/technical')
+    || location.pathname.startsWith('/workspace/business')
+    || location.pathname.startsWith('/parse/business')
 
   const handleSwitchWorkspace = (slug) => {
     if (slug === activeWorkspace) return
@@ -110,8 +113,8 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
   const isActive = (def) => def.match.test(location.pathname)
 
   return (
-    <div className={isTechnicalExperience ? 'flex min-h-[100dvh] flex-col overflow-hidden bg-[#f6f8fb]' : 'h-screen flex flex-col overflow-hidden bg-surface'}>
-      <header className={`fixed top-0 w-full z-50 h-12 bg-[#05202E] text-white border-b border-[#154e7a] flex items-center justify-between gap-2 px-3 md:px-5 ${isTechnicalExperience ? 'shadow-[0_8px_30px_-22px_rgba(0,0,0,0.6)]' : ''}`}>
+    <div className={isWorkspaceExperience ? 'flex min-h-[100dvh] flex-col overflow-hidden bg-[#f6f8fb]' : 'h-screen flex flex-col overflow-hidden bg-surface'}>
+      <header className={`fixed top-0 w-full z-50 h-12 bg-[#05202E] text-white border-b border-[#154e7a] flex items-center justify-between gap-2 px-3 md:px-5 ${isWorkspaceExperience ? 'shadow-[0_8px_30px_-22px_rgba(0,0,0,0.6)]' : ''}`}>
         <div className="flex items-center gap-3 min-w-0">
           <span className="inline-flex h-8 shrink-0 items-center rounded-sm bg-white px-2 py-1 shadow-sm">
             <img src={enterpriseLogo} alt="上海电气" className="h-6 w-auto object-contain" />
@@ -122,7 +125,7 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
         </div>
 
         {showSwitcher && (
-          <div className={`hidden md:flex items-center gap-1 rounded-full bg-white/10 p-0.5 ${isTechnicalExperience ? 'border border-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]' : 'backdrop-blur'}`}>
+          <div className={`hidden md:flex items-center gap-1 rounded-full bg-white/10 p-0.5 ${isWorkspaceExperience ? 'border border-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]' : 'backdrop-blur'}`}>
             {allowedWorkspaces.map((slug) => {
               const ws = WORKSPACE_TYPES[slug]
               if (!ws) return null
@@ -132,7 +135,7 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
                   key={slug}
                   type="button"
                   onClick={() => handleSwitchWorkspace(slug)}
-                  className={`inline-flex items-center gap-1.5 px-3 h-7 rounded-full text-xs font-medium transition-all ${isTechnicalExperience ? 'duration-200' : ''} ${active ? 'bg-white text-[#05202E] shadow-sm' : isTechnicalExperience ? 'text-white/80 hover:bg-white/10 hover:text-white' : 'text-white/80 hover:text-white'}`}
+                  className={`inline-flex items-center gap-1.5 px-3 h-7 rounded-full text-xs font-medium transition-all ${isWorkspaceExperience ? 'duration-200' : ''} ${active ? 'bg-white text-[#05202E] shadow-sm' : isWorkspaceExperience ? 'text-white/80 hover:bg-white/10 hover:text-white' : 'text-white/80 hover:text-white'}`}
                 >
                   <span
                     className="material-symbols-outlined text-[15px]"
@@ -205,7 +208,7 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
       </header>
 
       <div className="flex flex-1 pt-12 min-h-0">
-        <aside className={`hidden md:flex flex-col bg-[#0067B6] fixed left-0 top-12 ${isTechnicalExperience ? 'h-[calc(100dvh-3rem)] shadow-[10px_0_28px_-24px_rgba(0,64,114,0.8)]' : 'h-[calc(100vh-3rem)]'} w-[78px] z-40 border-r border-[#0f77c4]`}>
+        <aside className={`hidden md:flex flex-col bg-[#0067B6] fixed left-0 top-12 ${isWorkspaceExperience ? 'h-[calc(100dvh-3rem)] shadow-[10px_0_28px_-24px_rgba(0,64,114,0.8)]' : 'h-[calc(100vh-3rem)]'} w-[78px] z-40 border-r border-[#0f77c4]`}>
           <nav className="flex-1 overflow-y-auto flex flex-col gap-0 px-0 font-headline text-xs">
             {navItems.map((item) => {
               const active = isActive(item)
@@ -213,11 +216,11 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
                 <NavLink
                   key={item.key}
                   to={item.to}
-                  className={`${isTechnicalExperience ? 'group relative' : ''} w-full flex flex-col items-center justify-center gap-1 px-1 py-3 border-y border-transparent transition-all ${isTechnicalExperience ? 'duration-200' : ''} ${active ? 'bg-[#4C95CD] text-white border-[#62a2d4]' : 'text-white/85 hover:text-white hover:bg-[#237ac0]'}`}
+                  className={`${isWorkspaceExperience ? 'group relative' : ''} w-full flex flex-col items-center justify-center gap-1 px-1 py-3 border-y border-transparent transition-all ${isWorkspaceExperience ? 'duration-200' : ''} ${active ? 'bg-[#4C95CD] text-white border-[#62a2d4]' : 'text-white/85 hover:text-white hover:bg-[#237ac0]'}`}
                 >
-                  {isTechnicalExperience && active ? <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r-full bg-white" /> : null}
+                  {isWorkspaceExperience && active ? <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r-full bg-white" /> : null}
                   <span
-                    className={`material-symbols-outlined text-[20px] ${isTechnicalExperience ? `transition-transform duration-200 ${active ? 'scale-105' : 'group-hover:scale-105'}` : ''}`}
+                    className={`material-symbols-outlined text-[20px] ${isWorkspaceExperience ? `transition-transform duration-200 ${active ? 'scale-105' : 'group-hover:scale-105'}` : ''}`}
                     style={{ fontVariationSettings: active ? "'FILL' 1" : "'FILL' 0" }}
                   >
                     {item.icon}
@@ -245,20 +248,20 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
           )}
         </aside>
 
-        <main className={isTechnicalExperience ? 'technical-shell-main flex-1 md:ml-[78px] overflow-y-auto min-h-0 px-4 pt-4 pb-24 md:px-6 md:py-5 lg:px-8 lg:py-6 xl:px-10' : 'flex-1 md:ml-[78px] overflow-y-auto bg-white min-h-0 px-7 py-4 md:px-10 md:py-5 lg:px-12 lg:py-6 xl:px-14'}>
-          {isTechnicalExperience ? (
-            <div className="technical-shell-frame">
+        <main className={isWorkspaceExperience ? 'workspace-shell-main flex-1 md:ml-[78px] overflow-y-auto min-h-0 px-4 pt-4 pb-24 md:px-6 md:py-5 lg:px-8 lg:py-6 xl:px-10' : 'flex-1 md:ml-[78px] overflow-y-auto bg-white min-h-0 px-7 py-4 md:px-10 md:py-5 lg:px-12 lg:py-6 xl:px-14'}>
+          {isWorkspaceExperience ? (
+            <div className="workspace-shell-frame">
               {children}
             </div>
           ) : children}
         </main>
       </div>
 
-      <footer className={`${isTechnicalExperience ? 'hidden md:flex bg-white/85' : 'flex bg-surface'} md:ml-[78px] h-7 border-t border-outline-variant/45 text-outline text-xs items-center justify-center`}>
+      <footer className={`${isWorkspaceExperience ? 'hidden md:flex bg-white/85' : 'flex bg-surface'} md:ml-[78px] h-7 border-t border-outline-variant/45 text-outline text-xs items-center justify-center`}>
         © 上海电气风电集团股份有限公司版权所有
       </footer>
 
-      {isTechnicalExperience ? (
+      {isWorkspaceExperience ? (
         <nav className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-6 border-t border-outline-variant/60 bg-white/95 px-1 pt-1 pb-[calc(env(safe-area-inset-bottom)+0.35rem)] shadow-[0_-12px_28px_-24px_rgba(13,33,55,0.35)] md:hidden">
           {navItems.map((item) => {
             const active = isActive(item)

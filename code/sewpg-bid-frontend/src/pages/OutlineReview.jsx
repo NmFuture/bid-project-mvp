@@ -246,13 +246,11 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
   const navigate = useNavigate()
   const routeWorkspaceSlug = useWorkspaceSlug()
   const workspaceSlug = workspaceKind || routeWorkspaceSlug
-  const isBusinessWorkspace = workspaceSlug === 'business'
   const [nodes, setNodes] = useState([])
   const [activeNodeId, setActiveNodeId] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [confirming, setConfirming] = useState(false)
-  const [rejecting, setRejecting] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState('')
   const [tenderPreview, setTenderPreview] = useState(null)
@@ -379,7 +377,7 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
 
     setSaving(true)
     try {
-      const nodesToSave = isBusinessWorkspace ? renumberOutlineNodes(nodes) : nodes
+      const nodesToSave = renumberOutlineNodes(nodes)
       const payload = await outlineAPI.save(id, { nodes: nodesToSave })
       const nextNodes = Array.isArray(payload?.nodes) ? payload.nodes : []
       setNodes(nextNodes)
@@ -395,25 +393,6 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
     }
   }
 
-  const handleReject = async () => {
-    const shouldRegenerate = window.confirm('将按 S2 的目录结果重生成 S3，当前未保存修改会丢失。确认继续吗？')
-    if (!shouldRegenerate) return
-
-    setRejecting(true)
-    try {
-      const payload = await outlineAPI.regenerate(id)
-      const nextNodes = Array.isArray(payload?.nodes) ? payload.nodes : []
-      setNodes(nextNodes)
-      setDirty(false)
-      setActiveNodeId(nextNodes[0]?.id || '')
-      showToast?.(payload?.message || '已重生成目录审核稿')
-    } catch (e) {
-      showToast?.(e?.message || '重生成失败，请稍后重试', 'error')
-    } finally {
-      setRejecting(false)
-    }
-  }
-
   const handleConfirm = async () => {
     if (!nodes.length) {
       showToast?.('目录为空，请先新增章节后再确认。', 'error')
@@ -423,7 +402,7 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
     setConfirming(true)
     try {
       if (dirty) {
-        const nodesToSave = isBusinessWorkspace ? renumberOutlineNodes(nodes) : nodes
+        const nodesToSave = renumberOutlineNodes(nodes)
         const saved = await outlineAPI.save(id, { nodes: nodesToSave })
         setNodes(Array.isArray(saved?.nodes) ? saved.nodes : [])
         setDirty(false)
@@ -432,9 +411,7 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
       await outlineAPI.confirm(id)
       const stageResult = await stagesAPI.update(id, 2, { status: 'completed' })
       const nextStageId = Number(stageResult?.currentStage) || 3
-      const nextRoute = isBusinessWorkspace
-        ? projectRoute(id, '/gaps', workspaceSlug)
-        : getStageRoute(id, nextStageId, workspaceSlug) || projectRoute(id, '/gaps', workspaceSlug)
+      const nextRoute = getStageRoute(id, nextStageId, workspaceSlug) || projectRoute(id, '/gaps', workspaceSlug)
       showToast?.('目录确认已完成，已进入素材匹配')
       navigate(nextRoute)
     } catch (e) {
@@ -528,7 +505,7 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
     if (!movingId || movingId === targetId) return
     setNodes((prev) => {
       const moved = moveNodeWithinSameParent(prev, movingId, targetId, dragPlacement)
-      const next = isBusinessWorkspace && moved ? renumberOutlineNodes(moved) : moved
+      const next = moved ? renumberOutlineNodes(moved) : moved
       if (!next) {
         showToast?.('暂只支持同级目录拖拽排序。', 'error')
         return prev
@@ -627,7 +604,7 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
               ) : (
                 <span className="w-6 shrink-0" />
               )}
-              <span className={`${isBusinessWorkspace ? 'w-20' : 'w-9'} shrink-0 text-xs font-semibold text-outline`}>{displayNumber}</span>
+              <span className="w-20 shrink-0 text-xs font-semibold text-outline">{displayNumber}</span>
               <input
                 value={node.title || ''}
                 onClick={(e) => e.stopPropagation()}
@@ -714,46 +691,15 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
   const activeRefs = collectSourceRefs(activeNode)
 
   return (
-    <div className={`stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none ${isBusinessWorkspace ? 'business-ui-shell' : ''}`}>
+    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none business-ui-shell">
       <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
 
       <PageHeader
-        leftExtra={isBusinessWorkspace ? null : (
-          <div>
-            <p className="text-xs font-semibold text-primary">审核目录</p>
-            <h1 className="mt-1 text-lg font-headline font-bold text-on-surface">确认投标文件目录</h1>
-          </div>
-        )}
-        className={isBusinessWorkspace ? 'mb-2' : 'rounded-md border border-outline-variant/50 bg-white px-5 py-4 shadow-[0_1px_3px_rgba(13,33,55,0.06)]'}
+        className="mb-2"
         actionsClassName="stage-header-actions"
         actions={(
           <>
-            {!isBusinessWorkspace ? (
-              <>
-                <button
-                  onClick={loadData}
-                  className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors"
-                >
-                  刷新
-                </button>
-                <button
-                  onClick={handleReject}
-                  disabled={rejecting}
-                  className="px-4 py-2.5 text-sm font-medium text-on-surface-variant bg-surface-container-high hover:bg-surface-dim rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {rejecting ? '处理中...' : '驳回重生成'}
-                </button>
-                <Button
-                  onClick={handleSave}
-                  disabled={saving}
-                  size="lg"
-                  variant="primary"
-                >
-                  {saving ? '保存中...' : dirty ? '保存目录*' : '保存目录'}
-                </Button>
-              </>
-            ) : null}
             <Button
               onClick={handleConfirm}
               disabled={confirming}
@@ -798,18 +744,14 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
                 >
                   新增一级
                 </Button>
-                {isBusinessWorkspace ? (
-                  <>
-                    <Button
-                      onClick={handleSave}
-                      disabled={saving}
-                      size="sm"
-                      variant="primary"
-                    >
-                      {saving ? '保存中...' : dirty ? '保存目录*' : '保存目录'}
-                    </Button>
-                  </>
-                ) : null}
+                <Button
+                  onClick={handleSave}
+                  disabled={saving}
+                  size="sm"
+                  variant="primary"
+                >
+                  {saving ? '保存中...' : dirty ? '保存目录*' : '保存目录'}
+                </Button>
               </div>
             </div>
 
@@ -831,7 +773,7 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
                 </div>
               )}
             </div>
-            {!isBusinessWorkspace && activeRefs.length ? (
+            {activeRefs.length ? (
               <div className="max-h-[34%] min-h-[140px] overflow-y-auto border-t border-surface-container-high bg-white px-5 py-4">
                 <h4 className="text-xs font-semibold text-on-surface">当前目录依据</h4>
                 <div className="mt-2 flex flex-col gap-2">

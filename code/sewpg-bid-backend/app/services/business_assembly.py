@@ -19,7 +19,7 @@ from app.services.onlyoffice_documents import document_path
 from app.services.opencode_client import OpencodeClient
 from app.services.parse_profiles import normalize_bid_type
 from app.services.store import now_iso, store
-from app.services.workspace_artifacts import business_workspace_dir
+from app.services.workspace_artifacts import business_workspace_dir, technical_workspace_stage_dir
 
 
 BUSINESS_ASSEMBLER_SKILL_NAME = "bid-business-assembler"
@@ -48,6 +48,22 @@ BUSINESS_FORMAT_PRESETS = {
         "label": "自定义格式",
         "description": "按用户设置的字体、字号、行距、页边距、目录和页眉规则执行格式规范化。",
     },
+}
+
+TECH_FORMAT_PRESETS = {
+    "standard": {
+        "label": "标准技术标格式",
+        "description": "默认技术标版式：标题、正文、表格、目录、页眉和分页统一规范化。",
+    },
+    "custom": {
+        "label": "自定义格式",
+        "description": "按用户设置的字体、字号、行距、页边距、目录和页眉规则执行格式规范化。",
+    },
+}
+
+BID_FORMAT_PRESETS = {
+    "技术标": TECH_FORMAT_PRESETS,
+    "商务标": BUSINESS_FORMAT_PRESETS,
 }
 
 
@@ -478,8 +494,9 @@ def apply_business_document_format_preset(
     style_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     project = store.get_project_runtime_state(project_id)
-    if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
-        raise ValueError("格式切换仅支持商务标项目。")
+    bid_type = normalize_bid_type(str(project.get("bidType") or "技术标"))
+    if bid_type == "技术标":
+        return apply_technical_document_format_preset(project_id, preset, style_overrides)
 
     preset_key = preset if preset in BUSINESS_FORMAT_PRESETS else "standard"
     preset_info = BUSINESS_FORMAT_PRESETS[preset_key]
@@ -522,6 +539,65 @@ def apply_business_document_format_preset(
     }
 
 
+def apply_technical_document_format_preset(
+    project_id: str,
+    preset: str = "standard",
+    style_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    project = store.get_project_runtime_state(project_id)
+    bid_type = normalize_bid_type(str(project.get("bidType") or "技术标"))
+    if bid_type != "技术标":
+        raise ValueError("技术标格式切换仅支持技术标项目。")
+
+    preset_key = preset if preset in TECH_FORMAT_PRESETS else "standard"
+    preset_info = TECH_FORMAT_PRESETS[preset_key]
+    source_path = document_path(project_id)
+    if not source_path.exists():
+        state = store.get_document_state(project_id)
+        raise FileNotFoundError(f"技术标正文文件不存在：{state.get('fileName') or source_path.name}")
+
+    from app.services.tech_assembly import (
+        _prepare_tech_format_outline,
+        _prepare_toc_json as _prepare_technical_toc_json,
+        _run_local_tech_format_cleaner,
+    )
+
+    outline_state = store.get_outline_state(project_id)
+    parse_storage = store.get_parse_storage(project_id)
+    work_dir = technical_workspace_stage_dir(project_id, "s5_format_switch_workdir")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    toc_json_path = _prepare_technical_toc_json(project_id, project, outline_state, parse_storage, work_dir)
+    outline_path = _prepare_tech_format_outline(toc_json_path, work_dir)
+    output_path = work_dir / f"{source_path.stem}.{preset_key}.formatted.docx"
+    manifest_path = work_dir / f"tech_format_{preset_key}_input.json"
+    style_spec_path = _prepare_technical_format_style_spec(preset_key, style_overrides or {}, work_dir)
+    manifest = {
+        "schemaVersion": "bid-tech-format-clean-manifest-v1",
+        "inputFile": str(source_path),
+        "outlineFile": str(outline_path),
+        "outputFile": str(output_path),
+        "projectName": str(project.get("name") or project_id),
+        "formatPreset": preset_key,
+        "styleSpecPath": str(style_spec_path),
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    result = _run_local_tech_format_cleaner(manifest_path)
+    formatted_path = Path(str(result.get("outputFile") or output_path)).expanduser()
+    if not formatted_path.exists():
+        raise RuntimeError(f"技术标格式切换未生成输出文件：{formatted_path}")
+    shutil.copy2(formatted_path, source_path)
+    return {
+        "preset": preset_key,
+        "label": preset_info["label"],
+        "description": preset_info["description"],
+        "styleOverrides": copy.deepcopy(style_overrides or {}),
+        "manifestPath": str(manifest_path),
+        "outputFile": str(formatted_path),
+        "summary": result.get("summary") if isinstance(result.get("summary"), dict) else {},
+    }
+
+
 def _prepare_business_format_style_spec(
     preset_key: str,
     style_overrides: dict[str, Any],
@@ -540,6 +616,23 @@ def _prepare_business_format_style_spec(
 
     _apply_business_style_overrides(spec, style_overrides)
     style_path = work_dir / f"business_format_{preset_key}_style.json"
+    style_path.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
+    return style_path
+
+
+def _prepare_technical_format_style_spec(
+    preset_key: str,
+    style_overrides: dict[str, Any],
+    work_dir: Path,
+) -> Path:
+    base_path = BASE_DIR / "opencode" / "skill" / "bid-tech-assembler" / "references" / "heading_style.json"
+    spec = json.loads(base_path.read_text(encoding="utf-8"))
+    if not isinstance(spec, dict):
+        raise ValueError("技术标格式规范配置不是 JSON object。")
+    spec = copy.deepcopy(spec)
+    if preset_key == "custom" or style_overrides:
+        _apply_business_style_overrides(spec, style_overrides)
+    style_path = work_dir / f"tech_format_{preset_key}_style.json"
     style_path.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
     return style_path
 

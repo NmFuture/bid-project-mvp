@@ -1,27 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
-import { documentAPI, projectsAPI, stagesAPI } from '../api'
+import { useParams } from 'react-router-dom'
+import { documentAPI, projectsAPI } from '../api'
 import { PageError, PageLoading } from '../components/states/PageState'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
-import OnlyOfficeWorkspace from '../components/shared/OnlyOfficeWorkspace'
-import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
-import StageGroupNav from '../components/shared/StageGroupNav'
 import Button from '../components/ui/Button'
 import IconButton from '../components/ui/IconButton'
-import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 
 const FONT_OPTIONS = {
   zh: ['等线', '宋体', '仿宋', '黑体', '楷体', '微软雅黑', '方正仿宋_GBK', '方正小标宋_GBK'],
   en: ['Times New Roman', 'Arial', 'Calibri', 'Cambria', 'Georgia'],
-}
-
-const formatDateTime = (value) => {
-  if (!value) return '未保存'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '未保存'
-  return date.toLocaleString('zh-CN', { hour12: false })
 }
 
 const triggerDownload = (url, fileName) => {
@@ -36,7 +25,7 @@ const triggerDownload = (url, fileName) => {
   return true
 }
 
-const businessFormatPresets = [
+const documentFormatPresets = [
   {
     key: 'standard',
     label: '标准版',
@@ -51,8 +40,6 @@ const businessFormatPresets = [
 
 export default function CoCreationEditor({ showToast }) {
   const { id } = useParams()
-  const navigate = useNavigate()
-  const workspaceSlug = useWorkspaceSlug()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -61,22 +48,25 @@ export default function CoCreationEditor({ showToast }) {
   const [project, setProject] = useState(null)
   const [finalData, setFinalData] = useState(null)
   const [savingFallback, setSavingFallback] = useState(false)
-  const [forceSaving, setForceSaving] = useState(false)
-  const [finishingStage, setFinishingStage] = useState(false)
   const [businessPreviewFullscreen, setBusinessPreviewFullscreen] = useState(false)
   const [pdfPreparing, setPdfPreparing] = useState(false)
   const [pdfData, setPdfData] = useState(null)
-  const [chatMessages, setChatMessages] = useState([
+  const bidLabel = String(project?.bidType || '').includes('商务') ? '商务标' : '技术标'
+  const isBusinessBid = bidLabel === '商务标'
+  const documentPartLabel = isBusinessBid ? '商务部分' : '技术部分'
+  const defaultWordFileName = `${bidLabel}投标文件.docx`
+  const defaultPdfFileName = `${bidLabel}投标文件.pdf`
+  const [chatMessages, setChatMessages] = useState(() => [
     {
       role: 'assistant',
-      content: '可在这里输入需要润色的段落、修改目标或风险问题。我会基于商务标上下文给出建议，不会自动改写 Word。',
+      content: '可在这里输入需要润色的段落、修改目标或风险问题。我会基于当前标书上下文给出建议，不会自动改写 Word。',
     },
   ])
   const chatHistoryRef = useRef(null)
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const [rewriteOriginal, setRewriteOriginal] = useState('')
-  const [rewriteInstruction, setRewriteInstruction] = useState('优化为正式、审慎、可履约的商务投标表达，不改变事实、金额、日期和承诺边界。')
+  const [rewriteInstruction, setRewriteInstruction] = useState('优化为正式、审慎、可履约的投标表达，不改变事实、金额、日期和承诺边界。')
   const [rewriteSuggestion, setRewriteSuggestion] = useState(null)
   const [rewriteLoading, setRewriteLoading] = useState(false)
   const [rewriteApplying, setRewriteApplying] = useState(false)
@@ -102,7 +92,7 @@ export default function CoCreationEditor({ showToast }) {
     tableLineSpacing: 1,
     insertToc: true,
     tocPageBreakAfter: true,
-    headerTextTemplate: '{projectName}投标文件-商务部分',
+    headerTextTemplate: '{projectName}投标文件-当前部分',
   })
   const [formatApplying, setFormatApplying] = useState('')
 
@@ -156,9 +146,26 @@ export default function CoCreationEditor({ showToast }) {
   const hasOnlyOfficeSession = Boolean(data?.onlyoffice?.fileUrl && data?.onlyoffice?.callbackUrl)
   const useFallbackEditor = !hasOnlyOfficeSession || Boolean(onlyofficeError)
   const editorModeLabel = useFallbackEditor ? '文本兜底' : 'OnlyOffice 在线编辑'
-  const isBusinessBid = String(project?.bidType || '').includes('商务')
-  const pageTitle = isBusinessBid ? '' : 'S5 人机共创'
-  const pageDescription = isBusinessBid ? '' : '在线编辑生成后的投标文件正文，确认后进入导出阶段。'
+
+  useEffect(() => {
+    setChatMessages((current) => {
+      if (current.length !== 1 || current[0]?.role !== 'assistant') return current
+      return [{
+        ...current[0],
+        content: `可在这里输入需要润色的段落、修改目标或风险问题。我会基于${bidLabel}上下文给出建议，不会自动改写 Word。`,
+      }]
+    })
+    setRewriteInstruction((current) => (
+      current.includes('商务投标表达') || current === '优化为正式、审慎、可履约的投标表达，不改变事实、金额、日期和承诺边界。'
+        ? `优化为正式、审慎、可履约的${bidLabel}投标表达，不改变事实、金额、日期和承诺边界。`
+        : current
+    ))
+    setCustomFormat((current) => {
+      const currentHeader = String(current.headerTextTemplate || '')
+      if (currentHeader && !currentHeader.includes('当前部分') && !currentHeader.includes('商务部分') && !currentHeader.includes('技术部分')) return current
+      return { ...current, headerTextTemplate: `{projectName}投标文件-${documentPartLabel}` }
+    })
+  }, [bidLabel, documentPartLabel])
 
   const handleSaveFallback = async () => {
     const content = fallbackContent.trim()
@@ -176,19 +183,6 @@ export default function CoCreationEditor({ showToast }) {
       showToast?.(e?.message || '保存失败，请稍后重试', 'error')
     } finally {
       setSavingFallback(false)
-    }
-  }
-
-  const handleForceSave = async () => {
-    setForceSaving(true)
-    try {
-      const response = await documentAPI.forceSave(id)
-      setData(response?.payload || data)
-      showToast?.('已刷新真实文档状态')
-    } catch (e) {
-      showToast?.(e?.message || '刷新文档状态失败', 'error')
-    } finally {
-      setForceSaving(false)
     }
   }
 
@@ -280,9 +274,9 @@ export default function CoCreationEditor({ showToast }) {
       setData(response?.payload?.document || response?.document || data)
       setFinalData(await documentAPI.final(id).catch(() => finalData))
       setOnlyofficeError('')
-      showToast?.(response?.message || '商务标格式已切换')
+      showToast?.(response?.message || `${bidLabel}格式已切换`)
     } catch (e) {
-      showToast?.(e?.message || '商务标格式切换失败', 'error')
+      showToast?.(e?.message || `${bidLabel}格式切换失败`, 'error')
     } finally {
       setFormatApplying('')
     }
@@ -303,7 +297,7 @@ export default function CoCreationEditor({ showToast }) {
     try {
       const response = await documentAPI.finalPdf(id)
       setPdfData(response)
-      const downloaded = triggerDownload(response?.fileUrl, response?.fileName || '商务标投标文件.pdf')
+      const downloaded = triggerDownload(response?.fileUrl, response?.fileName || defaultPdfFileName)
       showToast?.(downloaded ? 'PDF 已生成并开始下载' : (response?.message || 'PDF 已生成'))
     } catch (e) {
       showToast?.(e?.message || 'PDF 生成失败', 'error')
@@ -354,24 +348,6 @@ export default function CoCreationEditor({ showToast }) {
       </select>
     </label>
   )
-
-  const handleFinishCoCreation = async () => {
-    setFinishingStage(true)
-    try {
-      await stagesAPI.update(id, 5, { status: 'completed' })
-      if (isBusinessBid) {
-        showToast?.('商务标共创导出已完成。')
-        setFinalData(await documentAPI.final(id).catch(() => finalData))
-      } else {
-        showToast?.('S5 共创已完成，已进入 S6 导出')
-        navigate(projectRoute(id, '/export', workspaceSlug))
-      }
-    } catch (e) {
-      showToast?.(e?.message || '共创完成失败，请稍后重试', 'error')
-    } finally {
-      setFinishingStage(false)
-    }
-  }
 
   const renderDocumentEditor = (minHeight = '680px') => {
     const minHeightClass = minHeight === '740px' ? 'min-h-[740px]' : minHeight === '690px' ? 'min-h-[690px]' : 'min-h-[680px]'
@@ -552,7 +528,7 @@ export default function CoCreationEditor({ showToast }) {
     <>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className="grid grid-cols-1 gap-2">
-          {businessFormatPresets.map((preset) => (
+          {documentFormatPresets.map((preset) => (
             <button
               key={preset.key}
               type="button"
@@ -619,7 +595,7 @@ export default function CoCreationEditor({ showToast }) {
                   />
                   目录后分页
                 </label>
-                {renderFormatTextInput('headerTextTemplate', '页眉模板', { placeholder: '{projectName}投标文件-商务部分' })}
+                {renderFormatTextInput('headerTextTemplate', '页眉模板', { placeholder: `{projectName}投标文件-${documentPartLabel}` })}
               </div>
             </div>
           </div>
@@ -639,14 +615,14 @@ export default function CoCreationEditor({ showToast }) {
     </>
   )
 
-  const renderBusinessWorkspace = () => (
+  const renderProjectWorkspace = () => (
     <div className="business-ui-shell grid min-h-[885px] grid-cols-1 items-stretch gap-4 xl:min-h-[calc(100vh-4.5rem)] xl:grid-cols-[minmax(0,1fr)_420px] 2xl:grid-cols-[minmax(0,1fr)_460px]">
       <section className={`business-panel flex min-h-0 flex-col overflow-hidden rounded-md border border-outline-variant/60 bg-white shadow-[0_1px_2px_rgba(13,33,55,0.05)] ${
         businessPreviewFullscreen ? 'fixed inset-0 z-[160] rounded-none border-0' : ''
       }`}>
         <div className="business-section-head flex min-h-[58px] flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div className="min-w-0">
-            <h3 className="truncate text-base font-semibold text-on-surface">商务标正文预览</h3>
+            <h3 className="truncate text-base font-semibold text-on-surface">{bidLabel}正文预览</h3>
             <p className="mt-1 truncate text-xs text-outline" title={data?.fileName || ''}>{data?.fileName || '未生成文档'}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -665,7 +641,7 @@ export default function CoCreationEditor({ showToast }) {
             <Button
               as="a"
               href={finalData?.fileUrl || data?.fileUrl || '#'}
-              download={finalData?.fileName || data?.fileName || '商务标投标文件.docx'}
+              download={finalData?.fileName || data?.fileName || defaultWordFileName}
               size="sm"
               variant="primary"
             >
@@ -674,7 +650,7 @@ export default function CoCreationEditor({ showToast }) {
             {pdfData?.fileUrl ? (
               <Button
                 type="button"
-                onClick={() => triggerDownload(pdfData.fileUrl, pdfData.fileName || '商务标投标文件.pdf')}
+                onClick={() => triggerDownload(pdfData.fileUrl, pdfData.fileName || defaultPdfFileName)}
                 size="sm"
                 variant="primary"
               >
@@ -707,7 +683,7 @@ export default function CoCreationEditor({ showToast }) {
         <section className="business-panel flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-outline-variant/60 bg-surface-container-lowest shadow-[0_1px_2px_rgba(13,33,55,0.05)]">
           <div className="business-section-head business-editor-tool-head flex items-center justify-between gap-3 border-b border-surface-container-high px-3 py-2">
             <div className="flex min-w-0 items-center gap-2">
-              <h3 className="truncate text-base font-semibold text-on-surface">商务标共创工具</h3>
+              <h3 className="truncate text-base font-semibold text-on-surface">{bidLabel}共创工具</h3>
             </div>
             <div className="grid w-[176px] shrink-0 grid-cols-2 gap-1 rounded-md bg-surface-container-high p-1">
               {[
@@ -731,155 +707,14 @@ export default function CoCreationEditor({ showToast }) {
     </div>
   )
 
-  if (loading) return <PageLoading title={isBusinessBid ? '正在加载 S4 共创导出文档...' : '正在加载 S5 人机共创文档...'} />
+  if (loading) return <PageLoading title="正在加载共创导出文档..." />
   if (error) return <PageError title="文档加载失败" description={error} onRetry={loadDocument} />
 
   return (
     <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
       <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
-      {!isBusinessBid ? (
-        <>
-          <StageGroupNav
-            current="editor"
-            items={[
-              { key: 'editor', label: '共创编辑', icon: 'edit_document', path: '/editor' },
-              { key: 'export', label: '最终导出', icon: 'download', path: '/export' },
-            ]}
-          />
-
-          <PageHeader
-            title={pageTitle}
-            description={pageDescription}
-            actionsClassName="stage-header-actions"
-            actions={(
-              <>
-                <button
-                  onClick={loadDocument}
-                  className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors"
-                >
-                  刷新
-                </button>
-                <Button
-                  onClick={handleFinishCoCreation}
-                  disabled={finishingStage}
-                  size="lg"
-                  variant="success"
-                >
-                  {finishingStage ? '处理中...' : '进入下一阶段'}
-                </Button>
-              </>
-            )}
-          />
-        </>
-      ) : null}
-
-      {isBusinessBid ? renderBusinessWorkspace() : (
-
-      <OnlyOfficeWorkspace
-        heightClass="min-h-[780px]"
-        gridClassName="xl:grid-cols-[minmax(18rem,24rem)_minmax(0,1fr)]"
-        documentTitle="共创文档"
-        documentSubtitle={data?.fileName || '未生成文档'}
-        documentMeta={(
-          <span className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${useFallbackEditor ? 'bg-error-container text-on-error-container' : 'bg-secondary-container text-on-secondary-container'}`}>
-            {editorModeLabel}
-          </span>
-        )}
-        documentAreaClassName="flex flex-col"
-        sidebar={(
-          <div className="flex h-full min-h-0 flex-col">
-            <div className="border-b border-surface-container-high bg-surface-container-low px-5 py-4">
-              <h3 className="text-base font-semibold text-on-surface">文档上下文</h3>
-              <p className="mt-1 truncate text-xs text-outline" title={data?.sourceFileName || '-'}>
-                来源：{data?.sourceFileName || '-'}
-              </p>
-            </div>
-            <div className="flex-1 space-y-4 overflow-y-auto p-5">
-              <div className="space-y-3 text-sm">
-                <div>
-                  <div className="text-xs text-on-surface-variant">文件名</div>
-                  <div className="mt-1 break-words font-medium text-on-surface">{data?.fileName || '-'}</div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded-md bg-surface-container-low px-3 py-2">
-                    <div className="text-xs text-on-surface-variant">版本</div>
-                    <div className="mt-1 font-semibold text-on-surface">v{data?.version || 1}</div>
-                  </div>
-                  <div className="rounded-md bg-surface-container-low px-3 py-2">
-                    <div className="text-xs text-on-surface-variant">模式</div>
-                    <div className="mt-1 font-semibold text-on-surface">{editorModeLabel}</div>
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-on-surface-variant">最近保存</div>
-                  <div className="mt-1 text-on-surface">{formatDateTime(data?.lastSavedAt)}</div>
-                </div>
-              </div>
-
-              {onlyofficeError && (
-                <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
-                  {onlyofficeError}
-                </div>
-              )}
-
-              <button
-                onClick={handleForceSave}
-                disabled={forceSaving}
-                className="flex h-8 w-full items-center justify-center rounded-md bg-primary px-3 text-xs font-semibold text-on-primary transition-colors hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {forceSaving ? '刷新中...' : '刷新文档状态'}
-              </button>
-
-              {isBusinessBid && (
-                <div className="rounded-md border border-surface-container-high bg-white p-3 text-sm">
-                  <div className="font-semibold text-on-surface">最终版下载</div>
-                  <div className="mt-2 space-y-1 text-xs text-on-surface-variant">
-                    <div>文件：{finalData?.fileName || data?.fileName || '-'}</div>
-                    <div>版本：v{finalData?.version || data?.version || 1}</div>
-                    <div>最近保存：{formatDateTime(finalData?.lastSavedAt || data?.lastSavedAt)}</div>
-                  </div>
-                  <a
-                    href={finalData?.fileUrl || data?.fileUrl || '#'}
-                    download={finalData?.fileName || data?.fileName || '商务标投标文件.docx'}
-                    onClick={() => showToast?.('开始下载商务标最终版 Word')}
-                    className="mt-3 inline-flex h-8 w-full items-center justify-center rounded-md bg-primary px-3 text-xs font-semibold text-on-primary transition-colors hover:bg-primary-container"
-                  >
-                    下载最终版 Word
-                  </a>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      >
-        <div className={useFallbackEditor ? 'hidden' : 'min-h-0 flex-1'}>
-          <OnlyOfficeEmbed
-            session={data?.onlyoffice}
-            className="h-full min-h-[680px] w-full rounded-md border border-outline-variant bg-white"
-            onReady={() => setOnlyofficeError('')}
-            onError={(message) => setOnlyofficeError(message)}
-          />
-        </div>
-
-        <div className={useFallbackEditor ? 'flex min-h-0 flex-1 flex-col gap-3' : 'hidden'}>
-          <textarea
-            value={fallbackContent}
-            onChange={(event) => setFallbackContent(event.target.value)}
-            className="min-h-[620px] flex-1 rounded-md border border-outline-variant bg-surface-container-lowest px-3 py-3 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30"
-          />
-          <div className="flex justify-end">
-            <button
-              onClick={handleSaveFallback}
-              disabled={savingFallback}
-              className="flex h-8 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-on-primary transition-colors hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {savingFallback ? '保存中...' : '保存回写'}
-            </button>
-          </div>
-        </div>
-      </OnlyOfficeWorkspace>
-      )}
+      {renderProjectWorkspace()}
     </div>
   )
 }

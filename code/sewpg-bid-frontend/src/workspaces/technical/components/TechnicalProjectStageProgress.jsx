@@ -8,8 +8,8 @@ import TechnicalStageProgress from './TechnicalStageProgress'
 const COMPACT_STAGE_GROUPS = [
   { id: 1, name: '目录生成', stageIds: [1], pendingRouteStageId: 1, completedRouteStageId: 1 },
   { id: 2, name: '目录确认', stageIds: [2], pendingRouteStageId: 2, completedRouteStageId: 2 },
-  { id: 3, name: '事实表', stageIds: [3], pendingRouteStageId: 3, completedRouteStageId: 3, routePath: '/facts', pseudo: true },
-  { id: 4, name: '素材匹配', stageIds: [3, 4], pendingRouteStageId: 3, completedRouteStageId: 4, routePath: '/gaps' },
+  { id: 3, name: '素材匹配', stageIds: [3], pendingRouteStageId: 3, completedRouteStageId: 3, routePath: '/gaps' },
+  { id: 4, name: '标书生成', stageIds: [4], pendingRouteStageId: 4, completedRouteStageId: 4, routePath: '/generate' },
   { id: 5, name: '编辑导出', stageIds: [5, 6], pendingRouteStageId: 5, completedRouteStageId: 6 },
 ]
 
@@ -35,16 +35,13 @@ const compactProjectStages = (rawStages = []) => {
   return COMPACT_STAGE_GROUPS.map((group) => {
     const groupStages = group.stageIds.map((stageId) => rawById.get(stageId)).filter(Boolean)
     const activeStage = groupStages.find((stage) => stage?.status === 'active')
-    const isPseudoFactStage = group.pseudo && group.routePath === '/facts'
     const hasActiveStage = Boolean(activeStage)
     const hasKnownStage = groupStages.length > 0
     const isCompleted = hasKnownStage && groupStages.every((stage) => stage?.status === 'completed')
     const isPastGroup = activeRawStageId > Math.max(...group.stageIds)
 
     let status = 'pending'
-    if (isPseudoFactStage) {
-      status = activeRawStageId >= 3 ? 'completed' : 'pending'
-    } else if (hasActiveStage) {
+    if (hasActiveStage) {
       status = 'active'
     } else if (isCompleted || isPastGroup) {
       status = 'completed'

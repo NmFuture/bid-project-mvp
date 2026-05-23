@@ -7,7 +7,8 @@ import DataCard from '../components/shared/DataCard'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
-import StageGroupNav from '../components/shared/StageGroupNav'
+import Button from '../components/ui/Button'
+import Toolbar from '../components/ui/Toolbar'
 import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
 import {
   asArray,
@@ -166,7 +167,7 @@ const SmallStat = ({ label, value, active, onClick }) => (
   <button
     type="button"
     onClick={onClick}
-    className={`h-[58px] rounded-md border px-3 text-left transition-colors ${
+    className={`business-metric h-[58px] rounded-md border px-3 text-left transition-colors ${
       active
         ? 'border-primary bg-primary text-on-primary'
         : 'border-surface-container-high bg-surface-container-lowest text-on-surface hover:bg-surface-container-low'
@@ -539,7 +540,6 @@ export default function GapRecognition({ showToast }) {
     ]
   }, [items, summary])
   const factConfirmed = factTable?.status === 'confirmed'
-  const factSummary = factTable?.summary || {}
   const fillablePendingCount = useMemo(() => items.filter((item) => (
     decisionOf(item) === 'fill_required'
     && asObjectArray(item?.fillTasks).some((task) => task?.status !== 'completed')
@@ -646,10 +646,26 @@ export default function GapRecognition({ showToast }) {
     }
   }
 
-  const handleOpenFactModal = async () => {
-    setFactModalOpen(true)
-    if (!factTable?.schemaVersion || !asObjectArray(factTable?.fields).length) {
-      await loadFactTable({ build: true })
+  const ensureFactTableReady = async () => {
+    if (factTable?.status === 'confirmed') return true
+    if (busyAction) return false
+
+    setBusyAction('facts-auto')
+    try {
+      const currentFields = factFields.length
+        ? factFields
+        : asObjectArray((await gapsAPI.buildFacts(id))?.fields)
+      const fieldsToSave = currentFields.filter((field) => String(field.label || field.value || '').trim())
+      const payload = await gapsAPI.saveFacts(id, { fields: fieldsToSave, confirm: true, operator: '当前用户' })
+      setFactTable(payload)
+      setFactFields(asObjectArray(payload?.fields))
+      setData((current) => current ? { ...current, projectFactTable: payload } : current)
+      return true
+    } catch (e) {
+      showToast?.(e?.message || '内部项目数据准备失败，请稍后重试', 'error')
+      return false
+    } finally {
+      setBusyAction('')
     }
   }
 
@@ -773,10 +789,7 @@ export default function GapRecognition({ showToast }) {
   }
 
   const handleAiFillAll = async () => {
-    if (!factConfirmed) {
-      showToast?.('请先确认项目事实表，再执行一键填写', 'error')
-      setFactModalOpen(true)
-      if (!factFields.length) await loadFactTable({ build: true })
+    if (!factConfirmed && !(await ensureFactTableReady())) {
       return null
     }
     const payload = await runAction(
@@ -795,10 +808,7 @@ export default function GapRecognition({ showToast }) {
 
   const handleAiFill = async () => {
     if (!selected || !selectedFillTask) return null
-    if (!factConfirmed) {
-      showToast?.('请先确认项目事实表，再执行 AI 填写', 'error')
-      setFactModalOpen(true)
-      if (!factFields.length) await loadFactTable({ build: true })
+    if (!factConfirmed && !(await ensureFactTableReady())) {
       return null
     }
     const referenceIds = selectedAiFillReferenceIds
@@ -844,70 +854,70 @@ export default function GapRecognition({ showToast }) {
   if (error) return <PageError title="素材匹配加载失败" description={error} onRetry={loadData} />
 
   return (
-    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
+    <div className="stage-page business-ui-shell flex flex-col gap-6 animate-fade-in w-full max-w-none">
       <StageBreadcrumb currentLabel="素材匹配" />
       <ProjectStageProgress projectId={id} showToast={showToast} />
-      <StageGroupNav
-        current="matching"
-        items={[
-          { key: 'matching', label: '素材匹配', icon: 'rule_settings', path: '/gaps' },
-          { key: 'generate', label: '标书生成', icon: 'draw', path: '/generate' },
-        ]}
-      />
 
       <PageHeader
         actionsClassName="stage-header-actions"
         actions={(
-          <>
-            <button
-              onClick={handleOpenFactModal}
-              disabled={Boolean(busyAction)}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors disabled:opacity-50 ${
-                factConfirmed
-                  ? 'bg-secondary-container text-on-secondary-container hover:bg-secondary-container/80'
-                  : 'bg-tertiary-fixed text-on-tertiary-fixed hover:bg-tertiary-fixed/80'
-              }`}
-            >
-              <span className="material-symbols-outlined text-[18px]">fact_check</span>
-              {factConfirmed ? '项目事实表已确认' : '维护项目事实表'}
-            </button>
-            <button
+          <Toolbar>
+            <Button
+              type="button"
               onClick={handleAiFillAll}
               disabled={Boolean(busyAction) || !isCompleted || !fillablePendingCount}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-on-primary transition-colors hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+              size="stage"
+              variant="primary"
             >
-              <span className="material-symbols-outlined text-[18px]">auto_fix_high</span>
               {busyAction === 'ai-fill-all' ? '一键填写中...' : `一键AI填写${fillablePendingCount ? `(${fillablePendingCount})` : ''}`}
-            </button>
-            <button
+            </Button>
+            <Button
+              type="button"
               onClick={() => loadData()}
-              className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors"
+              size="stage"
+              variant="quiet"
             >
               刷新
-            </button>
-            <button
+            </Button>
+            <Button
+              type="button"
               onClick={handleRunDetection}
               disabled={Boolean(busyAction)}
-              className="px-4 py-2.5 bg-primary text-on-primary text-sm font-medium rounded-lg hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              size="stage"
+              variant="primary"
             >
               {busyAction === 'detect' ? '识别中...' : isCompleted ? '重新识别缺口' : '识别缺口'}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               onClick={handleAdvanceToS4}
               disabled={Boolean(busyAction)}
               title={isCompleted ? '进入标书生成；未确认的技术缺口会在生成和共创阶段继续提示' : '技术标已允许跳过素材匹配直接进入标书生成'}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-secondary px-4 py-2.5 text-sm font-semibold text-on-secondary transition-colors hover:bg-secondary/90 disabled:cursor-not-allowed disabled:opacity-50"
+              size="stage"
+              variant="success"
             >
-              <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
               {busyAction === 'advance-s4' ? '进入中...' : '进入标书生成'}
-            </button>
-          </>
+            </Button>
+          </Toolbar>
         )}
       />
 
-      <DataCard className="!p-0 overflow-hidden">
-        <div className="border-b border-surface-container-high bg-surface-container-low px-5 py-4">
+      {isCompleted ? (
+        <div className="grid auto-rows-max gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          {summaryCards.map(([key, label, value]) => (
+            <SmallStat
+              key={key}
+              label={label}
+              value={value}
+              active={decisionFilter === key}
+              onClick={() => setDecisionFilter(key)}
+            />
+          ))}
+        </div>
+      ) : null}
+
+      <DataCard className="!p-0 overflow-hidden business-panel">
+        <div className="business-section-head border-b border-surface-container-high px-4 py-3">
           <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-start 2xl:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
@@ -929,25 +939,8 @@ export default function GapRecognition({ showToast }) {
                   ].filter(Boolean).join(' · ')}
                 </p>
               ) : null}
-              <p className="mt-1 text-xs text-outline">
-                项目事实表：{factConfirmed ? '已人工确认' : '待人工确认'}
-                {factSummary.totalCount ? ` · 字段 ${factSummary.totalCount} · 待补充 ${factSummary.missingCount || 0}` : ''}
-              </p>
             </div>
 
-            {isCompleted ? (
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5 2xl:w-[42rem]">
-                {summaryCards.map(([key, label, value]) => (
-                  <SmallStat
-                    key={key}
-                    label={label}
-                    value={value}
-                    active={decisionFilter === key}
-                    onClick={() => setDecisionFilter(key)}
-                  />
-                ))}
-              </div>
-            ) : null}
           </div>
         </div>
 
@@ -1103,7 +1096,7 @@ export default function GapRecognition({ showToast }) {
                                 <span className="material-symbols-outlined text-[15px]">
                                   {selectedAiFillCompleted ? 'task_alt' : aiFillBusy ? 'pending' : factConfirmed ? 'edit_document' : 'rule_settings'}
                                 </span>
-                                {aiFillBusy ? 'AI填写中' : selectedAiFillCompleted ? 'AI已填写' : factConfirmed ? '等待AI填写' : '待事实确认'}
+                                {aiFillBusy ? 'AI填写中' : selectedAiFillCompleted ? 'AI已填写' : '等待AI填写'}
                               </span>
                             </div>
                             <div className="mt-3 grid grid-cols-1 gap-2">
@@ -1113,7 +1106,7 @@ export default function GapRecognition({ showToast }) {
                             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-surface-container-low px-3 py-2">
                               <div className="min-w-0 text-xs">
                                 <div className="font-semibold text-on-surface">
-                                  {selectedAiFillCompleted ? '已生成填写结果' : factConfirmed ? '待人工确认后填写' : '先确认项目事实表'}
+                                  {selectedAiFillCompleted ? '已生成填写结果' : '待执行 AI 填写'}
                                 </div>
                                 <div className="mt-1 truncate text-outline" title={selectedResolvedArtifact?.fileName || selectedBlankPath || ''}>
                                   {selectedResolvedArtifact?.fileName || selectedBlankPath || '尚未生成填写产物'}
@@ -1126,7 +1119,7 @@ export default function GapRecognition({ showToast }) {
                                 className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 <span className="material-symbols-outlined text-[16px]">auto_fix_high</span>
-                                {aiFillBusy ? 'AI填写中...' : !factConfirmed ? '确认事实表' : selectedAiFillCompleted ? '重新AI填写' : 'AI填写'}
+                                {aiFillBusy ? 'AI填写中...' : selectedAiFillCompleted ? '重新AI填写' : 'AI填写'}
                               </button>
                             </div>
                             {selectedResolvedArtifact?.qualityReport ? (

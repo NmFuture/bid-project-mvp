@@ -115,6 +115,11 @@ export default function ProjectList({ showToast, viewMode = 'projects', workspac
     navigate(getProjectEntryRoute(project))
   }
 
+  const stageLabelForProject = (project) => {
+    const isTechnicalBid = String(project?.bidType || '').includes('技术')
+    return getCompactStageLabel(project.currentStage, project.stageLabel || '-', isTechnicalBid ? 'tech' : 'business')
+  }
+
   if (loading) {
     return <PageLoading title="正在加载项目列表..." />
   }
@@ -288,7 +293,7 @@ export default function ProjectList({ showToast, viewMode = 'projects', workspac
                       <td className="px-6 text-[14px] text-on-surface-variant">{project.manager || '-'}</td>
                       <td className="px-6 text-[14px] text-on-surface-variant">{project.bidType || '-'}</td>
                       <td className="px-6 text-[14px] text-on-surface">
-                        {getCompactStageLabel(project.currentStage, project.stageLabel || '-')}
+                        {stageLabelForProject(project)}
                       </td>
                       <td className="px-6 text-[14px] text-on-surface-variant">{project.startDate || '-'}</td>
                       <td className="px-6 text-[14px] text-on-surface-variant">{project.endDate || project.deadline || '-'}</td>

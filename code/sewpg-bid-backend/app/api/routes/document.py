@@ -18,8 +18,8 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from app.api.utils import absolute_url, now_message, onlyoffice_backend_base_url
 from app.core.config import settings
-from app.services.business_assembly import BUSINESS_FORMAT_PRESETS, apply_business_document_format_preset
-from app.services.business_document_editing import apply_controlled_business_rewrite
+from app.services.business_assembly import BID_FORMAT_PRESETS, apply_business_document_format_preset
+from app.services.business_document_editing import apply_controlled_document_rewrite
 from app.services.onlyoffice_documents import (
     WORD_MEDIA_TYPE,
     build_editor_session_key,
@@ -254,14 +254,16 @@ async def force_save_document(project_id: str, request: Request) -> dict[str, An
     return now_message("已刷新文档状态。", payload)
 
 
-def _ensure_business_project(project_id: str) -> dict[str, Any]:
+def _ensure_bid_project(project_id: str) -> dict[str, Any]:
     try:
         project = store.get_project_runtime_state(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="项目不存在。") from exc
-    if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
-        raise HTTPException(status_code=400, detail="该接口仅支持商务标项目。")
     return project
+
+
+def _project_bid_label(project: dict[str, Any]) -> str:
+    return normalize_bid_type(str(project.get("bidType") or "技术标"))
 
 
 def _send_business_chat_prompt(title: str, prompt: str) -> dict[str, Any]:
@@ -294,7 +296,12 @@ def _send_business_chat_prompt(title: str, prompt: str) -> dict[str, Any]:
             ) from second_exc
 
 
-def _extract_rewrite_suggestion(reply: str, original_text: str, instruction: str) -> dict[str, Any]:
+def _extract_rewrite_suggestion(
+    reply: str,
+    original_text: str,
+    instruction: str,
+    bid_label: str = "标书",
+) -> dict[str, Any]:
     text = str(reply or "").strip()
     replacement = text
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
@@ -321,7 +328,7 @@ def _extract_rewrite_suggestion(reply: str, original_text: str, instruction: str
         "originalText": str(original_text or "").strip(),
         "replacementText": replacement.strip(),
         "instruction": str(instruction or "").strip(),
-        "reason": reason or "已根据用户润色要求优化商务投标表达。",
+        "reason": reason or f"已根据用户润色要求优化{bid_label}投标表达。",
         "riskTip": risk or "请确认替换文本未改变招标文件要求、承诺边界、金额、日期和主体信息。",
         "rawReply": reply,
     }
@@ -332,7 +339,8 @@ async def business_document_chat(
     project_id: str,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
-    project = _ensure_business_project(project_id)
+    project = _ensure_bid_project(project_id)
+    bid_label = _project_bid_label(project)
     message = str(data.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="请输入需要对话或润色的内容。")
@@ -341,6 +349,7 @@ async def business_document_chat(
     fill_state = store.get_fill_state(project_id)
     context = {
         "projectId": project_id,
+        "bidType": bid_label,
         "projectName": project.get("name") or project_id,
         "projectCode": project.get("projectCode") or "",
         "customerName": project.get("customerName") or project.get("owner") or "",
@@ -356,7 +365,7 @@ async def business_document_chat(
         if isinstance(item, dict)
     ]
     prompt = f"""
-你是商务标投标文件共创助手。请只围绕商务标正文的语言润色、表达优化、风险提示和补写建议回答，不要编造项目事实，不要自动修改 Word 文件。
+你是{bid_label}投标文件共创助手。请只围绕{bid_label}正文的语言润色、表达优化、风险提示和补写建议回答，不要编造项目事实，不要自动修改 Word 文件。
 
 项目上下文：
 {context}
@@ -371,7 +380,7 @@ async def business_document_chat(
 """.strip()
 
     try:
-        result = await asyncio.to_thread(_send_business_chat_prompt, "商务标 S4 共创对话", prompt)
+        result = await asyncio.to_thread(_send_business_chat_prompt, f"{bid_label}共创对话", prompt)
         reply = str(result.get("reply") or "").strip()
         if not reply:
             raise RuntimeError("opencode 未返回有效文本。")
@@ -386,7 +395,7 @@ async def business_document_chat(
             "opencodeOutput": result.get("opencodeOutput") or {},
         }
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"商务标 AI 对话调用 opencode 失败：{exc}") from exc
+        raise HTTPException(status_code=502, detail=f"{bid_label} AI 对话调用 opencode 失败：{exc}") from exc
 
 
 @router.post("/api/projects/{project_id}/document/business-rewrite/suggest")
@@ -394,7 +403,8 @@ async def suggest_business_document_rewrite(
     project_id: str,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
-    project = _ensure_business_project(project_id)
+    project = _ensure_bid_project(project_id)
+    bid_label = _project_bid_label(project)
     original_text = str(data.get("originalText") or "").strip()
     instruction = str(data.get("instruction") or "").strip()
     if not original_text:
@@ -402,10 +412,10 @@ async def suggest_business_document_rewrite(
     if len(original_text) > 4000:
         raise HTTPException(status_code=400, detail="原文段落过长，请先缩短到单个段落或小片段。")
     if not instruction:
-        instruction = "在不改变事实、承诺边界、金额、日期和主体信息的前提下，优化为正式、审慎、可履约的商务投标表达。"
+        instruction = f"在不改变事实、承诺边界、金额、日期和主体信息的前提下，优化为正式、审慎、可履约的{bid_label}投标表达。"
 
     prompt = f"""
-你是商务标投标文件润色助手。请只改写用户提供的原文，不要扩写无依据事实，不要新增承诺，不要改变金额、日期、单位、项目名称、招标编号、法律责任边界。
+你是{bid_label}投标文件润色助手。请只改写用户提供的原文，不要扩写无依据事实，不要新增承诺，不要改变金额、日期、单位、项目名称、招标编号、法律责任边界。
 
 项目上下文：
 - 项目名称：{project.get("name") or project_id}
@@ -427,11 +437,11 @@ async def suggest_business_document_rewrite(
 """.strip()
 
     try:
-        result = await asyncio.to_thread(_send_business_chat_prompt, "商务标 S4 受控润色建议", prompt)
+        result = await asyncio.to_thread(_send_business_chat_prompt, f"{bid_label}受控润色建议", prompt)
         reply = str(result.get("reply") or "").strip()
         if not reply:
             raise RuntimeError("opencode 未返回有效润色建议。")
-        suggestion = _extract_rewrite_suggestion(reply, original_text, instruction)
+        suggestion = _extract_rewrite_suggestion(reply, original_text, instruction, bid_label)
         if not suggestion["replacementText"]:
             raise RuntimeError("opencode 未返回可替换文本。")
         return {
@@ -443,7 +453,7 @@ async def suggest_business_document_rewrite(
             "primaryModelError": result.get("primaryModelError") or "",
         }
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"商务标受控润色建议生成失败：{exc}") from exc
+        raise HTTPException(status_code=502, detail=f"{bid_label}受控润色建议生成失败：{exc}") from exc
 
 
 @router.post("/api/projects/{project_id}/document/business-rewrite/apply")
@@ -452,14 +462,15 @@ async def apply_business_document_rewrite(
     request: Request,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
-    _ensure_business_project(project_id)
+    project = _ensure_bid_project(project_id)
+    bid_label = _project_bid_label(project)
     original_text = str(data.get("originalText") or "").strip()
     replacement_text = str(data.get("replacementText") or "").strip()
     if not original_text or not replacement_text:
         raise HTTPException(status_code=400, detail="原文和替换文本不能为空。")
     try:
         result = await asyncio.to_thread(
-            apply_controlled_business_rewrite,
+            apply_controlled_document_rewrite,
             project_id,
             original_text=original_text,
             replacement_text=replacement_text,
@@ -470,7 +481,7 @@ async def apply_business_document_rewrite(
         refresh_document_session(doc_path)
         sync_document_to_minio(doc_path, document_object_key(project_id))
         return now_message(
-            "已按审核后的替换文本更新商务标正文。",
+            f"已按审核后的替换文本更新{bid_label}正文。",
             {
                 "rewrite": result,
                 "document": build_document_payload(project_id, request),
@@ -481,7 +492,7 @@ async def apply_business_document_rewrite(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"商务标正文受控替换失败：{exc}") from exc
+        raise HTTPException(status_code=500, detail=f"{bid_label}正文受控替换失败：{exc}") from exc
 
 
 @router.post("/api/projects/{project_id}/document/business-format")
@@ -490,10 +501,11 @@ async def apply_business_document_format(
     request: Request,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
-    _ensure_business_project(project_id)
+    project = _ensure_bid_project(project_id)
+    bid_label = _project_bid_label(project)
     preset = str(data.get("preset") or "standard").strip() or "standard"
-    if preset not in BUSINESS_FORMAT_PRESETS:
-        raise HTTPException(status_code=400, detail="未知商务标格式预设。")
+    if preset not in (BID_FORMAT_PRESETS.get(bid_label) or {}):
+        raise HTTPException(status_code=400, detail=f"未知{bid_label}格式预设。")
     style_overrides = data.get("styleOverrides") if isinstance(data.get("styleOverrides"), dict) else None
     try:
         result = await asyncio.to_thread(
@@ -507,7 +519,7 @@ async def apply_business_document_format(
         refresh_document_session(doc_path)
         sync_document_to_minio(doc_path, document_object_key(project_id))
         return now_message(
-            f"已应用{result.get('label') or '商务标格式'}。",
+            f"已应用{result.get('label') or f'{bid_label}格式'}。",
             {
                 "format": result,
                 "document": build_document_payload(project_id, request),
@@ -516,7 +528,7 @@ async def apply_business_document_format(
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"商务标格式切换失败：{exc}") from exc
+        raise HTTPException(status_code=500, detail=f"{bid_label}格式切换失败：{exc}") from exc
 
 
 @router.post("/api/projects/{project_id}/document/callback")

@@ -1,21 +1,25 @@
+.workspace-shell-main,
 .technical-shell-main {
   background:
     linear-gradient(180deg, rgba(246, 248, 251, 0.98), rgba(255, 255, 255, 0.92) 260px),
     #f6f8fb;
 }
 
+.workspace-shell-frame,
 .technical-shell-frame {
   width: 100%;
   max-width: 1400px;
   margin-inline: auto;
 }
 
+.workspace-scoped .command-surface,
 .technical-workspace .command-surface {
   border: 1px solid rgba(196, 208, 220, 0.68);
   background: rgba(255, 255, 255, 0.82);
   box-shadow: 0 10px 30px -24px rgba(16, 52, 82, 0.28);
 }
 
+.workspace-scoped .command-button,
 .technical-workspace .command-button {
   display: inline-flex;
   align-items: center;
@@ -34,26 +38,31 @@
     box-shadow 0.18s ease;
 }
 
+.workspace-scoped .command-button-primary,
 .technical-workspace .command-button-primary {
   background: #0068b7;
   color: #ffffff;
   box-shadow: 0 8px 20px -16px rgba(0, 104, 183, 0.55);
 }
 
+.workspace-scoped .command-button-primary:hover,
 .technical-workspace .command-button-primary:hover {
   background: #075f9e;
 }
 
+.workspace-scoped .command-button-secondary,
 .technical-workspace .command-button-secondary {
   background: #eef4f9;
   color: #2a4258;
 }
 
+.workspace-scoped .command-button-secondary:hover,
 .technical-workspace .command-button-secondary:hover {
   background: #e1eaf3;
   color: #17334a;
 }
 
+.workspace-scoped .interactive-lift,
 .technical-workspace .interactive-lift {
   transition:
     transform 0.24s cubic-bezier(0.16, 1, 0.3, 1),
@@ -62,21 +71,25 @@
     box-shadow 0.24s ease;
 }
 
+.workspace-scoped .interactive-lift:hover,
 .technical-workspace .interactive-lift:hover {
   transform: translateY(-1px);
   box-shadow: 0 14px 30px -24px rgba(0, 73, 128, 0.45);
 }
 
+.workspace-scoped .text-ink-strong,
 .technical-workspace .text-ink-strong {
   color: #17334a;
 }
 
+.workspace-scoped .page-frame,
 .technical-workspace .page-frame {
   width: 100%;
   max-width: 1400px;
   margin-inline: auto;
 }
 
+.workspace-scoped .project-list-page,
 .technical-workspace .project-list-page {
   background: transparent !important;
 }

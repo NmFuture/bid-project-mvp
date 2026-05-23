@@ -10,17 +10,18 @@ from docx import Document
 
 from app.services.onlyoffice_documents import document_path
 from app.services.store import now_iso, store
-from app.services.workspace_artifacts import business_workspace_dir
+from app.services.parse_profiles import normalize_bid_type
+from app.services.workspace_artifacts import workspace_stage_dir
 
 
-def apply_controlled_business_rewrite(
+def apply_controlled_document_rewrite(
     project_id: str,
     *,
     original_text: str,
     replacement_text: str,
     operator: str = "当前用户",
 ) -> dict[str, Any]:
-    """Apply a single, exact, human-approved rewrite to the business bid docx.
+    """Apply a single, exact, human-approved rewrite to the generated bid docx.
 
     This intentionally avoids broad AI edits. The original text must match one
     and only one body/table paragraph, or appear literally once inside one
@@ -35,9 +36,11 @@ def apply_controlled_business_rewrite(
         raise ValueError("替换文本不能为空。")
 
     path = document_path(project_id)
+    bid_type = _project_bid_type(project_id)
+    bid_label = normalize_bid_type(bid_type)
     if not path.exists():
         state = store.get_document_state(project_id)
-        raise FileNotFoundError(f"商务标正文文件不存在：{state.get('fileName') or path.name}")
+        raise FileNotFoundError(f"{bid_label}正文文件不存在：{state.get('fileName') or path.name}")
 
     document = Document(str(path))
     match = _find_unique_rewrite_match(document, original)
@@ -52,8 +55,9 @@ def apply_controlled_business_rewrite(
     document.save(str(path))
 
     record = {
-        "schemaVersion": "business-controlled-rewrite-v1",
+        "schemaVersion": "bid-controlled-rewrite-v1",
         "appliedAt": now_iso(),
+        "bidType": bid_label,
         "operator": operator,
         "originalText": original,
         "replacementText": replacement,
@@ -64,6 +68,21 @@ def apply_controlled_business_rewrite(
     }
     record["historyFile"] = str(_append_rewrite_history(project_id, record))
     return record
+
+
+def apply_controlled_business_rewrite(
+    project_id: str,
+    *,
+    original_text: str,
+    replacement_text: str,
+    operator: str = "当前用户",
+) -> dict[str, Any]:
+    return apply_controlled_document_rewrite(
+        project_id,
+        original_text=original_text,
+        replacement_text=replacement_text,
+        operator=operator,
+    )
 
 
 def _normalize_input(value: str) -> str:
@@ -97,7 +116,7 @@ def _find_unique_rewrite_match(document: Document, original: str) -> dict[str, A
     if len(literal_matches) > 1:
         raise ValueError(f"原文片段在正文中匹配到 {len(literal_matches)} 处，请补充更精确的原文。")
 
-    raise ValueError("未在当前商务标正文中找到该原文段落，请从左侧 Word 预览中复制完整段落后重试。")
+    raise ValueError("未在当前标书正文中找到该原文段落，请从左侧 Word 预览中复制完整段落后重试。")
 
 
 def _iter_body_and_table_paragraphs(document: Document) -> list[dict[str, Any]]:
@@ -135,7 +154,9 @@ def _replace_paragraph_text(paragraph, text: str) -> None:
 
 
 def _backup_document(project_id: str, path: Path) -> Path:
-    backup_dir = business_workspace_dir(project_id) / "s4_ai_rewrite_backups"
+    bid_type = _project_bid_type(project_id)
+    stage_dir = "s4_ai_rewrite_backups" if normalize_bid_type(bid_type) == "商务标" else "s5_ai_rewrite_backups"
+    backup_dir = workspace_stage_dir(project_id, stage_dir, bid_type)
     backup_dir.mkdir(parents=True, exist_ok=True)
     backup_path = backup_dir / f"{now_iso().replace(':', '').replace('-', '').replace('Z', '')}-{path.name}"
     shutil.copy2(path, backup_path)
@@ -143,8 +164,18 @@ def _backup_document(project_id: str, path: Path) -> Path:
 
 
 def _append_rewrite_history(project_id: str, record: dict[str, Any]) -> Path:
-    history_path = business_workspace_dir(project_id) / "s4_ai_rewrite_backups" / "rewrite-history.jsonl"
+    bid_type = _project_bid_type(project_id)
+    stage_dir = "s4_ai_rewrite_backups" if normalize_bid_type(bid_type) == "商务标" else "s5_ai_rewrite_backups"
+    history_path = workspace_stage_dir(project_id, stage_dir, bid_type) / "rewrite-history.jsonl"
     history_path.parent.mkdir(parents=True, exist_ok=True)
     with history_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     return history_path
+
+
+def _project_bid_type(project_id: str) -> str:
+    try:
+        project = store.get_project_runtime_state(project_id)
+    except KeyError:
+        project = store.get_project(project_id)
+    return normalize_bid_type(str(project.get("bidType") or "技术标"))

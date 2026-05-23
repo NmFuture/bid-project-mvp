@@ -24,12 +24,30 @@ export const STAGE_ROUTE_BUILDERS_BY_WORKSPACE = {
 }
 
 export const COMPACT_STAGE_LABELS = {
+  business: {
+    1: '目录生成',
+    2: '目录确认',
+    3: '素材匹配',
+    4: '素材匹配',
+    5: '编辑导出',
+    6: '编辑导出',
+  },
+  tech: {
+    1: '目录生成',
+    2: '目录确认',
+    3: '素材匹配',
+    4: '标书生成',
+    5: '编辑导出',
+    6: '编辑导出',
+  },
+  default: {
   1: '目录生成',
   2: '目录确认',
   3: '素材匹配',
-  4: '素材匹配',
+    4: '素材匹配',
   5: '编辑导出',
   6: '编辑导出',
+  },
 }
 
 const toStageId = (value) => {
@@ -37,9 +55,10 @@ const toStageId = (value) => {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0
 }
 
-export const getCompactStageLabel = (stageId, fallback = '') => (
-  COMPACT_STAGE_LABELS[toStageId(stageId)] || fallback
-)
+export const getCompactStageLabel = (stageId, fallback = '', workspaceSlug = '') => {
+  const labels = COMPACT_STAGE_LABELS[workspaceSlug] || COMPACT_STAGE_LABELS.default
+  return labels[toStageId(stageId)] || fallback
+}
 
 export const getStageRoute = (projectId, stageId, workspaceSlug = '') => {
   const resolvedStageId = toStageId(stageId)

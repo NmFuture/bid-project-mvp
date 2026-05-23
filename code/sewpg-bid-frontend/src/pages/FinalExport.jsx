@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { documentAPI } from '../api'
+import { documentAPI, projectsAPI } from '../api'
 import { PageError, PageLoading } from '../components/states/PageState'
 import DataCard from '../components/shared/DataCard'
 import PageHeader from '../components/shared/PageHeader'
 import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
-import StageGroupNav from '../components/shared/StageGroupNav'
+import Button from '../components/ui/Button'
+import Toolbar from '../components/ui/Toolbar'
 
 const formatDateTime = (value) => {
   if (!value) return '未保存'
@@ -18,6 +19,7 @@ const formatDateTime = (value) => {
 export default function FinalExport({ showToast }) {
   const { id } = useParams()
   const [data, setData] = useState(null)
+  const [project, setProject] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -25,8 +27,12 @@ export default function FinalExport({ showToast }) {
     setLoading(true)
     setError('')
     try {
-      const payload = await documentAPI.final(id)
+      const [payload, projectPayload] = await Promise.all([
+        documentAPI.final(id),
+        projectsAPI.get(id).catch(() => null),
+      ])
       setData(payload)
+      setProject(projectPayload)
     } catch (e) {
       setError(e?.message || '共创导出最终文件加载失败')
     } finally {
@@ -45,65 +51,82 @@ export default function FinalExport({ showToast }) {
   if (error) return <PageError title="最终文档加载失败" description={error} onRetry={loadData} />
 
   const downloadUrl = data?.fileUrl || '#'
-  const fileName = data?.fileName || '投标文件_终版.docx'
+  const bidLabel = String(project?.bidType || '').includes('商务') ? '商务标' : '技术标'
+  const fileName = data?.fileName || `${bidLabel}投标文件_终版.docx`
 
   return (
-    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
+    <div className="stage-page business-ui-shell flex flex-col gap-6 animate-fade-in w-full max-w-none">
       <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
-      <StageGroupNav
-        current="export"
-        items={[
-          { key: 'editor', label: '共创编辑', icon: 'edit_document', path: '/editor' },
-          { key: 'export', label: '最终导出', icon: 'download', path: '/export' },
-        ]}
-      />
 
       <PageHeader
         actionsClassName="stage-header-actions"
         actions={(
-          <button
-            onClick={loadData}
-            className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors"
-          >
-            刷新
-          </button>
+          <Toolbar>
+            <Button type="button" onClick={loadData} size="stage" variant="quiet">
+              刷新
+            </Button>
+            <Button
+              as="a"
+              href={downloadUrl}
+              download={fileName}
+              onClick={() => showToast?.(`开始下载${bidLabel}最终版 Word`)}
+              size="stage"
+              variant="primary"
+            >
+              下载 Word
+            </Button>
+          </Toolbar>
         )}
       />
 
-      <DataCard className="!p-0 !bg-transparent !border-0 !shadow-none min-h-[320px]">
-        <div className="p-0 mt-4 flex justify-center">
-          <div className="w-full max-w-[46rem] rounded-lg border border-surface-container-high bg-surface-container-low p-4 flex flex-col gap-5">
-            <h3 className="text-sm font-semibold text-on-surface">文件信息与下载</h3>
-            <div className="flex flex-col gap-2 text-sm">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-on-surface-variant">文件名</span>
-                <span className="text-on-surface font-medium text-right">{fileName}</span>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-on-surface-variant">文件类型</span>
-                <span className="text-on-surface font-medium uppercase">{data?.fileType || 'docx'}</span>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-on-surface-variant">最近保存</span>
-                <span className="text-on-surface font-medium">{formatDateTime(data?.lastSavedAt)}</span>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-on-surface-variant">版本号</span>
-                <span className="text-on-surface font-medium">v{data?.version || 1}</span>
-              </div>
+      <DataCard className="!p-0 overflow-hidden business-panel min-h-[360px]">
+        <div className="business-section-head flex items-center justify-between gap-3 border-b border-surface-container-high px-4 py-3">
+          <div className="min-w-0">
+            <h3 className="truncate text-base font-headline font-bold text-on-surface">最终版文件</h3>
+            <p className="mt-1 truncate text-xs text-outline" title={fileName}>{fileName}</p>
+          </div>
+          <span className="rounded-md bg-secondary-container px-2.5 py-1 text-xs font-semibold text-on-secondary-container">
+            v{data?.version || 1}
+          </span>
+        </div>
+
+        <div className="grid gap-4 bg-surface-container-low p-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(320px,0.5fr)]">
+          <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest p-4">
+            <h4 className="text-sm font-semibold text-on-surface">文件信息</h4>
+            <div className="mt-3 divide-y divide-surface-container-high text-sm">
+              {[
+                ['文件名', fileName],
+                ['文件类型', String(data?.fileType || 'docx').toUpperCase()],
+                ['最近保存', formatDateTime(data?.lastSavedAt)],
+                ['版本号', `v${data?.version || 1}`],
+              ].map(([label, value]) => (
+                <div key={label} className="flex items-center justify-between gap-4 py-3">
+                  <span className="text-on-surface-variant">{label}</span>
+                  <span className="break-all text-right font-medium text-on-surface">{value}</span>
+                </div>
+              ))}
             </div>
-            <p className="text-sm text-on-surface-variant">
-              点击下方按钮下载最终版 Word 文档。
-            </p>
-            <a
+          </div>
+
+          <div className="business-panel flex min-h-[220px] flex-col justify-between rounded-md border border-surface-container-high bg-surface-container-lowest p-4">
+            <div>
+              <h4 className="text-sm font-semibold text-on-surface">下载</h4>
+              <p className="mt-2 text-sm leading-relaxed text-on-surface-variant">
+                下载当前共创后的最终版 Word 文档。
+              </p>
+            </div>
+            <Button
+              as="a"
               href={downloadUrl}
               download={fileName}
-              onClick={() => showToast?.('开始下载最终版文档')}
-              className="stage-action-btn inline-flex items-center justify-center px-5 py-2.5 bg-primary text-on-primary text-sm font-semibold rounded-lg hover:bg-primary-container transition-colors"
+              onClick={() => showToast?.(`开始下载${bidLabel}最终版 Word`)}
+              className="mt-6 w-full"
+              size="lg"
+              variant="primary"
             >
               下载最终版 Word
-            </a>
+            </Button>
           </div>
         </div>
       </DataCard>
