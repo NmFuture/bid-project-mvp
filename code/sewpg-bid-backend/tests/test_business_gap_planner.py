@@ -721,7 +721,8 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertIn("template_missing_for_fill", mode_task["riskFlags"])
         self.assertFalse(mode_task.get("templateCandidates"))
 
-        stored_plan = store._require(project_id)["business_gap_state"]["plan"]
+        stored_project = store._require(project_id)
+        stored_plan = stored_project["business_gap_state"]["plan"]
         bid_letter_stored = next(item for item in stored_plan["tasks"] if item["id"] == bid_letter_task["id"])
         bid_letter_stored["candidateMaterials"] = [
             {
@@ -732,6 +733,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
                 "score": 0.86,
             }
         ]
+        store._persist_project(stored_project)
         candidate_mode_response = self.client.patch(
             f"/api/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}",
             json={"assemblyMode": "template_fill_docx"},
@@ -760,10 +762,12 @@ class BusinessGapPlannerTests(unittest.TestCase):
                 }
             ],
         )
-        stored_plan = store._require(project_id)["business_gap_state"]["plan"]
+        stored_project = store._require(project_id)
+        stored_plan = stored_project["business_gap_state"]["plan"]
         bid_letter_stored = next(item for item in stored_plan["tasks"] if item["id"] == bid_letter_task["id"])
         bid_letter_stored["candidateMaterials"] = []
         bid_letter_stored["templateCandidates"] = []
+        store._persist_project(stored_project)
         backfill_response = self.client.get(f"/api/projects/{project_id}/business-gaps")
         self.assertEqual(backfill_response.status_code, 200)
         backfilled_task = next(item for item in backfill_response.json()["tasks"] if item["id"] == bid_letter_task["id"])
@@ -796,6 +800,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertEqual(upload_response.status_code, 200)
         uploaded = upload_response.json()["artifact"]
         self.assertEqual(upload_response.json()["task"]["status"], "ready")
+        self.assertEqual(upload_response.json()["task"]["handlingMode"], "manual_upload")
         self.assertEqual(uploaded["sourceMode"], "uploaded_in_business_s3")
         self.assertIn("business-workspace/gaps/uploads", uploaded["filePath"])
         self.assertTrue(Path(uploaded["filePath"]).exists())
@@ -940,6 +945,8 @@ class BusinessGapPlannerTests(unittest.TestCase):
                             "materialName": "商务素材证书.pdf",
                             "folderPath": "商务标/通用素材/05-专题证书库",
                             "materialTier": "standard",
+                            "businessMaterialKind": "fixed",
+                            "businessMaterialKindLabel": "固定素材",
                             "evidenceSegmentId": selectable_payload["segments"][0]["evidenceSegmentId"],
                             "evidenceSegmentTitle": selectable_payload["segments"][0]["evidenceSegmentTitle"],
                             "evidenceSourcePages": selectable_payload["segments"][0]["evidenceSourcePages"],
@@ -951,9 +958,12 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertEqual(select_response.status_code, 200)
         selected_task = select_response.json()["task"]
         self.assertEqual(selected_task["status"], "ready")
+        self.assertEqual(selected_task["handlingMode"], "fixed_material")
         self.assertEqual(selected_task["selectedMaterialRefs"][0]["materialId"], "RAW-9001")
+        self.assertEqual(selected_task["selectedMaterialRefs"][0]["businessMaterialKind"], "fixed")
         self.assertEqual(selected_task["selectedEvidenceSegments"][0]["segmentId"], selectable_payload["segments"][0]["evidenceSegmentId"])
         self.assertEqual(select_response.json()["artifact"]["sourceMode"], "selected_from_business_material_library")
+        self.assertEqual(select_response.json()["artifact"]["businessMaterialKind"], "fixed")
         self.assertEqual(select_response.json()["artifact"]["evidenceSegmentId"], selectable_payload["segments"][0]["evidenceSegmentId"])
         self.assertIn("business-workspace/gaps/selected-materials", select_response.json()["artifact"]["filePath"])
         self.assertFalse((technical_workspace_dir(project_id) / "s4_gap_workdir" / "selected_material").exists())
@@ -974,6 +984,311 @@ class BusinessGapPlannerTests(unittest.TestCase):
         stored_project = store._require(project_id)
         self.assertEqual(stored_project["business_gap_state"]["projectFactTable"]["status"], "confirmed")
         self.assertEqual(stored_project["gap_state"]["projectFactTable"], {})
+
+    def test_business_gap_table_fill_creates_artifact_from_target_and_sources(self) -> None:
+        self._setup_app_test()
+        from app.services.store import PROJECT_FACT_TABLE_SCHEMA_VERSION, now_iso, store
+        from app.services.workspace_artifacts import business_workspace_dir, technical_workspace_dir
+
+        project = store.create_project({"name": "商务AI填表项目", "customerName": "华能集团", "bidType": "商务标"})
+        project_id = project["id"]
+        business_workspace = business_workspace_dir(project_id)
+        target_path = business_workspace / "gaps" / "templates" / "投标函模板.docx"
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_doc = Document()
+        table = target_doc.add_table(rows=2, cols=2)
+        table.rows[0].cells[0].text = "字段"
+        table.rows[0].cells[1].text = "投标人响应"
+        table.rows[1].cells[0].text = "项目名称"
+        table.rows[1].cells[1].text = ""
+        target_doc.save(target_path)
+        source_path = business_workspace / "source.xlsx"
+        source_path.write_bytes(b"fake-xlsx")
+
+        stored_project = store._require(project_id)
+        stored_project["business_gap_state"].update(
+            {
+                "recognitionStatus": "completed",
+                "recognizedAt": now_iso(),
+                "plan": {
+                    "schemaVersion": "bid-business-gap-plan-v1",
+                    "tocRefs": [{"nodeId": "TOC-1", "title": "投标函", "taskIds": ["BT-001"], "status": "partial"}],
+                    "tasks": [
+                        {
+                            "id": "BT-001",
+                            "title": "投标函",
+                            "taskType": "table",
+                            "decision": "fill_required",
+                            "status": "needs_input",
+                            "moduleKey": "structured_response_tables",
+                            "assemblyMode": "template_fill_docx",
+                            "materialUsage": "fill_table",
+                            "templateCandidates": [
+                                {
+                                    "templateId": "TPL-001",
+                                    "templateName": "投标函模板.docx",
+                                    "fileName": target_path.name,
+                                    "filePath": str(target_path),
+                                    "assemblyMode": "template_fill_docx",
+                                    "materialUsage": "fill_table",
+                                    "sourceMode": "project_uploaded_bid_template",
+                                }
+                            ],
+                            "resolvedArtifacts": [],
+                            "riskFlags": ["missing_material"],
+                        }
+                    ],
+                    "summary": {},
+                },
+                "integrity": {},
+                "projectFactTable": {
+                    "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+                    "status": "confirmed",
+                    "fields": [{"label": "项目名称", "value": "商务AI填表项目", "status": "confirmed"}],
+                },
+            }
+        )
+        store._persist_project(stored_project)
+
+        async def fake_download_payload(material_id: str) -> tuple[dict[str, str], str]:
+            self.assertEqual(material_id, "RAW-TABLE-001")
+            return {
+                "fileId": material_id,
+                "fileName": "报价数据.xlsx",
+                "bucket": "mock-bucket",
+                "key": "mock-key",
+                "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            }, "raw"
+
+        def fake_download_file(bucket: str, key: str, output_path: Path) -> Path:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(source_path.read_bytes())
+            return output_path
+
+        def fake_runner(manifest_path: Path) -> dict[str, object]:
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["target"]["templateId"], "TPL-001")
+            self.assertEqual(manifest["sourceMaterials"][0]["materialId"], "RAW-TABLE-001")
+            output_path = Path(manifest["outputFile"])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            Document(str(target_path)).save(output_path)
+            return {
+                "schemaVersion": "bid-business-table-fill-v1",
+                "outputFile": str(output_path),
+                "fillReport": {"filledFieldCount": 1},
+                "unfilledFields": [],
+                "evidenceRefs": [{"materialId": "RAW-TABLE-001", "factCount": 1}],
+            }
+
+        with patch("app.services.store._downloadable_fill_source_payload", side_effect=fake_download_payload), patch(
+            "app.services.store.minio_client.download_file",
+            side_effect=fake_download_file,
+        ), patch(
+            "app.services.store.run_business_table_fill_skill",
+            side_effect=fake_runner,
+        ):
+            response = self.client.post(
+                f"/api/projects/{project_id}/business-gaps/tasks/BT-001/table-fill",
+                json={
+                    "target": {"templateId": "TPL-001"},
+                    "sourceMaterials": [{"materialId": "RAW-TABLE-001", "materialName": "报价数据.xlsx"}],
+                    "operator": "测试用户",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["artifact"]["sourceMode"], "generated_by_business_table_fill")
+        self.assertEqual(payload["artifact"]["assemblyMode"], "table_fill_from_material")
+        self.assertEqual(payload["task"]["status"], "ready")
+        self.assertEqual(payload["task"]["decision"], "ready")
+        self.assertEqual(payload["task"]["handlingMode"], "ai_table_fill")
+        self.assertEqual(payload["task"]["resolvedArtifacts"][0]["operator"], "测试用户")
+        self.assertTrue(Path(payload["artifact"]["filePath"]).exists())
+        self.assertFalse((technical_workspace_dir(project_id) / "s4_gap_workdir" / "table-fill").exists())
+
+    def test_business_gap_table_fill_allows_project_fact_table_only(self) -> None:
+        self._setup_app_test()
+        from app.services.store import PROJECT_FACT_TABLE_SCHEMA_VERSION, now_iso, store
+        from app.services.workspace_artifacts import business_workspace_dir
+
+        project = store.create_project({"name": "商务事实表填表项目", "customerName": "华能集团", "bidType": "商务标"})
+        project_id = project["id"]
+        business_workspace = business_workspace_dir(project_id)
+        target_path = business_workspace / "gaps" / "templates" / "投标函模板.docx"
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_doc = Document()
+        table = target_doc.add_table(rows=2, cols=2)
+        table.rows[0].cells[0].text = "字段"
+        table.rows[0].cells[1].text = "投标人响应"
+        table.rows[1].cells[0].text = "项目名称"
+        table.rows[1].cells[1].text = ""
+        target_doc.save(target_path)
+
+        stored_project = store._require(project_id)
+        stored_project["business_gap_state"].update(
+            {
+                "recognitionStatus": "completed",
+                "recognizedAt": now_iso(),
+                "plan": {
+                    "schemaVersion": "bid-business-gap-plan-v1",
+                    "tocRefs": [{"nodeId": "TOC-1", "title": "投标函", "taskIds": ["BT-001"], "status": "partial"}],
+                    "tasks": [
+                        {
+                            "id": "BT-001",
+                            "title": "投标函",
+                            "taskType": "table",
+                            "decision": "fill_required",
+                            "status": "needs_input",
+                            "moduleKey": "structured_response_tables",
+                            "assemblyMode": "template_fill_docx",
+                            "materialUsage": "fill_table",
+                            "templateCandidates": [
+                                {
+                                    "templateId": "TPL-001",
+                                    "templateName": "投标函模板.docx",
+                                    "fileName": target_path.name,
+                                    "filePath": str(target_path),
+                                    "assemblyMode": "template_fill_docx",
+                                    "materialUsage": "fill_table",
+                                    "sourceMode": "parsed_from_tender_attachment_template",
+                                }
+                            ],
+                            "resolvedArtifacts": [],
+                            "riskFlags": ["missing_material"],
+                        }
+                    ],
+                    "summary": {},
+                },
+                "integrity": {},
+                "projectFactTable": {
+                    "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+                    "status": "confirmed",
+                    "fields": [{"label": "项目名称", "value": "商务事实表填表项目", "status": "confirmed"}],
+                },
+            }
+        )
+        store._persist_project(stored_project)
+
+        def fake_runner(manifest_path: Path) -> dict[str, object]:
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["sourceMaterials"], [])
+            self.assertEqual(manifest["projectFactTable"]["status"], "confirmed")
+            output_path = Path(manifest["outputFile"])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            Document(str(target_path)).save(output_path)
+            return {
+                "schemaVersion": "bid-business-table-fill-v1",
+                "outputFile": str(output_path),
+                "fillReport": {"filledFieldCount": 1},
+                "unfilledFields": [],
+                "evidenceRefs": [],
+            }
+
+        with patch("app.services.store.run_business_table_fill_skill", side_effect=fake_runner):
+            response = self.client.post(
+                f"/api/projects/{project_id}/business-gaps/tasks/BT-001/table-fill",
+                json={"target": {"templateId": "TPL-001"}, "operator": "测试用户"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["artifact"]["sourceMaterials"], [])
+        self.assertEqual(payload["projectFactTable"]["status"], "confirmed")
+        self.assertEqual(payload["task"]["handlingMode"], "ai_table_fill")
+
+    def test_business_table_fill_runner_fallback_docx_has_no_internal_explanation(self) -> None:
+        backend_root = Path(__file__).resolve().parents[1]
+        script_path = backend_root / "opencode" / "skill" / "bid-business-table-fill" / "scripts" / "run_from_manifest.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target_path = root / "纯文本目标.txt"
+            target_path.write_text("fallback", encoding="utf-8")
+            output_path = root / "AI填表.docx"
+            manifest_path = root / "business_table_fill_input.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-table-fill-v1",
+                        "projectId": "PRJ-TABLE-FILL",
+                        "projectName": "商务填表项目",
+                        "task": {"id": "BT-001", "title": "商务评分索引表", "requirement": ""},
+                        "target": {"fileName": target_path.name, "filePath": str(target_path)},
+                        "sourceMaterials": [],
+                        "projectFactTable": {
+                            "schemaVersion": "bid-project-fact-table-v1",
+                            "status": "confirmed",
+                            "fields": [{"label": "项目名称", "value": "商务填表项目"}],
+                        },
+                        "facts": {"项目名称": "商务填表项目"},
+                        "outputFile": str(output_path),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [sys.executable, str(script_path), "--manifest", str(manifest_path), "--response", "summary"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            output_doc = Document(str(output_path))
+            text_parts = [paragraph.text for paragraph in output_doc.paragraphs]
+            for table in output_doc.tables:
+                for row in table.rows:
+                    text_parts.extend(cell.text for cell in row.cells)
+            text = "\n".join(text_parts)
+
+        self.assertIn("商务评分索引表", text)
+        self.assertNotIn("当前目标文件暂不支持原格式写入", text)
+        self.assertNotIn("已根据项目事实表和数据来源生成", text)
+        self.assertNotIn("AI填表结果", text)
+        self.assertNotIn("AI填表内容", text)
+        self.assertNotIn("未从项目事实表或素材库提取到可填写内容", text)
+
+    def test_business_gap_task_ignore_sets_handling_mode(self) -> None:
+        self._setup_app_test()
+        from app.services.store import now_iso, store
+
+        project = store.create_project({"name": "商务忽略任务项目", "customerName": "华能集团", "bidType": "商务标"})
+        project_id = project["id"]
+        stored_project = store._require(project_id)
+        stored_project["business_gap_state"].update(
+            {
+                "recognitionStatus": "completed",
+                "recognizedAt": now_iso(),
+                "plan": {
+                    "schemaVersion": "bid-business-gap-plan-v1",
+                    "tocRefs": [{"nodeId": "TOC-1", "title": "承诺函", "taskIds": ["BT-IGNORE"], "status": "partial"}],
+                    "tasks": [
+                        {
+                            "id": "BT-IGNORE",
+                            "title": "可忽略事项",
+                            "taskType": "attachment",
+                            "decision": "review_required",
+                            "status": "review_required",
+                            "moduleKey": "commitments_and_notes",
+                            "candidateMaterials": [],
+                            "resolvedArtifacts": [],
+                        }
+                    ],
+                    "summary": {},
+                },
+                "integrity": {},
+            }
+        )
+        store._persist_project(stored_project)
+
+        response = self.client.patch(
+            f"/api/projects/{project_id}/business-gaps/tasks/BT-IGNORE",
+            json={"status": "ignored", "notes": "无需响应"},
+        )
+        self.assertEqual(response.status_code, 200)
+        task = response.json()["task"]
+        self.assertEqual(task["status"], "ignored")
+        self.assertEqual(task["handlingMode"], "ignored")
+        self.assertEqual(response.json()["plan"]["summary"]["handlingModeCounts"]["ignored"], 1)
 
 
 if __name__ == "__main__":

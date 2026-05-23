@@ -57,8 +57,8 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
                             {
                                 "id": "BTASK-0010",
                                 "title": "投标函",
-                                "status": "needs_input",
-                                "decision": "fill_required",
+                                "status": "ready",
+                                "decision": "ready",
                                 "tocTarget": {"title": "投标函"},
                                 "resolvedArtifacts": [],
                             }
@@ -352,8 +352,8 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
                             {
                                 "id": "BTASK-LETTER",
                                 "title": "投标函",
-                                "status": "needs_input",
-                                "decision": "fill_required",
+                                "status": "ready",
+                                "decision": "ready",
                                 "assemblyMode": "template_fill_docx",
                                 "tocTarget": {"title": "投标函"},
                                 "resolvedArtifacts": [],
@@ -509,6 +509,114 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
         self.assertIn("附件1 投标函", text)
         self.assertNotIn("授权书正文不应被投标函任务带入", text)
         self.assertEqual(attachment_manifest["items"][0]["mode"], "template_fragment_fill")
+
+    def test_business_assembler_skips_ignored_and_unconfirmed_tasks_without_template_fallback(self) -> None:
+        backend_root = Path(__file__).resolve().parents[1]
+        script_path = backend_root / "opencode" / "skill" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            materials = root / "materials" / "商务标" / "项目素材" / "03-模板底稿与过程文件"
+            materials.mkdir(parents=True)
+            template_path = materials / "商务响应文件模板.docx"
+            doc = Document()
+            doc.add_paragraph("变流器型式认证")
+            doc.add_paragraph("{{安全生产许可证}}")
+            doc.add_paragraph("{{质量管理体系认证证书（DNV-Business Assurance）}}")
+            doc.add_paragraph("{{2024年财务情况}}")
+            doc.add_paragraph("{{新疆新能博乐三台50MW项目(WH6.25N-182*8)}}")
+            doc.save(template_path)
+
+            toc_path = root / "toc.json"
+            gap_path = root / "business_gap_plan.json"
+            facts_path = root / "project_fact_table.json"
+            parse_path = root / "parse_result.json"
+            output_path = root / "商务投标文件.docx"
+            toc_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "bid-toc-json-v1",
+                        "items": [
+                            {"number": "4", "title": "变流器型式认证", "level": 1},
+                            {"number": "5", "title": "安全生产许可证", "level": 1},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            gap_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-gap-plan-v1",
+                        "tasks": [
+                            {
+                                "id": "BTASK-IGNORED-CERT",
+                                "title": "变流器型式认证",
+                                "status": "ignored",
+                                "decision": "ready",
+                                "handlingMode": "ignored",
+                                "assemblyMode": "template_fill_docx",
+                                "tocTarget": {"title": "变流器型式认证"},
+                                "resolvedArtifacts": [],
+                            },
+                            {
+                                "id": "BTASK-UNCONFIRMED-LICENSE",
+                                "title": "安全生产许可证",
+                                "status": "review_required",
+                                "decision": "review_required",
+                                "assemblyMode": "template_fill_docx",
+                                "tocTarget": {"title": "安全生产许可证"},
+                                "resolvedArtifacts": [],
+                            },
+                        ],
+                        "tocRefs": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            facts_path.write_text(
+                json.dumps({"schemaVersion": "bid-project-fact-table-v1", "status": "confirmed", "fields": []}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            parse_path.write_text(json.dumps({"status": "completed", "structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest_path = root / "business_assembly_input.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-BIZ-S4-SKIP",
+                        "projectName": "跳过未处理任务项目",
+                        "bidType": "商务标",
+                        "workDir": str(root),
+                        "tocJsonPath": str(toc_path),
+                        "businessGapPlanPath": str(gap_path),
+                        "projectFactTablePath": str(facts_path),
+                        "parseResultPath": str(parse_path),
+                        "materialLibraryDir": str(root / "materials"),
+                        "outputFile": str(output_path),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run([sys.executable, str(script_path), "--manifest", str(manifest_path), "--response", "summary"], check=True, capture_output=True, text=True)
+
+            output_doc = Document(str(output_path))
+            text = "\n".join(paragraph.text for paragraph in output_doc.paragraphs)
+            plan = json.loads((root / "business_assembly_plan.json").read_text(encoding="utf-8"))
+            review_text = (root / "business_needs_review.md").read_text(encoding="utf-8")
+
+        self.assertIn("4 变流器型式认证", text)
+        self.assertIn("5 安全生产许可证", text)
+        self.assertNotIn("[待填写：安全生产许可证]", text)
+        self.assertNotIn("[待填写：质量管理体系认证证书", text)
+        self.assertNotIn("[待填写：2024年财务情况]", text)
+        self.assertNotIn("[待填写：新疆新能博乐三台50MW项目", text)
+        self.assertEqual(plan["summary"]["assembledCount"], 0)
+        self.assertEqual(plan["sections"][0]["status"], "ignored")
+        self.assertEqual(plan["sections"][1]["status"], "review_required")
+        self.assertIn("正文不写入占位或兜底模板", review_text)
+        self.assertIn("任务尚未确认素材", review_text)
 
     def test_business_assembler_uses_extract_segment_intent_without_merging_whole_docx(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
@@ -862,6 +970,91 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
         self.assertNotIn("支撑材料来源", text)
         self.assertNotIn("清洗稿段落3", text)
         self.assertNotIn("清洗稿段落4", text)
+
+    def test_business_assembler_does_not_emit_table_summary_prefix(self) -> None:
+        backend_root = Path(__file__).resolve().parents[1]
+        script_path = backend_root / "opencode" / "skill" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_docx = root / "企业获奖情况.docx"
+            doc = Document()
+            table = doc.add_table(rows=2, cols=3)
+            table.rows[0].cells[0].text = "序号"
+            table.rows[0].cells[1].text = "奖项名称"
+            table.rows[0].cells[2].text = "获奖年度"
+            table.rows[1].cells[0].text = "1"
+            table.rows[1].cells[1].text = "国家优质工程奖"
+            table.rows[1].cells[2].text = "2024"
+            doc.save(source_docx)
+            toc_path = root / "toc.json"
+            gap_path = root / "business_gap_plan.json"
+            facts_path = root / "project_fact_table.json"
+            parse_path = root / "parse_result.json"
+            output_path = root / "商务投标文件.docx"
+            toc_path.write_text(
+                json.dumps({"schema_version": "bid-toc-json-v1", "items": [{"number": "七", "title": "企业获奖情况", "level": 1}]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            gap_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-gap-plan-v1",
+                        "tasks": [
+                            {
+                                "id": "BTASK-AWARD",
+                                "title": "企业获奖情况",
+                                "status": "ready",
+                                "decision": "ready",
+                                "taskType": "attachment",
+                                "assemblyMode": "extract_and_summarize",
+                                "materialUsage": "extract_and_summarize",
+                                "tocTarget": {"title": "企业获奖情况"},
+                                "resolvedArtifacts": [
+                                    {
+                                        "artifactId": "BART-AWARD",
+                                        "artifactType": "selected_material",
+                                        "fileName": source_docx.name,
+                                        "filePath": str(source_docx),
+                                        "sourceMode": "selected_from_business_material_library",
+                                        "assemblyMode": "extract_and_summarize",
+                                        "materialUsage": "extract_and_summarize",
+                                    }
+                                ],
+                            }
+                        ],
+                        "tocRefs": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            facts_path.write_text(json.dumps({"schemaVersion": "bid-project-fact-table-v1", "status": "confirmed", "fields": []}, ensure_ascii=False), encoding="utf-8")
+            parse_path.write_text(json.dumps({"status": "completed", "structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest_path = root / "business_assembly_input.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-BIZ-S4-AWARD",
+                        "projectName": "获奖情况项目",
+                        "bidType": "商务标",
+                        "workDir": str(root),
+                        "tocJsonPath": str(toc_path),
+                        "businessGapPlanPath": str(gap_path),
+                        "projectFactTablePath": str(facts_path),
+                        "parseResultPath": str(parse_path),
+                        "materialLibraryDir": str(root / "materials"),
+                        "outputFile": str(output_path),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run([sys.executable, str(script_path), "--manifest", str(manifest_path), "--response", "summary"], check=True, capture_output=True, text=True)
+            output_doc = Document(str(output_path))
+            text = "\n".join(paragraph.text for paragraph in output_doc.paragraphs)
+
+        self.assertIn("国家优质工程奖", text)
+        self.assertNotIn("表格信息：", text)
 
 
 class BusinessAssemblyServiceTests(unittest.TestCase):

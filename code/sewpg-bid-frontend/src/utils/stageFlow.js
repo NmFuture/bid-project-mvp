@@ -13,7 +13,7 @@ export const BUSINESS_STAGE_ROUTE_BUILDERS = {
   1: (projectId, workspaceSlug = 'business') => projectRoute(projectId, '/template-directory', workspaceSlug),
   2: (projectId, workspaceSlug = 'business') => projectRoute(projectId, '/outline', workspaceSlug),
   3: (projectId, workspaceSlug = 'business') => projectRoute(projectId, '/gaps', workspaceSlug),
-  4: (projectId, workspaceSlug = 'business') => projectRoute(projectId, '/editor', workspaceSlug),
+  4: (projectId, workspaceSlug = 'business') => projectRoute(projectId, '/gaps', workspaceSlug),
   5: (projectId, workspaceSlug = 'business') => projectRoute(projectId, '/editor', workspaceSlug),
   6: (projectId, workspaceSlug = 'business') => projectRoute(projectId, '/editor', workspaceSlug),
 }

@@ -31,11 +31,21 @@ from app.services.workspace_artifacts import business_workspace_dir, legacy_work
 
 BUSINESS_GAP_PLAN_SCHEMA_VERSION = "bid-business-gap-plan-v1"
 BUSINESS_GAP_PLANNER_SKILL_NAME = "bid-business-gap-planner"
+BUSINESS_TABLE_FILL_SCHEMA_VERSION = "bid-business-table-fill-v1"
+BUSINESS_TABLE_FILL_SKILL_NAME = "bid-business-table-fill"
 BUSINESS_GAP_PLANNER_RUNNER = (
     BASE_DIR
     / "opencode"
     / "skill"
     / BUSINESS_GAP_PLANNER_SKILL_NAME
+    / "scripts"
+    / "run_from_manifest.py"
+)
+BUSINESS_TABLE_FILL_RUNNER = (
+    BASE_DIR
+    / "opencode"
+    / "skill"
+    / BUSINESS_TABLE_FILL_SKILL_NAME
     / "scripts"
     / "run_from_manifest.py"
 )
@@ -161,22 +171,33 @@ def run_business_gap_planner_skill(manifest_path: Path) -> dict[str, Any]:
         return _run_local_skill_runner(BUSINESS_GAP_PLANNER_RUNNER, manifest_path, BUSINESS_GAP_PLAN_SCHEMA_VERSION)
 
 
+def run_business_table_fill_skill(manifest_path: Path) -> dict[str, Any]:
+    try:
+        return _run_local_skill_runner(BUSINESS_TABLE_FILL_RUNNER, manifest_path, BUSINESS_TABLE_FILL_SCHEMA_VERSION)
+    except Exception:
+        raise
+
+
 def summarize_business_gap_plan(plan: dict[str, Any]) -> dict[str, Any]:
     tasks = [item for item in plan.get("tasks") or [] if isinstance(item, dict)]
     toc_refs = [item for item in plan.get("tocRefs") or [] if isinstance(item, dict)]
     statuses: dict[str, int] = {}
     decisions: dict[str, int] = {}
     modules: dict[str, int] = {}
+    handling_modes: dict[str, int] = {}
     for task in tasks:
         status = str(task.get("status") or "")
         decision = str(task.get("decision") or "")
         module_key = str(task.get("moduleKey") or "")
+        handling_mode = str(task.get("handlingMode") or "")
         if status:
             statuses[status] = statuses.get(status, 0) + 1
         if decision:
             decisions[decision] = decisions.get(decision, 0) + 1
         if module_key:
             modules[module_key] = modules.get(module_key, 0) + 1
+        if handling_mode:
+            handling_modes[handling_mode] = handling_modes.get(handling_mode, 0) + 1
     blocking = sum(1 for task in tasks if str(task.get("status") or "") in {"needs_input", "filling", "review_required"})
     return {
         "tocRefCount": len(toc_refs),
@@ -189,6 +210,7 @@ def summarize_business_gap_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "decisionCounts": decisions,
         "statusCounts": statuses,
         "moduleCounts": modules,
+        "handlingModeCounts": handling_modes,
     }
 
 
@@ -982,6 +1004,8 @@ def _business_material_index(material_scope: dict[str, Any], selected_model: dic
                     "name": str(raw.get("name") or ""),
                     "folderPath": str(raw.get("folderPath") or ""),
                     "materialTier": str(raw.get("materialTier") or scope.get("materialTier") or ""),
+                    "businessMaterialKind": str(raw.get("businessMaterialKind") or ""),
+                    "businessMaterialKindLabel": str(raw.get("businessMaterialKindLabel") or ""),
                     "hasCleanedWord": bool(raw.get("hasCleanedWord")),
                     "cleanedFileName": str(raw.get("cleanedFileName") or ""),
                     "cleanStatus": str(raw.get("cleanStatus") or ""),

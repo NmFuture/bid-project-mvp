@@ -319,6 +319,28 @@ async def ai_draft_business_gap_task(
         raise HTTPException(status_code=404, detail="Business gap task not found") from exc
 
 
+@router.post("/api/projects/{project_id}/business-gaps/tasks/{task_id}/table-fill")
+async def table_fill_business_gap_task(
+    project_id: str,
+    task_id: str,
+    request: Request,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(
+            store.run_business_gap_table_fill,
+            project_id,
+            task_id,
+            data,
+            browser_base_url=str(request.base_url).rstrip("/"),
+            onlyoffice_base_url=onlyoffice_backend_base_url(request),
+        )
+    except ValueError as exc:
+        raise _value_error(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Business gap task not found") from exc
+
+
 @router.post("/api/projects/{project_id}/business-gaps/tasks/{task_id}/sync-artifact-material")
 async def sync_business_gap_artifact_to_material(
     project_id: str,

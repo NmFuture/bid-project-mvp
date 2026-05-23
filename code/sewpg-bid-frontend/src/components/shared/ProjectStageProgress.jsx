@@ -28,6 +28,17 @@ const stageStatusRank = {
 const compactProjectStages = (rawStages = []) => {
   if (!Array.isArray(rawStages) || !rawStages.length) return []
 
+  if (rawStages.some((stage) => Array.isArray(stage?.sourceStages))) {
+    return rawStages.map((stage) => ({
+      ...stage,
+      id: toStageId(stage?.id),
+      routeStageId: toStageId(stage?.routeStageId || stage?.id),
+      sourceStageIds: Array.isArray(stage?.sourceStages)
+        ? stage.sourceStages.map(toStageId).filter(Boolean)
+        : [],
+    }))
+  }
+
   const rawById = new Map(rawStages.map((stage) => [toStageId(stage?.id), stage]).filter(([id]) => id))
   const activeRawStage = rawStages.find((stage) => stage?.status === 'active')
   const activeRawStageId = toStageId(activeRawStage?.id)

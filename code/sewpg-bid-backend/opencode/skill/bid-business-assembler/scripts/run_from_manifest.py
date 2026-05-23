@@ -160,6 +160,29 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
             ctx.add_review("no_business_gap_task", f"目录章节未绑定商务 S3 任务：{title}", section=title)
         else:
             for task in bound_tasks:
+                if is_ignored_task(task):
+                    risk_flags.append("business_gap_task_ignored")
+                    if section_status == "placeholder":
+                        section_status = "ignored"
+                    ctx.add_review(
+                        "business_gap_task_ignored",
+                        f"任务已被标记忽略，正文不写入占位或兜底模板：{task.get('title') or title}",
+                        section=title,
+                        source=str(task.get("id") or ""),
+                        level="info",
+                    )
+                    continue
+                if not task_ready_for_assembly(task):
+                    risk_flags.append("business_gap_task_unconfirmed")
+                    if section_status == "placeholder":
+                        section_status = "review_required"
+                    ctx.add_review(
+                        "business_gap_task_unconfirmed",
+                        f"任务尚未确认素材，已跳过正文写入以避免模板占位串章节：{task.get('title') or title}",
+                        section=title,
+                        source=str(task.get("id") or ""),
+                    )
+                    continue
                 assembly_mode = task_assembly_mode(task)
                 task_artifacts = task_artifacts_for_assembly(task)
                 if not task_artifacts:
@@ -168,14 +191,6 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
                         task_artifacts = [template_artifact]
                 if not task_artifacts:
                     task_artifacts = best_parse_artifacts_for_task(task, parse_artifacts) if allows_parse_artifact_fallback(task) else []
-                if str(task.get("status") or "") not in {"ready", "resolved"}:
-                    risk_flags.append("business_gap_task_unconfirmed")
-                    ctx.add_review(
-                        "business_gap_task_unconfirmed",
-                        f"任务未完全确认但已进入生成：{task.get('title') or title}",
-                        section=title,
-                        source=str(task.get("id") or ""),
-                    )
                 if task_artifacts:
                     for artifact in task_artifacts:
                         artifact = artifact_with_task_intent(task, artifact)
@@ -456,6 +471,22 @@ def bound_tasks_for_item(item: dict[str, Any], grouped: dict[str, list[dict[str,
     return result
 
 
+def task_status(task: dict[str, Any]) -> str:
+    return str(task.get("status") or "").strip().lower()
+
+
+def task_handling_mode(task: dict[str, Any]) -> str:
+    return str(task.get("handlingMode") or task.get("materialUsage") or "").strip().lower()
+
+
+def is_ignored_task(task: dict[str, Any]) -> bool:
+    return task_status(task) == "ignored" or task_handling_mode(task) == "ignored"
+
+
+def task_ready_for_assembly(task: dict[str, Any]) -> bool:
+    return not is_ignored_task(task) and task_status(task) in {"ready", "resolved"}
+
+
 def task_artifacts_for_assembly(task: dict[str, Any]) -> list[dict[str, Any]]:
     artifacts = [item for item in task.get("resolvedArtifacts") or [] if isinstance(item, dict)]
     artifacts = [item for item in artifacts if str(item.get("filePath") or item.get("path") or "").strip()]
@@ -486,11 +517,11 @@ def task_assembly_mode(task: dict[str, Any]) -> str:
 
 
 def allows_template_fallback(task: dict[str, Any]) -> bool:
-    return task_assembly_mode(task) in {"", "template_fill_docx", "table_fill_from_material", "ai_draft"}
+    return task_ready_for_assembly(task) and task_assembly_mode(task) in {"", "template_fill_docx", "table_fill_from_material", "ai_draft"}
 
 
 def allows_parse_artifact_fallback(task: dict[str, Any]) -> bool:
-    return task_assembly_mode(task) in {"", "template_fill_docx", "table_fill_from_material", "ai_draft", "attach_whole_file"}
+    return task_ready_for_assembly(task) and task_assembly_mode(task) in {"", "template_fill_docx", "table_fill_from_material", "ai_draft", "attach_whole_file"}
 
 
 def artifact_with_task_intent(task: dict[str, Any], artifact: dict[str, Any]) -> dict[str, Any]:
@@ -1337,12 +1368,10 @@ def table_summary_snippets(source: Document, facts: dict[str, str], ctx: Assembl
                 rows.append(cells)
         if not rows:
             continue
-        header = " / ".join(rows[0])[:120]
-        body = "；".join(" / ".join(row) for row in rows[1:4])[:260]
-        text = f"表格信息：{header}"
-        if body:
-            text += f"；{body}"
-        snippets.append(text)
+        for row in rows[1:5]:
+            text = clean_summary_text("；".join(row))
+            if useful_summary_text(text):
+                snippets.append(text[:260])
     return snippets
 
 

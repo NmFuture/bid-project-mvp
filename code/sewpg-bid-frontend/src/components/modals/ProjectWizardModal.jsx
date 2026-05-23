@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { materialsAPI, projectsAPI } from '../../api'
+import Button from '../ui/Button'
 
 const MANUAL_TURBINE_VALUE = '__manual_turbine_model__'
 const PROJECT_WIZARD_DRAFT_VERSION = 1
@@ -346,12 +347,13 @@ export default function ProjectWizardModal({
   const nextDisabledReason = missingRequiredItems.length ? `请先补全：${missingRequiredItems.join('、')}` : ''
 
   const archivePathPreview = useMemo(() => {
+    const bidType = form.bidType || '技术标'
     const customer = form.customerName.trim() || '客户名'
     const projectIdentity = materialProjectMode === 'library'
       ? selectedMaterialProject?.projectId || selectedMaterialProjectId || '项目ID'
       : project?.materialProjectId || '系统生成项目ID'
-    return `技术标/客户素材/${customer}；技术标/项目素材/${projectIdentity}`
-  }, [form.customerName, materialProjectMode, project?.materialProjectId, selectedMaterialProject?.projectId, selectedMaterialProjectId])
+    return `${bidType}/客户素材/${customer}；${bidType}/项目素材/${projectIdentity}`
+  }, [form.bidType, form.customerName, materialProjectMode, project?.materialProjectId, selectedMaterialProject?.projectId, selectedMaterialProjectId])
 
   const handleCreate = async () => {
     setCreating(true)
@@ -726,21 +728,23 @@ export default function ProjectWizardModal({
 
         {/* Footer */}
         <div className="flex justify-between items-center px-5 py-4 border-t border-[#d7e0ea] bg-white">
-          <button
+          <Button
             onClick={onClose}
-            className="h-8 px-6 text-sm font-medium text-white border border-[#a8acaf] bg-[#b6babd] hover:bg-[#a9adb0] transition-colors"
+            size="sm"
+            variant="quiet"
           >
             取消
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={handleCreate}
             disabled={creating || !canSubmit}
             title={!canSubmit ? nextDisabledReason : undefined}
             aria-describedby={!canSubmit ? 'project-wizard-required-hint' : undefined}
-            className="h-8 px-7 bg-[#0bafff] text-on-primary text-sm font-semibold border border-[#0aa3ea] hover:bg-[#07a3ef] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            size="stage"
+            variant="primary"
           >
-            {creating ? (isUpdateMode ? '保存中...' : '创建中...') : (isUpdateMode ? '保存项目信息' : '创建项目')}
-          </button>
+            {creating ? (isUpdateMode ? '保存中...' : '创建中...') : '确认提交'}
+          </Button>
         </div>
       </div>
     </div>

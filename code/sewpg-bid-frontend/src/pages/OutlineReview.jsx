@@ -7,6 +7,7 @@ import ProjectStageProgress from '../components/shared/ProjectStageProgress'
 import StageBreadcrumb from '../components/shared/StageBreadcrumb'
 import OnlyOfficeEmbed from '../components/shared/OnlyOfficeEmbed'
 import OnlyOfficeWorkspace from '../components/shared/OnlyOfficeWorkspace'
+import Button from '../components/ui/Button'
 import { getOutlineDisplayNumber } from '../utils/outlineNumber'
 import { getStageRoute } from '../utils/stageFlow'
 import { projectRoute, useWorkspaceSlug } from '../utils/workspace'
@@ -39,6 +40,23 @@ const findNodeContext = (nodes, targetId, parent = null) => {
   return null
 }
 
+const moveNodeWithinSameParent = (nodes, movingId, targetId, placement = 'before') => {
+  if (!movingId || !targetId || movingId === targetId) return null
+  const next = cloneNodes(nodes)
+  const movingContext = findNodeContext(next, movingId)
+  const targetContext = findNodeContext(next, targetId)
+  if (!movingContext || !targetContext || movingContext.siblings !== targetContext.siblings) {
+    return null
+  }
+
+  const siblings = movingContext.siblings
+  const [movingNode] = siblings.splice(movingContext.index, 1)
+  const targetIndex = siblings.findIndex((item) => item.id === targetId)
+  if (!movingNode || targetIndex < 0) return null
+  siblings.splice(placement === 'after' ? targetIndex + 1 : targetIndex, 0, movingNode)
+  return next
+}
+
 const collectExpandableNodeIds = (items = []) =>
   (items || []).reduce((result, item) => {
     const children = Array.isArray(item.children) ? item.children : []
@@ -51,6 +69,78 @@ const collectExpandableNodeIds = (items = []) =>
 
 const countNodes = (items = []) =>
   (items || []).reduce((total, item) => total + 1 + countNodes(item.children || []), 0)
+
+const chineseNumber = (value) => {
+  const digits = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九']
+  const num = Number(value)
+  if (!Number.isFinite(num) || num <= 0) return String(value)
+  if (num <= 10) return num === 10 ? '十' : digits[num]
+  if (num < 20) return `十${digits[num - 10]}`
+  if (num < 100) {
+    const tens = Math.floor(num / 10)
+    const ones = num % 10
+    return `${digits[tens]}十${digits[ones]}`
+  }
+  return String(value)
+}
+
+const numberStyle = (value, level = 0) => {
+  const text = String(value || '').trim()
+  if (/^第[一二三四五六七八九十百]+节/.test(text)) return 'section'
+  if (/^第[一二三四五六七八九十百]+章/.test(text)) return 'chapter'
+  if (/^[（(][一二三四五六七八九十百]+[）)]/.test(text)) return 'chinese-paren'
+  if (/^[一二三四五六七八九十百]+[、．.]/.test(text)) return 'chinese-comma'
+  if (/^[（(]\d+[）)]/.test(text)) return 'arabic-paren'
+  if (/^\d+[、．.]/.test(text)) return 'arabic-comma'
+  if (/^\d+(?:\.\d+)+$/.test(text)) return 'decimal'
+  if (/^\d+$/.test(text)) return level === 0 ? 'arabic' : 'decimal'
+  return ''
+}
+
+const collectNumberStyles = (items = [], level = 0, styles = {}) => {
+  ;(items || []).forEach((item) => {
+    const style = numberStyle(getOutlineDisplayNumber(item), level)
+    if (style && !styles[level]) styles[level] = style
+    if (Array.isArray(item?.children) && item.children.length) {
+      collectNumberStyles(item.children, level + 1, styles)
+    }
+  })
+  return styles
+}
+
+const formatOutlineNumber = (index, level, decimalPrefix, style) => {
+  const normalizedStyle = style || (level === 0 ? 'arabic' : 'decimal')
+  if (normalizedStyle === 'chapter') return `第${chineseNumber(index)}章`
+  if (normalizedStyle === 'section') return `第${chineseNumber(index)}节`
+  if (normalizedStyle === 'chinese-paren') return `（${chineseNumber(index)}）`
+  if (normalizedStyle === 'chinese-comma') return `${chineseNumber(index)}、`
+  if (normalizedStyle === 'arabic-paren') return `（${index}）`
+  if (normalizedStyle === 'arabic-comma') return `${index}、`
+  if (normalizedStyle === 'decimal') return decimalPrefix ? `${decimalPrefix}.${index}` : String(index)
+  return String(index)
+}
+
+const renumberOutlineNodes = (items = []) => {
+  const styles = collectNumberStyles(items)
+  const walk = (nodes = [], level = 0, decimalPrefix = '') => (
+    (nodes || []).map((node, index) => {
+      const position = index + 1
+      const nextDecimalPrefix = decimalPrefix ? `${decimalPrefix}.${position}` : String(position)
+      const nextNumber = formatOutlineNumber(position, level, decimalPrefix, styles[level])
+      const nextNode = {
+        ...node,
+        number: nextNumber,
+        tocNumber: nextNumber,
+        toc_number: nextNumber,
+      }
+      nextNode.children = Array.isArray(node.children)
+        ? walk(node.children, level + 1, nextDecimalPrefix)
+        : []
+      return nextNode
+    })
+  )
+  return walk(cloneNodes(items))
+}
 
 const SEARCH_STORAGE_KEY = 'onlyoffice-search-bridge-message'
 const SEARCH_CHANNEL_NAME = 'onlyoffice-search-bridge'
@@ -170,6 +260,9 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
   const [collapsedNodeIds, setCollapsedNodeIds] = useState(new Set())
   const [pendingSearchText, setPendingSearchText] = useState('')
   const [activeBasisRef, setActiveBasisRef] = useState(null)
+  const [dragNodeId, setDragNodeId] = useState('')
+  const [dragOverNodeId, setDragOverNodeId] = useState('')
+  const [dragPlacement, setDragPlacement] = useState('before')
   const onlyofficeEmbedRef = useRef(null)
   const pendingSearchNonceRef = useRef('')
 
@@ -286,7 +379,8 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
 
     setSaving(true)
     try {
-      const payload = await outlineAPI.save(id, { nodes })
+      const nodesToSave = isBusinessWorkspace ? renumberOutlineNodes(nodes) : nodes
+      const payload = await outlineAPI.save(id, { nodes: nodesToSave })
       const nextNodes = Array.isArray(payload?.nodes) ? payload.nodes : []
       setNodes(nextNodes)
       setDirty(false)
@@ -329,7 +423,8 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
     setConfirming(true)
     try {
       if (dirty) {
-        const saved = await outlineAPI.save(id, { nodes })
+        const nodesToSave = isBusinessWorkspace ? renumberOutlineNodes(nodes) : nodes
+        const saved = await outlineAPI.save(id, { nodes: nodesToSave })
         setNodes(Array.isArray(saved?.nodes) ? saved.nodes : [])
         setDirty(false)
       }
@@ -337,7 +432,9 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
       await outlineAPI.confirm(id)
       const stageResult = await stagesAPI.update(id, 2, { status: 'completed' })
       const nextStageId = Number(stageResult?.currentStage) || 3
-      const nextRoute = getStageRoute(id, nextStageId, workspaceSlug) || projectRoute(id, '/gaps', workspaceSlug)
+      const nextRoute = isBusinessWorkspace
+        ? projectRoute(id, '/gaps', workspaceSlug)
+        : getStageRoute(id, nextStageId, workspaceSlug) || projectRoute(id, '/gaps', workspaceSlug)
       showToast?.('目录确认已完成，已进入素材匹配')
       navigate(nextRoute)
     } catch (e) {
@@ -401,18 +498,50 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
     }
   }
 
-  const handleMove = (targetId, direction) => {
-    setDirty(true)
+  const handleDragStart = (event, targetId) => {
+    setDragNodeId(targetId)
+    setDragOverNodeId('')
+    setDragPlacement('before')
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', targetId)
+  }
+
+  const handleDragOver = (event, targetId) => {
+    const movingId = dragNodeId || event.dataTransfer.getData('text/plain')
+    if (!movingId || movingId === targetId) return
+    const movingContext = findNodeContext(nodes, movingId)
+    const targetContext = findNodeContext(nodes, targetId)
+    if (!movingContext || !targetContext || movingContext.siblings !== targetContext.siblings) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    const rect = event.currentTarget.getBoundingClientRect()
+    const placement = event.clientY > rect.top + rect.height / 2 ? 'after' : 'before'
+    setDragOverNodeId(targetId)
+    setDragPlacement(placement)
+  }
+
+  const handleDrop = (event, targetId) => {
+    event.preventDefault()
+    const movingId = dragNodeId || event.dataTransfer.getData('text/plain')
+    setDragNodeId('')
+    setDragOverNodeId('')
+    if (!movingId || movingId === targetId) return
     setNodes((prev) => {
-      const next = cloneNodes(prev)
-      const context = findNodeContext(next, targetId)
-      if (!context) return prev
-      const toIndex = direction === 'up' ? context.index - 1 : context.index + 1
-      if (toIndex < 0 || toIndex >= context.siblings.length) return prev
-      const [current] = context.siblings.splice(context.index, 1)
-      context.siblings.splice(toIndex, 0, current)
+      const moved = moveNodeWithinSameParent(prev, movingId, targetId, dragPlacement)
+      const next = isBusinessWorkspace && moved ? renumberOutlineNodes(moved) : moved
+      if (!next) {
+        showToast?.('暂只支持同级目录拖拽排序。', 'error')
+        return prev
+      }
+      setDirty(true)
       return next
     })
+  }
+
+  const handleDragEnd = () => {
+    setDragNodeId('')
+    setDragOverNodeId('')
+    setDragPlacement('before')
   }
 
   const handleTitleChange = (targetId, value) => {
@@ -451,9 +580,8 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
       {(items || []).map((node, index) => {
         const seq = prefix ? `${prefix}.${index + 1}` : `${index + 1}`
         const isActive = activeNodeId === node.id
-        const siblings = items || []
-        const canMoveUp = index > 0
-        const canMoveDown = index < siblings.length - 1
+        const isDragging = dragNodeId === node.id
+        const isDragTarget = dragOverNodeId === node.id
         const hasChildren = Array.isArray(node.children) && node.children.length > 0
         const isCollapsed = collapsedNodeIds.has(node.id)
         const status = requiredStatusLabel(node)
@@ -467,11 +595,22 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
                 setActiveNodeId(node.id)
                 focusTenderBasis(node)
               }}
-              className={`flex items-center gap-1 px-2 py-1.5 transition-colors border-b border-surface-container-high ${
+              draggable
+              onDragStart={(event) => handleDragStart(event, node.id)}
+              onDragOver={(event) => handleDragOver(event, node.id)}
+              onDrop={(event) => handleDrop(event, node.id)}
+              onDragEnd={handleDragEnd}
+              onDragLeave={() => {
+                if (dragOverNodeId === node.id) setDragOverNodeId('')
+              }}
+              className={`flex cursor-grab items-center gap-1 px-2 py-1.5 transition-colors border-b border-surface-container-high active:cursor-grabbing ${
                 isActive ? 'bg-primary/5' : 'bg-white'
-              }`}
+              } ${isDragging ? 'opacity-45' : ''} ${isDragTarget ? `${dragPlacement === 'after' ? 'border-b-2 border-b-primary' : 'border-t-2 border-t-primary'} bg-primary/10` : ''}`}
               style={{ marginLeft: `${depth * 20}px` }}
             >
+              <span className="flex h-6 w-5 shrink-0 items-center justify-center text-outline" title="拖拽排序">
+                <span className="material-symbols-outlined text-[18px]">drag_indicator</span>
+              </span>
               {hasChildren ? (
                 <button
                   onClick={(e) => {
@@ -534,34 +673,6 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
               <button
                 onClick={(e) => {
                   e.stopPropagation()
-                  handleMove(node.id, 'up')
-                }}
-                disabled={!canMoveUp}
-                className="h-7 w-7 text-outline hover:text-primary transition-colors disabled:opacity-35 disabled:cursor-not-allowed flex items-center justify-center"
-                title="上移"
-              >
-                <svg viewBox="0 0 20 20" className="w-4 h-4" aria-hidden="true" fill="none">
-                  <path d="M10 16V5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  <path d="M6.5 8.5L10 5L13.5 8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  handleMove(node.id, 'down')
-                }}
-                disabled={!canMoveDown}
-                className="h-7 w-7 text-outline hover:text-primary transition-colors disabled:opacity-35 disabled:cursor-not-allowed flex items-center justify-center"
-                title="下移"
-              >
-                <svg viewBox="0 0 20 20" className="w-4 h-4" aria-hidden="true" fill="none">
-                  <path d="M10 4V15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  <path d="M6.5 11.5L10 15L13.5 11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
                   handleDelete(node.id)
                 }}
                 className="h-7 w-7 text-error hover:text-error transition-colors flex items-center justify-center"
@@ -603,55 +714,62 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
   const activeRefs = collectSourceRefs(activeNode)
 
   return (
-    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
+    <div className={`stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none ${isBusinessWorkspace ? 'business-ui-shell' : ''}`}>
       <StageBreadcrumb />
       <ProjectStageProgress projectId={id} showToast={showToast} />
 
       <PageHeader
-        leftExtra={(
+        leftExtra={isBusinessWorkspace ? null : (
           <div>
             <p className="text-xs font-semibold text-primary">审核目录</p>
             <h1 className="mt-1 text-lg font-headline font-bold text-on-surface">确认投标文件目录</h1>
           </div>
         )}
-        className="rounded-md border border-outline-variant/50 bg-white px-5 py-4 shadow-[0_1px_3px_rgba(13,33,55,0.06)]"
+        className={isBusinessWorkspace ? 'mb-2' : 'rounded-md border border-outline-variant/50 bg-white px-5 py-4 shadow-[0_1px_3px_rgba(13,33,55,0.06)]'}
         actionsClassName="stage-header-actions"
         actions={(
           <>
-            <button
-              onClick={loadData}
-              className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors"
-            >
-              刷新
-            </button>
-            <button
-              onClick={handleReject}
-              disabled={rejecting}
-              className="px-4 py-2.5 text-sm font-medium text-on-surface-variant bg-surface-container-high hover:bg-surface-dim rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {rejecting ? '处理中...' : '驳回重生成'}
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="px-4 py-2.5 text-sm font-medium text-on-primary bg-primary hover:bg-primary-container rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {saving ? '保存中...' : dirty ? '保存目录*' : '保存目录'}
-            </button>
-            <button
+            {!isBusinessWorkspace ? (
+              <>
+                <button
+                  onClick={loadData}
+                  className="px-4 py-2.5 bg-surface-container-high text-on-surface-variant text-sm font-medium rounded-lg hover:bg-surface-dim transition-colors"
+                >
+                  刷新
+                </button>
+                <button
+                  onClick={handleReject}
+                  disabled={rejecting}
+                  className="px-4 py-2.5 text-sm font-medium text-on-surface-variant bg-surface-container-high hover:bg-surface-dim rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {rejecting ? '处理中...' : '驳回重生成'}
+                </button>
+                <Button
+                  onClick={handleSave}
+                  disabled={saving}
+                  size="lg"
+                  variant="primary"
+                >
+                  {saving ? '保存中...' : dirty ? '保存目录*' : '保存目录'}
+                </Button>
+              </>
+            ) : null}
+            <Button
               onClick={handleConfirm}
               disabled={confirming}
-              className="px-4 py-2.5 text-sm font-medium text-on-secondary bg-secondary hover:bg-secondary/90 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              size="lg"
+              variant="success"
             >
-              {confirming ? '进入中...' : '确认目录并进入素材匹配'}
-            </button>
+              {confirming ? '进入中...' : '进入素材匹配'}
+            </Button>
           </>
         )}
       />
 
       <OnlyOfficeWorkspace
-        heightClass="h-[calc(100vh-16rem)] min-h-[620px] max-h-[860px]"
+        heightClass="h-[calc(100vh-13.5rem)] min-h-[680px] max-h-[920px]"
         gridClassName="grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-rows-none lg:grid-cols-[minmax(24rem,38rem)_minmax(0,1fr)]"
+        headerClassName="h-[72px] min-h-[72px]"
         documentTitle="招标文件预览"
         documentSubtitle={activeTenderFileName}
         documentMeta={(
@@ -662,22 +780,36 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
         documentAreaClassName="flex flex-col"
         sidebar={(
           <section className="flex h-full min-h-0 flex-col overflow-hidden">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
+            <div className="flex h-[72px] min-h-[72px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
               <h3 className="text-base font-semibold text-on-surface">投标文件目录</h3>
-              <div className="flex items-center gap-3">
-                <button
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button
                   onClick={handleToggleAllCollapse}
                   disabled={!collectExpandableNodeIds(nodes).length}
-                  className="stage-action-btn px-3 py-1.5 rounded-lg bg-surface-container-high text-on-surface-variant text-xs font-semibold hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  size="sm"
+                  variant="quiet"
                 >
                   {collapsedNodeIds.size ? '展开全部' : '收起全部'}
-                </button>
-                <button
+                </Button>
+                <Button
                   onClick={handleAddRoot}
-                  className="stage-action-btn px-3 py-1.5 rounded-lg bg-primary text-on-primary text-xs font-semibold hover:bg-primary-container transition-colors"
+                  size="sm"
+                  variant="primary"
                 >
                   新增一级
-                </button>
+                </Button>
+                {isBusinessWorkspace ? (
+                  <>
+                    <Button
+                      onClick={handleSave}
+                      disabled={saving}
+                      size="sm"
+                      variant="primary"
+                    >
+                      {saving ? '保存中...' : dirty ? '保存目录*' : '保存目录'}
+                    </Button>
+                  </>
+                ) : null}
               </div>
             </div>
 
@@ -688,16 +820,18 @@ export default function OutlineReview({ showToast, workspaceKind = '' }) {
                 <div className="h-[320px] rounded-lg border border-dashed border-surface-container-high flex flex-col items-center justify-center text-center">
                   <span className="material-symbols-outlined text-4xl text-outline mb-3">account_tree</span>
                   <p className="text-sm text-on-surface-variant">当前目录为空，请新增章节后继续审核。</p>
-                  <button
+                  <Button
                     onClick={handleAddRoot}
-                    className="mt-4 px-4 py-2 text-sm font-medium bg-primary text-on-primary rounded-lg hover:bg-primary-container transition-colors"
+                    className="mt-4"
+                    size="md"
+                    variant="primary"
                   >
                     新增一级章节
-                  </button>
+                  </Button>
                 </div>
               )}
             </div>
-            {activeRefs.length ? (
+            {!isBusinessWorkspace && activeRefs.length ? (
               <div className="max-h-[34%] min-h-[140px] overflow-y-auto border-t border-surface-container-high bg-white px-5 py-4">
                 <h4 className="text-xs font-semibold text-on-surface">当前目录依据</h4>
                 <div className="mt-2 flex flex-col gap-2">

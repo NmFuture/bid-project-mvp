@@ -104,6 +104,7 @@ async def raw_upload(request: Request) -> dict[str, Any]:
             "projectName": str(form.get("projectName") or ""),
             "bidType": str(form.get("bidType") or "技术标"),
             "materialTier": str(form.get("materialTier") or ""),
+            "businessMaterialKind": str(form.get("businessMaterialKind") or ""),
             "customerId": str(form.get("customerId") or ""),
             "customerName": str(form.get("customerName") or ""),
             "onConflict": str(form.get("onConflict") or ""),
@@ -130,6 +131,7 @@ async def raw_upload(request: Request) -> dict[str, Any]:
         project_name=str(data.get("projectName") or ""),
         bid_type=str(data.get("bidType") or "技术标"),
         material_tier=str(data.get("materialTier") or ""),
+        business_material_kind=str(data.get("businessMaterialKind") or ""),
         customer_id=str(data.get("customerId") or ""),
         customer_name=str(data.get("customerName") or ""),
         on_conflict=str(data.get("onConflict") or ""),
@@ -139,7 +141,11 @@ async def raw_upload(request: Request) -> dict[str, Any]:
 
 @router.patch("/api/materials/raw/{file_id}")
 async def raw_update_file(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await material_store.raw_update_file(file_id=file_id, name=str(data.get("name") or ""))
+    return await material_store.raw_update_file(
+        file_id=file_id,
+        name=str(data.get("name") or ""),
+        business_material_kind=str(data.get("businessMaterialKind") or ""),
+    )
 
 
 @router.post("/api/materials/raw/move")
