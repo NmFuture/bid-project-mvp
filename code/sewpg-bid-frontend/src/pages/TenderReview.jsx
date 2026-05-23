@@ -636,7 +636,6 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
   const appendices = Array.isArray(parseData?.structured?.appendices)
     ? parseData.structured.appendices
     : EMPTY_APPENDICES
-  const businessScoringAsset = parseData?.structured?.businessScoringAsset || {}
   const commitmentLetters = Array.isArray(parseData?.structured?.commitmentLetters)
     ? parseData.structured.commitmentLetters
     : EMPTY_APPENDICES
@@ -663,10 +662,6 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
   const selectedAppendix = useMemo(
     () => appendices.find((appendix, index) => appendixKey(appendix, index) === activeAppendixId) || appendices[0] || null,
     [activeAppendixId, appendices],
-  )
-  const structuredCategories = useMemo(
-    () => (Array.isArray(parseData?.structured?.categories) ? parseData.structured.categories : []),
-    [parseData],
   )
   const parsedDates = parseData?.structured?.projectDates || parseData?.summary?.projectDates || {}
   const structuredRows = useMemo(() => {

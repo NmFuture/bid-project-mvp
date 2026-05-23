@@ -603,9 +603,6 @@ function BusinessMaterialPreviewDrawer({
 }) {
   const [fullscreen, setFullscreen] = useState(false)
   useEffect(() => {
-    if (!open) setFullscreen(false)
-  }, [open])
-  useEffect(() => {
     if (!fullscreen) return undefined
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
@@ -1237,11 +1234,7 @@ export default function BusinessGapRecognition({ showToast }) {
     return () => window.clearInterval(timer)
   }, [generationRunning, loadGenerationStatus])
 
-  useEffect(() => {
-    if (generationRunning) setGenerationModalOpen(true)
-  }, [generationRunning])
-
-  const runPlan = async () => {
+  const runPlan = useCallback(async () => {
     setRunning(true)
     setError('')
     setGapPlanError('')
@@ -1260,7 +1253,7 @@ export default function BusinessGapRecognition({ showToast }) {
     } finally {
       setRunning(false)
     }
-  }
+  }, [id, showToast])
 
   const runBusinessAssembly = async () => {
     if (actionLoading) return
@@ -1332,8 +1325,6 @@ export default function BusinessGapRecognition({ showToast }) {
       setActionLoading('')
     }
   }
-
-  const selectMaterial = async (task, material) => selectMaterials(task, [material])
 
   const selectTemplate = async (task, template) => {
     if (!task || !template) return
@@ -1668,7 +1659,7 @@ export default function BusinessGapRecognition({ showToast }) {
     if (loading || autoPlanRunRef.current || running || payload?.status === 'completed') return
     autoPlanRunRef.current = true
     runPlan()
-  }, [loading, payload?.status, running])
+  }, [loading, payload?.status, running, runPlan])
 
   if (loading) return <PageLoading title="正在加载商务标素材匹配" description="正在读取商务目录、解析产物和素材推荐。" />
   if (error && !payload) return <PageError title="加载失败" description={error} onRetry={load} />
@@ -1984,7 +1975,7 @@ export default function BusinessGapRecognition({ showToast }) {
         onPreview={openMaterialPreview}
       />
       <BusinessGenerationProgressModal
-        open={generationModalOpen}
+        open={generationModalOpen || generationRunning}
         status={generationStatus}
         progress={generationProgress}
         onClose={() => setGenerationModalOpen(false)}
@@ -1995,14 +1986,16 @@ export default function BusinessGapRecognition({ showToast }) {
         error={gapPlanError}
         onClose={() => setGapPlanModalOpen(false)}
       />
-      <BusinessMaterialPreviewDrawer
-        open={materialPreviewOpen}
-        loading={materialPreviewLoading}
-        payload={materialPreviewPayload}
-        source={materialPreviewSource}
-        onClose={closeMaterialPreview}
-        onOpenOffice={() => openMaterialPreview(materialPreviewSource, 'office')}
-      />
+      {materialPreviewOpen ? (
+        <BusinessMaterialPreviewDrawer
+          open={materialPreviewOpen}
+          loading={materialPreviewLoading}
+          payload={materialPreviewPayload}
+          source={materialPreviewSource}
+          onClose={closeMaterialPreview}
+          onOpenOffice={() => openMaterialPreview(materialPreviewSource, 'office')}
+        />
+      ) : null}
     </div>
   )
 }

@@ -809,9 +809,7 @@ export default function MaterialDB({ showToast = () => {} }) {
   const canDeleteFolder = Boolean(selectedFolderPath) && !isProtectedDeleteFolderPath(selectedFolderPath)
 
   const fileItems = useMemo(() => filesPayload?.items || [], [filesPayload?.items])
-  const totalCount = Number(filesPayload?.total || 0)
   const filesByFolderPath = useMemo(() => groupFilesByFolderPath(fileItems), [fileItems])
-  const visibleTreeFileCount = useMemo(() => getVisibleFileCount(tree), [tree])
   const previewTitle = previewSession?.fileName || previewItem?.cleanedFileName || previewItem?.name || '未选择清洗稿'
   const hasPreviewSession = Boolean(previewSession?.onlyoffice?.fileUrl) && !onlyofficePreviewError
   const previewModeLabel = previewLoading
