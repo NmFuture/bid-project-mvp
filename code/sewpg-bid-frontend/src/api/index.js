@@ -447,6 +447,13 @@ export const businessGapsAPI = {
       timeoutMs: 10 * 60 * 1000,
       retryCount: 0,
     }),
+  tableFill: (projectId, taskId, data) =>
+    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/table-fill`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 10 * 60 * 1000,
+      retryCount: 0,
+    }),
   syncArtifactMaterial: (projectId, taskId, data) =>
     request(`/projects/${projectId}/business-gaps/tasks/${taskId}/sync-artifact-material`, { method: 'POST', body: data }),
 }
@@ -497,6 +504,7 @@ export const documentAPI = {
   businessFormat: (projectId, data) =>
     request(`/projects/${projectId}/document/business-format`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
   final: (projectId) => request(`/projects/${projectId}/final-document`),
+  finalPdf: (projectId) => request(`/projects/${projectId}/final-document/pdf`, { timeoutMs: 5 * 60 * 1000, retryCount: 0 }),
 }
 
 // ===== Export =====

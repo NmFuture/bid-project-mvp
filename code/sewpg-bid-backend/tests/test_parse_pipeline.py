@@ -1759,6 +1759,20 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(deleted.status_code, 200)
         self.assertFalse(temp_project_dir.exists())
 
+    def test_delete_business_project_cleans_project_material_folder(self) -> None:
+        project_id = self.create_business_project()
+        deleted_paths: list[str] = []
+
+        def fake_delete_folder(path: str) -> dict[str, object]:
+            deleted_paths.append(path)
+            return {"message": "deleted", "folderPath": path, "deletedFileCount": 2}
+
+        with patch("app.services.store._run_async_material_delete_folder", side_effect=fake_delete_folder):
+            deleted = self.client.delete(f"/api/projects/{project_id}")
+
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted_paths, [f"商务标/项目素材/{project_id}"])
+
     def test_parse_results_materializes_legacy_required_appendix_preview_docx(self) -> None:
         project_id = self.create_project()
         store.complete_parse(

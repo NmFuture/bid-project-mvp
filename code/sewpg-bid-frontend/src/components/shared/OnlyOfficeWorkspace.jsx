@@ -11,6 +11,7 @@ export default function OnlyOfficeWorkspace({
   gridClassName = 'xl:grid-cols-[minmax(20rem,28rem)_minmax(0,1fr)]',
   sidebarClassName = '',
   documentAreaClassName = '',
+  headerClassName = '',
 }) {
   const [fullscreen, setFullscreen] = useState(false)
 
@@ -39,7 +40,7 @@ export default function OnlyOfficeWorkspace({
     <div className={['relative', className].join(' ')}>
       <div
         className={[
-          'grid grid-cols-1 overflow-hidden rounded-md border border-outline-variant/50 bg-surface-container-lowest shadow-[0_1px_3px_rgba(13,33,55,0.08)]',
+          'grid grid-cols-1 overflow-hidden rounded-md border border-outline-variant/60 bg-surface-container-lowest shadow-[0_1px_2px_rgba(13,33,55,0.05)]',
           gridClassName,
           heightClass,
         ].join(' ')}
@@ -60,7 +61,10 @@ export default function OnlyOfficeWorkspace({
               : 'flex min-h-0 flex-col bg-white',
           ].join(' ')}
         >
-          <div className="flex min-h-[58px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
+          <div className={[
+            'flex min-h-[58px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3',
+            headerClassName,
+          ].join(' ')}>
             <div className="min-w-0">
               <h3 className="truncate text-base font-semibold text-on-surface">
                 {documentTitle}

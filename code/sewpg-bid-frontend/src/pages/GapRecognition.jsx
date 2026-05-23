@@ -1322,7 +1322,7 @@ export default function GapRecognition({ showToast }) {
 
                       <div className="min-h-0 flex-1 p-4">
                         {previewLoading ? (
-                          <div className="flex h-full min-h-[420px] items-center justify-center rounded-md border border-surface-container-high bg-surface-container-lowest px-6 text-center">
+                          <div className="flex h-full min-h-[480px] items-center justify-center rounded-md border border-surface-container-high bg-surface-container-lowest px-6 text-center">
                             <div>
                               <span className="material-symbols-outlined text-4xl text-primary">hourglass_empty</span>
                               <p className="mt-3 text-sm text-on-surface-variant">正在加载预览...</p>
@@ -1332,12 +1332,12 @@ export default function GapRecognition({ showToast }) {
                           <OnlyOfficeEmbed
                             session={previewSession.onlyoffice}
                             mode="view"
-                            className="h-full min-h-[420px] w-full rounded-md border border-surface-container-high bg-white"
+                            className="h-full min-h-[480px] w-full rounded-md border border-surface-container-high bg-white"
                             onReady={() => setPreviewError('')}
                             onError={(message) => setPreviewError(message || 'OnlyOffice 预览加载失败')}
                           />
                         ) : (
-                          <div className="flex h-full min-h-[420px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest px-6 text-center">
+                          <div className="flex h-full min-h-[480px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest px-6 text-center">
                             <p className="max-w-md text-sm text-on-surface-variant">
                               {previewError || (selectedPreviewChoice ? '当前对象暂时无法预览，请检查素材是否已清洗为 Word。' : '当前目录项还没有可预览的素材、空表或处理产物。')}
                             </p>

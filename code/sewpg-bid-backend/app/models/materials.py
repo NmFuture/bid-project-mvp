@@ -112,6 +112,8 @@ class RawFile(Base):
             "identityDisplay": ext.get("identityDisplay") or "",
             "materialTier": ext.get("materialTier") or (self.folder.tier if self.folder else ""),
             "materialTierLabel": ext.get("materialTierLabel") or "",
+            "businessMaterialKind": ext.get("businessMaterialKind") or "",
+            "businessMaterialKindLabel": ext.get("businessMaterialKindLabel") or "",
             "version": self.version,
             "lastAction": ext.get("lastAction") or "upload",
             "lastOperator": ext.get("lastOperator") or "",

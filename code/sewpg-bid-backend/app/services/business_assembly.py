@@ -67,7 +67,7 @@ def assemble_business_bid_for_project_with_progress(
     if not plan:
         plan = _recover_business_gap_plan(project, business_gap_state)
     if not plan:
-        raise ValueError("请先在商务标 S3 页面点击“生成/更新商务缺口计划”，再进入 S4 生成标书。")
+        raise ValueError("请先进入商务标 S3 页面完成素材匹配，再进入 S4 生成标书。")
 
     started_at = time.monotonic()
     work_dir = _prepare_work_dir(project_id)

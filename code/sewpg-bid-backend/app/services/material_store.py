@@ -104,6 +104,11 @@ MATERIAL_TIER_LABELS = {
     "customer": "客户素材",
     "project": "项目素材",
 }
+BUSINESS_MATERIAL_KIND_VALUES = {"fixed", "other"}
+BUSINESS_MATERIAL_KIND_LABELS = {
+    "fixed": "固定素材",
+    "other": "其他",
+}
 CLEANABLE_MATERIAL_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm", ".docx", ".doc"}
 ORIGINAL_ONLY_MATERIAL_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".ds_store"}
 MATERIAL_LIBRARY_ALLOWED_SUFFIXES = CLEANABLE_MATERIAL_SUFFIXES | ORIGINAL_ONLY_MATERIAL_SUFFIXES | {".md"}
@@ -260,6 +265,22 @@ def normalize_material_tier(value: str) -> str:
         "项目": "project",
         "项目素材": "project",
         "项目定制": "project",
+    }
+    return aliases.get(text, "")
+
+
+def normalize_business_material_kind(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if text in BUSINESS_MATERIAL_KIND_VALUES:
+        return text
+    aliases = {
+        "固定": "fixed",
+        "固定素材": "fixed",
+        "直接挂载": "fixed",
+        "原件挂载": "fixed",
+        "其他": "other",
+        "普通": "other",
+        "非固定": "other",
     }
     return aliases.get(text, "")
 
@@ -1425,6 +1446,7 @@ class MaterialStore:
         project_name: str = "",
         bid_type: str = "技术标",
         material_tier: str = "",
+        business_material_kind: str = "",
         customer_id: str = "",
         customer_name: str = "",
         on_conflict: str = "",
@@ -1435,6 +1457,7 @@ class MaterialStore:
             raise PeripheralError(400, "请至少上传一个文件。", "RAW_UPLOAD_FILES_REQUIRED")
         normalized_bid_type = bid_type if bid_type in {"技术标", "商务标", "通用"} else "技术标"
         normalized_tier = normalize_material_tier(material_tier)
+        normalized_business_kind = normalize_business_material_kind(business_material_kind)
         auto_target = not bool(target_path)
 
         async with async_session() as session:
@@ -1594,6 +1617,14 @@ class MaterialStore:
                     "cleanMessage": clean_message,
                     "cleanUpdatedAt": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
                 }
+                if item_bid_type == "商务标":
+                    business_kind = normalized_business_kind or "other"
+                    common_ext.update(
+                        {
+                            "businessMaterialKind": business_kind,
+                            "businessMaterialKindLabel": BUSINESS_MATERIAL_KIND_LABELS.get(business_kind, ""),
+                        }
+                    )
                 extra_ext_fields = item.get("extFields") if isinstance(item.get("extFields"), dict) else {}
                 if extra_ext_fields:
                     common_ext.update(copy.deepcopy(extra_ext_fields))
@@ -1746,11 +1777,11 @@ class MaterialStore:
             ),
         )
 
-    async def raw_update_file(self, file_id: str, name: str) -> dict[str, Any]:
+    async def raw_update_file(self, file_id: str, name: str = "", business_material_kind: str = "") -> dict[str, Any]:
         numeric_id = int(file_id.replace("RAW-", ""))
-        next_name = safe_segment(name, "")
-        if not next_name:
-            raise PeripheralError(400, "文件名不能为空。", "RAW_FILE_NAME_REQUIRED")
+        raw_name = str(name or "").strip()
+        next_name = safe_segment(raw_name, "") if raw_name else ""
+        next_kind = normalize_business_material_kind(business_material_kind)
         async with async_session() as session:
             await self._ensure_runtime_tables(session)
             result = await session.execute(select(RawFile).where(RawFile.id == numeric_id).options(selectinload(RawFile.folder)))
@@ -1759,16 +1790,21 @@ class MaterialStore:
                 raise PeripheralError(404, "文件不存在。", "RAW_FILE_NOT_FOUND")
             if item.folder is None:
                 raise PeripheralError(400, "文件目录信息缺失。", "RAW_FILE_FOLDER_MISSING")
+            if not next_name:
+                next_name = item.name
+            if not next_name:
+                raise PeripheralError(400, "文件名不能为空。", "RAW_FILE_NAME_REQUIRED")
 
-            conflict = await session.execute(
-                select(RawFile).where(
-                    RawFile.folder_id == item.folder_id,
-                    RawFile.name == next_name,
-                    RawFile.id != item.id,
+            if next_name != item.name:
+                conflict = await session.execute(
+                    select(RawFile).where(
+                        RawFile.folder_id == item.folder_id,
+                        RawFile.name == next_name,
+                        RawFile.id != item.id,
+                    )
                 )
-            )
-            if conflict.scalar_one_or_none() is not None:
-                raise PeripheralError(409, "目标目录存在同名文件。", "MATERIAL_CONFLICT")
+                if conflict.scalar_one_or_none() is not None:
+                    raise PeripheralError(409, "目标目录存在同名文件。", "MATERIAL_CONFLICT")
 
             next_key = self._raw_object_key(item.folder.path, next_name)
             if next_key != item.minio_key and item.minio_key:
@@ -1777,12 +1813,21 @@ class MaterialStore:
 
             item.name = next_name
             item.minio_key = next_key
-            item.ext_fields = {
+            ext = {
                 **(item.ext_fields or {}),
                 "sourceMinioKey": next_key,
                 "sourceFileName": next_name,
                 "lastAction": "rename",
             }
+            if next_kind and str(ext.get("bidType") or "") == "商务标":
+                ext.update(
+                    {
+                        "businessMaterialKind": next_kind,
+                        "businessMaterialKindLabel": BUSINESS_MATERIAL_KIND_LABELS.get(next_kind, ""),
+                        "lastAction": "update",
+                    }
+                )
+            item.ext_fields = ext
             await session.commit()
             refreshed = await session.execute(
                 select(RawFile).where(RawFile.id == numeric_id).options(selectinload(RawFile.folder))

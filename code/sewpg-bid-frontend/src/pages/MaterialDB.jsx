@@ -27,6 +27,18 @@ const MATERIAL_TIER_OPTIONS = [
     description: '只在当前项目使用的补充资料。',
   },
 ]
+const BUSINESS_MATERIAL_KIND_OPTIONS = [
+  {
+    value: 'fixed',
+    label: '固定素材',
+    description: '原件可直接挂载或嵌入商务标正文。',
+  },
+  {
+    value: 'other',
+    label: '其他',
+    description: '作为填表、人工指定或后续处理的数据来源。',
+  },
+]
 const CLEAN_STATUS_OPTIONS = [
   { value: '', label: '全部状态' },
   { value: 'cleaned', label: '已清洗' },
@@ -104,6 +116,9 @@ const cleanStatusMeta = (status) => {
   if (status === 'cleaning') return { label: '清洗中', className: 'bg-primary/10 text-primary' }
   return { label: '待清洗', className: 'bg-surface-container-high text-on-surface-variant' }
 }
+
+const businessMaterialKindMeta = (value) =>
+  BUSINESS_MATERIAL_KIND_OPTIONS.find((item) => item.value === value) || BUSINESS_MATERIAL_KIND_OPTIONS[1]
 
 const canPreviewCleaned = (item) => item?.cleanStatus === 'cleaned' && Boolean(item?.hasCleanedWord)
 
@@ -470,6 +485,7 @@ function TreeNode({
   onFileSelect,
   onRenameFile,
   onDeleteFile,
+  onUpdateBusinessMaterialKind,
   onSplitFile,
   onDeleteFolder,
   onMoveDrop,
@@ -594,6 +610,7 @@ function TreeNode({
             const fileSelected = selectedFileId === item.id
             const previewable = canPreviewCleaned(item)
             const meta = cleanStatusMeta(item.cleanStatus)
+            const kindMeta = businessMaterialKindMeta(item.businessMaterialKind)
             const canSplit = item.bidType === '商务标' && extOf(item.name) === 'docx'
             return (
               <div
@@ -631,6 +648,11 @@ function TreeNode({
                 <span className={`hidden shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex ${meta.className}`}>
                   {meta.label}
                 </span>
+                {item.bidType === '商务标' && (
+                  <span className={`hidden shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex ${item.businessMaterialKind === 'fixed' ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
+                    {item.businessMaterialKindLabel || kindMeta.label}
+                  </span>
+                )}
                 <span className="hidden shrink-0 items-center gap-1 group-hover:inline-flex">
                   <button
                     type="button"
@@ -644,6 +666,20 @@ function TreeNode({
                   >
                     <span aria-hidden="true" className="material-symbols-outlined text-[15px]">drive_file_rename_outline</span>
                   </button>
+                  {item.bidType === '商务标' && (
+                    <button
+                      type="button"
+                      title={item.businessMaterialKind === 'fixed' ? '标记为其他素材' : '标记为固定素材'}
+                      aria-label={`切换素材类型 ${item.name || item.id}`}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onUpdateBusinessMaterialKind?.(item)
+                      }}
+                      className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-secondary-container/50 hover:text-secondary"
+                    >
+                      <span aria-hidden="true" className="material-symbols-outlined text-[15px]">sell</span>
+                    </button>
+                  )}
                   {canSplit && (
                     <button
                       type="button"
@@ -688,6 +724,7 @@ function TreeNode({
               onFileSelect={onFileSelect}
               onRenameFile={onRenameFile}
               onDeleteFile={onDeleteFile}
+              onUpdateBusinessMaterialKind={onUpdateBusinessMaterialKind}
               onSplitFile={onSplitFile}
               onDeleteFolder={onDeleteFolder}
               onMoveDrop={onMoveDrop}
@@ -748,6 +785,7 @@ export default function MaterialDB({ showToast = () => {} }) {
   const [uploadProjectCode, setUploadProjectCode] = useState('')
   const [uploadProjectName, setUploadProjectName] = useState('')
   const [uploadBidType, setUploadBidType] = useState('技术标')
+  const [uploadBusinessMaterialKind, setUploadBusinessMaterialKind] = useState('other')
   const [uploadFiles, setUploadFiles] = useState([])
   const [uploadAfterSplit, setUploadAfterSplit] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -953,6 +991,7 @@ export default function MaterialDB({ showToast = () => {} }) {
     setUploadProjectCode(options.projectCode || '')
     setUploadProjectName(options.projectName || '')
     setUploadBidType(activeBidType)
+    setUploadBusinessMaterialKind('other')
     setUploadFiles([])
     setUploadAfterSplit(false)
     setUploadError('')
@@ -1071,6 +1110,7 @@ export default function MaterialDB({ showToast = () => {} }) {
       payload.append('projectName', projectName)
       payload.append('bidType', uploadBidType)
       payload.append('materialTier', materialTier)
+      payload.append('businessMaterialKind', uploadBidType === '商务标' ? uploadBusinessMaterialKind : '')
       payload.append('customerId', customerId)
       payload.append('customerName', customerName)
       if (onConflict) {
@@ -1151,7 +1191,10 @@ export default function MaterialDB({ showToast = () => {} }) {
     const nextName = window.prompt('请输入新的文件名', currentName)
     if (!nextName || !nextName.trim() || nextName.trim() === currentName) return
     try {
-      const result = await materialsAPI.raw.updateFile(item.id, { name: nextName.trim() })
+      const result = await materialsAPI.raw.updateFile(item.id, {
+        name: nextName.trim(),
+        businessMaterialKind: item.businessMaterialKind || '',
+      })
       showToast(result?.message || '文件重命名成功')
       if (previewItem?.id === item.id) {
         setPreviewItem((prev) => ({ ...prev, name: result?.item?.name || nextName.trim() }))
@@ -1161,6 +1204,28 @@ export default function MaterialDB({ showToast = () => {} }) {
       await loadLibrary({ silent: true })
     } catch (e) {
       showToast(safeMessage(e, '文件重命名失败'), 'error')
+    }
+  }
+
+  const updateBusinessMaterialKind = async (item) => {
+    if (!item?.id || item.bidType !== '商务标') return
+    const current = item.businessMaterialKind === 'fixed' ? 'fixed' : 'other'
+    const nextKind = current === 'fixed' ? 'other' : 'fixed'
+    try {
+      const result = await materialsAPI.raw.updateFile(item.id, {
+        businessMaterialKind: nextKind,
+      })
+      showToast(result?.message || `已标记为${businessMaterialKindMeta(nextKind).label}`)
+      if (previewItem?.id === item.id) {
+        setPreviewItem((prev) => ({
+          ...(prev || {}),
+          businessMaterialKind: nextKind,
+          businessMaterialKindLabel: businessMaterialKindMeta(nextKind).label,
+        }))
+      }
+      await loadLibrary({ silent: true })
+    } catch (e) {
+      showToast(safeMessage(e, '素材类型更新失败'), 'error')
     }
   }
 
@@ -1442,50 +1507,13 @@ export default function MaterialDB({ showToast = () => {} }) {
   }
 
   return (
-    <div className="flex flex-col gap-6 animate-fade-in">
+    <div className="flex flex-col gap-3 animate-fade-in">
       <MaterialsViewSwitch
         active="structured"
         activeBidType={activeBidType}
         lockedBidType={lockedBidType}
         onBidTypeChange={handleBidTypeChange}
-        title="原始材料库"
-        subtitle={refreshing || error ? (error || '正在刷新...') : (
-          activeBidType === '技术标'
-            ? '管理技术标通用、客户、项目三档原始素材。'
-            : '管理商务标通用、客户、项目三档原始素材。'
-        )}
-        actions={(
-          <div className="flex flex-nowrap gap-2">
-            <button
-              onClick={() => loadLibrary({ silent: true })}
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors"
-            >
-              刷新
-            </button>
-            <button
-              onClick={() => openUploadModal({ mode: 'tier' })}
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-container transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              上传文件
-            </button>
-          </div>
-        )}
-        meta={(
-          <div className="flex flex-nowrap gap-2 text-xs xl:justify-end">
-            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-primary/10 text-primary">
-              {activeBidType}
-            </span>
-            <span className="max-w-[260px] truncate whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
-              当前目录 {selectedFolderPath || '-'}
-            </span>
-            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
-              文件 {fileItems.length}/{visibleTreeFileCount || totalCount}
-            </span>
-            <span className="whitespace-nowrap px-2.5 py-1 rounded-full bg-surface-container-high text-on-surface-variant">
-              权限 可编辑
-            </span>
-          </div>
-        )}
+        subtitle={refreshing || error ? (error || '正在刷新...') : ''}
         basePath={materialsBasePath}
       />
 
@@ -1505,8 +1533,8 @@ export default function MaterialDB({ showToast = () => {} }) {
       )}
 
       <OnlyOfficeWorkspace
-        heightClass="min-h-[760px]"
-        gridClassName="xl:grid-cols-[minmax(28rem,38rem)_minmax(0,1fr)]"
+        heightClass="min-h-[780px] xl:min-h-[calc(100vh-7rem)]"
+        gridClassName="xl:grid-cols-[minmax(30rem,40rem)_minmax(0,1fr)]"
         documentTitle="清洗稿预览"
         documentSubtitle={`当前文件：${previewTitle}`}
         documentMeta={(
@@ -1514,10 +1542,11 @@ export default function MaterialDB({ showToast = () => {} }) {
             {previewModeLabel}
           </span>
         )}
+        headerClassName="h-[72px] min-h-[72px]"
         documentAreaClassName="flex flex-col"
         sidebar={(
           <section className="flex h-full min-h-0 flex-col">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
+            <div className="flex h-[72px] min-h-[72px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
               <div className="min-w-0">
                 <h3 className="text-base font-semibold text-on-surface">素材目录</h3>
                 <p className="mt-1 truncate text-xs text-outline">{selectedFolderPath || '未选择目录'}</p>
@@ -1528,7 +1557,7 @@ export default function MaterialDB({ showToast = () => {} }) {
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col">
-              <div className="border-b border-surface-container-high bg-surface-container-lowest px-3 py-3">
+              <div className="border-b border-surface-container-high bg-surface-container-lowest px-3 py-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0">
                     <div className="text-sm font-semibold text-on-surface">目录与文件</div>
@@ -1563,8 +1592,8 @@ export default function MaterialDB({ showToast = () => {} }) {
                   </div>
                 </div>
 
-                <div className="mt-3 rounded-md border border-surface-container-high bg-surface-container-low px-3 py-3">
-                  <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="mt-2 rounded-md border border-surface-container-high bg-surface-container-low px-3 py-2">
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
                     <span className="text-xs font-semibold text-on-surface">筛选</span>
                     <div className="flex items-center gap-2">
                       {activeFilterCount > 0 && (
@@ -1589,7 +1618,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                       </button>
                     </div>
                   </div>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_9rem]">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_8rem]">
                     <label className="relative">
                       <span className="sr-only">搜索文件名</span>
                       <span aria-hidden="true" className="material-symbols-outlined pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[17px] text-outline">search</span>
@@ -1597,7 +1626,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                         value={filters.keyword}
                         onChange={(e) => updateFilter('keyword', e.target.value)}
                         placeholder="搜索文件名"
-                        className="h-9 w-full rounded-md border-none bg-surface-container-highest px-8 text-xs"
+                        className="h-8 w-full rounded-md border-none bg-surface-container-highest px-8 text-xs"
                       />
                       {filters.keyword && (
                         <button
@@ -1614,7 +1643,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                       aria-label="清洗状态"
                       value={filters.cleanStatus}
                       onChange={(e) => updateFilter('cleanStatus', e.target.value)}
-                      className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-xs"
+                      className="h-8 rounded-md border-none bg-surface-container-highest px-3 text-xs"
                     >
                       {CLEAN_STATUS_OPTIONS.map((option) => (
                         <option key={option.value || 'all'} value={option.value}>{option.label}</option>
@@ -1626,7 +1655,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                           aria-label="素材层级"
                           value={filters.materialTier}
                           onChange={(e) => updateFilter('materialTier', e.target.value)}
-                          className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-xs"
+                          className="h-8 rounded-md border-none bg-surface-container-highest px-3 text-xs"
                         >
                           <option value="">全部层级</option>
                           {MATERIAL_TIER_OPTIONS.map((option) => (
@@ -1638,14 +1667,14 @@ export default function MaterialDB({ showToast = () => {} }) {
                           value={filters.customerName}
                           onChange={(e) => updateFilter('customerName', e.target.value)}
                           placeholder="客户"
-                          className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-xs"
+                          className="h-8 rounded-md border-none bg-surface-container-highest px-3 text-xs"
                         />
                         <input
                           aria-label="按项目筛选"
                           value={filters.projectId}
                           onChange={(e) => updateFilter('projectId', e.target.value)}
                           placeholder="项目ID/编号"
-                          className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-xs"
+                          className="h-8 rounded-md border-none bg-surface-container-highest px-3 text-xs"
                         />
                       </>
                     )}
@@ -1653,7 +1682,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                 </div>
               </div>
 
-              <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
                 <div className="min-h-full rounded-md border border-surface-container-high bg-surface-container-lowest p-2">
                   {tree.map((node) => (
                     <TreeNode
@@ -1668,6 +1697,7 @@ export default function MaterialDB({ showToast = () => {} }) {
                       }}
                       onRenameFile={handleRenameFile}
                       onDeleteFile={handleDeleteFile}
+                      onUpdateBusinessMaterialKind={updateBusinessMaterialKind}
                       onSplitFile={openBusinessSplitModal}
                       onDeleteFolder={handleDeleteFolder}
                       onMoveDrop={handleMoveDrop}
@@ -1849,6 +1879,29 @@ export default function MaterialDB({ showToast = () => {} }) {
                       {materialTierMeta(uploadMaterialTier).description}
                     </div>
                   )}
+                </div>
+              )}
+
+              {uploadBidType === '商务标' && (
+                <div className="rounded-lg border border-surface-container-high bg-surface-container-low px-3 py-3">
+                  <div className="text-sm font-semibold text-on-surface">素材类型</div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {BUSINESS_MATERIAL_KIND_OPTIONS.map((option) => {
+                      const active = uploadBusinessMaterialKind === option.value
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => setUploadBusinessMaterialKind(option.value)}
+                          aria-pressed={active}
+                          className={`rounded-md border px-3 py-2 text-left transition-colors ${active ? 'border-primary bg-primary/5 text-primary' : 'border-surface-container-high bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container-low'}`}
+                        >
+                          <span className="block text-sm font-semibold">{option.label}</span>
+                          <span className="mt-1 block text-xs text-outline">{option.description}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
               )}
 
