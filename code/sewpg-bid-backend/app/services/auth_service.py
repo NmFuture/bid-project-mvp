@@ -14,7 +14,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.models import async_session
 from app.models.materials import AuthSession, SystemUser
-from app.services.material_store import material_store
+from app.services.material_runtime_tables import ensure_material_runtime_tables
 
 
 def now_utc() -> datetime:
@@ -57,7 +57,7 @@ def extract_bearer_token(authorization: str | None) -> str:
 class AuthService:
     async def _ensure_tables(self) -> None:
         async with async_session() as session:
-            await material_store._ensure_runtime_tables(session)
+            await ensure_material_runtime_tables(session)
             await session.commit()
 
     async def ensure_bootstrap_admin(self) -> None:

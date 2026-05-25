@@ -9,8 +9,10 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import Request
+from fastapi.responses import StreamingResponse
 
 from app.core.config import settings
+from app.services.minio_client import minio_client
 
 
 def now_message(message: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -119,3 +121,28 @@ def onlyoffice_backend_base_url(request: Request) -> str:
 
 def content_disposition(filename: str) -> str:
     return f"attachment; filename*=UTF-8''{quote(filename)}"
+
+
+def minio_streaming_response(
+    payload: dict[str, Any],
+    *,
+    default_file_name: str = "download.bin",
+    default_media_type: str = "application/octet-stream",
+) -> StreamingResponse:
+    response = minio_client.get_object_response(payload["bucket"], payload["key"])
+
+    def iterate_chunks():
+        try:
+            for chunk in response.stream(64 * 1024):
+                yield chunk
+        finally:
+            response.close()
+            response.release_conn()
+
+    file_name = str(payload.get("fileName") or default_file_name)
+    media_type = str(payload.get("mimeType") or default_media_type)
+    return StreamingResponse(
+        iterate_chunks(),
+        media_type=media_type,
+        headers={"Content-Disposition": content_disposition(file_name)},
+    )

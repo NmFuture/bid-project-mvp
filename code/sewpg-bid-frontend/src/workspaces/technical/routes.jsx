@@ -1,6 +1,5 @@
 import { Navigate, Route } from 'react-router-dom'
 import WorkspaceAccess from '../shared/WorkspaceAccess'
-import ProjectPathRedirect from '../shared/ProjectPathRedirect'
 import TechnicalTenderReview from './pages/TechnicalTenderReview'
 import TechnicalProjectList from './pages/TechnicalProjectList'
 import TechnicalProjectEntryRedirect from './pages/TechnicalProjectEntryRedirect'
@@ -43,24 +42,12 @@ export function renderTechnicalRoutes({ user, showToast }) {
         element={withAccess(user, <TechnicalProjectList showToast={showToast} />)}
       />
       <Route
-        path="/workspace/tech/flow"
-        element={withAccess(user, <Navigate to="/workspace/tech/projects" replace />)}
-      />
-      <Route
         path="/workspace/tech/projects/:id"
         element={withAccess(user, <TechnicalProjectEntryRedirect />)}
       />
       <Route
         path="/workspace/tech/projects/:id/template-directory"
         element={withAccess(user, <TechnicalParseResult showToast={showToast} />)}
-      />
-      <Route
-        path="/workspace/tech/projects/:id/parse"
-        element={withAccess(user, <ProjectPathRedirect path="/template-directory" />)}
-      />
-      <Route
-        path="/workspace/tech/projects/:id/directory"
-        element={withAccess(user, <ProjectPathRedirect path="/template-directory" />)}
       />
       <Route
         path="/workspace/tech/projects/:id/outline"
@@ -73,14 +60,6 @@ export function renderTechnicalRoutes({ user, showToast }) {
       <Route
         path="/workspace/tech/projects/:id/gaps"
         element={withAccess(user, <TechnicalGapRecognition showToast={showToast} />)}
-      />
-      <Route
-        path="/workspace/tech/projects/:id/gaps-fill"
-        element={withAccess(user, <ProjectPathRedirect path="/gaps" />)}
-      />
-      <Route
-        path="/workspace/tech/projects/:id/gaps/review"
-        element={withAccess(user, <ProjectPathRedirect path="/gaps" />)}
       />
       <Route
         path="/workspace/tech/projects/:id/generate"
@@ -99,7 +78,7 @@ export function renderTechnicalRoutes({ user, showToast }) {
         element={withAccess(user, <TechnicalFinalExport showToast={showToast} />)}
       />
       <Route
-        path="/workspace/tech/materials/structured"
+        path="/workspace/tech/materials/raw"
         element={withAccess(user, <TechnicalMaterialDB showToast={showToast} />)}
       />
       <Route

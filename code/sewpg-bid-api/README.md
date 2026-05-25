@@ -11,10 +11,12 @@
 
 当前正式口径以这些文件为准：
 
+- `../../doc/31-技术标与商务标双轨独立化实施计划.md`
 - `../../doc/06-MVP接口文档.md`
-- `../../doc/08-MVP部署说明.md`
-- `../../doc/12-数据存储与素材库数据说明.md`
+- `./MVP接口与参数核心版_极简版.md`
+- `../sewpg-bid-backend/app/api/routes/technical.py`
+- `../sewpg-bid-backend/app/api/routes/business.py`
 
-历史 FastAPI 迁移方案已经归档到 `../../doc/archive/07-FastAPI承接与前端改造.md`，不再作为下一阶段开发入口。
+历史 FastAPI 迁移方案和旧单线接口不再作为下一阶段开发入口。
 
 后续如果把契约正式收进 `code`，建议优先落到这里，而不是继续散落在前端目录或项目根目录。

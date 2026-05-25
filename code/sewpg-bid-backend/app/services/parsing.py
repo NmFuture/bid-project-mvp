@@ -18,6 +18,7 @@ from xml.etree import ElementTree as ET
 from docx import Document
 
 from app.core.config import settings
+from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.opencode_client import OpencodeClient
 from app.services.parse_profiles import (
@@ -2785,7 +2786,12 @@ def _prepare_commitment_letter_outputs(
     return prepared
 
 
-def materialize_parse_appendix_docx_assets(project_id: str, parse_result: dict[str, Any], *, bid_type: str = "技术标") -> dict[str, Any]:
+def materialize_parse_appendix_docx_assets(
+    project_id: str,
+    parse_result: dict[str, Any],
+    *,
+    bid_type: str,
+) -> dict[str, Any]:
     payload = copy.deepcopy(parse_result)
     structured = payload.get("structured")
     if not isinstance(structured, dict):
@@ -2802,7 +2808,7 @@ def materialize_parse_business_commitment_letter_docx_assets(
     project_id: str,
     parse_result: dict[str, Any],
     *,
-    bid_type: str = "商务标",
+    bid_type: str,
 ) -> dict[str, Any]:
     payload = copy.deepcopy(parse_result)
     structured = payload.get("structured")
@@ -4143,7 +4149,7 @@ def parse_tender_documents(
     project_id: str,
     tender_files: list[dict[str, Any]],
     *,
-    bid_type: str = "技术标",
+    bid_type: str,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     profile = resolve_parse_profile(bid_type)

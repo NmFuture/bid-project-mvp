@@ -222,7 +222,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
         ), patch(
-            "app.services.business_material_splitter.material_store.raw_upload",
+            "app.services.business_material_splitter._upload_business_split_files",
             side_effect=fake_raw_upload,
         ):
             result = await confirm_business_material_split(
@@ -335,7 +335,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
         ), patch(
-            "app.services.business_material_splitter.material_store.raw_upload",
+            "app.services.business_material_splitter._upload_business_split_files",
             side_effect=fake_raw_upload,
         ):
             result = await confirm_business_material_split(
@@ -384,7 +384,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
         ), patch(
-            "app.services.business_material_splitter.material_store.raw_upload",
+            "app.services.business_material_splitter._upload_business_split_files",
             side_effect=fake_raw_upload,
         ):
             result = await confirm_business_material_split(
@@ -401,7 +401,8 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(len(uploaded_calls), 1)
-        self.assertEqual(uploaded_calls[0]["bid_type"], "商务标")
+        self.assertEqual(uploaded_calls[0]["target_path"], "商务标/通用素材/06-通用模板底稿库")
+        self.assertNotIn("bid_type", uploaded_calls[0])
         self.assertEqual(uploaded_calls[0]["files"][0]["extFields"]["splitParentMaterialId"], "RAW-0001")
         self.assertEqual(result["items"][0]["splitParentMaterialId"], "RAW-0001")
 
@@ -424,7 +425,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
         ), patch(
-            "app.services.business_material_splitter.material_store.raw_upload",
+            "app.services.business_material_splitter._upload_business_split_files",
             side_effect=fake_raw_upload,
         ):
             await confirm_business_material_split(

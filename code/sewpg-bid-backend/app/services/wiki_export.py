@@ -7,6 +7,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE, require_bid_type
+
 
 DEFAULT_API_BASE = "http://fastapi:8000"
 WIKI_FILES = {
@@ -38,9 +40,18 @@ def fetch_json(url: str, timeout: float) -> dict[str, Any]:
     return data
 
 
-def api_get(api_base: str, params: dict[str, str], timeout: float) -> dict[str, Any]:
+def wiki_api_path(bid_type: str) -> str:
+    normalized = require_bid_type(bid_type)
+    if normalized == BUSINESS_BID_TYPE:
+        return "/api/business/materials/wiki"
+    if normalized == TECHNICAL_BID_TYPE:
+        return "/api/technical/materials/wiki"
+    raise ValueError("标类必须是技术标或商务标。")
+
+
+def api_get(api_base: str, path: str, params: dict[str, str], timeout: float) -> dict[str, Any]:
     query = urllib.parse.urlencode(params)
-    return fetch_json(f"{api_base.rstrip('/')}/api/materials/wiki?{query}", timeout)
+    return fetch_json(f"{api_base.rstrip('/')}{path}?{query}", timeout)
 
 
 def iter_tree(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -241,7 +252,8 @@ def export_wiki(api_base: str, bid_type: str, out_dir: Path, timeout: float = 20
     cards_dir = out_dir / "卡片"
     cards_dir.mkdir(parents=True, exist_ok=True)
 
-    root_payload = api_get(api_base, {"bidType": bid_type}, timeout)
+    api_path = wiki_api_path(bid_type)
+    root_payload = api_get(api_base, api_path, {"bidType": bid_type}, timeout)
     tree = list(root_payload.get("tree") or [])
     tree_nodes = iter_tree(tree)
     selected_nodes: list[dict[str, Any]] = []
@@ -250,7 +262,7 @@ def export_wiki(api_base: str, bid_type: str, out_dir: Path, timeout: float = 20
         node_id = str(node.get("id") or "")
         if not node_id:
             continue
-        payload = api_get(api_base, {"nodeId": node_id, "bidType": bid_type}, timeout)
+        payload = api_get(api_base, api_path, {"nodeId": node_id, "bidType": bid_type}, timeout)
         selected = payload.get("selectedNode")
         if isinstance(selected, dict):
             selected_nodes.append(selected)

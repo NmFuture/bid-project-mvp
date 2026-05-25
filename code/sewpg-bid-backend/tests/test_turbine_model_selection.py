@@ -15,7 +15,13 @@ from openpyxl import Workbook
 
 from app.main import app
 from app.core.config import settings
-from app.services.store import now_iso, store
+from app.services.bid_outline_state import confirm_outline_state, save_generated_outline_state
+from app.services.bid_runtime_state import now_iso
+from app.services.store import store
+from app.services.technical_gap_repository import persist_technical_gap_project, require_technical_gap_project_for_update
+from app.services.technical_gap_review import confirm_technical_review, prepare_technical_review_document
+from app.services.technical_gap_service import technical_gap_service
+from app.services.technical_gap_state import ensure_technical_gap_state
 from app.services.turbine_models import extract_turbine_model_options_from_xlsx_bytes
 from app.services.workspace_artifacts import technical_workspace_dir
 
@@ -44,6 +50,39 @@ def _xlsx_payload() -> str:
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
+def _confirm_technical_review_for_tests(project_id: str) -> None:
+    project = require_technical_gap_project_for_update(project_id)
+    gap_state = ensure_technical_gap_state(project)
+    prepare_technical_review_document(project, gap_state)
+    confirm_technical_review(project, gap_state)
+    persist_technical_gap_project(project)
+
+
+def _save_generated_outline_for_tests(
+    project_id: str,
+    *,
+    nodes: list[dict],
+    generated_at: str,
+    summary: str,
+) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = save_generated_outline_state(
+        project,
+        nodes=nodes,
+        generated_at=generated_at,
+        summary=summary,
+    )
+    store.persist_project_state(project)
+    return payload
+
+
+def _confirm_outline_for_tests(project_id: str) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = confirm_outline_state(project)
+    store.persist_project_state(project)
+    return payload
+
+
 class TurbineModelSelectionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -62,7 +101,7 @@ class TurbineModelSelectionTests(unittest.TestCase):
 
     def _create_project(self) -> str:
         response = self.client.post(
-            "/api/projects",
+            "/api/technical/projects",
             json={
                 "name": "机型字段验证项目",
                 "customerName": "华能集团",
@@ -106,7 +145,7 @@ class TurbineModelSelectionTests(unittest.TestCase):
     def test_project_persists_selected_turbine_model(self) -> None:
         project_id = self._create_project()
 
-        payload = self.client.get(f"/api/projects/{project_id}").json()
+        payload = self.client.get(f"/api/technical/projects/{project_id}").json()
 
         self.assertEqual(payload["turbineModel"]["model"], "EW10.0-220下置")
         self.assertEqual(payload["turbineModel"]["platform"], "X2E-2")
@@ -141,13 +180,13 @@ class TurbineModelSelectionTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        store.save_generated_outline(
+        _save_generated_outline_for_tests(
             project_id=project_id,
             nodes=[{"id": "OL-1", "title": "性能保证", "children": []}],
             generated_at=now_iso(),
             summary="目录已生成。",
         )
-        store.confirm_outline(project_id)
+        _confirm_outline_for_tests(project_id)
         project = store._require(project_id)
         project["parse_result"] = {
             "status": "completed",
@@ -209,15 +248,15 @@ class TurbineModelSelectionTests(unittest.TestCase):
             output_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
             return {"schema_version": "bid-tech-gap-plan-v1", "outputFile": str(output_file)}
 
-        with patch("app.services.gap_planning.run_gap_planner_skill", side_effect=fake_gap_planner):
-            detection = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        with patch("app.services.technical_gap_planner.run_technical_gap_planner_skill", side_effect=fake_gap_planner):
+            detection = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection.status_code, 200, detection.text)
         self.assertEqual(gap_manifests[0]["projectTurbineModel"]["model"], "EW10.0-220下置")
         self.assertEqual(detection.json()["gapPlan"]["projectTurbineModel"]["platform"], "X2E-2")
-        facts = self.client.post(f"/api/projects/{project_id}/gaps/facts/build")
+        facts = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
         self.assertEqual(facts.status_code, 200, facts.text)
         confirm_facts = self.client.put(
-            f"/api/projects/{project_id}/gaps/facts",
+            f"/api/technical/projects/{project_id}/gaps/facts",
             json={"fields": facts.json()["fields"], "confirm": True, "operator": "测试用户"},
         )
         self.assertEqual(confirm_facts.status_code, 200, confirm_facts.text)
@@ -233,18 +272,17 @@ class TurbineModelSelectionTests(unittest.TestCase):
             doc.save(output_file)
             return {"schema_version": "bid-tech-table-fill-v1", "outputFile": str(output_file)}
 
-        with patch("app.services.gap_planning.run_table_filler_skill", side_effect=fake_table_filler):
+        with patch("app.services.technical_gap_ai_fill.run_technical_table_filler_skill", side_effect=fake_table_filler):
             fill = self.client.post(
-                f"/api/projects/{project_id}/gaps/GAP-0001/ai-fill",
+                f"/api/technical/projects/{project_id}/gaps/GAP-0001/ai-fill",
                 json={"fillTaskId": "FILL-GAP-0001", "referenceMaterialIds": ["RAW-0001"], "parseFieldIds": ["APP-1"]},
             )
         self.assertEqual(fill.status_code, 200, fill.text)
         self.assertEqual(fill_manifests[0]["projectTurbineModel"]["model"], "EW10.0-220下置")
 
-        store.check_gap_plan_integrity(project_id)
-        store.submit_gap_review(project_id)
-        store.prepare_review_document(project_id)
-        store.confirm_review(project_id)
+        asyncio.run(technical_gap_service.recheck(project_id))
+        asyncio.run(technical_gap_service.submit_review(project_id))
+        _confirm_technical_review_for_tests(project_id)
         assembly_manifests: list[dict] = []
 
         def fake_prepare_wiki_dir(project, parse_storage, work_dir):

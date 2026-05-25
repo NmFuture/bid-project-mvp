@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import base64
 import subprocess
@@ -10,6 +11,76 @@ from pathlib import Path
 from unittest.mock import patch
 
 from docx import Document
+
+from app.services.bid_fill_generation_state import start_fill_generation_state
+from app.services.bid_outline_state import confirm_outline_state, save_generated_outline_state
+from app.services.bid_parse_state import complete_parse_state, update_parse_result_state
+from app.services.bid_type import BUSINESS_BID_TYPE
+
+
+def _update_parse_result_for_tests(store, project_id: str, parse_result: dict, *, parse_storage: dict | None = None) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = update_parse_result_state(project, parse_result, parse_storage=parse_storage)
+    store.persist_project_state(project)
+    return payload
+
+
+def _complete_parse_for_tests(
+    store,
+    project_id: str,
+    tender_files: list[dict],
+    template_files: list[dict],
+    *,
+    summary: dict | None = None,
+    parse_storage: dict | None = None,
+) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = complete_parse_state(
+        project,
+        tender_files,
+        template_files,
+        summary=summary,
+        parse_storage=parse_storage,
+    )
+    store.persist_project_state(project)
+    return payload
+
+
+def _fill_state_for_tests(store, project_id: str) -> dict:
+    return copy.deepcopy(store.get_project_runtime_state(project_id)["fill_state"])
+
+
+def _start_fill_generation_for_tests(store, project_id: str) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = start_fill_generation_state(project)
+    store.persist_project_state(project)
+    return payload
+
+
+def _save_generated_outline_for_tests(
+    store,
+    project_id: str,
+    *,
+    nodes: list[dict],
+    generated_at: str,
+    summary: str,
+) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = save_generated_outline_state(
+        project,
+        nodes=nodes,
+        generated_at=generated_at,
+        summary=summary,
+    )
+    store.persist_project_state(project)
+    return payload
+
+
+def _confirm_outline_for_tests(store, project_id: str) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = confirm_outline_state(project)
+    store.persist_project_state(project)
+    return payload
 
 
 class BusinessAssemblyRunnerTests(unittest.TestCase):
@@ -1080,9 +1151,33 @@ class BusinessAssemblyServiceTests(unittest.TestCase):
         self.client.close()
         self.temp_dir.cleanup()
 
+    def test_business_material_export_uses_business_material_store(self) -> None:
+        from app.services import business_assembly
+
+        async def fake_raw_files(**kwargs):
+            self.assertNotIn("bid_type", kwargs)
+            self.assertTrue(str(kwargs.get("folder_path") or "").startswith("商务标/"))
+            return {"items": [], "total": 0}
+
+        project = {
+            "id": "PRJ-BIZ-MATERIAL-SCOPE",
+            "name": "商务素材范围项目",
+            "bidType": "商务标",
+            "customerName": "华能集团",
+        }
+        with patch("app.services.business_assembly.business_material_store.raw_files", side_effect=fake_raw_files) as raw_files:
+            _, exported = business_assembly._export_business_material_library(
+                project,
+                Path(self.temp_dir.name) / "business-material-export",
+            )
+
+        self.assertEqual(exported, 0)
+        self.assertGreaterEqual(raw_files.call_count, 1)
+
     def test_business_fill_generation_uses_business_assembler_without_technical_gap_state(self) -> None:
         from app.core.config import settings
-        from app.services.store import now_iso, store
+        from app.services.bid_runtime_state import now_iso
+        from app.services.store import store
         from app.services.workspace_artifacts import business_workspace_dir, technical_workspace_dir
 
         project = store.create_project({"name": "商务S4集成项目", "customerName": "华能集团", "bidType": "商务标"})
@@ -1098,14 +1193,16 @@ class BusinessAssemblyServiceTests(unittest.TestCase):
         doc.add_paragraph("商务评分标准正文")
         doc.save(scoring_path)
 
-        store.complete_parse(
+        _complete_parse_for_tests(
+            store,
             project_id,
             tender_files=[{"id": "TEN-1", "name": "商务招标文件.docx", "path": str(tender_path), "size_label": "1 KB"}],
             template_files=[],
             summary={"fileCount": 1, "extractedCount": 1, "textLength": 10, "textPreview": "", "warnings": []},
             parse_storage={"projectDir": str(business_workspace), "combinedTextPath": str(parse_dir / "combined.txt"), "manifestPath": ""},
         )
-        store.update_parse_result(
+        _update_parse_result_for_tests(
+            store,
             project_id,
             {
                 "status": "completed",
@@ -1124,7 +1221,8 @@ class BusinessAssemblyServiceTests(unittest.TestCase):
                 },
             },
         )
-        store.save_generated_outline(
+        _save_generated_outline_for_tests(
+            store,
             project_id=project_id,
             nodes=[
                 {"id": "OL-1", "title": "投标函", "children": []},
@@ -1133,7 +1231,7 @@ class BusinessAssemblyServiceTests(unittest.TestCase):
             generated_at=now_iso(),
             summary="商务目录已生成。",
         )
-        store.confirm_outline(project_id)
+        _confirm_outline_for_tests(store, project_id)
         project_record = store._require(project_id)
         business_gap_state = project_record["business_gap_state"]
         business_gap_state.update(
@@ -1164,12 +1262,12 @@ class BusinessAssemblyServiceTests(unittest.TestCase):
             patch("app.services.business_assembly.OpencodeClient.run_bid_business_assembler_with_trace", side_effect=RuntimeError("offline")),
             patch("app.services.business_assembly.OpencodeClient.run_bid_business_format_cleaner_with_trace", side_effect=RuntimeError("offline")),
         ):
-            store.start_fill_generation(project_id)
-            from app.api.routes.generation import _run_fill_generation_job
+            _start_fill_generation_for_tests(store, project_id)
+            from app.services.bid_generation_flow import _run_fill_generation_job
 
-            _run_fill_generation_job(project_id, {}, {"id": "u1", "name": "测试"})
+            _run_fill_generation_job(project_id, {}, {"id": "u1", "name": "测试"}, bid_type=BUSINESS_BID_TYPE)
 
-        state = store.get_fill_state(project_id)
+        state = _fill_state_for_tests(store, project_id)
         self.assertEqual(state["status"], "completed")
         self.assertEqual((state.get("assembly") or {}).get("skill"), "bid-business-assembler")
         self.assertIn("business-workspace/s4_assembly_workdir", (state.get("assembly") or {}).get("workDir", ""))

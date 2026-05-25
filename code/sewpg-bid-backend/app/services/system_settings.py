@@ -17,7 +17,9 @@ from app.core.config import settings
 from app.models import async_session
 from app.models.materials import BackupRecord, SystemConfig, TemplateAsset
 from app.services.audit_service import audit_service
-from app.services.material_store import material_store, safe_segment, size_label
+from app.services.file_utils import format_size_label as size_label
+from app.services.file_utils import now_display, safe_segment
+from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
 from app.services.template_store import is_valid_docx_bytes, is_valid_docx_stream
@@ -41,10 +43,6 @@ DEFAULT_LLM_MODEL_OPTIONS = [
 OPENCODE_RUNTIME_CONFIG_PATH = settings.documents_dir / "_runtime" / "opencode" / "opencode.runtime.json"
 
 
-def now_display() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
 def mask_secret(value: str) -> str:
     text = str(value or "")
     if not text:
@@ -57,7 +55,7 @@ def mask_secret(value: str) -> str:
 class SystemSettingsService:
     async def _ensure_tables(self) -> None:
         async with async_session() as session:
-            await material_store._ensure_runtime_tables(session)
+            await ensure_material_runtime_tables(session)
             await session.commit()
         await self._ensure_model_defaults()
         await self._sync_opencode_runtime_config()

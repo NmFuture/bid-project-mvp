@@ -9,15 +9,23 @@ from typing import Any
 from docx import Document
 
 from app.core.config import settings
+from app.services.bid_parse_state import update_parse_result_state
+from app.services.bid_type import BUSINESS_BID_TYPE
+from app.services.business_material_store import business_material_store
+from app.services.file_utils import safe_segment
 from app.services.identity import build_project_identity
-from app.services.material_store import material_store, safe_segment
+from app.services.material_folder_scope import project_material_root_path
 from app.services.onlyoffice_documents import WORD_MEDIA_TYPE
-from app.services.parse_profiles import BUSINESS_PARSE_PROFILE, normalize_bid_type
+from app.services.parse_profiles import BUSINESS_PARSE_PROFILE
 from app.services.parsing import (
     materialize_parse_appendix_docx_assets,
     materialize_parse_business_commitment_letter_docx_assets,
 )
-from app.services.store import store
+from app.services.workspace_project_access import (
+    get_workspace_project_runtime_state,
+    persist_workspace_project_state,
+    require_workspace_project_for_update,
+)
 from app.services.workspace_artifacts import workspace_parse_dir
 
 
@@ -65,10 +73,13 @@ def _materialize_business_parse_result(project_id: str, parse_result: dict[str, 
 
 
 def _business_payload(project_id: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    project = store.get_project(project_id)
-    if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
-        raise BusinessParseAssetError(400, "仅商务标解析产物支持该操作。")
-    parse_result = store.get_parse_result(project_id)
+    project = get_workspace_project_runtime_state(
+        project_id,
+        bid_type=BUSINESS_PARSE_PROFILE.bid_type,
+        not_found_error=KeyError,
+        wrong_type_error=lambda _project_id: BusinessParseAssetError(400, "仅商务标解析产物支持该操作。"),
+    )
+    parse_result = copy.deepcopy(project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {})
     if parse_result.get("status") != "completed":
         raise BusinessParseAssetError(400, "请先完成商务标解析。")
     payload = _materialize_business_parse_result(project_id, parse_result)
@@ -98,12 +109,20 @@ def _update_structured_result_file(parse_storage: dict[str, Any], parse_result: 
 
 
 def _persist_business_parse_result(project_id: str, parse_result: dict[str, Any]) -> dict[str, Any]:
-    parse_storage = store.get_parse_storage(project_id)
+    project = require_workspace_project_for_update(
+        project_id,
+        bid_type=BUSINESS_PARSE_PROFILE.bid_type,
+        not_found_error=KeyError,
+        wrong_type_error=lambda _project_id: BusinessParseAssetError(400, "仅商务标解析产物支持该操作。"),
+    )
+    parse_storage = copy.deepcopy(project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {})
     if isinstance(parse_storage, dict):
         parse_storage["items"] = copy.deepcopy(parse_result.get("items") or parse_storage.get("items") or [])
         parse_storage["structured"] = copy.deepcopy(parse_result.get("structured") or {})
         _update_structured_result_file(parse_storage, parse_result)
-    return store.update_parse_result(project_id, parse_result, parse_storage=parse_storage)
+    payload = update_parse_result_state(project, parse_result, parse_storage=parse_storage)
+    persist_workspace_project_state(project)
+    return payload
 
 
 def _scoring_groups(structured: dict[str, Any]) -> dict[str, Any]:
@@ -219,7 +238,7 @@ def _business_material_target(project: dict[str, Any], target_folder: str) -> tu
     project_code = str(identity.get("projectCode") or material_project_id)
     project_name = str(identity.get("projectName") or project.get("name") or "")
     customer_name = str(identity.get("customerCanonicalName") or identity.get("customerName") or project.get("owner") or "")
-    target_path = f"商务标/项目素材/{material_project_id}/{target_folder}"
+    target_path = f"{project_material_root_path(BUSINESS_BID_TYPE, material_project_id)}/{target_folder}"
     return identity, target_path, material_project_id, project_code, project_name, customer_name
 
 
@@ -237,12 +256,11 @@ async def _upload_business_material_files(
         target_folder,
     )
     try:
-        return await material_store.raw_upload(
+        return await business_material_store.raw_upload(
             target_path=target_path,
             project_id=material_project_id,
             project_code=project_code,
             project_name=project_name,
-            bid_type="商务标",
             material_tier="project",
             customer_id=str(identity.get("customerId") or ""),
             customer_name=customer_name,

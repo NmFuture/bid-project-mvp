@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import re
 import shutil
 import subprocess
@@ -13,11 +14,19 @@ from typing import Any, Callable
 from docx import Document
 
 from app.core.config import BASE_DIR, settings
+from app.services.bid_outline_state import save_generated_outline_state
+from app.services.bid_project_state import project_parse_input_records
+from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type
 from app.services.opencode_client import OpencodeClient
 from app.services.parsing import IMAGE_SUFFIXES, _ocr_fallback_text
-from app.services.store import build_directory_opencode_output, now_iso, store
+from app.services.bid_runtime_state import build_directory_opencode_output, now_iso
 from app.services.template_store import is_valid_docx_file
 from app.services.workspace_artifacts import workspace_dir
+from app.services.workspace_project_access import (
+    get_any_workspace_project_runtime_state,
+    persist_workspace_project_state,
+    require_any_workspace_project_for_update,
+)
 
 OUTLINE_SKILL_NAME = "bid-tech-outline-generator"
 BUSINESS_OUTLINE_SKILL_NAME = "business-bid-outline"
@@ -45,7 +54,10 @@ PUBLIC_EVIDENCE_DECISION_LIMIT = 80
 
 
 def _is_business_bid(bid_type: Any) -> bool:
-    return str(bid_type or "").strip() == "商务标"
+    return require_bid_type(
+        bid_type,
+        error_message="目录生成必须显式传入技术标或商务标。",
+    ) == BUSINESS_BID_TYPE
 
 
 def _outline_skill_name(bid_type: Any) -> str:
@@ -69,9 +81,9 @@ def generate_outline_for_project_with_progress(
     data: dict[str, Any] | None = None,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
-    project = store.get_project(project_id)
-    parse_storage = store.get_parse_storage(project_id)
-    tender_file_records, template_file_records = store.get_parse_inputs(project_id)
+    project = get_any_workspace_project_runtime_state(project_id, not_found_error=KeyError)
+    parse_storage = copy.deepcopy(project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {})
+    tender_file_records, template_file_records = project_parse_input_records(project_id, project)
     combined_text_path = Path(str(parse_storage.get("combinedTextPath") or ""))
     if not combined_text_path.exists():
         raise ValueError("S1 解析结果不存在，请先完成解析。")
@@ -133,14 +145,16 @@ def generate_outline_for_project_with_progress(
         )
 
     generated_at = now_iso()
-    payload = store.save_generated_outline(
-        project_id=project_id,
+    project_for_update = require_any_workspace_project_for_update(project_id, not_found_error=KeyError)
+    payload = save_generated_outline_state(
+        project_for_update,
         nodes=nodes,
         generated_at=generated_at,
         summary=summary,
         opencode_output=opencode_output,
         rule_evidence=toc_result.get("ruleEvidence") if isinstance(toc_result.get("ruleEvidence"), dict) else {},
     )
+    persist_workspace_project_state(project_for_update)
     return payload
 
 
@@ -253,11 +267,14 @@ def _run_local_outline_skill(manifest_path: Path) -> dict[str, Any]:
 
 
 def _build_outline_prompt(manifest_path: Path, bid_type: Any) -> str:
-    if _is_business_bid(bid_type):
+    bid_type_text = require_bid_type(
+        bid_type,
+        error_message="目录生成必须显式传入技术标或商务标。",
+    )
+    if _is_business_bid(bid_type_text):
         return _build_business_outline_prompt(manifest_path)
-    skill_name = _outline_skill_name(bid_type)
-    skill_command = _outline_skill_command(bid_type)
-    bid_type_text = str(bid_type or "技术标")
+    skill_name = _outline_skill_name(bid_type_text)
+    skill_command = _outline_skill_command(bid_type_text)
     return f"""
 Use the {skill_name} skill.
 
@@ -480,7 +497,10 @@ def _write_business_toc_from_outline_payload(
             "projectId": str(manifest.get("projectId") or ""),
             "projectCode": str(manifest.get("projectCode") or ""),
             "projectName": str(manifest.get("projectName") or ""),
-            "bidType": str(manifest.get("bidType") or "商务标"),
+            "bidType": require_bid_type(
+                manifest.get("bidType"),
+                error_message="商务标目录生成必须显式传入商务标。",
+            ),
         },
         "source_files": source_files,
         "summary": {
@@ -849,7 +869,7 @@ def _prepare_toc_skill_workspace(
     tender_file_records: list[dict[str, Any]],
     template_file_records: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    bid_type = _normalize_bid_type(str(project.get("bidType") or "技术标"))
+    bid_type = _outline_bid_type(str(project.get("bidType") or ""))
     project_dir = workspace_dir(project_id, bid_type)
     project_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1152,8 +1172,11 @@ def _unique_path(path: Path) -> Path:
     raise RuntimeError(f"无法为文件生成唯一路径：{path}")
 
 
-def _normalize_bid_type(value: str) -> str:
-    return value.strip() or "投标文件"
+def _outline_bid_type(value: str) -> str:
+    return require_bid_type(
+        value,
+        error_message="目录工作区必须显式传入技术标或商务标。",
+    )
 
 
 def _nodes_from_generation_result(result: dict[str, Any]) -> list[dict[str, Any]]:

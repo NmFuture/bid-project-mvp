@@ -8,13 +8,14 @@ from typing import Any
 
 from docx import Document
 
+from app.services.bid_type import BUSINESS_BID_TYPE
 from app.services.onlyoffice_documents import document_path
-from app.services.store import now_iso, store
-from app.services.parse_profiles import normalize_bid_type
+from app.services.bid_runtime_state import now_iso
 from app.services.workspace_artifacts import workspace_stage_dir
+from app.services.workspace_project_access import get_workspace_project_runtime_state
 
 
-def apply_controlled_document_rewrite(
+def apply_controlled_business_rewrite(
     project_id: str,
     *,
     original_text: str,
@@ -35,11 +36,10 @@ def apply_controlled_document_rewrite(
     if not replacement:
         raise ValueError("替换文本不能为空。")
 
+    bid_label = _require_business_bid_type(project_id)
     path = document_path(project_id)
-    bid_type = _project_bid_type(project_id)
-    bid_label = normalize_bid_type(bid_type)
     if not path.exists():
-        state = store.get_document_state(project_id)
+        state = _business_document_state(project_id)
         raise FileNotFoundError(f"{bid_label}正文文件不存在：{state.get('fileName') or path.name}")
 
     document = Document(str(path))
@@ -68,21 +68,6 @@ def apply_controlled_document_rewrite(
     }
     record["historyFile"] = str(_append_rewrite_history(project_id, record))
     return record
-
-
-def apply_controlled_business_rewrite(
-    project_id: str,
-    *,
-    original_text: str,
-    replacement_text: str,
-    operator: str = "当前用户",
-) -> dict[str, Any]:
-    return apply_controlled_document_rewrite(
-        project_id,
-        original_text=original_text,
-        replacement_text=replacement_text,
-        operator=operator,
-    )
 
 
 def _normalize_input(value: str) -> str:
@@ -154,8 +139,8 @@ def _replace_paragraph_text(paragraph, text: str) -> None:
 
 
 def _backup_document(project_id: str, path: Path) -> Path:
-    bid_type = _project_bid_type(project_id)
-    stage_dir = "s4_ai_rewrite_backups" if normalize_bid_type(bid_type) == "商务标" else "s5_ai_rewrite_backups"
+    bid_type = _require_business_bid_type(project_id)
+    stage_dir = "s4_ai_rewrite_backups"
     backup_dir = workspace_stage_dir(project_id, stage_dir, bid_type)
     backup_dir.mkdir(parents=True, exist_ok=True)
     backup_path = backup_dir / f"{now_iso().replace(':', '').replace('-', '').replace('Z', '')}-{path.name}"
@@ -164,8 +149,8 @@ def _backup_document(project_id: str, path: Path) -> Path:
 
 
 def _append_rewrite_history(project_id: str, record: dict[str, Any]) -> Path:
-    bid_type = _project_bid_type(project_id)
-    stage_dir = "s4_ai_rewrite_backups" if normalize_bid_type(bid_type) == "商务标" else "s5_ai_rewrite_backups"
+    bid_type = _require_business_bid_type(project_id)
+    stage_dir = "s4_ai_rewrite_backups"
     history_path = workspace_stage_dir(project_id, stage_dir, bid_type) / "rewrite-history.jsonl"
     history_path.parent.mkdir(parents=True, exist_ok=True)
     with history_path.open("a", encoding="utf-8") as handle:
@@ -173,9 +158,21 @@ def _append_rewrite_history(project_id: str, record: dict[str, Any]) -> Path:
     return history_path
 
 
-def _project_bid_type(project_id: str) -> str:
-    try:
-        project = store.get_project_runtime_state(project_id)
-    except KeyError:
-        project = store.get_project(project_id)
-    return normalize_bid_type(str(project.get("bidType") or "技术标"))
+def _require_business_bid_type(project_id: str) -> str:
+    _business_project(project_id)
+    return BUSINESS_BID_TYPE
+
+
+def _business_project(project_id: str) -> dict[str, Any]:
+    return get_workspace_project_runtime_state(
+        project_id,
+        bid_type=BUSINESS_BID_TYPE,
+        not_found_error=KeyError,
+        wrong_type_error=lambda _project_id: ValueError("商务标受控润色仅支持商务标项目。"),
+    )
+
+
+def _business_document_state(project_id: str) -> dict[str, Any]:
+    project = _business_project(project_id)
+    state = project.get("document_state") if isinstance(project.get("document_state"), dict) else {}
+    return dict(state)

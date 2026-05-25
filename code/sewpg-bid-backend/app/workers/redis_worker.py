@@ -12,6 +12,7 @@ from app.services.job_queue import (
     mark_job_status,
     release_generation_lock,
 )
+from app.services.workspace_project_access import get_any_workspace_project_runtime_state
 
 logger = logging.getLogger(__name__)
 _stop_requested = False
@@ -21,6 +22,10 @@ def _request_stop(signum: int, _: Any) -> None:
     global _stop_requested
     logger.info("Received signal %s, stopping worker after current job.", signum)
     _stop_requested = True
+
+
+def _runtime_state(project_id: str) -> dict[str, Any]:
+    return get_any_workspace_project_runtime_state(project_id, not_found_error=KeyError)
 
 
 def _run_job(job: dict[str, Any]) -> None:
@@ -33,17 +38,23 @@ def _run_job(job: dict[str, Any]) -> None:
     mark_job_status(job, "running")
     try:
         if job_type == "directory_generation":
-            from app.api.routes.directory import _run_directory_generation_job
-            from app.services.store import store
+            from app.services.bid_directory_flow import _run_directory_generation_job
 
             _run_directory_generation_job(project_id, data)
-            final_state = store.get_directory_state(project_id)
+            project_state = _runtime_state(project_id)
+            final_state = project_state.get("directory_state") if isinstance(project_state.get("directory_state"), dict) else {}
         elif job_type == "fill_generation":
-            from app.api.routes.generation import _run_fill_generation_job
-            from app.services.store import store
+            from app.services.bid_generation_flow import _run_fill_generation_job
+            from app.services.bid_type import require_bid_type
 
-            _run_fill_generation_job(project_id, data, user)
-            final_state = store.get_fill_state(project_id)
+            project_state = _runtime_state(project_id)
+            bid_type = require_bid_type(
+                data.get("__bidType") or project_state.get("bidType"),
+                error_message="生成任务必须显式绑定技术标或商务标。",
+            )
+            _run_fill_generation_job(project_id, data, user, bid_type=bid_type)
+            project_state = _runtime_state(project_id)
+            final_state = project_state.get("fill_state") if isinstance(project_state.get("fill_state"), dict) else {}
         elif job_type == "material_cleaning":
             from app.services.material_cleaning import clean_material_file_sync
 

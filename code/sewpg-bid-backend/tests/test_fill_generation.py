@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import copy
 import json
 import tempfile
 import unittest
@@ -8,11 +10,123 @@ from unittest.mock import patch
 
 from docx import Document
 from fastapi.testclient import TestClient
+from starlette.datastructures import URL
 
 from app.main import app
 from app.core.config import settings
-from app.services.store import now_iso, store
+from app.services.bid_fill_generation_state import save_fill_generation_result_state, start_fill_generation_state
+from app.services.bid_outline_state import confirm_outline_state, save_generated_outline_state
+from app.services.bid_parse_state import complete_parse_state
+from app.services.bid_type import TECHNICAL_BID_TYPE
+from app.services.bid_runtime_state import now_iso
+from app.services.store import store
+from app.services.technical_gap_repository import persist_technical_gap_project, require_technical_gap_project_for_update
+from app.services.technical_gap_review import confirm_technical_review, prepare_technical_review_document
+from app.services.technical_gap_service import technical_gap_service
+from app.services.technical_gap_state import ensure_technical_gap_state
 from app.services.workspace_artifacts import technical_workspace_dir, technical_workspace_stage_dir
+
+
+class _DummyRequest:
+    base_url = URL("http://testserver/")
+    url = URL("http://testserver/")
+
+
+def _confirm_technical_review_for_tests(project_id: str) -> None:
+    project = require_technical_gap_project_for_update(project_id)
+    gap_state = ensure_technical_gap_state(project)
+    prepare_technical_review_document(project, gap_state)
+    confirm_technical_review(project, gap_state)
+    persist_technical_gap_project(project)
+
+
+def _fill_state_for_tests(project_id: str) -> dict:
+    return copy.deepcopy(store.get_project_runtime_state(project_id)["fill_state"])
+
+
+def _start_fill_generation_for_tests(project_id: str) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = start_fill_generation_state(project)
+    store.persist_project_state(project)
+    return payload
+
+
+def _save_fill_generation_result_for_tests(
+    project_id: str,
+    *,
+    summary: str,
+    sections: list[dict],
+    content: str,
+    filled_at: str,
+    run_duration_sec: int,
+    file_size_bytes: int,
+    opencode_output: dict | None = None,
+    file_name: str | None = None,
+    coverage: dict | None = None,
+    assembly: dict | None = None,
+) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = save_fill_generation_result_state(
+        project,
+        project_id=project_id,
+        summary=summary,
+        sections=sections,
+        content=content,
+        filled_at=filled_at,
+        run_duration_sec=run_duration_sec,
+        file_size_bytes=file_size_bytes,
+        opencode_output=opencode_output,
+        file_name=file_name,
+        coverage=coverage,
+        assembly=assembly,
+    )
+    store.persist_project_state(project)
+    return payload
+
+
+def _complete_parse_for_tests(
+    project_id: str,
+    tender_files: list[dict],
+    template_files: list[dict],
+    *,
+    summary: dict | None = None,
+    parse_storage: dict | None = None,
+) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = complete_parse_state(
+        project,
+        tender_files,
+        template_files,
+        summary=summary,
+        parse_storage=parse_storage,
+    )
+    store.persist_project_state(project)
+    return payload
+
+
+def _save_generated_outline_for_tests(
+    project_id: str,
+    *,
+    nodes: list[dict],
+    generated_at: str,
+    summary: str,
+) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = save_generated_outline_state(
+        project,
+        nodes=nodes,
+        generated_at=generated_at,
+        summary=summary,
+    )
+    store.persist_project_state(project)
+    return payload
+
+
+def _confirm_outline_for_tests(project_id: str) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = confirm_outline_state(project)
+    store.persist_project_state(project)
+    return payload
 
 
 class FillGenerationTests(unittest.TestCase):
@@ -27,7 +141,7 @@ class FillGenerationTests(unittest.TestCase):
         store.reset_for_tests()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
         self.gap_planner_patcher = patch(
-            "app.services.gap_planning.OpencodeClient.run_bid_tech_gap_planner_with_trace",
+            "app.services.technical_gap_planner.OpencodeClient.run_bid_tech_gap_planner_with_trace",
             side_effect=RuntimeError("offline test fallback"),
         )
         self.gap_planner_patcher.start()
@@ -42,7 +156,7 @@ class FillGenerationTests(unittest.TestCase):
 
     def _prepare_project_after_outline(self) -> str:
         response = self.client.post(
-            "/api/projects",
+            "/api/technical/projects",
             json={
                 "name": "S4生成标书项目",
                 "customerName": "测试业主",
@@ -72,7 +186,7 @@ class FillGenerationTests(unittest.TestCase):
         tender_path.parent.mkdir(parents=True, exist_ok=True)
         tender_path.write_text("dummy", encoding="utf-8")
 
-        store.complete_parse(
+        _complete_parse_for_tests(
             project_id,
             tender_files=[
                 {
@@ -98,7 +212,7 @@ class FillGenerationTests(unittest.TestCase):
             },
         )
 
-        store.save_generated_outline(
+        _save_generated_outline_for_tests(
             project_id=project_id,
             nodes=[
                 {
@@ -128,25 +242,30 @@ class FillGenerationTests(unittest.TestCase):
             generated_at=now_iso(),
             summary="目录已生成。",
         )
-        store.confirm_outline(project_id)
+        _confirm_outline_for_tests(project_id)
         return project_id
 
     def _prepare_project_for_s7(self) -> str:
         project_id = self._prepare_project_after_outline()
-        store.run_gap_detection(project_id)
-        for item in store.get_gap_filling(project_id)["items"]:
-            store.update_gap_item(project_id, item["id"], {"status": "skipped", "reason": "测试中人工确认忽略"})
-        store.check_gap_plan_integrity(project_id)
-        store.submit_gap_review(project_id)
-        store.prepare_review_document(project_id)
-        store.confirm_review(project_id)
+        technical_gap_service.run_detection(project_id)
+        for item in asyncio.run(technical_gap_service.gaps(project_id, _DummyRequest()))["items"]:
+            asyncio.run(
+                technical_gap_service.update_gap(
+                    project_id,
+                    item["id"],
+                    {"status": "skipped", "reason": "测试中人工确认忽略"},
+                )
+            )
+        asyncio.run(technical_gap_service.recheck(project_id))
+        asyncio.run(technical_gap_service.submit_review(project_id))
+        _confirm_technical_review_for_tests(project_id)
         return project_id
 
     def test_run_fill_generation_returns_running_state_immediately(self) -> None:
         project_id = self._prepare_project_for_s7()
 
-        with patch("app.api.routes.generation._schedule_fill_generation_job"):
-            response = self.client.post(f"/api/projects/{project_id}/fill-generation/run", headers=self.headers)
+        with patch("app.services.bid_generation_flow._schedule_fill_generation_job"):
+            response = self.client.post(f"/api/technical/projects/{project_id}/fill-generation/run", headers=self.headers)
 
         self.assertEqual(response.status_code, 202)
         payload = response.json()
@@ -156,7 +275,7 @@ class FillGenerationTests(unittest.TestCase):
         self.assertEqual(payload["tasks"][1]["status"], "pending")
         self.assertEqual(payload["events"][0]["step"], "bootstrap")
         self.assertEqual(payload["opencodeOutput"]["status"], "idle")
-        audit = self.client.get("/api/audit", headers=self.headers)
+        audit = self.client.get("/api/technical/audit", headers=self.headers)
         self.assertEqual(audit.status_code, 200)
         generation_logs = [item for item in audit.json()["items"] if item["action"] == "开始生成标书"]
         self.assertGreaterEqual(len(generation_logs), 1)
@@ -164,17 +283,18 @@ class FillGenerationTests(unittest.TestCase):
         self.assertEqual(generation_logs[0]["module"], "generation")
 
     def test_background_job_updates_running_state_then_writes_real_docx(self) -> None:
-        from app.api.routes.generation import _handle_fill_progress, _run_fill_generation_job
+        from app.services.bid_generation_flow import _handle_fill_progress, _run_fill_generation_job
 
         project_id = self._prepare_project_for_s7()
-        store.start_fill_generation(project_id)
+        _start_fill_generation_for_tests(project_id)
 
         _handle_fill_progress(
             project_id,
             "inputs_ready",
             {"wikiCardCount": 3, "exportedMaterialCount": 2},
+            bid_type=TECHNICAL_BID_TYPE,
         )
-        running_state = store.get_fill_state(project_id)
+        running_state = _fill_state_for_tests(project_id)
         self.assertEqual(running_state["status"], "running")
         self.assertEqual(running_state["percentage"], 30)
         self.assertEqual(running_state["tasks"][1]["status"], "running")
@@ -225,7 +345,7 @@ class FillGenerationTests(unittest.TestCase):
             content = "# S4生成标书项目 正文\n\n## 项目概况\n项目背景\n\n## 关键参数响应\n【待填写：关键参数实测值】"
             target = document_path(fake_project_id)
             write_document(target, "S4生成标书项目_正文.docx", content)
-            return store.save_fill_generation_result(
+            return _save_fill_generation_result_for_tests(
                 project_id=fake_project_id,
                 summary="技术标正文拼装完成。",
                 sections=sections,
@@ -256,24 +376,24 @@ class FillGenerationTests(unittest.TestCase):
             )
 
         with patch(
-            "app.services.draft_generation.assemble_tech_bid_for_project_with_progress",
+            "app.services.technical_draft_generation.assemble_tech_bid_for_project_with_progress",
             side_effect=fake_assemble,
         ):
-            _run_fill_generation_job(project_id, {})
+            _run_fill_generation_job(project_id, {}, bid_type=TECHNICAL_BID_TYPE)
 
-        payload = store.get_fill_state(project_id)
+        payload = _fill_state_for_tests(project_id)
         self.assertEqual(payload["status"], "completed")
         self.assertEqual(payload["percentage"], 100)
         self.assertEqual(payload["output"]["fileType"], "docx")
         self.assertEqual(len(payload["sections"]), 3)
         self.assertEqual(payload["opencodeOutput"]["status"], "received")
         self.assertEqual(payload["opencodeOutput"]["parts"][0]["type"], "text")
-        audit = self.client.get("/api/audit", headers=self.headers)
+        audit = self.client.get("/api/technical/audit", headers=self.headers)
         self.assertEqual(audit.status_code, 200)
         actions = [item["action"] for item in audit.json()["items"]]
         self.assertIn("生成标书完成", actions)
 
-        document_response = self.client.get(f"/api/projects/{project_id}/document/file")
+        document_response = self.client.get(f"/api/technical/projects/{project_id}/document/file")
         self.assertEqual(document_response.status_code, 200)
         self.assertEqual(document_response.content[:2], b"PK")
 
@@ -285,18 +405,18 @@ class FillGenerationTests(unittest.TestCase):
         self.assertIn("【待填写：关键参数实测值】", full_text)
 
     def test_generation_failure_before_inputs_marks_prepare_task_failed(self) -> None:
-        from app.api.routes.generation import _run_fill_generation_job
+        from app.services.bid_generation_flow import _run_fill_generation_job
 
         project_id = self._prepare_project_after_outline()
-        store.start_fill_generation(project_id)
+        _start_fill_generation_for_tests(project_id)
 
         with patch(
-            "app.api.routes.generation.generate_draft_for_project_with_progress",
+            "app.services.bid_generation_flow.generate_technical_draft_for_project_with_progress",
             side_effect=RuntimeError("Remote end closed connection without response"),
         ):
-            _run_fill_generation_job(project_id, {})
+            _run_fill_generation_job(project_id, {}, bid_type=TECHNICAL_BID_TYPE)
 
-        payload = store.get_fill_state(project_id)
+        payload = _fill_state_for_tests(project_id)
         self.assertEqual(payload["status"], "failed")
         self.assertEqual(payload["tasks"][0]["status"], "failed")
         self.assertEqual(payload["tasks"][1]["status"], "pending")
@@ -304,17 +424,17 @@ class FillGenerationTests(unittest.TestCase):
         self.assertIn("Remote end closed", payload["summary"])
 
     def test_get_coverage_returns_tree_after_fill_generation(self) -> None:
-        from app.api.routes.generation import _run_fill_generation_job
+        from app.services.bid_generation_flow import _run_fill_generation_job
 
         project_id = self._prepare_project_for_s7()
-        store.start_fill_generation(project_id)
+        _start_fill_generation_for_tests(project_id)
 
         def fake_assemble(fake_project_id, data, progress_callback=None):
             from app.services.onlyoffice_documents import document_path, write_document
 
             target = document_path(fake_project_id)
             write_document(target, "S4生成标书项目_正文.docx", "# 正文\n\n已拼装。")
-            return store.save_fill_generation_result(
+            return _save_fill_generation_result_for_tests(
                 project_id=fake_project_id,
                 summary="技术标正文拼装完成。",
                 sections=[],
@@ -345,10 +465,10 @@ class FillGenerationTests(unittest.TestCase):
                 },
             )
 
-        with patch("app.services.draft_generation.assemble_tech_bid_for_project_with_progress", side_effect=fake_assemble):
-            _run_fill_generation_job(project_id, {})
+        with patch("app.services.technical_draft_generation.assemble_tech_bid_for_project_with_progress", side_effect=fake_assemble):
+            _run_fill_generation_job(project_id, {}, bid_type=TECHNICAL_BID_TYPE)
 
-        coverage_response = self.client.get(f"/api/projects/{project_id}/coverage")
+        coverage_response = self.client.get(f"/api/technical/projects/{project_id}/coverage")
         self.assertEqual(coverage_response.status_code, 200)
         coverage = coverage_response.json()
         self.assertIn("tree", coverage)
@@ -594,12 +714,16 @@ class FillGenerationTests(unittest.TestCase):
                 "cleanedFileName": "项目技术承诺函.docx",
                 "materialTier": "customer",
                 "folderPath": "定制素材/技术标",
+                "bidType": "技术标",
             },
             "4",
         )
 
         self.assertIn('name: "项目技术承诺函"', card_text)
         self.assertIn('skeleton_section: "4"', card_text)
+
+        with self.assertRaises(ValueError):
+            _render_runtime_material_card({"id": "RAW-0082", "name": "缺标类素材.docx"}, "4")
 
     def test_s7_manifest_includes_confirmed_gap_plan_path(self) -> None:
         from app.services import tech_assembly

@@ -1,28 +1,21 @@
 import { NavLink } from 'react-router-dom'
 
 const ITEMS = [
-  { key: 'structured', label: '原始素材', path: '/structured' },
+  { key: 'raw', label: '原始素材', path: '/raw' },
   { key: 'wiki', label: 'Wiki', path: '/wiki' },
 ]
 
-const BID_TYPE_ITEMS = [
-  { value: '技术标', label: '技术标', shortLabel: '技' },
-  { value: '商务标', label: '商务标', shortLabel: '商' },
-]
-
 export default function TechnicalMaterialsViewSwitch({
-  active = 'structured',
+  active = 'raw',
   activeBidType = '技术标',
-  onBidTypeChange = null,
-  lockedBidType = '',
   title = '',
   subtitle = '',
   actions = null,
   meta = null,
-  basePath = '/materials',
+  basePath = '/workspace/tech/materials',
 }) {
-  const normalizedBasePath = String(basePath || '/materials').replace(/\/+$/, '')
-  const bidType = activeBidType === '商务标' ? '商务标' : '技术标'
+  const normalizedBasePath = String(basePath || '/workspace/tech/materials').replace(/\/+$/, '')
+  const bidType = '技术标'
   const bidTypeQuery = `?bidType=${encodeURIComponent(bidType)}`
   return (
     <div className="overflow-hidden rounded-lg border border-outline-variant/55 bg-white shadow-[0_12px_28px_-24px_rgba(13,33,55,0.35)]">
@@ -41,35 +34,8 @@ export default function TechnicalMaterialsViewSwitch({
           </div>
 
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <div className="inline-flex h-8 w-fit rounded-md border border-outline-variant/65 bg-surface-container-low p-0.5 text-xs">
-              {BID_TYPE_ITEMS.map((item) => {
-                const selected = bidType === item.value
-                const disabled = Boolean(lockedBidType && lockedBidType !== item.value)
-                return (
-                  <button
-                    key={item.value}
-                    type="button"
-                    disabled={disabled}
-                    onClick={() => onBidTypeChange?.(item.value)}
-                    title={item.label}
-                    className={`inline-flex h-7 min-w-[76px] items-center justify-center gap-1.5 rounded px-2.5 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                      selected
-                        ? 'bg-primary text-on-primary font-medium'
-                        : 'text-on-surface-variant hover:bg-surface-container-high'
-                    }`}
-                  >
-                    <span
-                      aria-hidden="true"
-                      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded text-[11px] ${
-                        selected ? 'bg-white/20 text-on-primary' : 'bg-surface-container-high text-primary'
-                      }`}
-                    >
-                      {item.shortLabel}
-                    </span>
-                    <span>{item.label}</span>
-                  </button>
-                )
-              })}
+            <div className="inline-flex h-8 w-fit items-center rounded-md border border-outline-variant/65 bg-primary px-3 text-xs font-medium text-on-primary">
+              {activeBidType}
             </div>
             <div className="inline-flex h-8 w-fit rounded-md border border-outline-variant/65 bg-surface-container-low p-0.5 text-xs">
               {ITEMS.map((item) => {

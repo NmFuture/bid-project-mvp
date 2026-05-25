@@ -3,11 +3,13 @@ from __future__ import annotations
 import unittest
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.core.config import settings
+from app.services.bid_type import GENERAL_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.peripheral import PeripheralError
-from app.services.wiki_generation import generate_platform_wiki
+from app.services.wiki_generation import _profile_raw_file, generate_platform_wiki
 
 
 class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
@@ -54,12 +56,12 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value=skill_payload,
             ) as generate,
             patch(
-                "app.services.wiki_generation.material_store.import_generated_wiki_blueprint",
+                "app.services.wiki_generation.technical_material_store.import_generated_wiki_blueprint",
                 new_callable=AsyncMock,
                 return_value={"message": "平台级 Wiki 创建成功。", "tree": [], "selectedNode": None},
             ) as import_blueprint,
         ):
-            result = await generate_platform_wiki(mode="replace")
+            result = await generate_platform_wiki(mode="replace", bid_type=TECHNICAL_BID_TYPE)
 
         generate.assert_called_once()
         manifest_path = generate.call_args.args[0]
@@ -72,6 +74,24 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["generation"]["skill"], "bid-tech-wiki-material-builder")
         self.assertFalse(result["generation"]["fallbackUsed"])
         self.assertEqual(result["generation"]["opencodeOutput"]["sessionId"], "manifest-wiki")
+
+    async def test_unscoped_legacy_material_profiles_as_common_not_technical(self) -> None:
+        folder = SimpleNamespace(path="通用素材/企业资质", tier="standard", bid_type="")
+        item = SimpleNamespace(
+            id=1,
+            name="企业资质.pdf",
+            ext_fields={},
+            folder=folder,
+            minio_bucket="materials",
+            minio_key="raw/enterprise.pdf",
+            size_bytes=128,
+        )
+
+        profile = _profile_raw_file(item)
+
+        self.assertEqual(profile["bidType"], GENERAL_BID_TYPE)
+        self.assertEqual(profile["identityScope"], "general")
+        self.assertEqual(profile["materialTier"], "standard")
 
     async def test_generate_business_wiki_uses_business_skill_and_imports_business_root(self) -> None:
         skill_payload = {
@@ -106,7 +126,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value=skill_payload,
             ) as generate,
             patch(
-                "app.services.wiki_generation.material_store.import_generated_wiki_blueprint",
+                "app.services.wiki_generation.business_material_store.import_generated_wiki_blueprint",
                 new_callable=AsyncMock,
                 return_value={"message": "商务标 Wiki 创建成功。", "tree": [], "selectedNode": None},
             ) as import_blueprint,
@@ -170,12 +190,12 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value=opencode_payload,
             ),
             patch(
-                "app.services.wiki_generation.material_store.import_generated_wiki_blueprint",
+                "app.services.wiki_generation.technical_material_store.import_generated_wiki_blueprint",
                 new_callable=AsyncMock,
                 return_value={"message": "平台级 Wiki 创建成功。", "tree": [], "selectedNode": None},
             ) as import_blueprint,
         ):
-            result = await generate_platform_wiki(mode="replace")
+            result = await generate_platform_wiki(mode="replace", bid_type=TECHNICAL_BID_TYPE)
 
         imported_nodes = import_blueprint.call_args.kwargs["nodes"]
         self.assertEqual(result["generation"]["summary"], "完整 Wiki 已生成。")
@@ -194,12 +214,12 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 side_effect=RuntimeError("skill 不可用"),
             ),
             patch(
-                "app.services.wiki_generation.material_store.import_generated_wiki_blueprint",
+                "app.services.wiki_generation.technical_material_store.import_generated_wiki_blueprint",
                 new_callable=AsyncMock,
             ) as import_blueprint,
         ):
             with self.assertRaises(PeripheralError) as context:
-                await generate_platform_wiki()
+                await generate_platform_wiki(bid_type=TECHNICAL_BID_TYPE)
 
         self.assertEqual(context.exception.code, "WIKI_SKILL_FAILED")
         import_blueprint.assert_not_awaited()
@@ -216,12 +236,15 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 side_effect=RuntimeError("skill 不可用"),
             ),
             patch(
-                "app.services.wiki_generation.material_store.import_generated_wiki_blueprint",
+                "app.services.wiki_generation.technical_material_store.import_generated_wiki_blueprint",
                 new_callable=AsyncMock,
                 return_value={"message": "平台级 Wiki 创建成功。", "tree": [], "selectedNode": None},
             ) as import_blueprint,
         ):
-            result = await generate_platform_wiki(fallback_to_deterministic=True)
+            result = await generate_platform_wiki(
+                bid_type=TECHNICAL_BID_TYPE,
+                fallback_to_deterministic=True,
+            )
 
         import_blueprint.assert_awaited_once()
         self.assertEqual(result["generation"]["generator"], "deterministic_fallback")
@@ -241,7 +264,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 side_effect=RuntimeError("business skill 不可用"),
             ),
             patch(
-                "app.services.wiki_generation.material_store.import_generated_wiki_blueprint",
+                "app.services.wiki_generation.business_material_store.import_generated_wiki_blueprint",
                 new_callable=AsyncMock,
                 return_value={"message": "商务标 Wiki 创建成功。", "tree": [], "selectedNode": None},
             ) as import_blueprint,
@@ -310,7 +333,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 side_effect=RuntimeError("business skill 不可用"),
             ),
             patch(
-                "app.services.wiki_generation.material_store.import_generated_wiki_blueprint",
+                "app.services.wiki_generation.business_material_store.import_generated_wiki_blueprint",
                 new_callable=AsyncMock,
                 return_value={"message": "商务标 Wiki 创建成功。", "tree": [], "selectedNode": None},
             ) as import_blueprint,

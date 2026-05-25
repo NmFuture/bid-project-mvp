@@ -71,35 +71,30 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
 
     async def create_project(self) -> str:
         response = await self.client.post(
-            "/api/projects",
+            "/api/technical/projects",
             json={
                 "name": "外围模块联调项目",
                 "customerName": "测试业主",
-                "bidType": "技术标",
             },
         )
         response.raise_for_status()
         return response.json()["id"]
 
     async def test_raw_material_library_supports_list_and_mutation(self) -> None:
-        permissions = await self.client.get("/api/materials/raw/permissions")
-        self.assertEqual(permissions.status_code, 200)
-        self.assertEqual(permissions.json()["role"], "member")
-
-        tree_response = await self.client.get("/api/materials/raw/tree")
+        tree_response = await self.client.get("/api/technical/materials/raw/tree")
         self.assertEqual(tree_response.status_code, 200)
         self.assertGreater(len(tree_response.json()["tree"]), 0)
 
         create_folder = await self.client.post(
-            "/api/materials/raw/folders",
+            "/api/technical/materials/raw/folders",
             json={"parentPath": f"技术标/项目素材/PRJ-TEST-{self.run_id}", "folderName": f"补充资料-{self.run_id}"},
         )
         self.assertEqual(create_folder.status_code, 200)
         folder_path = create_folder.json()["folderPath"]
 
         upload = await self.client.post(
-            "/api/materials/raw/upload",
-            data={"targetPath": folder_path, "bidType": "技术标"},
+            "/api/technical/materials/raw/upload",
+            data={"targetPath": folder_path},
             files=[
                 (
                     "files",
@@ -115,32 +110,33 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
         uploaded_item = upload.json()["items"][0]
         self.assertEqual(uploaded_item["folderPath"], folder_path)
 
-        files = await self.client.get("/api/materials/raw/files", params={"folderPath": folder_path})
+        files = await self.client.get("/api/technical/materials/raw/files", params={"folderPath": folder_path})
         self.assertEqual(files.status_code, 200)
         self.assertEqual(files.json()["total"], 1)
         self.assertEqual(files.json()["items"][0]["name"], "评分表.docx")
 
         file_id = files.json()["items"][0]["id"]
 
-        renamed = await self.client.patch(f"/api/materials/raw/{file_id}", json={"name": "评分表-重命名.docx"})
+        renamed = await self.client.patch(f"/api/technical/materials/raw/{file_id}", json={"name": "评分表-重命名.docx"})
         self.assertEqual(renamed.status_code, 200)
         self.assertEqual(renamed.json()["item"]["name"], "评分表-重命名.docx")
 
-        download = await self.client.get(f"/api/materials/raw/{file_id}/download")
+        download = await self.client.get(f"/api/technical/materials/raw/{file_id}/download")
         self.assertEqual(download.status_code, 200)
         self.assertIn("downloadUrl", download.json())
+        self.assertTrue(download.json()["downloadUrl"].startswith("/api/technical/materials/raw/"))
 
     async def test_raw_material_library_supports_folder_upload(self) -> None:
         create_folder = await self.client.post(
-            "/api/materials/raw/folders",
+            "/api/technical/materials/raw/folders",
             json={"parentPath": "技术标/通用素材", "folderName": f"目录上传测试-{self.run_id}"},
         )
         self.assertEqual(create_folder.status_code, 200)
         folder_path = create_folder.json()["folderPath"]
 
         upload = await self.client.post(
-            "/api/materials/raw/upload",
-            data={"targetPath": folder_path, "bidType": "技术标"},
+            "/api/technical/materials/raw/upload",
+            data={"targetPath": folder_path},
             files=[
                 (
                     "files",
@@ -162,9 +158,8 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
         customer_name = f"华能集团-{self.run_id}"
         target_path = f"商务标/客户素材/{customer_name}/01-客户关系与专项证明"
         upload = await self.client.post(
-            "/api/materials/raw/upload",
+            "/api/business/materials/raw/upload",
             data={
-                "bidType": "商务标",
                 "targetPath": target_path,
                 "customerName": customer_name,
             },
@@ -187,22 +182,21 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(uploaded_item["folderPath"], target_path)
 
         files = await self.client.get(
-            "/api/materials/raw/files",
-            params={"bidType": "商务标", "customerName": customer_name},
+            "/api/business/materials/raw/files",
+            params={"customerName": customer_name},
         )
         self.assertEqual(files.status_code, 200)
         self.assertEqual(files.json()["total"], 1)
         self.assertEqual(files.json()["items"][0]["name"], "授权书.docx")
         self.assertEqual(files.json()["items"][0]["bidType"], "商务标")
 
-    async def test_structured_and_wiki_material_routes_return_frontend_ready_payloads(self) -> None:
-        structured = await self.client.get("/api/materials/structured")
-        self.assertEqual(structured.status_code, 200)
-        self.assertIn("items", structured.json())
-        self.assertIn("tableOptions", structured.json())
-        self.assertGreater(len(structured.json()["tableOptions"]), 0)
+    async def test_identity_and_wiki_material_routes_return_frontend_ready_payloads(self) -> None:
+        identity = await self.client.get("/api/technical/materials/identity-options")
+        self.assertEqual(identity.status_code, 200)
+        self.assertIn("customers", identity.json())
+        self.assertIn("projects", identity.json())
 
-        wiki = await self.client.get("/api/materials/wiki")
+        wiki = await self.client.get("/api/technical/materials/wiki")
         self.assertEqual(wiki.status_code, 200)
         wiki_payload = wiki.json()
         self.assertIn("tree", wiki_payload)
@@ -210,7 +204,7 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(wiki_payload["selectedNode"])
 
         created = await self.client.post(
-            "/api/materials/wiki",
+            "/api/technical/materials/wiki",
             json={"title": f"风资源说明-{self.run_id}", "isFolder": False},
         )
         self.assertEqual(created.status_code, 200)
@@ -219,7 +213,7 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
 
         node_id = selected_node["id"]
         updated = await self.client.put(
-            f"/api/materials/wiki/{node_id}",
+            f"/api/technical/materials/wiki/{node_id}",
             json={
                 "title": f"风资源说明-更新-{self.run_id}",
                 "markdownContent": "# 风资源说明\n\n需要补充测风塔数据。",
@@ -230,7 +224,7 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.json()["selectedNode"]["title"], f"风资源说明-更新-{self.run_id}")
 
-        refreshed = await self.client.post(f"/api/materials/wiki/{node_id}/refresh-summary")
+        refreshed = await self.client.post(f"/api/technical/materials/wiki/{node_id}/refresh-summary")
         self.assertEqual(refreshed.status_code, 200)
         self.assertIn("summary", refreshed.json())
 
@@ -257,34 +251,28 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(health.status_code, 200)
         self.assertIsInstance(health.json(), list)
 
-        audit_list = await self.client.get("/api/audit", headers=self.headers)
+        audit_list = await self.client.get("/api/technical/audit", headers=self.headers)
         self.assertEqual(audit_list.status_code, 200)
         audit_payload = audit_list.json()
         self.assertIn("filterOptions", audit_payload)
-        self.assertGreater(len(audit_payload["items"]), 0)
 
-        audit_id = audit_payload["items"][0]["id"]
-        audit_detail = await self.client.get(f"/api/audit/{audit_id}", headers=self.headers)
-        self.assertEqual(audit_detail.status_code, 200)
-        self.assertEqual(audit_detail.json()["id"], audit_id)
-
-        audit_export = await self.client.get("/api/audit/export", headers=self.headers)
+        audit_export = await self.client.get("/api/technical/audit/export", headers=self.headers)
         self.assertEqual(audit_export.status_code, 200)
         self.assertIn("fileName", audit_export.json())
 
-        export_check = await self.client.get(f"/api/projects/{project_id}/export/check")
+        export_check = await self.client.get(f"/api/technical/projects/{project_id}/export/check")
         self.assertEqual(export_check.status_code, 200)
         self.assertIn("suggestedFileName", export_check.json())
 
         blocked_export = await self.client.post(
-            f"/api/projects/{project_id}/export",
+            f"/api/technical/projects/{project_id}/export",
             json={"format": "docx", "fileName": "投标文件_PRJ_TEST", "warningConfirmed": False},
         )
         self.assertEqual(blocked_export.status_code, 400)
         self.assertEqual(blocked_export.json()["code"], "EXPORT_WARNING_NOT_CONFIRMED")
 
         exported = await self.client.post(
-            f"/api/projects/{project_id}/export",
+            f"/api/technical/projects/{project_id}/export",
             json={"format": "docx", "fileName": "投标文件_PRJ_TEST", "warningConfirmed": True},
         )
         self.assertEqual(exported.status_code, 200)

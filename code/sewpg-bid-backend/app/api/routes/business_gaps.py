@@ -1,67 +1,70 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
-from app.api.utils import onlyoffice_backend_base_url
-from app.services.peripheral import PeripheralError
+from app.services.business_gap_service import business_gap_service
 from app.services.minio_client import minio_client
-from app.services.store import store
-
-router = APIRouter()
+from app.services.peripheral import PeripheralError
 
 
-def _value_error(exc: ValueError) -> HTTPException:
-    return HTTPException(status_code=400, detail=str(exc))
+def _ensure_business_project(project_id: str) -> dict[str, Any]:
+    try:
+        return business_gap_service.ensure_project(project_id)
+    except PeripheralError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@router.get("/api/projects/{project_id}/business-gaps")
+router = APIRouter(dependencies=[Depends(_ensure_business_project)])
+
+
+def _raise_service_error(exc: Exception, not_found_detail: str) -> None:
+    if isinstance(exc, PeripheralError):
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    if isinstance(exc, (RuntimeError, ValueError)):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(exc, KeyError):
+        raise HTTPException(status_code=404, detail=not_found_detail) from exc
+    raise exc
+
+
+@router.get("/api/business/projects/{project_id}/business-gaps")
 async def get_business_gaps(project_id: str, request: Request) -> dict[str, Any]:
     try:
-        return store.get_business_gap_filling(
-            project_id,
-            browser_base_url=str(request.base_url).rstrip("/"),
-            onlyoffice_base_url=onlyoffice_backend_base_url(request),
-        )
-    except ValueError as exc:
-        raise _value_error(exc) from exc
+        return business_gap_service.gaps(project_id, request)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap plan not found")
 
 
-@router.post("/api/projects/{project_id}/business-gaps/run")
+@router.post("/api/business/projects/{project_id}/business-gaps/run")
 async def run_business_gap_detection(project_id: str) -> dict[str, Any]:
     try:
-        payload = store.run_business_gap_detection(project_id)
-    except (RuntimeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-    return {
-        **payload,
-        "message": f"商务标缺口计划生成完成，共 {summary.get('taskCount', 0)} 个任务。",
-    }
+        return business_gap_service.run_detection(project_id)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap plan not found")
 
 
-@router.get("/api/projects/{project_id}/business-gaps/facts")
+@router.get("/api/business/projects/{project_id}/business-gaps/facts")
 async def get_business_gap_project_facts(project_id: str) -> dict[str, Any]:
     try:
-        return store.get_business_gap_fact_table(project_id)
-    except ValueError as exc:
-        raise _value_error(exc) from exc
+        return business_gap_service.facts(project_id)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap facts not found")
 
 
-@router.get("/api/projects/{project_id}/business-gaps/selectable-materials")
+@router.get("/api/business/projects/{project_id}/business-gaps/selectable-materials")
 async def get_business_gap_selectable_materials(project_id: str, keyword: str = "") -> dict[str, Any]:
     try:
-        return store.list_business_gap_selectable_materials(project_id, keyword=keyword)
-    except ValueError as exc:
-        raise _value_error(exc) from exc
+        return business_gap_service.selectable_materials(project_id, keyword=keyword)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap material not found")
 
 
-@router.get("/api/projects/{project_id}/business-gaps/materials/{material_id}/preview")
+@router.get("/api/business/projects/{project_id}/business-gaps/materials/{material_id}/preview")
 async def preview_business_gap_material(
     project_id: str,
     material_id: str,
@@ -69,31 +72,17 @@ async def preview_business_gap_material(
     mode: str = "quick",
 ) -> dict[str, Any]:
     try:
-        return await store.get_business_gap_material_preview(
-            project_id,
-            material_id,
-            mode=mode,
-            browser_base_url=str(request.base_url).rstrip("/"),
-            onlyoffice_base_url=onlyoffice_backend_base_url(request),
-        )
-    except ValueError as exc:
-        raise _value_error(exc) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Business gap material not found") from exc
-    except PeripheralError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        return await business_gap_service.material_preview(project_id, material_id, request, mode=mode)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap material not found")
 
 
-@router.get("/api/projects/{project_id}/business-gaps/materials/{material_id}/content/{filename:path}")
+@router.get("/api/business/projects/{project_id}/business-gaps/materials/{material_id}/content/{filename:path}")
 async def business_gap_material_preview_content(project_id: str, material_id: str, filename: str) -> StreamingResponse:
     try:
-        payload = await store.get_business_gap_material_preview_content(project_id, material_id)
-    except ValueError as exc:
-        raise _value_error(exc) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Business gap material not found") from exc
-    except PeripheralError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        payload = await business_gap_service.material_preview_content(project_id, material_id)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap material not found")
     response = minio_client.get_object_response(payload["bucket"], payload["key"])
 
     def iterate_chunks():
@@ -111,68 +100,62 @@ async def business_gap_material_preview_content(project_id: str, material_id: st
     )
 
 
-@router.post("/api/projects/{project_id}/business-gaps/facts/build")
+@router.post("/api/business/projects/{project_id}/business-gaps/facts/build")
 async def build_business_gap_project_facts(project_id: str) -> dict[str, Any]:
     try:
-        return await asyncio.to_thread(store.build_business_gap_fact_table, project_id)
-    except ValueError as exc:
-        raise _value_error(exc) from exc
+        return await business_gap_service.build_facts(project_id)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap facts not found")
 
 
-@router.put("/api/projects/{project_id}/business-gaps/facts")
+@router.put("/api/business/projects/{project_id}/business-gaps/facts")
 async def save_business_gap_project_facts(
     project_id: str,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     try:
-        return await asyncio.to_thread(store.save_business_gap_fact_table, project_id, data)
-    except ValueError as exc:
-        raise _value_error(exc) from exc
+        return await business_gap_service.save_facts(project_id, data)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap facts not found")
 
 
-@router.patch("/api/projects/{project_id}/business-gaps/tasks/{task_id}")
+@router.patch("/api/business/projects/{project_id}/business-gaps/tasks/{task_id}")
 async def update_business_gap_task(
     project_id: str,
     task_id: str,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     try:
-        return store.update_business_gap_task(project_id, task_id, data)
-    except ValueError as exc:
-        raise _value_error(exc) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Business gap task not found") from exc
+        return business_gap_service.update_task(project_id, task_id, data)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap task not found")
 
 
-@router.post("/api/projects/{project_id}/business-gaps/toc/{toc_node_id}/manual-task")
+@router.post("/api/business/projects/{project_id}/business-gaps/toc/{toc_node_id}/manual-task")
 async def create_business_gap_manual_task(
     project_id: str,
     toc_node_id: str,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     try:
-        return store.create_business_gap_manual_task(project_id, toc_node_id, data)
-    except ValueError as exc:
-        raise _value_error(exc) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Business gap toc ref not found") from exc
+        return business_gap_service.create_manual_task(project_id, toc_node_id, data)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap toc ref not found")
 
 
-@router.post("/api/projects/{project_id}/business-gaps/tasks/{task_id}/confirm-artifact")
+@router.post("/api/business/projects/{project_id}/business-gaps/tasks/{task_id}/confirm-artifact")
 async def confirm_business_gap_artifact(
     project_id: str,
     task_id: str,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     try:
-        return store.confirm_business_gap_artifact(project_id, task_id, data)
-    except ValueError as exc:
-        raise _value_error(exc) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Business gap artifact not found") from exc
+        return business_gap_service.confirm_artifact(project_id, task_id, data)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap artifact not found")
 
 
-@router.post("/api/projects/{project_id}/business-gaps/tasks/{task_id}/upload")
+@router.post("/api/business/projects/{project_id}/business-gaps/tasks/{task_id}/upload")
 async def upload_business_gap_artifact(
     project_id: str,
     task_id: str,
@@ -180,20 +163,12 @@ async def upload_business_gap_artifact(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     try:
-        return store.upload_business_gap_artifact(
-            project_id,
-            task_id,
-            data,
-            browser_base_url=str(request.base_url).rstrip("/"),
-            onlyoffice_base_url=onlyoffice_backend_base_url(request),
-        )
-    except ValueError as exc:
-        raise _value_error(exc) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Business gap task not found") from exc
+        return business_gap_service.upload_artifact(project_id, task_id, request, data)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap task not found")
 
 
-@router.post("/api/projects/{project_id}/business-gaps/tasks/{task_id}/upload-files")
+@router.post("/api/business/projects/{project_id}/business-gaps/tasks/{task_id}/upload-files")
 async def upload_business_gap_artifact_files(
     project_id: str,
     task_id: str,
@@ -215,24 +190,15 @@ async def upload_business_gap_artifact_files(
                     "rawBytes": raw,
                 }
             )
-        return store.upload_business_gap_artifact_bytes(
-            project_id,
-            task_id,
-            records,
-            operator=operator,
-            browser_base_url=str(request.base_url).rstrip("/"),
-            onlyoffice_base_url=onlyoffice_backend_base_url(request),
-        )
-    except ValueError as exc:
-        raise _value_error(exc) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Business gap task not found") from exc
+        return business_gap_service.upload_artifact_files(project_id, task_id, request, records, operator=operator)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap task not found")
     finally:
         for upload in uploads:
             await upload.close()
 
 
-@router.delete("/api/projects/{project_id}/business-gaps/tasks/{task_id}/artifacts/{artifact_id}")
+@router.delete("/api/business/projects/{project_id}/business-gaps/tasks/{task_id}/artifacts/{artifact_id}")
 async def remove_business_gap_artifact(
     project_id: str,
     task_id: str,
@@ -240,20 +206,12 @@ async def remove_business_gap_artifact(
     request: Request,
 ) -> dict[str, Any]:
     try:
-        return store.remove_business_gap_artifact(
-            project_id,
-            task_id,
-            artifact_id,
-            browser_base_url=str(request.base_url).rstrip("/"),
-            onlyoffice_base_url=onlyoffice_backend_base_url(request),
-        )
-    except ValueError as exc:
-        raise _value_error(exc) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Business gap artifact not found") from exc
+        return business_gap_service.remove_artifact(project_id, task_id, artifact_id, request)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap artifact not found")
 
 
-@router.post("/api/projects/{project_id}/business-gaps/tasks/{task_id}/select-material")
+@router.post("/api/business/projects/{project_id}/business-gaps/tasks/{task_id}/select-material")
 async def select_business_gap_material(
     project_id: str,
     task_id: str,
@@ -261,22 +219,12 @@ async def select_business_gap_material(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     try:
-        return await store.select_business_gap_material(
-            project_id,
-            task_id,
-            data,
-            browser_base_url=str(request.base_url).rstrip("/"),
-            onlyoffice_base_url=onlyoffice_backend_base_url(request),
-        )
-    except ValueError as exc:
-        raise _value_error(exc) from exc
-    except PeripheralError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Business gap task not found") from exc
+        return await business_gap_service.select_material(project_id, task_id, request, data)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap task not found")
 
 
-@router.post("/api/projects/{project_id}/business-gaps/tasks/{task_id}/select-template")
+@router.post("/api/business/projects/{project_id}/business-gaps/tasks/{task_id}/select-template")
 async def select_business_gap_template(
     project_id: str,
     task_id: str,
@@ -284,20 +232,12 @@ async def select_business_gap_template(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     try:
-        return store.select_business_gap_template(
-            project_id,
-            task_id,
-            data,
-            browser_base_url=str(request.base_url).rstrip("/"),
-            onlyoffice_base_url=onlyoffice_backend_base_url(request),
-        )
-    except ValueError as exc:
-        raise _value_error(exc) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Business gap task not found") from exc
+        return business_gap_service.select_template(project_id, task_id, request, data)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap task not found")
 
 
-@router.post("/api/projects/{project_id}/business-gaps/tasks/{task_id}/ai-draft")
+@router.post("/api/business/projects/{project_id}/business-gaps/tasks/{task_id}/ai-draft")
 async def ai_draft_business_gap_task(
     project_id: str,
     task_id: str,
@@ -305,21 +245,12 @@ async def ai_draft_business_gap_task(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     try:
-        return await asyncio.to_thread(
-            store.run_business_gap_ai_draft,
-            project_id,
-            task_id,
-            data,
-            browser_base_url=str(request.base_url).rstrip("/"),
-            onlyoffice_base_url=onlyoffice_backend_base_url(request),
-        )
-    except ValueError as exc:
-        raise _value_error(exc) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Business gap task not found") from exc
+        return await business_gap_service.ai_draft(project_id, task_id, request, data)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap task not found")
 
 
-@router.post("/api/projects/{project_id}/business-gaps/tasks/{task_id}/table-fill")
+@router.post("/api/business/projects/{project_id}/business-gaps/tasks/{task_id}/table-fill")
 async def table_fill_business_gap_task(
     project_id: str,
     task_id: str,
@@ -327,21 +258,12 @@ async def table_fill_business_gap_task(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     try:
-        return await asyncio.to_thread(
-            store.run_business_gap_table_fill,
-            project_id,
-            task_id,
-            data,
-            browser_base_url=str(request.base_url).rstrip("/"),
-            onlyoffice_base_url=onlyoffice_backend_base_url(request),
-        )
-    except ValueError as exc:
-        raise _value_error(exc) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Business gap task not found") from exc
+        return await business_gap_service.table_fill(project_id, task_id, request, data)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap task not found")
 
 
-@router.post("/api/projects/{project_id}/business-gaps/tasks/{task_id}/sync-artifact-material")
+@router.post("/api/business/projects/{project_id}/business-gaps/tasks/{task_id}/sync-artifact-material")
 async def sync_business_gap_artifact_to_material(
     project_id: str,
     task_id: str,
@@ -349,27 +271,17 @@ async def sync_business_gap_artifact_to_material(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     try:
-        return store.sync_business_gap_artifact_to_material_library(
-            project_id,
-            task_id,
-            data,
-            browser_base_url=str(request.base_url).rstrip("/"),
-            onlyoffice_base_url=onlyoffice_backend_base_url(request),
-        )
-    except ValueError as exc:
-        raise _value_error(exc) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Business gap artifact not found") from exc
-    except PeripheralError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        return await business_gap_service.sync_artifact_to_material(project_id, task_id, request, data)
+    except Exception as exc:
+        _raise_service_error(exc, "Business gap artifact not found")
 
 
-@router.get("/api/projects/{project_id}/business-gaps/artifacts/{artifact_id}/content/{filename:path}")
+@router.get("/api/business/projects/{project_id}/business-gaps/artifacts/{artifact_id}/content/{filename:path}")
 async def business_gap_artifact_content(project_id: str, artifact_id: str, filename: str) -> FileResponse:
     try:
-        artifact = store.get_business_gap_artifact(project_id, artifact_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Artifact not found") from exc
+        artifact = business_gap_service.artifact(project_id, artifact_id)
+    except Exception as exc:
+        _raise_service_error(exc, "Artifact not found")
     path = Path(str(artifact.get("filePath") or artifact.get("path") or ""))
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="Artifact file not found")

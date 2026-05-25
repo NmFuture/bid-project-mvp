@@ -10,6 +10,78 @@ from pathlib import Path
 from unittest.mock import patch
 from docx import Document
 
+from app.services.bid_outline_state import confirm_outline_state, save_generated_outline_state
+from app.services.bid_parse_state import complete_parse_state, update_parse_result_state, update_template_files_state
+from app.services.bid_project_state import update_template_fallback_state
+
+
+def _update_parse_result_for_tests(store, project_id: str, parse_result: dict, *, parse_storage: dict | None = None) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = update_parse_result_state(project, parse_result, parse_storage=parse_storage)
+    store.persist_project_state(project)
+    return payload
+
+
+def _complete_parse_for_tests(
+    store,
+    project_id: str,
+    tender_files: list[dict],
+    template_files: list[dict],
+    *,
+    summary: dict | None = None,
+    parse_storage: dict | None = None,
+) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = complete_parse_state(
+        project,
+        tender_files,
+        template_files,
+        summary=summary,
+        parse_storage=parse_storage,
+    )
+    store.persist_project_state(project)
+    return payload
+
+
+def _update_template_files_for_tests(store, project_id: str, template_files: list[dict]) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = update_template_files_state(project, template_files)
+    store.persist_project_state(project)
+    return payload
+
+
+def _update_template_fallback_for_tests(store, project_id: str, data: dict) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = update_template_fallback_state(project, data)
+    store.persist_project_state(project)
+    return payload
+
+
+def _save_generated_outline_for_tests(
+    store,
+    project_id: str,
+    *,
+    nodes: list[dict],
+    generated_at: str,
+    summary: str,
+) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = save_generated_outline_state(
+        project,
+        nodes=nodes,
+        generated_at=generated_at,
+        summary=summary,
+    )
+    store.persist_project_state(project)
+    return payload
+
+
+def _confirm_outline_for_tests(store, project_id: str) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = confirm_outline_state(project)
+    store.persist_project_state(project)
+    return payload
+
 
 class BusinessGapPlannerTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -550,18 +622,20 @@ class BusinessGapPlannerTests(unittest.TestCase):
     def test_business_gap_api_uses_business_workspace_and_keeps_technical_gap_state_empty(self) -> None:
         self._setup_app_test()
         from app.core.config import settings
-        from app.services.store import now_iso, store
+        from app.services.bid_runtime_state import now_iso
+        from app.services.store import store
         from app.services.workspace_artifacts import business_workspace_dir, technical_workspace_dir
 
         project = store.create_project({"name": "商务S3项目", "customerName": "华能集团", "bidType": "商务标"})
         project_id = project["id"]
-        store.update_template_fallback(project_id, {"enabled": False})
+        _update_template_fallback_for_tests(store, project_id, {"enabled": False})
         business_workspace = business_workspace_dir(project_id)
         business_workspace.mkdir(parents=True, exist_ok=True)
         letter_path = business_workspace / "commitment-letters" / "保密承诺书.docx"
         letter_path.parent.mkdir(parents=True, exist_ok=True)
         letter_path.write_bytes(b"fake-docx")
-        store.complete_parse(
+        _complete_parse_for_tests(
+            store,
             project_id,
             tender_files=[{"id": "TEN-1", "name": "商务招标文件.md", "path": str(settings.uploads_dir / "tender.md"), "size_label": "1 KB"}],
             template_files=[],
@@ -572,7 +646,8 @@ class BusinessGapPlannerTests(unittest.TestCase):
                 "manifestPath": "",
             },
         )
-        store.update_parse_result(
+        _update_parse_result_for_tests(
+            store,
             project_id,
             {
                 "status": "completed",
@@ -616,7 +691,8 @@ class BusinessGapPlannerTests(unittest.TestCase):
                 },
             },
         )
-        store.save_generated_outline(
+        _save_generated_outline_for_tests(
+            store,
             project_id=project_id,
             nodes=[
                 {"id": "OL-1", "title": "投标函", "children": []},
@@ -627,20 +703,22 @@ class BusinessGapPlannerTests(unittest.TestCase):
             generated_at=now_iso(),
             summary="商务目录已生成。",
         )
-        store.confirm_outline(project_id)
+        _confirm_outline_for_tests(store, project_id)
         store.update_stage(project_id, 2, {"status": "completed"})
 
         async def empty_raw_files(**kwargs):
+            self.assertNotIn("bid_type", kwargs)
+            self.assertTrue(str(kwargs.get("folder_path") or "").startswith("商务标/"))
             return {"items": [], "total": 0}
 
         with patch(
             "app.services.business_gap_planning.OpencodeClient.run_bid_business_gap_planner_with_trace",
             side_effect=RuntimeError("offline test fallback"),
         ), patch(
-            "app.services.business_gap_planning.material_store.raw_files",
+            "app.services.business_gap_planning.business_material_store.raw_files",
             side_effect=empty_raw_files,
         ):
-            response = self.client.post(f"/api/projects/{project_id}/business-gaps/run")
+            response = self.client.post(f"/api/business/projects/{project_id}/business-gaps/run")
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["status"], "completed")
@@ -650,12 +728,12 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertTrue((business_workspace / "gaps" / "business_gap_input.json").exists())
         self.assertFalse((technical_workspace_dir(project_id) / "s4_gap_workdir" / "gap_plan.json").exists())
 
-        get_response = self.client.get(f"/api/projects/{project_id}/business-gaps")
+        get_response = self.client.get(f"/api/business/projects/{project_id}/business-gaps")
         self.assertEqual(get_response.status_code, 200)
         self.assertEqual(len(get_response.json()["tocRefs"]), 3)
         empty_ref = next(item for item in get_response.json()["tocRefs"] if item["title"] == "投标人需要说明的其他内容")
         manual_response = self.client.post(
-            f"/api/projects/{project_id}/business-gaps/toc/{empty_ref['nodeId']}/manual-task",
+            f"/api/business/projects/{project_id}/business-gaps/toc/{empty_ref['nodeId']}/manual-task",
             json={"title": "本章节补充说明材料"},
         )
         self.assertEqual(manual_response.status_code, 200)
@@ -666,7 +744,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         manual_ref = next(item for item in manual_response.json()["plan"]["tocRefs"] if item["nodeId"] == empty_ref["nodeId"])
         self.assertIn(manual_task["id"], manual_ref["taskIds"])
         manual_upload_response = self.client.post(
-            f"/api/projects/{project_id}/business-gaps/tasks/{manual_task['id']}/upload",
+            f"/api/business/projects/{project_id}/business-gaps/tasks/{manual_task['id']}/upload",
             json={
                 "files": [
                     {
@@ -688,7 +766,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertEqual(manual_ref_after_upload["status"], "ready")
         manual_artifact = manual_upload_response.json()["artifact"]
         remove_manual_response = self.client.delete(
-            f"/api/projects/{project_id}/business-gaps/tasks/{manual_task['id']}/artifacts/{manual_artifact['artifactId']}"
+            f"/api/business/projects/{project_id}/business-gaps/tasks/{manual_task['id']}/artifacts/{manual_artifact['artifactId']}"
         )
         self.assertEqual(remove_manual_response.status_code, 200)
         self.assertEqual(remove_manual_response.json()["task"]["status"], "needs_input")
@@ -701,7 +779,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertFalse(Path(manual_artifact["filePath"]).exists())
         task = next(item for item in get_response.json()["tasks"] if item["title"] == "保密承诺书")
         confirm_response = self.client.post(
-            f"/api/projects/{project_id}/business-gaps/tasks/{task['id']}/confirm-artifact",
+            f"/api/business/projects/{project_id}/business-gaps/tasks/{task['id']}/confirm-artifact",
             json={"artifactId": "COMMIT-0001", "confirmed": True},
         )
         self.assertEqual(confirm_response.status_code, 200)
@@ -709,7 +787,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
 
         bid_letter_task = next(item for item in get_response.json()["tasks"] if item["title"] == "投标函")
         mode_response = self.client.patch(
-            f"/api/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}",
+            f"/api/business/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}",
             json={"assemblyMode": "template_fill_docx"},
         )
         self.assertEqual(mode_response.status_code, 200)
@@ -735,7 +813,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         ]
         store._persist_project(stored_project)
         candidate_mode_response = self.client.patch(
-            f"/api/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}",
+            f"/api/business/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}",
             json={"assemblyMode": "template_fill_docx"},
         )
         self.assertEqual(candidate_mode_response.status_code, 200)
@@ -748,7 +826,8 @@ class BusinessGapPlannerTests(unittest.TestCase):
         doc.add_paragraph("投标函")
         doc.add_paragraph("项目名称：")
         doc.save(template_source)
-        store.update_template_files(
+        _update_template_files_for_tests(
+            store,
             project_id,
             [
                 {
@@ -768,14 +847,14 @@ class BusinessGapPlannerTests(unittest.TestCase):
         bid_letter_stored["candidateMaterials"] = []
         bid_letter_stored["templateCandidates"] = []
         store._persist_project(stored_project)
-        backfill_response = self.client.get(f"/api/projects/{project_id}/business-gaps")
+        backfill_response = self.client.get(f"/api/business/projects/{project_id}/business-gaps")
         self.assertEqual(backfill_response.status_code, 200)
         backfilled_task = next(item for item in backfill_response.json()["tasks"] if item["id"] == bid_letter_task["id"])
         self.assertEqual(backfilled_task["status"], "review_required")
         self.assertEqual(backfilled_task["templateCandidates"][0]["templateId"], "TPL-PROJECT-001")
         self.assertEqual(backfilled_task["templateCandidates"][0]["sourceMode"], "project_uploaded_bid_template")
         select_template_response = self.client.post(
-            f"/api/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/select-template",
+            f"/api/business/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/select-template",
             json={"template": {"templateId": "TPL-PROJECT-001"}},
         )
         self.assertEqual(select_template_response.status_code, 200)
@@ -786,7 +865,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertIn("business-workspace/gaps/selected-templates", select_template_response.json()["artifact"]["filePath"])
 
         upload_response = self.client.post(
-            f"/api/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/upload",
+            f"/api/business/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/upload",
             json={
                 "files": [
                     {
@@ -810,7 +889,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertIn(f"商务标/项目素材/{project_id}/02-商务响应文件", uploaded["materialTargetPath"])
 
         multipart_upload_response = self.client.post(
-            f"/api/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/upload-files",
+            f"/api/business/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/upload-files",
             data={"operator": "测试用户"},
             files=[
                 (
@@ -831,7 +910,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertEqual(Path(multipart_uploaded["filePath"]).read_bytes(), b"business-gap-docx-bytes")
 
         ai_mode_response = self.client.patch(
-            f"/api/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}",
+            f"/api/business/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}",
             json={"assemblyMode": "ai_draft"},
         )
         self.assertEqual(ai_mode_response.status_code, 200)
@@ -840,7 +919,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertEqual(ai_mode_task["decision"], "ai_draft_required")
         self.assertIn("ai_draft_required", ai_mode_task["riskFlags"])
         ai_draft_response = self.client.post(
-            f"/api/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/ai-draft",
+            f"/api/business/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/ai-draft",
             json={"operator": "测试用户"},
         )
         self.assertEqual(ai_draft_response.status_code, 200)
@@ -850,7 +929,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertNotIn("ai_draft_required", ai_draft_task["riskFlags"])
 
         async def fake_raw_upload(**kwargs):
-            self.assertEqual(kwargs["bid_type"], "商务标")
+            self.assertNotIn("bid_type", kwargs)
             self.assertEqual(kwargs["material_tier"], "project")
             self.assertIn(f"商务标/项目素材/{project_id}/02-商务响应文件", kwargs["target_path"])
             return {
@@ -870,9 +949,9 @@ class BusinessGapPlannerTests(unittest.TestCase):
                 "cleaning": {"queued": 0, "jobs": []},
             }
 
-        with patch("app.services.store.material_store.raw_upload", side_effect=fake_raw_upload):
+        with patch("app.services.business_gap_service.business_material_store.raw_upload", side_effect=fake_raw_upload):
             sync_response = self.client.post(
-                f"/api/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/sync-artifact-material",
+                f"/api/business/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/sync-artifact-material",
                 json={"artifactId": uploaded["artifactId"]},
             )
         self.assertEqual(sync_response.status_code, 200)
@@ -888,14 +967,14 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertIn("商务标/项目素材", synced_material["folderPath"])
         self.assertFalse(synced_material["folderPath"].startswith("技术标/"))
 
-        async def fake_download_payload(material_id: str) -> tuple[dict[str, str], str]:
+        async def fake_download_content(material_id: str) -> dict[str, str]:
             return {
                 "fileId": material_id,
                 "fileName": "商务素材证书.pdf",
                 "bucket": "mock-bucket",
                 "key": "mock-key",
                 "mimeType": "application/pdf",
-            }, "raw"
+            }
 
         def fake_download_file(bucket: str, key: str, target_path: Path) -> Path:
             target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -903,6 +982,8 @@ class BusinessGapPlannerTests(unittest.TestCase):
             return target_path
 
         async def fake_raw_files(**kwargs):
+            self.assertNotIn("bid_type", kwargs)
+            self.assertTrue(str(kwargs.get("folder_path") or "").startswith("商务标/"))
             return {
                 "items": [
                     {
@@ -918,16 +999,22 @@ class BusinessGapPlannerTests(unittest.TestCase):
                 "total": 1,
             }
 
-        with patch.object(store, "_business_material_download_payload", side_effect=fake_download_payload), patch(
-            "app.services.store.minio_client.download_file",
+        with patch(
+            "app.services.business_gap_service.business_material_store.raw_download_cleaned_content",
+            side_effect=RuntimeError("no cleaned content in this test"),
+        ), patch(
+            "app.services.business_gap_service.business_material_store.raw_download_content",
+            side_effect=fake_download_content,
+        ), patch(
+            "app.services.business_gap_service.minio_client.download_file",
             side_effect=fake_download_file,
         ):
             with patch(
-                "app.services.business_gap_planning.material_store.raw_files",
+                "app.services.business_gap_planning.business_material_store.raw_files",
                 side_effect=fake_raw_files,
             ):
                 selectable_response = self.client.get(
-                    f"/api/projects/{project_id}/business-gaps/selectable-materials?keyword=证书"
+                    f"/api/business/projects/{project_id}/business-gaps/selectable-materials?keyword=证书"
                 )
             self.assertEqual(selectable_response.status_code, 200)
             selectable_payload = selectable_response.json()
@@ -937,7 +1024,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
             self.assertTrue(selectable_payload["segments"][0]["evidenceSegmentId"])
 
             select_response = self.client.post(
-                f"/api/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/select-material",
+                f"/api/business/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/select-material",
                 json={
                     "materials": [
                         {
@@ -968,7 +1055,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertIn("business-workspace/gaps/selected-materials", select_response.json()["artifact"]["filePath"])
         self.assertFalse((technical_workspace_dir(project_id) / "s4_gap_workdir" / "selected_material").exists())
 
-        facts_response = self.client.post(f"/api/projects/{project_id}/business-gaps/facts/build")
+        facts_response = self.client.post(f"/api/business/projects/{project_id}/business-gaps/facts/build")
         self.assertEqual(facts_response.status_code, 200)
         facts = facts_response.json()
         labels = {field["label"]: field for field in facts["fields"]}
@@ -976,7 +1063,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertEqual(labels["招标编号"]["value"], "BIZ-2026-001")
         self.assertIn("投标人", labels)
         confirm_facts_response = self.client.put(
-            f"/api/projects/{project_id}/business-gaps/facts",
+            f"/api/business/projects/{project_id}/business-gaps/facts",
             json={"fields": facts["fields"], "confirm": True, "operator": "测试用户"},
         )
         self.assertEqual(confirm_facts_response.status_code, 200)
@@ -987,7 +1074,9 @@ class BusinessGapPlannerTests(unittest.TestCase):
 
     def test_business_gap_table_fill_creates_artifact_from_target_and_sources(self) -> None:
         self._setup_app_test()
-        from app.services.store import PROJECT_FACT_TABLE_SCHEMA_VERSION, now_iso, store
+        from app.services.business_gap_fact_table import PROJECT_FACT_TABLE_SCHEMA_VERSION
+        from app.services.bid_runtime_state import now_iso
+        from app.services.store import store
         from app.services.workspace_artifacts import business_workspace_dir, technical_workspace_dir
 
         project = store.create_project({"name": "商务AI填表项目", "customerName": "华能集团", "bidType": "商务标"})
@@ -1080,15 +1169,15 @@ class BusinessGapPlannerTests(unittest.TestCase):
                 "evidenceRefs": [{"materialId": "RAW-TABLE-001", "factCount": 1}],
             }
 
-        with patch("app.services.store._downloadable_fill_source_payload", side_effect=fake_download_payload), patch(
-            "app.services.store.minio_client.download_file",
+        with patch("app.services.business_gap_table_fill.downloadable_business_fill_source_payload", side_effect=fake_download_payload), patch(
+            "app.services.business_gap_table_fill.minio_client.download_file",
             side_effect=fake_download_file,
         ), patch(
-            "app.services.store.run_business_table_fill_skill",
+            "app.services.business_gap_service.run_business_table_fill_skill",
             side_effect=fake_runner,
         ):
             response = self.client.post(
-                f"/api/projects/{project_id}/business-gaps/tasks/BT-001/table-fill",
+                f"/api/business/projects/{project_id}/business-gaps/tasks/BT-001/table-fill",
                 json={
                     "target": {"templateId": "TPL-001"},
                     "sourceMaterials": [{"materialId": "RAW-TABLE-001", "materialName": "报价数据.xlsx"}],
@@ -1109,7 +1198,9 @@ class BusinessGapPlannerTests(unittest.TestCase):
 
     def test_business_gap_table_fill_allows_project_fact_table_only(self) -> None:
         self._setup_app_test()
-        from app.services.store import PROJECT_FACT_TABLE_SCHEMA_VERSION, now_iso, store
+        from app.services.business_gap_fact_table import PROJECT_FACT_TABLE_SCHEMA_VERSION
+        from app.services.bid_runtime_state import now_iso
+        from app.services.store import store
         from app.services.workspace_artifacts import business_workspace_dir
 
         project = store.create_project({"name": "商务事实表填表项目", "customerName": "华能集团", "bidType": "商务标"})
@@ -1185,9 +1276,9 @@ class BusinessGapPlannerTests(unittest.TestCase):
                 "evidenceRefs": [],
             }
 
-        with patch("app.services.store.run_business_table_fill_skill", side_effect=fake_runner):
+        with patch("app.services.business_gap_service.run_business_table_fill_skill", side_effect=fake_runner):
             response = self.client.post(
-                f"/api/projects/{project_id}/business-gaps/tasks/BT-001/table-fill",
+                f"/api/business/projects/{project_id}/business-gaps/tasks/BT-001/table-fill",
                 json={"target": {"templateId": "TPL-001"}, "operator": "测试用户"},
             )
 
@@ -1249,7 +1340,8 @@ class BusinessGapPlannerTests(unittest.TestCase):
 
     def test_business_gap_task_ignore_sets_handling_mode(self) -> None:
         self._setup_app_test()
-        from app.services.store import now_iso, store
+        from app.services.bid_runtime_state import now_iso
+        from app.services.store import store
 
         project = store.create_project({"name": "商务忽略任务项目", "customerName": "华能集团", "bidType": "商务标"})
         project_id = project["id"]
@@ -1281,7 +1373,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         store._persist_project(stored_project)
 
         response = self.client.patch(
-            f"/api/projects/{project_id}/business-gaps/tasks/BT-IGNORE",
+            f"/api/business/projects/{project_id}/business-gaps/tasks/BT-IGNORE",
             json={"status": "ignored", "notes": "无需响应"},
         )
         self.assertEqual(response.status_code, 200)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE, require_bid_type
+
 
 TECHNICAL_PARSE_SKILL_NAME = "bid-tender-structured-parser"
 BUSINESS_PARSE_SKILL_NAME = "bid-business-tender-structured-parser"
@@ -23,7 +25,7 @@ class ParseProfile:
 
 TECHNICAL_PARSE_PROFILE = ParseProfile(
     key="technical",
-    bid_type="技术标",
+    bid_type=TECHNICAL_BID_TYPE,
     skill_name=TECHNICAL_PARSE_SKILL_NAME,
     schema_version=TECHNICAL_SCHEMA_VERSION,
     workspace_dirname=TECHNICAL_WORKSPACE_DIRNAME,
@@ -43,7 +45,7 @@ TECHNICAL_PARSE_PROFILE = ParseProfile(
 
 BUSINESS_PARSE_PROFILE = ParseProfile(
     key="business",
-    bid_type="商务标",
+    bid_type=BUSINESS_BID_TYPE,
     skill_name=BUSINESS_PARSE_SKILL_NAME,
     schema_version=BUSINESS_SCHEMA_VERSION,
     workspace_dirname=BUSINESS_WORKSPACE_DIRNAME,
@@ -59,10 +61,9 @@ BUSINESS_PARSE_PROFILE = ParseProfile(
 )
 
 
-def normalize_bid_type(bid_type: str) -> str:
-    value = str(bid_type or "").strip()
-    return "商务标" if "商务" in value else "技术标"
-
-
 def resolve_parse_profile(bid_type: str) -> ParseProfile:
-    return BUSINESS_PARSE_PROFILE if normalize_bid_type(bid_type) == "商务标" else TECHNICAL_PARSE_PROFILE
+    normalized_bid_type = require_bid_type(
+        bid_type,
+        error_message="解析 profile 必须显式传入技术标或商务标。",
+    )
+    return BUSINESS_PARSE_PROFILE if normalized_bid_type == BUSINESS_BID_TYPE else TECHNICAL_PARSE_PROFILE

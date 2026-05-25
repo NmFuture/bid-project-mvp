@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import unittest
@@ -14,6 +15,8 @@ from docx import Document
 from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.main import app
+from app.services.audit_service import audit_service
+from app.services.bid_project_state import project_parse_input_records
 from app.services.system_settings import system_settings_service
 from app.services.store import store
 
@@ -25,6 +28,11 @@ def build_docx_bytes(*lines: str) -> bytes:
         doc.add_paragraph(line)
     doc.save(file_obj)
     return file_obj.getvalue()
+
+
+def parse_inputs_for_tests(project_id: str):
+    project = store.get_project_runtime_state(project_id)
+    return project_parse_input_records(project_id, project)
 
 
 @unittest.skipUnless(os.getenv("BID_RUN_INTEGRATION") == "1", "requires PostgreSQL and MinIO")
@@ -175,9 +183,9 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
 
     def test_enabled_system_default_template_is_used_as_project_fallback(self) -> None:
         project = self.client.post(
-            "/api/projects",
+            "/api/business/projects",
             headers=self.headers,
-            json={"name": "默认模板测试项目", "customerName": "测试业主", "bidType": "商务标"},
+            json={"name": "默认模板测试项目", "customerName": "测试业主"},
         )
         self.assertEqual(project.status_code, 200)
         project_id = project.json()["id"]
@@ -199,21 +207,21 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
         activate = self.client.post(f"/api/settings/default-templates/{template_id}/activate", headers=self.headers)
         self.assertEqual(activate.status_code, 200)
 
-        fallback = self.client.get(f"/api/projects/{project_id}/template-fallback", headers=self.headers)
+        fallback = self.client.get(f"/api/business/projects/{project_id}/template-fallback", headers=self.headers)
         self.assertEqual(fallback.status_code, 200)
         self.assertEqual(fallback.json()["template"]["source"], "system-default")
         self.assertEqual(fallback.json()["template"]["templateType"], "business")
         self.assertEqual(fallback.json()["template"]["name"], "默认商务标模板.docx")
 
         disabled = self.client.put(
-            f"/api/projects/{project_id}/template-fallback",
+            f"/api/business/projects/{project_id}/template-fallback",
             headers=self.headers,
             json={"enabled": False},
         )
         self.assertEqual(disabled.status_code, 200)
         self.assertFalse(disabled.json()["enabled"])
         enabled = self.client.put(
-            f"/api/projects/{project_id}/template-fallback",
+            f"/api/business/projects/{project_id}/template-fallback",
             headers=self.headers,
             json={"enabled": True},
         )
@@ -231,7 +239,7 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
             "templateTypeLabel": "商务标",
         }
         with patch("app.services.template_store.resolve_fallback_bid_template_file_sync", return_value=system_record):
-            _, template_files = store.get_parse_inputs(project_id)
+            _, template_files = parse_inputs_for_tests(project_id)
 
         self.assertEqual(len(template_files), 1)
         self.assertEqual(template_files[0]["source"], "system-default")
@@ -286,46 +294,45 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
                 "model": "deepseek-ai/DeepSeek-OCR",
             },
         )
-        audit = self.client.get("/api/audit", headers=self.headers)
-        self.assertEqual(audit.status_code, 200)
-        actions = [item["action"] for item in audit.json()["items"]]
+        audit = asyncio.run(audit_service.list({}))
+        actions = [item["action"] for item in audit["items"]]
         self.assertIn("创建用户", actions)
         self.assertIn("更新用户", actions)
         self.assertIn("更新OCR 模型配置", actions)
-        detail = self.client.get(f"/api/audit/{audit.json()['items'][0]['id']}", headers=self.headers)
-        self.assertEqual(detail.status_code, 200)
-        self.assertIn("diff", detail.json())
-        payload_text = audit.text + detail.text
+        detail = asyncio.run(audit_service.detail(audit["items"][0]["id"]))
+        self.assertIn("diff", detail)
+        payload_text = json.dumps(audit, ensure_ascii=False) + json.dumps(detail, ensure_ascii=False)
         self.assertNotIn("654321", payload_text)
+        self.assertEqual(self.client.get("/api/audit", headers=self.headers).status_code, 404)
 
     def test_ocr_requires_config_and_can_list_tasks(self) -> None:
         project = self.client.post(
-            "/api/projects",
+            "/api/technical/projects",
             headers=self.headers,
-            json={"name": "OCR 测试项目", "customerName": "测试业主", "bidType": "技术标"},
+            json={"name": "OCR 测试项目", "customerName": "测试业主"},
         )
         self.assertEqual(project.status_code, 200)
         project_id = project.json()["id"]
 
-        before = self.client.get(f"/api/projects/{project_id}/ocr/tasks", headers=self.headers)
+        before = self.client.get(f"/api/technical/projects/{project_id}/ocr/tasks", headers=self.headers)
         self.assertEqual(before.status_code, 200)
 
         run = self.client.post(
-            f"/api/projects/{project_id}/ocr/tasks",
+            f"/api/technical/projects/{project_id}/ocr/tasks",
             headers=self.headers,
             files={"file": ("ocr.png", b"\x89PNG\r\n\x1a\n", "image/png")},
         )
         self.assertEqual(run.status_code, 400)
 
-        tasks = self.client.get(f"/api/projects/{project_id}/ocr/tasks", headers=self.headers)
+        tasks = self.client.get(f"/api/technical/projects/{project_id}/ocr/tasks", headers=self.headers)
         self.assertEqual(tasks.status_code, 200)
         self.assertEqual(tasks.json()["total"], before.json()["total"])
 
     def test_ocr_success_persists_task_candidates_and_confirmation(self) -> None:
         project = self.client.post(
-            "/api/projects",
+            "/api/technical/projects",
             headers=self.headers,
-            json={"name": "OCR 成功测试项目", "customerName": "测试业主", "bidType": "技术标"},
+            json={"name": "OCR 成功测试项目", "customerName": "测试业主"},
         )
         self.assertEqual(project.status_code, 200)
         project_id = project.json()["id"]
@@ -361,7 +368,7 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
 
         with patch("httpx.AsyncClient.post", side_effect=fake_post):
             run = self.client.post(
-                f"/api/projects/{project_id}/ocr/tasks",
+                f"/api/technical/projects/{project_id}/ocr/tasks",
                 headers=self.headers,
                 files={"file": ("ocr.png", b"\x89PNG\r\n\x1a\nfake", "image/png")},
             )
@@ -373,15 +380,33 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
         candidate_id = payload["candidates"][0]["id"]
 
         confirm = self.client.post(
-            f"/api/projects/{project_id}/ocr/candidates/{candidate_id}/confirm",
+            f"/api/technical/projects/{project_id}/ocr/candidates/{candidate_id}/confirm",
             headers=self.headers,
             json={"action": "confirm", "value": "Wind Farm"},
         )
         self.assertEqual(confirm.status_code, 200)
         self.assertEqual(confirm.json()["item"]["status"], "confirmed")
-        updated = self.client.get(f"/api/projects/{project_id}/parse-results", headers=self.headers)
+        updated = self.client.get(f"/api/technical/projects/{project_id}/parse-results", headers=self.headers)
         fields = updated.json()["structured"]["ocrConfirmedFields"]
         self.assertEqual(fields[0]["value"], "Wind Farm")
+
+        technical_audit = self.client.get("/api/technical/audit", headers=self.headers)
+        self.assertEqual(technical_audit.status_code, 200)
+        ocr_logs = [item for item in technical_audit.json()["items"] if item["actionType"] == "ocr"]
+        self.assertGreaterEqual(len(ocr_logs), 2)
+        self.assertTrue(all(item["metadata"].get("bidType") == "技术标" for item in ocr_logs))
+        self.assertTrue(all(item["metadata"].get("projectId") == project_id for item in ocr_logs))
+        run_log = next(item for item in ocr_logs if item["action"] == "执行 OCR 识别")
+        self.assertEqual(run_log["metadata"]["candidateCount"], 3)
+
+        detail = self.client.get(f"/api/technical/audit/{run_log['id']}", headers=self.headers)
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.json()["metadata"]["bidType"], "技术标")
+        business_detail = self.client.get(f"/api/business/audit/{run_log['id']}", headers=self.headers)
+        self.assertEqual(business_detail.status_code, 404)
+        business_audit = self.client.get("/api/business/audit", headers=self.headers)
+        self.assertEqual(business_audit.status_code, 200)
+        self.assertEqual([item for item in business_audit.json()["items"] if item["actionType"] == "ocr"], [])
 
 
 if __name__ == "__main__":

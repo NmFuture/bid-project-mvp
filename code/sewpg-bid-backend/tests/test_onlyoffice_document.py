@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import platform
 import tempfile
@@ -9,13 +10,67 @@ from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, quote, urlparse
 
 from fastapi.testclient import TestClient
+from starlette.datastructures import URL as StarletteURL
 
 from app.main import app
 from app.core.config import settings
+from app.services.bid_document_state import force_save_document_state
+from app.services.bid_outline_state import confirm_outline_state, save_generated_outline_state
 from app.services.onlyoffice_documents import build_editor_session_key, document_path
-from app.services.material_store import material_store
 from app.services.peripheral import PeripheralError
 from app.services.store import store
+from app.services.technical_gap_repository import persist_technical_gap_project, require_technical_gap_project_for_update
+from app.services.technical_gap_review import prepare_technical_review_document
+from app.services.technical_gap_service import technical_gap_service
+from app.services.technical_gap_state import ensure_technical_gap_state
+from app.services.technical_material_store import technical_material_store
+
+
+class _DummyRequest:
+    base_url = StarletteURL("http://testserver/")
+    url = StarletteURL("http://testserver/")
+
+
+def _prepare_technical_review_document_for_tests(project_id: str) -> None:
+    project = require_technical_gap_project_for_update(project_id)
+    gap_state = ensure_technical_gap_state(project)
+    prepare_technical_review_document(project, gap_state)
+    persist_technical_gap_project(project)
+
+
+def _document_state(project_id: str) -> dict:
+    return store.get_project_runtime_state(project_id)["document_state"]
+
+
+def _force_save_document_for_tests(project_id: str) -> None:
+    project = store.require_project_for_update(project_id)
+    force_save_document_state(project, project_id)
+    store.persist_project_state(project)
+
+
+def _save_generated_outline_for_tests(
+    project_id: str,
+    *,
+    nodes: list[dict],
+    generated_at: str,
+    summary: str,
+) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = save_generated_outline_state(
+        project,
+        nodes=nodes,
+        generated_at=generated_at,
+        summary=summary,
+    )
+    store.persist_project_state(project)
+    return payload
+
+
+def _confirm_outline_for_tests(project_id: str) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = confirm_outline_state(project)
+    store.persist_project_state(project)
+    return payload
 
 
 class OnlyOfficeDocumentTests(unittest.TestCase):
@@ -35,7 +90,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         store.reset_for_tests()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
         self.gap_planner_patcher = patch(
-            "app.services.gap_planning.OpencodeClient.run_bid_tech_gap_planner_with_trace",
+            "app.services.technical_gap_planner.OpencodeClient.run_bid_tech_gap_planner_with_trace",
             side_effect=RuntimeError("offline test fallback"),
         )
         self.gap_planner_patcher.start()
@@ -50,7 +105,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
 
     def create_project(self) -> str:
         response = self.client.post(
-            "/api/projects",
+            "/api/technical/projects",
             json={
                 "name": "OnlyOffice 联调项目",
                 "customerName": "测试业主",
@@ -59,9 +114,20 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         response.raise_for_status()
         return response.json()["id"]
 
+    def create_business_project(self) -> str:
+        response = self.client.post(
+            "/api/business/projects",
+            json={
+                "name": "商务 OnlyOffice 联调项目",
+                "customerName": "测试业主",
+            },
+        )
+        response.raise_for_status()
+        return response.json()["id"]
+
     def create_project_with_review_document(self) -> str:
         project_id = self.create_project()
-        store.save_generated_outline(
+        _save_generated_outline_for_tests(
             project_id=project_id,
             nodes=[
                 {
@@ -83,19 +149,25 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
             generated_at="2026-04-20T00:00:00Z",
             summary="目录已生成。",
         )
-        store.confirm_outline(project_id)
-        store.run_gap_detection(project_id)
-        for item in store.get_gap_filling(project_id)["items"]:
-            store.update_gap_item(project_id, item["id"], {"status": "skipped", "reason": "测试中人工确认忽略"})
-        store.check_gap_plan_integrity(project_id)
-        store.submit_gap_review(project_id)
-        store.prepare_review_document(project_id)
+        _confirm_outline_for_tests(project_id)
+        technical_gap_service.run_detection(project_id)
+        for item in asyncio.run(technical_gap_service.gaps(project_id, _DummyRequest()))["items"]:
+            asyncio.run(
+                technical_gap_service.update_gap(
+                    project_id,
+                    item["id"],
+                    {"status": "skipped", "reason": "测试中人工确认忽略"},
+                )
+            )
+        asyncio.run(technical_gap_service.recheck(project_id))
+        asyncio.run(technical_gap_service.submit_review(project_id))
+        _prepare_technical_review_document_for_tests(project_id)
         return project_id
 
     def test_document_file_is_real_docx(self) -> None:
         project_id = self.create_project()
 
-        response = self.client.get(f"/api/projects/{project_id}/document/file")
+        response = self.client.get(f"/api/technical/projects/{project_id}/document/file")
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(
@@ -105,11 +177,61 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         )
         self.assertEqual(response.content[:2], b"PK")
 
+    def test_technical_document_format_endpoint_uses_technical_service(self) -> None:
+        project_id = self.create_project()
+
+        with patch(
+            "app.services.technical_document_service.apply_technical_document_format_preset",
+            return_value={
+                "preset": "custom",
+                "label": "自定义技术标格式",
+                "description": "测试格式",
+                "summary": {"updated": 1},
+            },
+        ) as formatter, patch("app.services.technical_document_service.sync_document_to_minio"):
+            response = self.client.post(
+                f"/api/technical/projects/{project_id}/document/technical-format",
+                json={"preset": "custom", "styleOverrides": {"bodySizePt": 13}},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        formatter.assert_called_once_with(project_id, "custom", {"bodySizePt": 13})
+        payload = response.json()
+        self.assertEqual(payload["payload"]["format"]["preset"], "custom")
+        state = _document_state(project_id)
+        self.assertEqual(state["technicalFormatPreset"], "custom")
+        self.assertEqual(state["technicalFormatLabel"], "自定义技术标格式")
+
+    def test_business_document_format_endpoint_uses_business_service(self) -> None:
+        project_id = self.create_business_project()
+
+        with patch(
+            "app.services.business_document_service.apply_business_document_format_preset",
+            return_value={
+                "preset": "custom",
+                "label": "自定义商务标格式",
+                "description": "测试格式",
+                "summary": {"updated": 1},
+            },
+        ) as formatter, patch("app.services.business_document_service.sync_document_to_minio"):
+            response = self.client.post(
+                f"/api/business/projects/{project_id}/document/business-format",
+                json={"preset": "custom", "styleOverrides": {"bodySizePt": 12}},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        formatter.assert_called_once_with(project_id, "custom", {"bodySizePt": 12})
+        payload = response.json()
+        self.assertEqual(payload["payload"]["format"]["preset"], "custom")
+        state = _document_state(project_id)
+        self.assertEqual(state["businessFormatPreset"], "custom")
+        self.assertEqual(state["businessFormatLabel"], "自定义商务标格式")
+
     def test_document_session_uses_docker_reachable_urls_for_local_dev(self) -> None:
         project_id = self.create_project()
 
         with patch("app.api.utils.detect_lan_ip", return_value="192.168.31.148"):
-            response = self.client.get(f"/api/projects/{project_id}/document")
+            response = self.client.get(f"/api/technical/projects/{project_id}/document")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -124,66 +246,43 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         project_id = self.create_project()
 
         with patch("app.api.utils.detect_lan_ip", return_value=""):
-            response = self.client.get(f"/api/projects/{project_id}/document")
+            response = self.client.get(f"/api/technical/projects/{project_id}/document")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertIn("host.docker.internal:8000", payload["onlyoffice"]["fileUrl"])
         self.assertIn("host.docker.internal:8000", payload["onlyoffice"]["callbackUrl"])
 
-    def test_explicit_onlyoffice_backend_base_url_is_used_for_document_and_review_routes(self) -> None:
-        project_id = self.create_project_with_review_document()
+    def test_explicit_onlyoffice_backend_base_url_is_used_for_document_route(self) -> None:
+        project_id = self.create_project()
         settings.onlyoffice_backend_base_url = "http://fastapi:8000"
 
-        document_response = self.client.get(f"/api/projects/{project_id}/document")
-        review_response = self.client.get(f"/api/projects/{project_id}/review-items/document")
+        document_response = self.client.get(f"/api/technical/projects/{project_id}/document")
 
         self.assertEqual(document_response.status_code, 200)
-        self.assertEqual(review_response.status_code, 200)
 
         document_payload = document_response.json()
-        review_payload = review_response.json()
         document_file_url = urlparse(document_payload["onlyoffice"]["fileUrl"])
         self.assertEqual(
             f"{document_file_url.scheme}://{document_file_url.netloc}{document_file_url.path}",
-            f"http://fastapi:8000/api/projects/{project_id}/document/file/{quote(document_payload['fileName'])}",
+            f"http://fastapi:8000/api/technical/projects/{project_id}/document/file/{quote(document_payload['fileName'])}",
         )
         self.assertEqual(parse_qs(document_file_url.query).get("doc_version"), ["1"])
         document_callback_url = urlparse(document_payload["onlyoffice"]["callbackUrl"])
         self.assertEqual(
             f"{document_callback_url.scheme}://{document_callback_url.netloc}{document_callback_url.path}",
-            f"http://fastapi:8000/api/projects/{project_id}/document/callback",
+            f"http://fastapi:8000/api/technical/projects/{project_id}/document/callback",
         )
         self.assertEqual(parse_qs(document_callback_url.query).get("oo_doc_version"), ["1"])
-        self.assertEqual(
-            review_payload["onlyoffice"]["fileUrl"],
-            f"http://fastapi:8000/api/projects/{project_id}/review-items/document/file/{quote(review_payload['fileName'])}",
-        )
-        self.assertEqual(
-            review_payload["onlyoffice"]["callbackUrl"],
-            f"http://fastapi:8000/api/projects/{project_id}/review-items/document/callback",
-        )
 
     def test_document_callback_rejects_invalid_token(self) -> None:
         project_id = self.create_project()
         settings.onlyoffice_callback_token = "secret-token"
 
         response = self.client.post(
-            f"/api/projects/{project_id}/document/callback",
+            f"/api/technical/projects/{project_id}/document/callback",
             params={"oo_callback_token": "wrong"},
-            json={"status": 6, "url": "http://127.0.0.1:8000/api/projects/foo/document/file/x.docx"},
-        )
-        self.assertEqual(response.status_code, 403)
-        self.assertIn("callback token", response.text)
-
-    def test_review_callback_rejects_invalid_token(self) -> None:
-        project_id = self.create_project_with_review_document()
-        settings.onlyoffice_callback_token = "secret-token"
-
-        response = self.client.post(
-            f"/api/projects/{project_id}/review-items/document/callback",
-            params={"oo_callback_token": "bad"},
-            json={"status": 6, "url": "http://127.0.0.1:8000/api/projects/foo/document/file/x.docx"},
+            json={"status": 6, "url": "http://127.0.0.1:8000/api/technical/projects/foo/document/file/x.docx"},
         )
         self.assertEqual(response.status_code, 403)
         self.assertIn("callback token", response.text)
@@ -193,7 +292,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         settings.onlyoffice_callback_token = "secret-token"
 
         response = self.client.post(
-            f"/api/projects/{project_id}/document/callback",
+            f"/api/technical/projects/{project_id}/document/callback",
             params={"oo_callback_token": "secret-token"},
             json={"status": 6, "url": "https://attacker.example.com/malware.docx"},
         )
@@ -201,33 +300,27 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         self.assertIn("白名单", response.text)
 
     def test_file_routes_accept_filename_suffix_alias(self) -> None:
-        project_id = self.create_project_with_review_document()
+        project_id = self.create_project()
 
-        review_response = self.client.get(f"/api/projects/{project_id}/review-items/document")
-        document_response = self.client.get(f"/api/projects/{project_id}/document")
+        document_response = self.client.get(f"/api/technical/projects/{project_id}/document")
 
-        self.assertEqual(review_response.status_code, 200)
         self.assertEqual(document_response.status_code, 200)
 
-        review_file_url = review_response.json()["fileUrl"]
         document_file_url = document_response.json()["fileUrl"]
 
-        review_file = self.client.get(review_file_url.replace("http://127.0.0.1:8000", ""))
         document_file = self.client.get(document_file_url.replace("http://127.0.0.1:8000", ""))
 
-        self.assertEqual(review_file.status_code, 200)
         self.assertEqual(document_file.status_code, 200)
-        self.assertEqual(review_file.content[:2], b"PK")
         self.assertEqual(document_file.content[:2], b"PK")
 
     def test_force_save_route_refreshes_document_session_key(self) -> None:
         project_id = self.create_project()
 
-        initial_response = self.client.get(f"/api/projects/{project_id}/document")
+        initial_response = self.client.get(f"/api/technical/projects/{project_id}/document")
         self.assertEqual(initial_response.status_code, 200)
         initial_key = initial_response.json()["onlyoffice"]["documentKey"]
 
-        refresh_response = self.client.post(f"/api/projects/{project_id}/document/force-save")
+        refresh_response = self.client.post(f"/api/technical/projects/{project_id}/document/force-save")
         self.assertEqual(refresh_response.status_code, 200)
         refreshed_key = refresh_response.json()["payload"]["onlyoffice"]["documentKey"]
 
@@ -237,31 +330,21 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
             build_editor_session_key(document_path(project_id), refresh_response.json()["payload"]["version"]),
         )
 
-        latest_response = self.client.get(f"/api/projects/{project_id}/document")
+        latest_response = self.client.get(f"/api/technical/projects/{project_id}/document")
         self.assertEqual(latest_response.status_code, 200)
         self.assertEqual(latest_response.json()["onlyoffice"]["documentKey"], refreshed_key)
 
     def test_route_payload_uses_real_document_file_keys(self) -> None:
-        project_id = self.create_project_with_review_document()
+        project_id = self.create_project()
 
-        store.force_save_document(project_id)
-        store.force_save_review_document(project_id)
+        _force_save_document_for_tests(project_id)
 
-        document_response = self.client.get(f"/api/projects/{project_id}/document")
-        review_response = self.client.get(f"/api/projects/{project_id}/review-items/document")
+        document_response = self.client.get(f"/api/technical/projects/{project_id}/document")
 
         self.assertEqual(document_response.status_code, 200)
-        self.assertEqual(review_response.status_code, 200)
         self.assertEqual(
             document_response.json()["onlyoffice"]["documentKey"],
             build_editor_session_key(document_path(project_id), document_response.json()["version"]),
-        )
-        self.assertEqual(
-            review_response.json()["onlyoffice"]["documentKey"],
-            build_editor_session_key(
-                settings.documents_dir / f"{project_id}-review.docx",
-                review_response.json()["version"],
-            ),
         )
 
     def test_editor_session_key_is_ascii_safe_for_onlyoffice_paths(self) -> None:
@@ -282,12 +365,12 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
             "status": "ready",
             "fileId": "RAW-0007",
             "fileName": "清洗稿.docx",
-            "fileUrl": "http://127.0.0.1:8000/api/materials/raw/RAW-0007/cleaned/content/%E6%B8%85%E6%B4%97%E7%A8%BF.docx",
+            "fileUrl": "http://127.0.0.1:8000/api/technical/materials/raw/RAW-0007/cleaned/content/%E6%B8%85%E6%B4%97%E7%A8%BF.docx",
             "onlyoffice": {
                 "documentKey": "material-RAW-0007-v1",
                 "title": "清洗稿.docx",
-                "fileUrl": "http://fastapi:8000/api/materials/raw/RAW-0007/cleaned/content/%E6%B8%85%E6%B4%97%E7%A8%BF.docx",
-                "browserFileUrl": "http://127.0.0.1:8000/api/materials/raw/RAW-0007/cleaned/content/%E6%B8%85%E6%B4%97%E7%A8%BF.docx",
+                "fileUrl": "http://fastapi:8000/api/technical/materials/raw/RAW-0007/cleaned/content/%E6%B8%85%E6%B4%97%E7%A8%BF.docx",
+                "browserFileUrl": "http://127.0.0.1:8000/api/technical/materials/raw/RAW-0007/cleaned/content/%E6%B8%85%E6%B4%97%E7%A8%BF.docx",
                 "fileType": "docx",
                 "documentType": "word",
                 "user": {"id": "user-1", "name": "当前用户"},
@@ -295,12 +378,12 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         }
 
         with patch.object(
-            material_store,
+            technical_material_store,
             "raw_cleaned_preview",
             new=AsyncMock(return_value=preview_payload),
             create=True,
         ) as mocked:
-            response = self.client.get("/api/materials/raw/RAW-0007/cleaned/preview")
+            response = self.client.get("/api/technical/materials/raw/RAW-0007/cleaned/preview")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -311,7 +394,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
 
     def test_cleaned_material_preview_route_blocks_unavailable_cleaned_word(self) -> None:
         with patch.object(
-            material_store,
+            technical_material_store,
             "raw_cleaned_preview",
             new=AsyncMock(
                 side_effect=PeripheralError(
@@ -322,7 +405,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
             ),
             create=True,
         ):
-            response = self.client.get("/api/materials/raw/RAW-0008/cleaned/preview")
+            response = self.client.get("/api/technical/materials/raw/RAW-0008/cleaned/preview")
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["code"], "RAW_CLEANED_PREVIEW_UNAVAILABLE")

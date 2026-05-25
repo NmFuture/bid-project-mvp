@@ -451,7 +451,7 @@
 | `issue_date` | 出具日期 |
 | `expiry_date` | 到期日期 |
 | `validity_status` | `valid / expiring_soon / expired / unknown` |
-| `last_verified_at` | 最近一次有效性核验时间 |
+| `last_verified_at` | 最后一次有效性核验时间 |
 
 #### F. 风险与限制字段
 

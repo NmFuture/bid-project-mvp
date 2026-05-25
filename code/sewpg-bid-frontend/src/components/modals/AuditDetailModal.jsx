@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { auditAPI } from '../../api'
 
 const flattenObject = (input, prefix = '', output = {}) => {
   if (input === null || input === undefined) {
@@ -29,7 +28,7 @@ const toDisplay = (value) => {
   return String(value)
 }
 
-export default function AuditDetailModal({ auditId, onClose }) {
+export default function AuditDetailModal({ auditId, onClose, loadDetail }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [detail, setDetail] = useState(null)
@@ -38,7 +37,12 @@ export default function AuditDetailModal({ auditId, onClose }) {
     const timer = setTimeout(() => {
       setLoading(true)
       setError('')
-      auditAPI.detail(auditId)
+      if (typeof loadDetail !== 'function') {
+        setError('日志详情接口未配置。')
+        setLoading(false)
+        return
+      }
+      loadDetail(auditId)
         .then((res) => {
           setDetail(res)
         })
@@ -52,7 +56,7 @@ export default function AuditDetailModal({ auditId, onClose }) {
     }, 0)
 
     return () => clearTimeout(timer)
-  }, [auditId])
+  }, [auditId, loadDetail])
 
   const diffRows = useMemo(() => {
     if (!detail?.diff) return []

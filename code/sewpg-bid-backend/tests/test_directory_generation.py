@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 import unittest
@@ -12,6 +13,15 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.core.config import settings
+from app.services.bid_parse_state import complete_parse_state
+from app.services.bid_project_state import update_template_fallback_state
+from app.services.bid_outline_state import (
+    complete_directory_generation_state,
+    directory_state_with_rule_evidence,
+    regenerate_outline_state,
+    save_outline_state,
+    start_directory_generation_state,
+)
 from app.services.outline_generation import _run_local_outline_skill
 from app.services.store import store
 from app.services.workspace_artifacts import business_workspace_dir, technical_workspace_dir
@@ -39,6 +49,62 @@ class DirectoryGenerationTests(unittest.TestCase):
         for text, style in paragraphs:
             doc.add_paragraph(text, style=style) if style else doc.add_paragraph(text)
         doc.save(path)
+
+    def _parse_runtime_state(self, project_id: str) -> tuple[dict, dict]:
+        project = store.get_project_runtime_state(project_id)
+        return copy.deepcopy(project["parse_result"]), copy.deepcopy(project["parse_storage"])
+
+    def _directory_state_for_tests(self, project_id: str) -> dict:
+        project = store.require_project_for_update(project_id)
+        return directory_state_with_rule_evidence(project)
+
+    def _outline_state_for_tests(self, project_id: str) -> dict:
+        project = store.require_project_for_update(project_id)
+        return copy.deepcopy(project["outline_state"])
+
+    def _update_template_fallback_for_tests(self, project_id: str, data: dict) -> dict:
+        project = store.require_project_for_update(project_id)
+        payload = update_template_fallback_state(project, data)
+        store.persist_project_state(project)
+        return payload
+
+    def _start_directory_generation_for_tests(self, project_id: str) -> dict:
+        project = store.require_project_for_update(project_id)
+        payload = start_directory_generation_state(project)
+        store.persist_project_state(project)
+        return payload
+
+    def _save_outline_for_tests(self, project_id: str, nodes: list[dict]) -> dict:
+        project = store.require_project_for_update(project_id)
+        payload = save_outline_state(project, nodes)
+        store.persist_project_state(project)
+        return payload
+
+    def _regenerate_outline_for_tests(self, project_id: str) -> dict:
+        project = store.require_project_for_update(project_id)
+        payload = regenerate_outline_state(project)
+        store.persist_project_state(project)
+        return payload
+
+    def _complete_parse_for_tests(
+        self,
+        project_id: str,
+        tender_files: list[dict],
+        template_files: list[dict],
+        *,
+        summary: dict | None = None,
+        parse_storage: dict | None = None,
+    ) -> dict:
+        project = store.require_project_for_update(project_id)
+        payload = complete_parse_state(
+            project,
+            tender_files,
+            template_files,
+            summary=summary,
+            parse_storage=parse_storage,
+        )
+        store.persist_project_state(project)
+        return payload
 
     def _prepare_project_with_parse_result(self, bid_type: str = "技术标") -> str:
         project = store.create_project(
@@ -94,7 +160,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        store.complete_parse(
+        self._complete_parse_for_tests(
             project_id,
             tender_files=[
                 {
@@ -430,7 +496,7 @@ class DirectoryGenerationTests(unittest.TestCase):
                 ("供货保障专题", ""),
             ],
         )
-        outline = store.get_outline_state(project_id)
+        outline = self._outline_state_for_tests(project_id)
         root = outline["nodes"][0]
         self.assertEqual(root["title"], "投标函及授权文件")
         self.assertEqual(root["tocNumber"], "一、")
@@ -591,8 +657,8 @@ class DirectoryGenerationTests(unittest.TestCase):
         ):
             generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
-        store.save_outline(project_id, [{"id": "OL-X", "title": "人工改坏目录", "children": []}])
-        payload = store.regenerate_outline(project_id)
+        self._save_outline_for_tests(project_id, [{"id": "OL-X", "title": "人工改坏目录", "children": []}])
+        payload = self._regenerate_outline_for_tests(project_id)
         titles = [node["title"] for node in payload["nodes"]]
 
         self.assertEqual(titles, ["商务响应文件"])
@@ -625,6 +691,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             {
                 "name": "图片模板目录项目",
                 "customerName": "测试业主",
+                "bidType": "技术标",
             }
         )
         project_id = project["id"]
@@ -651,7 +718,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        store.complete_parse(
+        self._complete_parse_for_tests(
             project_id,
             tender_files=[
                 {
@@ -692,7 +759,7 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "completed")
         self.assertGreaterEqual(payload["output"]["chapterCount"], 2)
-        workspace = store.get_directory_state(project_id)["opencodeOutput"]["workDir"]
+        workspace = self._directory_state_for_tests(project_id)["opencodeOutput"]["workDir"]
         manifest = json.loads((Path(workspace) / "s2_input.json").read_text(encoding="utf-8"))
         self.assertEqual(Path(manifest["templateFile"]).suffix, ".docx")
         self.assertEqual(Path(manifest["tenderFiles"][0]["path"]).suffix, ".docx")
@@ -709,7 +776,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertFalse((settings.parsed_dir / project_id / "s2.json").exists())
         self.assertEqual(Path(payload["opencodeOutput"]["workDir"]).name, "s2_toc_workdir")
 
-        outline = store.get_outline_state(project_id)
+        outline = self._outline_state_for_tests(project_id)
         self.assertEqual(outline["reviewStatus"], "draft")
         self.assertEqual(len(outline["nodes"]), 2)
         self.assertEqual(outline["nodes"][0]["title"], "第一章 投标响应概述")
@@ -950,9 +1017,8 @@ class DirectoryGenerationTests(unittest.TestCase):
             ],
         )
 
-        parse_result = store.get_parse_result(project_id)
-        parse_storage = store.get_parse_storage(project_id)
-        store.complete_parse(
+        parse_result, parse_storage = self._parse_runtime_state(project_id)
+        self._complete_parse_for_tests(
             project_id,
             tender_files=[
                 {
@@ -1062,7 +1128,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         project = store._require(project_id)
         project["directory_state"].pop("ruleEvidence", None)
 
-        state = store.get_directory_state(project_id)
+        state = self._directory_state_for_tests(project_id)
 
         self.assertEqual(state["ruleEvidence"]["engine"], "bid-tech-outline-generator")
         self.assertGreater(state["ruleEvidence"]["tenderCandidateCount"], 0)
@@ -1088,9 +1154,8 @@ class DirectoryGenerationTests(unittest.TestCase):
         document.add_paragraph("2.1 进度安排")
         document.save(template_path)
 
-        parse_result = store.get_parse_result(project_id)
-        parse_storage = store.get_parse_storage(project_id)
-        store.complete_parse(
+        parse_result, parse_storage = self._parse_runtime_state(project_id)
+        self._complete_parse_for_tests(
             project_id,
             tender_files=[
                 {
@@ -1118,7 +1183,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         ):
             generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
-        outline = store.get_outline_state(project_id)
+        outline = self._outline_state_for_tests(project_id)
         self.assertEqual(outline["nodes"][0]["title"], "第1章 响应概述")
         self.assertEqual(outline["nodes"][0]["children"][0]["title"], "基本响应")
         self.assertEqual(outline["nodes"][1]["title"], "第2章 项目交付方案")
@@ -1142,9 +1207,8 @@ class DirectoryGenerationTests(unittest.TestCase):
         document.add_paragraph("（1）正文编号清单不能进入目录")
         document.save(template_path)
 
-        parse_result = store.get_parse_result(project_id)
-        parse_storage = store.get_parse_storage(project_id)
-        store.complete_parse(
+        parse_result, parse_storage = self._parse_runtime_state(project_id)
+        self._complete_parse_for_tests(
             project_id,
             tender_files=[
                 {
@@ -1181,9 +1245,9 @@ class DirectoryGenerationTests(unittest.TestCase):
     def test_run_directory_generation_returns_running_state_immediately(self) -> None:
         project_id = self._prepare_project_with_parse_result()
 
-        with patch("app.api.routes.directory._schedule_directory_generation_job"):
+        with patch("app.services.bid_directory_flow._schedule_directory_generation_job"):
             response = self.client.post(
-                f"/api/projects/{project_id}/directory-generation/run",
+                f"/api/technical/projects/{project_id}/directory-generation/run",
                 json={"outlineStrategy": "strict"},
             )
 
@@ -1197,10 +1261,9 @@ class DirectoryGenerationTests(unittest.TestCase):
         from app.services.outline_generation import generate_outline_for_project
 
         project_id = self._prepare_project_with_parse_result()
-        store.update_template_fallback(project_id, {"enabled": False})
-        parse_result = store.get_parse_result(project_id)
-        parse_storage = store.get_parse_storage(project_id)
-        store.complete_parse(
+        self._update_template_fallback_for_tests(project_id, {"enabled": False})
+        parse_result, parse_storage = self._parse_runtime_state(project_id)
+        self._complete_parse_for_tests(
             project_id,
             tender_files=[
                 {
@@ -1222,12 +1285,11 @@ class DirectoryGenerationTests(unittest.TestCase):
         from app.services.outline_generation import generate_outline_for_project
 
         project_id = self._prepare_project_with_parse_result()
-        parse_result = store.get_parse_result(project_id)
-        parse_storage = store.get_parse_storage(project_id)
+        parse_result, parse_storage = self._parse_runtime_state(project_id)
         bad_template = settings.uploads_dir / project_id / "template" / "bad-template.docx"
         bad_template.parent.mkdir(parents=True, exist_ok=True)
         bad_template.write_bytes(b"bad docx")
-        store.complete_parse(
+        self._complete_parse_for_tests(
             project_id,
             tender_files=[
                 {
@@ -1253,10 +1315,10 @@ class DirectoryGenerationTests(unittest.TestCase):
             generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
     def test_futurecode_progress_updates_before_completion(self) -> None:
-        from app.api.routes.directory import _handle_directory_progress
+        from app.services.bid_directory_flow import _handle_directory_progress
 
         project_id = self._prepare_project_with_parse_result()
-        store.start_directory_generation(project_id)
+        self._start_directory_generation_for_tests(project_id)
 
         _handle_directory_progress(
             project_id,
@@ -1268,7 +1330,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             },
         )
 
-        state = store.get_directory_state(project_id)
+        state = self._directory_state_for_tests(project_id)
         self.assertEqual(state["status"], "running")
         self.assertEqual(state["percentage"], 45)
         self.assertEqual(state["opencodeOutput"]["status"], "waiting")
@@ -1277,17 +1339,17 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertIn("futurecode", state["events"][-1]["message"])
 
     def test_background_job_updates_running_state_then_completes(self) -> None:
-        from app.api.routes.directory import _handle_directory_progress, _run_directory_generation_job
+        from app.services.bid_directory_flow import _handle_directory_progress, _run_directory_generation_job
 
         project_id = self._prepare_project_with_parse_result()
-        store.start_directory_generation(project_id)
+        self._start_directory_generation_for_tests(project_id)
 
         _handle_directory_progress(
             project_id,
             "inputs_ready",
             {"tenderFileCount": 1, "templateFileCount": 1},
         )
-        running_state = store.get_directory_state(project_id)
+        running_state = self._directory_state_for_tests(project_id)
         self.assertEqual(running_state["status"], "running")
         self.assertEqual(running_state["percentage"], 30)
         self.assertEqual(running_state["tasks"][1]["status"], "running")
@@ -1310,7 +1372,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         ):
             _run_directory_generation_job(project_id, {"outlineStrategy": "strict"})
 
-        completed_state = store.get_directory_state(project_id)
+        completed_state = self._directory_state_for_tests(project_id)
         self.assertEqual(completed_state["status"], "completed")
         self.assertEqual(completed_state["percentage"], 100)
         self.assertEqual(completed_state["tasks"][2]["status"], "done")
@@ -1320,11 +1382,13 @@ class DirectoryGenerationTests(unittest.TestCase):
 
     def test_directory_generation_stream_returns_event_stream_payload(self) -> None:
         project_id = self._prepare_project_with_parse_result()
-        store.complete_directory_generation(project_id, {})
+        project = store.require_project_for_update(project_id)
+        complete_directory_generation_state(project, {})
+        store.persist_project_state(project)
 
         with self.client.stream(
             "GET",
-            f"/api/projects/{project_id}/directory-generation/stream",
+            f"/api/technical/projects/{project_id}/directory-generation/stream",
         ) as response:
             chunks = response.iter_text()
             first_chunk = next(chunks)

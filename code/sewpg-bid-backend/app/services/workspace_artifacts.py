@@ -15,17 +15,17 @@ from app.services.parse_profiles import (
 )
 
 
-def _profile_for_workspace(value: Any = "技术标") -> ParseProfile:
+def _profile_for_workspace(value: Any) -> ParseProfile:
     if isinstance(value, ParseProfile):
         return value
-    return resolve_parse_profile(str(value or "技术标"))
+    return resolve_parse_profile(str(value))
 
 
-def workspace_slug_for_bid_type(bid_type: Any = "技术标") -> str:
+def workspace_slug_for_bid_type(bid_type: Any) -> str:
     return _profile_for_workspace(bid_type).key
 
 
-def workspace_dir(project_id: str, profile_or_bid_type: Any = "技术标") -> Path:
+def workspace_dir(project_id: str, profile_or_bid_type: Any) -> Path:
     profile = _profile_for_workspace(profile_or_bid_type)
     return settings.documents_dir / project_id / profile.workspace_dirname
 
@@ -38,7 +38,7 @@ def business_workspace_dir(project_id: str) -> Path:
     return workspace_dir(project_id, BUSINESS_PARSE_PROFILE)
 
 
-def workspace_appendices_dir(project_id: str, profile_or_bid_type: Any = "技术标") -> Path:
+def workspace_appendices_dir(project_id: str, profile_or_bid_type: Any) -> Path:
     return workspace_dir(project_id, profile_or_bid_type) / "appendices"
 
 
@@ -46,7 +46,7 @@ def technical_workspace_appendices_dir(project_id: str) -> Path:
     return workspace_appendices_dir(project_id, TECHNICAL_PARSE_PROFILE)
 
 
-def workspace_parse_dir(project_id: str, profile_or_bid_type: Any = "技术标") -> Path:
+def workspace_parse_dir(project_id: str, profile_or_bid_type: Any) -> Path:
     return workspace_dir(project_id, profile_or_bid_type) / "parse"
 
 
@@ -54,12 +54,12 @@ def technical_workspace_parse_dir(project_id: str) -> Path:
     return workspace_parse_dir(project_id, TECHNICAL_PARSE_PROFILE)
 
 
-def workspace_stage_dir(project_id: str, stage_name: str, bid_type: Any = "技术标") -> Path:
+def workspace_stage_dir(project_id: str, stage_name: str, bid_type: Any) -> Path:
     return workspace_dir(project_id, bid_type) / stage_name
 
 
 def technical_workspace_stage_dir(project_id: str, stage_name: str) -> Path:
-    return workspace_stage_dir(project_id, stage_name, "技术标")
+    return workspace_stage_dir(project_id, stage_name, TECHNICAL_PARSE_PROFILE)
 
 
 def legacy_workspace_roots(project_id: str, parse_storage: dict[str, Any] | None = None) -> list[Path]:
@@ -174,7 +174,7 @@ def promote_parse_artifacts_to_workspace(
     parse_result: dict[str, Any],
     parse_storage: dict[str, Any],
     *,
-    bid_type: str = "技术标",
+    bid_type: str,
     clean_workspace: bool = True,
 ) -> dict[str, Any]:
     """Copy the current S1 parse JSON and generated Word assets into the project workspace."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
 import shutil
@@ -12,11 +13,22 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.config import BASE_DIR, settings
-from app.services.material_store import material_store
+from app.services.bid_fill_generation_state import save_fill_generation_result_state
+from app.services.bid_project_state import project_parse_input_records
+from app.services.bid_type import TECHNICAL_BID_TYPE, require_bid_type
 from app.services.minio_client import minio_client
 from app.services.onlyoffice_documents import document_path
-from app.services.store import now_iso, store
+from app.services.bid_runtime_state import now_iso
+from app.services.technical_gap_repository import get_technical_gap_project_runtime_state
+from app.services.technical_gap_review import build_technical_review_payload
+from app.services.technical_gap_state import ensure_technical_gap_state
+from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
+from app.services.workspace_project_access import (
+    get_workspace_project_runtime_state,
+    persist_workspace_project_state,
+    require_workspace_project_for_update,
+)
 from app.services.workspace_artifacts import legacy_workspace_roots, technical_workspace_stage_dir
 from app.services.wiki_export import export_wiki
 
@@ -36,10 +48,15 @@ def assemble_tech_bid_for_project_with_progress(
     data: dict[str, Any] | None = None,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
-    project = store.get_project(project_id)
-    outline_state = store.get_outline_state(project_id)
-    parse_storage = store.get_parse_storage(project_id)
-    _, template_file_records = store.get_parse_inputs(project_id)
+    project = get_workspace_project_runtime_state(
+        project_id,
+        bid_type=TECHNICAL_BID_TYPE,
+        not_found_error=KeyError,
+        wrong_type_error=lambda _project_id: ValueError("技术标生成标书仅支持技术标项目。"),
+    )
+    outline_state = copy.deepcopy(project.get("outline_state") if isinstance(project.get("outline_state"), dict) else {})
+    parse_storage = copy.deepcopy(project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {})
+    _, template_file_records = project_parse_input_records(project_id, project)
 
     if outline_state.get("reviewStatus") != "confirmed":
         raise ValueError("请先完成目录确认后再生成标书。")
@@ -70,10 +87,14 @@ def assemble_tech_bid_for_project_with_progress(
 
     output_file = work_dir / f"{_safe_filename(str(project.get('name') or project_id), project_id)}_正文.docx"
     manifest_path = work_dir / "s7_assembly_input.json"
+    bid_type = require_bid_type(
+        project.get("bidType"),
+        error_message="技术标正文拼装必须显式传入技术标项目。",
+    )
     manifest = {
         "projectId": project_id,
         "projectName": str(project.get("name") or project_id),
-        "bidType": str(project.get("bidType") or "技术标"),
+        "bidType": bid_type,
         "workDir": str(work_dir),
         "tocJsonPath": str(toc_json_path),
         "gapPlanPath": str(gap_plan_path) if gap_plan_path else "",
@@ -179,7 +200,14 @@ def assemble_tech_bid_for_project_with_progress(
             }
         ]
 
-    return store.save_fill_generation_result(
+    project_for_update = require_workspace_project_for_update(
+        project_id,
+        bid_type=TECHNICAL_BID_TYPE,
+        not_found_error=KeyError,
+        wrong_type_error=lambda _project_id: ValueError("技术标生成标书仅支持技术标项目。"),
+    )
+    payload = save_fill_generation_result_state(
+        project_for_update,
         project_id=project_id,
         summary="技术标正文拼装完成。",
         sections=sections,
@@ -207,6 +235,8 @@ def assemble_tech_bid_for_project_with_progress(
             "formatClean": format_clean,
         },
     )
+    persist_workspace_project_state(project_for_update)
+    return payload
 
 
 def _prepare_work_dir(project_id: str, parse_storage: dict[str, Any]) -> Path:
@@ -247,7 +277,7 @@ def _prepare_toc_json(
     parse_storage: dict[str, Any],
     work_dir: Path,
 ) -> Path:
-    directory_state = store.get_directory_state(project_id)
+    directory_state = project.get("directory_state") if isinstance(project.get("directory_state"), dict) else {}
     opencode_output = directory_state.get("opencodeOutput") or {}
     candidates = [
         str(opencode_output.get("tocJsonPath") or ""),
@@ -286,8 +316,9 @@ def _prepare_toc_json(
 
 
 def _prepare_gap_plan(project_id: str, work_dir: Path) -> Path | None:
-    review_state = store.get_review_items(project_id)
-    gap_state = store._require(project_id).get("gap_state") or {}
+    technical_project = get_technical_gap_project_runtime_state(project_id)
+    gap_state = ensure_technical_gap_state(technical_project)
+    review_state = build_technical_review_payload(technical_project, gap_state)
     plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
     if not plan:
         recovered_plan_path = technical_workspace_stage_dir(project_id, "s4_gap_workdir") / "gap_plan.json"
@@ -445,7 +476,10 @@ def _prepare_wiki_dir(project: dict[str, Any], parse_storage: dict[str, Any], wo
     try:
         export_wiki(
             api_base=settings.bid_internal_api_base_url or "http://fastapi:8000",
-            bid_type=str(project.get("bidType") or "投标文件"),
+            bid_type=require_bid_type(
+                project.get("bidType"),
+                error_message="技术标 Wiki 导出必须显式传入技术标项目。",
+            ),
             out_dir=target,
         )
     except Exception:
@@ -504,8 +538,7 @@ def _augment_wiki_with_material_cards(toc_json_path: Path, wiki_dir: Path, proje
         return 0
 
     raw_payload = _run_async(
-        material_store.raw_files(
-            bid_type=str(project.get("bidType") or "技术标"),
+        technical_material_store.raw_files(
             page=1,
             page_size=1000,
         )
@@ -778,6 +811,10 @@ def _render_runtime_material_card(item: dict[str, Any], section: str) -> str:
     scope = "通用" if str(item.get("materialTier") or "") == "standard" else "定制"
     category = str(item.get("group") or Path(str(item.get("folderPath") or "素材")).name or "素材")
     cleaned_name = str(item.get("cleanedFileName") or "")
+    bid_type = require_bid_type(
+        item.get("bidType"),
+        error_message="技术标运行态素材卡片必须显式传入标类。",
+    )
     lines = [
         "---",
         f"name: {json.dumps(card_name, ensure_ascii=False)}",
@@ -787,7 +824,7 @@ def _render_runtime_material_card(item: dict[str, Any], section: str) -> str:
         f"material_id: {json.dumps(str(item.get('id') or ''), ensure_ascii=False)}",
         f"identity_scope: {json.dumps(str(item.get('identityScope') or 'general'), ensure_ascii=False)}",
         f"material_scope: {json.dumps(str(item.get('materialScope') or item.get('identityScope') or 'general'), ensure_ascii=False)}",
-        f"bid_type: {json.dumps(str(item.get('bidType') or '技术标'), ensure_ascii=False)}",
+        f"bid_type: {json.dumps(bid_type, ensure_ascii=False)}",
         f"customer_id: {json.dumps(str(item.get('customerId') or ''), ensure_ascii=False)}",
         f"customer_name: {json.dumps(str(item.get('customerCanonicalName') or item.get('customerName') or ''), ensure_ascii=False)}",
         f"customer_aliases: {json.dumps('、'.join(str(alias) for alias in item.get('customerAliases') or []), ensure_ascii=False)}",
@@ -868,9 +905,9 @@ def _copy_material_to_library(material_id: str, original_path: str, target_path:
 
     if material_id:
         try:
-            payload = _run_async(material_store.raw_download_cleaned_content(material_id))
+            payload = _run_async(technical_material_store.raw_download_cleaned_content(material_id))
         except Exception:
-            payload = _run_async(material_store.raw_download_content(material_id))
+            payload = _run_async(technical_material_store.raw_download_content(material_id))
         mime_type = str(payload.get("mimeType") or "")
         file_name = str(payload.get("fileName") or "")
         if "wordprocessingml" not in mime_type and not file_name.lower().endswith(".docx"):

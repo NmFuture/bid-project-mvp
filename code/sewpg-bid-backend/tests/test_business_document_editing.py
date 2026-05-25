@@ -10,21 +10,28 @@ from docx import Document
 from app.core.config import settings
 from app.services.business_document_editing import apply_controlled_business_rewrite
 from app.services.onlyoffice_documents import document_path
+from app.services.store import store
 
 
 class BusinessDocumentEditingTests(unittest.TestCase):
     def setUp(self) -> None:
+        store.reset_for_tests()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.original_documents_dir = settings.documents_dir
         settings.documents_dir = Path(self.temp_dir.name) / "documents"
         settings.documents_dir.mkdir(parents=True, exist_ok=True)
 
     def tearDown(self) -> None:
+        store.reset_for_tests()
         settings.documents_dir = self.original_documents_dir
         self.temp_dir.cleanup()
 
+    def _create_project(self, bid_type: str = "商务标") -> str:
+        project = store.create_project({"name": "受控润色测试项目", "customerName": "测试业主", "bidType": bid_type})
+        return str(project["id"])
+
     def test_apply_controlled_rewrite_replaces_unique_paragraph_and_writes_history(self) -> None:
-        project_id = "PRJ-BIZ-REWRITE"
+        project_id = self._create_project("商务标")
         path = document_path(project_id)
         doc = Document()
         doc.add_paragraph("投标人承诺按招标文件要求履行合同。")
@@ -51,7 +58,7 @@ class BusinessDocumentEditingTests(unittest.TestCase):
         self.assertEqual(history[-1]["matchMode"], "exact_paragraph")
 
     def test_apply_controlled_rewrite_rejects_ambiguous_matches(self) -> None:
-        project_id = "PRJ-BIZ-REWRITE-DUP"
+        project_id = self._create_project("商务标")
         path = document_path(project_id)
         doc = Document()
         doc.add_paragraph("请严格响应招标文件要求。")
@@ -71,6 +78,24 @@ class BusinessDocumentEditingTests(unittest.TestCase):
             [paragraph.text for paragraph in updated.paragraphs],
             ["请严格响应招标文件要求。", "请严格响应招标文件要求。"],
         )
+
+    def test_apply_controlled_rewrite_rejects_technical_project(self) -> None:
+        project_id = self._create_project("技术标")
+        path = document_path(project_id)
+        doc = Document()
+        doc.add_paragraph("技术标正文不应由商务标润色入口修改。")
+        doc.save(path)
+
+        with self.assertRaisesRegex(ValueError, "商务标受控润色仅支持商务标项目"):
+            apply_controlled_business_rewrite(
+                project_id,
+                original_text="技术标正文不应由商务标润色入口修改。",
+                replacement_text="错误替换。",
+                operator="测试用户",
+            )
+
+        updated = Document(str(path))
+        self.assertEqual([paragraph.text for paragraph in updated.paragraphs], ["技术标正文不应由商务标润色入口修改。"])
 
 
 if __name__ == "__main__":

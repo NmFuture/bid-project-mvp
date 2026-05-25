@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { materialsAPI, projectsAPI } from '../../api'
 import Button from '../ui/Button'
 
 const MANUAL_TURBINE_VALUE = '__manual_turbine_model__'
@@ -68,7 +67,7 @@ const buildInitialForm = (project = null, defaultBidType = '') => ({
   customerCanonicalName: String(project?.materialCustomerName || project?.customerCanonicalName || project?.customerName || ''),
   materialProjectName: String(project?.materialProjectName || ''),
   manager: String(project?.manager || ''),
-  bidType: String(project?.bidType || defaultBidType || '技术标'),
+  bidType: String(project?.bidType || defaultBidType || ''),
   turbineModel: normalizeTurbineModel(project?.turbineModel || project?.selectedTurbineModel),
   startDate: String(project?.startDate || ''),
   endDate: String(project?.endDate || project?.deadline || ''),
@@ -137,6 +136,11 @@ export default function ProjectWizardModal({
   forceReviewDecision = '',
   defaultBidType = '',
   lockBidType = false,
+  bidTypeOptions = [],
+  requiresTurbineModel = false,
+  projectsApi = null,
+  materialsApi = null,
+  turbineModelOptionsApi = null,
 }) {
   const isUpdateMode = mode === 'update' && Boolean(project?.id)
   const draftKey = useMemo(() => buildDraftKey({ mode, project, defaultBidType }), [defaultBidType, mode, project])
@@ -171,6 +175,10 @@ export default function ProjectWizardModal({
   const [createError, setCreateError] = useState('')
 
   const updateForm = (key, val) => setForm((prev) => ({ ...prev, [key]: val }))
+  const resolvedBidTypeOptions = useMemo(() => {
+    const items = lockBidType ? [form.bidType] : bidTypeOptions
+    return [...new Set((items || []).map((item) => String(item || '').trim()).filter(Boolean))]
+  }, [bidTypeOptions, form.bidType, lockBidType])
   const selectedMaterialCustomer = materialCustomers.find((item) => item.id === selectedMaterialCustomerId)
   const selectedMaterialProject = materialProjects.find((item) => item.id === selectedMaterialProjectId)
   const selectedTurbineId = form.turbineModel?.id || form.turbineModel?.model || ''
@@ -225,7 +233,10 @@ export default function ProjectWizardModal({
       setLoadingIdentities(true)
       setIdentityError('')
       try {
-        const payload = await materialsAPI.identityOptions({ bidType: form.bidType })
+        if (!materialsApi?.identityOptions) {
+          throw new Error('项目素材身份接口未配置。')
+        }
+        const payload = await materialsApi.identityOptions({ bidType: form.bidType })
         if (!mounted) return
         const customers = normalizeCustomers(payload?.customers || [])
         const projects = normalizeMaterialProjects(payload?.projects || [])
@@ -292,12 +303,12 @@ export default function ProjectWizardModal({
     return () => {
       mounted = false
     }
-  }, [form.bidType, hasDraft, isUpdateMode, project?.customerId, project?.customerName, project?.keyAccountId, project?.materialCustomerId, project?.materialProjectId, project?.materialProjectMode])
+  }, [form.bidType, hasDraft, isUpdateMode, materialsApi, project?.customerId, project?.customerName, project?.keyAccountId, project?.materialCustomerId, project?.materialProjectId, project?.materialProjectMode])
 
   useEffect(() => {
     let mounted = true
     const loadTurbineOptions = async () => {
-      if (form.bidType !== '技术标') {
+      if (!requiresTurbineModel) {
         setTurbineOptions([])
         setTurbineError('')
         return
@@ -305,7 +316,10 @@ export default function ProjectWizardModal({
       setLoadingTurbines(true)
       setTurbineError('')
       try {
-        const payload = await materialsAPI.turbineModelOptions({ bidType: form.bidType })
+        if (!turbineModelOptionsApi?.turbineModelOptions) {
+          throw new Error('投标机型候选接口未配置。')
+        }
+        const payload = await turbineModelOptionsApi.turbineModelOptions({ bidType: form.bidType })
         if (!mounted) return
         const options = (Array.isArray(payload?.items) ? payload.items : []).map(normalizeTurbineModel).filter((item) => item.model)
         setTurbineOptions(options)
@@ -326,7 +340,7 @@ export default function ProjectWizardModal({
     return () => {
       mounted = false
     }
-  }, [form.bidType])
+  }, [form.bidType, requiresTurbineModel, turbineModelOptionsApi])
 
   const missingRequiredItems = useMemo(() => {
     const items = []
@@ -337,17 +351,17 @@ export default function ProjectWizardModal({
       items.push('普通客户')
     }
     if (materialProjectMode === 'library' && !selectedMaterialProjectId) items.push('重点项目')
-    if (form.bidType === '技术标' && !String(form.turbineModel?.model || '').trim()) items.push('投标机型')
+    if (requiresTurbineModel && !String(form.turbineModel?.model || '').trim()) items.push('投标机型')
     if (!form.manager.trim()) items.push('负责人')
     if (!form.startDate) items.push('起始日期')
     if (!form.endDate) items.push('截止日期')
     return items
-  }, [customerMode, form, materialProjectMode, selectedMaterialCustomerId, selectedMaterialProjectId])
+  }, [customerMode, form, materialProjectMode, requiresTurbineModel, selectedMaterialCustomerId, selectedMaterialProjectId])
   const canSubmit = missingRequiredItems.length === 0
   const nextDisabledReason = missingRequiredItems.length ? `请先补全：${missingRequiredItems.join('、')}` : ''
 
   const archivePathPreview = useMemo(() => {
-    const bidType = form.bidType || '技术标'
+    const bidType = form.bidType || '标书类型'
     const customer = form.customerName.trim() || '客户名'
     const projectIdentity = materialProjectMode === 'library'
       ? selectedMaterialProject?.projectId || selectedMaterialProjectId || '项目ID'
@@ -373,7 +387,7 @@ export default function ProjectWizardModal({
         materialProjectId: materialProjectMode === 'library' ? selectedMaterialProject?.projectId || selectedMaterialProjectId : '',
         materialProjectCode: materialProjectMode === 'library' ? selectedMaterialProject?.projectCode || selectedMaterialProjectId : form.projectCode,
         materialProjectName: materialProjectMode === 'library' ? selectedMaterialProject?.name || selectedMaterialProjectId : (form.materialProjectName || form.name),
-        turbineModel: form.bidType === '技术标'
+        turbineModel: requiresTurbineModel
           ? {
               ...form.turbineModel,
               model: String(form.turbineModel?.model || '').trim(),
@@ -383,12 +397,13 @@ export default function ProjectWizardModal({
       }
       if (forceReviewDecision) payload.reviewDecision = forceReviewDecision
 
+      if (!projectsApi) throw new Error('项目接口未配置。')
       if (isUpdateMode) {
-        const updatedProject = await projectsAPI.update(project.id, payload)
+        const updatedProject = await projectsApi.update(project.id, payload)
         clearDraft(draftKey)
         onCreated(updatedProject)
       } else {
-        const createdProject = await projectsAPI.create(payload)
+        const createdProject = await projectsApi.create(payload)
         clearDraft(draftKey)
         onCreated(createdProject)
       }
@@ -434,14 +449,9 @@ export default function ProjectWizardModal({
                     onChange={(e) => updateForm('bidType', e.target.value)}
                     disabled={lockBidType}
                   >
-                    {lockBidType ? (
-                      <option>{form.bidType}</option>
-                    ) : (
-                      <>
-                        <option>技术标</option>
-                        <option>商务标</option>
-                      </>
-                    )}
+                    {resolvedBidTypeOptions.length
+                      ? resolvedBidTypeOptions.map((item) => <option key={item}>{item}</option>)
+                      : <option>{form.bidType || '请选择标书类型'}</option>}
                   </select>
                 </div>
                 <div className="md:col-span-2">
@@ -610,7 +620,7 @@ export default function ProjectWizardModal({
                   )}
                 </div>
               </div>
-              {form.bidType === '技术标' && (
+              {requiresTurbineModel && (
                 <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
                   <div className="lg:col-span-3">
                     <label className="block text-sm font-semibold text-on-surface mb-2">投标机型 *</label>

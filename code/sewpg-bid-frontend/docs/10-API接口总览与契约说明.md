@@ -1,63 +1,57 @@
 # 前端 API 接口总览
 
-> 更新时间：2026-05-03
-> 适用范围：`sewpg-bid-frontend` 通过 `/api` 调用正式 FastAPI。
+> 更新时间：2026-05-24
+> 适用范围：`sewpg-bid-frontend` 通过双轨 API 调用正式 FastAPI。
 
-本文件只保留前端侧阅读入口，详细接口契约以仓库根目录的正式文档为准：
-
-- `/Users/wlb/Agent/bid-project/doc/06-MVP接口文档.md`
-- `/Users/wlb/Agent/bid-project/code/sewpg-bid-api/MVP接口与参数核心版_极简版.md`
-
-## 当前阶段口径
-
-当前技术标流程统一为：
+当前前端已经从旧单线接口改为双轨接口：
 
 ```text
-S0 解析
-  -> S1 模板与目录
-  -> S2 审核目录
-  -> S3 缺口处理
-  -> S4 生成标书
-  -> S5 共创
-  -> S6 导出
+技术标页面 -> technical*API -> /api/technical/...
+商务标页面 -> business*API -> /api/business/...
 ```
 
-- `S0` 是全局解析/审核模块，不出现在项目阶段条中。
-- 项目阶段条只展示 `S1-S6`。
-- `fill-generation`、`coverage`、`review-items` 等接口名保留历史兼容，但用户阶段和页面语义按 `S0-S6` 理解。
-- 旧 `S7/S8/S9/S10` 只允许出现在历史内部目录名、兼容接口名或归档资料里。
+## 当前入口
 
-## 前端调用约定
+```text
+/parse/technical
+/parse/business
+/workspace/tech/...
+/workspace/business/...
+```
 
-- 前端统一通过 `src/api/index.js` 调用 `/api`。
-- 前端不直接调用 `opencode`。
-- 前端不直接处理 OnlyOffice callback。
-- FastAPI 是唯一正式业务后端。
+旧根路由和 workspace 兼容别名不再作为当前入口。
 
-## 当前重点接口域
+## API 封装
 
-| 域 | 前端封装 | 正式说明 |
+| 领域 | 技术标封装 | 商务标封装 |
 |---|---|---|
-| 认证 | `authAPI` | 登录、会话恢复、退出 |
-| 项目与阶段 | `projectsAPI`、`stagesAPI` | 项目列表、详情、`S1-S6` 阶段条 |
-| S0 解析 | `parseAPI` | 多招标文件上传、解析、投标决策 |
-| S1/S2 目录 | `directoryAPI`、`outlineAPI` | 模板读取、目录生成、目录审核 |
-| S3 缺口处理 | `gapsAPI`、`reviewItemsAPI` | 缺口计划、补料、选择素材、AI 填写、确认 |
-| S4 生成标书 | `fillGenerationAPI`、`coverageAPI` | 正文拼装与覆盖诊断 |
-| S5/S6 文档 | `documentAPI`、`exportAPI` | OnlyOffice 共创、最终下载、导出前检查 |
-| 素材库 | `materialsAPI` | 技术标原始素材、技术标 Wiki、商务标空状态 |
-| 设置/审计 | `settingsAPI`、`auditAPI` | 用户、模板、模型配置、审计日志 |
+| 项目 | `technicalProjectsAPI` | `businessProjectsAPI` |
+| 阶段 | `technicalStagesAPI` | `businessStagesAPI` |
+| 解析 | `technicalParseAPI` | `businessParseAPI` |
+| 目录生成 | `technicalDirectoryAPI` | `businessDirectoryAPI` |
+| 目录审核 | `technicalOutlineAPI` | `businessOutlineAPI` |
+| 缺口 | `technicalGapsAPI` | `businessGapsAPI` |
+| 生成 | `technicalGenerateAPI` | `businessGenerateAPI` |
+| 文档 | `technicalDocumentAPI` | `businessDocumentAPI` |
+| 素材/Wiki | `technicalMaterialsAPI` | `businessMaterialsAPI` |
+| 审计 | `technicalAuditAPI` | `businessAuditAPI` |
 
-## 素材库口径
+通用封装只保留认证、设置和仪表盘：
 
-素材库是一级准备模块，和 `解析 / 技术标 / 商务标 / 审计 / 设置` 同级。
+- `authAPI`
+- `settingsAPI`
+- `dashboardAPI`
 
-当前页面口径：
+## 页面约定
 
-- 顶层：`技术标 / 商务标`
-- 技术标：`原始素材 / Wiki`
-- 技术标原始素材：`通用素材 / 客户素材 / 项目素材`
-- 技术标 Wiki：`01-素材总表 / 02-章节映射表 / 03-素材卡片 / 04-待填写清单 / 05-使用规则`
-- 商务标：原始素材和 Wiki 先保留为空
+- 技术标页面只调用 `technical*API`。
+- 商务标页面只调用 `business*API`。
+- 共享 UI 组件可以复用，但不能在组件内部直接调用业务 API。
+- 新建/完善项目弹窗是共享 UI 壳，必须通过 `workspaceKind` 选择对应双轨 API。
 
-后续如果本文件和根目录正式接口文档冲突，以 `/Users/wlb/Agent/bid-project/doc/06-MVP接口文档.md` 为准。
+## 当前事实来源
+
+- `/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/src/api/index.js`
+- `/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/technical.py`
+- `/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/business.py`
+- `/Users/wlb/Agent/bid-project/doc/31-技术标与商务标双轨独立化实施计划.md`

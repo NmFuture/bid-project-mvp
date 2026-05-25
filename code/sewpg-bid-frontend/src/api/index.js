@@ -245,376 +245,464 @@ async function request(path, options = {}) {
   })
 }
 
-// ===== Projects =====
-export const projectsAPI = {
-  list: (params = {}) => {
-    const qs = new URLSearchParams(cleanQuery(params)).toString()
-    return request(`/projects${qs ? `?${qs}` : ''}`)
-  },
-  get: (id) => request(`/projects/${id}`),
-  create: (data) => request('/projects', { method: 'POST', body: data }),
-  update: (id, data) => request(`/projects/${id}`, { method: 'PUT', body: data }),
-  delete: (id) => request(`/projects/${id}`, { method: 'DELETE' }),
-  cockpit: (id) => request(`/projects/${id}/cockpit`),
-  materialsPath: (id) => request(`/projects/${id}/materials-path`),
-  templateFallback: (id) => request(`/projects/${id}/template-fallback`),
-  updateTemplateFallback: (id, data) =>
-    request(`/projects/${id}/template-fallback`, { method: 'PUT', body: data }),
-  parseStatus: (id) => request(`/projects/${id}/materials/parse-status`),
-}
-
-// ===== Customers =====
-export const customersAPI = {
-  keyAccounts: () => request('/customers/key-accounts'),
-}
-
-// ===== Stages =====
-export const stagesAPI = {
-  list: (projectId) => request(`/projects/${projectId}/stages`),
-  update: (projectId, stage, data) =>
-    request(`/projects/${projectId}/stages/${stage}`, { method: 'PUT', body: data }),
-}
-
-// ===== S1 Parse =====
-export const parseAPI = {
-  results: (projectId) => request(`/projects/${projectId}/parse-results`),
-  progress: (projectId) => request(`/projects/${projectId}/parse-results/progress`),
-  run: (projectId) => request(`/projects/${projectId}/parse-results/run`, { method: 'POST' }),
-  uploadAndRun: (projectId, data) =>
-    request(`/projects/${projectId}/parse-results/upload-and-run`, {
-      method: 'POST',
-      body: data?.formData || data,
-      timeoutMs: 5 * 60 * 1000,
-      retryCount: 0,
-    }),
-  uploadTemplates: (projectId, data) =>
-    request(`/projects/${projectId}/template-files/upload`, {
-      method: 'POST',
-      body: data?.formData || data,
-      timeoutMs: 5 * 60 * 1000,
-      retryCount: 0,
-    }),
-  updateItem: (projectId, rid, data) =>
-    request(`/projects/${projectId}/parse-results/${rid}`, { method: 'PUT', body: data }),
-  appendixPreview: (projectId, appendixId) =>
-    request(`/projects/${projectId}/parse-results/appendices/${encodeURIComponent(appendixId)}/preview`),
-  approveAppendixAsset: (projectId, appendixId, data = {}) =>
-    request(`/projects/${projectId}/parse-results/appendices/${encodeURIComponent(appendixId)}/approve`, {
-      method: 'POST',
-      body: data,
-      timeoutMs: 5 * 60 * 1000,
-      retryCount: 0,
-    }),
-  approveAllAppendixAssets: (projectId, data = {}) =>
-    request(`/projects/${projectId}/parse-results/appendices/approve`, {
-      method: 'POST',
-      body: data,
-      timeoutMs: 5 * 60 * 1000,
-      retryCount: 0,
-    }),
-  approveBusinessScoringAsset: (projectId, data = {}) =>
-    request(`/projects/${projectId}/parse-results/business-scoring/approve`, {
-      method: 'POST',
-      body: data,
-      timeoutMs: 5 * 60 * 1000,
-      retryCount: 0,
-    }),
-  approveCommitmentLetterAsset: (projectId, letterId, data = {}) =>
-    request(`/projects/${projectId}/parse-results/commitment-letters/${encodeURIComponent(letterId)}/approve`, {
-      method: 'POST',
-      body: data,
-      timeoutMs: 5 * 60 * 1000,
-      retryCount: 0,
-    }),
-  approveAllCommitmentLetterAssets: (projectId, data = {}) =>
-    request(`/projects/${projectId}/parse-results/commitment-letters/approve`, {
-      method: 'POST',
-      body: data,
-      timeoutMs: 5 * 60 * 1000,
-      retryCount: 0,
-    }),
-  commitmentLetterPreview: (projectId, letterId) =>
-    request(`/projects/${projectId}/parse-results/commitment-letters/${encodeURIComponent(letterId)}/preview`),
-}
-
-// ===== S2 Directory Generate =====
-export const directoryAPI = {
-  status: (projectId) => request(`/projects/${projectId}/directory-generation`),
-  run: (projectId) =>
-    request(`/projects/${projectId}/directory-generation/run`, {
-      method: 'POST',
-      timeoutMs: 5 * 60 * 1000,
-      retryCount: 0,
-    }),
-  stream: (projectId, handlers = {}) =>
-    createEventStream(`/projects/${projectId}/directory-generation/stream`, handlers),
-}
-
-// ===== S3 Outline =====
-export const outlineAPI = {
-  get: (projectId, params = {}) => {
-    const qs = new URLSearchParams(cleanQuery({ fileId: params.fileId })).toString()
-    return request(`/projects/${projectId}/outline${qs ? `?${qs}` : ''}`)
-  },
-  save: (projectId, data) => request(`/projects/${projectId}/outline`, { method: 'PUT', body: data }),
-  regenerate: (projectId) => request(`/projects/${projectId}/outline/regenerate`, { method: 'POST' }),
-  confirm: (projectId) => request(`/projects/${projectId}/outline/confirm`, { method: 'POST' }),
-}
-
-// ===== Gap Handling =====
-export const gapsAPI = {
-  detectionStatus: (projectId) => request(`/projects/${projectId}/gaps-detection`),
-  runDetection: (projectId) => request(`/projects/${projectId}/gaps-detection/run`, { method: 'POST' }),
-  list: (projectId) => request(`/projects/${projectId}/gaps`),
-  update: (projectId, gid, data) =>
-    request(`/projects/${projectId}/gaps/${gid}`, { method: 'PUT', body: data }),
-  upload: (projectId, gid, data) =>
-    request(`/projects/${projectId}/gaps/${gid}/upload`, { method: 'POST', body: data }),
-  selectMaterial: (projectId, gid, data) =>
-    request(`/projects/${projectId}/gaps/${gid}/select-material`, { method: 'POST', body: data }),
-  submitReview: (projectId) =>
-    request(`/projects/${projectId}/gaps/submit-review`, { method: 'POST' }),
-  facts: (projectId) => request(`/projects/${projectId}/gaps/facts`),
-  buildFacts: (projectId) =>
-    request(`/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
-  saveFacts: (projectId, data) =>
-    request(`/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
-  recheck: (projectId) =>
-    request(`/projects/${projectId}/gaps/recheck`, { method: 'POST' }),
-  aiFill: (projectId, gid, data) =>
-    request(`/projects/${projectId}/gaps/${gid}/ai-fill`, {
-      method: 'POST',
-      body: data,
-      timeoutMs: 10 * 60 * 1000,
-      retryCount: 0,
-    }),
-  aiFillAll: (projectId, data) =>
-    request(`/projects/${projectId}/gaps/ai-fill-all`, {
-      method: 'POST',
-      body: data,
-      timeoutMs: 30 * 60 * 1000,
-      retryCount: 0,
-    }),
-  submissions: (projectId) => request(`/projects/${projectId}/materials/submissions`),
-  submitMaterial: (projectId, data) =>
-    request(`/projects/${projectId}/materials/submissions`, { method: 'POST', body: data }),
-  updateMissing: (projectId, missingId, data) =>
-    request(`/projects/${projectId}/materials/missing/${missingId}`, { method: 'PATCH', body: data }),
-}
-
 // ===== Business Gap Handling =====
 export const businessGapsAPI = {
-  list: (projectId) => request(`/projects/${projectId}/business-gaps`),
-  run: (projectId) => request(`/projects/${projectId}/business-gaps/run`, { method: 'POST', timeoutMs: 10 * 60 * 1000, retryCount: 0 }),
-  facts: (projectId) => request(`/projects/${projectId}/business-gaps/facts`),
+  list: (projectId) => request(`/business/projects/${projectId}/business-gaps`),
+  run: (projectId) => request(`/business/projects/${projectId}/business-gaps/run`, { method: 'POST', timeoutMs: 10 * 60 * 1000, retryCount: 0 }),
+  facts: (projectId) => request(`/business/projects/${projectId}/business-gaps/facts`),
   selectableMaterials: (projectId, params = {}) => {
     const qs = new URLSearchParams(cleanQuery(params)).toString()
-    return request(`/projects/${projectId}/business-gaps/selectable-materials${qs ? `?${qs}` : ''}`)
+    return request(`/business/projects/${projectId}/business-gaps/selectable-materials${qs ? `?${qs}` : ''}`)
   },
   previewMaterial: (projectId, materialId, params = {}) => {
     const qs = new URLSearchParams(cleanQuery(params)).toString()
-    return request(`/projects/${projectId}/business-gaps/materials/${encodeURIComponent(materialId)}/preview${qs ? `?${qs}` : ''}`)
+    return request(`/business/projects/${projectId}/business-gaps/materials/${encodeURIComponent(materialId)}/preview${qs ? `?${qs}` : ''}`)
   },
   buildFacts: (projectId) =>
-    request(`/projects/${projectId}/business-gaps/facts/build`, { method: 'POST' }),
+    request(`/business/projects/${projectId}/business-gaps/facts/build`, { method: 'POST' }),
   saveFacts: (projectId, data) =>
-    request(`/projects/${projectId}/business-gaps/facts`, { method: 'PUT', body: data }),
+    request(`/business/projects/${projectId}/business-gaps/facts`, { method: 'PUT', body: data }),
   updateTask: (projectId, taskId, data) =>
-    request(`/projects/${projectId}/business-gaps/tasks/${taskId}`, { method: 'PATCH', body: data }),
+    request(`/business/projects/${projectId}/business-gaps/tasks/${taskId}`, { method: 'PATCH', body: data }),
   createManualTask: (projectId, tocNodeId, data) =>
-    request(`/projects/${projectId}/business-gaps/toc/${tocNodeId}/manual-task`, { method: 'POST', body: data }),
+    request(`/business/projects/${projectId}/business-gaps/toc/${tocNodeId}/manual-task`, { method: 'POST', body: data }),
   confirmArtifact: (projectId, taskId, data) =>
-    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/confirm-artifact`, { method: 'POST', body: data }),
+    request(`/business/projects/${projectId}/business-gaps/tasks/${taskId}/confirm-artifact`, { method: 'POST', body: data }),
   upload: (projectId, taskId, data) =>
-    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/upload`, { method: 'POST', body: data }),
+    request(`/business/projects/${projectId}/business-gaps/tasks/${taskId}/upload`, { method: 'POST', body: data }),
   uploadFiles: (projectId, taskId, data) =>
-    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/upload-files`, {
+    request(`/business/projects/${projectId}/business-gaps/tasks/${taskId}/upload-files`, {
       method: 'POST',
       body: data?.formData || data,
       timeoutMs: 5 * 60 * 1000,
       retryCount: 0,
     }),
   removeArtifact: (projectId, taskId, artifactId) =>
-    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/artifacts/${encodeURIComponent(artifactId)}`, { method: 'DELETE' }),
+    request(`/business/projects/${projectId}/business-gaps/tasks/${taskId}/artifacts/${encodeURIComponent(artifactId)}`, { method: 'DELETE' }),
   selectMaterial: (projectId, taskId, data) =>
-    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/select-material`, { method: 'POST', body: data }),
+    request(`/business/projects/${projectId}/business-gaps/tasks/${taskId}/select-material`, { method: 'POST', body: data }),
   selectTemplate: (projectId, taskId, data) =>
-    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/select-template`, { method: 'POST', body: data }),
+    request(`/business/projects/${projectId}/business-gaps/tasks/${taskId}/select-template`, { method: 'POST', body: data }),
   aiDraft: (projectId, taskId, data) =>
-    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/ai-draft`, {
+    request(`/business/projects/${projectId}/business-gaps/tasks/${taskId}/ai-draft`, {
       method: 'POST',
       body: data,
       timeoutMs: 10 * 60 * 1000,
       retryCount: 0,
     }),
   tableFill: (projectId, taskId, data) =>
-    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/table-fill`, {
+    request(`/business/projects/${projectId}/business-gaps/tasks/${taskId}/table-fill`, {
       method: 'POST',
       body: data,
       timeoutMs: 10 * 60 * 1000,
       retryCount: 0,
     }),
   syncArtifactMaterial: (projectId, taskId, data) =>
-    request(`/projects/${projectId}/business-gaps/tasks/${taskId}/sync-artifact-material`, { method: 'POST', body: data }),
+    request(`/business/projects/${projectId}/business-gaps/tasks/${taskId}/sync-artifact-material`, { method: 'POST', body: data }),
 }
 
-// ===== Gap Confirmation Preview =====
-export const reviewAPI = {
-  list: (projectId) => request(`/projects/${projectId}/review-items`),
-  prepareParse: (projectId) =>
-    request(`/projects/${projectId}/review-items/prepare`, { method: 'POST' }),
-  document: (projectId) => request(`/projects/${projectId}/review-items/document`),
-  saveDocument: (projectId, data) =>
-    request(`/projects/${projectId}/review-items/document/save`, { method: 'PUT', body: data }),
-  forceSaveDocument: (projectId) =>
-    request(`/projects/${projectId}/review-items/document/force-save`, { method: 'POST' }),
-  confirm: (projectId) =>
-    request(`/projects/${projectId}/review-items/confirm`, { method: 'POST' }),
+// ===== Technical workspace facades =====
+export const technicalProjectsAPI = {
+  list: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/technical/projects${qs ? `?${qs}` : ''}`)
+  },
+  get: (id) => request(`/technical/projects/${id}`),
+  create: (data) => request('/technical/projects', { method: 'POST', body: data }),
+  update: (id, data) => request(`/technical/projects/${id}`, { method: 'PUT', body: data }),
+  delete: (id) => request(`/technical/projects/${id}`, { method: 'DELETE' }),
+  materialsPath: (id) => request(`/technical/projects/${id}/materials-path`),
+  templateFallback: (id) => request(`/technical/projects/${id}/template-fallback`),
+  updateTemplateFallback: (id, data) =>
+    request(`/technical/projects/${id}/template-fallback`, { method: 'PUT', body: data }),
+  parseStatus: (id) => request(`/technical/projects/${id}/materials/parse-status`),
 }
 
-// ===== Bid Generation =====
-export const generateAPI = {
-  status: (projectId) => request(`/projects/${projectId}/fill-generation`),
+export const technicalStagesAPI = {
+  list: (projectId) => request(`/technical/projects/${projectId}/stages`),
+  update: (projectId, stage, data) =>
+    request(`/technical/projects/${projectId}/stages/${stage}`, { method: 'PUT', body: data }),
+}
+
+export const technicalParseAPI = {
+  results: (projectId) => request(`/technical/projects/${projectId}/parse-results`),
+  progress: (projectId) => request(`/technical/projects/${projectId}/parse-results/progress`),
+  run: (projectId) => request(`/technical/projects/${projectId}/parse-results/run`, { method: 'POST' }),
+  uploadAndRun: (projectId, data) =>
+    request(`/technical/projects/${projectId}/parse-results/upload-and-run`, {
+      method: 'POST',
+      body: data?.formData || data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  uploadTemplates: (projectId, data) =>
+    request(`/technical/projects/${projectId}/template-files/upload`, {
+      method: 'POST',
+      body: data?.formData || data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  appendixPreview: (projectId, appendixId) =>
+    request(`/technical/projects/${projectId}/parse-results/appendices/${encodeURIComponent(appendixId)}/preview`),
+  approveAppendixAsset: (projectId, appendixId, data = {}) =>
+    request(`/technical/projects/${projectId}/parse-results/appendices/${encodeURIComponent(appendixId)}/approve`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  approveAllAppendixAssets: (projectId, data = {}) =>
+    request(`/technical/projects/${projectId}/parse-results/appendices/approve`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+}
+
+export const technicalDirectoryAPI = {
+  status: (projectId) => request(`/technical/projects/${projectId}/directory-generation`),
   run: (projectId) =>
-    request(`/projects/${projectId}/fill-generation/run`, {
+    request(`/technical/projects/${projectId}/directory-generation/run`, {
+      method: 'POST',
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  stream: (projectId, handlers = {}) =>
+    createEventStream(`/technical/projects/${projectId}/directory-generation/stream`, handlers),
+}
+
+export const technicalOutlineAPI = {
+  get: (projectId, params = {}) => {
+    const qs = new URLSearchParams(cleanQuery({ fileId: params.fileId })).toString()
+    return request(`/technical/projects/${projectId}/outline${qs ? `?${qs}` : ''}`)
+  },
+  save: (projectId, data) => request(`/technical/projects/${projectId}/outline`, { method: 'PUT', body: data }),
+  regenerate: (projectId) => request(`/technical/projects/${projectId}/outline/regenerate`, { method: 'POST' }),
+  confirm: (projectId) => request(`/technical/projects/${projectId}/outline/confirm`, { method: 'POST' }),
+}
+
+export const technicalGapsAPI = {
+  detectionStatus: (projectId) => request(`/technical/projects/${projectId}/gaps-detection`),
+  runDetection: (projectId) => request(`/technical/projects/${projectId}/gaps-detection/run`, { method: 'POST' }),
+  list: (projectId) => request(`/technical/projects/${projectId}/gaps`),
+  update: (projectId, gid, data) =>
+    request(`/technical/projects/${projectId}/gaps/${gid}`, { method: 'PUT', body: data }),
+  upload: (projectId, gid, data) =>
+    request(`/technical/projects/${projectId}/gaps/${gid}/upload`, { method: 'POST', body: data }),
+  selectMaterial: (projectId, gid, data) =>
+    request(`/technical/projects/${projectId}/gaps/${gid}/select-material`, { method: 'POST', body: data }),
+  submitReview: (projectId) =>
+    request(`/technical/projects/${projectId}/gaps/submit-review`, { method: 'POST' }),
+  facts: (projectId) => request(`/technical/projects/${projectId}/gaps/facts`),
+  buildFacts: (projectId) =>
+    request(`/technical/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
+  saveFacts: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
+  recheck: (projectId) =>
+    request(`/technical/projects/${projectId}/gaps/recheck`, { method: 'POST' }),
+  aiFill: (projectId, gid, data) =>
+    request(`/technical/projects/${projectId}/gaps/${gid}/ai-fill`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 10 * 60 * 1000,
+      retryCount: 0,
+    }),
+  aiFillAll: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/ai-fill-all`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 30 * 60 * 1000,
+      retryCount: 0,
+    }),
+  submissions: (projectId) => request(`/technical/projects/${projectId}/materials/submissions`),
+  submitMaterial: (projectId, data) =>
+    request(`/technical/projects/${projectId}/materials/submissions`, { method: 'POST', body: data }),
+  updateMissing: (projectId, missingId, data) =>
+    request(`/technical/projects/${projectId}/materials/missing/${missingId}`, { method: 'PATCH', body: data }),
+}
+
+export const technicalGenerateAPI = {
+  status: (projectId) => request(`/technical/projects/${projectId}/fill-generation`),
+  run: (projectId) =>
+    request(`/technical/projects/${projectId}/fill-generation/run`, {
       method: 'POST',
       timeoutMs: 10 * 60 * 1000,
       retryCount: 0,
     }),
 }
 
-// ===== Coverage Diagnostics =====
-export const coverageAPI = {
-  get: (projectId) => request(`/projects/${projectId}/coverage`),
+export const technicalCoverageAPI = {
+  get: (projectId) => request(`/technical/projects/${projectId}/coverage`),
 }
 
-// ===== Co-creation Document =====
-export const documentAPI = {
-  get: (projectId) => request(`/projects/${projectId}/document`),
+export const technicalDocumentAPI = {
+  get: (projectId) => request(`/technical/projects/${projectId}/document`),
   save: (projectId, data) =>
-    request(`/projects/${projectId}/document/save`, { method: 'PUT', body: data }),
+    request(`/technical/projects/${projectId}/document/save`, { method: 'PUT', body: data }),
   forceSave: (projectId) =>
-    request(`/projects/${projectId}/document/force-save`, { method: 'POST' }),
-  businessChat: (projectId, data) =>
-    request(`/projects/${projectId}/document/business-chat`, { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
-  businessRewriteSuggest: (projectId, data) =>
-    request(`/projects/${projectId}/document/business-rewrite/suggest`, { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
-  businessRewriteApply: (projectId, data) =>
-    request(`/projects/${projectId}/document/business-rewrite/apply`, { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
-  businessFormat: (projectId, data) =>
-    request(`/projects/${projectId}/document/business-format`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
-  final: (projectId) => request(`/projects/${projectId}/final-document`),
-  finalPdf: (projectId) => request(`/projects/${projectId}/final-document/pdf`, { timeoutMs: 5 * 60 * 1000, retryCount: 0 }),
+    request(`/technical/projects/${projectId}/document/force-save`, { method: 'POST' }),
+  technicalFormat: (projectId, data) =>
+    request(`/technical/projects/${projectId}/document/technical-format`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
+  final: (projectId) => request(`/technical/projects/${projectId}/final-document`),
+  finalPdf: (projectId) => request(`/technical/projects/${projectId}/final-document/pdf`, { timeoutMs: 5 * 60 * 1000, retryCount: 0 }),
 }
 
-// ===== Export =====
-export const exportAPI = {
-  check: (projectId) => request(`/projects/${projectId}/export/check`),
-  doExport: (projectId, data) => request(`/projects/${projectId}/export`, { method: 'POST', body: data }),
+export const technicalExportAPI = {
+  check: (projectId) => request(`/technical/projects/${projectId}/export/check`),
+  doExport: (projectId, data) => request(`/technical/projects/${projectId}/export`, { method: 'POST', body: data }),
 }
 
-// ===== Materials =====
-export const materialsAPI = {
-  identityOptions: (params = {}) => {
-    const qs = new URLSearchParams(cleanQuery(params)).toString()
-    return request(`/materials/identity-options${qs ? `?${qs}` : ''}`)
-  },
-  turbineModelOptions: (params = {}) => {
-    const qs = new URLSearchParams(cleanQuery(params)).toString()
-    return request(`/materials/turbine-model-options${qs ? `?${qs}` : ''}`)
-  },
+export const technicalMaterialsAPI = {
+  identityOptions: () => request('/technical/materials/identity-options'),
+  turbineModelOptions: () => request('/technical/materials/turbine-model-options'),
   raw: {
-    permissions: (params = {}) => {
-      const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/materials/raw/permissions${qs ? `?${qs}` : ''}`)
-    },
-    tree: (params = {}) => {
-      const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/materials/raw/tree${qs ? `?${qs}` : ''}`)
-    },
+    tree: () => request('/technical/materials/raw/tree'),
     files: (params = {}) => {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/materials/raw/files${qs ? `?${qs}` : ''}`)
+      return request(`/technical/materials/raw/files${qs ? `?${qs}` : ''}`)
     },
     upload: (data) =>
-      request('/materials/raw/upload', { method: 'POST', body: data, timeoutMs: 30 * 60 * 1000 }),
+      request('/technical/materials/raw/upload', { method: 'POST', body: data, timeoutMs: 30 * 60 * 1000 }),
     bootstrapFolders: (data) =>
-      request('/materials/raw/folders/bootstrap', { method: 'POST', body: data }),
+      request('/technical/materials/raw/folders/bootstrap', { method: 'POST', body: data }),
     createFolder: (data) =>
-      request('/materials/raw/folders', { method: 'POST', body: data }),
+      request('/technical/materials/raw/folders', { method: 'POST', body: data }),
     moveFolder: (data) =>
-      request('/materials/raw/folders/move', { method: 'POST', body: data }),
+      request('/technical/materials/raw/folders/move', { method: 'POST', body: data }),
     deleteFolder: (params = {}) => {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/materials/raw/folders${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
+      return request(`/technical/materials/raw/folders${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
     },
-    updateFile: (id, data) => request(`/materials/raw/${id}`, { method: 'PATCH', body: data }),
-    moveFile: (data) => request('/materials/raw/move', { method: 'POST', body: data }),
-    deleteFile: (id) => request(`/materials/raw/${id}`, { method: 'DELETE' }),
-    downloadFile: (id) => request(`/materials/raw/${id}/download`),
-    previewBusinessSplit: (id, data) =>
-      request(`/materials/raw/${id}/business-split/preview`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
-    confirmBusinessSplit: (id, data) =>
-      request(`/materials/raw/${id}/business-split/confirm`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
-    cleanFile: (id) => request(`/materials/raw/${id}/clean`, { method: 'POST' }),
-    downloadCleanedFile: (id) => request(`/materials/raw/${id}/cleaned/download`),
-    previewCleanedFile: (id) => request(`/materials/raw/${id}/cleaned/preview`),
-    parseStatus: (projectId) => request(`/projects/${projectId}/materials/parse-status`),
-  },
-  structured: {
-    list: (params = {}) => {
-      const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/materials/structured${qs ? `?${qs}` : ''}`)
-    },
-    downloadTemplate: (params = {}) => {
-      const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/materials/structured/template${qs ? `?${qs}` : ''}`)
-    },
-    previewImport: (data) =>
-      request('/materials/structured/import/preview', { method: 'POST', body: data }),
-    confirmImport: (data) =>
-      request('/materials/structured/import/confirm', { method: 'POST', body: data }),
-    create: (data) => request('/materials/structured', { method: 'POST', body: data }),
-    update: (id, data) => request(`/materials/structured/${id}`, { method: 'PUT', body: data }),
-    delete: (id) => request(`/materials/structured/${id}`, { method: 'DELETE' }),
-    importExcel: (formData) =>
-      request('/materials/structured/import', { method: 'POST', body: formData }),
+    updateFile: (id, data) => request(`/technical/materials/raw/${id}`, { method: 'PATCH', body: data }),
+    moveFile: (data) => request('/technical/materials/raw/move', { method: 'POST', body: data }),
+    deleteFile: (id) => request(`/technical/materials/raw/${id}`, { method: 'DELETE' }),
+    previewCleanedFile: (id) => request(`/technical/materials/raw/${id}/cleaned/preview`),
+    parseStatus: (projectId) => request(`/technical/projects/${projectId}/materials/parse-status`),
   },
   wiki: {
     list: (params = {}) => {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/materials/wiki${qs ? `?${qs}` : ''}`)
+      return request(`/technical/materials/wiki${qs ? `?${qs}` : ''}`)
     },
     bootstrap: (data = {}) =>
-      request('/materials/wiki/bootstrap', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
-    create: (data) => request('/materials/wiki', { method: 'POST', body: data }),
-    update: (id, data) => request(`/materials/wiki/${id}`, { method: 'PUT', body: data }),
+      request('/technical/materials/wiki/bootstrap', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    create: (data) => request('/technical/materials/wiki', { method: 'POST', body: data }),
+    update: (id, data) => request(`/technical/materials/wiki/${id}`, { method: 'PUT', body: data }),
     delete: (id, params = {}) => {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/materials/wiki/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
+      return request(`/technical/materials/wiki/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
     },
-    move: (id, data) => request(`/materials/wiki/${id}/move`, { method: 'POST', body: data }),
+    move: (id, data) => request(`/technical/materials/wiki/${id}/move`, { method: 'POST', body: data }),
     uploadAttachment: (id, data) =>
-      request(`/materials/wiki/${id}/attachments`, { method: 'POST', body: data }),
+      request(`/technical/materials/wiki/${id}/attachments`, { method: 'POST', body: data }),
     deleteAttachment: (id, params = {}) => {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/materials/wiki/attachments/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
+      return request(`/technical/materials/wiki/attachments/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
     },
     refreshSummary: (id, data = {}) =>
-      request(`/materials/wiki/${id}/refresh-summary`, { method: 'POST', body: data }),
+      request(`/technical/materials/wiki/${id}/refresh-summary`, { method: 'POST', body: data }),
   },
 }
 
-// ===== Audit =====
-export const auditAPI = {
+export const technicalAuditAPI = {
   list: (params = {}) => {
     const qs = new URLSearchParams(cleanQuery(params)).toString()
-    return request(`/audit${qs ? `?${qs}` : ''}`)
+    return request(`/technical/audit${qs ? `?${qs}` : ''}`)
   },
-  detail: (id) => request(`/audit/${id}`),
+  detail: (id) => request(`/technical/audit/${id}`),
   exportCsv: (params = {}) => {
     const qs = new URLSearchParams(cleanQuery(params)).toString()
-    return request(`/audit/export${qs ? `?${qs}` : ''}`)
+    return request(`/technical/audit/export${qs ? `?${qs}` : ''}`)
+  },
+}
+
+// ===== Business workspace facades =====
+export const businessProjectsAPI = {
+  list: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/business/projects${qs ? `?${qs}` : ''}`)
+  },
+  get: (id) => request(`/business/projects/${id}`),
+  create: (data) => request('/business/projects', { method: 'POST', body: data }),
+  update: (id, data) => request(`/business/projects/${id}`, { method: 'PUT', body: data }),
+  delete: (id) => request(`/business/projects/${id}`, { method: 'DELETE' }),
+  templateFallback: (id) => request(`/business/projects/${id}/template-fallback`),
+  updateTemplateFallback: (id, data) =>
+    request(`/business/projects/${id}/template-fallback`, { method: 'PUT', body: data }),
+}
+
+export const businessStagesAPI = {
+  list: (projectId) => request(`/business/projects/${projectId}/stages`),
+  update: (projectId, stage, data) =>
+    request(`/business/projects/${projectId}/stages/${stage}`, { method: 'PUT', body: data }),
+}
+
+export const businessParseAPI = {
+  results: (projectId) => request(`/business/projects/${projectId}/parse-results`),
+  progress: (projectId) => request(`/business/projects/${projectId}/parse-results/progress`),
+  appendixPreview: (projectId, appendixId) =>
+    request(`/business/projects/${projectId}/parse-results/appendices/${encodeURIComponent(appendixId)}/preview`),
+  approveAppendixAsset: (projectId, appendixId, data = {}) =>
+    request(`/business/projects/${projectId}/parse-results/appendices/${encodeURIComponent(appendixId)}/approve`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  approveAllAppendixAssets: (projectId, data = {}) =>
+    request(`/business/projects/${projectId}/parse-results/appendices/approve`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  approveBusinessScoringAsset: (projectId, data = {}) =>
+    request(`/business/projects/${projectId}/parse-results/business-scoring/approve`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  commitmentLetterPreview: (projectId, letterId) =>
+    request(`/business/projects/${projectId}/parse-results/commitment-letters/${encodeURIComponent(letterId)}/preview`),
+  approveCommitmentLetterAsset: (projectId, letterId, data = {}) =>
+    request(`/business/projects/${projectId}/parse-results/commitment-letters/${encodeURIComponent(letterId)}/approve`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  approveAllCommitmentLetterAssets: (projectId, data = {}) =>
+    request(`/business/projects/${projectId}/parse-results/commitment-letters/approve`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  uploadAndRun: (projectId, data) =>
+    request(`/business/projects/${projectId}/parse-results/upload-and-run`, {
+      method: 'POST',
+      body: data?.formData || data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  uploadTemplates: (projectId, data) =>
+    request(`/business/projects/${projectId}/template-files/upload`, {
+      method: 'POST',
+      body: data?.formData || data,
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+}
+
+export const businessDirectoryAPI = {
+  status: (projectId) => request(`/business/projects/${projectId}/directory-generation`),
+  run: (projectId) =>
+    request(`/business/projects/${projectId}/directory-generation/run`, {
+      method: 'POST',
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+}
+
+export const businessOutlineAPI = {
+  get: (projectId, params = {}) => {
+    const qs = new URLSearchParams(cleanQuery({ fileId: params.fileId })).toString()
+    return request(`/business/projects/${projectId}/outline${qs ? `?${qs}` : ''}`)
+  },
+  save: (projectId, data) => request(`/business/projects/${projectId}/outline`, { method: 'PUT', body: data }),
+  confirm: (projectId) => request(`/business/projects/${projectId}/outline/confirm`, { method: 'POST' }),
+}
+
+export const businessGenerateAPI = {
+  status: (projectId) => request(`/business/projects/${projectId}/fill-generation`),
+  run: (projectId) =>
+    request(`/business/projects/${projectId}/fill-generation/run`, {
+      method: 'POST',
+      timeoutMs: 10 * 60 * 1000,
+      retryCount: 0,
+    }),
+}
+
+export const businessDocumentAPI = {
+  get: (projectId) => request(`/business/projects/${projectId}/document`),
+  save: (projectId, data) =>
+    request(`/business/projects/${projectId}/document/save`, { method: 'PUT', body: data }),
+  businessChat: (projectId, data) =>
+    request(`/business/projects/${projectId}/document/business-chat`, { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
+  businessRewriteSuggest: (projectId, data) =>
+    request(`/business/projects/${projectId}/document/business-rewrite/suggest`, { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
+  businessRewriteApply: (projectId, data) =>
+    request(`/business/projects/${projectId}/document/business-rewrite/apply`, { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
+  businessFormat: (projectId, data) =>
+    request(`/business/projects/${projectId}/document/business-format`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
+  final: (projectId) => request(`/business/projects/${projectId}/final-document`),
+  finalPdf: (projectId) => request(`/business/projects/${projectId}/final-document/pdf`, { timeoutMs: 5 * 60 * 1000, retryCount: 0 }),
+}
+
+export const businessMaterialsAPI = {
+  identityOptions: () => request('/business/materials/identity-options'),
+  raw: {
+    tree: () => request('/business/materials/raw/tree'),
+    files: (params = {}) => {
+      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      return request(`/business/materials/raw/files${qs ? `?${qs}` : ''}`)
+    },
+    upload: (data) =>
+      request('/business/materials/raw/upload', { method: 'POST', body: data, timeoutMs: 30 * 60 * 1000 }),
+    createFolder: (data) =>
+      request('/business/materials/raw/folders', { method: 'POST', body: data }),
+    moveFolder: (data) =>
+      request('/business/materials/raw/folders/move', { method: 'POST', body: data }),
+    deleteFolder: (params = {}) => {
+      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      return request(`/business/materials/raw/folders${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
+    },
+    updateFile: (id, data) => request(`/business/materials/raw/${id}`, { method: 'PATCH', body: data }),
+    moveFile: (data) => request('/business/materials/raw/move', { method: 'POST', body: data }),
+    deleteFile: (id) => request(`/business/materials/raw/${id}`, { method: 'DELETE' }),
+    previewBusinessSplit: (id, data) =>
+      request(`/business/materials/raw/${id}/business-split/preview`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
+    confirmBusinessSplit: (id, data) =>
+      request(`/business/materials/raw/${id}/business-split/confirm`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    previewCleanedFile: (id) => request(`/business/materials/raw/${id}/cleaned/preview`),
+    parseStatus: (projectId) => request(`/business/projects/${projectId}/materials/parse-status`),
+  },
+  wiki: {
+    list: (params = {}) => {
+      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      return request(`/business/materials/wiki${qs ? `?${qs}` : ''}`)
+    },
+    bootstrap: (data = {}) =>
+      request('/business/materials/wiki/bootstrap', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    create: (data) => request('/business/materials/wiki', { method: 'POST', body: data }),
+    update: (id, data) => request(`/business/materials/wiki/${id}`, { method: 'PUT', body: data }),
+    delete: (id, params = {}) => {
+      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      return request(`/business/materials/wiki/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
+    },
+    move: (id, data) => request(`/business/materials/wiki/${id}/move`, { method: 'POST', body: data }),
+    uploadAttachment: (id, data) =>
+      request(`/business/materials/wiki/${id}/attachments`, { method: 'POST', body: data }),
+    deleteAttachment: (id, params = {}) => {
+      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      return request(`/business/materials/wiki/attachments/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
+    },
+    refreshSummary: (id, data = {}) =>
+      request(`/business/materials/wiki/${id}/refresh-summary`, { method: 'POST', body: data }),
+  },
+}
+
+export const businessAuditAPI = {
+  list: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/business/audit${qs ? `?${qs}` : ''}`)
+  },
+  detail: (id) => request(`/business/audit/${id}`),
+  exportCsv: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/business/audit/export${qs ? `?${qs}` : ''}`)
   },
 }
 
@@ -653,15 +741,6 @@ export const authAPI = {
 // ===== Dashboard =====
 export const dashboardAPI = {
   get: () => request('/dashboard'),
-}
-
-// ===== OCR =====
-export const ocrAPI = {
-  list: (projectId) => request(`/projects/${projectId}/ocr/tasks`),
-  run: (projectId, data) => request(`/projects/${projectId}/ocr/tasks`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
-  detail: (projectId, taskId) => request(`/projects/${projectId}/ocr/tasks/${taskId}`),
-  confirm: (projectId, candidateId, data) =>
-    request(`/projects/${projectId}/ocr/candidates/${candidateId}/confirm`, { method: 'POST', body: data }),
 }
 
 export { ApiError }

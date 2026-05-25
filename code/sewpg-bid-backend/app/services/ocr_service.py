@@ -14,13 +14,20 @@ from sqlalchemy import desc, select
 from app.models import async_session
 from app.models.materials import OcrCandidate, OcrTask
 from app.services.audit_service import audit_service
-from app.services.material_store import material_store
+from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.peripheral import PeripheralError
-from app.services.store import store
 from app.services.system_settings import system_settings_service
+from app.services.workspace_project_access import (
+    persist_workspace_project_state,
+    require_any_workspace_project_for_update,
+)
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+
+
+def _ocr_project_not_found(project_id: str) -> PeripheralError:
+    return PeripheralError(404, "OCR 项目不存在。", "OCR_PROJECT_NOT_FOUND")
 
 
 def _candidate_field_name(text: str, index: int) -> str:
@@ -63,7 +70,7 @@ def _extract_candidates_from_text(text: str) -> list[dict[str, Any]]:
 class OcrService:
     async def _ensure_tables(self) -> None:
         async with async_session() as session:
-            await material_store._ensure_runtime_tables(session)
+            await ensure_material_runtime_tables(session)
             await session.commit()
 
     async def recognize_text_for_parse(
@@ -122,6 +129,7 @@ class OcrService:
         content: bytes,
         mime_type: str = "",
         user: dict[str, Any] | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         await self._ensure_tables()
         config = await system_settings_service.get_model_secret_config("ocr")
@@ -189,6 +197,13 @@ class OcrService:
             status="成功" if status == "completed" else "失败",
             user=user,
             diff={"before": {}, "after": {"taskId": task_id, "candidateCount": len(candidates), "status": status}},
+            metadata={
+                **(audit_metadata or {}),
+                "taskId": task_id,
+                "fileName": file_name,
+                "candidateCount": len(candidates),
+                "ocrStatus": status,
+            },
         )
         return await self.detail(project_id, task_id)
 
@@ -262,6 +277,7 @@ class OcrService:
         data: dict[str, Any],
         *,
         user: dict[str, Any] | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         await self._ensure_tables()
         action = str(data.get("action") or "confirm")
@@ -297,11 +313,18 @@ class OcrService:
             target=f"{project_id} / {candidate_id}",
             user=user,
             diff={"before": before, "after": after},
+            metadata={
+                **(audit_metadata or {}),
+                "candidateId": candidate_id,
+                "taskId": str(after.get("taskId") or before.get("taskId") or ""),
+                "fieldName": str(after.get("fieldName") or before.get("fieldName") or ""),
+                "ocrAction": action,
+            },
         )
         return {"message": "OCR 候选字段已处理", "item": after}
 
     def _write_candidate_to_project(self, project_id: str, candidate: OcrCandidate) -> None:
-        project = store._require(project_id)
+        project = require_any_workspace_project_for_update(project_id, not_found_error=_ocr_project_not_found)
         parse_result = project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {}
         structured = parse_result.get("structured") if isinstance(parse_result.get("structured"), dict) else {}
         fields = structured.get("ocrConfirmedFields")
@@ -321,10 +344,10 @@ class OcrService:
         structured["ocrConfirmedFields"] = fields
         parse_result["structured"] = structured
         project["parse_result"] = parse_result
-        from app.services.store import now_iso
+        from app.services.bid_runtime_state import now_iso
 
         project["updatedAt"] = now_iso()
-        store._persist_project(project)
+        persist_workspace_project_state(project)
 
 
 ocr_service = OcrService()

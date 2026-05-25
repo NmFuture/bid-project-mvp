@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.store import store
+from app.services.bid_project_service import business_project_service, technical_project_service
 
 
 _STAGE_PROGRESS = {
@@ -133,9 +133,9 @@ class DashboardService:
         tech_items: list[dict[str, Any]] = []
         business_items: list[dict[str, Any]] = []
         if role in {"T", "TB"}:
-            tech_items = store.list_projects(bid_type="技术标", page_size=50).get("items", [])
+            tech_items = technical_project_service.list(page_size=50).get("items", [])
         if role in {"B", "TB"}:
-            business_items = store.list_projects(bid_type="商务标", page_size=50).get("items", [])
+            business_items = business_project_service.list(page_size=50).get("items", [])
 
         if role == "T":
             payload = _build_t(tech_items)

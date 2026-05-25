@@ -128,7 +128,7 @@ class RawFile(Base):
             "cleanedSizeLabel": _size_label(int(ext.get("cleanedSize") or 0)),
             "cleanedAt": ext.get("cleanedAt") or "",
             "hasCleanedWord": bool(ext.get("cleanedMinioKey")),
-            "cleanedDownloadUrl": f"/api/materials/raw/RAW-{self.id:04d}/cleaned/content" if ext.get("cleanedMinioKey") else "",
+            "cleanedDownloadUrl": f"__scoped_material_raw__/RAW-{self.id:04d}/cleaned/content" if ext.get("cleanedMinioKey") else "",
             "turbineModel": ext.get("turbineModel") or "",
             "turbineModelLabel": ext.get("turbineModelLabel") or ext.get("turbineModel") or "",
             "turbinePlatform": ext.get("turbinePlatform") or "",

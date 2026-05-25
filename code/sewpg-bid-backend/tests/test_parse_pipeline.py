@@ -16,6 +16,9 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.config import settings
 from app.services import parsing as parsing_service
+from app.services.file_utils import format_size_mb
+from app.services.bid_parse_state import complete_parse_state
+from app.services.bid_project_state import project_parse_input_records
 from app.services.store import store
 
 
@@ -26,6 +29,31 @@ def build_docx_bytes(*lines: str) -> bytes:
         doc.add_paragraph(line)
     doc.save(file_obj)
     return file_obj.getvalue()
+
+
+def parse_inputs_for_tests(project_id: str):
+    project = store.get_project_runtime_state(project_id)
+    return project_parse_input_records(project_id, project)
+
+
+def complete_parse_for_tests(
+    project_id: str,
+    tender_files: list[dict],
+    template_files: list[dict],
+    *,
+    summary: dict | None = None,
+    parse_storage: dict | None = None,
+) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = complete_parse_state(
+        project,
+        tender_files,
+        template_files,
+        summary=summary,
+        parse_storage=parse_storage,
+    )
+    store.persist_project_state(project)
+    return payload
 
 
 def build_docx_blocks_bytes(*blocks: str | list[list[str]]) -> bytes:
@@ -300,7 +328,7 @@ class ParsePipelineTests(unittest.TestCase):
 
     def create_project(self) -> str:
         response = self.client.post(
-            "/api/projects",
+            "/api/technical/projects",
             json={"name": "解析测试项目", "customerName": "测试业主"},
         )
         response.raise_for_status()
@@ -308,11 +336,20 @@ class ParsePipelineTests(unittest.TestCase):
 
     def create_business_project(self) -> str:
         response = self.client.post(
-            "/api/projects",
-            json={"name": "商务解析测试项目", "customerName": "测试业主", "bidType": "商务标"},
+            "/api/business/projects",
+            json={"name": "商务解析测试项目", "customerName": "测试业主"},
         )
         response.raise_for_status()
         return response.json()["id"]
+
+    def project_url(self, project_id: str) -> str:
+        project = store._require(project_id)
+        if project.get("bidType") == "商务标":
+            return f"/api/business/projects/{project_id}"
+        return f"/api/technical/projects/{project_id}"
+
+    def parse_results_url(self, project_id: str, suffix: str = "") -> str:
+        return f"{self.project_url(project_id)}/parse-results{suffix}"
 
     def test_upload_and_parse_docx_extracts_text_and_preview(self) -> None:
         project_id = self.create_project()
@@ -323,7 +360,7 @@ class ParsePipelineTests(unittest.TestCase):
         )
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -344,7 +381,7 @@ class ParsePipelineTests(unittest.TestCase):
         file_bytes = "# Markdown 招标说明\n\n本项目允许使用 Markdown 素材文件。".encode("utf-8")
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -395,7 +432,7 @@ class ParsePipelineTests(unittest.TestCase):
                 "maxTokens": 2048,
             }
             response = self.client.post(
-                f"/api/projects/{project_id}/parse-results/upload-and-run",
+                self.parse_results_url(project_id, "/upload-and-run"),
                 files=[
                     (
                         "tenderFiles",
@@ -440,7 +477,7 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 ("tenderFiles", ("总发包招标文件.md", main_tender, "text/markdown")),
                 ("tenderFiles", ("子项目招标文件.md", child_tender, "text/markdown")),
@@ -496,7 +533,7 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[("tenderFiles", ("招标文件.md", tender, "text/markdown"))],
         )
 
@@ -523,7 +560,7 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[("tenderFiles", ("招标文件.md", tender, "text/markdown"))],
         )
 
@@ -541,7 +578,7 @@ class ParsePipelineTests(unittest.TestCase):
         project_id = self.create_project()
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -721,7 +758,7 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[("tenderFiles", ("招标文件.md", tender, "text/markdown"))],
         )
 
@@ -790,7 +827,7 @@ class ParsePipelineTests(unittest.TestCase):
     def test_parse_docx_appendix_table_generates_workspace_docx(self) -> None:
         project_id = self.create_project()
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -820,7 +857,7 @@ class ParsePipelineTests(unittest.TestCase):
 
         project_id = self.create_project()
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -909,7 +946,7 @@ class ParsePipelineTests(unittest.TestCase):
 
         deadline = time.monotonic()
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -961,7 +998,7 @@ class ParsePipelineTests(unittest.TestCase):
         )
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -998,7 +1035,7 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[("tenderFiles", ("招标文件.md", tender, "text/markdown"))],
         )
 
@@ -1017,7 +1054,7 @@ class ParsePipelineTests(unittest.TestCase):
     def test_participating_promotes_parse_json_and_appendices_to_workspace(self) -> None:
         project_id = self.create_project()
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -1039,7 +1076,7 @@ class ParsePipelineTests(unittest.TestCase):
         stale_path.write_bytes(b"old")
 
         updated = self.client.put(
-            f"/api/projects/{project_id}",
+            self.project_url(project_id),
             json={
                 "name": "参与后归档项目",
                 "customerName": "测试业主",
@@ -1061,7 +1098,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(len(workspace_appendices), 1)
         self.assertFalse(temp_project_dir.exists())
 
-        promoted_payload = self.client.get(f"/api/projects/{project_id}/parse-results")
+        promoted_payload = self.client.get(self.parse_results_url(project_id))
         self.assertEqual(promoted_payload.status_code, 200)
         appendix = promoted_payload.json()["structured"]["appendices"][0]
         self.assertIn(str(workspace_appendix_dir), appendix["docxPath"])
@@ -1077,7 +1114,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(Path(parse_storage["skillManifestPath"]), workspace_parse_dir / "s1_parse_manifest.json")
         self.assertTrue(all(str(workspace_parse_dir) in item["textPath"] for item in parse_storage["documents"]))
 
-        preview = self.client.get(f"/api/projects/{project_id}/parse-results/appendices/APPX-0001/preview")
+        preview = self.client.get(self.parse_results_url(project_id, "/appendices/APPX-0001/preview"))
         self.assertEqual(preview.status_code, 200)
         self.assertIn(str(workspace_appendix_dir), preview.json()["docxPath"])
         self.assertFalse(temp_project_dir.exists())
@@ -1107,7 +1144,7 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
         )
 
@@ -1155,7 +1192,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertTrue(Path(letters[0]["docxPath"]).exists())
 
         preview = self.client.get(
-            f"/api/projects/{project_id}/parse-results/commitment-letters/{letters[0]['id']}/preview"
+            self.parse_results_url(project_id, f"/commitment-letters/{letters[0]['id']}/preview")
         )
         self.assertEqual(preview.status_code, 200)
         preview_payload = preview.json()
@@ -1163,7 +1200,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertIn("/parse-results/commitment-letters/", preview_payload["onlyoffice"]["browserFileUrl"])
 
         approved = self.client.post(
-            f"/api/projects/{project_id}/parse-results/commitment-letters/{letters[0]['id']}/approve",
+            self.parse_results_url(project_id, f"/commitment-letters/{letters[0]['id']}/approve"),
             json={"approved": True},
         )
         self.assertEqual(approved.status_code, 200)
@@ -1188,20 +1225,20 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["structured"]["schemaVersion"], "bid-business-tender-structured-v1")
         approve_response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/commitment-letters/approve",
+            self.parse_results_url(project_id, "/commitment-letters/approve"),
             json={"approved": True},
         )
         self.assertEqual(approve_response.status_code, 200)
         self.assertEqual(approve_response.json()["approvedCount"], 1)
 
         updated = self.client.put(
-            f"/api/projects/{project_id}",
+            self.project_url(project_id),
             json={
                 "name": "商务归档测试项目",
                 "customerName": "测试业主",
@@ -1236,7 +1273,7 @@ class ParsePipelineTests(unittest.TestCase):
         )
 
         preview = self.client.get(
-            f"/api/projects/{project_id}/parse-results/commitment-letters/{commitment_letters[0]['id']}/preview"
+            self.parse_results_url(project_id, f"/commitment-letters/{commitment_letters[0]['id']}/preview")
         )
         self.assertEqual(preview.status_code, 200)
         self.assertIn(str(workspace_commitment_dir), preview.json()["docxPath"])
@@ -1257,7 +1294,7 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
         )
 
@@ -1291,7 +1328,7 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
         )
 
@@ -1310,7 +1347,7 @@ class ParsePipelineTests(unittest.TestCase):
     def test_business_bid_docx_attachment_templates_are_sliced_with_quality_metadata(self) -> None:
         project_id = self.create_business_project()
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -1363,7 +1400,7 @@ class ParsePipelineTests(unittest.TestCase):
     def test_business_bid_docx_attachment_templates_ignore_toc_and_keep_following_table(self) -> None:
         project_id = self.create_business_project()
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -1396,7 +1433,7 @@ class ParsePipelineTests(unittest.TestCase):
     def test_business_bid_docx_table_fingerprint_extracts_template_without_attachment_title(self) -> None:
         project_id = self.create_business_project()
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -1436,7 +1473,7 @@ class ParsePipelineTests(unittest.TestCase):
         )
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -1469,7 +1506,7 @@ class ParsePipelineTests(unittest.TestCase):
         )
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -1491,7 +1528,7 @@ class ParsePipelineTests(unittest.TestCase):
     def test_business_bid_existing_commitment_template_suppresses_generated_duplicate(self) -> None:
         project_id = self.create_business_project()
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -1528,7 +1565,7 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
         )
 
@@ -1555,7 +1592,7 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
         )
 
@@ -1596,7 +1633,7 @@ class ParsePipelineTests(unittest.TestCase):
             },
         ) as mocked_review:
             response = self.client.post(
-                f"/api/projects/{project_id}/parse-results/upload-and-run",
+                self.parse_results_url(project_id, "/upload-and-run"),
                 files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
             )
 
@@ -1622,7 +1659,7 @@ class ParsePipelineTests(unittest.TestCase):
             side_effect=RuntimeError("semantic review unavailable"),
         ) as mocked_review:
             response = self.client.post(
-                f"/api/projects/{project_id}/parse-results/upload-and-run",
+                self.parse_results_url(project_id, "/upload-and-run"),
                 files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
             )
 
@@ -1668,7 +1705,7 @@ class ParsePipelineTests(unittest.TestCase):
             },
         ) as mocked_review:
             response = self.client.post(
-                f"/api/projects/{project_id}/parse-results/upload-and-run",
+                self.parse_results_url(project_id, "/upload-and-run"),
                 files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
             )
 
@@ -1718,7 +1755,7 @@ class ParsePipelineTests(unittest.TestCase):
             },
         ) as mocked_review:
             response = self.client.post(
-                f"/api/projects/{project_id}/parse-results/upload-and-run",
+                self.parse_results_url(project_id, "/upload-and-run"),
                 files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
             )
 
@@ -1738,7 +1775,7 @@ class ParsePipelineTests(unittest.TestCase):
     def test_delete_project_cleans_parse_temp_workspace(self) -> None:
         project_id = self.create_project()
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -1754,7 +1791,7 @@ class ParsePipelineTests(unittest.TestCase):
         temp_project_dir = settings.parsed_dir / project_id
         self.assertTrue(temp_project_dir.exists())
 
-        deleted = self.client.delete(f"/api/projects/{project_id}")
+        deleted = self.client.delete(self.project_url(project_id))
 
         self.assertEqual(deleted.status_code, 200)
         self.assertFalse(temp_project_dir.exists())
@@ -1767,15 +1804,15 @@ class ParsePipelineTests(unittest.TestCase):
             deleted_paths.append(path)
             return {"message": "deleted", "folderPath": path, "deletedFileCount": 2}
 
-        with patch("app.services.store._run_async_material_delete_folder", side_effect=fake_delete_folder):
-            deleted = self.client.delete(f"/api/projects/{project_id}")
+        with patch("app.services.bid_project_state.run_workspace_material_folder_delete", side_effect=fake_delete_folder):
+            deleted = self.client.delete(self.project_url(project_id))
 
         self.assertEqual(deleted.status_code, 200)
         self.assertEqual(deleted_paths, [f"商务标/项目素材/{project_id}"])
 
     def test_parse_results_materializes_legacy_required_appendix_preview_docx(self) -> None:
         project_id = self.create_project()
-        store.complete_parse(
+        complete_parse_for_tests(
             project_id,
             [{"id": "TEN-1", "name": "招标文件.docx", "size_label": "1.0 MB"}],
             [],
@@ -1800,7 +1837,7 @@ class ParsePipelineTests(unittest.TestCase):
             },
         )
 
-        response = self.client.get(f"/api/projects/{project_id}/parse-results")
+        response = self.client.get(self.parse_results_url(project_id))
         self.assertEqual(response.status_code, 200)
         appendix = response.json()["structured"]["appendices"][0]
         self.assertEqual(appendix["status"], "generated")
@@ -1808,14 +1845,16 @@ class ParsePipelineTests(unittest.TestCase):
         appendix_path = Path(appendix["docxPath"])
         self.assertTrue(appendix_path.exists())
 
-        preview = self.client.get(f"/api/projects/{project_id}/parse-results/appendices/APPX-0007/preview")
+        preview = self.client.get(self.parse_results_url(project_id, "/appendices/APPX-0007/preview"))
         self.assertEqual(preview.status_code, 200)
         preview_payload = preview.json()
         self.assertEqual(preview_payload["id"], "APPX-0007")
         self.assertEqual(preview_payload["onlyoffice"]["documentType"], "word")
         self.assertTrue(preview_payload["onlyoffice"]["documentKey"])
 
-        file_response = self.client.get(f"/api/projects/{project_id}/parse-results/appendices/APPX-0007/file/{appendix_path.name}")
+        file_response = self.client.get(
+            self.parse_results_url(project_id, f"/appendices/APPX-0007/file/{appendix_path.name}")
+        )
         self.assertEqual(file_response.status_code, 200)
         self.assertGreater(len(file_response.content), 0)
 
@@ -1823,17 +1862,17 @@ class ParsePipelineTests(unittest.TestCase):
         project_id = self.create_project()
         tender = "项目名称：进度测试项目\n单机容量：6.25MW\n".encode("utf-8")
 
-        before = self.client.get(f"/api/projects/{project_id}/parse-results/progress")
+        before = self.client.get(self.parse_results_url(project_id, "/progress"))
         self.assertEqual(before.status_code, 200)
         self.assertEqual(before.json()["status"], "idle")
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[("tenderFiles", ("招标文件.md", tender, "text/markdown"))],
         )
         self.assertEqual(response.status_code, 200)
 
-        progress = self.client.get(f"/api/projects/{project_id}/parse-results/progress")
+        progress = self.client.get(self.parse_results_url(project_id, "/progress"))
         self.assertEqual(progress.status_code, 200)
         payload = progress.json()
         self.assertEqual(payload["status"], "completed")
@@ -1847,7 +1886,7 @@ class ParsePipelineTests(unittest.TestCase):
 
     def test_project_create_and_update_support_start_and_end_dates(self) -> None:
         response = self.client.post(
-            "/api/projects",
+            "/api/technical/projects",
             json={
                 "name": "日期测试项目",
                 "customerName": "测试业主",
@@ -1863,7 +1902,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(created["deadline"], "2026-08-20")
 
         update_response = self.client.put(
-            f"/api/projects/{created['id']}",
+            f"/api/technical/projects/{created['id']}",
             json={
                 "startDate": "2026-05-15",
                 "endDate": "2026-09-01",
@@ -1876,7 +1915,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(updated["endDate"], "2026-09-01")
         self.assertEqual(updated["deadline"], "2026-09-01")
 
-        list_response = self.client.get("/api/projects")
+        list_response = self.client.get("/api/technical/projects")
         self.assertEqual(list_response.status_code, 200)
         listed = list_response.json()["items"][0]
         self.assertEqual(listed["startDate"], "2026-05-15")
@@ -1891,7 +1930,7 @@ class ParsePipelineTests(unittest.TestCase):
         )
 
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -1915,7 +1954,7 @@ class ParsePipelineTests(unittest.TestCase):
         template_bytes = build_docx_bytes("投标模板", "封面", "这是后补上传的模板文件。")
 
         first_response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -1926,7 +1965,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(first_response.status_code, 200)
 
         second_response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "templateFiles",
@@ -1945,7 +1984,7 @@ class ParsePipelineTests(unittest.TestCase):
         project_id = self.create_project()
         tender_bytes = build_docx_bytes("招标文件正文", "项目概况", "项目没有单独上传投标模板。")
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -1956,7 +1995,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         with patch("app.services.template_store.resolve_system_default_bid_template_file", return_value=None):
-            _, template_files = store.get_parse_inputs(project_id)
+            _, template_files = parse_inputs_for_tests(project_id)
 
         self.assertEqual(template_files, [])
 
@@ -1964,7 +2003,7 @@ class ParsePipelineTests(unittest.TestCase):
         project_id = self.create_project()
         tender_bytes = build_docx_bytes("招标文件正文", "项目概况", "项目没有单独上传投标模板。")
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -1982,7 +2021,7 @@ class ParsePipelineTests(unittest.TestCase):
             "name": "默认技术标模板.docx",
             "stored_name": "默认技术标模板.docx",
             "size_bytes": default_path.stat().st_size,
-            "size_label": store.format_size(default_path.stat().st_size),
+            "size_label": format_size_mb(default_path.stat().st_size),
             "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "path": str(default_path),
             "source": "system-default",
@@ -1994,7 +2033,7 @@ class ParsePipelineTests(unittest.TestCase):
         }
 
         with patch("app.services.template_store.resolve_system_default_bid_template_file", return_value=default_record):
-            _, template_files = store.get_parse_inputs(project_id)
+            _, template_files = parse_inputs_for_tests(project_id)
 
         self.assertEqual(len(template_files), 1)
         self.assertEqual(template_files[0]["name"], "默认技术标模板.docx")
@@ -2006,7 +2045,7 @@ class ParsePipelineTests(unittest.TestCase):
         tender_bytes = build_docx_bytes("招标文件正文", "项目概况", "项目后续上传自己的投标模板。")
         template_bytes = build_docx_bytes("项目投标模板", "第一章 项目模板章节")
         response = self.client.post(
-            f"/api/projects/{project_id}/parse-results/upload-and-run",
+            self.parse_results_url(project_id, "/upload-and-run"),
             files=[
                 (
                     "tenderFiles",
@@ -2028,7 +2067,7 @@ class ParsePipelineTests(unittest.TestCase):
             "isFallback": True,
         }
         with patch("app.services.template_store.resolve_system_default_bid_template_file", return_value=default_record):
-            _, template_files = store.get_parse_inputs(project_id)
+            _, template_files = parse_inputs_for_tests(project_id)
 
         self.assertEqual(len(template_files), 1)
         self.assertEqual(template_files[0]["name"], "项目模板.docx")

@@ -1,8 +1,9 @@
 # 商务标目录生成 Skill 适配说明
 
 > 用途：记录商务标 S2 目录生成 Skill 适配后的数据流、编号规则、刷新口径和验收记录，便于后续接手者继续维护。
-> 更新日期：2026-05-10
+> 更新日期：2026-05-25
 > 适用范围：仅商务标目录生成与目录审核页；不改变技术标目录生成、技术标 Skill、技术标页面或技术标测试口径。
+> 当前入口：商务标目录审核页面已迁到 `src/workspaces/business/pages/BusinessOutlineReview.jsx`；旧共享 OutlineReview 页面不再作为当前页面口径。
 
 ## 1. 当前结论
 
@@ -23,7 +24,7 @@
   -> toc.json.items[*].number
   -> 后端 _outline_nodes_from_toc()
   -> outline_state.nodes[*].tocNumber
-  -> 前端 OutlineReview 编号列
+  -> 前端 BusinessOutlineReview 编号列
 ```
 
 关键点：
@@ -32,7 +33,7 @@
 2. 后端加载商务标 `outline.json` 时会校验 `number` 字段，缺失会报错，不再静默补编号。
 3. 后端生成商务标 `toc.json` 时，`number` 直接来自 section 的 `number`，不会按 `1 / 1.1 / 1.2` 重新编号。
 4. `outline_state.nodes[*].tocNumber` 来自 `toc.json.items[*].number`。
-5. 前端 `OutlineReview.jsx` 的编号列显示 `tocNumber`，不再显示 UI 递归生成的 `seq`。
+5. 前端 `BusinessOutlineReview.jsx` 的编号列显示 `tocNumber`，不再显示 UI 递归生成的 `seq`。
 
 ## 3. number 字段规则
 
@@ -94,7 +95,7 @@
 
 前端：
 
-1. `code/sewpg-bid-frontend/src/pages/OutlineReview.jsx`
+1. `code/sewpg-bid-frontend/src/workspaces/business/pages/BusinessOutlineReview.jsx`
 2. `code/sewpg-bid-frontend/src/utils/outlineNumber.js`
 3. `code/sewpg-bid-frontend/src/utils/outlineNumber.test.mjs`
 

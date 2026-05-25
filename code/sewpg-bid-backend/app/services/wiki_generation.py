@@ -21,12 +21,14 @@ from sqlalchemy.orm import selectinload
 from app.core.config import BASE_DIR, settings
 from app.models import async_session
 from app.models.materials import RawFile
+from app.services.bid_type import BUSINESS_BID_TYPE, GENERAL_BID_TYPE, TECHNICAL_BID_TYPE, require_bid_type
 from app.services.identity import canonical_customer, classify_material_path, material_identity
+from app.services.business_material_store import business_material_store
 from app.services.business_wiki_blueprint import build_business_wiki_blueprint
 from app.services.minio_client import minio_client
-from app.services.material_store import material_store
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.peripheral import PeripheralError
+from app.services.technical_material_store import technical_material_store
 
 DEFAULT_REFERENCE_WIKI_PATH = Path(
     "/Users/anbocheng/Desktop/20260412_技术标/20260413_技术标_组织优化/素材库-20260413-wlb-clean-wiki/wiki"
@@ -46,6 +48,29 @@ def _read_excerpt(path: Path, limit: int = MAX_EXCERPT_CHARS) -> str:
     if len(text) <= limit:
         return text
     return f"{text[: limit - 3]}\n..."
+
+
+async def _import_generated_wiki_blueprint(
+    bid_type: str,
+    *,
+    root_title: str,
+    root_markdown_content: str,
+    nodes: list[dict[str, Any]],
+    mode: str,
+) -> dict[str, Any]:
+    if _normalize_wiki_bid_type(bid_type) == BUSINESS_BID_TYPE:
+        return await business_material_store.import_generated_wiki_blueprint(
+            root_title=root_title,
+            root_markdown_content=root_markdown_content,
+            nodes=nodes,
+            mode=mode,
+        )
+    return await technical_material_store.import_generated_wiki_blueprint(
+        root_title=root_title,
+        root_markdown_content=root_markdown_content,
+        nodes=nodes,
+        mode=mode,
+    )
 
 
 def _summarize_reference_wiki(reference_root: Path) -> dict[str, Any]:
@@ -122,10 +147,10 @@ MAX_CARD_EXCERPT_PARAGRAPHS = 10
 MAX_CARD_HEADINGS = 80
 MAX_INDEX_ITEMS = 260
 MAX_SYNC_DOCX_BYTES = 30 * 1024 * 1024
-WIKI_BID_TYPES = {"技术标", "商务标"}
+WIKI_BID_TYPES = {TECHNICAL_BID_TYPE, BUSINESS_BID_TYPE}
 WIKI_SKILL_NAMES = {
-    "技术标": "bid-tech-wiki-material-builder",
-    "商务标": "bid-business-wiki-material-builder",
+    TECHNICAL_BID_TYPE: "bid-tech-wiki-material-builder",
+    BUSINESS_BID_TYPE: "bid-business-wiki-material-builder",
 }
 HEADING_STYLE_RE = re.compile(r"(?:Heading|标题)\s*([1-9])|Heading([1-9])", re.IGNORECASE)
 NUMBERED_HEADING_RE = re.compile(
@@ -183,24 +208,26 @@ def _material_scope(folder_path: str, file_name: str, folder_tier: str = "") -> 
 
 
 def _material_bid_type(folder_path: str, file_name: str, folder_bid_type: str = "") -> str:
-    if folder_bid_type in {"技术标", "商务标", "通用"}:
+    if folder_bid_type in {TECHNICAL_BID_TYPE, BUSINESS_BID_TYPE, GENERAL_BID_TYPE}:
         return folder_bid_type
     text = f"{folder_path}/{file_name}"
     if "商务标" in text or "商务" in text or "报价" in text or "开标" in text:
-        return "商务标"
+        return BUSINESS_BID_TYPE
     if "技术标" in text or "风资源" in text or "机组" in text or "风机" in text or "技术" in text:
-        return "技术标"
-    return "通用"
+        return TECHNICAL_BID_TYPE
+    return GENERAL_BID_TYPE
 
 
 def _normalize_wiki_bid_type(value: str = "") -> str:
-    text = str(value or "").strip()
-    return text if text in WIKI_BID_TYPES else "技术标"
+    return require_bid_type(
+        value,
+        error_message="Wiki 生成必须显式传入技术标或商务标。",
+    )
 
 
 def _wiki_skill_name(bid_type: str) -> str:
     normalized = _normalize_wiki_bid_type(bid_type)
-    return WIKI_SKILL_NAMES.get(normalized, WIKI_SKILL_NAMES["技术标"])
+    return WIKI_SKILL_NAMES.get(normalized, WIKI_SKILL_NAMES[TECHNICAL_BID_TYPE])
 
 
 def _wiki_skill_runner(bid_type: str) -> Path:
@@ -662,15 +689,19 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
     cleaned_file_name = str(ext_fields.get("cleanedFileName") or "")
     has_cleaned_word = bool(cleaned_minio_key)
     ext = "docx" if source_ext == "docx" or has_cleaned_word else source_ext
-    path_identity = classify_material_path(folder_path, str(ext_fields.get("bidType") or folder_bid_type or "技术标"))
-    bid_type = str(ext_fields.get("bidType") or path_identity.get("bidType") or _material_bid_type(folder_path, file_name, folder_bid_type))
+    inferred_bid_type = _material_bid_type(folder_path, file_name, folder_bid_type)
+    path_identity = classify_material_path(
+        folder_path,
+        str(ext_fields.get("bidType") or folder_bid_type or inferred_bid_type),
+    )
+    bid_type = str(ext_fields.get("bidType") or path_identity.get("bidType") or inferred_bid_type)
     scope = _material_scope(folder_path, file_name, folder_tier)
     material_tier = str(ext_fields.get("materialTier") or path_identity.get("materialTier") or folder_tier or "")
     if material_tier == "standard":
         scope = "通用"
     elif material_tier in {"customer", "project"}:
         scope = "定制"
-    if bid_type == "商务标":
+    if bid_type == BUSINESS_BID_TYPE:
         group = "项目商务数据" if scope == "定制" else _classify_business_group(folder_path, file_name)
     else:
         group = "项目数据" if scope == "定制" else _classify_material_group(folder_path, file_name)
@@ -773,7 +804,7 @@ async def _summarize_material_inventory() -> dict[str, Any]:
         files = result.scalars().all()
         for item in files:
             material = _profile_raw_file(item)
-            if material.get("bidType") == "商务标":
+            if material.get("bidType") == BUSINESS_BID_TYPE:
                 ocr_payload = await _ensure_business_wiki_ocr_cache(item, material)
                 _apply_business_wiki_ocr_to_profile(material, ocr_payload)
             items.append(material)
@@ -824,10 +855,10 @@ def _filter_inventory_for_bid_type(inventory: dict[str, Any], bid_type: str) -> 
 def _build_wiki_generation_prompt(reference: dict[str, Any], material_inventory: dict[str, Any], bid_type: str) -> str:
     skill_name = _wiki_skill_name(bid_type)
     root_title = _wiki_root_title(bid_type)
-    opposite_bid_type = "商务标" if bid_type == "技术标" else "技术标"
+    opposite_bid_type = BUSINESS_BID_TYPE if bid_type == TECHNICAL_BID_TYPE else TECHNICAL_BID_TYPE
     bid_focus = (
         "技术方案、机型参数、技术标准、风资源、设备子系统、供货交付、评分点映射"
-        if bid_type == "技术标"
+        if bid_type == TECHNICAL_BID_TYPE
         else "投标函、授权委托、资质证书、业绩证明、报价、保证金、商务偏差、合同条款响应"
     )
     payload = json.dumps(
@@ -1155,14 +1186,14 @@ def _matches_bid_type(material: dict[str, Any], bid_type: str) -> bool:
         ):
             material_bid_type = bid_type
         elif any(keyword in path_text for keyword in ("商务标", "商务", "报价", "开标", "投标函", "授权", "偏差", "保证金")):
-            material_bid_type = "商务标"
+            material_bid_type = BUSINESS_BID_TYPE
         elif any(keyword in path_text for keyword in ("技术标", "技术", "风机", "机组", "风资源")):
-            material_bid_type = "技术标"
+            material_bid_type = TECHNICAL_BID_TYPE
         else:
-            material_bid_type = "通用"
-    if bid_type == "商务标":
-        return material_bid_type == "商务标"
-    return material_bid_type == bid_type or material_bid_type == "通用"
+            material_bid_type = GENERAL_BID_TYPE
+    if bid_type == BUSINESS_BID_TYPE:
+        return material_bid_type == BUSINESS_BID_TYPE
+    return material_bid_type == bid_type or material_bid_type == GENERAL_BID_TYPE
 
 
 def _group_material_nodes(materials: list[dict[str, Any]], scope: str, bid_type: str) -> list[dict[str, Any]]:
@@ -1171,7 +1202,7 @@ def _group_material_nodes(materials: list[dict[str, Any]], scope: str, bid_type:
         if material.get("scope") != scope or material.get("ext") != "docx" or not _matches_bid_type(material, bid_type):
             continue
         grouped.setdefault(str(material.get("group") or "专项技术"), []).append(material)
-    order = BUSINESS_CARD_GROUP_ORDER if bid_type == "商务标" else TECH_CARD_GROUP_ORDER
+    order = BUSINESS_CARD_GROUP_ORDER if bid_type == BUSINESS_BID_TYPE else TECH_CARD_GROUP_ORDER
     rank = {name: index for index, name in enumerate(order)}
     children: list[dict[str, Any]] = []
     for group, group_items in sorted(grouped.items(), key=lambda item: (rank.get(item[0], 99), item[0])):
@@ -1271,7 +1302,7 @@ def _render_skeleton_markdown(materials: list[dict[str, Any]], bid_type: str) ->
         "",
         "本页是平台 Wiki 的 merge 真源草案。每个章节下面列出可挂载的原始 docx，并标明 AI 身份、素材内部 Heading 层级。",
     ]
-    if not by_section and bid_type == "商务标":
+    if not by_section and bid_type == BUSINESS_BID_TYPE:
         lines.extend(
             [
                 "",
@@ -1321,7 +1352,7 @@ def _render_rules_markdown(materials: list[dict[str, Any]], bid_type: str) -> st
         "",
         "## 章节素材覆盖面",
     ]
-    if bid_type == "商务标":
+    if bid_type == BUSINESS_BID_TYPE:
         lines.extend(
             [
                 "- 商务标优先保持表单、函件、证明材料原格式，不做事实改写。",
@@ -1344,7 +1375,7 @@ def _render_synonyms_markdown(materials: list[dict[str, Any]], bid_type: str) ->
         for keyword in material.get("keywords") or []:
             keyword_map.setdefault(str(keyword), set()).update({title, section})
     lines = [f"# {bid_type}同义词映射", "", "| 检索词 | 映射到 |", "|---|---|"]
-    if bid_type == "商务标" and not keyword_map:
+    if bid_type == BUSINESS_BID_TYPE and not keyword_map:
         keyword_map = {
             "投标函": {"投标书", "开标文件"},
             "授权": {"法定代表人授权", "授权委托书"},
@@ -1384,9 +1415,9 @@ def _render_bid_type_overview(materials: list[dict[str, Any]], bid_type: str) ->
 def _build_bid_type_system_node(materials: list[dict[str, Any]], inventory: dict[str, Any], bid_type: str) -> dict[str, Any]:
     common_children = _group_material_nodes(materials, "通用", bid_type)
     custom_children = _group_material_nodes(materials, "定制", bid_type)
-    if bid_type == "商务标" and not common_children:
+    if bid_type == BUSINESS_BID_TYPE and not common_children:
         common_children = _render_framework_card_groups(BUSINESS_FRAMEWORK_GROUPS, bid_type, "通用")
-    if bid_type == "商务标" and not custom_children:
+    if bid_type == BUSINESS_BID_TYPE and not custom_children:
         custom_children = _render_framework_card_groups(["项目商务数据", "业主专属承诺", "项目报价附件"], bid_type, "定制")
     return {
         "title": f"01-{bid_type}体系",
@@ -1571,9 +1602,13 @@ def _build_quality_log_node(materials: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _build_material_wiki_blueprint(reference: dict[str, Any], inventory: dict[str, Any], bid_type: str = "技术标") -> dict[str, Any]:
+def _build_material_wiki_blueprint(
+    reference: dict[str, Any],
+    inventory: dict[str, Any],
+    bid_type: str,
+) -> dict[str, Any]:
     bid_type = _normalize_wiki_bid_type(bid_type)
-    if bid_type == "商务标":
+    if bid_type == BUSINESS_BID_TYPE:
         return build_business_wiki_blueprint(inventory, root_title=_wiki_root_title(bid_type))
 
     materials = list(inventory.get("items") or [])
@@ -1891,9 +1926,10 @@ def _run_local_wiki_skill(manifest_path: Path, bid_type: str) -> dict[str, Any]:
 
 
 async def generate_platform_wiki(
+    *,
     reference_path: str = "",
     mode: str = "create",
-    bid_type: str = "技术标",
+    bid_type: str,
     fallback_to_deterministic: bool = False,
 ) -> dict[str, Any]:
     normalized_bid_type = _normalize_wiki_bid_type(bid_type)
@@ -1935,7 +1971,8 @@ async def generate_platform_wiki(
         generator = "deterministic_fallback"
         fallback_used = True
 
-    imported = await material_store.import_generated_wiki_blueprint(
+    imported = await _import_generated_wiki_blueprint(
+        normalized_bid_type,
         root_title=blueprint["rootTitle"],
         root_markdown_content=blueprint.get("rootMarkdownContent") or "",
         nodes=blueprint["nodes"],

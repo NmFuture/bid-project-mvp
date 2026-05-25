@@ -1,10 +1,9 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { materialsAPI } from '../../../api'
+import { technicalMaterialsAPI } from '../../../api'
 import MaterialsViewSwitch from '../components/TechnicalMaterialsViewSwitch'
 import MarkdownLite from '../../../components/shared/MarkdownLite'
 import { PageEmpty, PageError, PageLoading } from '../components/TechnicalPageState'
-import { bidTypeFromWorkspace, useWorkspaceSlug, workspaceRoute } from '../../../utils/workspace'
+import { useWorkspaceSlug, workspaceRoute } from '../../../utils/workspace'
 
 const normalizeArray = (value) =>
   Array.isArray(value) ? [...new Set(value)].filter(Boolean).sort() : []
@@ -18,8 +17,6 @@ const sameArray = (left, right) => {
 
 const safeMessage = (error, fallback) =>
   error?.payload?.detail || error?.message || fallback
-
-const normalizeBidTypeTab = (value) => (value === '商务标' ? '商务标' : '技术标')
 
 const normalizeNode = (node) => {
   if (!node) return null
@@ -45,12 +42,9 @@ const normalizeDraft = (node) => ({
 })
 
 export default function MaterialWiki({ showToast = () => {} }) {
-  const [searchParams, setSearchParams] = useSearchParams()
   const workspaceSlug = useWorkspaceSlug()
-  const lockedBidType = bidTypeFromWorkspace(workspaceSlug)
-  const materialsBasePath = workspaceSlug ? workspaceRoute(workspaceSlug, '/materials') : '/materials'
-  const queryBidType = normalizeBidTypeTab(searchParams.get('bidType') || '')
-  const [activeBidType, setActiveBidType] = useState(() => normalizeBidTypeTab(lockedBidType || queryBidType || '技术标'))
+  const materialsBasePath = workspaceRoute(workspaceSlug || 'tech', '/materials')
+  const activeBidType = '技术标'
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -87,7 +81,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
     }
 
     try {
-      const response = await materialsAPI.wiki.list({
+      const response = await technicalMaterialsAPI.wiki.list({
         ...params,
         bidType: activeBidType,
       })
@@ -163,20 +157,10 @@ export default function MaterialWiki({ showToast = () => {} }) {
     await loadData({ nodeId }, { silent: true })
   }
 
-  const handleBidTypeChange = (value) => {
-    if (lockedBidType) return
-    const next = normalizeBidTypeTab(value)
-    if (next === activeBidType) return
-    setActiveBidType(next)
-    setSearchParams({ bidType: next })
-    setData(null)
-    setDraft(normalizeDraft(null))
-  }
-
   const handleCreateNode = async (isFolder = false) => {
     setCreatingNode(true)
     try {
-      const payload = await materialsAPI.wiki.create({
+      const payload = await technicalMaterialsAPI.wiki.create({
         parentId: selectedNodeId,
         title: isFolder ? '新建目录' : '新建节点',
         isFolder,
@@ -202,7 +186,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
 
     setSaving(true)
     try {
-      const payload = await materialsAPI.wiki.update(selectedNodeId, {
+      const payload = await technicalMaterialsAPI.wiki.update(selectedNodeId, {
         title,
         markdownContent: draft.markdownContent,
         tags: draft.tags,
@@ -225,7 +209,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
     if (!ok) return
     setDeletingNode(true)
     try {
-      const payload = await materialsAPI.wiki.delete(nodeId, { bidType: activeBidType })
+      const payload = await technicalMaterialsAPI.wiki.delete(nodeId, { bidType: activeBidType })
       applyPayload(payload)
       showToast(payload?.message || 'Wiki 节点删除成功')
     } catch (e) {
@@ -240,7 +224,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
     if (!selectedNodeId) return
     setRefreshingSummary(true)
     try {
-      const payload = await materialsAPI.wiki.refreshSummary(selectedNodeId, { bidType: activeBidType })
+      const payload = await technicalMaterialsAPI.wiki.refreshSummary(selectedNodeId, { bidType: activeBidType })
       applyPayload(payload)
       showToast('摘要已刷新')
     } catch (e) {
@@ -256,7 +240,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
     if (!ok) return
     setRefreshingWiki(true)
     try {
-      const payload = await materialsAPI.wiki.bootstrap({
+      const payload = await technicalMaterialsAPI.wiki.bootstrap({
         mode: 'refresh',
         bidType: activeBidType,
       })
@@ -275,7 +259,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
     if (!ok) return
     setRebuildingWiki(true)
     try {
-      const payload = await materialsAPI.wiki.bootstrap({
+      const payload = await technicalMaterialsAPI.wiki.bootstrap({
         mode: 'replace',
         bidType: activeBidType,
       })
@@ -308,7 +292,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
       formData.append('fileName', file.name)
       formData.append('fileSize', String(file.size))
       formData.append('bidType', activeBidType)
-      const payload = await materialsAPI.wiki.uploadAttachment(selectedNodeId, formData)
+      const payload = await technicalMaterialsAPI.wiki.uploadAttachment(selectedNodeId, formData)
       applyPayload(payload)
       showToast('附件上传成功')
     } catch (e) {
@@ -325,7 +309,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
     if (!ok) return
     setDeletingAttachmentId(attachment.id)
     try {
-      const payload = await materialsAPI.wiki.deleteAttachment(attachment.id, { bidType: activeBidType })
+      const payload = await technicalMaterialsAPI.wiki.deleteAttachment(attachment.id, { bidType: activeBidType })
       applyPayload(payload)
       showToast(payload?.message || '附件删除成功')
     } catch (e) {
@@ -340,7 +324,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
     if (!movingId || !targetNode?.id || movingId === targetNode.id) return
     setMovingNode(true)
     try {
-      const payload = await materialsAPI.wiki.move(movingId, {
+      const payload = await technicalMaterialsAPI.wiki.move(movingId, {
         targetId: targetNode.id,
         mode,
         bidType: activeBidType,
@@ -483,8 +467,6 @@ export default function MaterialWiki({ showToast = () => {} }) {
       <MaterialsViewSwitch
         active="wiki"
         activeBidType={activeBidType}
-        lockedBidType={lockedBidType}
-        onBidTypeChange={handleBidTypeChange}
         title={`${activeBidType} Wiki`}
         subtitle={selectedNode?.pathText || selectedNode?.title || `${activeBidType} Wiki 内容维护`}
         actions={(

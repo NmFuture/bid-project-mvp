@@ -4,8 +4,7 @@ import hashlib
 import re
 from typing import Any
 
-
-BID_TYPES = {"技术标", "商务标", "通用"}
+from app.services.bid_type import BID_TYPES, BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE, require_bid_type
 
 
 CUSTOMER_REGISTRY = [
@@ -41,8 +40,8 @@ ROOT_TIER_ALIASES = {
     "项目定制": "project",
 }
 
-TECHNICAL_MATERIAL_ROOT = "技术标"
-BUSINESS_MATERIAL_ROOT = "商务标"
+TECHNICAL_MATERIAL_ROOT = TECHNICAL_BID_TYPE
+BUSINESS_MATERIAL_ROOT = BUSINESS_BID_TYPE
 
 
 def normalize_identity_text(value: Any) -> str:
@@ -110,17 +109,16 @@ def canonical_customer(value: Any) -> dict[str, Any]:
     }
 
 
-def normalize_bid_type(value: Any, default: str = "技术标") -> str:
-    text = str(value or "").strip()
-    return text if text in BID_TYPES else default
-
-
-def classify_material_path(folder_path: Any, default_bid_type: str = "技术标") -> dict[str, Any]:
+def classify_material_path(folder_path: Any, default_bid_type: str) -> dict[str, Any]:
     path = str(folder_path or "").replace("\\", "/").strip("/")
     parts = [part for part in path.split("/") if part]
     root = parts[0] if parts else ""
     tier = ""
-    bid_type = normalize_bid_type(default_bid_type)
+    bid_type = require_bid_type(
+        default_bid_type,
+        allow_general=True,
+        error_message="素材路径分类必须显式传入技术标、商务标或通用。",
+    )
     customer_name = ""
     project_id = ""
 
@@ -220,7 +218,10 @@ def build_project_identity(project: dict[str, Any]) -> dict[str, Any]:
         "projectCode": material_project_code,
         "projectName": material_project_name,
         "materialProjectMode": material_project_mode or ("library" if material_project_id != bid_project_id else ""),
-        "bidType": normalize_bid_type(project.get("bidType"), "技术标"),
+        "bidType": require_bid_type(
+            project.get("bidType"),
+            error_message="项目身份必须显式传入技术标或商务标。",
+        ),
         "owner": owner,
         "customerName": owner,
         "customerId": customer["customerId"],
@@ -246,7 +247,10 @@ def build_project_identity(project: dict[str, Any]) -> dict[str, Any]:
 
 def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
     identity = build_project_identity(project)
-    bid_type = normalize_bid_type(identity.get("bidType") or project.get("bidType"), "技术标")
+    bid_type = require_bid_type(
+        identity.get("bidType") or project.get("bidType"),
+        error_message="项目素材范围必须显式传入技术标或商务标。",
+    )
     customer_name = str(identity.get("customerCanonicalName") or identity.get("customerName") or "").strip()
     project_id = str(identity.get("projectId") or identity.get("bidProjectId") or project.get("id") or "").strip()
     scopes: list[dict[str, Any]] = [
@@ -295,7 +299,7 @@ def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
 def material_identity(
     *,
     material_tier: Any,
-    bid_type: Any = "技术标",
+    bid_type: Any,
     customer_name: Any = "",
     project_id: Any = "",
     project_code: Any = "",
@@ -306,7 +310,7 @@ def material_identity(
         return {
             "identityScope": "general",
             "materialScope": "general",
-            "bidType": normalize_bid_type(bid_type),
+            "bidType": require_bid_type(bid_type, allow_general=True),
             "customerId": "",
             "customerCanonicalName": "",
             "customerAliases": [],
@@ -321,7 +325,7 @@ def material_identity(
         return {
             "identityScope": "customer",
             "materialScope": "customer",
-            "bidType": normalize_bid_type(bid_type),
+            "bidType": require_bid_type(bid_type, allow_general=True),
             "customerId": customer["customerId"],
             "customerCanonicalName": customer["customerCanonicalName"],
             "customerAliases": customer["customerAliases"],
@@ -336,7 +340,7 @@ def material_identity(
     return {
         "identityScope": "project",
         "materialScope": "project",
-        "bidType": normalize_bid_type(bid_type),
+        "bidType": require_bid_type(bid_type, allow_general=True),
         "customerId": canonical_customer(customer_name)["customerId"] if customer_name else "",
         "customerCanonicalName": canonical_customer(customer_name)["customerCanonicalName"] if customer_name else "",
         "customerAliases": canonical_customer(customer_name)["customerAliases"] if customer_name else [],

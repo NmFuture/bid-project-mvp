@@ -11,15 +11,22 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.config import BASE_DIR, settings
+from app.services.bid_fill_generation_state import save_fill_generation_result_state
+from app.services.bid_type import BUSINESS_BID_TYPE
+from app.services.business_gap_fact_table import build_project_fact_table
 from app.services.business_gap_planning import _business_template_index, _resolve_business_toc_json, _run_async
+from app.services.business_material_store import business_material_store
 from app.services.identity import build_project_material_scope
-from app.services.material_store import material_store
 from app.services.minio_client import minio_client
 from app.services.onlyoffice_documents import document_path
 from app.services.opencode_client import OpencodeClient
-from app.services.parse_profiles import normalize_bid_type
-from app.services.store import now_iso, store
-from app.services.workspace_artifacts import business_workspace_dir, technical_workspace_stage_dir
+from app.services.bid_runtime_state import now_iso
+from app.services.workspace_project_access import (
+    get_workspace_project_runtime_state,
+    persist_workspace_project_state,
+    require_workspace_project_for_update,
+)
+from app.services.workspace_artifacts import business_workspace_dir
 
 
 BUSINESS_ASSEMBLER_SKILL_NAME = "bid-business-assembler"
@@ -50,32 +57,18 @@ BUSINESS_FORMAT_PRESETS = {
     },
 }
 
-TECH_FORMAT_PRESETS = {
-    "standard": {
-        "label": "标准技术标格式",
-        "description": "默认技术标版式：标题、正文、表格、目录、页眉和分页统一规范化。",
-    },
-    "custom": {
-        "label": "自定义格式",
-        "description": "按用户设置的字体、字号、行距、页边距、目录和页眉规则执行格式规范化。",
-    },
-}
-
-BID_FORMAT_PRESETS = {
-    "技术标": TECH_FORMAT_PRESETS,
-    "商务标": BUSINESS_FORMAT_PRESETS,
-}
-
-
 def assemble_business_bid_for_project_with_progress(
     project_id: str,
     data: dict[str, Any] | None = None,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
-    project = store.get_project_runtime_state(project_id)
-    if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
-        raise ValueError("商务标生成标书仅支持商务标项目。")
-    outline_state = store.get_outline_state(project_id)
+    project = get_workspace_project_runtime_state(
+        project_id,
+        bid_type=BUSINESS_BID_TYPE,
+        not_found_error=KeyError,
+        wrong_type_error=lambda _project_id: ValueError("商务标生成标书仅支持商务标项目。"),
+    )
+    outline_state = copy.deepcopy(project.get("outline_state") if isinstance(project.get("outline_state"), dict) else {})
     if outline_state.get("reviewStatus") != "confirmed":
         raise ValueError("请先完成商务目录确认后再生成标书。")
     business_gap_state = project.get("business_gap_state") if isinstance(project.get("business_gap_state"), dict) else {}
@@ -113,7 +106,7 @@ def assemble_business_bid_for_project_with_progress(
         "schemaVersion": "bid-business-assembly-manifest-v1",
         "projectId": project_id,
         "projectName": str(project.get("name") or project_id),
-        "bidType": "商务标",
+        "bidType": BUSINESS_BID_TYPE,
         "project": {
             "projectCode": str(project.get("projectCode") or ""),
             "customerName": str(project.get("customerName") or project.get("owner") or ""),
@@ -231,7 +224,14 @@ def assemble_business_bid_for_project_with_progress(
             }
         )
 
-    return store.save_fill_generation_result(
+    project_for_update = require_workspace_project_for_update(
+        project_id,
+        bid_type=BUSINESS_BID_TYPE,
+        not_found_error=KeyError,
+        wrong_type_error=lambda _project_id: ValueError("商务标生成标书仅支持商务标项目。"),
+    )
+    payload = save_fill_generation_result_state(
+        project_for_update,
         project_id=project_id,
         summary="商务标响应文件装配完成。",
         sections=sections,
@@ -263,6 +263,8 @@ def assemble_business_bid_for_project_with_progress(
             "formatClean": format_clean,
         },
     )
+    persist_workspace_project_state(project_for_update)
+    return payload
 
 
 def _prepare_work_dir(project_id: str) -> Path:
@@ -294,7 +296,7 @@ def _recover_business_gap_plan(project: dict[str, Any], business_gap_state: dict
         project["business_gap_state"] = business_gap_state
         project["updatedAt"] = now_iso()
         try:
-            store._persist_project(project)
+            persist_workspace_project_state(project)
         except Exception:
             pass
         return plan
@@ -314,7 +316,7 @@ def _prepare_gap_plan(plan: dict[str, Any], work_dir: Path) -> Path:
 def _prepare_project_fact_table(project: dict[str, Any], business_gap_state: dict[str, Any], work_dir: Path) -> Path:
     table = business_gap_state.get("projectFactTable") if isinstance(business_gap_state.get("projectFactTable"), dict) else {}
     if not table:
-        table = store._build_project_fact_table(project, business_gap_state)
+        table = build_project_fact_table(project, business_gap_state)
     target = work_dir / "project_fact_table.json"
     target.write_text(json.dumps(table, ensure_ascii=False, indent=2), encoding="utf-8")
     return target
@@ -353,9 +355,8 @@ def _export_business_material_library(project: dict[str, Any], library_dir: Path
             continue
         try:
             payload = _run_async(
-                material_store.raw_files(
+                business_material_store.raw_files(
                     folder_path=folder_path,
-                    bid_type="商务标",
                     material_tier=str(scope.get("materialTier") or ""),
                     recursive=True,
                     page=1,
@@ -382,9 +383,9 @@ def _copy_business_material(item: dict[str, Any], library_dir: Path) -> bool:
         return False
     try:
         try:
-            payload = _run_async(material_store.raw_download_cleaned_content(material_id))
+            payload = _run_async(business_material_store.raw_download_cleaned_content(material_id))
         except Exception:
-            payload = _run_async(material_store.raw_download_content(material_id))
+            payload = _run_async(business_material_store.raw_download_content(material_id))
         file_name = _safe_filename(str(payload.get("fileName") or item.get("name") or f"{material_id}.bin"), f"{material_id}.bin")
         folder = _safe_filename(str(item.get("folderPath") or "素材"), "素材")
         target_path = library_dir / folder / file_name
@@ -493,16 +494,18 @@ def apply_business_document_format_preset(
     preset: str = "standard",
     style_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    project = store.get_project_runtime_state(project_id)
-    bid_type = normalize_bid_type(str(project.get("bidType") or "技术标"))
-    if bid_type == "技术标":
-        return apply_technical_document_format_preset(project_id, preset, style_overrides)
+    project = get_workspace_project_runtime_state(
+        project_id,
+        bid_type=BUSINESS_BID_TYPE,
+        not_found_error=KeyError,
+        wrong_type_error=lambda _project_id: ValueError("商务标格式切换仅支持商务标项目。"),
+    )
 
     preset_key = preset if preset in BUSINESS_FORMAT_PRESETS else "standard"
     preset_info = BUSINESS_FORMAT_PRESETS[preset_key]
     source_path = document_path(project_id)
     if not source_path.exists():
-        state = store.get_document_state(project_id)
+        state = project.get("document_state") if isinstance(project.get("document_state"), dict) else {}
         raise FileNotFoundError(f"商务标正文文件不存在：{state.get('fileName') or source_path.name}")
 
     work_dir = business_workspace_dir(project_id) / "s4_format_switch_workdir"
@@ -539,65 +542,6 @@ def apply_business_document_format_preset(
     }
 
 
-def apply_technical_document_format_preset(
-    project_id: str,
-    preset: str = "standard",
-    style_overrides: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    project = store.get_project_runtime_state(project_id)
-    bid_type = normalize_bid_type(str(project.get("bidType") or "技术标"))
-    if bid_type != "技术标":
-        raise ValueError("技术标格式切换仅支持技术标项目。")
-
-    preset_key = preset if preset in TECH_FORMAT_PRESETS else "standard"
-    preset_info = TECH_FORMAT_PRESETS[preset_key]
-    source_path = document_path(project_id)
-    if not source_path.exists():
-        state = store.get_document_state(project_id)
-        raise FileNotFoundError(f"技术标正文文件不存在：{state.get('fileName') or source_path.name}")
-
-    from app.services.tech_assembly import (
-        _prepare_tech_format_outline,
-        _prepare_toc_json as _prepare_technical_toc_json,
-        _run_local_tech_format_cleaner,
-    )
-
-    outline_state = store.get_outline_state(project_id)
-    parse_storage = store.get_parse_storage(project_id)
-    work_dir = technical_workspace_stage_dir(project_id, "s5_format_switch_workdir")
-    work_dir.mkdir(parents=True, exist_ok=True)
-    toc_json_path = _prepare_technical_toc_json(project_id, project, outline_state, parse_storage, work_dir)
-    outline_path = _prepare_tech_format_outline(toc_json_path, work_dir)
-    output_path = work_dir / f"{source_path.stem}.{preset_key}.formatted.docx"
-    manifest_path = work_dir / f"tech_format_{preset_key}_input.json"
-    style_spec_path = _prepare_technical_format_style_spec(preset_key, style_overrides or {}, work_dir)
-    manifest = {
-        "schemaVersion": "bid-tech-format-clean-manifest-v1",
-        "inputFile": str(source_path),
-        "outlineFile": str(outline_path),
-        "outputFile": str(output_path),
-        "projectName": str(project.get("name") or project_id),
-        "formatPreset": preset_key,
-        "styleSpecPath": str(style_spec_path),
-    }
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    result = _run_local_tech_format_cleaner(manifest_path)
-    formatted_path = Path(str(result.get("outputFile") or output_path)).expanduser()
-    if not formatted_path.exists():
-        raise RuntimeError(f"技术标格式切换未生成输出文件：{formatted_path}")
-    shutil.copy2(formatted_path, source_path)
-    return {
-        "preset": preset_key,
-        "label": preset_info["label"],
-        "description": preset_info["description"],
-        "styleOverrides": copy.deepcopy(style_overrides or {}),
-        "manifestPath": str(manifest_path),
-        "outputFile": str(formatted_path),
-        "summary": result.get("summary") if isinstance(result.get("summary"), dict) else {},
-    }
-
-
 def _prepare_business_format_style_spec(
     preset_key: str,
     style_overrides: dict[str, Any],
@@ -616,23 +560,6 @@ def _prepare_business_format_style_spec(
 
     _apply_business_style_overrides(spec, style_overrides)
     style_path = work_dir / f"business_format_{preset_key}_style.json"
-    style_path.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
-    return style_path
-
-
-def _prepare_technical_format_style_spec(
-    preset_key: str,
-    style_overrides: dict[str, Any],
-    work_dir: Path,
-) -> Path:
-    base_path = BASE_DIR / "opencode" / "skill" / "bid-tech-assembler" / "references" / "heading_style.json"
-    spec = json.loads(base_path.read_text(encoding="utf-8"))
-    if not isinstance(spec, dict):
-        raise ValueError("技术标格式规范配置不是 JSON object。")
-    spec = copy.deepcopy(spec)
-    if preset_key == "custom" or style_overrides:
-        _apply_business_style_overrides(spec, style_overrides)
-    style_path = work_dir / f"tech_format_{preset_key}_style.json"
     style_path.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
     return style_path
 

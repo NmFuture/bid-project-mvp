@@ -1,50 +1,54 @@
 # 项目执行说明
 
 > 这份文件给后续参与这个项目的开发同学和智能体使用。
-> 当前目标：在已跑通 Docker Compose MVP 的基础上，按甲方新增需求待办逐项推进，并保持 `S0-S6` 阶段口径一致。
+> 当前目标：在已跑通 Docker Compose MVP 的基础上，继续实施技术标 / 商务标双轨独立化，并保持文档、接口和代码边界一致。
 
 ## 0. 当前推进规则
 
 当前下一阶段工作以这三份文档为准：
 
+- `/Users/wlb/Agent/bid-project/doc/31-技术标与商务标双轨独立化实施计划.md`
+  - 当前最重要的架构边界和拆分计划
+- `/Users/wlb/Agent/bid-project/doc/README.md`
+  - 文档入口和历史资料去留口径
+- `/Users/wlb/Agent/bid-project/code/progress.md`
+  - 当前已完成拆分、验证命令和下一步
+
+业务需求依据继续参考：
+
 - `/Users/wlb/Agent/bid-project/doc/14-甲方新增需求待办.md`
-  - 当前统一待办池
-  - 按实施难度升序排列
-  - 每条待办都有“完成情况”
 - `/Users/wlb/Agent/bid-project/doc/15-技术标与商务标需求整理.md`
-  - 技术标、商务标需求来源和讨论依据
 - `/Users/wlb/Agent/bid-project/doc/16-目标一与目标二最终目标.md`
-  - 附表填写与素材库待填写内容生成的验收基准
-  - 自动结果必须达到人工版本至少 85%，低于 85% 时继续诊断、修复、再评测
+  - 涉及附表填写、待填写 Word、85% 人工基准验收时必须补读
 
 执行规则：
 
-- 按 `doc/14-甲方新增需求待办.md` 的待办清单推进。
-- 完成一项后，把对应行的“完成情况”从 `[ ]` 改为 `[x]`。
+- 优先按 `doc/31` 的双轨独立化计划推进，不要按旧通用接口或旧单线阶段号新增代码。
 - 每完成或推进一项，同步在 `/Users/wlb/Agent/bid-project/code/progress.md` 写进度记录。
-- 每完成一项待办后，必须重新部署相关服务给用户检查；涉及前端展示的改动至少执行 `docker compose build web && docker compose up -d web`。
-- 每完成一项待办后，同步创建一次 git commit，提交前确认工作树只包含本项相关改动。
-- 新会话开工时先读 `doc/14-甲方新增需求待办.md`、`code/progress.md` 和本文件，再看具体代码；涉及附表填写、待填写 Word、85% 人工基准验收时，同时先读 `doc/16-目标一与目标二最终目标.md`。
+- 涉及前端展示的改动，至少运行前端检查或页面冒烟；涉及后端双轨边界的改动，补对应防回退测试。
+- 新会话开工时先读 `doc/31`、`doc/README.md`、`code/progress.md` 和本文件，再看具体代码。
 - 用户明确说“先更新待办文档，不需要直接做”时，只改文档，不实现功能。
-- PWF 与 MYX 当前协作范围仅限商务标流程；默认只允许修改商务标相关页面、接口、服务、Skill、测试和文档。
-- 商务标协作中不得改动技术标流程、技术标素材库/Wiki、技术标 Skill、技术标页面、技术标 API、技术标测试或技术标文档。除非用户明确扩大范围，否则发现需要动共享代码时，必须保持技术标行为不变，并在变更说明中写清商务标/技术标边界。
+- 如果任务明确只属于商务标或技术标，默认只改对应 workspace、API、service、Skill、测试和文档。
+- 确实需要动共享底座时，必须证明另一条线行为不变，并在变更说明中写清商务标/技术标边界。
 
 当前重要口径：
 
 - `素材库` 是一级准备模块，和 `解析 / 技术标 / 商务标 / 审计 / 设置` 同级；不要再把它解释成某个标类工作区内部的附属页面。
-- 素材库顶层先分 `技术标 / 商务标`；当前只启用技术标，技术标下再分 `通用素材 / 客户素材 / 项目素材`，商务标先保留为空。
+- 素材库顶层分 `技术标 / 商务标`；两边都通过各自 business/technical materials API 访问，底层通用 `material_store` 只作为持久化底座继续收瘦。
 - 项目在 `S0` 确认参与并补全信息时，会绑定技术标素材读取范围：`技术标/通用素材`、`技术标/客户素材/{客户}`、`技术标/项目素材/{素材项目ID}`。
 - 项目信息补全页的当前业务文案为：`业务项目编号` 和 `负责人` 并列，`客户来源` 为 `重要客户 / 普通客户`，`业主单位（客户）` 与其并列，`项目来源` 为 `已有项目 / 普通项目`，右侧字段叫 `项目`，不要再在这个页面写成“素材库客户 / 素材库项目”。
 - 技术标项目必须在项目信息补全页确认 `投标机型`。候选机型来自素材库真实投标机型参数表动态解析，不单独维护静态 JSON 文件；用户选中的机型和参数会作为项目 `turbineModel / selectedTurbineModel / turbineModelLabel` 存入项目 payload，并延续到 `S3 缺口处理`、AI 填写和 `S4 生成标书`。
 - `S3 缺口处理` 与 `S4 生成标书` 的素材搜索和 Agent 输入应按上述项目范围读取，避免跨客户、跨项目误用素材。
-- 2026-05-04 S3 当前只确认第一个缺口识别 Skill `bid-tech-gap-planner`。第二个空副表/Word 填写 Skill 和第三个审阅/完整性复查 Skill 不能写成已验收；后续要基于第一个 Skill 的稳定 `gapPlan` 重新规划。
+- `S3 缺口处理` 的代码边界已经迁入技术标/商务标专属 service：缺口识别、补料、AI 填写、素材选择、预览、完整性复查和审核入口都不应再回调旧通用 store/helper。不要把这等同于业务验收已全部完成；是否对外宣称通过，必须看 `doc/31` 和 `code/progress.md` 中带具体日期的真实回归与人工验收记录。
 - 技术标 Wiki 当前由 FastAPI 直接执行 `bid-tech-wiki-material-builder/scripts/run_from_manifest.py` 生成，不经过 OpenCode 会话中转；一级节点固定为 `01-素材总表 / 02-章节映射表 / 03-素材卡片 / 04-待填写清单 / 05-使用规则`。
 - 技术标流程统一为 `S0-S6`：`S0 解析 -> S1 模板与目录 -> S2 审核目录 -> S3 缺口处理 -> S4 生成标书 -> S5 共创 -> S6 导出`。
 - `S0` 属于全局 `解析` / `审核` 模块，负责上传招标文件、结构化解析、投标决策和补全项目信息。
 - 项目模块进度条只展示 `S1-S6` 六个节点。
-- 项目内历史 URL `/projects/:id/parse` 仅作为兼容跳转；当前 `S1 模板与目录` 的正式 URL 是 `/projects/:id/template-directory`。
+- 项目内旧根 URL `/projects/:id/parse`、`/projects/:id/template-directory` 不再作为当前入口或兼容跳转；技术标 `S1 模板与目录` 的正式 URL 是 `/workspace/tech/projects/:id/template-directory`，商务标对应 `/workspace/business/projects/:id/template-directory`。
 - 旧阶段号 `S7/S8/S9/S10` 不再作为当前产品或接口基线；只在历史内部目录名和 legacy 请求映射中保留。
 - 旧的 Agent 决策素材匹配已经前移到 `S3 缺口处理`，不要再恢复为独立生成后步骤。
+- 业务入口只认 `/api/technical/...` 和 `/api/business/...`；旧 `/api/projects...`、`/api/materials...`、`/api/audit...` 仅可作为 404 防回退测试和内部 URL 兼容替换依据。
+- 运行态时间戳统一由 `app/services/bid_runtime_state.py::now_iso` 提供，不要再从 `app.services.store` 重导出或新增第二份时间戳函数。
 
 ## 1. 当前目录结构
 
@@ -147,7 +151,7 @@ S0 解析
 - `S0`：多招标文件上传、结构化解析、PDF/图片型文件无感识别、投标决策、项目信息补全
 - `S1`：项目模板上传或设置侧系统默认模板读取；调用 futurecode/opencode 执行 `bid-tech-outline-generator` 的 `s2toc` 命令生成目录；失败时本地运行同一 Skill 脚本降级
 - `S2`：审核并确认目录
-- `S3`：当前已确认的是缺口识别；补料、AI 填写、OnlyOffice 预览和完整性校验仍按后续验收逐步收口
+- `S3`：技术标和商务标都已拆入各自缺口 service；缺口识别、补料、AI 填写、素材选择、预览、完整性复查和审核入口按双轨边界实现，业务验收结论以带具体日期的回归和人工验收记录为准
 - `S4`：调用 `bid-tech-assembler`，按目录 JSON、缺口计划、Wiki 和素材库拼装正文，并生成覆盖诊断
 - `S5`：OnlyOffice 共创编辑
 - `S6`：下载最新版 Word，导出前格式检查和 PDF 能力继续按待办推进
@@ -182,16 +186,16 @@ S0 解析
 ### 4.3 后端做什么
 
 - FastAPI 统一承接所有 `/api`
-- 调 futurecode/opencode 执行 `s2toc` 生成目录，并在调用失败时本地运行同一 Skill 脚本
-- 调缺口识别和 AI 填写 Skill
-- 直接执行技术标专用 `bid-tech-wiki-material-builder` Skill runner 生成素材 Wiki 蓝图，完整结果由脚本写入共享 `parsed/_wiki_build/*/wiki_blueprint.json` 后再由后端导入
-- 调本地 `bid-tech-assembler` skill 生成正文 docx
+- 技术标和商务标分别通过 `/api/technical/...`、`/api/business/...` 暴露业务入口
+- 调 opencode / 本地 Skill 执行目录、缺口、正文、Wiki 等任务，Skill 名称按标类分开
 - 管项目状态、设置、审计和素材库
 - 提供 OnlyOffice `config/meta/download/callback`
+- 底层 `store.py`、`material_store.py` 只作为持久化底座保留，双轨业务规则继续迁到专属 service/domain/state/repository 模块
 
 ## 5. 工作目录约定
 
 - 最新成功目录产物固定在 `{DOCUMENTS_DIR}/{project_id}/technical-workspace/s2_toc_workdir/`。
+- 商务标对应产物固定在 `{DOCUMENTS_DIR}/{project_id}/business-workspace/` 下，按商务标 service 分阶段写入。
 - 新一轮目录生成先写 `{DOCUMENTS_DIR}/{project_id}/technical-workspace/s2_toc_workdir.new/`，成功后再发布。
 - 旧成功目录归档到 `{DOCUMENTS_DIR}/{project_id}/technical-workspace/s2_toc_workdir.runs/`。
 - 素材 Wiki 重建 manifest 和完整蓝图位于 `{PARSED_DIR}/_wiki_build/bid-wiki-build-*/`，由 `fastapi` 直接运行技术标 Wiki Skill runner 生成。
@@ -246,6 +250,9 @@ docker compose up
 所有真实实现都以这些文件为准：
 
 - `/Users/wlb/Agent/bid-project/README.md`
+- `/Users/wlb/Agent/bid-project/doc/31-技术标与商务标双轨独立化实施计划.md`
+- `/Users/wlb/Agent/bid-project/doc/README.md`
+- `/Users/wlb/Agent/bid-project/code/progress.md`
 - `/Users/wlb/Agent/bid-project/doc/05-MVP主链路说明.md`
 - `/Users/wlb/Agent/bid-project/doc/06-MVP接口文档.md`
 - `/Users/wlb/Agent/bid-project/doc/08-MVP部署说明.md`
@@ -270,9 +277,9 @@ frontend -> FastAPI -> opencode/skill -> docx -> OnlyOffice -> callback -> downl
 
 旧 MVP 联调顺序已经基本完成，后续不要按旧十段阶段序列扩功能。当前落地顺序：
 
-1. 从 `/Users/wlb/Agent/bid-project/doc/14-甲方新增需求待办.md` 的未完成项开始推进。
-2. 每开始一项前，先确认它与当前代码、页面和接口的真实状态。
-3. 完成后勾选待办，并写入 `/Users/wlb/Agent/bid-project/code/progress.md`。
+1. 先按 `/Users/wlb/Agent/bid-project/doc/31-技术标与商务标双轨独立化实施计划.md` 继续拆业务边界。
+2. 每开始一项前，先确认它与当前代码、页面、接口和测试的真实状态。
+3. 完成后写入 `/Users/wlb/Agent/bid-project/code/progress.md`，必要时同步更新 `doc/README.md` 和接口文档。
 
 ## 9. Git 分支约定
 

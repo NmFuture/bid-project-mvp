@@ -8,7 +8,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -19,14 +18,18 @@ from sqlalchemy import select
 from app.core.config import BASE_DIR, settings
 from app.models import async_session
 from app.models.materials import WikiDoc, WikiNode
+from app.services.bid_type import BUSINESS_BID_TYPE
+from app.services.business_material_store import business_material_store
+from app.services.bid_runtime_state import now_iso
 from app.services.identity import build_project_material_scope
-from app.services.material_store import material_store
+from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.minio_client import minio_client
 from app.services.opencode_client import OpencodeClient
-from app.services.parse_profiles import BUSINESS_PARSE_PROFILE, normalize_bid_type
+from app.services.parse_profiles import BUSINESS_PARSE_PROFILE
 from app.services.template_store import resolve_fallback_bid_template_file_sync
 from app.services.turbine_models import project_turbine_model
 from app.services.workspace_artifacts import business_workspace_dir, legacy_workspace_roots
+from app.services.workspace_project_access import ensure_workspace_project_type
 
 
 BUSINESS_GAP_PLAN_SCHEMA_VERSION = "bid-business-gap-plan-v1"
@@ -51,13 +54,12 @@ BUSINESS_TABLE_FILL_RUNNER = (
 )
 
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
 def build_business_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
-    if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
-        raise ValueError("商务标缺口处理仅支持商务标项目。")
+    ensure_workspace_project_type(
+        project,
+        bid_type=BUSINESS_BID_TYPE,
+        wrong_type_error=lambda _project_id: ValueError("商务标缺口处理仅支持商务标项目。"),
+    )
 
     project_id = str(project.get("id") or "")
     project_dir = business_workspace_dir(project_id)
@@ -89,7 +91,7 @@ def build_business_gap_plan_for_project(project: dict[str, Any]) -> dict[str, An
     manifest = {
         "projectId": project_id,
         "projectName": str(project.get("name") or project_id),
-        "bidType": "商务标",
+        "bidType": BUSINESS_BID_TYPE,
         "workDir": str(work_dir),
         "tocJsonPath": str(toc_json_path),
         "parseResultPath": str(parse_result_path),
@@ -122,8 +124,11 @@ def build_business_gap_plan_for_project(project: dict[str, Any]) -> dict[str, An
 
 def build_business_gap_material_picker_index(project: dict[str, Any]) -> dict[str, Any]:
     """Build the same business material/evidence index used by S3 planner for manual selection."""
-    if normalize_bid_type(str(project.get("bidType") or "")) != "商务标":
-        raise ValueError("商务标素材选择仅支持商务标项目。")
+    ensure_workspace_project_type(
+        project,
+        bid_type=BUSINESS_BID_TYPE,
+        wrong_type_error=lambda _project_id: ValueError("商务标素材选择仅支持商务标项目。"),
+    )
     project_id = str(project.get("id") or "")
     work_dir = business_workspace_dir(project_id) / "gaps"
     material_scope = build_project_material_scope(project)
@@ -138,7 +143,7 @@ def build_business_gap_material_picker_index(project: dict[str, Any]) -> dict[st
     return {
         "schemaVersion": "bid-business-material-picker-index-v1",
         "projectId": project_id,
-        "bidType": "商务标",
+        "bidType": BUSINESS_BID_TYPE,
         "materialScope": material_scope,
         "materialIndex": material_index,
         "templateIndex": template_index,
@@ -231,7 +236,7 @@ def refresh_business_gap_artifact_urls(
             file_name = str(artifact.get("fileName") or Path(str(artifact.get("filePath") or "")).name or "artifact")
             if not artifact_id:
                 continue
-            rel = f"/api/projects/{project_id}/business-gaps/artifacts/{artifact_id}/content/{quote(file_name)}"
+            rel = f"/api/business/projects/{project_id}/business-gaps/artifacts/{artifact_id}/content/{quote(file_name)}"
             browser_url = f"{browser_base_url.rstrip('/')}{rel}" if browser_base_url else rel
             server_url = f"{onlyoffice_base_url.rstrip('/')}{rel}" if onlyoffice_base_url else browser_url
             artifact["fileUrl"] = browser_url
@@ -416,7 +421,7 @@ def _build_business_wiki_index(wiki_dir: Path | None) -> dict[str, Any]:
 async def _business_wiki_docs_from_db() -> list[dict[str, Any]]:
     async with async_session() as session:
         try:
-            await material_store._ensure_runtime_tables(session)  # noqa: SLF001 - internal table bootstrap is required here.
+            await ensure_material_runtime_tables(session)
             rows = (
                 await session.execute(
                     select(WikiNode, WikiDoc)
@@ -705,7 +710,7 @@ def _business_evidence_segments_from_cleaned_word(material: dict[str, Any]) -> l
     if not material_id:
         return []
     try:
-        payload = _run_async(material_store.raw_download_cleaned_content(material_id))
+        payload = _run_async(business_material_store.raw_download_cleaned_content(material_id))
     except Exception:
         return []
     suffix = Path(str(payload.get("fileName") or "")).suffix.lower()
@@ -971,6 +976,7 @@ def _dedupe_wiki_rows(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> list
 def _business_material_index(material_scope: dict[str, Any], selected_model: dict[str, Any]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
+    _ = selected_model
     for scope in material_scope.get("readableScopes") or []:
         if not isinstance(scope, dict):
             continue
@@ -979,11 +985,9 @@ def _business_material_index(material_scope: dict[str, Any], selected_model: dic
             continue
         try:
             payload = _run_async(
-                material_store.raw_files(
+                business_material_store.raw_files(
                     folder_path=folder_path,
-                    bid_type="商务标",
                     material_tier=str(scope.get("materialTier") or ""),
-                    turbine_model=selected_model,
                     recursive=True,
                     page=1,
                     page_size=1000,
@@ -1025,7 +1029,7 @@ def _business_template_index(project: dict[str, Any], work_dir: Path) -> list[di
     source_kind = "project_upload"
     if not source_records and _template_fallback_enabled(project):
         try:
-            fallback_record = resolve_fallback_bid_template_file_sync(project_id, "商务标")
+            fallback_record = resolve_fallback_bid_template_file_sync(project_id, BUSINESS_BID_TYPE)
         except Exception:
             fallback_record = None
         if isinstance(fallback_record, dict):

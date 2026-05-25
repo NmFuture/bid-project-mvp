@@ -23,7 +23,8 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.models import async_session
 from app.models.materials import RawFile
-from app.services.material_store import material_store, safe_segment
+from app.services.bid_type import BUSINESS_BID_TYPE
+from app.services.file_utils import safe_segment
 from app.services.minio_client import minio_client
 from app.services.opencode_client import OpencodeClient
 from app.services.peripheral import PeripheralError
@@ -188,9 +189,8 @@ async def confirm_business_material_split(
         )
 
     for target_path, files in grouped.items():
-        result = await material_store.raw_upload(
+        result = await _upload_business_split_files(
             target_path=target_path,
-            bid_type="商务标",
             on_conflict=on_conflict,
             files=files,
         )
@@ -203,6 +203,21 @@ async def confirm_business_material_split(
         "items": uploaded_items,
         "fragments": selected,
     }
+
+
+async def _upload_business_split_files(
+    *,
+    target_path: str,
+    on_conflict: str,
+    files: list[dict[str, Any]],
+) -> dict[str, Any]:
+    from app.services.business_material_store import business_material_store
+
+    return await business_material_store.raw_upload(
+        target_path=target_path,
+        on_conflict=on_conflict,
+        files=files,
+    )
 
 
 async def _load_business_source_file(file_id: str) -> dict[str, Any]:
@@ -218,7 +233,7 @@ async def _load_business_source_file(file_id: str) -> dict[str, Any]:
             raise PeripheralError(400, "素材目录信息缺失。", "RAW_FILE_FOLDER_MISSING")
         payload = item.to_dict()
         ext = item.ext_fields or {}
-        if str(ext.get("bidType") or payload.get("bidType") or "") != "商务标":
+        if str(ext.get("bidType") or payload.get("bidType") or "") != BUSINESS_BID_TYPE:
             raise PeripheralError(400, "素材切分入口当前仅支持商务标素材。", "BUSINESS_SPLIT_BID_TYPE_ONLY")
         if PurePosixPath(item.name).suffix.lower() != ".docx":
             raise PeripheralError(400, "第一版切分仅支持 .docx 文件；PDF/扫描件请先人工拆分或后续 OCR 增强。", "BUSINESS_SPLIT_DOCX_ONLY")
@@ -1016,29 +1031,29 @@ def _suggest_target_path(source: dict[str, Any], material_type: str, title: str,
     if target_path:
         return target_path.strip().strip("/")
     folder_path = str(source.get("folderPath") or "").strip().strip("/")
-    tier_path = _tier_root_path(source) or "商务标/通用素材"
+    tier_path = _tier_root_path(source) or f"{BUSINESS_BID_TYPE}/通用素材"
     if material_type == "证书":
         if "部件" in title or "大部件" in title:
-            return "商务标/通用素材/05-专题证书库/02-大部件型式认证证书"
-        return "商务标/通用素材/05-专题证书库/01-机型认证证书"
+            return f"{BUSINESS_BID_TYPE}/通用素材/05-专题证书库/02-大部件型式认证证书"
+        return f"{BUSINESS_BID_TYPE}/通用素材/05-专题证书库/01-机型认证证书"
     if material_type == "业绩订单":
-        return "商务标/通用素材/03-业绩资产池"
+        return f"{BUSINESS_BID_TYPE}/通用素材/03-业绩资产池"
     if material_type in {"承诺书模板", "商务附件模板"}:
         if "/项目素材/" in folder_path:
             return f"{tier_path}/03-模板底稿与过程文件"
         if "/客户素材/" in folder_path:
             return f"{tier_path}/03-模板底稿与过程文件"
-        return "商务标/通用素材/06-通用模板底稿库"
+        return f"{BUSINESS_BID_TYPE}/通用素材/06-通用模板底稿库"
     return folder_path or tier_path
 
 
 def _tier_root_path(source: dict[str, Any]) -> str:
     folder_path = str(source.get("folderPath") or "")
     parts = [part for part in folder_path.split("/") if part]
-    if len(parts) >= 3 and parts[0] == "商务标" and parts[1] in {"客户素材", "项目素材"}:
+    if len(parts) >= 3 and parts[0] == BUSINESS_BID_TYPE and parts[1] in {"客户素材", "项目素材"}:
         return "/".join(parts[:3])
-    if len(parts) >= 2 and parts[0] == "商务标" and parts[1] == "通用素材":
-        return "商务标/通用素材"
+    if len(parts) >= 2 and parts[0] == BUSINESS_BID_TYPE and parts[1] == "通用素材":
+        return f"{BUSINESS_BID_TYPE}/通用素材"
     return ""
 
 

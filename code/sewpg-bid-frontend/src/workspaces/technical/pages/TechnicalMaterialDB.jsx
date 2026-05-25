@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { materialsAPI } from '../../../api'
+import { technicalMaterialsAPI } from '../../../api'
 import MaterialsViewSwitch from '../components/TechnicalMaterialsViewSwitch'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import OnlyOfficeWorkspace from '../components/TechnicalOnlyOfficeWorkspace'
 import { PageError, PageLoading } from '../components/TechnicalPageState'
-import { bidTypeFromWorkspace, useWorkspaceSlug, workspaceRoute } from '../../../utils/workspace'
+import { useWorkspaceSlug, workspaceRoute } from '../../../utils/workspace'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
 const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.DS_Store'
@@ -40,44 +39,20 @@ const BID_TYPE_TABS = [
     icon: 'engineering',
     rootPath: '技术标/通用素材',
   },
-  {
-    value: '商务标',
-    label: '商务标',
-    icon: 'request_quote',
-    rootPath: '商务标/通用素材',
-  },
 ]
 const ALLOWED_EXTENSIONS = new Set([
   'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff', 'ds_store',
 ])
-const MATERIAL_ROOT_PATHS = ['技术标', '商务标']
+const MATERIAL_ROOT_PATHS = ['技术标']
 const PROTECTED_MOVE_FOLDER_PATHS = new Set([
   '技术标',
-  '商务标',
 ])
 const PROTECTED_DELETE_FOLDER_PATHS = new Set([
   '技术标',
-  '商务标',
-])
-const BUSINESS_STANDARD_PROTECTED_FOLDER_PATHS = new Set([
-  '商务标/通用素材/01-资质合规库',
-  '商务标/通用素材/02-企业能力库',
-  '商务标/通用素材/03-业绩资产池',
-  '商务标/通用素材/04-财务资料库',
-  '商务标/通用素材/05-专题证书库',
-  '商务标/通用素材/05-专题证书库/01-机型认证证书',
-  '商务标/通用素材/05-专题证书库/02-大部件型式认证证书',
-  '商务标/通用素材/06-通用模板底稿库',
-])
-const BUSINESS_CUSTOMIZED_PROTECTED_FOLDER_NAMES = new Set([
-  '01-客户关系与专项证明',
-  '02-商务响应文件',
-  '03-模板底稿与过程文件',
 ])
 
 const MATERIAL_ROOT_LABELS = {
   技术标: '技术标',
-  商务标: '商务标',
   '技术标/通用素材': '通用素材',
   '技术标/客户素材': '客户素材',
   '技术标/项目素材': '项目素材',
@@ -89,7 +64,7 @@ const MATERIAL_ROOT_LABELS = {
   项目定制: '项目素材',
 }
 
-const normalizeBidTypeTab = (value) => (value === '商务标' ? '商务标' : '技术标')
+const normalizeBidTypeTab = () => '技术标'
 
 const bidTypeTabMeta = (value) =>
   BID_TYPE_TABS.find((item) => item.value === normalizeBidTypeTab(value)) || BID_TYPE_TABS[0]
@@ -200,17 +175,7 @@ const ensureMaterialRootNodes = (nodes = []) => {
     children: techChildren,
     fileCount: Number(technicalNode.fileCount || 0) || techChildren.reduce((sum, child) => sum + Number(child.fileCount || 0), 0),
   }
-  return [
-    normalizedTechnical,
-    byPath.get('商务标') || {
-      id: '商务标',
-      name: '商务标',
-      path: '商务标',
-      directFileCount: 0,
-      fileCount: 0,
-      children: [],
-    },
-  ]
+  return [normalizedTechnical]
 }
 
 const flattenTreePaths = (nodes = []) => {
@@ -272,16 +237,7 @@ const normalizePath = (path) => String(path || '').replace(/^\/+|\/+$/g, '')
 
 const isProtectedDeleteFolderPath = (path) => {
   const normalized = normalizePath(path)
-  if (PROTECTED_DELETE_FOLDER_PATHS.has(normalized) || BUSINESS_STANDARD_PROTECTED_FOLDER_PATHS.has(normalized)) {
-    return true
-  }
-  const parts = normalized.split('/').filter(Boolean)
-  return (
-    parts.length === 4
-    && parts[0] === '商务标'
-    && (parts[1] === '客户素材' || parts[1] === '项目素材')
-    && BUSINESS_CUSTOMIZED_PROTECTED_FOLDER_NAMES.has(parts[3])
-  )
+  return PROTECTED_DELETE_FOLDER_PATHS.has(normalized)
 }
 
 const parentPath = (path) => {
@@ -545,7 +501,6 @@ function TreeNode({
   onFileSelect,
   onRenameFile,
   onDeleteFile,
-  onSplitFile,
   onDeleteFolder,
   onMoveDrop,
   dragTargetPath,
@@ -669,7 +624,6 @@ function TreeNode({
             const fileSelected = selectedFileId === item.id
             const previewable = canPreviewCleaned(item)
             const meta = cleanStatusMeta(item.cleanStatus)
-            const canSplit = item.bidType === '商务标' && extOf(item.name) === 'docx'
             return (
               <div
                 key={item.id}
@@ -719,20 +673,6 @@ function TreeNode({
                   >
                     <span aria-hidden="true" className="material-symbols-outlined text-[15px]">drive_file_rename_outline</span>
                   </button>
-                  {canSplit && (
-                    <button
-                      type="button"
-                      title="切分商务素材"
-                      aria-label={`切分商务素材 ${item.name || item.id}`}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        onSplitFile?.(item)
-                      }}
-                      className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-primary/10 hover:text-primary"
-                    >
-                      <span className="material-symbols-outlined text-[15px]">call_split</span>
-                    </button>
-                  )}
                   <button
                     type="button"
                     title="删除文件"
@@ -763,7 +703,6 @@ function TreeNode({
               onFileSelect={onFileSelect}
               onRenameFile={onRenameFile}
               onDeleteFile={onDeleteFile}
-              onSplitFile={onSplitFile}
               onDeleteFolder={onDeleteFolder}
               onMoveDrop={onMoveDrop}
               dragTargetPath={dragTargetPath}
@@ -782,11 +721,9 @@ function TreeNode({
 }
 
 export default function MaterialDB({ showToast = () => {} }) {
-  const [searchParams, setSearchParams] = useSearchParams()
   const workspaceSlug = useWorkspaceSlug()
-  const lockedBidType = bidTypeFromWorkspace(workspaceSlug)
-  const materialsBasePath = workspaceSlug ? workspaceRoute(workspaceSlug, '/materials') : '/materials'
-  const queryBidType = normalizeBidTypeTab(searchParams.get('bidType') || '')
+  const materialsBasePath = workspaceRoute(workspaceSlug || 'tech', '/materials')
+  const activeBidType = '技术标'
   const uploadPickerRef = useRef(null)
   const libraryLoadedRef = useRef(false)
   const [tree, setTree] = useState([])
@@ -796,7 +733,6 @@ export default function MaterialDB({ showToast = () => {} }) {
   const [filesPayload, setFilesPayload] = useState({ items: [], total: 0, page: 1, pageSize: 20 })
   const [parseStatus, setParseStatus] = useState(null)
   const [selectedFolderPath, setSelectedFolderPath] = useState('')
-  const [activeBidType, setActiveBidType] = useState(() => normalizeBidTypeTab(lockedBidType || queryBidType || '技术标'))
   const [filters, setFilters] = useState({
     keyword: '',
     customerName: '',
@@ -824,7 +760,6 @@ export default function MaterialDB({ showToast = () => {} }) {
   const [uploadProjectName, setUploadProjectName] = useState('')
   const [uploadBidType, setUploadBidType] = useState('技术标')
   const [uploadFiles, setUploadFiles] = useState([])
-  const [uploadAfterSplit, setUploadAfterSplit] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
   const [previewItem, setPreviewItem] = useState(null)
@@ -832,12 +767,6 @@ export default function MaterialDB({ showToast = () => {} }) {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
   const [onlyofficePreviewError, setOnlyofficePreviewError] = useState('')
-  const [splitModalOpen, setSplitModalOpen] = useState(false)
-  const [splitLoading, setSplitLoading] = useState(false)
-  const [splitConfirming, setSplitConfirming] = useState(false)
-  const [splitError, setSplitError] = useState('')
-  const [splitPlan, setSplitPlan] = useState(null)
-  const [splitSourceItem, setSplitSourceItem] = useState(null)
 
   const [conflictContext, setConflictContext] = useState(null)
 
@@ -888,7 +817,7 @@ export default function MaterialDB({ showToast = () => {} }) {
     else setLoading(true)
     setError('')
     try {
-      const treeResponse = await materialsAPI.raw.tree()
+      const treeResponse = await technicalMaterialsAPI.raw.tree()
       const normalizedTree = ensureMaterialRootNodes(
         normalizeTreeNodes(treeResponse?.tree || treeResponse?.items || treeResponse?.nodes || [])
       )
@@ -913,7 +842,7 @@ export default function MaterialDB({ showToast = () => {} }) {
       }
 
       const filePageSize = Math.max(1000, getVisibleFileCount(visibleTree) + 50)
-      const payload = await materialsAPI.raw.files({
+      const payload = await technicalMaterialsAPI.raw.files({
         folderPath: '',
         recursive: true,
         keyword: filters.keyword.trim(),
@@ -929,7 +858,7 @@ export default function MaterialDB({ showToast = () => {} }) {
 
       if (filters.projectId.trim()) {
         try {
-          const status = await materialsAPI.raw.parseStatus(filters.projectId.trim())
+          const status = await technicalMaterialsAPI.raw.parseStatus(filters.projectId.trim())
           setParseStatus(status)
         } catch {
           setParseStatus(null)
@@ -949,7 +878,7 @@ export default function MaterialDB({ showToast = () => {} }) {
   const loadUploadIdentityOptions = useCallback(async () => {
     setLoadingIdentityOptions(true)
     try {
-      const identityPayload = await materialsAPI.identityOptions({ bidType: activeBidType }) || {}
+      const identityPayload = await technicalMaterialsAPI.identityOptions({ bidType: activeBidType }) || {}
       const normalizedProjects = normalizeProjectOptions(identityPayload.projects || [])
       setProjectOptions(normalizedProjects)
       setCustomerOptions(normalizeCustomerOptions(identityPayload.customers || [], identityPayload.projects || []))
@@ -968,18 +897,6 @@ export default function MaterialDB({ showToast = () => {} }) {
     }, 0)
     return () => clearTimeout(timer)
   }, [loadLibrary])
-
-  useEffect(() => {
-    if (!lockedBidType) return
-    const timer = setTimeout(() => {
-      const next = normalizeBidTypeTab(lockedBidType)
-      setActiveBidType(next)
-      setUploadBidType(next)
-      setSelectedFolderPath('')
-      setParseStatus(null)
-    }, 0)
-    return () => clearTimeout(timer)
-  }, [lockedBidType])
 
   useEffect(() => {
     persistUploadKind(uploadKind)
@@ -1041,7 +958,6 @@ export default function MaterialDB({ showToast = () => {} }) {
     setUploadProjectName(options.projectName || '')
     setUploadBidType(activeBidType)
     setUploadFiles([])
-    setUploadAfterSplit(false)
     setUploadError('')
   }
 
@@ -1169,18 +1085,11 @@ export default function MaterialDB({ showToast = () => {} }) {
         payload.append('relativePaths', relativePath)
       })
 
-      const result = await materialsAPI.raw.upload(payload)
+      const result = await technicalMaterialsAPI.raw.upload(payload)
       showToast(result?.message || `上传成功：${uploadFiles.length} 个文件`)
       setConflictContext(null)
       closeUploadModal()
       await loadLibrary({ silent: true })
-      const uploadedDocx = (result?.items || []).find((item) => item?.bidType === '商务标' && extOf(item?.name) === 'docx')
-      if (uploadAfterSplit && uploadedDocx) {
-        showToast('上传完成，正在打开商务素材切分审核。')
-        await openBusinessSplitModal(uploadedDocx)
-      } else if (uploadAfterSplit) {
-        showToast('上传完成，但未找到可切分的商务 docx 文件。', 'warning')
-      }
     } catch (e) {
       if (e?.status === 409 && e?.code === 'MATERIAL_CONFLICT') {
         setConflictContext({ type: 'upload', payload: null, detail: e?.payload?.conflict || null })
@@ -1200,7 +1109,7 @@ export default function MaterialDB({ showToast = () => {} }) {
     const folderName = window.prompt('请输入新建文件夹名称')
     if (!folderName || !folderName.trim()) return
     try {
-      const result = await materialsAPI.raw.createFolder({
+      const result = await technicalMaterialsAPI.raw.createFolder({
         parentPath: selectedFolderPath,
         folderName: folderName.trim(),
       })
@@ -1223,7 +1132,7 @@ export default function MaterialDB({ showToast = () => {} }) {
     const ok = window.confirm(`确认删除文件夹：${targetPath} ？\n\n该目录下的子文件夹和素材文件也会一起删除。`)
     if (!ok) return
     try {
-      const result = await materialsAPI.raw.deleteFolder({ path: targetPath })
+      const result = await technicalMaterialsAPI.raw.deleteFolder({ path: targetPath })
       showToast(result?.message || '文件夹删除成功')
       setSelectedFolderPath(parentPath(targetPath))
       await loadLibrary({ silent: true })
@@ -1238,7 +1147,7 @@ export default function MaterialDB({ showToast = () => {} }) {
     const nextName = window.prompt('请输入新的文件名', currentName)
     if (!nextName || !nextName.trim() || nextName.trim() === currentName) return
     try {
-      const result = await materialsAPI.raw.updateFile(item.id, { name: nextName.trim() })
+      const result = await technicalMaterialsAPI.raw.updateFile(item.id, { name: nextName.trim() })
       showToast(result?.message || '文件重命名成功')
       if (previewItem?.id === item.id) {
         setPreviewItem((prev) => ({ ...prev, name: result?.item?.name || nextName.trim() }))
@@ -1256,7 +1165,7 @@ export default function MaterialDB({ showToast = () => {} }) {
     const ok = window.confirm(`确认删除文件：${item.name || item.id} ？\n\n原始文件及其清洗稿也会一起删除。`)
     if (!ok) return
     try {
-      const result = await materialsAPI.raw.deleteFile(item.id)
+      const result = await technicalMaterialsAPI.raw.deleteFile(item.id)
       showToast(result?.message || '文件删除成功')
       if (previewItem?.id === item.id) {
         setPreviewItem(null)
@@ -1267,110 +1176,6 @@ export default function MaterialDB({ showToast = () => {} }) {
       await loadLibrary({ silent: true })
     } catch (e) {
       showToast(safeMessage(e, '文件删除失败'), 'error')
-    }
-  }
-
-  const loadBusinessSplitPlan = async (item, { aiMode = 'auto' } = {}) => {
-    const payload = await materialsAPI.raw.previewBusinessSplit(item.id, { targetPath: item.folderPath || selectedFolderPath, aiMode })
-    setSplitPlan({
-      ...payload,
-      fragments: (payload?.fragments || []).map((fragment) => ({
-        ...fragment,
-        selected: fragment.selected !== false,
-        targetPath: fragment.suggestedPath || item.folderPath || selectedFolderPath,
-        fileName: fragment.suggestedFileName || `${fragment.title || '商务素材片段'}.docx`,
-      })),
-    })
-  }
-
-  const openBusinessSplitModal = async (item) => {
-    if (!item?.id) return
-    if (activeBidType !== '商务标' || item.bidType !== '商务标') {
-      showToast('素材切分入口当前仅支持商务标素材。', 'error')
-      return
-    }
-    if (extOf(item.name) !== 'docx') {
-      showToast('第一版素材切分仅支持 Word docx 文件。', 'error')
-      return
-    }
-    setSplitSourceItem(item)
-    setSplitModalOpen(true)
-    setSplitLoading(true)
-    setSplitError('')
-    setSplitPlan(null)
-    try {
-      await loadBusinessSplitPlan(item, { aiMode: 'auto' })
-    } catch (e) {
-      setSplitError(safeMessage(e, '生成切分建议失败。'))
-    } finally {
-      setSplitLoading(false)
-    }
-  }
-
-  const rerunBusinessSplitWithAi = async () => {
-    if (!splitSourceItem?.id) return
-    setSplitLoading(true)
-    setSplitError('')
-    try {
-      await loadBusinessSplitPlan(splitSourceItem, { aiMode: 'force' })
-      showToast('AI 增强识别完成，请审核切分片段。')
-    } catch (e) {
-      setSplitError(safeMessage(e, 'AI 增强识别失败。'))
-    } finally {
-      setSplitLoading(false)
-    }
-  }
-
-  const closeBusinessSplitModal = () => {
-    setSplitModalOpen(false)
-    setSplitLoading(false)
-    setSplitConfirming(false)
-    setSplitError('')
-    setSplitPlan(null)
-    setSplitSourceItem(null)
-  }
-
-  const updateSplitFragment = (fragmentId, patch) => {
-    setSplitPlan((current) => ({
-      ...(current || {}),
-      fragments: (current?.fragments || []).map((fragment) => (
-        fragment.id === fragmentId ? { ...fragment, ...patch } : fragment
-      )),
-    }))
-  }
-
-  const confirmBusinessSplit = async () => {
-    const fragments = (splitPlan?.fragments || []).filter((fragment) => fragment.selected)
-    if (!splitSourceItem?.id || !fragments.length) {
-      setSplitError('请至少勾选一个切分片段。')
-      return
-    }
-    setSplitConfirming(true)
-    setSplitError('')
-    try {
-      const result = await materialsAPI.raw.confirmBusinessSplit(splitSourceItem.id, {
-        fragments: fragments.map((fragment) => ({
-          id: fragment.id,
-          selected: true,
-          title: fragment.title,
-          fileName: fragment.fileName,
-          targetPath: fragment.targetPath,
-          materialType: fragment.materialType,
-          sourceLocation: fragment.sourceLocation,
-          suggestedPath: fragment.suggestedPath,
-          suggestedFileName: fragment.suggestedFileName,
-          contentPreview: fragment.contentPreview,
-          confidence: fragment.confidence,
-          riskTips: fragment.riskTips,
-        })),
-      })
-      showToast(result?.message || `已生成 ${fragments.length} 个子素材`)
-      closeBusinessSplitModal()
-      await loadLibrary({ silent: true })
-    } catch (e) {
-      setSplitError(safeMessage(e, '确认切分入库失败。'))
-    } finally {
-      setSplitConfirming(false)
     }
   }
 
@@ -1389,7 +1194,7 @@ export default function MaterialDB({ showToast = () => {} }) {
     setPreviewLoading(true)
     setPreviewError('')
     try {
-      const payload = await materialsAPI.raw.previewCleanedFile(item.id)
+      const payload = await technicalMaterialsAPI.raw.previewCleanedFile(item.id)
       setPreviewSession(payload)
     } catch (e) {
       setPreviewError(safeMessage(e, '清洗稿预览加载失败'))
@@ -1409,8 +1214,8 @@ export default function MaterialDB({ showToast = () => {} }) {
 
   const handleMoveDrop = async (event, targetPath) => {
     const normalizedTarget = normalizePath(targetPath)
-    if (!normalizedTarget || normalizedTarget.startsWith('商务标')) {
-      showToast('商务标素材库当前不可移动。', 'error')
+    if (!normalizedTarget) {
+      showToast('请选择目标目录。', 'error')
       return
     }
 
@@ -1419,7 +1224,7 @@ export default function MaterialDB({ showToast = () => {} }) {
       const sourceFolder = normalizePath(filePayload.folderPath)
       if (sourceFolder === normalizedTarget) return
       try {
-        const result = await materialsAPI.raw.moveFile({
+        const result = await technicalMaterialsAPI.raw.moveFile({
           fileId: filePayload.id,
           targetPath: normalizedTarget,
         })
@@ -1452,7 +1257,7 @@ export default function MaterialDB({ showToast = () => {} }) {
     }
 
     try {
-      const result = await materialsAPI.raw.moveFolder({
+      const result = await technicalMaterialsAPI.raw.moveFolder({
         sourcePath,
         targetParentPath: normalizedTarget,
       })
@@ -1464,22 +1269,12 @@ export default function MaterialDB({ showToast = () => {} }) {
     }
   }
 
-  const handleBidTypeChange = (value) => {
-    if (lockedBidType) return
-    const next = normalizeBidTypeTab(value)
-    if (next === activeBidType) return
-    setActiveBidType(next)
-    setSearchParams({ bidType: next })
-    setSelectedFolderPath('')
-    setParseStatus(null)
-  }
-
   const resolveConflict = async (action) => {
     if (conflictContext.type === 'upload') {
       await performUpload(action)
     } else if (conflictContext.type === 'move-file') {
       try {
-        const result = await materialsAPI.raw.moveFile({
+        const result = await technicalMaterialsAPI.raw.moveFile({
           ...(conflictContext.payload || {}),
           onConflict: action,
         })
@@ -1531,16 +1326,10 @@ export default function MaterialDB({ showToast = () => {} }) {
   return (
     <div className="flex flex-col gap-3 animate-fade-in">
       <MaterialsViewSwitch
-        active="structured"
+        active="raw"
         activeBidType={activeBidType}
-        lockedBidType={lockedBidType}
-        onBidTypeChange={handleBidTypeChange}
         title="原始材料库"
-        subtitle={refreshing || error ? (error || '正在刷新...') : (
-          activeBidType === '技术标'
-            ? '管理技术标通用、客户、项目三档原始素材。'
-            : '管理商务标通用、客户、项目三档原始素材。'
-        )}
+        subtitle={refreshing || error ? (error || '正在刷新...') : '管理技术标通用、客户、项目三档原始素材。'}
         actions={(
           <div className="flex flex-nowrap gap-2">
             <button
@@ -1760,7 +1549,6 @@ export default function MaterialDB({ showToast = () => {} }) {
                       }}
                       onRenameFile={handleRenameFile}
                       onDeleteFile={handleDeleteFile}
-                      onSplitFile={openBusinessSplitModal}
                       onDeleteFolder={handleDeleteFolder}
                       onMoveDrop={handleMoveDrop}
                       dragTargetPath={dragTargetPath}
@@ -1846,14 +1634,9 @@ export default function MaterialDB({ showToast = () => {} }) {
                 </div>
                 <label className="text-sm text-on-surface-variant">
                   <span className="block mb-1">标书类型</span>
-                  <select
-                    value={uploadBidType}
-                    onChange={(e) => setUploadBidType(normalizeBidTypeTab(e.target.value))}
-                    className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                  >
-                    <option value="技术标">技术标</option>
-                    <option value="商务标">商务标</option>
-                  </select>
+                  <div className="flex h-10 items-center rounded-lg bg-surface-container-highest px-3 text-sm font-semibold text-on-surface">
+                    技术标
+                  </div>
                 </label>
               </div>
 
@@ -1976,21 +1759,6 @@ export default function MaterialDB({ showToast = () => {} }) {
                     })}
                   </div>
                 </div>
-                {uploadBidType === '商务标' && (
-                  <label className="rounded-lg bg-primary/5 px-3 py-2 text-sm text-on-surface-variant">
-                    <span className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={uploadAfterSplit}
-                        onChange={(event) => setUploadAfterSplit(event.target.checked)}
-                      />
-                      上传后打开切分审核
-                    </span>
-                    <span className="mt-1 block text-xs text-outline">
-                      仅对商务标 docx 生效；原文件保留，审核后生成子素材。
-                    </span>
-                  </label>
-                )}
               </div>
 
               <input
@@ -2124,143 +1892,6 @@ export default function MaterialDB({ showToast = () => {} }) {
         </div>
       )}
 
-      {splitModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">
-          <div className="w-full max-w-5xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-2xl flex flex-col overflow-hidden">
-            <div className="px-5 sm:px-6 py-4 border-b border-surface-container-high flex items-center justify-between shrink-0">
-              <div className="min-w-0">
-                <h2 className="text-lg font-headline font-bold text-on-surface">商务素材切分审核</h2>
-                <p className="mt-1 truncate text-xs text-outline">
-                  母文件：{splitSourceItem?.name || '-'}；确认后将生成子素材并进入商务标原始素材库。
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={rerunBusinessSplitWithAi}
-                  disabled={splitLoading || splitConfirming}
-                  className="rounded-lg bg-primary/10 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/15 disabled:opacity-50"
-                >
-                  {splitLoading ? '识别中...' : 'AI增强识别'}
-                </button>
-                <button onClick={closeBusinessSplitModal} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
-                  <span className="material-symbols-outlined">close</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="flex-1 min-h-0 overflow-y-auto p-5 sm:p-6">
-              {splitLoading ? (
-                <div className="flex min-h-[360px] items-center justify-center rounded-lg border border-dashed border-surface-container-high text-sm text-on-surface-variant">
-                  正在生成切分建议...
-                </div>
-              ) : splitError && !splitPlan ? (
-                <div className="rounded-lg border border-error/30 bg-error-container/20 px-4 py-3 text-sm text-error">
-                  {splitError}
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 text-xs leading-5 text-on-surface-variant">
-                    系统会先用规则和本地语义切分；如果文件像订单/业绩集合且切分数量偏少，会自动调用 AI 增强。若结果仍少，可点击右上角“AI增强识别”强制复核。
-                    <span className="ml-2 font-semibold">当前策略：{splitPlan?.diagnostics?.strategy || '-'}</span>
-                    {splitPlan?.diagnostics?.aiAttempted ? <span className="ml-2">AI 已尝试</span> : null}
-                    {splitPlan?.diagnostics?.aiError ? <span className="ml-2 text-error">AI错误：{splitPlan.diagnostics.aiError}</span> : null}
-                  </div>
-
-                  {splitError && (
-                    <div className="rounded-lg border border-error/30 bg-error-container/20 px-4 py-3 text-sm text-error">
-                      {splitError}
-                    </div>
-                  )}
-
-                  {(splitPlan?.fragments || []).length ? (
-                    <div className="space-y-3">
-                      {(splitPlan?.fragments || []).map((fragment, index) => (
-                        <div key={fragment.id || index} className={`rounded-lg border p-4 ${fragment.selected ? 'border-primary/30 bg-white' : 'border-surface-container-high bg-surface-container-low'}`}>
-                          <div className="flex flex-wrap items-start justify-between gap-3">
-                            <label className="flex min-w-0 flex-1 items-start gap-2">
-                              <input
-                                type="checkbox"
-                                checked={Boolean(fragment.selected)}
-                                onChange={(event) => updateSplitFragment(fragment.id, { selected: event.target.checked })}
-                                className="mt-1"
-                              />
-                              <span className="min-w-0">
-                                <span className="block text-sm font-semibold text-on-surface">{fragment.title || `片段 ${index + 1}`}</span>
-                                <span className="mt-1 block text-xs text-outline">
-                                  {fragment.materialType || '商务素材片段'} · 置信度 {Math.round(Number(fragment.confidence || 0) * 100)}%
-                                </span>
-                              </span>
-                            </label>
-                            <span className="rounded-full bg-surface-container-high px-2 py-1 text-[11px] font-semibold text-on-surface-variant">
-                              {fragment.id}
-                            </span>
-                          </div>
-
-                          <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
-                            <label className="text-xs text-on-surface-variant">
-                              子素材文件名
-                              <input
-                                value={fragment.fileName || ''}
-                                onChange={(event) => updateSplitFragment(fragment.id, { fileName: event.target.value })}
-                                className="mt-1 h-9 w-full rounded-md border border-surface-container-high bg-white px-3 text-sm text-on-surface"
-                              />
-                            </label>
-                            <label className="text-xs text-on-surface-variant">
-                              入库路径
-                              <input
-                                value={fragment.targetPath || ''}
-                                onChange={(event) => updateSplitFragment(fragment.id, { targetPath: event.target.value })}
-                                className="mt-1 h-9 w-full rounded-md border border-surface-container-high bg-white px-3 text-sm text-on-surface"
-                              />
-                            </label>
-                          </div>
-
-                          <div className="mt-3 rounded-md bg-surface-container-low px-3 py-2">
-                            <div className="text-[11px] font-semibold text-on-surface-variant">片段预览</div>
-                            <pre className="mt-1 max-h-28 overflow-y-auto whitespace-pre-wrap text-xs leading-5 text-on-surface-variant">
-                              {fragment.contentPreview || '暂无预览文本'}
-                            </pre>
-                          </div>
-
-                          {!!(fragment.riskTips || []).length && (
-                            <div className="mt-3 rounded-md bg-warning/10 px-3 py-2 text-xs leading-5 text-on-surface">
-                              {(fragment.riskTips || []).map((tip) => (
-                                <div key={tip}>风险提示：{tip}</div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="rounded-lg border border-dashed border-surface-container-high px-4 py-8 text-center text-sm text-on-surface-variant">
-                      未识别到可切分边界。建议人工拆分后再上传，或后续接入 OCR/AI 边界增强。
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <div className="px-5 sm:px-6 py-4 border-t border-surface-container-high flex flex-wrap items-center justify-between gap-3 bg-surface-container-low rounded-b-xl shrink-0">
-              <div className="text-xs text-on-surface-variant">
-                已勾选 {(splitPlan?.fragments || []).filter((fragment) => fragment.selected).length} / {(splitPlan?.fragments || []).length} 个片段
-              </div>
-              <div className="flex justify-end gap-3">
-                <button onClick={closeBusinessSplitModal} className="px-4 py-2 text-sm text-on-surface-variant hover:bg-surface-container-high rounded-lg">
-                  取消
-                </button>
-                <button
-                  onClick={confirmBusinessSplit}
-                  disabled={splitLoading || splitConfirming || !(splitPlan?.fragments || []).some((fragment) => fragment.selected)}
-                  className="px-4 py-2 text-sm bg-primary text-on-primary rounded-lg hover:bg-primary-container disabled:opacity-50"
-                >
-                  {splitConfirming ? '入库中...' : '确认生成子素材'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import base64
 import json
 import tempfile
@@ -13,8 +14,11 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.core.config import settings
-from app.services import gap_planning
-from app.services.store import now_iso, store
+from app.services import technical_gap_ai_fill
+from app.services.bid_outline_state import confirm_outline_state, save_generated_outline_state
+from app.services.technical_gap_domain import aggregate_technical_gap_fill_quality
+from app.services.bid_runtime_state import now_iso
+from app.services.store import store
 from app.services.workspace_artifacts import technical_workspace_dir
 
 
@@ -55,6 +59,31 @@ def minimal_gap_plan_from_manifest(manifest: dict) -> dict:
     }
 
 
+def _save_generated_outline_for_tests(
+    project_id: str,
+    *,
+    nodes: list[dict],
+    generated_at: str,
+    summary: str,
+) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = save_generated_outline_state(
+        project,
+        nodes=nodes,
+        generated_at=generated_at,
+        summary=summary,
+    )
+    store.persist_project_state(project)
+    return payload
+
+
+def _confirm_outline_for_tests(project_id: str) -> dict:
+    project = store.require_project_for_update(project_id)
+    payload = confirm_outline_state(project)
+    store.persist_project_state(project)
+    return payload
+
+
 class GapReviewFlowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -67,7 +96,7 @@ class GapReviewFlowTests(unittest.TestCase):
         store.reset_for_tests()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
         self.gap_planner_patcher = patch(
-            "app.services.gap_planning.OpencodeClient.run_bid_tech_gap_planner_with_trace",
+            "app.services.technical_gap_planner.OpencodeClient.run_bid_tech_gap_planner_with_trace",
             side_effect=RuntimeError("offline test fallback"),
         )
         self.gap_planner_mock = self.gap_planner_patcher.start()
@@ -79,7 +108,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def _create_project_with_confirmed_outline(self) -> str:
         response = self.client.post(
-            "/api/projects",
+            "/api/technical/projects",
             json={
                 "name": "S4-S6联调项目",
                 "customerName": "测试业主",
@@ -88,7 +117,7 @@ class GapReviewFlowTests(unittest.TestCase):
         response.raise_for_status()
         project_id = response.json()["id"]
 
-        store.save_generated_outline(
+        _save_generated_outline_for_tests(
             project_id=project_id,
             nodes=[
                 {
@@ -115,7 +144,7 @@ class GapReviewFlowTests(unittest.TestCase):
             generated_at=now_iso(),
             summary="目录已生成。",
         )
-        store.confirm_outline(project_id)
+        _confirm_outline_for_tests(project_id)
         return project_id
 
     def _create_project_with_confirmed_directory_json(self) -> str:
@@ -178,7 +207,7 @@ class GapReviewFlowTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        parse_storage = store.get_parse_storage(project_id)
+        parse_storage = copy.deepcopy(store.get_project_runtime_state(project_id)["parse_storage"])
         parse_storage["projectDir"] = str(project_dir)
         project = store._require(project_id)
         project["parse_storage"] = parse_storage
@@ -197,7 +226,7 @@ class GapReviewFlowTests(unittest.TestCase):
         return project_id
 
     def _confirm_project_fact_table(self, project_id: str, extra_values: dict[str, str] | None = None) -> dict:
-        build_response = self.client.post(f"/api/projects/{project_id}/gaps/facts/build")
+        build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
         self.assertEqual(build_response.status_code, 200, build_response.text)
         fields = build_response.json()["fields"]
         for field in fields:
@@ -207,7 +236,7 @@ class GapReviewFlowTests(unittest.TestCase):
             if str(field.get("value") or "").strip():
                 field["status"] = "confirmed"
         confirm_response = self.client.put(
-            f"/api/projects/{project_id}/gaps/facts",
+            f"/api/technical/projects/{project_id}/gaps/facts",
             json={"fields": fields, "confirm": True, "operator": "测试用户"},
         )
         self.assertEqual(confirm_response.status_code, 200, confirm_response.text)
@@ -217,7 +246,7 @@ class GapReviewFlowTests(unittest.TestCase):
     def test_gap_detection_creates_real_gap_plan_from_directory_material_refs_and_parse_appendices(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
 
-        response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -279,15 +308,15 @@ class GapReviewFlowTests(unittest.TestCase):
             output_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
             return {"schema_version": "bid-tech-gap-plan-v1", "outputFile": str(output_file)}
 
-        with patch("app.services.gap_planning.run_gap_planner_skill", side_effect=fake_gap_planner):
-            response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        with patch("app.services.technical_gap_planner.run_technical_gap_planner_skill", side_effect=fake_gap_planner):
+            response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
 
         self.assertEqual(response.status_code, 400, response.text)
         self.assertIn("缺口识别结果不完整", response.json()["detail"])
 
     def test_gap_detection_rerun_returns_clean_first_step_plan(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
@@ -311,7 +340,7 @@ class GapReviewFlowTests(unittest.TestCase):
         store._persist_project(project)
         self.gap_planner_mock.reset_mock()
 
-        response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
 
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
@@ -326,7 +355,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_gap_ai_fill_calls_opencode_skill_and_registers_resolved_artifact(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
@@ -358,11 +387,11 @@ class GapReviewFlowTests(unittest.TestCase):
             }
 
         with patch(
-            "app.services.gap_planning.run_table_filler_skill",
+            "app.services.technical_gap_ai_fill.run_technical_table_filler_skill",
             side_effect=fake_run_table_filler,
         ):
             response = self.client.post(
-                f"/api/projects/{project_id}/gaps/{gap_id}/ai-fill",
+                f"/api/technical/projects/{project_id}/gaps/{gap_id}/ai-fill",
                 json={
                     "fillTaskId": fill_task_id,
                     "referenceMaterialIds": ["RAW-0001"],
@@ -389,7 +418,7 @@ class GapReviewFlowTests(unittest.TestCase):
             payload["artifact"]["onlyoffice"]["documentServerFileUrl"],
         )
         self.assertTrue(payload["artifact"]["onlyoffice"]["browserFileUrl"].startswith("http://127.0.0.1:8000/"))
-        updated_gap = self.client.get(f"/api/projects/{project_id}/gaps").json()["gapPlan"]
+        updated_gap = self.client.get(f"/api/technical/projects/{project_id}/gaps").json()["gapPlan"]
         updated_item = next(item for item in updated_gap["items"] if item["id"] == gap_id)
         self.assertEqual(updated_item["resolvedArtifacts"][0]["source"], "ai_fill")
         self.assertEqual(updated_item["fillTasks"][0]["status"], "completed")
@@ -402,7 +431,7 @@ class GapReviewFlowTests(unittest.TestCase):
             {"id": "FIELD-ROTOR", "label": "叶轮直径", "value": "220m", "sourceFile": "招标文件.docx"},
         ]
         store._persist_project(project)
-        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
@@ -439,11 +468,11 @@ class GapReviewFlowTests(unittest.TestCase):
             }
 
         with patch(
-            "app.services.gap_planning.run_table_filler_skill",
+            "app.services.technical_gap_ai_fill.run_technical_table_filler_skill",
             side_effect=fake_run_table_filler,
         ):
             response = self.client.post(
-                f"/api/projects/{project_id}/gaps/{gap_id}/ai-fill",
+                f"/api/technical/projects/{project_id}/gaps/{gap_id}/ai-fill",
                 json={
                     "fillTaskId": fill_task_id,
                     "referenceMaterialIds": ["RAW-0001"],
@@ -467,7 +496,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_gap_ai_fill_registers_each_batch_table_output_as_previewable_artifact(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200, detection_response.text)
         gap_plan = detection_response.json()["gapPlan"]
         fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
@@ -538,9 +567,9 @@ class GapReviewFlowTests(unittest.TestCase):
             batch_report.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
             return result
 
-        with patch("app.services.gap_planning.run_table_filler_skill", side_effect=fake_run_batch_table_filler):
+        with patch("app.services.technical_gap_ai_fill.run_technical_table_filler_skill", side_effect=fake_run_batch_table_filler):
             response = self.client.post(
-                f"/api/projects/{project_id}/gaps/{gap_id}/ai-fill",
+                f"/api/technical/projects/{project_id}/gaps/{gap_id}/ai-fill",
                 json={"fillTaskId": fill_task_id, "operator": "测试用户"},
             )
 
@@ -557,12 +586,12 @@ class GapReviewFlowTests(unittest.TestCase):
             self.assertEqual(artifact["qualityReport"]["status"], "passed")
             self.assertIn(quote(artifact["fileName"]), artifact["onlyoffice"]["browserFileUrl"])
 
-        updated_gap = self.client.get(f"/api/projects/{project_id}/gaps").json()["gapPlan"]
+        updated_gap = self.client.get(f"/api/technical/projects/{project_id}/gaps").json()["gapPlan"]
         updated_item = next(item for item in updated_gap["items"] if item["id"] == gap_id)
         self.assertEqual(len(updated_item["resolvedArtifacts"]), 2)
         first_artifact = updated_item["resolvedArtifacts"][0]
         download = self.client.get(
-            f"/api/projects/{project_id}/gaps/artifacts/{first_artifact['id']}/content/{quote(first_artifact['fileName'])}"
+            f"/api/technical/projects/{project_id}/gaps/artifacts/{first_artifact['id']}/content/{quote(first_artifact['fileName'])}"
         )
         self.assertEqual(download.status_code, 200)
         self.assertGreater(len(download.content), 0)
@@ -580,7 +609,7 @@ class GapReviewFlowTests(unittest.TestCase):
             "hubHeightM": 125,
         }
         store._persist_project(project)
-        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200, detection_response.text)
         gap_plan = detection_response.json()["gapPlan"]
         fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
@@ -589,7 +618,7 @@ class GapReviewFlowTests(unittest.TestCase):
         project["gap_state"]["plan"] = gap_plan
         store._persist_project(project)
 
-        response = self.client.post(f"/api/projects/{project_id}/gaps/facts/build")
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
 
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
@@ -617,10 +646,10 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_project_fact_table_preserves_manual_fields_when_rebuilt(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200, detection_response.text)
 
-        build_response = self.client.post(f"/api/projects/{project_id}/gaps/facts/build")
+        build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
         self.assertEqual(build_response.status_code, 200, build_response.text)
         fields = build_response.json()["fields"]
         fields.append(
@@ -637,12 +666,12 @@ class GapReviewFlowTests(unittest.TestCase):
             }
         )
         save_response = self.client.put(
-            f"/api/projects/{project_id}/gaps/facts",
+            f"/api/technical/projects/{project_id}/gaps/facts",
             json={"fields": fields, "confirm": True, "operator": "测试用户"},
         )
         self.assertEqual(save_response.status_code, 200, save_response.text)
 
-        rebuild_response = self.client.post(f"/api/projects/{project_id}/gaps/facts/build")
+        rebuild_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
         self.assertEqual(rebuild_response.status_code, 200, rebuild_response.text)
         by_label = {field["label"]: field for field in rebuild_response.json()["fields"]}
         self.assertEqual(by_label["现场特殊要求"]["value"], "满足低温施工窗口要求")
@@ -749,7 +778,7 @@ class GapReviewFlowTests(unittest.TestCase):
         }
         store._persist_project(project)
 
-        response = self.client.post(f"/api/projects/{project_id}/gaps/facts/build")
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
 
         self.assertEqual(response.status_code, 200, response.text)
         fields = response.json()["fields"]
@@ -863,7 +892,7 @@ class GapReviewFlowTests(unittest.TestCase):
         }
         store._persist_project(project)
 
-        response = self.client.post(f"/api/projects/{project_id}/gaps/facts/build")
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
 
         self.assertEqual(response.status_code, 200, response.text)
         by_label = {field["label"]: field for field in response.json()["fields"]}
@@ -934,7 +963,7 @@ class GapReviewFlowTests(unittest.TestCase):
         }
         store._persist_project(project)
 
-        response = self.client.post(f"/api/projects/{project_id}/gaps/facts/build")
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
 
         self.assertEqual(response.status_code, 200, response.text)
         by_label = {field["label"]: field for field in response.json()["fields"]}
@@ -999,7 +1028,7 @@ class GapReviewFlowTests(unittest.TestCase):
         }
         store._persist_project(project)
 
-        response = self.client.post(f"/api/projects/{project_id}/gaps/facts/build")
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
 
         self.assertEqual(response.status_code, 200, response.text)
         by_label = {field["label"]: field for field in response.json()["fields"]}
@@ -1013,7 +1042,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_gap_ai_fill_requires_confirmed_fact_table_and_manifest_carries_it(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200, detection_response.text)
         gap_plan = detection_response.json()["gapPlan"]
         fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
@@ -1021,7 +1050,7 @@ class GapReviewFlowTests(unittest.TestCase):
         fill_task_id = fill_item["fillTasks"][0]["id"]
 
         blocked = self.client.post(
-            f"/api/projects/{project_id}/gaps/{gap_id}/ai-fill",
+            f"/api/technical/projects/{project_id}/gaps/{gap_id}/ai-fill",
             json={"fillTaskId": fill_task_id, "operator": "测试用户"},
         )
         self.assertEqual(blocked.status_code, 400)
@@ -1045,9 +1074,9 @@ class GapReviewFlowTests(unittest.TestCase):
                 "fillReport": {"filledFieldCount": 2, "unfilledFieldCount": 0},
             }
 
-        with patch("app.services.gap_planning.run_table_filler_skill", side_effect=fake_run_table_filler):
+        with patch("app.services.technical_gap_ai_fill.run_technical_table_filler_skill", side_effect=fake_run_table_filler):
             response = self.client.post(
-                f"/api/projects/{project_id}/gaps/{gap_id}/ai-fill",
+                f"/api/technical/projects/{project_id}/gaps/{gap_id}/ai-fill",
                 json={"fillTaskId": fill_task_id, "operator": "测试用户"},
             )
 
@@ -1181,12 +1210,12 @@ class GapReviewFlowTests(unittest.TestCase):
                 "fillReport": {"filledFieldCount": 1, "unfilledFieldCount": 0},
             }
 
-        with patch("app.services.gap_planning.run_word_placeholder_filler_skill", side_effect=fake_run_word_filler), patch(
-            "app.services.gap_planning.run_table_filler_skill",
+        with patch("app.services.technical_gap_ai_fill.run_technical_word_placeholder_filler_skill", side_effect=fake_run_word_filler), patch(
+            "app.services.technical_gap_ai_fill.run_technical_table_filler_skill",
             side_effect=fake_run_table_filler,
         ):
             response = self.client.post(
-                f"/api/projects/{project_id}/gaps/ai-fill-all",
+                f"/api/technical/projects/{project_id}/gaps/ai-fill-all",
                 json={"operator": "测试用户"},
             )
 
@@ -1201,7 +1230,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(len(table_files), len(set(table_files)))
 
     def test_gap_ai_fill_all_quality_summary_uses_weighted_field_counts(self) -> None:
-        aggregate = store._aggregate_gap_fill_quality(
+        aggregate = aggregate_technical_gap_fill_quality(
             [
                 {
                     "qualityReport": {
@@ -1237,7 +1266,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(aggregate["completenessRate"], 0.99)
 
     def test_fill_quality_does_not_pass_when_target_fields_are_unknown(self) -> None:
-        report = gap_planning._build_fill_quality_report(
+        report = technical_gap_ai_fill._build_fill_quality_report(
             {
                 "outputFile": "filled.docx",
                 "unfilledFields": [],
@@ -1252,7 +1281,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(report["expectedFieldCount"], 0)
 
     def test_fill_quality_uses_semantic_validation_for_correctness(self) -> None:
-        report = gap_planning._build_fill_quality_report(
+        report = technical_gap_ai_fill._build_fill_quality_report(
             {
                 "outputFile": "filled.docx",
                 "unfilledFields": [],
@@ -1335,7 +1364,7 @@ class GapReviewFlowTests(unittest.TestCase):
         project["identity"] = {"owner": "华能集团", "customerName": "华能集团"}
         store._persist_project(project)
 
-        repaired = self.client.get(f"/api/projects/{project_id}/gaps-detection").json()["gapPlan"]
+        repaired = self.client.get(f"/api/technical/projects/{project_id}/gaps-detection").json()["gapPlan"]
         task = repaired["items"][0]["fillTasks"][0]
         self.assertEqual(task["skill"], "bid-tech-word-placeholder-filler")
         self._confirm_project_fact_table(project_id)
@@ -1357,12 +1386,12 @@ class GapReviewFlowTests(unittest.TestCase):
                 "fillReport": {"filledPlaceholderCount": 1, "unfilledPlaceholderCount": 0},
             }
 
-        with patch("app.services.gap_planning.run_table_filler_skill", side_effect=AssertionError("table filler should not run")), patch(
-            "app.services.gap_planning.run_word_placeholder_filler_skill",
+        with patch("app.services.technical_gap_ai_fill.run_technical_table_filler_skill", side_effect=AssertionError("table filler should not run")), patch(
+            "app.services.technical_gap_ai_fill.run_technical_word_placeholder_filler_skill",
             side_effect=fake_run_word_filler,
         ):
             response = self.client.post(
-                f"/api/projects/{project_id}/gaps/GAP-WORD/ai-fill",
+                f"/api/technical/projects/{project_id}/gaps/GAP-WORD/ai-fill",
                 json={"fillTaskId": "FILL-GAP-WORD-RAW-WORD", "operator": "测试用户"},
             )
 
@@ -1375,12 +1404,12 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_fill_material_index_keeps_project_scope_when_item_has_blank_candidate(self) -> None:
         with patch(
-            "app.services.gap_planning._allowed_material_index",
+            "app.services.technical_gap_ai_fill._allowed_technical_material_index",
             return_value=[
                 {"id": "RAW-FACTS", "name": "风资源评估报告.docx", "folderPath": "技术标/项目素材"},
             ],
         ):
-            index = gap_planning._material_index_for_fill(
+            index = technical_gap_ai_fill._material_index_for_fill(
                 {"id": "PRJ-TEST"},
                 {"scopeBoundary": {"paths": ["技术标/项目素材"]}},
                 {
@@ -1400,13 +1429,13 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_gap_upload_registers_real_project_artifact_for_s7(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         gap_id = next(item for item in gap_plan["items"] if item["status"] == "needs_input")["id"]
 
         response = self.client.post(
-            f"/api/projects/{project_id}/gaps/{gap_id}/upload",
+            f"/api/technical/projects/{project_id}/gaps/{gap_id}/upload",
             json={
                 "bidType": "技术标",
                 "files": [
@@ -1427,14 +1456,14 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(artifact["skill"], "")
         self.assertTrue(Path(artifact["path"]).exists())
         self.assertTrue(artifact["s7Ready"])
-        gap_payload = self.client.get(f"/api/projects/{project_id}/gaps").json()
+        gap_payload = self.client.get(f"/api/technical/projects/{project_id}/gaps").json()
         updated_item = next(item for item in gap_payload["gapPlan"]["items"] if item["id"] == gap_id)
         self.assertEqual(updated_item["resolvedArtifacts"][0]["source"], "manual_upload")
         self.assertEqual(updated_item["status"], "resolved")
 
     def test_gap_upload_preserves_browser_docx_data_url_for_s7(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         gap_id = next(item for item in gap_plan["items"] if item["status"] == "needs_input")["id"]
@@ -1449,7 +1478,7 @@ class GapReviewFlowTests(unittest.TestCase):
         )
 
         response = self.client.post(
-            f"/api/projects/{project_id}/gaps/{gap_id}/upload",
+            f"/api/technical/projects/{project_id}/gaps/{gap_id}/upload",
             json={
                 "bidType": "技术标",
                 "files": [
@@ -1473,7 +1502,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_gap_select_existing_material_registers_real_artifact_for_s7(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         gap_id = next(item for item in gap_plan["items"] if item["status"] == "needs_input")["id"]
@@ -1499,11 +1528,11 @@ class GapReviewFlowTests(unittest.TestCase):
             ]
 
         with patch(
-            "app.services.store.prepare_existing_gap_material_files",
+            "app.services.technical_gap_service.prepare_technical_existing_gap_material_files",
             side_effect=fake_prepare_existing_gap_material_files,
         ):
             response = self.client.post(
-                f"/api/projects/{project_id}/gaps/{gap_id}/select-material",
+                f"/api/technical/projects/{project_id}/gaps/{gap_id}/select-material",
                 json={
                     "materials": [
                         {
@@ -1525,7 +1554,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(artifact["path"], str(prepared_docx))
         self.assertTrue(artifact["s7Ready"])
         self.assertIn("onlyoffice", artifact)
-        updated_gap = self.client.get(f"/api/projects/{project_id}/gaps").json()["gapPlan"]
+        updated_gap = self.client.get(f"/api/technical/projects/{project_id}/gaps").json()["gapPlan"]
         updated_item = next(item for item in updated_gap["items"] if item["id"] == gap_id)
         self.assertEqual(updated_item["resolvedArtifacts"][0]["source"], "material_library")
         self.assertEqual(updated_item["resolvedArtifacts"][0]["path"], str(prepared_docx))
@@ -1553,7 +1582,7 @@ class GapReviewFlowTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
 
         self.assertEqual(response.status_code, 200)
         plan = response.json()["gapPlan"]
@@ -1661,7 +1690,7 @@ class GapReviewFlowTests(unittest.TestCase):
         }
         store._persist_project(project)
 
-        response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
 
         self.assertEqual(response.status_code, 200, response.text)
         plan = response.json()["gapPlan"]
@@ -1730,9 +1759,9 @@ class GapReviewFlowTests(unittest.TestCase):
             output_file.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
             return {"schema_version": "bid-tech-gap-plan-v1", "outputFile": str(output_file)}
 
-        with patch("app.services.gap_planning.material_store.raw_files", side_effect=fake_raw_files), \
-            patch("app.services.gap_planning.run_gap_planner_skill", side_effect=fake_gap_planner):
-            response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        with patch("app.services.technical_gap_planner.technical_material_store.raw_files", side_effect=fake_raw_files), \
+            patch("app.services.technical_gap_planner.run_technical_gap_planner_skill", side_effect=fake_gap_planner):
+            response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
 
         self.assertEqual(response.status_code, 200, response.text)
         manifest = manifests[0]
@@ -1755,13 +1784,13 @@ class GapReviewFlowTests(unittest.TestCase):
     def test_gap_review_mock_flow_runs_from_s4_to_s6(self) -> None:
         project_id = self._create_project_with_confirmed_outline()
 
-        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200)
         detection_payload = detection_response.json()
         self.assertEqual(detection_payload["status"], "completed")
         self.assertGreater(len(detection_payload["items"]), 0)
 
-        gaps_response = self.client.get(f"/api/projects/{project_id}/gaps")
+        gaps_response = self.client.get(f"/api/technical/projects/{project_id}/gaps")
         self.assertEqual(gaps_response.status_code, 200)
         gaps_payload = gaps_response.json()
         self.assertEqual(gaps_payload["status"], "ready")
@@ -1770,7 +1799,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
         for index, item in enumerate(items):
             submission_response = self.client.post(
-                f"/api/projects/{project_id}/materials/submissions",
+                f"/api/technical/projects/{project_id}/materials/submissions",
                 json={
                     "missingId": item["id"],
                     "bidType": item.get("bidType") or "技术标",
@@ -1787,75 +1816,58 @@ class GapReviewFlowTests(unittest.TestCase):
 
             if index % 2 == 0:
                 update_response = self.client.put(
-                    f"/api/projects/{project_id}/gaps/{item['id']}",
+                    f"/api/technical/projects/{project_id}/gaps/{item['id']}",
                     json={"action": "resolve", "source": {"name": f"{item['id']}.docx"}},
                 )
             else:
                 update_response = self.client.patch(
-                    f"/api/projects/{project_id}/materials/missing/{item['id']}",
+                    f"/api/technical/projects/{project_id}/materials/missing/{item['id']}",
                     json={"status": "skipped", "reason": "MVP阶段先跳过"},
                 )
             self.assertEqual(update_response.status_code, 200)
 
-        submit_review_response = self.client.post(f"/api/projects/{project_id}/gaps/submit-review")
+        submit_review_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/submit-review")
         self.assertEqual(submit_review_response.status_code, 200)
-
-        review_items_response = self.client.get(f"/api/projects/{project_id}/review-items")
-        self.assertEqual(review_items_response.status_code, 200)
-        self.assertEqual(review_items_response.json()["status"], "ready")
-
-        prepare_response = self.client.post(f"/api/projects/{project_id}/review-items/prepare")
-        self.assertEqual(prepare_response.status_code, 200)
-
-        review_document_response = self.client.get(f"/api/projects/{project_id}/review-items/document")
-        self.assertEqual(review_document_response.status_code, 200)
-        review_document = review_document_response.json()
-        self.assertEqual(review_document["status"], "ready")
-        self.assertIn("onlyoffice", review_document)
-        self.assertIn("fileUrl", review_document["onlyoffice"])
-
-        confirm_response = self.client.post(f"/api/projects/{project_id}/review-items/confirm")
-        self.assertEqual(confirm_response.status_code, 200)
-        self.assertEqual(confirm_response.json()["reviewStatus"], "confirmed")
+        submit_payload = submit_review_response.json()["payload"]
+        self.assertTrue(submit_payload["submittedForReview"])
+        self.assertGreater(len(submit_payload["items"]), 0)
 
     def test_submit_review_blocks_until_gap_plan_is_resolved(self) -> None:
         project_id = self._create_project_with_confirmed_outline()
 
-        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200)
 
-        submit_review_response = self.client.post(f"/api/projects/{project_id}/gaps/submit-review")
+        submit_review_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/submit-review")
         self.assertEqual(submit_review_response.status_code, 400)
         self.assertIn("缺口未解决", submit_review_response.json()["detail"])
 
-        gaps_payload = self.client.get(f"/api/projects/{project_id}/gaps").json()
+        gaps_payload = self.client.get(f"/api/technical/projects/{project_id}/gaps").json()
         for item in gaps_payload["items"]:
             update_response = self.client.patch(
-                f"/api/projects/{project_id}/materials/missing/{item['id']}",
+                f"/api/technical/projects/{project_id}/materials/missing/{item['id']}",
                 json={"status": "skipped", "reason": "测试中人工确认忽略"},
             )
             self.assertEqual(update_response.status_code, 200)
 
-        recheck_response = self.client.post(f"/api/projects/{project_id}/gaps/recheck")
+        recheck_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/recheck")
         self.assertEqual(recheck_response.status_code, 200)
         self.assertEqual(recheck_response.json()["integrity"]["status"], "passed")
 
-        submit_review_response = self.client.post(f"/api/projects/{project_id}/gaps/submit-review")
+        submit_review_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/submit-review")
         self.assertEqual(submit_review_response.status_code, 200)
         submit_payload = submit_review_response.json()["payload"]
         self.assertTrue(submit_payload["submittedForReview"])
         self.assertGreater(len(submit_payload["items"]), 0)
         self.assertTrue(all(item["status"] == "skipped" for item in submit_payload["items"]))
 
-        prepare_response = self.client.post(f"/api/projects/{project_id}/review-items/prepare")
-        self.assertEqual(prepare_response.status_code, 200)
-        review_items_response = self.client.get(f"/api/projects/{project_id}/review-items")
-        self.assertEqual(review_items_response.status_code, 200)
-        self.assertEqual(review_items_response.json()["summary"]["pendingCount"], 0)
+        final_gap_payload = self.client.get(f"/api/technical/projects/{project_id}/gaps").json()
+        self.assertTrue(final_gap_payload["submittedForReview"])
+        self.assertTrue(all(item["status"] == "skipped" for item in submit_payload["items"]))
 
     def test_gap_recheck_passes_when_all_items_are_resolved_or_ignored_with_s4_ready_artifacts(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/projects/{project_id}/gaps-detection/run")
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         for item in gap_plan["items"]:
@@ -1883,7 +1895,7 @@ class GapReviewFlowTests(unittest.TestCase):
         project["gap_state"]["plan"] = gap_plan
         store._persist_project(project)
 
-        response = self.client.post(f"/api/projects/{project_id}/gaps/recheck")
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps/recheck")
 
         self.assertEqual(response.status_code, 200, response.text)
         integrity = response.json()["integrity"]

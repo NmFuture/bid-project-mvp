@@ -5,6 +5,7 @@ import unittest
 
 import pytest
 
+from app.services.bid_outline_state import complete_directory_generation_state
 from app.services.identity import build_project_material_scope
 from app.services.store import AppStore
 
@@ -56,9 +57,12 @@ class StorePersistenceTests(unittest.TestCase):
             {
                 "name": "PostgreSQL 持久化验证",
                 "customerName": "测试业主",
+                "bidType": "技术标",
             }
         )
-        store1.complete_directory_generation(created["id"], {})
+        project_state = store1.require_project_for_update(created["id"])
+        complete_directory_generation_state(project_state, {})
+        store1.persist_project_state(project_state)
 
         store2 = AppStore(storage_backend="postgres")
         project = store2.get_project(created["id"])
@@ -69,10 +73,10 @@ class StorePersistenceTests(unittest.TestCase):
 
     def test_project_id_continues_after_restart(self) -> None:
         store1 = AppStore(storage_backend="postgres")
-        first = store1.create_project({"name": "项目一"})
+        first = store1.create_project({"name": "项目一", "bidType": "技术标"})
 
         store2 = AppStore(storage_backend="postgres")
-        second = store2.create_project({"name": "项目二"})
+        second = store2.create_project({"name": "项目二", "bidType": "技术标"})
 
         self.assertEqual(first["id"], "PRJ-0001")
         self.assertEqual(second["id"], "PRJ-0002")

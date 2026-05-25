@@ -14,34 +14,27 @@ from sqlalchemy import desc, select
 from app.core.config import settings
 from app.models import async_session
 from app.models.materials import StructuredTable, TemplateAsset
-from app.services.material_store import size_label
+from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
+from app.services.file_utils import format_size_label as size_label
+from app.services.file_utils import now_display, safe_segment
+from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.minio_client import minio_client
-from app.services.peripheral import PeripheralError, peripheral_store
+from app.services.peripheral import PeripheralError
 
 logger = logging.getLogger(__name__)
 
 FALLBACK_BID_TEMPLATE_NAME = "投标文件-模板.docx"
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 DEFAULT_TEMPLATE_TYPES = {
-    "technical": "技术标",
-    "business": "商务标",
+    "technical": TECHNICAL_BID_TYPE,
+    "business": BUSINESS_BID_TYPE,
 }
+DEFAULT_EXCEL_TEMPLATE_TABLE_OPTIONS = (
+    {"key": "performance_guarantee", "label": "性能保证"},
+    {"key": "project_reference", "label": "项目业绩"},
+)
 DOCX_MIN_BYTES = 1024
 DOCX_DOCUMENT_XML = "word/document.xml"
-
-
-def now_display() -> str:
-    from datetime import datetime
-
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def safe_segment(value: str, fallback: str) -> str:
-    import re
-
-    text = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
-    text = re.sub(r"\s+", " ", text).strip(" .")
-    return text or fallback
 
 
 def is_plausible_docx_size(size_bytes: int) -> bool:
@@ -199,11 +192,11 @@ async def resolve_system_default_bid_template_file(project_id: str, bid_type: st
     }
 
 
-async def resolve_fallback_bid_template_file(project_id: str, bid_type: str = "技术标") -> dict[str, Any] | None:
+async def resolve_fallback_bid_template_file(project_id: str, bid_type: str) -> dict[str, Any] | None:
     return await resolve_system_default_bid_template_file(project_id, bid_type)
 
 
-def resolve_fallback_bid_template_file_sync(project_id: str, bid_type: str = "技术标") -> dict[str, Any] | None:
+def resolve_fallback_bid_template_file_sync(project_id: str, bid_type: str) -> dict[str, Any] | None:
     import asyncio
 
     result: dict[str, Any] | None = None
@@ -265,7 +258,7 @@ async def template_fallback_payload(
 class TemplateStore:
     async def _ensure_tables(self) -> None:
         async with async_session() as session:
-            await peripheral_store_material_proxy._ensure_runtime_tables(session)
+            await ensure_material_runtime_tables(session)
             await session.commit()
 
     @staticmethod
@@ -306,7 +299,7 @@ class TemplateStore:
             mapping = {row.table_key: row.table_label for row in rows}
             if mapping:
                 return mapping
-        return {item["key"]: item["label"] for item in peripheral_store._structured_table_options}
+        return {item["key"]: item["label"] for item in DEFAULT_EXCEL_TEMPLATE_TABLE_OPTIONS}
 
     async def dotx_list(self) -> dict[str, Any]:
         await self._ensure_tables()
@@ -493,6 +486,4 @@ class TemplateStore:
         payload = await self.excel_list()
         payload.update({"message": "Activated", "item": next(item for item in payload["items"] if item["id"] == template_id)})
         return payload
-from app.services.material_store import material_store as peripheral_store_material_proxy
-
 template_store = TemplateStore()

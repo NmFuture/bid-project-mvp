@@ -2,19 +2,13 @@ import { Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { useCallback, useEffect, useState } from 'react'
 import AppShell from './components/layout/AppShell'
 import Dashboard from './pages/Dashboard'
-import ProjectList from './pages/ProjectList'
-import ProjectEntryRedirect from './pages/ProjectEntryRedirect'
-import MaterialDB from './pages/MaterialDB'
-import MaterialWiki from './pages/MaterialWiki'
-import AuditLog from './pages/AuditLog'
 import Settings from './pages/Settings'
 import Login from './pages/Login'
 import Toast from './components/shared/Toast'
 import { AUTH_EXPIRED_EVENT, AUTH_STORAGE_KEY, authAPI } from './api'
-import { parseRouteFromBidType, workspaceFromSlug, workspaceRoute } from './utils/workspace'
+import { workspaceFromSlug, workspaceRoute } from './utils/workspace'
 import { renderTechnicalRoutes } from './workspaces/technical/routes'
 import { renderBusinessRoutes } from './workspaces/business/routes'
-import LegacyProjectPathRedirect from './workspaces/shared/LegacyProjectPathRedirect'
 
 const readStoredSession = () => {
   if (typeof window === 'undefined') return null
@@ -158,29 +152,10 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard currentUser={session?.user} />} />
-          <Route path="/parse" element={<Navigate to="/parse/technical" replace />} />
-          <Route path="/review" element={<Navigate to={parseRouteFromBidType('技术标')} replace />} />
-
           {renderTechnicalRoutes({ user: session?.user, showToast })}
           {renderBusinessRoutes({ user: session?.user, showToast })}
 
           <Route path="/workspace/:workspace" element={<WorkspaceRedirect />} />
-          <Route path="/projects" element={<ProjectList showToast={showToast} />} />
-          <Route path="/projects/:id" element={<ProjectEntryRedirect />} />
-          <Route path="/projects/:id/template-directory" element={<LegacyProjectPathRedirect path="/template-directory" />} />
-          <Route path="/projects/:id/parse" element={<LegacyProjectPathRedirect path="/template-directory" />} />
-          <Route path="/projects/:id/directory" element={<LegacyProjectPathRedirect path="/template-directory" />} />
-          <Route path="/projects/:id/outline" element={<LegacyProjectPathRedirect path="/outline" />} />
-          <Route path="/projects/:id/gaps" element={<LegacyProjectPathRedirect path="/gaps" />} />
-          <Route path="/projects/:id/gaps-fill" element={<LegacyProjectPathRedirect path="/gaps" />} />
-          <Route path="/projects/:id/gaps/review" element={<LegacyProjectPathRedirect path="/gaps" />} />
-          <Route path="/projects/:id/generate" element={<LegacyProjectPathRedirect path="/generate" />} />
-          <Route path="/projects/:id/coverage" element={<LegacyProjectPathRedirect path="/coverage" />} />
-          <Route path="/projects/:id/editor" element={<LegacyProjectPathRedirect path="/editor" />} />
-          <Route path="/projects/:id/export" element={<LegacyProjectPathRedirect path="/export" />} />
-          <Route path="/materials/structured" element={<MaterialDB showToast={showToast} />} />
-          <Route path="/materials/wiki" element={<MaterialWiki showToast={showToast} />} />
-          <Route path="/audit" element={<AuditLog showToast={showToast} />} />
           <Route path="/settings" element={<Settings showToast={showToast} />} />
         </Routes>
       </AppShell>

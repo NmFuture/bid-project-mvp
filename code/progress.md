@@ -1,3817 +1,1170 @@
 # progress.md
 
-## 记录规则
+> 当前用途：只记录双轨独立化之后的最新进度口径。
+> 历史 MVP 联调过程和旧接口调用记录不再放在当前工作树中，避免新会话和 AI 把旧通用入口当成现状；需要追溯时查 git 历史。
+> 更新日期：2026-05-25
 
-本文件记录标书工作区隔离改造的方案、过程和后续调整。
+## 当前主线
 
-- 每次改动后追加一条进度记录。
-- 记录内容包括：时间、改动目标、改动文件、验证结果、遗留问题。
-- 已安装 Git `post-commit` hook：提交后会自动向本文件追加提交摘要。
-
-## 进度记录
-
-### 2026-05-24 00:49 技术标 S3 去除事实表与素材匹配重复入口
-
-改动目标：
-
-- 按用户反馈，技术标项目栏中“事实表”和“素材匹配”功能重复，去掉一个对用户可见的入口。
-- 保留 AI 填写所需的项目事实数据能力，但不再把它作为项目流程里的独立阶段或独立操作按钮展示。
-
-改动内容：
-
-- 技术标旧进度组件移除独立“事实表”伪阶段，技术标项目进度恢复为 `目录生成 / 目录确认 / 素材匹配 / 标书生成 / 编辑导出`。
-- `stageFlow.js` 支持按标类显示紧凑阶段标签：技术标 S4 显示 `标书生成`，商务标仍保留原来的 S3/S4 `素材匹配` 口径。
-- `GapRecognition.jsx` 去掉 S3 顶部“维护项目事实表”按钮和事实表统计卡，素材匹配成为唯一可见入口。
-- `GapRecognition.jsx` 的 AI 填写和一键 AI 填写会在内部自动准备并确认项目事实数据，不再要求用户先进入事实表弹窗。
-
-验证结果：
-
-- `npm run lint` 通过。
-- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的既有提示。
-
-遗留问题：
-
-- 事实表维护弹窗代码仍作为内部兜底保留，但主流程和 S3 主界面不再暴露入口。
-
-### 2026-05-24 00:31 技术标项目流程对齐商务标处理逻辑和 UI 风格
-
-改动目标：
-
-- 按用户反馈，不只做入口切换，而是让技术标项目内 S1-S6 参照商务标的处理逻辑和 UI 风格准备同等一套体验。
-- 保留技术标自身的素材边界、缺口识别、AI 填写、正文拼装和导出业务逻辑，避免把技术标误接到商务标专用接口。
-
-改动内容：
-
-- 技术标项目列表、S1 模板与目录、S2 审核目录、S3 缺口处理、S4 生成标书、S5 共创、S6 导出入口改为复用共享项目页，并固定 `workspaceKind="tech"`。
-- `ParseResult.jsx` 取消仅商务标生效的 UI 分支，技术标也使用商务标同款模板上传、默认模板兜底、目录生成状态和进度展示；同时移除技术标原始 FutureCode 输出区。
-- `OutlineReview.jsx` 取消技术标独立旧样式，技术标和商务标统一使用商务标目录审核壳层、保存按钮、编号重排和依据面板。
-- `GapRecognition.jsx` 在保留技术标缺口识别、项目事实表、AI 填写和 OnlyOffice 预览逻辑的前提下，补齐 `business-ui-shell`、顶部操作区、统计面板和统一卡片头部。
-- `GenerateProgress.jsx` 技术标生成页改为和商务标一致的进度弹窗、操作按钮和面板结构，不再展示原始 opencode/FutureCode 输出卡片。
-- `CoCreationEditor.jsx` 技术标共创页改为商务标同款双栏正文预览 + 共创工具，AI 对话、受控改写、格式清洗和 PDF 生成按 `技术标/商务标` 文案与后端标类分流。
-- `FinalExport.jsx` 技术标导出页改为商务标同款最终文件面板和下载操作，默认文件名按标类区分。
-- 后端 `document.py`、`business_document_editing.py`、`business_assembly.py` 将原商务标共创/格式清洗能力泛化为标类感知接口，技术标调用时走技术标工作区和技术标格式清洗链路。
-- `AppShell.jsx` 将项目工作区外壳扩展到技术标和商务标，保证两套项目栏在同一画布、侧栏和移动端导航样式下展示。
-
-验证结果：
-
-- `npm run lint` 通过。
-- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的既有提示。
-- `python -m py_compile app/api/routes/document.py app/services/business_document_editing.py app/services/business_assembly.py` 通过。
-
-遗留问题：
-
-- 技术标 S3 仍使用技术标专用缺口处理和 AI 填写接口，未直接复用商务标 S3 接口；这是为了保留两类标书的业务边界。
-- 需要重建并重启 `web/fastapi` 后在浏览器复查 8080 页面。
-
-### 2026-05-23 23:05 安博成 0523 素材库路径检查与商务标 UI 对齐
-
-改动目标：
-
-- 完成飞书 0523 会议分配给安博成的素材库路径检查，确认技术标/商务标在前端入口、后端接口、数据库字段和对象存储路径上的隔离状态。
-- 按马雨欣演示思路补齐商务标 UI 对齐中缺失的“生成商务标正文弹窗进度”展示。
-- 输出可复查的验收记录，列明已对齐项、未对齐项和后续改造项。
-
-改动内容：
-
-- `GenerateProgress.jsx` 为商务标生成页增加进度弹窗，展示进度条、任务进度、执行事件和结果概览；运行中不可误关，完成后可直接进入共创导出。
-- `GenerateProgress.jsx` 对商务标隐藏原始 FutureCode 输出卡片，避免汇报页面暴露 Provider、Model、Session 和原始片段；技术标生成页保持原行为不变。
-- 新增 `doc/30-安博成0523任务验收记录.md`，记录素材库隔离证据、运行态 API 检查结果、商务 Wiki/业绩表交集/混排机型等后续事项，以及 UI 对齐状态。
-
-验证结果：
-
-- `npm run lint` 通过。
-- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的提示。
-- `docker compose build web && docker compose up -d web` 已用本机端口覆盖值重建并启动前端服务，`http://localhost:8080/api/healthz` 返回 ok，`http://localhost:8080/` 返回 200。
-- 浏览器验证 `http://localhost:8080/workspace/business/projects/PRJ-0004/generate`：商务生成页显示“查看进度/重新生成标书”，不再出现 Provider、Session、原始文本；点击“查看进度”可打开商务标正文进度弹窗，弹窗包含任务进度、执行事件和结果概览。
-- 已通过运行态接口检查：`/api/materials/raw/tree` 返回 `技术标` 和 `商务标` 两个根。
-- 已通过运行态接口检查：`raw/files?bidType=技术标` 返回 95 个技术标文件，`raw/files?bidType=商务标` 返回 0 个商务标文件。
-- 已通过交叉过滤检查：`folderPath=技术标&bidType=商务标` 和 `folderPath=商务标&bidType=技术标` 均返回 0。
-- 已通过 PostgreSQL 检查：当前 95 个 `raw_files` 的 `ext_fields.bidType` 均为 `技术标`，对象 key 样例均带 `raw/技术标/...` 前缀。
-- 商务标 Wiki 检查发现当前仅有 `新建节点`，已记录为后续改造项。
-
-遗留问题：
-
-- 商务标素材库目录已初始化但文件为空，需导入真实商务标素材后再做匹配质量验收。
-- 商务标 Wiki 尚未初始化为完整业务结构。
-- `业绩表` 等技术标/商务标交集素材尚无显式双侧可见策略；建议后续新增 `applicableBidTypes` 或共享素材标记，而不是取消标类隔离。
-- 混排机型与多 tag 检索属于后续研发项，本轮仅记录边界和建议。
-
-### 2026-05-22 11:31 移除技术标 S4 生成页拼装输出详情区
-
-改动目标：
-
-- 按页面标注移除技术标 `/workspace/tech/projects/:id/generate` 中不需要展示的 `拼装输出` 详情区域。
-- 仅调整技术标生成页，不修改商务标生成页。
-
-改动内容：
-
-- `TechnicalGenerateProgress.jsx` 删除拼装输出卡片，不再展示 Provider、Model、Session 和原始片段文本。
-- 同步收敛空闲态说明文案，去掉“拼装原始输出”相关描述。
-- 删除该输出卡片专用的格式化函数和状态映射，避免残留未使用逻辑。
-
-验证结果：
-
-- `npm run lint` 通过。
-- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的提示。
-- `docker compose build web && docker compose up -d web` 已重建并启动前端服务。
-- 浏览器复查 `http://localhost/workspace/tech/projects/PRJ-0003/generate`，确认不再出现 `拼装输出`、Provider、Model、Session 和 `原始文本`。
-
-遗留问题：
-
-- 无。
-
-### 2026-05-22 11:22 移除技术标 S1 页面生成输出详情区
-
-改动目标：
-
-- 按页面标注移除技术标 `/workspace/tech/projects/:id/template-directory` 中不需要展示的两块详情内容。
-- 仅调整技术标 S1 页面，不修改商务标页面。
-
-改动内容：
-
-- `TechnicalParseResult.jsx` 删除 `futurecode 生成输出` 面板。
-- `TechnicalParseResult.jsx` 删除 `futurecode 流式输出` 面板。
-- 同步调整技术标目录生成失败提示，避免继续引导用户查看已移除的流式输出区。
-
-验证结果：
-
-- `npm run lint` 通过。
-- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的提示。
-- `docker compose build web && docker compose up -d web` 已重建并启动前端服务。
-- 浏览器复查 `http://localhost/workspace/tech/projects/PRJ-0003/template-directory`，确认页面不再出现 `futurecode 生成输出`、`futurecode 流式输出` 和相关失败提示。
-
-遗留问题：
-
-- 无。
-
-### 2026-05-22 00:23 同步 f291d5d 技术标前端 polish 到技术标工作区
-
-改动目标：
-
-- 将更靠前提交 `f291d5d feat(frontend): polish bidding workspace UI` 中与技术标相关的前端界面更新同步到当前 `Dev` 技术标工作区。
-- 只更新技术标前端链路，避免把该提交中的商务标、全局共享组件和全局 CSS 改动直接带入商务标界面。
-
-改动内容：
-
-- 在 `src/workspaces/technical/pages` 下落地技术标页面独立实现，覆盖解析、项目列表、S1 模板与目录、S2 目录确认、S3 缺口/素材匹配、S4 生成、S5 共创、S6 导出、素材库、Wiki、日志等页面。
-- 新增技术标局部组件：阶段分组导航、项目阶段进度、卡片、素材视图切换、OnlyOffice 工作区、加载/空/错误状态。
-- 将技术标页面导入切换到 `src/workspaces/technical/components`，不再依赖会把 `f291d5d` 视觉变化扩散到商务标的共享组件。
-- `AppShell.jsx` 仅对 `/workspace/tech` 和 `/parse/technical` 启用技术标新版画布、移动端底部导航和轻量导航阴影；商务标路径保持原外壳。
-- `technical.css` 承接 `f291d5d` 中原本属于全局 CSS 的按钮、卡片、图标字号、技术标画布等样式，并限定在技术标工作区作用域内。
-
-验证结果：
-
-- `npm run lint` 通过。
-- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的提示。
-- `git diff --check` 通过。
-
-遗留问题：
-
-- `f291d5d` 中纯全局页面（Dashboard、Settings）和商务标相关 polish 未同步，本轮按用户要求只迁移技术标界面。
-
-### 2026-05-21 20:48 前端技术标/商务标工作区入口拆分
-
-改动目标：
-
-- 将技术标和商务标前端从同一组动态 workspace 路由中拆开，形成两套可独立维护的页面入口和路由树。
-- 先建立低风险边界：技术标改动默认进入 `src/workspaces/technical`，商务标改动默认进入 `src/workspaces/business`，共享实现继续留在兼容层逐步抽离。
-- 删除 S3 缺口页的混合入口，技术标直接进入技术缺口页，商务标直接进入商务缺口页。
-
-改动内容：
-
-- 新增 `src/workspaces/technical/routes.jsx` 和 `src/workspaces/business/routes.jsx`，分别声明两套解析、项目、阶段、素材库、Wiki、日志路由。
-- 新增技术标/商务标页面入口文件，当前先包裹既有共享实现，并通过 `workspaceKind` 固定标类上下文。
-- `App.jsx` 改为挂载双线路由模块；旧 `/projects/:id/...` 深链接通过 `LegacyProjectPathRedirect` 自动迁移到对应标类工作区。
-- `stageFlow.js` 拆出 `TECHNICAL_STAGE_ROUTE_BUILDERS` 与 `BUSINESS_STAGE_ROUTE_BUILDERS`，避免商务标阶段路由特殊规则继续散落在通用函数里。
-- 删除未再使用的 `src/pages/GapEntry.jsx` 混合分发页，并新增 `src/workspaces/README.md` 记录后续维护边界。
-
-验证结果：
-
-- `npm run lint` 通过。
-- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的既有提示。
-
-遗留问题：
-
-- 本轮是路由和页面入口级拆分，部分底层实现仍复用 `src/pages` 旧文件；后续修改某个标类的具体页面时，应优先把对应实现迁移到该标类目录，再继续改业务细节。
-
-### 2026-05-10 商务标目录生成 Skill 编号链路适配
-
-改动目标：
-
-- 商务标目录审核页标题编号显示改为使用 `business-bid-outline` Skill 生成的 `outline.json.sections[*].number`。
-- 空编号保持为空，不再由前端或后端按层级自动生成编号。
-- 记录真实容器目录生成过程和报告 Skill 执行时长，方便后续排查与验收。
-
-改动内容：
-
-- `business-bid-outline` Skill 明确 `number` 字段学习规则：历史标题有编号则保留，历史无编号或无法可靠推断则输出 `null` 或空字符串。
-- 历史商务标目录输入脚本提取标题编号并拆分干净标题，`validate_outline.py` 要求每个 section 显式包含 `number`。
-- 后端加载商务标 `outline.json` 时校验 `number` 字段，并将其贯通到 `toc.json.items[*].number` 和 `outline_state.nodes[*].tocNumber`。
-- 后端对 `source == "business_outline"` 的节点标题不再拼接中文编号，避免编号列和标题输入框重复显示。
-- 前端 `OutlineReview.jsx` 编号列显示 `tocNumber`，不再显示 UI 递归生成的 `seq`；新增 `outlineNumber` 工具和回归测试。
-- 新增 `doc/23-商务标目录生成Skill适配说明.md`，记录数据流、刷新口径、关键文件和 2026-05-09 真实容器验收记录。
-
-验证结果：
-
-- `node --test src/utils/outlineNumber.test.mjs` 通过：3 passed。
-- `npm run build` 通过。
-- `npm run lint` 通过：0 errors，保留 `TenderReview.jsx` 的既有 hooks warning。
-- `.venv\Scripts\python.exe -m pytest tests/test_directory_generation.py -q` 通过：30 passed。
-- `docker compose up -d --build` 已重建并启动完整服务。
-- 真实商务标目录生成项目 `PRJ-0004`，OpenCode session `ses_1f2f073c3ffenS6H3NCxW8VEdG`，开始时间 `2026-05-09T14:06:20Z`，完成时间 `2026-05-09T14:10:26Z`，总耗时 246 秒，Skill 执行耗时 243 秒。
-- 真实输出中 `outline.json`、`toc.json` 和 `outline_state.nodes[*].tocNumber` 的编号链路一致：`["一、","二、","三、","3.1","3.2","","四、","五、","5.1","5.2"]`。
-
-遗留问题：
-
-- 目录生成完成后，浏览器若停留在旧状态，需要刷新页面才能看到最新 `outline_state`。
-
-### 2026-05-05 10:18 收敛 S3 项目事实表生成口径
-
-改动目标：
-
-- 修复项目事实表把解析噪声、品牌名、工具型号等内容当成事实字段的问题。
-- 事实表先吃 S0/S1 解析里可信的项目基础字段，再从每个 AI 待填写 Word/副表中沉淀通用、项目定制、常用字段。
-- 重新构建事实表时不再继承旧草稿里的错误冲突值，仅保留人工已确认字段。
-
-改动内容：
-
-- `store.py` 为解析字段增加可信白名单：当前仅自动采纳项目名称、招标编号、可信招标人，以及可从文本中明确抽出的性能保证值。
-- `store.py` 读取待填写 DOCX 表格行，抽取机型、容量、台数、风资源、性能保证等常用事实字段，并过滤品牌、工具型号、参数/方法/折减类噪声。
-- 项目事实字段增加规范化映射：总容量/机组数量/安全等级/空气密度/湍流强度/极端风速/单位千瓦扫风面积等会合并到稳定字段名。
-- `投标方案` 在有轮毂高度时用 `机型-轮毂高度`，否则先用投标机型作为候选，交由人工确认。
-- 增加回归测试覆盖：噪声解析项不进入事实表，表格待填字段能被抽取，且招标人不再因解析噪声进入 conflict。
-
-验证结果：
-
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_turbine_model_selection.py tests/test_toc_skill_scripts.py -q` 通过：61 passed。
-- `.venv/bin/python -m py_compile app/services/store.py` 通过。
-- 已重建并重启 `fastapi / worker`，`/api/healthz` 返回 ok，`fastapi` healthy。
-- live `PRJ-0003` 重新构建事实表后：`totalCount=36`、`candidateCount=13`、`missingCount=23`、`conflictCount=0`；已预填项目名称、招标编号、招标方、投标机型、单机容量、叶轮直径、功率曲线保证率、全场/单台可利用率等。
-
-遗留问题：
-
-- `总装机容量、机组台数、轮毂高度、安全等级、风资源数据` 等无法从当前可信来源唯一确定，保留为待人工确认字段。
-- 事实表只沉淀跨 Word/副表复用的项目事实；品牌配置、工具清单、载荷细项等表格专项内容仍应由填写 Skill 结合 Wiki/素材库逐表处理。
-
-### 2026-05-05 09:39 S3 增加项目事实表确认、批量 AI 填写和三率验收
-
-改动目标：
-
-- 按用户确认的顺序调整 S3：先维护项目事实表并人工确认，再逐项或一键执行 Word/副表填写。
-- AI 填写不能只依赖事实表，manifest 仍携带素材库/Wiki/解析字段参考材料；确认后的事实表作为高优先级项目事实传给 Word/table 两个 Skill。
-- 填写结果必须给出覆盖率、正确率、完整率，不再用“生成了文档”或残留占位符数量作为唯一验收信号。
-
-改动内容：
-
-- 后端新增 `GET/POST/PUT /api/projects/{id}/gaps/facts` 事实表接口，事实表从项目身份、投标机型、解析字段和缺口占位符生成，支持人工编辑后 `confirm=true`。
-- `POST /api/projects/{id}/gaps/{gap_id}/ai-fill` 增加事实表确认门禁，并在 manifest 中写入 `projectFactTable`。
-- 新增 `POST /api/projects/{id}/gaps/ai-fill-all`，批量填写时按 Word filler 优先、table filler 随后执行。
-- `gap_planning.py` 为每个 AI 填写 artifact 生成 `qualityReport`，包含 `coverageRate/correctnessRate/completenessRate` 与 `0.85` 门槛。
-- `bid-tech-word-placeholder-filler` 和 `bid-tech-table-filler` 都读取 `projectFactTable` 中已确认/候选事实，并优先用于字段匹配。
-- 前端 S3 页面新增“项目事实表维护”弹窗、一键 AI 填写按钮、填写前事实表确认提示、目录项质量状态和三率展示。
-- 接口文档补充事实表、单项填写、批量填写和三率验收口径。
-
-验证结果：
-
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_turbine_model_selection.py tests/test_toc_skill_scripts.py -q` 通过：60 passed。
-- `.venv/bin/python -m py_compile app/services/gap_planning.py app/services/store.py app/api/routes/gaps.py app/services/turbine_models.py opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py opencode/skill/bid-tech-word-placeholder-filler/scripts/run_from_manifest.py` 通过。
-- `node --test src/pages/gapRecognitionHelpers.test.mjs` 通过：10 passed。
-- `npm run lint` 通过。
-- `npm run build` 通过。
-- 已重建并重启 `web / fastapi / worker / opencode`，`http://127.0.0.1/projects/PRJ-0003/gaps` 返回 200。
-- 运行态 `POST /api/projects/PRJ-0003/gaps/facts/build` 返回 `draft 52` 个事实字段，其中 `17` 个待补充；未确认事实表时调用单项 `ai-fill` 返回“请先维护并确认项目事实表”。
-
-遗留问题：
-
-- 三率中的正确率当前以“已填写字段是否有证据链/事实依据”为严格自动口径；如要达到最终合同级人工基准，还需要引入人工 gold answer 的逐字段对比集。
-- 尚未在真实 `PRJ-0003` 上跑完整一键填写，因为该操作会批量生成大量产物；部署后建议先由用户在页面确认事实表，再执行一键填写抽查。
-
-### 2026-05-05 09:06 修复 S3 待填写 Word 旧计划误走表格 Skill
-
-改动目标：
-
-- 修复用户指出的 1.4“风电机组自主可控推广应用的承诺”被错误显示/执行为 `bid-tech-table-filler` 的问题。
-- 确保素材库 `sourceType=material_fill_template` 的待填写 Word 统一走 `bid-tech-word-placeholder-filler`，空副表/空表继续走 `bid-tech-table-filler`。
-- 确保 Word filler 能从项目身份中读取招标方/招标人等基础事实，不能确定时仍按 `[待人工补充：字段名]` 并标黄。
-
-改动内容：
-
-- `gap_planning.py` 增加 `normalize_gap_plan_fill_task_skills()`，新生成计划、读取旧计划、执行 `ai-fill` 前都会把旧的 material Word 填写任务从 table skill 迁移到 word skill。
-- `store.py` 在 `gaps-detection`、`gaps`、`ai-fill` 路径上自动修复并持久化旧 gap plan，避免 PRJ-0003 这类历史计划继续展示错误 Skill。
-- `run_ai_fill_for_gap()` 给 Word filler manifest 补入 `projectIdentity` 和 `customerName`。
-- `bid-tech-word-placeholder-filler` 从 `projectIdentity.owner/customerName/customerCanonicalName` 提取 `招标方/招标人/客户名称` 事实，用于承诺函等 Word 占位符。
-- 增加回归测试：旧 material Word 任务即使保存为 table skill，执行前也必须改走 word skill；承诺函里的 `招标方/日期` 必须被真实值消解。
-
-验证结果：
-
-- `PYTHONPATH=. .venv/bin/python -m py_compile app/services/gap_planning.py app/services/store.py opencode/skill/bid-tech-word-placeholder-filler/scripts/run_from_manifest.py` 通过。
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_gap_review_flow.py::GapReviewFlowTests::test_stale_material_word_fill_task_is_repaired_to_word_skill_before_ai_fill tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_word_placeholder_filler_uses_project_identity_for_owner_placeholders tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_word_placeholder_filler_replaces_parse_and_project_placeholders -q` 通过：3 passed。
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_toc_skill_scripts.py tests/test_gap_review_flow.py -q` 通过：53 passed。
-- 已重建并重启 `fastapi / worker / opencode`。
-- `PRJ-0003` 当前 22 个素材库待填写 Word 任务全部为 `bid-tech-word-placeholder-filler`，80 个非素材库空表/副表任务全部为 `bid-tech-table-filler`。
-- 已实际对 `PRJ-0003` 的 1.4 执行一次 AI 填写：输出 `风电机组自主可控推广应用的承诺_AI填写.docx`，`placeholderCount=2`，`filledPlaceholderCount=2`，`unfilledPlaceholderCount=0`，文档内不再残留 `待填写/待人工补充`，包含 `致：华能集团` 和 `日  期：2026年05月05日`。
-
-遗留问题：
-
-- 本轮只实际点击验证了 1.4；其他待填写 Word 现在已走正确 Skill，但若要逐项检查内容质量，还需要按目标二批量评测流程重新跑一轮并对比人工基准。
-
-### 2026-05-05 08:53 S3 缺口处理前端改为人工确认后 AI 填写
-
-改动目标：
-
-- 按用户确认，把 S3 缺口处理页调整为“先识别缺口，再点目录预览未填写空表/Word，人工检查来源素材后手动点击 AI 填写，填写完成后目录显示 AI 已填写，并默认预览填写结果”。
-- 保持 AI 填写仍走后端 `ai-fill`，由 OpenCode 调用对应 Skill：副表/空表走 `bid-tech-table-filler`，待填写 Word 走 `bid-tech-word-placeholder-filler`。
-
-改动内容：
-
-- `GapRecognition.jsx` 增加 AI 填写按钮、填写状态、来源素材检查区，并把 `fillTaskId / referenceMaterialIds / referenceMaterials / parseFieldIds` 传给 `gapsAPI.aiFill`。
-- AI 填写返回 `{ item, artifact, gapPlan }` 时保留原 S3 识别状态并合并新 gapPlan，避免页面误回到“待识别”。
-- 右侧 OnlyOffice 预览改为可切换未填写空表/Word、来源素材和填写结果；未填写时默认空白对象，填写后默认 AI 填写产物。
-- `gapRecognitionHelpers.js` 调整目录项结果摘要：AI 填写产物显示 `AI已填写`，已完成填写任务显示 `填写完毕`；预览选项保留空白源和素材源。
-- `gapRecognitionHelpers.test.mjs` 补充预览顺序和 AI 已填写状态回归。
-
-验证结果：
-
-- `node --test src/pages/gapRecognitionHelpers.test.mjs` 通过：9 passed。
-- `npm run lint` 通过。
-- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的既有提示。
-- 已重建并启动 `web` 容器：`docker compose build web && docker compose up -d web`。
-- `curl -fsS http://127.0.0.1/api/healthz` 返回 `status=ok`；`http://127.0.0.1/` 返回 200。
-
-遗留问题：
-
-- 本轮未在浏览器里实际点击 AI 填写，避免误触发一次真实 OpenCode 填写任务；交互入口和 API 契约已通过构建、lint 和 helper 回归验证。
-
-### 2026-05-04 20:28 副表填写 Skill 拆分口径与真实项目大规模验收
-
-改动目标：
-
-- 按用户确认，把第 14 条拆成两条路线：副表/空表填写由 `bid-tech-table-filler` 负责；素材库 `requiresFill` 待填写 Word 后续单独建 `bid-tech-word-placeholder-filler`。
-- 本轮只验真实项目里的所有副表，不混入素材库待填写 Word。
-
-改动内容：
-
-- `doc/14-甲方新增需求待办.md` 改为“两类 Skill 分工”：副表填写处理结构化表格，待填写 Word 处理正文/表格占位符。
-- `bid-tech-table-filler/SKILL.md` 收窄为“空副表/空表原样填写”，明确素材库待填写 Word 不在本 Skill 范围内。
-- `run_from_manifest.py` 增加真实批量容错：解析出来但没有表格的副表原样复制，报告记 `targetFieldCount=0`；批量中单个异常进入 `failedTargets`，不拖垮全批。
-- `tests/test_toc_skill_scripts.py` 增加无表格副表批量回归，验证空壳副表原样输出且普通副表继续填写。
-
-验证结果：
-
-- 目标回归通过：`PYTHONPATH=. .venv/bin/python -m pytest tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_table_filler_copies_no_table_appendix_without_failing_batch tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_table_filler_auto_selects_non_c_appendix_sources_from_material_index tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_table_filler_preserves_generic_appendix_and_highlights_manual_cells -q` 通过：3 passed。
-- 已重建并重启 `opencode` 容器，容器内确认新版 `s4fill` 生效。
-- 真实项目 `PRJ-0003` 副表专用 manifest：`82` 个副表目标，排除 `32` 个素材库待填写 Word。
-- 容器端到端执行：`docker compose exec -T opencode s4fill /data/documents/PRJ-0003/technical-workspace/s4_gap_workdir/table_filler_e2e_all/appendix_only_e2e/appendix_only_manifest.json`。
-- 批量报告：`targetCount=82`，`successfulTargetCount=82`，`failedTargetCount=0`，`outputFiles=82`。
-- 字段统计：`targetFieldCount=479`，`filledFieldCount=126`，`unfilledFieldCount=353`；其中 `43` 个副表识别到可填字段，`39` 个副表为零字段/标题页/空壳类输出。
-- 抽样检查 C.1/C.2/C.3/A.1 输出 Word 均保留表格；未填项数量与黄色高亮单元格数量一致：C.1 为 `10/10`，C.2 为 `21/21`，C.3 为 `36/36`，A.1 为 `13/13`。
-
-遗留问题：
-
-- 副表填写 Skill 已能大规模跑稳，但真实完整度仍依赖素材库中是否有对应事实；当前只保守填写确定字段，不编造。
-- 素材库待填写 Word 还未验收，下一步应单独重建 `bid-tech-word-placeholder-filler`，按占位符标签、段落上下文和素材来源做替换。
-
-### 2026-05-04 20:04 第二个 S3 Skill 补通用自动选材，不再只围绕 C 表
-
-改动目标：
-
-- 按用户纠正，把 `bid-tech-table-filler` 从“C 表增强为主”调整为“所有空副表/待填 Word 先自动判断素材来源，再保守填写”。
-
-改动内容：
-
-- `run_from_manifest.py` 增加通用素材路由层：读取目标副表标题、字段、备注、占位标签，对 `materialIndex` 中素材按主题/字段/文件名/路径/占位标签打分。
-- C.1/C.2/C.3 规则保留为增强包，但不再是主路径；非 C 副表可按供货范围、性能保证、塔筒基础、运输安装、备品备件、技术资料、偏差响应、风资源、环境适应性、试验检测等通用主题选材。
-- `fillReport.sourceSelection` 增加自动选材候选、分数、选中理由；批量报告也汇总每个目标的选材结果。
-- 后端 `run_ai_fill_for_gap` 现在会把允许范围内的 `materialIndex` 带给填写 Skill，并将可读取的 Word/Excel 素材下载到本次 `ai_fill` 工作目录，避免 Skill 只有素材元信息却读不到文件。
-- `SKILL.md` 更新边界：Agent 只调用 `s4fill`，脚本负责自动选材、抽取事实、字段映射、原 Word 写入和报告。
-
-验证结果：
-
-- 新增非 C 副表测试：`附表B.2 供货范围响应表` 在没有人工指定素材、且 `recommendedMaterials` 给错为风资源素材时，能从 `materialIndex` 自动选择 `供货范围清单` 并填满 3/3。
-- 目标回归通过：`PYTHONPATH=. .venv/bin/python -m pytest tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_table_filler_auto_selects_non_c_appendix_sources_from_material_index tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_table_filler_preserves_generic_appendix_and_highlights_manual_cells tests/test_gap_review_flow.py::GapReviewFlowTests::test_gap_ai_fill_calls_opencode_skill_and_registers_resolved_artifact tests/test_gap_review_flow.py::GapReviewFlowTests::test_gap_ai_fill_manifest_carries_appendix_context_and_recommended_materials -q` 通过：4 passed。
-- 现有批量样例仍可输出 4 个目标：C.1/C.2/C.3/A.1 合计填 67 项、待人工 64 项，并在 summary 中返回 `outputFiles=4`、`targetResults=4`、`sourceSelections=4`。
-
-遗留问题：
-
-- 还需要拿真实项目目录里的“所有副表 + 素材库待填写 Word”做一次端到端 OpenCode/容器验收。
-- 自动选材目前是确定性打分路由，适合作为 MVP 稳定底座；后续如果要进一步提高复杂语义匹配，可在同一报告结构下接 LLM rerank，但仍要保留人工覆盖优先。
-
-### 2026-05-04 18:45 第二个 S3 Skill 原样填充能力封装与批量样例验证
-
-改动目标：
-
-- 将 `bid-tech-table-filler` 从说明型 Word 占位实现，重建为“保留原 Word/表格结构”的空副表/待填 Word 填写 Skill。
-- 覆盖单副表和多副表批量调用；C.1/C.2/C.3 作为增强样例，非 C 副表走通用表头识别和字段相似匹配。
-
-改动内容：
-
-- `bid-tech-table-filler/scripts/run_from_manifest.py` 改为读取 manifest 中的空 Word、参考 Word/Excel、解析字段和投标机型，识别待填列，写入原表格单元格。
-- 无法确定的字段写入 `[待人工补充：字段名]`，并设置黄色单元格底色 `FFF2CC`。
-- 支持 `targets / appendixTargets / appendixTasks` 批量填写，每个目标输出独立 Word，并生成批量 JSON 报告。
-- C.1/C.2/C.3 增加参数表和子系统专题增强抽取；其他附表使用通用 Word/Excel 键值抽取、字段名相似度、解析字段和 `projectTurbineModel`。
-- `SKILL.md` 更新为当前边界：Agent 只组织输入并调用 `s4fill`，脚本负责确定性填写和报告。
-- `tests/test_toc_skill_scripts.py` 增加通用副表回归，验证原结构保留、项目字段填写、待人工补充和黄色高亮。
-
-验证结果：
-
-- 本地批量样例通过：C.1 填 24/34、C.2 填 15/36、C.3 填 24/57，非 C 的 A.1 样例填 4/4。
-- DOCX 检查通过：C.1/C.2/C.3 的 `[待人工补充]` 数量分别为 10/21/33，黄色高亮单元格数量一致。
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_table_filler_preserves_generic_appendix_and_highlights_manual_cells tests/test_gap_review_flow.py::GapReviewFlowTests::test_gap_ai_fill_calls_opencode_skill_and_registers_resolved_artifact tests/test_gap_review_flow.py::GapReviewFlowTests::test_gap_ai_fill_manifest_carries_appendix_context_and_recommended_materials -q` 通过：3 passed。
-- 已重建并启动 `opencode` 镜像；容器内 `s4fill /data/documents/skill-test/container_manifest.json` 能批量输出 4 个目标和报告。
-
-遗留问题：
-
-- 容器 smoke 只挂了参数表，未挂全量专题 Word，所以 C.2/C.3 完整度低于本地完整素材测试；真实产品需要由后端把人工选择、Excel 路由或 Wiki 判断出的素材路径完整传入 manifest。
-- 第 14 条还未勾选完成；后续还需接前端人工改选入口、真实项目目录里的所有副表批量验收，以及素材库待填写 Word 的真实样本测试。
-
-### 2026-05-03 16:29 技术标阶段口径收口到 S0-S6
-
-改动目标：
-
-- 按用户要求把技术标步骤从旧 `S0-S10` 收口为当前 `S0-S6`。
-- 明确 `S0` 是全局解析/审核步骤，项目模块只展示 `S1 模板与目录 / S2 审核目录 / S3 缺口处理 / S4 生成标书 / S5 共创 / S6 导出`。
-- 清理活跃文档、API 说明、skill 说明和前端项目内路径中的旧阶段歧义。
-
-改动内容：
-
-- 后端项目阶段模型改为 `S1-S6`，并保留旧阶段号请求到当前阶段的兼容映射。
-- 前端阶段路由改为 `1..6`，项目内 `S1 模板与目录` 正式路径改为 `/template-directory`；历史 `/projects/:id/parse` 只做兼容跳转，全局 `/parse` 保持 `S0 解析`。
-- 根 README、`code/AGENT.md`、`doc/05/06/08/11/12/13/14/README`、API 极简版和后端 README 全部改为 `S0-S6` 口径。
-- `doc/13` 从旧 `S7/S8` 文件名改为 `13-S4生成标书与覆盖诊断说明.md`。
-- OpenCode skill 说明改为当前用户阶段，保留 `s1_parse_manifest.json`、`s2toc`、`s4_gap_workdir`、`s7_assembly_workdir` 等历史内部名的兼容解释。
-
-验证结果：
-
-- `git diff --check` 通过。
-- `PYTHONPATH=. .venv/bin/python -m py_compile app/services/store.py app/api/routes/projects.py app/api/routes/export.py app/services/draft_generation.py app/services/tech_assembly.py app/services/opencode_client.py app/api/routes/generation.py` 通过。
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_stage_progress.py tests/test_parse_pipeline.py tests/test_directory_generation.py tests/test_fill_generation.py tests/test_gap_review_flow.py -q` 通过：60 passed。
-- `npm run lint` 通过。
-- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的既有提示。
-- `PYTHONPATH=. .venv/bin/python -m pytest -q` 全量后端测试通过：106 passed，13 skipped。
-- 已重新构建并重启 `fastapi / worker / web`。
-- `/api/healthz` 返回 `status=ok`。
-- `/api/projects/PRJ-0001/stages` 返回 6 个节点：`模板与目录 / 审核目录 / 缺口处理 / 生成标书 / 共创 / 导出`，`routeStageId` 为 `1..6`。
-
-### 2026-05-03 17:05 技术标模板兜底收口为设置侧系统默认模板
-
-改动目标：
-
-- 按用户确认收口技术标模板来源：只需要项目上传模板和设置侧启用的系统默认模板，不再保留第二层 legacy fallback。
-- 避免 `templates/fallback/technical/...` 继续被自动 seed 或静默用于 S2/S7 生成。
-
-改动内容：
-
-- `template_store.py` 移除 legacy fallback 对象查询、下载、seed 成默认模板的生成入口；`resolve_fallback_bid_template_file()` 现在只解析设置侧系统默认模板。
-- `system_settings.py` 启动初始化不再调用 legacy fallback seed。
-- `docker-compose.yml` 和 `.env.example` 移除 `BID_FALLBACK_TEMPLATE_*` 环境变量，避免部署继续配置第二层兜底。
-- S1 模板页 toast 文案去掉 fallback 表达；S2 模板无效错误只区分“项目投标模板”和“系统默认模板”。
-- 测试口径改为：没有项目模板且没有设置侧有效默认模板时，不再返回 legacy 模板；设置侧默认模板存在时才进入有效生成输入。
-- 数据存储说明和待办文档更新为单一设置侧默认模板规划。
-
-验证结果：
-
-- `git diff --check` 通过。
-- `PYTHONPATH=. .venv/bin/python -m py_compile app/services/template_store.py app/services/system_settings.py app/services/outline_generation.py` 通过。
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_directory_generation.py tests/test_security_settings_ocr_routes.py -q` 通过：42 passed，7 skipped。
-- 代码残留搜索确认运行路径中不再存在 legacy fallback 查询、下载、seed 或 `BID_FALLBACK_TEMPLATE_*` 配置。
-- MinIO/PostgreSQL 整理：停用 9B 技术标坏默认模板和 17B 商务标坏默认模板；把 190.53 MB 的真实技术标模板复制到 `bid-templates/templates/default/technical/7609394a-18ad-47b4-a4aa-2e526751d204-投标文件-模板.docx`，并设为技术标 active 系统默认模板。
-- 重新构建并重启 `fastapi / worker / web`；`/api/projects/PRJ-0001/template-fallback` 返回 `source=system-default`、`available=true`、`sizeLabel=190.53 MB`，且不再返回 `legacyFallbackTemplate` 字段。
-
-### 2026-05-03 14:49 OCR 入口收口为无感解析能力
-
-改动目标：
-
-- 按产品口径撤掉前端独立 OCR 入口和候选字段确认区。
-- 让图片、扫描型 PDF 等格式差异在后端解析链路中消化，用户只感知正常的上传、解析和目录生成。
-
-改动内容：
-
-- `ParseResult.jsx` 删除 OCR 任务加载、候选字段展示和确认/忽略交互，模板与目录页不再出现 OCR 工作台。
-- S1 上传白名单补齐图片格式；招标文件解析遇到图片或扫描型 PDF 时按需调用 OCR/视觉模型，把识别文本直接交给原有 LLM/Skill 解析。
-- 模板上传允许 PDF 和图片格式，并记录为后续目录/正文生成可按需视觉解析的模板输入。
-- S2 目录生成输入层补齐非 DOCX 兜底：招标文件使用 S1 combined text 生成内部 Word，PDF/图片模板经视觉识别后生成内部 Word，再交给目录 Skill。
-- `doc/14-甲方新增需求待办.md` 将待办 22 口径从“OCR 候选字段人工复核”改为“PDF / 图片型文件无感解析”。
-- 同步 README、接口文档、部署说明和 doc 索引，把 OCR 候选字段/人工确认旧口径改为业务页无感解析。
-
-验证结果：
-
-- `git diff --check` 通过。
-- `PYTHONPATH=. .venv/bin/python -m py_compile app/services/parsing.py app/services/outline_generation.py app/services/ocr_service.py app/api/routes/parse.py app/core/config.py` 通过。
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py::ParsePipelineTests::test_upload_and_parse_image_uses_visual_recognition_without_manual_ocr_flow -q` 通过：1 passed。
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_directory_generation.py::DirectoryGenerationTests::test_generate_outline_uses_s1_text_and_visual_template_for_non_docx_inputs -q` 通过：1 passed。
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_directory_generation.py tests/test_security_settings_ocr_routes.py -q` 通过：40 passed，6 skipped。
-- `npm run lint` 通过。
-- `npm run build` 通过；保留 Vite 主 chunk 超过 500KB 的既有体积提示。
-
-遗留问题：
-
-- PDF/图片模板当前通过识别文本生成内部 Word 参与目录生成；复杂版式模板的层级还需要结合真实样本继续调优。
-
-### 2026-05-03 14:12 S2 工作目录发布保护收尾
-
-改动目标：
-
-- 收尾当前未提交的 S2 工作目录 staging/发布/归档改动。
-- 确保 S2 新一轮发布失败时不会破坏上一轮成功的 `s2_toc_workdir/`。
-- 将 S2 工作目录、canonical manifest 和文档口径收敛到同一套路径规则。
-
-改动内容：
-
-- `outline_generation.py` 将 S2 工作区改为先写 `s2_toc_workdir.new/`，成功后发布为 `s2_toc_workdir/`，旧成功目录归档到 `s2_toc_workdir.runs/`。
-- 发布前先在 staging 中回写 manifest、toc、evidence 和 agent review 输入中的路径，再切换目录，减少发布中途失败对旧成功目录的影响。
-- 删除旧的 `parsed/{project_id}/s2.json` alias，`manifestPath` 与 `canonicalManifestPath` 都指向最新成功工作区中的 `s2_input.json`。
-- 补充目录生成回归测试，覆盖 alias 删除、成功归档旧工作区、生成失败保留旧工作区、发布前路径回写失败时保留旧工作区。
-- 同步根 README、`code/AGENT.md`、MVP 主链路、接口、部署、数据存储和 doc 索引中的 S2 运行口径。
-
-验证结果：
-
-- `git diff --check` 通过。
-- `PYTHONPATH=. python3 -m py_compile app/services/outline_generation.py` 通过。
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_directory_generation.py -q` 通过：18 passed。
-- `PYTHONPATH=. .venv/bin/python -m pytest -q` 通过：98 passed，12 skipped。
-- `docker compose build fastapi worker && docker compose up -d --force-recreate fastapi worker` 通过。
-- `docker compose ps fastapi worker` 显示 `fastapi` healthy，`worker` running。
-- `curl -fsS http://127.0.0.1/api/healthz` 返回 `status=ok`。
-
-遗留问题：
-
-- S2 任务展示中的部分文案仍偏向“futurecode 语义审核”旧表达，后续如要统一任务事件文案可另起小改。
-
-### 2026-05-03 10:19 待办 6/7/11/22 完成核验与文档口径同步
-
-改动目标：
-
-- 按 `$neat-freak` 收尾要求核验待办 6、7、11、22 是否已完成。
-- 清理外部文档中与真实鉴权、设置、审计、OCR 状态冲突的旧口径。
-
-改动内容：
-
-- 确认 `doc/14-甲方新增需求待办.md` 中第 6、7、11、22 项已勾选，且 `193123e Complete settings auth audit and OCR todos` 已提交对应实现。
-- 同步 `README.md`：补充认证管理员、默认 LLM/OCR 环境变量，并把“未接入 OCR”旧边界改为“已接入真实鉴权、持久化审计、系统设置、默认模板管理和 OCR 候选字段人工复核；SSO 尚未接入”。
-- 同步 `doc/06-MVP接口文档.md`：补充认证、设置、审计和 OCR 接口，并移除 `/api/audit/*`、`/api/settings/*` 仍需 mock 收紧的旧口径。
-- 同步 `doc/08-MVP部署说明.md` 和 `doc/README.md`：补齐部署环境变量、设置/审计/OCR 验收提示和当前文档索引说明。
-
-验证结果：
-
-- 已核对 `HEAD` 为 `193123e Complete settings auth audit and OCR todos`，提交内容覆盖认证、设置、审计、OCR 服务、前端设置页、解析页 OCR 入口和测试。
-- 已用 `rg` 检查外部文档中不再残留“登录鉴权本轮先不纳入 MVP”“默认没有接入 OCR”“当前 MVP 不做 OCR”“/api/audit/* 仍需收紧”“/api/settings/* 仍需收紧”等反向口径；剩余 `mock token` 命中均为说明待办 11 已去除 mock token 的正向记录。
-
-### 2026-05-03 01:05 待办 6/7/11/22 设置、鉴权、审计和 OCR 闭环
-
-改动目标：
-
-- 完成待办 11 登录鉴权真实化：去掉固定 mock token 和前端默认账号密码，接入真实用户、密码校验和服务端会话。
-- 完成待办 7 审计日志真实化：审计日志持久化，设置、登录、默认模板、OCR 等关键操作写入真实日志。
-- 完成待办 6 系统设置真实化：设置页管理技术标/商务标系统默认模板、LLM/OCR Base URL 和 API Key、备份、健康状态。
-- 完成待办 22 OCR / 图片型 PDF 内容识别与人工复核：OCR 结果进入候选字段，人工确认后才写入项目结构化字段。
-
-改动内容：
-
-- 新增真实认证服务 `app/services/auth_service.py`，使用 PBKDF2 密码哈希和服务端会话 token；初始化管理员通过环境变量配置，前端登录页不再预填默认账号密码。
-- 新增持久化审计服务 `app/services/audit_service.py`，审计列表、详情和导出读取真实 `audit_log` 数据。
-- 新增系统设置服务 `app/services/system_settings.py`，支持 LLM/OCR 模型配置、系统默认模板、备份记录和依赖健康探测。
-- 新增 OCR 服务 `app/services/ocr_service.py` 和 `/api/projects/{project_id}/ocr/*` 路由，支持图片和图片型 PDF OCR、候选字段、确认/忽略和项目结构化字段写回。
-- 扩展数据库模型和初始化脚本：`system_users`、`auth_sessions`、`system_configs`、`backup_records`、`ocr_tasks`、`ocr_candidates`，并补充 `audit_log` 元数据字段。
-- 设置页新增“默认模板”和“OCR 模型”区域；LLM/OCR 均可维护 Base URL、API Key、模型和连接测试，API Key 只写入不明文回显。
-- 明确设置页管理的是系统默认模板：S2/S7 生成输入优先读取项目上传模板；项目未上传时读取同标类已启用系统默认模板；旧固定 fallback 仅作为兼容兜底。
-- 解析/模板与目录页新增 OCR 候选字段入口，图片或图片型 PDF 识别后必须人工确认才写入。
-- Docker Compose 和 `.env.example` 增加认证管理员、默认 LLM、默认 OCR 配置入口。
-- 已勾选 `doc/14-甲方新增需求待办.md` 第 6、7、11、22 项。
-
-验证结果：
-
-- `python3 -m py_compile app/services/auth_service.py app/services/audit_service.py app/services/system_settings.py app/services/ocr_service.py app/services/template_store.py app/api/routes/auth.py app/api/routes/audit.py app/api/routes/settings.py app/api/routes/ocr.py app/api/routes/projects.py app/api/router.py app/main.py app/models/materials.py app/core/config.py` 通过。
-- `.venv/bin/python -m pytest tests/test_security_settings_ocr_routes.py -q` 通过：6 passed。
-- `.venv/bin/python -m pytest -q` 通过：103 passed，6 skipped。
-- `npm run lint` 通过。
-- `npm run build` 通过；仍有 Vite 主 chunk 超过 500KB 的既有体积提示。
-- Docker 已重建并重启 `fastapi / worker / web`。
-- 已用硅基流动 `deepseek-ai/DeepSeek-OCR` 做在线 OCR 冒烟：上传测试图片后任务 `completed`，生成 `Project / Bid No / Capacity` 3 个候选字段；接口响应不回显明文 API Key。
-
-遗留问题：
-
-- 本次 OCR 已完成接口、配置、候选字段和人工确认闭环；实际 OCR 模型效果、复杂扫描件版面还需要结合真实招标 PDF 调优。
-- 当前鉴权重点保护了登录、设置、审计、OCR 等本次安全相关入口；全站所有历史业务接口统一强制权限策略可作为后续安全硬化项继续收口。
-
-### 2026-05-03 01:25 系统默认模板口径补齐与 OCR 在线冒烟
-
-改动目标：
-
-- 按用户确认补齐口径：设置页管理的是系统默认模板，不是项目级模板。
-- 确保项目模板优先；项目没有上传模板时，才使用设置页启用的技术标/商务标系统默认模板。
-- 用硅基流动 `deepseek-ai/DeepSeek-OCR` 做一次真实在线调用验证。
-
-改动内容：
-
-- 后端生成输入 `store.get_parse_inputs()` 改为按项目 `bidType` 读取同标类系统默认模板；未配置系统默认模板时继续兼容旧固定 fallback。
-- `/api/projects/{project_id}/template-fallback` 返回有效模板、系统默认模板和旧兼容 fallback 的区分信息。
-- S1 模板页文案从“Fallback 模板来源”调整为“系统默认模板来源”。
-- 新增系统默认模板 fallback 覆盖测试和 OCR 成功候选字段落库/确认测试。
-
-验证结果：
-
-- `.venv/bin/python -m pytest tests/test_security_settings_ocr_routes.py -q` 通过：6 passed。
-- `.venv/bin/python -m pytest -q` 通过：103 passed，6 skipped。
-- `npm run lint`、`npm run build` 通过；build 保留既有 chunk 体积提示。
-- Docker 重新构建并启动后，在线 OCR 测试成功：SiliconFlow OCR 返回 3 个候选字段，API Key 未在响应中泄露。
-
-### 2026-05-03 01:35 用户管理审计缺口补齐
-
-改动目标：
-
-- 补齐完成审计中发现的缺口：设置页用户新增、用户更新和密码重置也必须写入真实审计日志。
-
-改动内容：
-
-- `auth_service.create_user()` 写入“创建用户”审计日志。
-- `auth_service.update_user()` 写入“更新用户”审计日志；密码变更只记录 `passwordUpdated=true`，不记录明文密码。
-- 设置页用户更新路由传入当前登录用户，确保审计日志中有真实操作人。
-
-验证结果：
-
-- `python3 -m py_compile app/services/auth_service.py app/api/routes/settings.py` 通过。
-- `.venv/bin/python -m pytest tests/test_security_settings_ocr_routes.py -q` 通过：6 passed。
-- `.venv/bin/python -m pytest -q` 通过：103 passed，6 skipped。
-- `npm run lint`、`npm run build` 通过；build 保留既有 chunk 体积提示。
-- Docker 重建 `fastapi / worker` 后冒烟通过：创建用户、更新用户、审计查询均成功，审计响应不包含测试密码明文。
-
-### 2026-05-02 13:21 待办 12/15 工作流收敛与 S4/S5/S6 真实化
-
-改动目标：
-
-- 完成待办 12/15 联合改造：模板页承接目录生成，缺口识别/补料/审核合并为“缺口识别与处理”，并用真实 `gapPlan` 串联素材匹配、AI 填写、完整性校验和 S7 拼接。
-
-改动内容：
-
-- 新增 `bid-tech-gap-planner` OpenCode Skill 和 `s4gap` 命令，输出 `bid-tech-gap-plan-v1` 匹配/缺口/处理计划。
-- 新增 `bid-tech-table-filler` OpenCode Skill 和 `s4fill` 命令，AI 填写空表/Word 并输出 Word 产物、未填字段和证据引用。
-- 后端新增 `app/services/gap_planning.py`，将已确认目录、解析结果和补料记录生成 `gapPlan`，支持 AI 填写产物挂回计划、OnlyOffice 预览 URL 和完整性校验。
-- S4/S5/S6 接口改为读取和维护真实 `gapPlan`，不再自动跳过缺口；必须全部解决或人工忽略后才能提交审核。
-- S7 manifest 增加 `gapPlanPath`，`bid-tech-assembler` 的 `build_assembly.py` 支持按缺口计划覆盖素材路径；S7 会把人工补料和 AI 填写产物写成运行时 Wiki 卡片纳入拼接。
-- 前端模板上传页内嵌目录生成按钮、进度、任务状态和 OpenCode/Skill 输出；目录完成后直接进入目录审核。
-- 前端 S5/S6 主流程收敛到 `/gaps`，旧 `/gaps-fill` 和 `/gaps/review` 重定向回统一缺口页。
-- 前端缺口页升级为“缺口识别与处理”，展示匹配素材、缺口原因、AI 填写任务、处理产物、重新检查缺口和生成标书入口。
-- 已勾选 `doc/14-甲方新增需求待办.md` 第 12 项和第 15 项。
-
-验证结果：
-
-- 后端 RED 测试已先失败，失败点为缺少 `gapPlan`、AI 填写接口和 S7 `gapPlanPath`。
-- `python3 -m py_compile app/services/gap_planning.py app/services/store.py app/api/routes/gaps.py app/services/tech_assembly.py app/services/opencode_client.py opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py opencode/skill/bid-tech-assembler/scripts/build_assembly.py opencode/skill/bid-tech-assembler/scripts/run_from_manifest.py` 通过。
-- `.venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_onlyoffice_document.py -q` 通过：23 passed。
-- `.venv/bin/python -m pytest -q` 通过：78 passed，6 skipped。
-- `npm run lint` 通过。
-- `npm run build` 通过。
-- 审计补强后新增统一缺口页客户资料上传闭环：`/api/projects/{project_id}/gaps/{gap_id}/upload` 会生成真实项目补料 Word 产物，挂回 `gapPlan.resolvedArtifacts` 并可供 S7 使用。
-- 补强后 `.venv/bin/python -m pytest -q` 通过：79 passed，6 skipped。
-- 补强后 `npm run lint` 通过。
-- 补强后 `npm run build` 通过。
-- 补强后 `docker compose build fastapi worker web && docker compose up -d --force-recreate fastapi worker web` 通过。
-- 补强后 `/api/healthz` 返回 `status=ok`，`http://127.0.0.1/` 返回 HTTP 200。
-- `docker compose build opencode fastapi worker web` 通过。
-- `docker compose up -d --force-recreate opencode fastapi worker web` 已重建并启动，`fastapi` 和 `opencode` 健康，`web` 监听 80。
-- `http://127.0.0.1/api/healthz` 返回 `status=ok`。
-- `http://127.0.0.1/` 返回 HTTP 200。
-- opencode 容器内 `s4gap`、`s4fill`、`s7assemble` 命令存在。
-- opencode 容器内 `s4gap` 烟测通过，生成 `bid-tech-gap-plan-v1`，包含 3 个目录项、1 个匹配项、1 个缺口和 1 个 AI 填写任务。
-- opencode 容器内 `s4fill` 烟测通过，生成 `bid-tech-table-fill-v1` JSON 和 Word 填写产物。
-
-遗留问题：
-
-- 当前 `bid-tech-gap-planner` 和 `bid-tech-table-filler` 已形成可运行 Skill 契约和本地 runner；实际模型效果、复杂表格填写准确率和证据页码质量仍需后续结合真实招标样本持续调优。
-- S8 待办 16 仍需后续升级为评分点、证据和正文段落覆盖审计。
-
-### 2026-05-02 12:59 待办 12/15 联合改造计划细化
-
-改动目标：
-
-- 细化待办 12“工作流收敛”和待办 15“S4/S5/S6 真实化”的联合实施口径。
-- 明确 AI 填写也必须通过 OpenCode 调用专门 Skill 完成，而不是前端或后端本地规则直接填写。
-
-改动内容：
-
-- 在 `doc/14-甲方新增需求待办.md` 新增“待办 12/15 联合改造计划”。
-- 明确目标流程：解析决策、模板上传/fallback、目录生成、目录审核、缺口识别与处理、AI 填写、OnlyOffice 预览、完整性校验、标书生成、共创。
-- 明确核心中间产物 `gap_plan.json` / `gapPlan`，作为目录审核后到 S7 拼接前的统一桥梁。
-- 明确新增两个 OpenCode Skill：
-  - `bid-tech-gap-planner`：根据已确认目录、素材库 Wiki、真实素材库、解析结果和补料记录生成匹配/缺口/处理计划。
-  - `bid-tech-table-filler` 或 `bid-appendix-filler`：根据空表/Word、人工指定参考素材和解析字段生成 AI 填写产物。
-- 明确后端、前端、S7 拼接改造范围和完成标准。
-
-验证结果：
-
-- 本次仅更新需求计划文档，未改代码，未运行测试和部署。
-
-遗留问题：
-
-- 后续实现时需先确定 `gapPlan` 的具体 JSON Schema、Skill manifest 字段和 S7 `bid-tech-assembler` 对 `gapPlanPath` 的兼容方式。
-
-### 2026-05-01 21:11 待办 8/13 项目日期与多招标文件结构化解析
-
-改动目标：
-
-- `http://127.0.0.1/parse` 支持多份招标文件一起解析，并输出评分细则、项目基础信息、风机参数、性能指标、环境适应性、专题方案等结构化结果。
-- 结构化解析项保留来源文件、证据文本和证据位置。
-- 项目支持起始日期和截止日期；S1 从招标文件识别日期并回填空字段，用户可在项目信息弹窗人工覆盖。
-
-改动内容：
-
-- 后端 S1 解析新增 `bid-tender-structured-parser` 目标 Skill、`s1parse` opencode 命令、结构化 JSON 产物和本地兜底解析。
-- `parse_result` 增加 `items`、`structured`、`summary.categoryCounts` 和 `summary.projectDates`。
-- 项目状态、列表、详情和驾驶舱增加 `startDate` / `endDate`，保留 `deadline` 作为截止日期兼容字段。
-- 前端解析页从“关键技术参数”升级为结构化解析结果表，展示类别、字段、提取值、来源文件、证据位置和证据文本。
-- 项目创建/完善弹窗增加起始日期和截止日期，确认提交时允许人工覆盖解析结果。
-- 已勾选 `doc/14-甲方新增需求待办.md` 第 8 项和第 13 项。
-
-验证结果：
-
-- 后端 RED 测试已先失败并确认覆盖新增行为。
-- `tests/test_parse_pipeline.py` 通过：8 passed。
-- `.venv/bin/python -m pytest -q` 通过：62 passed，6 skipped。
-- `python3 -m py_compile app/services/parsing.py app/services/store.py app/services/opencode_client.py app/api/routes/projects.py opencode/skill/bid-tender-structured-parser/scripts/run_from_manifest.py` 通过。
-- `npm run lint` 通过。
-- `npm run build` 通过；Vite 仍提示主 chunk 超过 500KB，这是既有构建体积提示。
-- `docker compose build opencode fastapi web` 通过。
-- `docker compose up -d opencode fastapi worker web` 已重建并启动，`fastapi` 健康，`web` 监听 80，`opencode` 健康。
-- `http://127.0.0.1/` 返回 HTTP 200。
-- `/api/healthz` 返回 `status=ok`。
-- opencode 容器内 `s1parse` 命令存在，并已用容器内 manifest 烟测输出结构化 JSON。
-- 已用临时项目调用 `/api/projects/{id}/parse-results/upload-and-run` 上传 Markdown 招标文件，返回 `extractedCount=7`，并正确识别 `startDate=2026-06-01`、`endDate=2026-09-30`；临时项目已删除。
-
-遗留问题：
-
-- S1 结构化解析当前是 Skill 命令 + 本地规则兜底，复杂自然语言和表格型 PDF 的高召回仍依赖后续 OCR/模型增强。
-
-### 2026-05-01 20:03 素材库清洗稿 OnlyOffice 预览
-
-改动目标：
-
-- 素材库页面支持点击已清洗文件，在右侧用 OnlyOffice 只读预览清洗稿。
-- 清洗失败、清洗中、待清洗或未生成清洗后 Word 的素材不开放预览。
-
-改动内容：
-
-- 后端新增 `/api/materials/raw/{file_id}/cleaned/preview`，返回清洗稿 OnlyOffice 会话。
-- 清洗稿预览会话使用浏览器可访问 URL 和 OnlyOffice 容器可访问 URL 分离的现有口径。
-- 清洗稿内容接口增加带文件名的 URL 形式，便于 OnlyOffice 识别文档。
-- 前端素材库页面改为左侧素材库、右侧清洗稿预览的左右结构。
-- 文件列表中已清洗且已生成 Word 的文件名和“预览”按钮可打开右侧预览；其他状态按钮禁用。
-- 新增 OnlyOffice 预览路由回归测试。
-- 已勾选 `doc/14-甲方新增需求待办.md` 第 5 项。
-
-验证结果：
-
-- `.venv/bin/python -m pytest -q` 通过：60 passed，6 skipped。
-- `npm run lint && npm run build` 通过；Vite 仍提示主 chunk 超过 500KB，这是既有构建体积提示。
-- `docker compose build fastapi web` 通过。
-- `docker compose up -d fastapi web` 已重建并启动，`fastapi` 健康，`web` 监听 80。
-- `http://127.0.0.1/` 返回 HTTP 200。
-- `/api/materials/raw/RAW-0094/cleaned/preview` 对真实已清洗素材返回 `status=ready` 和 OnlyOffice 会话。
-- 已用本地 Chrome headless 截图检查素材页左右结构，无明显布局重叠。
-
-遗留问题：
-
-- 清洗稿预览依赖 OnlyOffice Document Server 与 `ONLYOFFICE_BACKEND_BASE_URL` 连通性；若客户内网地址变化，需要按部署说明调整该环境变量。
-
-### 2026-05-01 18:04 模板上传 Fallback 读取
-
-改动目标：
-
-- S1 模板上传界面支持查看和启停系统 fallback 模板来源。
-- 项目未上传模板文件时，S2 目录生成和 S7 正文拼装可以读取 fallback 模板。
-- 按用户指定文件 `/Users/wlb/Agent/bid-project/code/测试文档/投标文件-模板.docx` 入库为 fallback 模板。
-
-改动内容：
-
-- 新增系统 fallback 模板 MinIO 读取与下载逻辑。
-- 项目状态增加 `templateFallback` 开关，新增 `/api/projects/{project_id}/template-fallback` 查询和更新接口。
-- `store.get_parse_inputs()` 默认返回“有效生成输入”，仅在没有项目模板且 fallback 启用时临时追加 fallback 模板；上传/解析接口改为读取原始上传记录，避免把 fallback 混入项目模板列表。
-- 前端 S1 模板上传页增加 fallback 来源、启停状态、MinIO bucket/key 展示。
-- Docker Compose 增加 fallback 模板 bucket/key/name 环境变量。
-- 已上传 fallback 模板到 MinIO：
-  - bucket：`bid-templates`
-  - key：`templates/fallback/technical/投标文件-模板.docx`
-  - size：`190.53 MB`
-
-验证结果：
-
-- `.venv/bin/python -m pytest -q` 通过：58 passed，6 skipped。
-- `npm run build` 通过。
-- 受 Docker Hub metadata 查询影响，标准 `docker compose build fastapi web` 未能完成；已改用本机已有 `sewpg-bid/fastapi:latest`、`sewpg-bid/web:latest` 作为基础镜像做本地增量重建。
-- 已重新部署并 force recreate：
-  - `fastapi`
-  - `worker`
-  - `web`
-- 烟测通过：
-  - `http://127.0.0.1/` 返回 HTTP 200。
-  - `/api/projects/{project_id}/template-fallback` 返回 `enabled=true`、`available=true`。
-  - MinIO fallback 对象存在：`bid-templates/templates/fallback/technical/投标文件-模板.docx`。
-
-遗留问题：
-
-- 当前 fallback 模板来源只有一个系统默认源；后续如需要多套模板，可扩展 source 列表和选择器。
-
-### 2026-04-27 11:19 上传文件夹弹窗滚动优化
-
-改动目标：
-
-- 上传文件夹时，如果选中文件很多，仍然能看到并点击底部“确认上传”按钮。
-
-改动内容：
-
-- 上传弹窗改为固定最大高度：`max-h-[calc(100vh-2rem)]`。
-- 弹窗采用三段式布局：
-  - 顶部标题固定。
-  - 中间表单内容区域内部滚动。
-  - 底部取消/确认上传按钮固定。
-- 已选文件列表增加独立滚动区域，最大高度约为视口 32%。
-
-验证结果：
-
-- `npm run build` 通过。
-- 已重新 build 并 force recreate `web`。
-- `http://127.0.0.1/` 返回 HTTP 200，`web` 容器已使用新镜像启动。
-
-### 2026-04-27 11:12 素材库递归显示与文件夹上传结构保留
-
-改动目标：
-
-- 解决素材库上传/触发清洗后前端文件列表为空的问题。
-- 上传整个文件夹时保留原始文件夹名和内部层级。
-
-改动内容：
-
-- 后端 `raw_files` 查询从“精确目录”改为“当前目录 + 全部子目录”递归查询。
-  - 选中 `通用素材`、`客户素材`、`项目素材` 母目录时，也能看到子目录中的文件。
-  - 选中客户目录或项目目录时，也能看到对应子树文件。
-- 后端 `raw_upload` 优化指定目录落位：
-  - 上传到 `通用素材` 时自动落到 `通用素材/{标类}`。
-  - 上传到 `客户素材/{客户}` 时自动落到 `客户素材/{客户}/{标类}`。
-  - 上传到 `项目素材/{项目ID}` 时自动落到 `项目素材/{项目ID}/{标类}`。
-- 文件夹上传继续使用浏览器的 `webkitRelativePath`，后端按该相对路径创建目录。
-- 原文件夹结构写入文件元数据：
-  - `sourceRelativePath`
-  - `sourceRootFolder`
-- 前端文件列表增加原始相对路径展示，便于确认文件夹上传结构。
-- 前端在选中三母目录并点击“上传到此目录”时，自动切到“按素材层级”落位，避免文件直接散落到母目录根下。
-
-验证结果：
-
-- `py_compile app/services/material_store.py app/models/materials.py app/api/routes/materials.py` 通过。
-- `npm run build` 通过。
-- `.venv/bin/python -m pytest tests/test_toc_skill_scripts.py tests/test_opencode_client.py` 通过，9 个测试全部通过。
-- 已重新 build 并 force recreate：
-  - `fastapi`
-  - `worker`
-  - `web`
-- API 烟测通过：
-  - 临时上传 `FolderSmoke-xxxx/子目录/probe.txt` 到 `通用素材`。
-  - 实际落位为 `通用素材/技术标/FolderSmoke-xxxx/子目录`。
-  - `/api/materials/raw/files?folderPath=通用素材&bidType=技术标` 能递归查到该文件。
-  - 返回中包含 `sourceRelativePath=FolderSmoke-xxxx/子目录/probe.txt`、`sourceRootFolder=FolderSmoke-xxxx`。
-  - 烟测文件和空目录已删除，数据库无残留。
-
-### 2026-04-27 10:58 素材库目录树固定三母目录
-
-改动目标：
-
-- 素材库目录树顶部固定为三个母目录，方便网页侧测试上传和 Wiki 构建：
-  - `通用素材`
-  - `客户素材`
-  - `项目素材`
-
-改动内容：
-
-- 后端 `raw_tree` 增加固定根兜底：
-  - 空库或根目录缺失时自动补齐三个母目录。
-  - API 返回时只按固定顺序输出这三个根。
-  - 根目录 `fileCount` 改为递归统计子树文件数。
-- 前端 `MaterialDB.jsx` 增加固定根合并：
-  - 即使接口返回为空，也会渲染三个母目录。
-  - 按技术标/商务标过滤时，三个母目录仍保留显示，子目录继续按标类过滤。
-
-验证结果：
-
-- `py_compile app/services/material_store.py` 通过。
-- `npm run build` 通过。
-- 已重新 build 并 force recreate：
-  - `fastapi`
-  - `worker`
-  - `web`
-- API 验证 `/api/materials/raw/tree` 顶层固定返回：
-  - `通用素材`
-  - `客户素材`
-  - `项目素材`
-- `docker compose ps` 显示 `fastapi / web / worker` 已使用新容器启动，`fastapi` 健康。
-
-### 2026-04-27 10:36 素材库与 Wiki 库结构清理
-
-改动目标：
-
-- 按当前工作流把素材库收敛为三层：通用素材、客户素材、项目素材。
-- 技术标/商务标在素材库和 Wiki 中继续隔离。
-- 移除旧的“标准模板/客户定制/项目定制/通用材料/质量审计/平台级 Wiki”口径。
-- 删除前期清洗烟测留下的测试素材 `RAW-0012`。
-
-改动内容：
-
-- 前端素材库默认入口改为：
-  - `通用素材/技术标`
-  - `通用素材/商务标`
-- 项目创建归档路径预览改为：
-  - `客户素材/{客户名}/{标类}`
-  - `项目素材/{项目ID}/{标类}`
-- 后端项目材料路径、mock fallback、初始化 SQL 全部改为新素材根。
-- Wiki 生成 prompt、确定性 fallback、opencode repair schema 和测试用例统一为 `质量日志`。
-- 删除旧的通用 Wiki skill：`bid-wiki-bootstrap-json`。
-- 保留底层 legacy alias，仅用于读取历史路径，不再作为新写入口径。
-- 当前 PostgreSQL 数据已迁移：
-  - `标准模板` -> `通用素材`
-  - `客户定制` -> `客户素材`
-  - `项目定制` -> `项目素材`
-  - `客户素材/{客户}/通用材料` -> `客户素材/{客户}/技术标`
-  - 补齐 `客户素材/{客户}/商务标`
-- 删除旧 Wiki 根：
-  - `风资源`
-  - `机组选型`
-  - `平台级Wiki（自动生成）`
-- 重新生成并覆盖：
-  - `技术标Wiki（自动生成）`
-  - `商务标Wiki（自动生成）`
-
-验证结果：
-
-- 已备份清理前数据到 `/tmp/bid_material_wiki_cleanup_20260427_103117.sql`。
-- `py_compile` 通过：
-  - `material_store.py`
-  - `wiki_generation.py`
-  - `opencode_client.py`
-  - `peripheral.py`
-  - `store.py`
-  - `projects.py`
-- `.venv/bin/python -m pytest tests/test_wiki_generation.py tests/test_opencode_client.py tests/test_toc_skill_scripts.py` 通过，13 个测试全部通过。
-- `npm run build` 通过。
-- 已重新 build 并 force recreate：
-  - `opencode`
-  - `fastapi`
-  - `worker`
-  - `web`
-- API 验证：
-  - `/api/materials/raw/tree` 只返回 `通用素材 / 客户素材 / 项目素材` 三个根。
-  - `/api/materials/wiki?bidType=技术标` 只返回 `技术标Wiki（自动生成）`。
-  - `/api/materials/wiki?bidType=商务标` 只返回 `商务标Wiki（自动生成）`。
-  - Wiki 子节点已改为 `07-技术标质量日志` 和 `07-商务标质量日志`。
-  - `opencode` 容器内 skill 只保留两个 Wiki builder：`bid-tech-wiki-material-builder`、`bid-business-wiki-material-builder`。
-
-遗留问题：
-
-- 历史内置技术标素材已标记为 `pending`，表示还没有可下载的清洗后 Word；后续需要用真实源文件重新上传或批量补源后再触发清洗。
-- 商务标当前没有真实素材，所以商务标 Wiki 是待补料框架。
-
-### 2026-04-27 10:17 技术标素材库清洗与 Wiki 创建入口收敛
-
-改动目标：
-
-- 技术标/商务标素材库上传时让用户选择素材层级：通用素材、客户素材、项目素材。
-- 上传后自动触发 `format-cleaner-v4`，把 PDF/Excel/Word 统一清洗为 Word。
-- 源文件继续保留在 MinIO `raw/...`，清洗后的正式 Word 存入 MinIO `cleaned/...`。
-- 前端状态收敛为少量可用状态，重点展示“已清洗 / 清洗失败”。
-- 创建 Wiki 从三个模式按钮收敛为两个入口：生成/更新 Wiki、重建 Wiki。
-
-改动内容：
-
-- 安装 `format-cleaner-v4` 到 `opencode/skill/format-cleaner-v4/`，并补充 Docker 依赖：
-  - `PyMuPDF`
-  - `pandas`
-  - `openpyxl`
-  - `lxml`
-- `format-cleaner-v4` driver 增加 `FORMAT_CLEANER_ALLOW_SYSTEM_PY=1`，允许 Docker/worker 使用系统 Python 运行。
-- 新增 `app/services/material_cleaning.py`：
-  - 从 PostgreSQL 读取 `raw_files`。
-  - 从 MinIO 下载源文件。
-  - 调用 `format-cleaner-v4/scripts/driver.py`。
-  - 上传清洗后的 Word 到 MinIO `cleaned/RAW-xxxx/...docx`。
-  - 把 `cleanStatus / cleanMessage / cleanedMinioKey / cleanedFileName / cleanedSize` 写回 `raw_files.ext_fields`。
-- Redis worker 新增 `material_cleaning` 任务类型。
-- `raw_upload` 上传成功后自动入队清洗任务。
-- 新增 API：
-  - `POST /api/materials/raw/{file_id}/clean`
-  - `GET /api/materials/raw/{file_id}/cleaned/download`
-  - `GET /api/materials/raw/{file_id}/cleaned/content`
-- 前端 `MaterialDB.jsx`：
-  - 上传弹窗增加素材层级选择。
-  - 文件列表增加层级和清洗状态列。
-  - 支持下载源文件、下载清洗后 Word、清洗失败后重试。
-  - 状态筛选收敛为全部、已清洗、清洗失败。
-  - Wiki 操作收敛为“生成/更新 Wiki”和“重建 Wiki”两个按钮。
-- 更新上传白名单：`.pdf,.doc,.docx,.md,.xls,.xlsx,.xlsm`。
-
-验证结果：
-
-- `npm run build` 通过。
-- `py_compile` 通过：
-  - `material_store.py`
-  - `material_cleaning.py`
-  - `materials.py`
-  - `job_queue.py`
-  - `redis_worker.py`
-  - `models/materials.py`
-  - `format-cleaner-v4/scripts/driver.py`
-- `.venv/bin/python -m pytest tests/test_wiki_generation.py tests/test_opencode_client.py` 通过，10 个测试全部通过。
-- 已重新部署并 force recreate：
-  - `opencode`
-  - `fastapi`
-  - `worker`
-  - `web`
-- 运行时核对：
-  - `opencode` 容器内存在 `format-cleaner-v4`，且 `fitz/pandas/openpyxl/lxml/docx` 依赖可导入。
-  - `fastapi` 容器内存在 `format-cleaner-v4/scripts/driver.py`，且依赖可导入。
-  - `docker compose ps` 显示 `fastapi / opencode / postgres / redis / minio` 健康。
-- 真实链路烟测通过：
-  - 上传测试文件 `RAW-0012` 到 `标准模板/技术标`。
-  - Redis worker 自动清洗完成。
-  - API 返回 `cleanStatus=cleaned`、`cleanResultStatus=SKIP`、`hasCleanedWord=true`。
-  - 清洗后 Word 已上传至 MinIO `bid-materials/cleaned/RAW-0012/...docx`。
-  - `GET /api/materials/raw/RAW-0012/cleaned/content` 下载成功，HTTP 200，大小 36721 bytes。
-
-遗留问题：
-
-- `tests/test_peripheral_routes.py` 在当前本地测试环境仍存在 asyncpg 连接跨事件循环问题，表现为 `Future attached to a different loop / cannot perform operation: another operation is in progress`。本次改造相关的运行时 API 已用真实 Docker 链路验证通过。
-- 目前 `format-cleaner-v4` 支持 `.pdf/.doc/.docx/.xls/.xlsx/.xlsm`；图片、zip、md 等非 Word 化素材后续需要单独定义 OCR/解包/文本清洗策略。
-
-### 2026-04-27 09:19 S2 目录 skill 三段式优化
-
-改动目标：
-
-- 按“投标模板主骨架 -> 招标文件修订 -> Wiki 小标题/素材补充”的思路优化 `bid-toc-wiki-driven-v2`。
-- 让目录 JSON 不只是标题，而是带模板来源、招标证据和素材引用，供后续 S3 审核、S4 缺口识别和 S7 正文生成继续使用。
-
-改动内容：
-
-- `extract_template.py`
-  - 优先使用 Word TOC 样式作为目录主骨架。
-  - 当 TOC 可用时，不再把正文 Heading 1/2 重复抽成第 7/8/9 章。
-  - 保留模板来源信息：`raw_text / page / style / source_kind`。
-- `extract_tender.py`
-  - 招标关键词抽取增加 `site_evidence / model_evidence / plot_evidence`。
-  - `specials[]` 增加 `confidence` 和 `evidence`，不再只是关键词。
-- `wiki_lookup.py`
-  - 支持把聚合 Wiki 卡片中的 `### 素材名` 拆成具体素材条目。
-  - 从 `attach / skeleton / docx / title` 推断素材挂载章节。
-  - 跳过“投标文件-模板”这类主模板素材，避免把主模板又加回目录子项。
-- `build_plan.py`
-  - 模板 H1/H2 始终作为主骨架。
-  - Wiki 同名素材挂到模板 H2 的 `material_refs`，不重复生成标题。
-  - Wiki 中模板未覆盖的小标题作为子目录补充。
-  - 招标 specials 可插入多个新增条目，不再每章只插入一个。
-  - 每个条目尽量补充 `source_refs / material_refs`。
-- `outline_generation.py`
-  - V2 JSON 转前端审核树时透传 `sourceRefs / materialRefs`。
-- `bid-toc-wiki-driven-v2/SKILL.md`
-  - 更新输出契约，明确 `source_refs / material_refs` 和三段式生成原则。
-
-验证结果：
-
-- `.venv/bin/python -m py_compile ...` 通过。
-- `.venv/bin/python -m pytest tests/test_opencode_client.py tests/test_directory_generation.py tests/test_wiki_generation.py tests/test_toc_skill_scripts.py` 通过，22 个测试全部通过。
-- 使用 `PRJ-0022` 真实输入本地 manifest 烟测通过，输出 62 条目录项：
-  - 保留 27
-  - 适配 30
-  - 新增-招标要求 4
-  - 新增-素材库建议 1
-- 已重新部署 `opencode / fastapi / worker / web`。
-- 已用新版 skill 重新生成并写回 `PRJ-0022`：
-  - 一级章从 13 个收敛为 6 个。
-  - 总节点从 115 个收敛为 62 个。
-  - API 验证 `/api/projects/PRJ-0022/outline` 返回 `roots=6 / total=62`。
-  - 节点已包含 `materialRefs`，例如 `技术评分标准索引表` 指向 `RAW-0004`。
-
-遗留问题：
-
-- 招标 specials 的证据已经进入 JSON，但仍可能包含“提到但不是明确要求”的上下文；后续需要继续做否定语义和“强要求/弱出现”的区分。
-- Wiki 的 `attach` 和 `skeleton` 元数据质量会直接影响小标题挂载准确性，后续仍需把 Wiki 卡片维护得更规范。
-
-### 2026-04-27 08:49 S3 目录审核卡顿修复
-
-问题现象：
-
-- 进入目录审核界面后页面明显卡顿，滚动和交互都很慢。
-
-根因：
-
-- `PRJ-0022` 的 S2 目录结果被抽成 659 个节点，其中一级节点 385 个。
-- 大量正文句子、日期、测风塔数据、页码等被 `extract_template.py` 的兜底逻辑误判成目录标题。
-- S3 目录审核前端会递归渲染每个节点为可编辑输入框，且默认全部展开；几百个受控输入框一起渲染，导致页面滚动卡顿。
-
-修复：
-
-- 收紧 `extract_template.py` 的模板目录兜底识别：
-  - 限制标题长度。
-  - 排除日期、正文长句、带明显正文标点的段落、`#` 开头的数据行。
-  - 普通编号标题必须有明确分隔符。
-  - 限制异常的大编号一级章节。
-  - H2 必须匹配当前 H1 编号。
-  - 清理目录行尾页码。
-- 优化 `OutlineReview.jsx`：
-  - 增加节点计数。
-  - 当目录节点超过 180 个时默认折叠所有可展开节点，避免一次性展开大树拖慢页面。
-
-验证结果：
-
-- `extract_template.py` 手工夹具验证通过，日期、正文句子和测风塔数据不再被识别为标题。
-- `.venv/bin/python -m py_compile opencode/skill/bid-toc-wiki-driven-v2/scripts/extract_template.py opencode/skill/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py` 通过。
-- `npm run build` 通过。
-- `.venv/bin/python -m pytest tests/test_opencode_client.py tests/test_directory_generation.py tests/test_wiki_generation.py` 通过，19 个测试全部通过。
-- `docker compose up -d --build opencode web` 已重新部署，`fastapi / opencode / web` 均为 healthy/up。
-- 已重新生成并写回 `PRJ-0022` 目录状态：由 659 个节点降为 115 个节点，一级节点由 385 个降为 13 个。
-
-遗留问题：
-
-- 当前目录不再是灾难性膨胀，但仍能看到部分模板章节重复，例如第七章到第九章重复出现技术章节名；后续还需要继续优化模板目录去重和章节边界识别。
-
-### 2026-04-27 08:40 S2 流式输出卡住排查与修复
-
-问题现象：
-
-- 本地测试 `PRJ-0022` 时，S2 目录生成页面停在流式输出阶段。
-- 前端 SSE 连接存在，但后续没有新内容。
-
-根因：
-
-- `bid-toc-wiki-driven-v2` 已经成功生成完整目录 JSON；当前路径口径已收口到 `/data/documents/{project_id}/technical-workspace/s2_toc_workdir/投标文件-总目录.json`。
-- 本次完整 JSON 有 659 条目录项，约 158KB。
-- OpenCode 在 Bash 命令完成后尝试把完整 JSON 再读回模型上下文，读到 50KB 截断后继续调用 `Glob` 检查输出文件。
-- 这个 `Glob` 工具调用长期处于 running，导致 worker 一直等待 OpenCode 最终响应，页面流式输出不再更新。
-
-修复：
-
-- `run_from_manifest.py` 新增 `--response summary`。
-- OpenCode 现在只返回小型摘要 JSON：`schema_version / document_title / outputFile / summary / itemCount`。
-- 后端 `outline_generation.py` 收到 `outputFile` 后，直接从共享卷读取完整 `投标文件-总目录.json`，再转换为 S3 所需的 `nodes[]`。
-- OpenCode prompt 明确禁止再用 `Read/Glob` 打开完整大 JSON。
-- `opencode_client.py` 接受 `outputFile` 型 S2 摘要响应。
-
-验证结果：
-
-- `.venv/bin/python -m pytest tests/test_opencode_client.py tests/test_directory_generation.py tests/test_wiki_generation.py` 通过，19 个测试全部通过。
-- `run_from_manifest.py --response summary` 本地烟测通过。
-- `docker compose up -d --build opencode fastapi worker` 已重新部署。
-- 容器内确认 `bid-toc-wiki-driven-v2` 已使用 `--response summary`，脚本 py_compile 通过。
-- 当前 `PRJ-0022` 已用已生成的 V2 JSON 收口为 completed：共 659 条目录项，输出为 385 个一级节点。
-- Redis `directory_generation:PRJ-0022` 锁不存在。
-
-### 2026-04-27 08:23 S2 目录 skill 替换与 API/wiki 适配
-
-改动目标：
-
-- 删除旧目录生成 skill，替换为 `bid-toc-wiki-driven-v2`。
-- 新 skill 不再只吃 prompt 文本，而是通过后端准备的 manifest 读取招标文件、投标正文模板、可选附表模板。
-- 新 skill 在缺少文件系统 wiki 时，通过后端 API 读取数据库中的对应标类 Wiki 并导出为 `wiki/卡片`。
-- 放开 OpenCode Bash 权限，让 skill 可以运行 Python 脚本。
-
-改动文件：
-
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/`
-- `code/sewpg-bid-backend/opencode/skill/bid-outline-json/`（已删除）
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/`（已删除）
-- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/`（旧共享 Wiki skill，已删除）
-- `code/sewpg-bid-backend/opencode/.opencode/skills/bid-outline-json/`（已删除）
-- `code/sewpg-bid-backend/app/services/outline_generation.py`
-- `code/sewpg-bid-backend/app/services/opencode_client.py`
-- `code/sewpg-bid-backend/app/core/config.py`
-- `code/sewpg-bid-backend/opencode/opencode.json`
-- `code/sewpg-bid-backend/opencode/docker-entrypoint.sh`
-- `code/docker-compose.yml`
-- `code/sewpg-bid-backend/tests/test_directory_generation.py`
-- `code/sewpg-bid-backend/tests/test_opencode_client.py`
-
-实现说明：
-
-- S2 后端会创建 `s2_toc_workdir/s2_input.json`，其中包含项目 ID、标类、工作目录、后端 API 地址、招标文件路径、投标正文模板路径、附表模板路径、wiki 目录和输出 JSON 路径。
-- OpenCode prompt 改为调用 `bid-toc-wiki-driven-v2`，并明确执行：
-  `python3 /workspace/.opencode/skills/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py --manifest <s2_input.json>`。
-- 新增 `export_wiki_from_api.py`：通过 `GET /api/materials/wiki?bidType=技术标/商务标` 拉取数据库 Wiki，导出为 V2 可读的文件系统卡片。
-- 新增 `run_from_manifest.py`：串起 `extract_template / extract_tender / extract_attach / build_plan`，最终把完整 V2 JSON 打印给 OpenCode。
-- `opencode` 容器增加 `/data/uploads:ro` 和 `/data/parsed` volume，使 skill 能读取上传文件并写回输出 JSON。
-- `outline_generation.py` 增加 V2 `items[] -> nodes[]` 适配层，S3 前端仍可使用原来的目录树，同时在 `opencodeOutput` 保留 skill 名、manifest 路径和 V2 JSON 路径。
-- `extract_template.py` 增加普通编号段落兜底识别，避免模板没有 Word Heading 样式时抽空。
-- 旧共享 Wiki skill 已下线，Wiki 生成只保留 `bid-tech-wiki-material-builder` 和 `bid-business-wiki-material-builder` 两个分标类入口。
-
-验证结果：
-
-- `python -m py_compile` 通过。
-- `.venv/bin/python -m pytest tests/test_opencode_client.py tests/test_directory_generation.py tests/test_wiki_generation.py` 通过，17 个测试全部通过。
-- 使用临时 docx + 临时 wiki 跑 `run_from_manifest.py` 通过，输出 `bid-toc-json-v1`，并生成 4 条目录项。
-- `docker compose config` 通过。
-- `docker compose up -d --build opencode fastapi worker` 已完成部署，`opencode / fastapi / worker` 均已重建并启动。
-- 运行时核对通过：`opencode` 容器内 `bash=allow`，存在 `bid-toc-wiki-driven-v2`，不存在旧 `bid-outline-json` 和旧共享 `bid-wiki-material-builder`。
-- 运行时 API 导出通过：`opencode` 容器调用 `http://fastapi:8000/api/materials/wiki?bidType=技术标` 成功导出 7 张 wiki 卡片。
-
-遗留问题：
-
-- 真实业务效果取决于数据库 Wiki 卡片中的 `skeleton_section` 质量；当前导出脚本会从 Markdown Merge 信息和标题兜底推断，但后续仍应把 Wiki 卡片元数据维护得更规范。
-
-### 2026-04-27 S2 新目录 skill 替换前理解
-
-改动目标：
-
-- 理解当前 S2 目录生成链路。
-- 理解 `/Users/wlb/Downloads/skills/bid-toc-wiki-driven-v2.zip` 的输入输出契约，为后续替换做准备。
-
-当前链路结论：
-
-- 当前 S2 已调用 OpenCode，但使用的是轻量 `bid-outline-json` skill。
-- 当前 S2 输入来自 S1：
-  - `parse_storage.combinedTextPath`：招标文件解析后的合并文本。
-  - `templateFileRecords`：S1 上传的投标模板文件记录。
-- 当前后端只从招标文本和模板 docx 中提取少量章节线索，再把线索放进 prompt，不把原始 docx 工作目录交给 skill。
-- 当前 S2 没有读取素材 Wiki。
-
-新 skill 结论：
-
-- `bid-toc-wiki-driven-v2` 是文件工作目录型 skill。
-- 它要求工作目录里能识别：
-  - `*招标*.docx`
-  - `*投标*正文*.docx`
-  - 可选 `*投标*附表*.docx`
-  - 文件系统版 `wiki/卡片` 与规则文件
-- 它输出的是总目录 JSON，结构为 `schema_version / document_title / project / source_files / summary / items`，不是当前前端直接使用的 `summary / nodes`。
-
-替换前需要做的适配：
-
-- 安装新 skill 到 `opencode/skill/bid-toc-wiki-driven-v2/`。
-- S2 后端准备项目级临时工作目录，把招标 docx、投标正文模板、可选附表模板、技术标或商务标 wiki 放进去。
-- OpenCode prompt 改为调用 `bid-toc-wiki-driven-v2`。
-- 增加 JSON 适配层：把新 skill 的 `items[]` 转成 S3 前端需要的 `nodes[]`，同时保留完整目录 JSON 作为审计/后续正文生成输入。
-- 当前 OpenCode 配置里 `bash` 是 `deny`；新 skill 依赖 Bash 调 python 脚本，替换时需要调整权限或改成后端直接执行脚本。
-
-验证结果：
-
-- 已解压新 skill 到临时目录。
-- `python -m py_compile scripts/*.py` 通过。
-
-### 2026-04-27 工作区入口收敛
-
-改动目标：
-
-- 将原方案文档改名为 `progress.md`，作为持续进度记录文件。
-- 创建进度记录 hook，后续提交后自动写入本文件。
-- 技术标/商务标工作区顶部标签只保留 `项目 / 素材库 / 日志`。
-- 移除顶部的 `流程` 和 `Wiki` 标签。
-
-改动说明：
-
-- `项目` 是工作区的自然入口，点击项目后进入 S1-S10 流程，因此不再单独暴露 `流程` 标签。
-- `素材库` 是人可见入口，Wiki 仍保留在素材库内部展示；Wiki 本质上主要给 AI/Skill 读取，不作为工作区顶部独立入口。
-- `/workspace/:workspace/flow` 保留兼容，但会跳回对应工作区的项目页。
-- `/workspace/:workspace/materials/wiki` 仍保留兼容，素材库内部切换到 Wiki 时继续可用。
-- 原 `code/progress.md` 的联调历史已合并到本文末尾，避免改名时丢失旧记录。
-
-涉及文件：
-
-- `code/progress.md`
-- `code/hooks/record-progress.sh`
-- `.git/hooks/post-commit`
-- `code/sewpg-bid-frontend/src/components/layout/AppShell.jsx`
-- `code/sewpg-bid-frontend/src/App.jsx`
-
-验证结果：
-
-- `npm run build` 通过。
-- `sh -n code/hooks/record-progress.sh && sh -n .git/hooks/post-commit` 通过。
-- `docker compose up -d --build web` 已完成，web 容器已重建并启动。
-- 代码检查确认工作区顶部标签只剩 `项目 / 素材库 / 日志`；素材库内部仍保留 Wiki 切换。
-
-## 标书工作区隔离改造方案
-
-## 目标
-
-系统入口调整为：
+技术标和商务标正在拆成两条独立生产线：
 
 ```text
-解析（共用）
-  -> 解析通过后创建投标项目
-    -> 技术标工作区
-    -> 商务标工作区
+技术标入口 -> 技术标页面 -> 技术标 API -> 技术标 service -> 技术标 Skill -> 技术标素材/Wiki -> 技术标文档/导出
 
-设置（共用）
+商务标入口 -> 商务标页面 -> 商务标 API -> 商务标 service -> 商务标 Skill -> 商务标素材/Wiki -> 商务标文档/导出
 ```
 
-除 `解析` 和 `设置` 外，项目、S1-S10 流程、素材库、Wiki、日志都按标类隔离。
+权威计划看：
 
-对人可见的工作区顶部入口收敛为：
+- `/Users/wlb/Agent/bid-project/doc/31-技术标与商务标双轨独立化实施计划.md`
+- `/Users/wlb/Agent/bid-project/doc/README.md`
 
-```text
-项目 / 素材库 / 日志
+## 已完成到哪里
+
+- 前端旧根入口和 workspace 内部旧别名已清理，当前从 `/parse/technical`、`/parse/business`、`/workspace/tech/...`、`/workspace/business/...` 进入。
+- 商务标和技术标页面已按 workspace 拆分，阶段进度组件也已拆成 business/technical 两套。
+- 后端旧通用 route 文件已移除，当前业务入口挂在 business/technical 两组 route 上。
+- 项目、解析、目录、生成、文档、OCR、素材库、Wiki、审计、技术标缺口和商务标缺口都已有第一层 business/technical service 边界。
+- 旧通用 store、material_store 仍是底层持久化底座，但对外不再作为业务入口直接暴露。
+- 素材分类、默认目录、保护目录、清洗状态和技术标旧路径规范化规则已下沉到 `material_taxonomy.py`，`material_store.py` 继续作为持久化底座引用这些规则。
+- 技术标投标机型候选已下沉到 `technical_turbine_material_options.py`，不再作为通用 `material_store` 能力暴露；商务标素材不会进入技术标机型候选。
+- 技术标素材查询的投标机型过滤已迁到 `technical_material_store.raw_files`，`material_store.raw_files` 不再接收或处理 `turbine_model`，商务标素材查询不会继承技术标机型筛选逻辑。
+- 素材上传元数据规则已下沉到 `material_upload_metadata.py`，上传时的标类、素材层级、客户/项目身份、商务固定/其他、清洗状态和技术机型提示不再直接写在 `material_store.raw_upload` 大块流程里。
+- Wiki 根节点标类和 scoped 可见性规则已下沉到 `material_wiki_scope.py`，`material_store.wiki_list` 不再内联技术标/商务标根节点判断。
+- Wiki 新建节点默认标类规则已下沉到 `material_wiki_scope.py`，新建根节点的技术标/商务标/通用适用范围不再直接写在 `material_store.wiki_create` 里。
+- raw 目录规划规则已下沉到 `material_folder_scope.py`，技术/商务根目录、默认三类目录、项目素材根路径、目录层级推断和旧技术目录规范化元数据不再直接写在 `material_store.py` 里。
+- RawFolder 素材层级推断包装已下沉到 `material_folder_scope.py`，`material_store.py` 不再保留 `_infer_material_tier_from_folder` 静态工具。
+- raw 权限展示规则已下沉到 `material_folder_scope.py`，技术标/商务标素材根权限和可编辑动作不再直接写在 `material_store.py` 里；未被 business/technical API 使用的旧 `material_store.raw_permissions` 公开门面已删除。
+- 商务标目录骨架规则已下沉到 `material_folder_scope.py`，商务标通用素材固定子目录、客户/项目素材自动子目录和商务定制目录层级判断不再直接写在 `material_store.py` 里。
+- 素材身份选项规则已下沉到 `material_identity_options.py`，客户/项目身份归并、项目表 payload 解析和按标类过滤不再直接写在 `material_store.identity_options` 里。
+- 素材身份选项读取执行层已下沉到 `material_identity_options_operations.py`，`raw_folders` / `raw_files` / `projects` 读取和项目表容错查询不再直接定义在 `material_store.py` 里。
+- raw 文件筛选规则已下沉到 `material_raw_file_filter.py`，项目/客户/标类/素材层级/清洗状态过滤和分页不再直接写在 `material_store.raw_files` 里。
+- raw 文件列表查询执行层已下沉到 `material_raw_file_operations.py`，目录递归查询、关键字查询、更新时间排序和筛选 payload 调用不再直接定义在 `material_store.py` 里。
+- raw 文件对象执行层已下沉到 `material_raw_object_operations.py`，清洗稿对象清理、清洗任务入队、文件版本归档和原文件/历史版本对象删除不再直接定义在 `material_store.py` 里。
+- raw 对象 key 拼接已下沉到 `material_raw_object_operations.py`，`material_store.py` 不再保留 `_raw_object_key` 静态工具。
+- raw 文件访问执行层已下沉到 `material_raw_access_operations.py`，原素材下载地址、原素材内容读取、清洗稿 OnlyOffice 预览和清洗稿内容读取不再直接定义在 `material_store.py` 里。
+- raw 文件生命周期执行层已下沉到 `material_raw_lifecycle_operations.py`，文件夹创建、文件夹删除和单文件删除不再直接定义在 `material_store.py` 里。
+- 未被 business/technical facade 使用的旧通用 raw 清洗重试和清洗稿下载地址门面已删除，`material_store.raw_retry_clean_file` / `raw_download_cleaned_file` 及其对应未使用 operation 不再保留；正式入口只保留双轨清洗稿预览和清洗稿内容下载。
+- raw 文件更新执行层已下沉到 `material_raw_update_operations.py`，重命名校验、同名冲突检查、MinIO key 迁移和更新后返回 payload 不再直接定义在 `material_store.py` 里。
+- raw 单文件读写入口继续收口，`material_store.raw_update_file` / `raw_delete_file` / `raw_download_file` / `raw_download_content` / `raw_cleaned_preview` / `raw_download_cleaned_content` / `raw_move_file` 均要求显式传入标类，底层 operation 会校验文件或目标目录属于当前标类或通用素材，避免绕过 business/technical facade 操作对方素材。
+- raw 上传目标目录推断已下沉到 `material_upload_target.py`，自动目录、层级根目录、scoped 路径和旧目录别名兼容判断不再直接写在 `material_store.raw_upload` 里。
+- raw 上传动作元数据已下沉到 `material_upload_metadata.py`，新上传、覆盖和版本上传的 lastAction/lastOperator 写回规则不再直接写在 `material_store.raw_upload` 里。
+- raw 上传执行层已下沉到 `material_upload_operations.py`，上传目标落实、白名单校验、相对路径展开、MinIO 写入、同名覆盖/版本处理、旧清洗稿清理和清洗任务入队不再直接定义在 `material_store.py` 里。
+- 素材底座 raw 上传/目录骨架入口不再默认技术标，`material_store.raw_upload` / `raw_bootstrap_folders` 及其底层 operation 要求调用方显式传入标类；商务/技术素材 facade 继续分别固定传入商务标/技术标。
+- 素材 helper 层隐式标类入口继续收口，身份选项、raw 文件过滤、raw 文件列表查询、Wiki 节点默认适用标类、Wiki 树/列表读取和 raw 移动元数据 helper 不再提供 `bid_type=""` / `destination_bid_type=""` 默认参数；调用方必须显式传入本次操作所属标类。
+- 生成填充文案、素材身份选项、技术标装配 manifest、技术标缺口规划/review/legacy 状态中的技术标兜底已统一引用 `bid_type.py` 常量，不再各自写第二份 `"技术标"` 字符串。
+- raw 移动元数据规则已下沉到 `material_move_metadata.py`，单文件移动/文件夹移动时的素材层级、标类、客户/项目身份、sourceMinioKey 和 lastAction 更新不再直接写在 `material_store.py` 里。
+- raw 移动执行层已下沉到 `material_move_operations.py`，单文件移动、冲突覆盖/版本处理、目录整树移动、MinIO key 迁移和移动后元数据写回不再直接定义在 `material_store.py` 里。
+- raw 文件夹移动保护规则已下沉到 `material_folder_scope.py`，基础根目录移动保护和禁止移动到自身/子目录的判断由移动执行层调用，不再直接写在 `material_store.raw_move_folder` 里。
+- 素材目录维护执行层已下沉到 `material_folder_maintenance.py`，项目目录骨架初始化、上传目标目录创建、新建目录后的商务定制子目录补齐判断、商务标通用/定制子目录自动补齐、既有商务目录回填和技术标旧目录迁移不再直接定义在 `material_store.py` 里。
+- raw 目录持久化执行层已下沉到 `material_raw_folder_operations.py`，根目录初始化、默认目录删除记录、规范目录补齐、路径建目录和嵌套目录创建不再直接定义在 `material_store.py` 里。
+- 素材运行表初始化已下沉到 `material_runtime_tables.py`，raw/Wiki/template/auth/settings/audit/OCR 运行表 DDL 和 `ensure_material_runtime_tables` 公开 helper 不再直接写在 `material_store.py` 里；template/settings/audit/auth/OCR/商务缺口规划服务也不再为了建表 import 素材 store。
+- raw 更新元数据规则已下沉到 `material_update_metadata.py`，重命名和商务素材 fixed/other 分类更新时的 sourceMinioKey、sourceFileName、businessMaterialKind、businessMaterialKindLabel 和 lastAction 不再直接写在更新执行流程里。
+- raw 树展示规则已下沉到 `material_raw_tree.py`，目录树 directFileCount/fileCount 统计和根节点结构不再直接写在 `material_store.raw_tree` 里。
+- raw 树读取执行层已下沉到 `material_raw_tree_operations.py`，根目录初始化、目录读取、文件读取和树 payload 调用不再直接定义在 `material_store.py` 里。
+- raw 树与目录操作返回树不再先取全量树再由 facade 兜底过滤，`material_store.raw_tree` / `raw_create_folder` / `raw_delete_folder` / `raw_move_folder` 要求显式传入标类，目录创建、删除、移动后的返回树也按本工作区标类生成。
+- raw 目录创建/删除/移动继续收口到底层 operation，父级目录、待删除目录、移动源目录和目标父目录都会按显式标类校验，不能绕过 business/technical facade 操作对方素材目录。
+- 未被 business/technical API 使用的旧通用 `material_store.structured_*` 门面、`material_structured_operations.py` 执行层和旧 in-memory `PeripheralStore.structured_*` mock 门面已删除；结构化解析数据继续由 S1 解析结果、商务解析资产和缺口模块承接，不再作为旧通用素材库入口暴露。
+- Wiki 树展示规则已下沉到 `material_wiki_tree.py`，根节点标类过滤、树节点结构、可见节点集合和默认选中顺序不再直接写在 `material_store.wiki_list` 里。
+- Wiki 列表读取执行层已下沉到 `material_wiki_list_operations.py`，Wiki 节点读取、选中文档查询、附件列表拼装和 Wiki 选项返回不再直接定义在 `material_store.py` 里。
+- Wiki 节点执行层已下沉到 `material_wiki_node_operations.py`，节点创建、更新、删除、摘要刷新和移动不再直接定义在 `material_store.py` 里。
+- Wiki 附件执行层已下沉到 `material_wiki_attachment_operations.py`，附件 key 生成、附件展示 payload、上传、下载、删除和对象存储清理不再直接定义在 `material_store.py` 里。
+- Wiki 附件读写入口继续收口，附件上传、内容下载和删除 operation 均校验节点或附件属于当前标类或通用 Wiki；`material_store.wiki_download_attachment_content` 不再提供无标类公共入口。
+- Wiki 导入规则已下沉到 `material_wiki_import.py`，导入 mode、根节点 spec、节点默认标题/正文/标签/适用标类和导入结果文案不再直接写在 `material_store.import_generated_wiki_blueprint` 里。
+- Wiki 导入执行层已下沉到 `material_wiki_import_operations.py`，自动生成 Wiki 的根节点替换、重复根清理、孤儿平台节点清理、自动子节点刷新、节点 create/upsert 和附件对象清理不再直接定义在 `material_store.py` 里。
+- Wiki 自动导入入口继续收口，`material_store.import_generated_wiki_blueprint` 要求显式传入标类，底层会校验生成根节点适用标类与当前工作区一致，并按该标类返回 scoped Wiki 列表。
+- 技术标缺口 review 规则已下沉到 `technical_gap_review.py`，`store.py` 中残留的 detection payload、缺口列表映射、review payload、review 文档内容和产物 URL 刷新旧私有方法已删除，不再保留第二份技术标缺口规则。
+- 技术标 review 文档状态规则继续下沉到 `technical_gap_review.py`，旧 `store.get_review_items` / `store.prepare_review_document` / `store.confirm_review` 等公开兼容入口已删除，`tech_assembly.py` 直接读取技术标 repository/state/review 模块。
+- 技术标覆盖率规则已下沉到 `technical_coverage.py`，`technical_delivery_service.py` 不再 import 通用 `store` 或调用 `store.get_coverage`，旧 `store.get_coverage` 兼容方法已删除，导出完成阶段也通过技术标 project service 更新。
+- 文档保存状态规则已下沉到 `bid_document_state.py`，正文保存、强制保存和最终文档 payload 不再直接写在 `store.py` 里。
+- 商务标/技术标文档格式状态写回规则已拆到 `business_document_state.py` / `technical_document_state.py`，并由 `bid_document_state.py` 提供统一薄门面；`store.py` 不再直接写 `businessFormatPreset` / `technicalFormatPreset` 等双轨专属字段，也不再直接 import 商务/技术格式状态模块或自行取格式写回时间戳。
+- 旧通用 `store.py` 文档状态公开门面已删除，`get_document_state` / `save_document_content` / `force_save_document` / `get_final_document` / `apply_business_document_format` / `apply_technical_document_format` 不再作为绕过双轨文档 flow 的兼容入口存在；测试需要构造文档状态时直接调用 `bid_document_state.py` 状态函数并显式持久化。
+- 商务标/技术标文档 service 的格式写回和强制保存状态更新已改为通过 `workspace_project_access.py` 取可写项目，再调用 `bid_document_state.py` 纯状态函数并显式持久化；`business_document_service.py` / `technical_document_service.py` 不再直接 import 通用 `store`。
+- 文档 flow 中性底座的文档 payload、正文保存、强制保存、OnlyOffice callback、最终文档和 PDF 文件读取已改为通过双轨项目 service / `workspace_project_access.py` 访问项目运行态或可写状态；`bid_document_flow.py` 不再直接 import 通用 `store`。
+- 后端项目阶段规则已下沉到 `project_stage_flow.py`，商务标四步压缩阶段、技术标六步阶段、技术标确认目录后跳过 S3 和旧阶段号映射不再直接写在 `store.py` 里。
+- 项目生命周期和展示状态规则已下沉到 `bid_project_state.py`，新建项目初始状态、参与/放弃投标后的解析产物迁移、项目素材目录删除、review decision、项目列表/详情 payload、模板 fallback 和阶段更新返回值不再直接写在 `store.py` 里。
+- 项目 JSONB 持久化 SQL 已下沉到 `bid_project_repository.py`，`store.py` 不再直接 import `psycopg` / `Jsonb`，也不再直接写 projects 表建表、查询、插入或删除 SQL。
+- 业务 service 对项目可写状态的访问已改为公开门面，`app/services` 不再直接调用 `store._require` / `store._persist_project` 私有方法；gap repository、OCR 候选确认和商务标装配 S3 plan 恢复写回都通过 `workspace_project_access` 的可写状态与持久化门面，`ocr_service.py` 不再直接 import 通用 `store`，`business_assembly.py` 不再直接调用 `store.persist_project_state`。
+- 项目 service 的项目列表、创建、详情、更新、删除、模板 fallback、解析进度和阶段更新已收口到 `workspace_project_access.py` 公开门面；`bid_project_service.py` 不再直接 import 通用 `store`。
+- 旧通用 `store.py` 模板 fallback 读写门面已删除，`template_fallback_context` / `update_template_fallback` 不再作为绕过双轨项目 service 的兼容入口存在；fallback 上下文读取和开关写回由 `workspace_project_access.py` 取项目后调用 `bid_project_state.py` 状态函数并显式持久化。
+- 看板项目列表已改为通过 `business_project_service` / `technical_project_service` 获取，不再直接调用 `store.list_projects` 或自行持有标类常量。
+- 双轨项目类型 guard 已收口到 `workspace_project_access.py`，商务/技术项目 service、解析 service、目录生成、生成调度、gap repository 只保留领域命名门面，技术标草稿生成、技术标正文装配、技术标格式切换、商务标正文/格式入口、商务受控润色、商务缺口规划和商务解析资产同步不再各自直接读取通用项目并重复判断 `bidType`；标类归一规则已收口到 `bid_type.py`，`parse_profiles.py` 与 `identity.py` 不再各自定义 `normalize_bid_type`，审计、解析产物落地、商务文档 service、目录/大纲状态、目录生成、生成调度、gap repository、事实表、workspace 路径、模板 fallback、素材 facade、素材分类、素材目录维护、raw 目录初始化、素材上传/更新元数据、素材上传/Wiki、商务素材切分、技术机型候选和 Wiki 生成也从 `bid_type.py` 取技术标/商务标/通用常量或判断函数，不再通过素材 facade、gap repository、生成链路、解析链路、素材目录链路、素材分类链路或 Wiki 生成素材过滤局部字符串比较间接维护标类口径。
+- 生成填充状态文案已下沉到 `bid_fill_state.py`，商务/技术正文标签、正文拼装 skill 任务标签和默认 `fill_state` 不再直接写在 `store.py` 里。
+- 运行态恢复、默认状态补齐和时间戳工具已下沉到 `bid_runtime_state.py`，解析结果/解析存储、解析进度、目录状态、大纲状态、正文生成状态、文档状态、商务标 S2 目录产物恢复、目录树节点转换、双轨 workspace 路径和 `now_iso` 不再直接写在或经由 `store.py` 对外重导出。
+- S1 解析状态规则已下沉到 `bid_parse_state.py`，解析完成 payload、解析进度事件、原文件类型标签和模板文件写回不再直接写在 `store.py` 里。
+- 旧通用 `store.py` 解析完成门面已删除，`complete_parse` 不再作为绕过双轨解析 service 的兼容入口存在；测试需要构造解析完成态时直接调用 `bid_parse_state.py` 状态函数并显式持久化。
+- 旧通用 `store.py` 解析结果/解析存储读取门面已删除，`get_parse_result` / `get_parse_storage` 不再作为绕过双轨解析 service、商务解析资产 service 或目录生成底层的兼容入口存在；测试需要复用解析结果/存储时直接从项目运行态取深拷贝。
+- 旧通用 `store.py` 解析进度读取门面已删除，`get_parse_progress` 不再作为绕过双轨项目 service 的兼容入口存在；项目解析状态读取由 `workspace_project_access.py` 取可写项目后调用 `bid_parse_state.py` 状态函数并按需显式持久化。
+- 旧通用 `store.py` 解析输入读取门面已删除，`get_parse_inputs` 不再作为绕过双轨解析 service、目录 flow 或目录生成底层的兼容入口存在；测试需要验证模板 fallback 输入时直接读取项目运行态并调用 `bid_project_state.project_parse_input_records`。
+- 旧通用 `store.py` 解析进度写入门面已删除，`start_parse_progress` / `update_parse_progress` 不再作为绕过双轨解析 service 的兼容入口存在；解析进度开始/更新由 `bid_parse_service.py` 通过 `bid_parse_state.py` 状态函数和显式项目持久化完成。
+- 旧通用 `store.py` 解析结果/模板文件写回门面已删除，`update_parse_result` / `update_template_files` 不再作为绕过双轨解析 service 或商务解析资产 service 的兼容入口存在；测试需要构造解析结果或模板文件时直接调用 `bid_parse_state.py` 状态函数并显式持久化。
+- S1 解析 service 的解析结果、解析进度、解析输入文件和模板文件写回已改为通过双轨项目 service / `workspace_project_access.py` 访问项目运行态或可写状态；`bid_parse_service.py` 不再直接 import 通用 `store`。
+- 商务解析资产的解析结果读取、结构化解析存储更新和 parse_result 写回已改为通过商务项目运行态、`update_parse_result_state` 与 `persist_workspace_project_state` 完成；`business_parse_assets.py` 不再直接 import 通用 `store`。
+- 上传大小展示工具已下沉到 `file_utils.py`，解析上传服务不再调用 `store.format_size`，`store.py` 不再挂非持久化展示工具。
+- 素材/模板文件名清洗、大小展示和显示时间工具已统一迁到 `file_utils.py`，`template_store.py`、`system_settings.py`、商务解析资产和商务素材切分不再从 `material_store.py` 导入 `safe_segment` / `size_label`；`material_store.py` 不再挂非持久化展示工具。
+- 目录/大纲状态规则已下沉到 `bid_outline_state.py`，目录生成状态更新、目录证据读取、保存生成大纲、确认大纲和商务标大纲重生成兜底不再直接写在 `store.py` 里。
+- 旧通用 `store.py` 目录/大纲读取门面已删除，`get_directory_state` / `get_outline_state` 不再作为绕过双轨目录 flow 或项目运行态访问层的兼容入口存在；测试需要读取目录状态时直接使用项目运行态和 `directory_state_with_rule_evidence` 保留证据文件回填语义。
+- 旧通用 `store.py` 目录生成运行态写入门面已删除，`start_directory_generation` / `update_directory_generation_state` / `fail_directory_generation` 不再作为绕过双轨目录 flow 的兼容入口存在；测试需要构造目录运行态时直接调用 `bid_outline_state.py` 状态函数并显式持久化。
+- 旧通用 `store.py` 目录/大纲写回门面已删除，`save_generated_outline` / `save_outline` / `regenerate_outline` / `confirm_outline` 不再作为绕过双轨目录 flow 的兼容入口存在；测试需要构造目录和大纲状态时直接调用 `bid_outline_state.py` 状态函数并显式持久化。
+- S2 目录 flow 的目录状态、目录生成进度、招标文件预览、人工大纲保存、重生成和确认写回已改为通过双轨项目 service / `workspace_project_access.py` 访问项目运行态或可写状态；`bid_directory_flow.py` 不再直接 import 通用 `store`。
+- S2 目录生成底层的解析输入读取和生成目录保存已改为通过项目运行态、`project_parse_input_records`、`save_generated_outline_state` 与 `persist_workspace_project_state` 处理；`outline_generation.py` 不再直接 import 通用 `store`。
+- 正文生成运行状态规则已下沉到 `bid_fill_generation_state.py`，开始/更新/失败/完成、输出文件状态、运行时长/文件大小格式化和双轨正文完成事件不再直接写在 `store.py` 里。
+- 商务/技术正文装配的目录状态、解析存储、模板输入、文档缺失提示和正文生成结果写回已改为通过项目运行态、`project_parse_input_records`、`save_fill_generation_result_state` 与 `persist_workspace_project_state` 处理；`business_assembly.py` / `tech_assembly.py` 不再直接 import 通用 `store`。
+- 旧通用 `store.py` 正文生成状态读取门面已删除，`get_fill_state` 不再作为绕过双轨生成 service 或项目运行态访问层的兼容入口存在；测试需要读取正文生成状态时直接从项目运行态深拷贝 `fill_state`。
+- 旧通用 `store.py` 正文生成写回门面已删除，`start_fill_generation` / `update_fill_generation_state` / `fail_fill_generation` / `save_fill_generation_result` 不再作为绕过双轨生成 flow 的兼容入口存在；测试需要构造正文生成运行态时直接调用 `bid_fill_generation_state.py` 状态函数并显式持久化。
+- 当前 `app/services` 与 `app/api/routes` 中直接 `store` 依赖只保留在 `workspace_project_access.py`，作为统一项目访问门面。
+- Redis 后台 worker 的目录/正文任务最终状态读取已改为通过 `workspace_project_access.py` 读取项目运行态；`app/workers/redis_worker.py` 不再直接 import 通用 `store`。
+- `store.py` 中旧 MVP 占位完成门面 `complete_directory_generation` / `complete_fill_generation` 和无人使用的 `get_template_fallback` 已删除；测试需要构造完成态时直接调用 state 函数并显式持久化，避免旧 store 兼容入口继续暗示可跳过正式流程。
+- 解析流程测试已迁到双轨入口；旧项目解析、项目素材范围、OCR、素材库和审计入口只作为 404 防回退测试保留。
+- 共享素材底座输出内部 URL 占位符，由 business/technical material facade 改写为对应工作区 URL。
+
+## 验证记录
+
+在 `/Users/wlb/Agent/bid-project/code/sewpg-bid-backend`：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
 ```
 
-其中：
+结果：`305 passed, 5 skipped`。
 
-- `项目` 内自然进入 S1-S10 撰写流程。
-- `素材库` 内保留原始素材和 Wiki 展示。
-- `Wiki` 不作为顶部独立入口，主要作为 AI/Skill 可读取的素材组织层。
+补充检查：
 
-## 入口定义
-
-### 解析
-
-解析是全局共用入口。用户在这里上传招标文件，点击解析后调用后续的 opencode skill。
-
-该 skill 的目标：
-
-- 解析招标文件。
-- 提取资格、评分、技术、商务、交付、合同等关键关注点。
-- 判断公司是否满足招标要求。
-- 给出参与 / 不参与 / 风险待确认的前置判断。
-
-解析通过后，系统进入正式标书撰写阶段，并创建技术标、商务标两个工作区入口。
-
-### 技术标工作区
-
-技术标工作区只展示技术标数据：
-
-- 技术标项目
-- 技术标 S1-S10 流程
-- 技术标素材库
-- 技术标 Wiki
-- 技术标日志
-
-技术标页面不展示商务标项目、商务标素材、商务标 Wiki。
-
-### 商务标工作区
-
-商务标工作区只展示商务标数据：
-
-- 商务标项目
-- 商务标 S1-S10 流程
-- 商务标素材库
-- 商务标 Wiki
-- 商务标日志
-
-商务标页面不展示技术标项目、技术标素材、技术标 Wiki。
-
-### 设置
-
-设置仍为全局共用，管理系统级配置：
-
-- 用户与角色
-- opencode 配置
-- OnlyOffice 配置
-- 模板和系统参数
-
-## 第一版落地边界
-
-第一版先搭框架，不一次性重写全部业务：
-
-1. 全局导航改为 `解析 / 技术标 / 商务标 / 设置`。
-2. 技术标、商务标进入独立工作区。
-3. 工作区内提供 `项目 / 素材库 / 日志`。
-4. 前端路由带工作区上下文。
-5. 所有项目、素材、Wiki 请求自动带 `bidType`。
-6. 保留旧路由作为兼容入口，避免当前演示链路断开。
-
-## 路由草案
-
-```text
-/parse
-
-/workspace/tech/projects
-/workspace/tech/projects/:projectId/parse
-/workspace/tech/projects/:projectId/directory
-/workspace/tech/projects/:projectId/outline
-/workspace/tech/projects/:projectId/gaps
-/workspace/tech/projects/:projectId/gaps-fill
-/workspace/tech/projects/:projectId/gaps/review
-/workspace/tech/projects/:projectId/generate
-/workspace/tech/projects/:projectId/coverage
-/workspace/tech/projects/:projectId/editor
-/workspace/tech/projects/:projectId/export
-/workspace/tech/materials/structured
-/workspace/tech/materials/wiki
-/workspace/tech/logs
-
-/workspace/business/projects
-/workspace/business/projects/:projectId/...
-/workspace/business/materials/structured
-/workspace/business/materials/wiki
-/workspace/business/logs
-
-/settings
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_material_identity_options.py tests/test_business_material_library_rules.py tests/test_peripheral_routes.py tests/test_project_material_scope.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_onlyoffice_document.py tests/test_business_material_splitter.py -q
+PYTHONPATH=. .venv/bin/python -m compileall app
+git diff --check
 ```
 
-## 底层数据边界
+结果：素材/Wiki/身份专项 `161 passed, 5 skipped`；编译和 diff 检查均通过。
 
-短期使用现有字段做兼容隔离：
+本轮 `now_iso` 依赖收口和文档口径整理补充：
 
-```text
-project.bidType
-raw_folder.bid_type
-raw_file.ext_fields.bidType
-wiki_node.bid_types
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_runtime_recovery_rules_are_outside_store tests/test_business_gap_planner.py tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_turbine_model_selection.py tests/test_business_assembly.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+git diff --check
 ```
 
-后续正式化时建议补充 `bid_workspace` 概念：
+结果：聚焦组合 `68 passed`；完整后端组合 `305 passed, 5 skipped`；diff 检查通过。
 
-```text
-tender_parse
-  id
-  tender_file
-  parsed_requirements
-  eligibility_result
-  status
+本轮 `material_store` 工具函数收口补充：
 
-bid_project
-  id
-  tender_parse_id
-  project_name
-  owner
-  status
-
-bid_workspace
-  id
-  project_id
-  bid_type: 技术标 / 商务标
-  current_stage
-  current_document
-  status
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_material_file_display_helpers_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_folder_scope_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_file_object_operations_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_update_metadata_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_move_metadata_rules_are_outside_material_store tests/test_business_material_splitter.py -q
 ```
 
-正式版本中，S1-S10、素材、Wiki、日志都应挂到 `bid_workspace`，而不是只靠项目 ID。
+结果：聚焦组合 `16 passed`；随后完整后端组合 `306 passed, 5 skipped`；`git diff --check` 通过。
 
-## Skill 分工
+本轮旧 `raw_permissions` 通用门面删除补充：
 
-解析阶段：
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_raw_folder_scope_rules_are_outside_material_store tests/test_business_material_library_rules.py -q
+```
 
-- `bid-tender-parse-eligibility`：解析招标文件并判断是否满足投标要求。
+结果：聚焦组合 `34 passed`；随后完整后端组合 `306 passed, 5 skipped`；`git diff --check` 通过。
 
-技术标工作区：
+本轮 `store.py` 项目持久化 SQL 下沉补充：
 
-- 技术标目录生成 skill。
-- 技术标正文生成 skill。
-- `bid-tech-wiki-material-builder`。
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_project_persistence_is_outside_store tests/test_store_persistence.py::ProjectMaterialScopeTests::test_project_material_scope_uses_selected_customer_and_material_project tests/test_stage_progress.py::StageProgressTests::test_get_stages_returns_collapsed_workflow_steps -q
+```
 
-商务标工作区：
+结果：聚焦组合 `3 passed`；项目状态相关组合 `132 passed, 2 skipped`；随后完整后端组合 `307 passed, 5 skipped`；`git diff --check` 通过。
 
-- 商务标目录生成 skill。
-- 商务标正文生成 skill。
-- `bid-business-wiki-material-builder`。
+本轮业务 service 项目状态公开门面补充：
 
-## 验收标准
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_services_use_public_project_state_mutation_api tests/test_bid_material_scope_services.py::test_bid_project_persistence_is_outside_store tests/test_bid_material_scope_services.py::test_business_gap_payload_stays_in_business_service tests/test_bid_material_scope_services.py::test_technical_gap_detection_stays_out_of_store_private_helpers tests/test_business_assembly.py::BusinessAssemblyServiceTests::test_business_material_export_uses_business_material_store -q
+```
 
-第一版验收：
+结果：聚焦组合 `5 passed`；业务/缺口/OCR 相关组合 `137 passed, 8 skipped`；随后完整后端组合 `308 passed, 5 skipped`；`git diff --check` 通过。
 
-- 顶部/侧边入口从 `审核` 改为 `解析`，从 `审计` 改为 `日志`。
-- 点击 `技术标` 只看到技术标项目、素材库、日志。
-- 点击 `商务标` 只看到商务标项目、素材库、日志。
-- Wiki 不出现在工作区顶部标签中，但可在素材库内部展示。
-- 技术标和商务标都能进入自己的 S1-S10 流程。
-- 旧的 `/projects`、`/materials/*`、`/audit` 路由不立即删除，作为兼容入口保留。
+本轮双轨项目访问层补充：
 
-## 历史联调进展（原 progress.md）
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_draft_generation_uses_workspace_specific_modules tests/test_bid_material_scope_services.py::test_services_use_public_project_state_mutation_api tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_bid_material_scope_services.py::test_business_gap_selectable_materials_stays_in_business_service tests/test_business_assembly.py::BusinessAssemblyServiceTests::test_business_material_export_uses_business_material_store -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_services_use_public_project_state_mutation_api tests/test_bid_material_scope_services.py::test_ocr_routes_are_workspace_scoped tests/test_project_material_scope.py::ProjectMaterialScopeRouteTests::test_workspace_ocr_task_routes_are_split tests/test_project_material_scope.py::ProjectMaterialScopeRouteTests::test_legacy_project_ocr_endpoint_is_not_registered tests/test_security_settings_ocr_routes.py::SecuritySettingsOcrRoutesTests::test_ocr_requires_config_and_can_list_tasks tests/test_security_settings_ocr_routes.py::SecuritySettingsOcrRoutesTests::test_ocr_success_persists_task_candidates_and_confirmation -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_bid_material_scope_services.py::test_business_parse_assets_upload_uses_business_material_store tests/test_bid_material_scope_services.py::test_business_parse_assets_do_not_import_material_store_singleton tests/test_bid_material_scope_services.py::test_business_and_technical_document_format_state_rules_are_split tests/test_onlyoffice_document.py::OnlyOfficeDocumentTests::test_technical_document_format_endpoint_uses_technical_service -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_stage_progress.py tests/test_peripheral_routes.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_business_document_editing.py tests/test_business_assembly.py::BusinessAssemblyServiceTests::test_business_material_export_uses_business_material_store -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_draft_generation_uses_workspace_specific_modules tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_directory_generation.py tests/test_fill_generation.py tests/test_business_gap_planner.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py tests/test_directory_generation.py tests/test_fill_generation.py tests/test_business_gap_planner.py tests/test_business_document_editing.py tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_business_assembly.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+git diff --check
+```
 
-### 联调进展
+结果：项目/格式聚焦组合为 `5 passed`；OCR 项目状态访问与双轨入口组合 `4 passed, 2 skipped`；另一组项目/格式组合为 `5 passed`；项目入口/解析相关组合 `54 passed, 5 skipped`；商务文档聚焦组合 `5 passed`；目录/生成/缺口聚焦组合 `56 passed`；相关后端组合 `204 passed, 5 skipped`；完整后端组合 `309 passed, 5 skipped`；`git diff --check` 通过。
 
-## 当前状态
+本轮旧 `store.py` 目录/大纲写回门面删除补充：
 
-- 已完成 API 核心文档收敛
-- 已完成 FastAPI 最小骨架
-- 已完成 `sewpg-bid-backend` 目录结构整理
-- 已完成 S1 真实解析
-- 已完成 S9 / S10 OnlyOffice 真实链路
-- 已完成 `opencode` Docker 部署与 S2 真实目录生成
-- 已完成 `S7` 真实初稿生成与 `S8` 覆盖 mock 承接
-- 当前下一步：收成完整 `docker compose`
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_outline_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_directory_generation.py::DirectoryGenerationTests::test_business_outline_regenerate_uses_generated_business_toc_not_technical_defaults tests/test_turbine_model_selection.py::TurbineModelSelectionTests::test_gap_manifest_ai_fill_and_assembly_carry_selected_turbine_model tests/test_business_gap_planner.py tests/test_gap_review_flow.py tests/test_onlyoffice_document.py tests/test_fill_generation.py tests/test_business_assembly.py -q
+```
 
-## 已完成
+结果：聚焦组合 `82 passed`；编译通过；完整后端组合 `312 passed, 5 skipped`；`git diff --check` 通过。
 
-### 2026-04-19
+本轮旧 `store.py` 正文生成写回门面删除补充：
 
-- 重写 [MVP接口与参数核心版_极简版.md](/Users/wlb/Agent/bid-project/code/sewpg-bid-api/MVP接口与参数核心版_极简版.md)
-  - 对齐当前前端真实接口
-  - 补齐 `GET /directory-generation`
-  - 补齐 `POST /outline/regenerate`
-  - 补齐 `GET /fill-generation`
-  - 补齐 `POST /document/force-save`
-  - 把 S9 返回结构改成顶层 `onlyoffice`
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_fill_generation_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_fill_generation.py tests/test_business_assembly.py::BusinessAssemblyServiceTests::test_business_fill_generation_uses_business_assembler_without_technical_gap_state -q
+```
 
-- 新增 FastAPI 骨架
-  - [main.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/main.py)
-  - [config.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/core/config.py)
-  - [router.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/router.py)
-  - [routes](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes)
-  - [store.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/services/store.py)
+结果：聚焦组合 `16 passed`；编译通过；完整后端组合 `312 passed, 5 skipped`；`git diff --check` 通过。
 
-- 补齐后端依赖
-  - [requirements.txt](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/requirements.txt)
+本轮旧 `store.py` 解析完成门面删除补充：
 
-- 整理 `sewpg-bid-backend` 结构
-  - 新增 [README.md](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/README.md)
-  - 新增 [.gitignore](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/.gitignore)
-  - 路由按领域拆到 `app/api/routes`
-  - `store` 移到 `app/services`
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_parse_state_rules_are_outside_store tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_results_materializes_legacy_required_appendix_preview_docx tests/test_directory_generation.py tests/test_fill_generation.py tests/test_business_gap_planner.py::BusinessGapPlannerTests::test_business_gap_api_uses_business_workspace_and_keeps_technical_gap_state_empty tests/test_business_assembly.py::BusinessAssemblyServiceTests::test_business_fill_generation_uses_business_assembler_without_technical_gap_state -q
+```
 
-- 本机验证通过
-  - `GET /healthz`
-  - `POST /api/projects`
-  - `POST /api/projects/{id}/parse-results/upload-and-run`
-  - `GET /api/projects/{id}/stages`
-  - `POST /api/projects/{id}/directory-generation/run`
-  - `GET /api/projects/{id}/outline`
-  - `POST /api/projects/{id}/fill-generation/run`
-  - `GET /api/projects/{id}/document`
-  - `PUT /api/projects/{id}/document/save`
-  - `GET /api/projects/{id}/final-document`
+结果：聚焦组合 `47 passed`；编译通过；完整后端组合 `312 passed, 5 skipped`；`git diff --check` 通过。
 
-- OnlyOffice 接入前检查已完成
-  - 确认前端 `CoCreationEditor.jsx` 已有 `DocsAPI.DocEditor(...)` 挂载逻辑
-  - 确认前端 `.env.development` 默认指向：
-    - Document Server: `http://localhost:8080`
-    - demo backend: `http://127.0.0.1:8000`
-  - 已启动本机 Docker Desktop
-  - 已发现并清理 `8080` 端口上的临时 `python -m http.server`
-  - 已拉起 `onlyoffice/documentserver`
-  - 已确认 `http://127.0.0.1:8080/healthcheck` 返回 `true`
+本轮旧 `material_store` raw 清洗重试和清洗稿下载地址门面删除补充：
 
-- 已接入真实 OnlyOffice 文档链路
-  - 后端新增 [onlyoffice_documents.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/services/onlyoffice_documents.py)
-  - [document.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/document.py) 已改成真实 `.docx` 文件链路
-  - `GET /api/projects/{id}/document/file` 已返回真实 docx，而不是纯文本
-  - `GET /api/projects/{id}/document` 已返回 Docker 可访问的 `host.docker.internal` fileUrl / callbackUrl
-  - `POST /api/projects/{id}/document/callback` 已支持回拉 OnlyOffice 保存结果并更新版本
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_raw_access_operations_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_lifecycle_operations_are_outside_material_store tests/test_onlyoffice_document.py::OnlyOfficeDocumentTests::test_cleaned_material_preview_route_returns_onlyoffice_session tests/test_onlyoffice_document.py::OnlyOfficeDocumentTests::test_cleaned_material_preview_route_blocks_unavailable_cleaned_word -q
+```
 
-- 已同步当前项目 S9 前端
-  - [CoCreationEditor.jsx](/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/src/pages/CoCreationEditor.jsx) 已切到“只要后端给会话就尝试挂载”
-  - [onlyoffice.js](/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/src/config/onlyoffice.js) 已补齐 `loadOnlyOfficeScript`
-  - 已去掉 S9 对 browser healthcheck 的强依赖
+结果：聚焦组合 `4 passed`；随后继续跑完整后端组合和 diff 检查。
 
-- 已完成旧 mock 资产收口
-  - 已停用并移除旧 `fastapi-mock`
-  - 已停用并移除旧 `mock-server`
-  - 已移除旧 `smoke` 脚本入口
-  - [package.json](/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/package.json) 当前只保留正式后端相关脚本
-  - [start.sh](/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/start.sh) 与 [start.bat](/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/start.bat) 当前都已切到启动正式后端
+标类归一规则补充：
 
-- 验证已通过
-  - 后端测试：[test_onlyoffice_document.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/tests/test_onlyoffice_document.py) `2/2 OK`
-  - 前端校验：`npm run check` 通过
-  - 本机接口验证：
-    - `POST /api/projects`
-    - `GET /api/projects/{id}/document`
-    - `GET /api/projects/{id}/document/file`
-    - `POST /api/projects/{id}/document/callback`
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_stage_progress.py tests/test_material_identity_options.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_bid_material_scope_services.py::test_raw_folder_scope_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_wiki_scope_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_upload_target_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_wiki_generation_import_uses_workspace_material_stores tests/test_bid_material_scope_services.py::test_technical_raw_files_owns_turbine_model_filtering tests/test_business_material_library_rules.py tests/test_material_identity_options.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_business_gap_planner.py tests/test_gap_review_flow.py tests/test_business_assembly.py tests/test_material_identity_options.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+git diff --check
+```
 
-- 已完成 SQLite 持久化
-  - [store.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/services/store.py) 已从纯内存态切到 SQLite 持久化
-  - 新增测试：[test_store_persistence.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/tests/test_store_persistence.py)
-  - 测试通过：
-    - `test_project_persists_across_store_restart`
-    - `test_project_id_continues_after_restart`
-  - 运行态已验证：创建项目后，重启 FastAPI 仍可读取同一项目
-  - 本机数据目录：
-    - SQLite：[/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/.localdata/sqlite/app.db](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/.localdata/sqlite/app.db)
-    - 上传文件：[/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/.localdata/uploads](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/.localdata/uploads)
-    - 生成文档：[/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/.localdata/documents](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/.localdata/documents)
+结果：标类规则聚焦组合 `59 passed`；素材/Wiki/标类常量聚焦组合 `53 passed`；事实表/S3 依赖口径聚焦组合 `56 passed`；完整后端组合 `310 passed, 5 skipped`；`git diff --check` 通过。补充确认 `bid_type.py` 是技术标/商务标/通用标类常量与 `normalize_bid_type` 的唯一规则源，`parse_profiles.py` 与 `identity.py` 不再各自定义标类归一函数，审计、gap repository、事实表、素材 facade、素材目录/上传/Wiki、技术机型候选和 Wiki 生成不再各自声明或间接转出技术标/商务标常量。
 
-- 已完成 S1 真实解析第一版
-  - 后端新增 [parsing.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/services/parsing.py)
-  - 当前支持：
-    - `docx` 真实抽文本
-    - `pdf` 预留真实抽文本能力（`pypdf`）
-  - 当前策略：
-    - 上传原文件继续落到 `uploads/`
-    - 解析后的大文本不写入 SQLite
-    - 解析 artifact 单独落到 `parsed/`
-    - SQLite 只保存摘要、预览和 artifact 路径
-  - 前端 S1 已切到真实 `FormData` 上传：
-    - [ParseResult.jsx](/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/src/pages/ParseResult.jsx)
-    - [index.js](/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/src/api/index.js)
-  - 新增测试：[test_parse_pipeline.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/tests/test_parse_pipeline.py)
-  - 本机大文件实测：
-    - `招标文件.docx`（约 20.8 MB）解析成功
-    - 解析总文本长度约 `351908`
-    - SQLite 文件仍仅约 `16 KB`
-  - 新增本机数据目录：
-    - 解析 artifact：[/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/.localdata/parsed](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/.localdata/parsed)
-  - S1 前端解析摘要已展示：
-    - 文本总长度
-    - 解析警告
-    - 文本预览
-  - 已修复 S1 二次上传逻辑：
-    - 首次上传招标文件并解析后
-    - 再上传投标模板时，允许继续点击“上传并自动解析”
-    - 后端会复用已上传的招标文件，追加模板文件，再重新解析
+解析与商务文档默认标类补充：
 
-- 已修复 S9 空白页的 OnlyOffice 保存链路配置
-  - 根因：OnlyOffice Docker 默认禁止私网地址请求，导致 `fileUrl/callbackUrl` 指向 `host.docker.internal` 时保存失败，前端随后白屏
-  - 已在 [docker-compose.onlyoffice.yml](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/onlyoffice/docker-compose.onlyoffice.yml) 增加 `ALLOW_PRIVATE_IP_ADDRESS=true`
-  - 已在 [start.sh](/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/start.sh) 和 [package.json](/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/package.json) 固定本机开发态 `ONLYOFFICE_BACKEND_BASE_URL=http://host.docker.internal:8000`
-  - 当前 `GET /api/projects/PRJ-0001/document` 已返回可供 OnlyOffice 使用的 `host.docker.internal` 地址
-  - 浏览器端已实测：S9 页面可编辑、保存、回写
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_parse_pipeline.py tests/test_business_document_editing.py tests/test_onlyoffice_document.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+git diff --check
+```
 
-- 已完成 `opencode` Docker 部署与 S2 真实接入
-  - [docker-compose.yml](/Users/wlb/Agent/bid-project/code/docker-compose.yml) 已补 `opencode` 本机端口映射 `4096:4096`
-  - `opencode` 容器启动时会复制本机 `~/.local/share/opencode/auth.json`
-  - 新增配置：[opencode.json](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/opencode/opencode.json)
-  - 新增轻量 skill：[bid-outline-json/SKILL.md](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/opencode/.opencode/skills/bid-outline-json/SKILL.md)
-  - 新增后端 client：[opencode_client.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/services/opencode_client.py)
-  - 新增目录生成服务：[outline_generation.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/services/outline_generation.py)
-  - [directory.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/directory.py) 已切到真实 `FastAPI -> opencode serve`
-  - S2 当前策略已修正为：
-    - 先读取投标模板目录线索
-    - 再结合招标章节线索进行删改、补改
-    - 输出前端 `S3` 可直接编辑的目录 JSON
-  - 新增测试：[test_directory_generation.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/tests/test_directory_generation.py)
-  - 后端测试当前 `9/9` 通过
-  - 本机 smoke test 通过：
-    - `http://127.0.0.1:4096/global/health`
-    - `POST /session`
-    - `POST /session/{id}/message`
-    - `POST /api/projects/PRJ-0001/directory-generation/run`
-    - `POST /api/projects/PRJ-0002/directory-generation/run`
-  - `S3` 已能读取真实生成的目录树
-  - `PRJ-0001` 已实测：
-    - 目录根节点已按投标模板输出 `第1章 标前概述 / 第2章 技术标准 / 第3章 风资源评估与机位排布方案`
-    - 不再是只看招标文本生成的通用目录
+结果：解析/商务文档聚焦组合 `58 passed`；完整后端组合 `310 passed, 5 skipped`；`git diff --check` 通过。补充确认 `parsing.py` 的技术标/商务标默认参数和 `business_document_service.py` 的商务文案兜底都从 `bid_type.py` 取常量；文档相对时间扫描无命中，解析/商务文档/装配旧默认字符串扫描无命中。
 
-- 已完成 S4 / S5 / S6 mock 流程接入
-  - 新增路由：
-    - [gaps.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/gaps.py)
-    - [review.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/review.py)
-  - [router.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/router.py) 已纳入 S4/S5/S6 路由
-  - [store.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/services/store.py) 已新增持久化状态：
-    - `gap_state`
-    - `review_document_state`
-  - S4 当前逻辑：
-    - 基于 `S3` 当前目录生成缺口 mock 数据
-    - 缺口识别结果持久化到 SQLite
-  - S5 当前逻辑：
-    - 支持补料提交
-    - 支持标记已补录 / 跳过
-    - 支持提交至 S6 审核
-  - S6 当前逻辑：
-    - 支持生成审核预览文档
-    - 支持返回 OnlyOffice 预览会话
-    - 支持确认审核进入 S7
-  - 新增测试：
-    - [test_gap_review_flow.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/tests/test_gap_review_flow.py)
-  - 后端全量测试当前 `10/10` 通过
-  - 本机 smoke test 已通过：
-    - `POST /api/projects/PRJ-0001/gaps-detection/run`
-    - `GET /api/projects/PRJ-0001/gaps`
-    - `POST /api/projects/PRJ-0001/materials/submissions`
-    - `POST /api/projects/PRJ-0001/gaps/submit-review`
-    - `POST /api/projects/PRJ-0001/review-items/prepare`
-    - `GET /api/projects/PRJ-0001/review-items/document`
-    - `POST /api/projects/PRJ-0001/review-items/confirm`
+项目状态默认标类补充：
 
-- 已完成 S7 真实初稿生成
-  - 新增服务：[draft_generation.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/services/draft_generation.py)
-  - 新增轻量 skill：[bid-draft-sections-json/SKILL.md](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/opencode/.opencode/skills/bid-draft-sections-json/SKILL.md)
-  - [generation.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/generation.py) 已切到真实 `FastAPI -> opencode serve`
-  - [opencode_client.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/services/opencode_client.py) 已新增 `generate_draft_sections`
-  - 当前 S7 逻辑：
-    - 输入 `S1` 解析文本 + `S3` 已确认目录 + 模板章节线索 + `S6` 审核摘要
-    - 调 `opencode` 生成章节 JSON
-    - 后端把章节内容写成真实 `.docx`
-    - S9 直接打开这份初稿
-  - 当前生成策略：
-    - 可泛化内容直接生成
-    - 可核验事实改成 `【待补充：...】`
-    - 用 `generationMode=generated / generated_with_placeholder / placeholder` 标记章节状态
-  - 新增测试：
-    - [test_fill_generation.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/tests/test_fill_generation.py)
-  - 后端全量测试当前 `12/12` 通过
-  - 本机最小烟测已通过：
-    - `PRJ-0004` 从 `S1 -> S6` 走完后
-    - `POST /api/projects/PRJ-0004/fill-generation/run` 返回 `200`
-    - 真实生成了 [PRJ-0004.docx](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/.localdata/documents/PRJ-0004.docx)
-    - `GET /api/projects/PRJ-0004/document` 已返回可供 S9 打开的真实会话
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_bid_material_scope_services.py::test_bid_runtime_recovery_rules_are_outside_store tests/test_store_persistence.py::ProjectMaterialScopeTests::test_project_material_scope_uses_selected_customer_and_material_project tests/test_parse_pipeline.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+git diff --check
+```
 
-- 已完成 S8 mock 承接
-  - 新增路由：[coverage.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/coverage.py)
-  - [store.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/services/store.py) 已新增覆盖树与问题清单计算
-  - 当前 S8 逻辑：
-    - 基于 `S7` 的 `generationMode`
-    - 自动映射为 `full / partial / none`
-    - 生成：
-      - `tree`
-      - `partialItems`
-      - `noCoverItems`
-  - 这样 `S7 -> S8 -> S9` 现在已经能继续走通
+结果：项目状态/运行态聚焦组合 `44 passed`；完整后端组合 `310 passed, 5 skipped`；`git diff --check` 通过。补充确认 `store.py` 的模板 fallback、`bid_project_state.py` 的项目创建/解析产物提升/项目素材路径分流、`bid_runtime_state.py` 的解析结果和解析存储恢复都从 `bid_type.py` 取默认技术标常量；项目状态旧默认字符串扫描无命中。
 
-- 已补稳定性收口
-  - `opencode` 默认超时已提高到 `600s`
-  - [opencode_client.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/services/opencode_client.py) 已把 timeout 转成可读错误，不再直接冒成 500 栈
-  - 前端 [index.js](/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/src/api/index.js) 已给：
-    - `directory-generation/run`
-    - `fill-generation/run`
-    单独放宽超时
+模板 fallback 与解析输入补充：
 
-- 已完成外围模块正式承接
-  - 后端新增外围路由：
-    - [materials.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/materials.py)
-    - [audit.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/audit.py)
-    - [settings.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/settings.py)
-    - [export.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/export.py)
-  - 后端新增 [peripheral.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/services/peripheral.py)
-    - 正式承接原始材料库、结构化素材、Wiki、审计日志、系统设置、导出校验
-    - 当前采用轻量 fixture / mock-backed 状态，先保证前端页面可用与联调闭环
-  - 新增测试：[test_peripheral_routes.py](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/tests/test_peripheral_routes.py)
-  - 后端外围测试通过：
-    - `raw materials`
-    - `structured/wiki`
-    - `audit/settings/export`
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_project_state_rules_are_outside_store tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_do_not_use_legacy_template_when_project_has_no_template tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_use_settings_default_template_when_project_has_no_template tests/test_parse_pipeline.py::ParsePipelineTests::test_project_template_overrides_fallback_template tests/test_security_settings_ocr_routes.py::SecuritySettingsOcrRoutesTests::test_ocr_success_persists_task_candidates_and_confirmation -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_bid_material_scope_services.py::test_bid_project_state_rules_are_outside_store tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_do_not_use_legacy_template_when_project_has_no_template tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_use_settings_default_template_when_project_has_no_template tests/test_parse_pipeline.py::ParsePipelineTests::test_project_template_overrides_fallback_template -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+git diff --check
+```
 
-- 已完成文档口径更新
-  - [sewpg-bid-frontend/README.md](/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/README.md) 已改为“正式 FastAPI + 外围模块已承接”口径
-  - [sewpg-bid-backend/README.md](/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/README.md) 已补外围模块分层说明
-  - [10-API接口总览与契约说明.md](/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/docs/10-API接口总览与契约说明.md) 已修正正式入口与现状说明
-  - [11-API字段级契约明细.md](/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/docs/11-API字段级契约明细.md) 已修正正式入口与全局说明
+结果：模板 fallback/解析输入聚焦组合 `4 passed, 1 skipped`，标类与项目状态聚焦组合 `5 passed`；完整后端组合 `310 passed, 5 skipped`；`git diff --check` 通过。补充确认 `get_parse_inputs`、`get_template_fallback` 和 `template_fallback_context` 的业务编排已下沉到 `bid_project_state.py`，`store.py` 不再直接 import `template_store`、调用 `resolve_fallback_bid_template_file_sync` 或执行 `asyncio.run`；后续旧 `store.get_parse_inputs` / `store.template_fallback_context` / `store.update_template_fallback` 公开门面也已删除。
+
+项目列表展示状态补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_project_state_rules_are_outside_store tests/test_store_persistence.py::ProjectMaterialScopeTests::test_project_material_scope_uses_selected_customer_and_material_project tests/test_project_material_scope.py::ProjectMaterialScopeRouteTests::test_materials_path_returns_project_readable_scopes tests/test_project_material_scope.py::ProjectMaterialScopeRouteTests::test_business_materials_path_returns_business_scopes tests/test_stage_progress.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+git diff --check
+```
+
+结果：项目列表/阶段/素材范围聚焦组合 `9 passed`；完整后端组合 `310 passed, 5 skipped`；`git diff --check` 通过。补充确认项目列表 summary、标类过滤、更新时间排序和分页已下沉到 `bid_project_state.py` 的 `project_list_state`；`store.py` 不再保留 `_summary` / `_normalize_template_fallback` 包装，也不再直接写项目列表排序过滤逻辑。
+
+阶段列表展示状态补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_project_state_rules_are_outside_store tests/test_stage_progress.py tests/test_store_persistence.py::ProjectMaterialScopeTests::test_project_material_scope_uses_selected_customer_and_material_project -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+git diff --check
+```
+
+结果：项目状态/阶段聚焦组合 `7 passed`；完整后端组合 `310 passed, 5 skipped`；`git diff --check` 通过。补充确认阶段列表展示入口已下沉到 `bid_project_state.py` 的 `project_stages_state`；`store.py` 不再直接 import `project_stage_flow` 或调用 `project_progress_stages`。
+
+文档格式状态写回补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_business_and_technical_document_format_state_rules_are_split tests/test_bid_material_scope_services.py::test_bid_document_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_bid_runtime_recovery_rules_are_outside_store tests/test_onlyoffice_document.py::OnlyOfficeDocumentTests::test_technical_document_format_endpoint_uses_technical_service tests/test_business_document_editing.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+```
+
+结果：文档状态/格式聚焦组合 `7 passed`；完整后端组合 `310 passed, 5 skipped`。补充确认商务标/技术标格式写回薄委托已收进 `bid_document_state.py`，`store.py` 不再直接 import `business_document_state.py` / `technical_document_state.py`，也不再通过 `runtime_now_iso()` 自行生成格式写回时间戳。
+
+文档模块读取状态边界补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_business_document_editing.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_onlyoffice_document.py::OnlyOfficeDocumentTests::test_technical_document_format_endpoint_uses_technical_service -q
+```
+
+结果：商务受控润色聚焦组合 `4 passed`，技术格式切换聚焦组合 `2 passed`；随后完整后端组合 `310 passed, 5 skipped`；`git diff --check` 通过；前端 `npm run build` 通过，仅有 Vite 大 chunk 警告。补充确认 `business_document_editing.py` 不再 import `store` 或直接调用 `store.get_document_state(project_id)`，缺文件提示所需文件名从商务标 workspace 运行态读取；`technical_document_format.py` 不再 import `store`，格式切换所需 `document_state` / `outline_state` / `parse_storage` 从技术标 workspace 运行态读取，避免格式模块继续绕过项目访问层读 store。
+
+文档 service 写回状态边界补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_business_document_editing.py tests/test_onlyoffice_document.py::OnlyOfficeDocumentTests::test_technical_document_format_endpoint_uses_technical_service tests/test_onlyoffice_document.py::OnlyOfficeDocumentTests::test_business_document_format_endpoint_uses_business_service -q
+```
+
+结果：编译通过，聚焦组合 `6 passed`；随后完整后端组合 `311 passed, 5 skipped`，`git diff --check` 通过。补充确认 `business_document_service.py` 的 AI 对话上下文从已 guard 的商务项目运行态读取 `document_state` / `fill_state`，受控替换后的强制保存和商务格式写回改走 `force_save_document_state` / `apply_business_document_format_to_project`；`technical_document_service.py` 的技术格式写回改走 `apply_technical_document_format_to_project`。两者均通过 `require_workspace_project_for_update` 与 `persist_workspace_project_state` 显式处理项目类型 guard 和持久化，不再直接调用 `store.get_document_state`、`store.get_fill_state`、`store.force_save_document` 或 `store.apply_*_document_format`。
+
+文档 flow store 依赖收口补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_onlyoffice_document.py tests/test_business_document_editing.py -q
+```
+
+结果：编译通过，文档聚焦组合 `18 passed`；随后完整后端组合 `311 passed, 5 skipped`，`git diff --check` 通过。补充确认 `bid_document_flow.py` 已移除 `store` import；文档 payload、保存正文、强制保存、final document、PDF、文件下载和 OnlyOffice callback 统一通过 `ensure_project` / `require_workspace_project_for_update` 读取或写入项目状态，并调用 `save_document_content_state`、`force_save_document_state`、`final_document_state` 与 `persist_workspace_project_state`。
+
+S1 解析 service store 依赖收口补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_parse_pipeline.py tests/test_project_material_scope.py -q
+```
+
+结果：编译通过，解析/项目素材范围聚焦组合 `49 passed`；随后完整后端组合 `311 passed, 5 skipped`，`git diff --check` 通过。补充确认 `bid_parse_service.py` 已移除 `store` import；解析结果读取、解析进度读取/开始/更新、解析输入文件读取、解析完成写回和模板文件追加，统一通过已 guard 的项目运行态或 `require_workspace_project_for_update` 可写状态，并调用 `project_parse_input_records`、`complete_parse_state`、`update_parse_progress_state`、`update_template_files_state` 与 `persist_workspace_project_state`。
+
+S2 目录 flow store 依赖收口补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_directory_generation.py -q
+```
+
+结果：编译通过，目录聚焦组合 `31 passed`；随后完整后端组合 `311 passed, 5 skipped`，`git diff --check` 通过。补充确认 `bid_directory_flow.py` 已移除 `store` import；目录状态读取、目录生成进度更新/失败写回、招标文件预览、人工大纲保存、重生成和确认目录，统一通过已 guard 的项目运行态或 `require_workspace_project_for_update` 可写状态，并调用 `project_parse_input_records`、`directory_state_with_rule_evidence`、`start_directory_generation_state`、`update_directory_generation_state`、`fail_directory_generation_state`、`save_outline_state`、`regenerate_outline_state`、`confirm_outline_state` 与 `persist_workspace_project_state`。
+
+S2 目录生成底层 store 依赖收口补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_directory_generation.py -q
+rg -l "from app\.services\.store import store|\bstore\." code/sewpg-bid-backend/app/services code/sewpg-bid-backend/app/api/routes -g '*.py' | sort
+```
+
+结果：编译通过，目录聚焦组合 `31 passed`；随后完整后端组合 `311 passed, 5 skipped`，`git diff --check` 通过；直接 `store` 依赖扫描中 `outline_generation.py` 已消失，剩余为 `bid_project_service.py`、`business_assembly.py`、`business_parse_assets.py`、`dashboard_service.py`、`tech_assembly.py` 和合法访问门面 `workspace_project_access.py`。补充确认 `outline_generation.py` 的解析存储读取、解析输入读取和生成目录保存改为通过项目运行态、`project_parse_input_records`、`save_generated_outline_state` 与 `persist_workspace_project_state` 完成，不再直接调用 `store.get_parse_storage`、`store.get_parse_inputs` 或 `store.save_generated_outline`。
+
+商务解析资产 store 依赖收口补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_bid_material_scope_services.py::test_business_parse_assets_upload_uses_business_material_store tests/test_bid_material_scope_services.py::test_business_parse_assets_do_not_import_material_store_singleton tests/test_parse_pipeline.py tests/test_project_material_scope.py -q
+rg -l "from app\.services\.store import store|\bstore\." code/sewpg-bid-backend/app/services code/sewpg-bid-backend/app/api/routes -g '*.py' | sort
+```
+
+结果：编译通过，商务解析资产/解析/项目素材范围聚焦组合 `51 passed`；随后完整后端组合 `311 passed, 5 skipped`，`git diff --check` 通过；直接 `store` 依赖扫描中 `business_parse_assets.py` 已消失，剩余为 `bid_project_service.py`、`business_assembly.py`、`dashboard_service.py`、`tech_assembly.py` 和合法访问门面 `workspace_project_access.py`。补充确认商务解析资产读取 parse_result、更新 structured result 文件、同步 parse_storage 和写回 parse_result 均改为通过商务项目运行态、`require_workspace_project_for_update`、`update_parse_result_state` 与 `persist_workspace_project_state` 完成，不再直接调用 `store.get_parse_result`、`store.get_parse_storage` 或 `store.update_parse_result`。
+
+service 直接 `store` 入口收口补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_bid_material_scope_services.py::test_draft_generation_uses_workspace_specific_modules tests/test_bid_material_scope_services.py::test_services_use_public_project_state_mutation_api tests/test_bid_material_scope_services.py::test_business_assembly_fact_table_stays_in_fact_table_helper tests/test_fill_generation.py tests/test_business_assembly.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_stage_progress.py tests/test_peripheral_routes.py -q
+rg -l "from app\.services\.store import store|\bstore\." code/sewpg-bid-backend/app/services code/sewpg-bid-backend/app/api/routes -g '*.py' | sort
+```
+
+结果：编译通过；看板标类口径聚焦 `1 passed`；装配/生成聚焦组合 `29 passed`；项目入口/阶段/解析聚焦组合 `55 passed, 5 skipped`；随后完整后端组合 `311 passed, 5 skipped`，`git diff --check` 通过；直接 `store` 依赖扫描只剩 `workspace_project_access.py`。补充确认 `dashboard_service.py` 改走双轨项目 service；`business_assembly.py` / `tech_assembly.py` 改走项目运行态与 `save_fill_generation_result_state`；`bid_project_service.py` 的项目列表、创建、详情、更新、删除、模板 fallback、解析进度和阶段更新均改走 `workspace_project_access.py` 公开门面。
+
+worker 与旧 store 占位门面收口补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_fill_generation_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_bid_outline_state_rules_are_outside_store tests/test_directory_generation.py::DirectoryGenerationTests::test_directory_generation_stream_returns_event_stream_payload tests/test_store_persistence.py::StorePersistenceTests::test_project_persists_across_postgres_store_restart -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_outline_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_bid_project_state_rules_are_outside_store -q
+rg -l "from app\.services\.store import store|\bstore\." code/sewpg-bid-backend/app -g '*.py' | sort
+```
+
+结果：编译通过；worker 防回退聚焦 `1 passed`；旧占位完成门面聚焦 `3 passed, 1 skipped`；项目/目录状态聚焦 `2 passed`；随后完整后端组合 `311 passed, 5 skipped`，`git diff --check` 通过；整个 `app` 下直接 `store` 依赖只剩 `workspace_project_access.py`。补充确认 `redis_worker.py` 不再直接读 `store.get_directory_state` / `store.get_fill_state`，`store.py` 也不再保留 `complete_directory_generation` / `complete_fill_generation` / `get_template_fallback` 旧门面。
+
+素材运行表公开 helper 补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_material_runtime_tables_are_outside_material_store tests/test_material_identity_options.py tests/test_business_gap_planner.py tests/test_business_material_library_rules.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+```
+
+结果：素材运行表/身份/商务素材聚焦组合 `49 passed`；完整后端组合 `310 passed, 5 skipped`。补充确认 `ensure_material_runtime_tables` 已迁到 `material_runtime_tables.py`，`material_store.py` 不再定义 `_ensure_runtime_tables` 或公开运行表 helper；template/settings/audit/auth/OCR/商务缺口规划服务直接引用运行表模块。
+
+素材底座默认标类补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_bid_material_scope_services.py::test_raw_upload_target_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_upload_action_metadata_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_folder_scope_rules_are_outside_material_store tests/test_material_identity_options.py tests/test_business_material_library_rules.py -q
+```
+
+结果：素材底座标类/上传/目录聚焦组合 `41 passed`。补充确认 `material_store.py` 和 `material_upload_operations.py` 不再 import `bid_type.py`，`raw_upload` / `raw_bootstrap_folders` 及其底层上传、目录骨架、上传目标和上传元数据函数不再提供默认技术标参数，标类必须由业务/技术 facade 或调用方显式传入。
+
+标类兜底字符串补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_bid_material_scope_services.py::test_bid_fill_state_labels_are_outside_store tests/test_gap_review_flow.py tests/test_fill_generation.py::FillGenerationTests::test_run_fill_generation_returns_running_state_immediately tests/test_material_identity_options.py -q
+```
+
+结果：标类兜底字符串聚焦组合 `35 passed`。补充确认 `bid_fill_state.py`、`material_identity_options.py`、`tech_assembly.py`、`technical_gap_planner.py`、`technical_gap_review.py` 和 `technical_gap_state.py` 的技术标兜底已改为引用 `TECHNICAL_BID_TYPE` 常量，并在单一标类源防回退测试中覆盖。
+
+workspace 默认标类补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_directory_generation.py tests/test_business_gap_planner.py tests/test_gap_review_flow.py tests/test_fill_generation.py -q
+```
+
+结果：workspace 标类/目录/缺口/填充聚焦组合 `83 passed`。补充确认 `workspace_artifacts.py` 不再 import `bid_type.py`，通用 `workspace_*` helper 和 `promote_parse_artifacts_to_workspace` 不再提供默认技术标参数；技术标路径继续通过 `technical_workspace_*` 显式 wrapper 进入。
+
+模板/生成 flow 默认标类补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_do_not_use_legacy_template_when_project_has_no_template tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_use_settings_default_template_when_project_has_no_template tests/test_parse_pipeline.py::ParsePipelineTests::test_project_template_overrides_fallback_template tests/test_business_gap_planner.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_fill_generation.py tests/test_business_assembly.py::BusinessAssemblyServiceTests::test_business_fill_generation_uses_business_assembler_without_technical_gap_state -q
+```
+
+结果：模板 fallback/商务缺口/生成 flow 聚焦组合分别为 `15 passed` 和 `15 passed`。补充确认 `template_store.resolve_fallback_bid_template_file*` 不再提供默认技术标参数，商务缺口规划调用 fallback 模板时使用 `BUSINESS_BID_TYPE` 常量；`bid_generation_flow.py` 的生成审计、进度回调、后台任务和调度 helper 不再提供默认技术标参数，worker 和测试调用均显式传入标类。
+
+身份规则默认标类补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_material_identity_options.py tests/test_project_material_scope.py tests/test_business_material_library_rules.py tests/test_wiki_generation.py -q
+```
+
+结果：身份/素材/Wiki 聚焦组合 `52 passed`。补充确认 `identity.classify_material_path` 与 `identity.material_identity` 不再提供默认技术标参数，素材上传元数据、素材身份选项、素材目录规则和 Wiki 生成调用时均显式传入标类。
+
+解析默认标类补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_parse_pipeline.py tests/test_project_material_scope.py -q
+```
+
+结果：解析/项目素材范围聚焦组合 `49 passed`。补充确认 `parsing.materialize_parse_appendix_docx_assets` 和 `parse_tender_documents` 不再提供默认技术标参数，商务/技术解析 service 与 workspace 推广调用方均显式传入标类。
+
+Wiki/外围默认标类补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_peripheral_routes.py tests/test_wiki_generation.py tests/test_business_material_library_rules.py -q
+```
+
+结果：Wiki/外围素材聚焦组合 `41 passed, 5 skipped`。补充确认 `wiki_generation.generate_platform_wiki` 与 deterministic blueprint helper 不再提供默认技术标参数，商务/技术 Wiki bootstrap 路由和测试均显式传入标类；旧 in-memory `peripheral.py` 的 raw 上传与目录骨架入口也不再默认技术标，按调用方传入标类生成项目素材路径。
+
+标类直写参数补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_parse_pipeline.py tests/test_business_assembly.py tests/test_business_document_editing.py tests/test_business_gap_planner.py tests/test_fill_generation.py tests/test_stage_progress.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_onlyoffice_document.py tests/test_stage_progress.py tests/test_peripheral_routes.py tests/test_business_document_editing.py -q
+rg -n "bid_type=\"技术标\"|bid_type=\"商务标\"|\"bidType\": \"技术标\"|\"bidType\": \"商务标\"|or \"技术标\"|or \"商务标\"|return \"商务标\"|return \"技术标\"|bid_type: str = BUSINESS_BID_TYPE|bid_type: str = TECHNICAL_BID_TYPE" app/services app/api -g '!**/__pycache__/**'
+```
+
+结果：标类常量/解析/商务装配/文档/缺口/生成聚焦组合 `86 passed`，技术格式/外围聚焦组合 `22 passed, 5 skipped`；扫描无命中。补充确认商务承诺函解析 materialize、商务装配/格式/缺口规划、技术草稿/装配/格式、dashboard 项目列表、双轨项目 service 和旧 in-memory seed 的标类参数均改为引用 `bid_type.py` 常量或显式 profile 标类，不再直接写第二份 `"技术标"` / `"商务标"` 参数口径。
+
+标类/素材根路径唯一口径补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py tests/test_business_gap_planner.py tests/test_gap_review_flow.py tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py -q
+rg -n 'BUSINESS_BID_TYPE = "商务标"|TECHNICAL_BID_TYPE = "技术标"|f"商务标/项目素材|"商务标/项目素材|f"技术标/项目素材|"技术标/项目素材' app/api app/services
+```
+
+结果：标类/素材路径聚焦组合 `175 passed, 5 skipped`；随后完整后端组合 `310 passed, 5 skipped`；`git diff --check` 通过；扫描只保留 `bid_type.py` 中的唯一常量定义。补充确认 `routes/business.py` 不再定义第二份 `BUSINESS_BID_TYPE`，商务缺口默认补料路径、商务解析产物入库路径、技术标缺口补料回执路径和旧 in-memory seed 路径均通过 `bid_type.py` 与 `material_folder_scope.project_material_root_path` / `material_tier_root_path` 生成，不再直接写 `商务标/项目素材` 或 `技术标/项目素材`。前端已删除无人引用的旧共享 `src/components/shared/MaterialsViewSwitch.jsx`，技术标素材切换器和技术标素材/Wiki 页面默认落到 `/workspace/tech/materials`，不再回退旧 `/materials` 根入口；`npm run build` 通过，仅有 Vite 大 chunk 警告。
+
+工作树梳理补充：
+
+```bash
+git status --short
+find .qoder .understand-anything -maxdepth 3 -type f | sort | head -n 120
+git status --short --untracked-files=all | awk '$1=="??" {print $2}' | sed -n '1,220p'
+git diff --name-status --diff-filter=D | sed -n '1,220p'
+```
+
+结果：`.qoder/` 与 `.understand-anything/` 确认为本机/插件生成的记忆、索引和知识图谱文件，已加入 `.gitignore`，不再混入项目成果。剩余未跟踪项按计划归类为后端双轨 route/service/test、新前端 business/technical workspace 文件和新文档；删除项按计划归类为旧通用后端 route/service、旧共享前端业务页面/组件和过期过程文档；修改项按计划归类为双轨拆分承接文件、文档入口压缩和 API/README 口径更新。当前未 stage、未 commit。
+
+阶段流程专项：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_stage_progress.py tests/test_fill_generation.py::FillGenerationTests::test_technical_stage_skips_s3_after_outline_confirmation -q
+```
+
+结果：`6 passed`。
+
+技术标机型候选拆分补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_bid_material_scope_services.py tests/test_project_material_scope.py tests/test_business_material_library_rules.py -q
+```
+
+结果：`77 passed`。
+
+前端在 `/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend`：
+
+```bash
+npm run check
+```
+
+结果：通过，仅有 Vite 大 chunk 警告。
+
+旧入口扫描结论：商务标 `/generate`、`/coverage`、`/export` 路由不再保留；`/workspace/tech/projects/:id/generate` 是技术标正式生成页，不属于旧入口。旧 `/api/projects...`、`/api/materials...`、`/api/audit...` 只剩 404 防回退测试和内部 URL 兼容替换函数。
+
+旧结构化素材门面删除补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_legacy_structured_material_store_api_is_removed tests/test_business_material_library_rules.py tests/test_project_material_scope.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+git diff --check
+rg -l "from app\.services\.store import store|\bstore\." code/sewpg-bid-backend/app -g '*.py' | sort
+```
+
+结果：编译通过；结构化素材删除/商务素材库/项目素材范围聚焦组合 `41 passed`；完整后端组合 `311 passed, 5 skipped`；`git diff --check` 通过；整个 `app` 下直接 `store` 依赖仍只剩 `workspace_project_access.py`。补充确认未被 business/technical API 使用的旧通用 `material_store.structured_*` 门面和 `material_structured_operations.py` 执行层已删除，结构化解析数据继续由 S1 解析结果、商务解析资产和缺口模块承接。
+
+旧 `PeripheralStore.structured_*` mock 门面删除补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_legacy_peripheral_structured_material_api_is_removed tests/test_bid_material_scope_services.py::test_legacy_structured_material_store_api_is_removed tests/test_peripheral_routes.py tests/test_security_settings_ocr_routes.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+git diff --check
+rg -n "structured_(list|template|preview_import|confirm_import|create|update|delete|import_excel)|_structured_|materials_structured|导入结构化素材|STRUCTURED_MATERIAL_NOT_FOUND|peripheral_store\._structured_table_options" code/sewpg-bid-backend/app/services/peripheral.py code/sewpg-bid-backend/app/services/template_store.py code/sewpg-bid-backend/app/services/material_store.py code/sewpg-bid-backend/tests/test_bid_material_scope_services.py
+```
+
+结果：编译通过；旧 peripheral structured 防回退、外围路由和设置/OCR 聚焦组合 `2 passed, 13 skipped`；完整后端组合 `312 passed, 5 skipped`；`git diff --check` 通过；旧 `structured_*` 素材 CRUD/import mock、`_structured_*` 状态字段、`materials_structured` 审计模块和 `template_store` 对 `peripheral_store._structured_table_options` 的隐式读取均已消失，模板 Excel 表类型改为 `DEFAULT_EXCEL_TEMPLATE_TABLE_OPTIONS` / `_excel_table_options` 口径。
+
+前端素材库路由口径补充：workspace 内原始素材页已从 `/workspace/tech|business/materials/structured` 改为 `/workspace/tech|business/materials/raw`，顶部素材库导航和 business/technical 素材切换器同步使用 `raw` key；`structured` 只保留为 S1 解析结果 JSON 字段语义，不再作为素材库页面路由或旧结构化素材库入口。
+
+```bash
+npm run check
+rg -n 'materials/structured|active="structured"|active='\''structured'\''|key: '\''structured'\''|key: "structured"|/structured' code/sewpg-bid-frontend/src code/sewpg-bid-frontend/docs code/progress.md doc/31-技术标与商务标双轨独立化实施计划.md -g '*.{js,jsx,ts,tsx,md}'
+```
+
+结果：前端 lint + build 通过，仅保留 Vite 大 chunk 警告；源码路由扫描中 `code/sewpg-bid-frontend/src` 已无 `/materials/structured`、`/structured` tab path 或 `structured` active/key 命中，剩余命中只在文档中作为旧入口说明和本条变更记录。
+
+旧 `store.py` 文档状态门面删除补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_document_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_business_and_technical_document_format_state_rules_are_split tests/test_onlyoffice_document.py::OnlyOfficeDocumentTests::test_technical_document_format_endpoint_uses_technical_service tests/test_onlyoffice_document.py::OnlyOfficeDocumentTests::test_business_document_format_endpoint_uses_business_service tests/test_onlyoffice_document.py::OnlyOfficeDocumentTests::test_route_payload_uses_real_document_file_keys -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_onlyoffice_document.py tests/test_business_document_editing.py tests/test_bid_material_scope_services.py::test_bid_document_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_business_and_technical_document_format_state_rules_are_split tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+git diff --check
+rg -n "store\.(get_document_state|save_document_content|force_save_document|apply_business_document_format|apply_technical_document_format|get_final_document)|def (get_document_state|save_document_content|force_save_document|apply_business_document_format|apply_technical_document_format|get_final_document)\(" code/sewpg-bid-backend/app code/sewpg-bid-backend/tests -g '*.py'
+```
+
+结果：编译通过；文档状态/格式聚焦组合 `5 passed`；OnlyOffice/商务文档/访问门面组合 `20 passed`；完整后端组合 `312 passed, 5 skipped`；`git diff --check` 通过；`AppStore` 公开方法列表中已无旧文档状态门面。补充确认正式文档接口继续通过 `bid_document_flow.py` / 双轨文档 service 访问已 guard 的项目运行态或可写状态，测试构造强制保存改为 `force_save_document_state` + `persist_project_state`；同名命中只剩正式 route/flow 方法名和防回退断言，不再有 `store.*` 旧文档门面调用。
+
+旧 `store.py` 解析进度写入门面删除补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_parse_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_do_not_use_legacy_template_when_project_has_no_template -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_bid_material_scope_services.py::test_bid_parse_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+git diff --check
+rg -n "def (start_parse_progress|update_parse_progress)\(|start_parse_progress_state|update_parse_progress_state\(" code/sewpg-bid-backend/app/services/store.py code/sewpg-bid-backend/tests/test_bid_material_scope_services.py code/sewpg-bid-backend/app/services/bid_parse_service.py
+```
+
+结果：编译通过；解析状态/项目访问门面聚焦组合 `3 passed`；解析/项目素材范围组合 `50 passed`；完整后端组合 `312 passed, 5 skipped`；`git diff --check` 通过；`AppStore` 公开方法列表中已无 `start_parse_progress` / `update_parse_progress`。补充确认解析进度写入只保留在双轨解析 service 内，`store.py` 不再 import 或调用 `start_parse_progress_state` / `update_parse_progress_state`；同名命中只剩 `bid_parse_state.py`、`bid_parse_service.py` 和防回退测试。
+
+旧 `store.py` 解析结果/模板文件写回门面删除补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_parse_state_rules_are_outside_store tests/test_business_gap_planner.py::BusinessGapPlannerTests::test_business_gap_api_uses_business_workspace_and_keeps_technical_gap_state_empty tests/test_business_assembly.py::BusinessAssemblyServiceTests::test_business_fill_generation_uses_business_assembler_without_technical_gap_state -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_parse_pipeline.py tests/test_bid_material_scope_services.py::test_bid_parse_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+git diff --check
+rg -n "store\.(update_parse_result|update_template_files)|def (update_parse_result|update_template_files)\(|update_parse_result_state\(|update_template_files_state\(" code/sewpg-bid-backend/app/services/store.py code/sewpg-bid-backend/app code/sewpg-bid-backend/tests -g '*.py'
+```
+
+结果：编译通过；解析状态/商务缺口/商务装配聚焦组合 `3 passed`；商务缺口/商务装配/解析扩展组合 `66 passed`；完整后端组合 `312 passed, 5 skipped`；`git diff --check` 通过；`AppStore` 公开方法列表中已无 `update_parse_result` / `update_template_files`。补充确认解析结果写回和模板文件写回只保留在 `business_parse_assets.py` / `bid_parse_service.py` 或测试内显式 state 函数路径，`store.py` 不再 import 或调用 `update_parse_result_state` / `update_template_files_state`；直接 `store` 依赖扫描仍只剩 `workspace_project_access.py`。
+
+旧 `store.py` 解析结果/解析存储读取门面删除补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_parse_state_rules_are_outside_store tests/test_directory_generation.py::DirectoryGenerationTests::test_only_explicit_appendix_tables_are_auto_added_after_template_outline tests/test_directory_generation.py::DirectoryGenerationTests::test_generate_outline_fails_when_template_is_missing tests/test_directory_generation.py::DirectoryGenerationTests::test_generate_outline_rejects_invalid_project_template_docx tests/test_gap_review_flow.py::GapReviewFlowTests::test_gap_detection_creates_real_gap_plan_from_directory_material_refs_and_parse_appendices -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_directory_generation.py tests/test_gap_review_flow.py tests/test_parse_pipeline.py tests/test_bid_material_scope_services.py::test_bid_parse_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+git diff --check
+rg -l "from app\.services\.store import store|\bstore\." code/sewpg-bid-backend/app -g '*.py' | sort
+rg -n "store\.(get_parse_result|get_parse_storage)|def (get_parse_result|get_parse_storage)\(" code/sewpg-bid-backend/app code/sewpg-bid-backend/tests -g '*.py'
+```
+
+结果：编译通过；解析状态/目录/缺口聚焦组合 `5 passed`；目录/缺口/解析扩展组合 `101 passed`；完整后端组合 `312 passed, 5 skipped`；`git diff --check` 通过；直接 `store` 依赖扫描仍只剩 `workspace_project_access.py`；`AppStore` 公开方法列表中已无 `get_parse_result` / `get_parse_storage`。补充确认测试复用解析结果/存储时改为从 `store.get_project_runtime_state(project_id)` 读取深拷贝，正式 app 侧仍由双轨解析 service、商务解析资产 service、目录生成底层或 workspace access 读取已 guard 的运行态。
+
+旧 `store.py` 解析进度读取门面删除补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_parse_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_progress_records_real_steps_and_completion -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_bid_material_scope_services.py::test_bid_parse_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+rg -n "store\.(get_parse_progress)|def (get_parse_progress)\(" app tests -g '*.py'
+```
+
+结果：编译通过；解析进度/访问门面聚焦组合 `3 passed`；解析/项目素材范围组合 `50 passed`；完整后端组合 `312 passed, 5 skipped`；`AppStore` 公开方法列表中已无 `get_parse_progress`，正式项目解析状态读取由 `workspace_project_access.py` 取可写项目后调用 `ensure_parse_progress_state` 并按需显式持久化；同名命中只剩防回退断言。
+
+旧 `store.py` 解析输入读取门面删除补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_parse_state_rules_are_outside_store tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_do_not_use_legacy_template_when_project_has_no_template tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_use_settings_default_template_when_project_has_no_template tests/test_parse_pipeline.py::ParsePipelineTests::test_project_template_overrides_fallback_template -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_security_settings_ocr_routes.py::SecuritySettingsOcrRoutesTests::test_ocr_success_persists_task_candidates_and_confirmation tests/test_bid_material_scope_services.py::test_bid_parse_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+rg -n "store\.(get_parse_inputs)|def (get_parse_inputs)\(" app tests -g '*.py'
+```
+
+结果：编译通过；解析输入 fallback 聚焦组合 `4 passed`；解析/设置 OCR/访问门面组合 `43 passed, 1 skipped`；完整后端组合 `312 passed, 5 skipped`；`AppStore` 公开方法列表中已无 `get_parse_inputs`。补充确认测试验证模板 fallback 输入时改为从项目运行态读取并调用 `project_parse_input_records`，正式 app 侧仍由双轨解析 service、目录 flow 或目录生成底层读取已 guard 的解析输入；同名命中只剩防回退断言。
+
+旧 `store.py` 模板 fallback 读写门面删除补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_project_state_rules_are_outside_store tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_do_not_use_legacy_template_when_project_has_no_template tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_use_settings_default_template_when_project_has_no_template tests/test_parse_pipeline.py::ParsePipelineTests::test_project_template_overrides_fallback_template tests/test_directory_generation.py::DirectoryGenerationTests::test_generate_outline_fails_when_template_is_missing tests/test_business_gap_planner.py::BusinessGapPlannerTests::test_business_gap_api_uses_business_workspace_and_keeps_technical_gap_state_empty -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_directory_generation.py tests/test_business_gap_planner.py tests/test_bid_material_scope_services.py::test_bid_project_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+rg -n "store\.(template_fallback_context|update_template_fallback)|def (template_fallback_context|update_template_fallback)\(" app tests -g '*.py'
+```
+
+结果：编译通过；模板 fallback/解析输入/目录缺模板/商务缺口聚焦组合 `6 passed`；解析/目录/商务缺口扩展组合 `84 passed`；完整后端组合 `312 passed, 5 skipped`；`AppStore` 公开方法列表中已无 `template_fallback_context` / `update_template_fallback`。补充确认正式 fallback 上下文读取和开关写回改由 `workspace_project_access.py` 取项目后调用 `project_template_fallback_context` / `update_template_fallback_state`，测试构造 fallback 关闭态也改为显式 state 函数加项目持久化；同名命中只剩 `bid_project_service.update_template_fallback` 正式业务方法名和防回退断言。
+
+旧 `store.py` 目录/大纲读取门面删除补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_directory_generation.py::DirectoryGenerationTests::test_get_directory_state_loads_rule_evidence_from_existing_file tests/test_directory_generation.py::DirectoryGenerationTests::test_generate_outline_rejects_invalid_project_template_docx tests/test_directory_generation.py::DirectoryGenerationTests::test_futurecode_progress_updates_before_completion tests/test_directory_generation.py::DirectoryGenerationTests::test_background_job_updates_running_state_then_completes -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_directory_generation.py tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_bid_material_scope_services.py::test_bid_outline_state_rules_are_outside_store -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+rg -n "store\.(get_directory_state|get_outline_state)|def (get_directory_state|get_outline_state)\(" app tests -g '*.py'
+```
+
+结果：编译通过；目录状态/证据回填聚焦组合 `5 passed`；目录生成扩展组合 `32 passed`；完整后端组合 `312 passed, 5 skipped`；`AppStore` 公开方法列表中已无 `get_directory_state` / `get_outline_state`。补充确认测试读取目录状态时改为通过项目运行态和 `directory_state_with_rule_evidence`，保留从证据文件回填 `ruleEvidence` 的语义；读取大纲状态时改为直接深拷贝项目运行态中的 `outline_state`；同名命中只剩防回退断言。
+
+旧 `store.py` 正文生成状态读取门面删除补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_fill_generation.py::FillGenerationTests::test_background_job_updates_running_state_then_writes_real_docx tests/test_fill_generation.py::FillGenerationTests::test_generation_failure_before_inputs_marks_prepare_task_failed tests/test_business_assembly.py::BusinessAssemblyServiceTests::test_business_fill_generation_uses_business_assembler_without_technical_gap_state -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_fill_generation.py tests/test_business_assembly.py tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+rg -n "store\.(get_fill_state)|def (get_fill_state)\(" app tests -g '*.py'
+```
+
+结果：编译通过；正文生成运行/完成/失败和商务装配聚焦组合 `4 passed`；填充/商务装配扩展组合 `26 passed`；完整后端组合 `312 passed, 5 skipped`；`AppStore` 公开方法列表中已无 `get_fill_state`。补充确认测试读取正文生成状态时改为从项目运行态深拷贝 `fill_state`，正式 app 侧仍由双轨生成/文档 service 通过已 guard 的项目运行态读取；同名命中只剩防回退断言。
+
+旧 `store.py` 目录生成运行态写入门面删除补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_directory_generation.py::DirectoryGenerationTests::test_futurecode_progress_updates_before_completion tests/test_directory_generation.py::DirectoryGenerationTests::test_background_job_updates_running_state_then_completes tests/test_directory_generation.py::DirectoryGenerationTests::test_run_directory_generation_returns_running_state_immediately -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_directory_generation.py tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_bid_material_scope_services.py::test_bid_outline_state_rules_are_outside_store -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+rg -n "store\.(start_directory_generation|update_directory_generation_state|fail_directory_generation)|def (start_directory_generation|update_directory_generation_state|fail_directory_generation)\(" app tests -g '*.py'
+```
+
+结果：编译通过；目录运行态进度聚焦组合 `4 passed`；目录生成扩展组合 `32 passed`；完整后端组合 `312 passed, 5 skipped`；`AppStore` 公开方法列表中已无 `start_directory_generation` / `update_directory_generation_state` / `fail_directory_generation`。补充确认测试构造目录运行态开始状态时改为调用 `start_directory_generation_state` 并显式持久化，正式目录运行态开始/更新/失败写回只保留在 `bid_directory_flow.py` 中；同名命中只剩正式 flow 方法、state helper 和防回退断言。
+
+素材 helper 隐式标类入口收口补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_material_scope_helpers_require_explicit_bid_type tests/test_bid_material_scope_services.py::test_material_identity_options_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_file_filter_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_wiki_node_scope_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_wiki_tree_display_rules_are_outside_material_store tests/test_material_identity_options.py tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_raw_file_filter_applies_project_customer_tier_and_clean_status tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_raw_file_filter_keeps_bid_scope_and_pagination_together tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_wiki_node_bid_types_inherit_parent_or_default_to_scope tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_wiki_tree_context_filters_roots_and_preserves_selected_order tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_raw_move_metadata_preserves_action_and_updates_scope tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_raw_move_metadata_can_set_file_move_action tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_raw_move_folder_metadata_sets_folder_move_action -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+rg -n 'bid_type: str = ""|destination_bid_type: str = ""|item_bid_type: str = ""' app/services/material_*.py
+git diff --check
+```
+
+结果：编译通过；素材 helper 显式标类聚焦组合 `16 passed`；完整后端组合 `313 passed, 5 skipped`；`git diff --check` 通过；`app/services/material_*.py` 已无 `bid_type=""` / `destination_bid_type=""` / `item_bid_type=""` 默认参数。补充确认身份选项、raw 文件过滤、raw 文件列表查询、Wiki 节点默认适用标类、Wiki 树/列表读取和 raw 移动元数据 helper 均要求调用方显式传入本次操作标类，同时保留历史素材记录缺失 `bidType` 字段时的读取容错。
+
+前端双轨构建验证补充：
+
+```bash
+npm run build
+npm run lint
+```
+
+结果：前端生产构建通过，仅有 Vite 大 chunk 警告；ESLint 通过。补充确认删旧页面/旧 helper 后，当前双轨 workspace 路由可正常完成构建。
+
+raw 树显式标类收口补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_material_scope_helpers_require_explicit_bid_type tests/test_bid_material_scope_services.py::test_raw_tree_display_rules_are_outside_material_store tests/test_business_material_library_rules.py tests/test_project_material_scope.py::ProjectMaterialScopeRouteTests::test_materials_path_returns_project_readable_scopes tests/test_project_material_scope.py::ProjectMaterialScopeRouteTests::test_business_materials_path_returns_business_scopes -q
+```
+
+结果：编译通过；raw 树/素材目录范围聚焦组合 `37 passed`；随后完整后端组合 `313 passed, 5 skipped`；`git diff --check` 通过。补充确认 `material_store.raw_tree`、raw 创建/删除/移动目录后的返回树均已按显式标类进入，业务/技术 facade 分别传入商务标/技术标。
+
+raw 单文件入口显式标类收口补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_material_scope_helpers_require_explicit_bid_type tests/test_bid_material_scope_services.py::test_raw_access_operations_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_lifecycle_operations_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_update_metadata_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_file_filter_rules_are_outside_material_store tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_raw_file_bid_scope_allows_common_materials_and_rejects_opposite_bid tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_raw_file_filter_applies_project_customer_tier_and_clean_status tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_raw_file_filter_keeps_bid_scope_and_pagination_together tests/test_onlyoffice_document.py::OnlyOfficeDocumentTests::test_cleaned_material_preview_route_returns_onlyoffice_session tests/test_onlyoffice_document.py::OnlyOfficeDocumentTests::test_cleaned_material_preview_route_blocks_unavailable_cleaned_word -q
+```
+
+结果：编译通过；raw 单文件范围校验聚焦组合 `10 passed`；随后完整后端组合 `314 passed, 5 skipped`；`git diff --check` 通过。补充确认 raw 更新、删除、下载、清洗稿预览/内容下载和单文件移动底层入口均显式接收标类，并在 operation 内校验素材范围；通用素材保持双轨可见，旧记录缺 `bidType` 时按目录根推断。
+
+Wiki 附件显式标类收口补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_wiki_attachment_operations_are_outside_material_store tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_wiki_attachment_scope_allows_common_docs_and_rejects_opposite_bid tests/test_wiki_generation.py tests/test_wiki_export_routes.py -q
+```
+
+结果：编译通过；Wiki 附件/Wiki 生成导出聚焦组合 `12 passed`；随后完整后端组合 `315 passed, 5 skipped`；`git diff --check` 通过。补充确认 Wiki 附件上传、内容下载和删除底层 operation 均校验标类范围，`material_store.wiki_download_attachment_content` 不再提供无标类公共入口。
+
+Wiki 自动导入显式标类收口补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_wiki_import_rules_are_outside_material_store tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_generated_wiki_import_rules_build_scoped_root_and_defaults -q
+```
+
+结果：Wiki 导入/生成/导出聚焦组合 `12 passed`；随后完整后端组合 `315 passed, 5 skipped`；`git diff --check` 通过。补充确认自动生成 Wiki 导入底层要求显式标类，root 适用标类与调用标类不一致时会拒绝，导入后也按当前标类返回 scoped Wiki 列表。
+
+raw 目录 operation 显式标类校验补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_material_scope_helpers_require_explicit_bid_type tests/test_bid_material_scope_services.py::test_raw_lifecycle_operations_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_folder_move_scope_rules_are_outside_material_store tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_raw_file_bid_scope_allows_common_materials_and_rejects_opposite_bid tests/test_business_material_library_rules.py::RawMaterialProtectedFolderTests::test_auto_bootstrapped_business_folders_cannot_be_deleted -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_parse_pipeline.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_bid_material_scope_services.py tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_document_editing.py tests/test_gap_review_flow.py tests/test_gap_event_loop_safety.py tests/test_business_gap_planner.py tests/test_business_assembly.py tests/test_fill_generation.py tests/test_material_identity_options.py tests/test_turbine_model_selection.py tests/test_onlyoffice_document.py tests/test_directory_generation.py tests/test_business_material_splitter.py tests/test_business_material_library_rules.py -q
+```
+
+结果：编译通过；raw 目录标类校验聚焦组合 `5 passed`；随后完整后端组合 `315 passed, 5 skipped`。补充确认 raw 目录创建、删除、移动均把显式标类传到底层 operation，父级目录、待删除目录、移动源目录和目标父目录都会做范围校验。
+
+商务标文档旧入口口径补充：
+
+```bash
+rg -n "src/pages/(TenderReview|OutlineReview|ProjectList|MaterialDB|MaterialWiki|GapRecognition|GenerateProgress|CoverageHeatmap|FinalExport|ParseResult|CoCreationEditor)|routes/(projects|parse|directory|generation|document|export|audit|coverage|materials|ocr|outline|review)|/api/projects|/api/materials|/api/audit" doc/21-商务标解析模块执行计划.md doc/23-商务标目录生成Skill适配说明.md
+git diff --check
+```
+
+结果：商务标解析说明和商务标目录 Skill 适配说明已无旧共享页面、旧通用 route 和旧 `/api/projects` / `/api/materials` / `/api/audit` 命中；`git diff --check` 通过。补充确认 `doc/21` 现在指向 `routes/business.py`、`business_parse_service`、`BusinessTenderReview` 和 `BusinessParseResult`，`doc/23` 现在指向 `BusinessOutlineReview`。
+
+`material_store` 薄 facade 防回退补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_material_store_is_thin_operation_facade -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_material_store_is_thin_operation_facade tests/test_bid_material_scope_services.py::test_material_file_display_helpers_are_outside_material_store tests/test_bid_material_scope_services.py::test_material_runtime_tables_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_tree_display_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_wiki_attachment_operations_are_outside_material_store -q
+git diff --check
+```
+
+结果：薄 facade 单测 `1 passed`；相邻素材边界组合 `5 passed`。补充确认 `material_store.py` 只保留 operation facade 调用，SQL、模型、MinIO、DDL 和运行表细节必须留在 operations/state 模块内。
+
+工作树拆包口径补充：
+
+```bash
+git status --porcelain=v1 | awk '{s=substr($0,1,2); c[s]++} END {for (s in c) print c[s], s}' | sort -nr
+git diff --shortstat
+git diff --name-status | awk '{print $1}' | sort | uniq -c | sort -nr
+git ls-files --others --exclude-standard | awk -F/ '{if ($1=="code") print $1"/"$2"/"$3; else print $1}' | sort | uniq -c | sort -nr
+```
+
+结果：当时工作树仍未 stage、未 commit；快照为 `100 ??` / `99 M` / `67 D`，tracked diff 为 `166 files changed, 15096 insertions(+), 48296 deletions(-)`。后续提交建议拆为 5 包：文档口径与工作树清理、后端双轨 route/service 与旧通用入口删除、素材/Wiki 显式标类边界、前端 business/technical workspace 拆分与旧页面删除、测试契约迁移与回归记录。
+
+路由与文档口径复核补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python - <<'PY'
+from app.main import app
+paths = sorted(route.path for route in app.routes)
+legacy = [p for p in paths if p.startswith('/api/projects') or p.startswith('/api/materials') or p.startswith('/api/audit')]
+technical = [p for p in paths if p.startswith('/api/technical')]
+business = [p for p in paths if p.startswith('/api/business')]
+print(f'legacy={len(legacy)}')
+print(f'technical={len(technical)}')
+print(f'business={len(business)}')
+PY
+```
+
+结果：当前 FastAPI app 路由表为 `legacy=0`、`technical=99`、`business=105`。已同步修正 `doc/31` 中旧的技术标/商务标注册数量，旧 `/api/projects...`、`/api/materials...`、`/api/audit...` 仍未重新注册。
+
+工作树拆包清单复核：
+
+```bash
+git -c core.quotePath=false status --porcelain=v1 | awk '...按 01-docs / 02-backend-core / 03-material-wiki / 04-frontend / 05-tests 分类...'
+```
+
+结果：当前 `git status --short` 为 266 个压缩条目；按 `--untracked-files=all` 或 `git add -n` 展开后为 267 个 stage 行，均已归类，无 `UNMATCHED`。建议后续 staging 继续按 5 包推进：
+
+| 包 | 数量 | 状态构成 | 主范围 |
+|---|---:|---|---|
+| 01-docs | 40 | 19 M / 17 D / 4 ?? | 根 README、`code/AGENT.md`、`code/plan.md`、`code/progress.md`、`doc/`、API/前后端 README 与 API 文档、`.gitignore` |
+| 02-backend-core | 91 | 22 M / 15 D / 54 ?? | 后端双轨 route、business/technical service、项目/解析/目录/生成/文档/缺口/覆盖/导出 flow、store 持久化边界和 worker |
+| 03-material-wiki | 38 | 5 M / 1 D / 32 ?? | `material_store` 薄 facade、素材 raw/Wiki operations、双轨素材 facade、素材分类/目录/上传/移动/运行表/Wiki 导入导出和机型候选 |
+| 04-frontend | 77 | 34 M / 34 D / 9 ?? | 前端 business/technical workspace、旧共享业务页/组件删除、双轨 API client、导航、阶段流和 workspace helper 防回退测试 |
+| 05-tests | 21 | 19 M / 2 ?? | 后端测试契约迁移、防回退测试和 Wiki 导出测试 |
+
+`01-docs` 包提交前审计：
+
+```bash
+rg -n "18-S3缺口处理重组路线|19-评测体系与S3重组开发记录|20-商务标素材库执行计划|23-商务标S3缺口处理预计方案计划|24-商务标S3缺口处理执行步骤|25-商务标S4生成标书执行计划|26-UI统一优化与Figma沉淀执行计划|27-UI现状扫描与问题清单|28-UI轻量设计规范|29-UI统一改造验收记录|archive/01-需求与目标|archive/02-技术选型与架构|archive/03-UI设计|archive/04-路线备选与功能盘点|archive/07-FastAPI承接与前端改造|archive/09-二阶段分工与第一周里程碑" README.md code/AGENT.md code/plan.md code/progress.md doc code/sewpg-bid-api/*.md code/sewpg-bid-backend/README.md code/sewpg-bid-frontend/README.md code/sewpg-bid-frontend/docs
+rg -n "/workspace/business/materials/structured|商务标结构化素材库|/materials/structured" README.md code/AGENT.md code/plan.md code/progress.md doc code/sewpg-bid-api/*.md code/sewpg-bid-backend/README.md code/sewpg-bid-frontend/README.md code/sewpg-bid-frontend/docs
+rg -n "<relative-time-keywords>" README.md code/AGENT.md code/plan.md code/progress.md doc code/sewpg-bid-api/*.md code/sewpg-bid-backend/README.md code/sewpg-bid-frontend/README.md code/sewpg-bid-frontend/docs
+git diff --check
+```
+
+结果：修正 `doc/27` 中已删除历史文档引用，改为指向仍存在的 `doc/17` 与 `doc/31`；修正 `doc/29` 中商务标素材库路由，从旧 `/workspace/business/materials/structured` 改为当前 `/workspace/business/materials/raw`，页面名称从“结构化素材库”改为“原始素材库”。复扫后已删除文档名无命中；相对时间词无命中；另用本地 Markdown 链接存在性脚本检查得到 `broken_links=0`；`git diff --check` 通过。`/materials/structured` 剩余命中均为旧入口已删除的说明记录。
+
+`02-backend-core` 包提交前审计：
+
+```bash
+rg -n "include_router|from app\\.api\\.routes|app\\.api\\.routes\\.|routes\\.(projects|parse|directory|generation|document|export|audit|coverage|materials|ocr|outline|review|gaps)" code/sewpg-bid-backend/app -g '*.py'
+rg -n "from app\\.services\\.store import store" code/sewpg-bid-backend/app/services code/sewpg-bid-backend/app/api/routes code/sewpg-bid-backend/app/workers -g '*.py'
+rg -n "from app\\.api\\.utils|import app\\.api\\.utils|app\\.api\\.utils" code/sewpg-bid-backend/app/services code/sewpg-bid-backend/app/workers -g '*.py'
+rg -n "app\\.services\\.(gap_planning|draft_generation|bid_flow_service)|from app\\.services import (gap_planning|draft_generation|bid_flow_service)|bid_flow_service" code/sewpg-bid-backend/app -g '*.py'
+PYTHONPATH=. .venv/bin/python - <<'PY'
+from app.main import app
+paths = sorted(route.path for route in app.routes)
+print(f"legacy={len([p for p in paths if p.startswith('/api/projects') or p.startswith('/api/materials') or p.startswith('/api/audit')])}")
+print(f"technical={len([p for p in paths if p.startswith('/api/technical')])}")
+print(f"business={len([p for p in paths if p.startswith('/api/business')])}")
+PY
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_draft_generation_uses_workspace_specific_modules tests/test_bid_material_scope_services.py::test_business_and_technical_routes_import_workspace_flow_services tests/test_bid_material_scope_services.py::test_bid_project_persistence_is_outside_store tests/test_bid_material_scope_services.py::test_services_use_public_project_state_mutation_api tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_bid_material_scope_services.py::test_bid_runtime_recovery_rules_are_outside_store tests/test_bid_material_scope_services.py::test_bid_parse_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_bid_outline_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_bid_document_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_bid_fill_generation_state_rules_are_outside_store tests/test_project_material_scope.py::ProjectMaterialScopeRouteTests::test_legacy_project_materials_path_endpoint_is_not_registered tests/test_project_material_scope.py::ProjectMaterialScopeRouteTests::test_legacy_project_ocr_endpoint_is_not_registered tests/test_project_material_scope.py::ProjectMaterialScopeRouteTests::test_legacy_project_parse_result_endpoints_are_not_registered tests/test_project_material_scope.py::ProjectMaterialScopeRouteTests::test_legacy_material_endpoints_are_not_registered -q
+PYTHONPATH=. .venv/bin/python -m compileall app
+git diff --check
+```
+
+结果：后端 route 文件当前只剩 `auth.py`、`business.py`、`business_gaps.py`、`dashboard.py`、`settings.py`、`system.py`、`technical.py`；`api_router` 只注册这些当前入口。直接 `store` 依赖只剩 `workspace_project_access.py`；service/worker 不再反向 import `app.api.utils`；精确扫描无旧 `gap_planning.py`、`draft_generation.py`、`bid_flow_service.py` 引用。当前 FastAPI app 路由表保持 `legacy=0` / `technical=99` / `business=105`。后端核心边界聚焦测试 `14 passed`；`compileall app` 与 `git diff --check` 通过。
+
+`03-material-wiki` 包提交前审计：
+
+```bash
+rg -n "from sqlalchemy|from app\\.models\\.materials import|from app\\.services\\.minio_client import minio_client|async with async_session|session\\.execute|select\\(|session\\.execute\\((insert|update|delete)\\(|minio_client\\.|RawFile\\(|RawFile\\.|RawFolder\\(|RawFolder\\.|WikiNode|WikiDoc|WikiAttachment|CREATE TABLE|ALTER TABLE|Jsonb|psycopg" code/sewpg-bid-backend/app/services/material_store.py
+rg -n "from app\\.services\\.material_store import material_store" code/sewpg-bid-backend/app -g '*.py'
+rg -n "\"/api/materials|'/api/materials|/api/materials" code/sewpg-bid-backend/app code/sewpg-bid-backend/tests -g '*.py'
+rg -n "bid_type\\s*:\\s*str\\s*=|bid_type\\s*=\\s*\"\"|destination_bid_type\\s*=\\s*\"\"|item_bid_type\\s*=\\s*\"\"" code/sewpg-bid-backend/app/services/material*.py code/sewpg-bid-backend/app/services/*material*.py code/sewpg-bid-backend/app/services/wiki_generation.py code/sewpg-bid-backend/app/services/identity.py
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_wiki_generation.py::WikiGenerationTests::test_unscoped_legacy_material_profiles_as_common_not_technical -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_material_store_is_thin_operation_facade tests/test_bid_material_scope_services.py::test_material_file_display_helpers_are_outside_material_store tests/test_bid_material_scope_services.py::test_material_runtime_tables_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_tree_display_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_wiki_attachment_operations_are_outside_material_store tests/test_bid_material_scope_services.py::test_wiki_import_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_folder_move_scope_rules_are_outside_material_store tests/test_bid_material_scope_services.py::test_raw_lifecycle_operations_are_outside_material_store tests/test_bid_material_scope_services.py::test_legacy_structured_material_store_api_is_removed tests/test_bid_material_scope_services.py::test_store_does_not_bypass_workspace_material_facades tests/test_bid_material_scope_services.py::test_wiki_generation_import_uses_workspace_material_stores tests/test_wiki_generation.py tests/test_wiki_export_routes.py tests/test_business_material_library_rules.py tests/test_material_identity_options.py -q
+PYTHONPATH=. .venv/bin/python -m compileall app
+git diff --check
+```
+
+结果：修正 Wiki inventory 中完全缺标类的历史通用素材兜底，不再经 `TECHNICAL_BID_TYPE` 偏向技术标；缺标类且路径为 `通用素材/...` 的素材会归为 `通用`，并新增防回退测试。`material_store.py` 重型依赖扫描无命中，仍是薄 facade；app 里只有 `business_material_store.py` 与 `technical_material_store.py` 直接导入通用 `material_store`；旧 `/api/materials...` 只剩防回退测试和 `scoped_material_urls.py` 兼容替换。新增单测 `1 passed`；素材/Wiki 聚焦组合 `61 passed`；`compileall app` 与 `git diff --check` 通过。
+
+`04-frontend` 包提交前审计：
+
+```bash
+rg -n "from ['\"](\\.\\./)*\\.\\./pages|from ['\"].*src/pages|ProjectPathRedirect|LegacyProjectPathRedirect|BusinessGapRecognitionPage|BusinessTenderReviewPage|BusinessCoverageHeatmap|BusinessGenerateProgress|BusinessFinalExport|TechnicalStageGroupNav|MaterialsViewSwitch|ProjectStageProgress|StageGroupNav|FakeProgress|StreamingText|HighlightedText|ExportModal|MaterialSelectModal" code/sewpg-bid-frontend/src
+rg -n "path=\"/(projects|materials|audit)|to=\{?['\"]/(projects|materials|audit)|request\(['\"]/(projects|materials|audit)|createEventStream\(['\"]/(projects|materials|audit)|href=\{?['\"]/(projects|materials|audit)|/materials/structured|/structured" code/sewpg-bid-frontend/src
+rg -n "technical[A-Za-z]*API|/technical|Technical[A-Z]|technical-" code/sewpg-bid-frontend/src/workspaces/business
+rg -n "business[A-Za-z]*API|/business|Business[A-Z]|business-" code/sewpg-bid-frontend/src/workspaces/technical
+npm run lint
+npm run build
+```
+
+结果：旧根路由、旧共享业务页/组件、旧 workspace 兼容跳转和 `/materials/structured` 扫描无回流；business workspace 未命中 technical API/类/样式，technical workspace 未命中 business API/类/样式。同步收紧 `AppShell.jsx` 导航高亮正则，只匹配当前 `/parse/business|technical`、`/workspace/business|tech/projects`、`/workspace/business|tech/materials` 和 `/workspace/business|tech/logs`，不再宽容匹配旧根 `/projects`、`/materials`、`/audit` 或旧 `/review`。前端 `npm run lint` 通过；`npm run build` 通过，仅保留 Vite 大 chunk 警告。
+
+`05-tests` 包提交前审计：
+
+```bash
+git -c core.quotePath=false diff --name-status -- code/sewpg-bid-backend/tests
+git -c core.quotePath=false ls-files --others --exclude-standard -- code/sewpg-bid-backend/tests
+rg -n "\/api\/(projects|materials|audit)|routes\.(projects|parse|directory|generation|document|export|audit|coverage|materials|ocr|outline|review|gaps)|app\.services\.(gap_planning|draft_generation|bid_flow_service)|from app\.services import (gap_planning|draft_generation|bid_flow_service)|businessGapTask|商务待填写字段" code/sewpg-bid-backend/tests
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest -q
+```
+
+结果：测试包当前为 19 个已修改测试文件、2 个新增测试文件；旧 `/api/projects`、`/api/materials`、`/api/audit` 仅保留在 404 防回退断言里，旧 `gap_planning`、`draft_generation`、`bid_flow_service` 仅保留在“不应再引用”的源码断言里，技术事实表不再沿用 `businessGapTask` / `商务待填写字段` 的防回退断言也在测试中保留。后端 `compileall app` 通过；后端完整测试 `484 passed, 17 skipped`。
+
+本轮全量回归补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest -q
+npm run lint
+npm run build
+```
+
+结果：后端编译通过；后端完整测试 `484 passed, 17 skipped`；前端 lint 通过；前端 build 通过，仅保留 Vite 大 chunk 警告。
+
+OCR 审计标类补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_ocr_service_injects_workspace_audit_metadata -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py::test_bid_ocr_service_injects_workspace_audit_metadata tests/test_bid_material_scope_services.py::test_ocr_routes_are_workspace_scoped tests/test_project_material_scope.py::ProjectMaterialScopeRouteTests::test_workspace_ocr_task_routes_are_split tests/test_project_material_scope.py::ProjectMaterialScopeRouteTests::test_legacy_project_ocr_endpoint_is_not_registered -q
+PYTHONPATH=. .venv/bin/python -m compileall app
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.py tests/test_project_material_scope.py tests/test_security_settings_ocr_routes.py -q
+```
+
+结果：`BidOcrService` 已从 business/technical 项目 service 获取已 guard 的项目，并把 `projectId`、`projectName`、`projectCode`、`customerName`、`bidType` 注入底层 OCR 审计 metadata；OCR 执行、候选确认和候选忽略写入审计时都会携带标类信息，便于 `/api/business/audit` 与 `/api/technical/audit` 按标类过滤。新增非集成防回退测试 `1 passed`；OCR/项目范围聚焦组合 `4 passed`；后端边界扩展组合 `99 passed, 8 skipped`；`compileall app` 通过；随后完整后端回归 `484 passed, 17 skipped`。
+
+前端共享项目弹窗 API 边界补充：
+
+```bash
+rg -n "from ['\"]\\.\\./\\.\\./api|businessProjectsAPI|businessMaterialsAPI|technicalProjectsAPI|technicalMaterialsAPI|workspaceApisForBidType|workspaceKind" code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx code/sewpg-bid-frontend/src/components/shared code/sewpg-bid-frontend/src/components/ui
+rg -n "<ProjectWizardModal" -g "*.jsx" code/sewpg-bid-frontend/src
+npm run lint
+npm run build
+```
+
+结果：`ProjectWizardModal.jsx` 已移除 business/technical API 直接 import 和 `workspaceApisForBidType` 分流函数，改为由调用页显式传入 `projectsApi`、`materialsApi` 和技术标专用 `turbineModelOptionsApi`；技术标项目列表、技术标解析审核和商务标解析审核三个调用点都已注入各自 workspace API。共享 modal/API 依赖扫描无命中；前端 `npm run lint` 通过；前端 `npm run build` 通过，仅保留 Vite 大 chunk 警告。
+
+前端共享项目弹窗机型字段配置化补充：
+
+```bash
+rg -n "form\\.bidType === '技术标'|form\\.bidType !== '技术标'|defaultBidType \\|\\| '技术标'|<option>技术标|<option>商务标|businessProjectsAPI|businessMaterialsAPI|technicalProjectsAPI|technicalMaterialsAPI|workspaceApisForBidType|workspaceKind" code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx code/sewpg-bid-frontend/src/components/shared code/sewpg-bid-frontend/src/components/ui
+npm run lint
+npm run build
+```
+
+结果：`ProjectWizardModal.jsx` 不再通过 `form.bidType === '技术标'` 判断是否加载/校验/提交投标机型，也不再内置技术标/商务标下拉选项；机型字段改为由调用页显式传入 `requiresTurbineModel`，技术标项目列表和技术标解析审核页传入该配置，商务标解析审核页不传。共享 modal 技术/商务硬编码扫描无命中；前端 `npm run lint` 与 `npm run build` 通过，build 仅保留 Vite 大 chunk 警告。
+
+素材无标类兜底补充：
+
+```bash
+PYTHONPATH=. pytest tests/test_material_identity_options.py tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_raw_upload_target_plan_handles_auto_project_target tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_raw_upload_target_plan_requires_explicit_bid_type tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_raw_upload_target_plan_infers_business_customer_subfolder tests/test_business_material_library_rules.py::BusinessMaterialLibraryRulesTests::test_raw_upload_target_plan_keeps_legacy_customer_aliases_canonicalizable tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_bid_material_scope_services.py::test_material_scope_helpers_require_explicit_bid_type -q
+python -m compileall app/services/material_identity_options.py app/services/material_upload_target.py app/services/material_upload_operations.py
+git diff --check
+```
+
+结果：`material_identity_options.py`、`material_upload_metadata.py` 和 `material_folder_scope.py` 中无标类旧素材身份、上传元数据和规范目录 metadata 不再默认为技术标，完全缺标类的旧 `项目素材/...` 记录会归为 `通用`；`material_upload_target.py` 不再把缺失或非法上传标类默认为技术标，而是返回 `BID_TYPE_REQUIRED`，上传执行层对应抛出 `RAW_UPLOAD_BID_TYPE_REQUIRED`。`normalize_material_bid_type` 也不再带 `TECHNICAL_BID_TYPE` 默认值，目录层级 specs 和项目素材根路径必须显式传入技术标或商务标，旧目录迁移也不再用技术标作为最后兜底。`technical_turbine_material_options.py` 读取机型候选时也不再把缺标类素材默认为技术标，而是按 ext/folder/path 推断真实标类，缺标类的商务路径素材不会混入技术标机型选项。新增防回退测试确认旧无标类项目素材不偏向技术标、上传目标和目录 helper 都必须显式传入技术标或商务标、缺标类商务素材不进入技术标机型候选；素材身份/素材规则/标类源码契约组合 `46 passed`；相关文件编译通过；`git diff --check` 通过。当时工作树仍未 stage、未 commit，快照为 `100 ??` / `99 M` / `67 D`，tracked diff 为 `166 files changed, 15096 insertions(+), 48296 deletions(-)`。
+
+项目/运行态默认标类补充：
+
+```bash
+PYTHONPATH=. pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_bid_material_scope_services.py::test_bid_project_state_rules_are_outside_store tests/test_bid_material_scope_services.py::test_bid_runtime_recovery_rules_are_outside_store tests/test_stage_progress.py -q
+python -m compileall app/services/bid_type.py app/services/bid_project_state.py app/services/bid_runtime_state.py
+PYTHONPATH=. pytest tests/test_bid_material_scope_services.py tests/test_fill_generation.py tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_do_not_use_legacy_template_when_project_has_no_template tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_use_settings_default_template_when_project_has_no_template tests/test_parse_pipeline.py::ParsePipelineTests::test_project_template_overrides_fallback_template tests/test_directory_generation.py::DirectoryGenerationTests::test_run_directory_generation_returns_running_state_immediately -q
+PYTHONPATH=. pytest tests/test_stage_progress.py tests/test_onlyoffice_document.py tests/test_peripheral_routes.py -q
+git diff --check
+```
+
+结果：`bid_type.py` 新增 `require_bid_type`，`is_technical_bid_type("unknown")` 不再因为默认值误判为技术标；`bid_project_state.py` 的项目新建、项目标类读取、项目更新和解析产物推广必须显式拿到技术标或商务标，不再通过 `TECHNICAL_BID_TYPE` 兜底；`bid_runtime_state.py` 的解析结果恢复、解析存储恢复和项目运行态补齐也必须显式传入标类。`tests/test_stage_progress.py`、`tests/test_store_persistence.py` 中直接走 store 的历史测试已改为显式传入技术标，新增防回退断言确认缺标类项目创建、项目更新和运行态恢复会抛错。聚焦组合 `8 passed`；解析/生成/目录/状态扩展组合 `109 passed`；阶段/OnlyOffice/外围组合 `19 passed, 5 skipped`；相关文件编译通过；`git diff --check` 通过。当时工作树仍未 stage、未 commit，快照为 `100 ??` / `99 M` / `67 D`，tracked diff 为 `166 files changed, 15096 insertions(+), 48296 deletions(-)`。
+
+身份/素材范围默认标类补充：
+
+```bash
+PYTHONPATH=. pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_bid_material_scope_services.py::test_material_scope_helpers_require_explicit_bid_type tests/test_material_identity_options.py tests/test_project_material_scope.py tests/test_business_material_library_rules.py tests/test_wiki_generation.py -q
+python -m compileall app/services/identity.py app/services/material_identity_options.py app/services/material_upload_metadata.py app/services/wiki_generation.py
+git diff --check
+```
+
+结果：`identity.py` 的 `build_project_identity`、`build_project_material_scope`、`classify_material_path` 和 `material_identity` 不再把缺失或未知标类默认为技术标；项目身份和项目素材范围必须显式传入技术标或商务标，素材路径分类和素材身份只在调用方显式传入时允许 `通用`。新增防回退断言确认缺标类项目身份、项目素材范围、路径分类和素材身份都会抛错；身份/素材范围/Wiki 组合 `59 passed`；相关文件编译通过；`git diff --check` 通过。当时工作树仍未 stage、未 commit，快照为 `100 ??` / `99 M` / `67 D`，tracked diff 为 `166 files changed, 15096 insertions(+), 48296 deletions(-)`。
+
+目录/技术标生成 manifest 默认标类补充：
+
+```bash
+PYTHONPATH=. pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_directory_generation.py tests/test_fill_generation.py tests/test_gap_review_flow.py -q
+PYTHONPATH=. pytest tests/test_bid_material_scope_services.py tests/test_business_assembly.py tests/test_turbine_model_selection.py -q
+python -m compileall app/services/outline_generation.py app/services/tech_assembly.py app/services/technical_gap_planner.py app/services/technical_gap_review.py
+git diff --check
+```
+
+结果：`outline_generation.py` 的目录 prompt 和 S2 工作区标类必须显式传入技术标或商务标，不再用 `TECHNICAL_BID_TYPE` 或“投标文件”兜底；`tech_assembly.py` 的 S7 manifest 与 Wiki 导出、`technical_gap_planner.py` 的 S4 manifest、`technical_gap_review.py` 的 review payload 都改为从已 guard 项目读取显式标类，缺标类时直接抛错。新增源码防回退断言覆盖 `outline_generation`、`tech_assembly`、`technical_gap_planner`、`technical_gap_review`；目录/生成/review 组合 `72 passed`；标类边界/商务装配/机型组合 `107 passed`；相关文件编译通过；`git diff --check` 通过。补充把 `technical_material_store.py` 的技术标根目录 fallback 收口为 `ensure_root_path` 后，共享层默认技术标扫描无命中；技术标 facade 仍通过显式 `TECHNICAL_BID_TYPE` 表达领域入口。技术素材边界补充组合 `4 passed`，相关文件编译通过，`git diff --check` 通过。当时工作树仍未 stage、未 commit，快照为 `100 ??` / `99 M` / `67 D`，tracked diff 为 `166 files changed, 15096 insertions(+), 48296 deletions(-)`。
+
+文档表格口径收敛补充：
+
+```bash
+rg -n -- 'business_project_service` -> `store|business_parse_service\.py` -> `store|business_directory_service` -> `store|technical_project_service` -> `store|technical_parse_service` -> `store|technical_directory_service\.py` -> .*`store`|后续再拆底层 store|后续继续拆解析底层 store|后续继续拆文档底层 store|后续继续拆底层 outline store' doc/31-技术标与商务标双轨独立化实施计划.md
+git diff --check
+```
+
+结果：`doc/31` 的商务标/技术标 API 与后端复用表已改成当前真实边界：项目、解析、目录不再写成直接 `-> store`，而是标明 `workspace_project_access.py`、`bid_project_state.py`、`bid_parse_state.py`、`bid_outline_state.py` 和 `bid_directory_flow.py` 等实际访问层；“后续拆底层 store”改成“防止业务规则回流到通用持久化 facade / 复扫共享工具边界”。旧表格口径扫描无命中，`git diff --check` 通过。当时工作树仍未 stage、未 commit，快照为 `100 ??` / `99 M` / `67 D`，tracked diff 为 `166 files changed, 15096 insertions(+), 48296 deletions(-)`。
+
+全量回归补充：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest -q
+npm run lint
+npm run build
+git diff --check
+```
+
+结果：后端完整回归通过，`484 passed, 17 skipped`；前端 `npm run lint` 通过；前端 `npm run build` 通过，仅保留 Vite 大 chunk 警告；`git diff --check` 通过。当时工作树仍未 stage、未 commit，快照为 `100 ??` / `99 M` / `67 D`，tracked diff 为 `166 files changed, 15096 insertions(+), 48296 deletions(-)`。
+
+核心标类默认收口补充：
+
+```bash
+PYTHONPATH=. pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_stage_progress.py tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_do_not_use_legacy_template_when_project_has_no_template tests/test_parse_pipeline.py::ParsePipelineTests::test_parse_inputs_use_settings_default_template_when_project_has_no_template tests/test_parse_pipeline.py::ParsePipelineTests::test_project_template_overrides_fallback_template tests/test_wiki_generation.py -q
+python -m compileall app/services/bid_type.py app/services/parse_profiles.py app/services/project_fact_materials.py app/services/project_stage_flow.py app/services/workspace_project_access.py app/services/peripheral.py app/services/wiki_generation.py app/services/outline_generation.py app/services/bid_generation_flow.py
+PYTHONPATH=. pytest tests/test_bid_material_scope_services.py tests/test_directory_generation.py tests/test_fill_generation.py tests/test_project_material_scope.py tests/test_peripheral_routes.py tests/test_wiki_generation.py tests/test_business_material_library_rules.py -q
+PYTHONPATH=. .venv/bin/python -m pytest -q
+git diff --check
+```
+
+结果：`normalize_bid_type` 默认值从技术标改为空字符串，未知标类不再天然归入技术标；`parse_profiles.py`、`workspace_project_access.py`、`project_stage_flow.py`、`project_fact_materials.py`、`peripheral.py`、`outline_generation.py`、`wiki_generation.py` 和 `bid_generation_flow.py` 改为通过 `require_bid_type` 显式要求技术标/商务标。新增 AST 防回退断言，确认 app 侧除 `bid_type.py` 内部外不再出现无显式默认的 `normalize_bid_type(...)` 调用；相关文件编译通过，标类核心聚焦组合 `17 passed`，共享边界扩展组合 `187 passed, 5 skipped`，后端完整回归 `484 passed, 17 skipped`，`git diff --check` 通过。当时工作树仍未 stage、未 commit，快照为 `100 ??` / `99 M` / `67 D`，tracked diff 为 `166 files changed, 15096 insertions(+), 48296 deletions(-)`。
+
+前端 workspace 与 Wiki 导出默认标类补充：
+
+```bash
+node --test src/utils/workspace.test.mjs
+PYTHONPATH=. pytest tests/test_wiki_export_routes.py -q
+python -m compileall app/services/business_document_service.py app/services/business_gap_service.py app/services/outline_generation.py app/services/tech_assembly.py app/services/wiki_export.py
+PYTHONPATH=. pytest tests/test_wiki_export_routes.py tests/test_fill_generation.py tests/test_bid_material_scope_services.py tests/test_business_document_editing.py tests/test_business_gap_planner.py tests/test_directory_generation.py -q
+PYTHONPATH=. .venv/bin/python -m pytest -q
+npm run lint
+npm run build
+git diff --check
+```
+
+结果：`src/utils/workspace.js` 中 `normalizeBidType`、`slugFromBidType` 和 `parseRouteFromBidType` 不再把未知标类归为技术标，非法 workspace slug 不再回退旧根 `/projects...` 路径；技术标/商务标解析审核页过滤项目时不再用当前页面标类补齐缺失 `bidType`，新建项目后跳转使用当前 workspace 显式 slug。`wiki_export.py` 的 Wiki API 路径选择改为 `require_bid_type`，未知标类不再落到技术标 Wiki；`business_document_service.py`、`business_gap_service.py`、`outline_generation.py` 和 `tech_assembly.py` 中的业务 payload/manifest/运行态素材卡片也改为显式标类。新增前端 workspace helper 防回退测试和 Wiki 导出未知标类测试；前端工具测试 `3 passed`，Wiki 导出测试 `4 passed`，相关后端组合 `153 passed`，后端完整回归 `484 passed, 17 skipped`，前端 `npm run lint` / `npm run build` 通过，残留默认路由扫描无命中，`git diff --check` 通过。当时工作树仍未 stage、未 commit，快照为 `100 ??` / `99 M` / `67 D`，tracked diff 为 `166 files changed, 15096 insertions(+), 48296 deletions(-)`。
+
+项目素材路径标类兜底补充：
+
+```bash
+PYTHONPATH=. pytest tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth tests/test_project_material_scope.py::ProjectMaterialScopeRouteTests::test_materials_path_returns_project_readable_scopes tests/test_project_material_scope.py::ProjectMaterialScopeRouteTests::test_business_materials_path_returns_business_scopes -q
+python -m compileall app/services/bid_project_service.py
+python - <<'PY'
+from app.main import app
+routes = [getattr(r, "path", "") for r in app.routes]
+legacy_prefixes = ["/api/projects", "/api/materials", "/api/audit", "/api/parse", "/api/directory", "/api/gaps", "/api/generation", "/api/document", "/api/export", "/api/coverage", "/api/ocr", "/api/outline", "/api/review"]
+legacy = [p for p in routes if any(p.startswith(prefix) for prefix in legacy_prefixes)]
+technical = [p for p in routes if p.startswith("/api/technical")]
+business = [p for p in routes if p.startswith("/api/business")]
+print(f"legacy={len(legacy)} technical={len(technical)} business={len(business)}")
+PY
+git diff --check
+```
+
+结果：`bid_project_service.materials_path` 不再使用 `or self.bid_type` 兜底素材路径标类，而是从已 guard 项目/素材范围里显式 `require_bid_type`；新增源码防回退断言确认项目 service 不再靠自身领域常量补缺失标类。项目素材路径聚焦组合 `3 passed`，相关文件编译通过，后端路由表保持 `legacy=0` / `technical=99` / `business=105`，前端旧根路由/API 名扫描无命中，旧通用后端 route/service 扫描无命中，`git diff --check` 通过。随后完整后端回归 `484 passed, 17 skipped`，前端 `npm run lint` / `npm run build` 通过，build 仅保留 Vite 大 chunk 警告。
+
+5 包 staging dry-run 补充：
+
+```bash
+git add -A -n -- .gitignore README.md code/AGENT.md code/plan.md code/progress.md code/sewpg-bid-api code/sewpg-bid-backend/README.md code/sewpg-bid-frontend/README.md code/sewpg-bid-frontend/docs doc
+git add -A -n -- code/sewpg-bid-backend/app ':!code/sewpg-bid-backend/app/models/materials.py' ':!code/sewpg-bid-backend/app/api/routes/materials.py' ':!code/sewpg-bid-backend/app/services/material*' ':!code/sewpg-bid-backend/app/services/business_material*' ':!code/sewpg-bid-backend/app/services/technical_material*' ':!code/sewpg-bid-backend/app/services/scoped_material_urls.py' ':!code/sewpg-bid-backend/app/services/technical_turbine_material_options.py' ':!code/sewpg-bid-backend/app/services/wiki_*'
+git add -A -n -- code/sewpg-bid-backend/app/models/materials.py code/sewpg-bid-backend/app/api/routes/materials.py 'code/sewpg-bid-backend/app/services/material*' 'code/sewpg-bid-backend/app/services/business_material*' 'code/sewpg-bid-backend/app/services/technical_material*' code/sewpg-bid-backend/app/services/scoped_material_urls.py code/sewpg-bid-backend/app/services/technical_turbine_material_options.py 'code/sewpg-bid-backend/app/services/wiki_*'
+git add -A -n -- code/sewpg-bid-frontend/src
+git add -A -n -- code/sewpg-bid-backend/tests
+```
+
+结果：dry-run stage 行数分别为 `01-docs=40`、`02-backend-core=91`、`03-material-wiki=38`、`04-frontend=77`、`05-tests=21`，合计 `267`；与 `git status --porcelain=v1 --untracked-files=all` 展开口径一致。未执行真实 `git add`，当前 index 仍未 stage。
 
 ## 下一步
 
-1. 把当前本机启动方式进一步收敛到完整 `docker compose`
-2. 继续补齐非主链路 mock 或外围接口
-3. 把 `opencode` 的部署配置收成用户可自行修改的口径
-   - `baseUrl` 需要可配置
-   - 外部模型 `apiKey` 需要可配置
-   - `.env.example` / 部署文档 / Compose 保持一致
-
-## 2026-04-27 11:32 上传弹窗与素材清洗排障
-
-- 前端上传弹窗改为固定视口高度：头部与底部操作区固定，中间内容区滚动，已选文件列表限制高度，避免文件夹内文件过多时“确认上传”按钮被顶出屏幕。
-- 排查素材清洗队列：Redis `bid:jobs` 队列为空，但 5 个素材停在 `pending`；worker 日志显示 `asyncpg` 连接跨 `asyncio.run()` event loop 复用导致 `cannot perform operation: another operation is in progress`。
-- 后端清洗同步入口改为复用 worker 内同一个 event loop，避免 SQLAlchemy asyncpg 连接池跨 loop 使用。
-- 已重新构建并重启 `web / fastapi / worker`。重新触发 `RAW-0017` 至 `RAW-0021` 清洗后，当前 6 个素材均为 `cleaned`，Redis 队列为 0，worker 未再出现 asyncpg 报错。
-
-## 2026-04-27 11:45 素材与项目字段匹配检查
-
-- 核查项目主数据与素材库：项目主数据目前在 SQLite，本地素材库在 PostgreSQL，二者尚未做强约束关联。
-- 当前项目素材存在不一致：上传到 `项目素材/1/技术标` 的文件记录了 `projectId=1`，但系统项目编号是 `PRJ-xxxx`；当前没有独立“外部项目编号”字段。
-- 当前客户素材存在口径差异：项目里有 `华能集团`，素材目录是 `客户素材/华能/技术标`，只能靠模糊/包含关系识别，不能算严格匹配。
-- 修复上传弹窗的参数：指定目录上传时不再额外提交默认 `materialTier=standard`，让后端按目标目录推断 `客户素材/项目素材`，避免写错素材层级。
-- 已校正本次已上传素材元数据：`RAW-0089` 至 `RAW-0093` 改为 `项目素材/projectId=1`，`RAW-0094` 改为 `客户素材/customerName=华能`。
-- `npm run build` 通过，已重新 build 并 force recreate `web`。
-
-## 2026-04-27 12:34 项目/客户身份统一与 AI Wiki 改造
-
-改动目标：
-
-- 统一项目、业主、素材库、Wiki 和 S2 目录 skill 的身份口径。
-- 人仍然按 `通用素材 / 客户素材 / 项目素材` 管理文件；AI 读取 Wiki 时按标准身份字段过滤素材。
-- 清洗后的 Word 作为 Wiki 建卡和后续 AI 使用的正式素材来源。
-
-改动内容：
-
-- 新增轻量身份层：
-  - 项目返回 `identity`，包含 `projectId / projectCode / customerId / customerCanonicalName / customerAliases`。
-  - 新建/编辑项目增加 `业务项目编号` 字段。
-  - 客户名如 `华能 / 华能集团 / 中国华能` 统一归一到 `CUST-HUANENG / 华能集团`。
-- 素材上传与查询：
-  - `raw_files.ext_fields` 写入 `identityScope / materialScope / customerId / customerCanonicalName / customerAliases / projectCode`。
-  - 客户筛选改为客户 ID/别名匹配；项目筛选改为 `projectId/projectCode` 匹配。
-  - 指定三母目录上传文件夹时，保留原文件夹结构并按路径推断客户/项目/标类。
-- Wiki 生成：
-  - 卡片新增 `AI 检索身份` 和 Merge 身份字段。
-  - 索引、目录骨架、装配规则写入身份匹配规则。
-  - Wiki 生成优先使用已清洗 Word；PDF/Excel 源文件只要已有 `cleanedMinioKey`，也会进入 Wiki 卡片。
-- S2 目录 skill：
-  - manifest 增加 `projectIdentity`。
-  - `export_wiki_from_api.py` 导出身份字段到 frontmatter。
-  - `wiki_lookup.py` 读取身份字段。
-  - `build_plan.py` 在目录生成前过滤 Wiki：通用素材可读，客户素材需客户命中，项目素材需项目编号命中。
-- 数据修复：
-  - 71 个历史素材已补齐身份字段。
-  - 当前技术标 Wiki 已重建：60 张通用卡片、6 张华能客户卡片、5 张项目编号 `1` 卡片。
-
-验证结果：
-
-- `py_compile` 通过：
-  - `identity.py`
-  - `store.py`
-  - `material_store.py`
-  - `wiki_generation.py`
-  - `outline_generation.py`
-  - `export_wiki_from_api.py`
-  - `wiki_lookup.py`
-  - `build_plan.py`
-  - `run_from_manifest.py`
-- `.venv/bin/python -m pytest tests/test_wiki_generation.py tests/test_toc_skill_scripts.py` 通过，8 个测试全部通过。
-- `npm run build` 通过。
-- 已重新 build 并 force recreate：
-  - `opencode`
-  - `fastapi`
-  - `worker`
-  - `web`
-- API 验证：
-  - 项目列表返回 `identity`。
-  - 客户素材返回 `identityScope=customer / customerId=CUST-HUANENG`。
-  - Wiki 卡片包含 `identity_scope`、`customer_id`、`project_code`、`cleaned_file_name`。
-  - 文件系统版 Wiki 导出后，`wiki_lookup --list-by-section` 可读到 6 个客户素材和 5 个项目素材身份字段。
-
-遗留问题：
-
-- 现有 `项目素材/1/技术标` 只会命中 `projectCode=1` 或招标解析出的项目编号 `1`。旧项目默认 `projectCode=PRJ-xxxx`，如要让某个旧项目使用这批项目素材，需要在项目信息里把业务项目编号改为 `1`。
-
-## 2026-04-27 13:56 客户/项目选择式素材上传
-
-改动目标：
-
-- 用户上传客户素材、项目素材时不再手填客户名或项目编号。
-- 前端改为“选择客户 / 选择项目”；系统把 `customerId / projectId / projectCode / projectName` 写入素材元数据。
-- 项目素材目录统一使用系统项目 ID，例如 `项目素材/PRJ-0021/技术标`；业务编号保留为 `projectCode`，供 Wiki 和 AI 检索使用。
-
-改动内容：
-
-- `/api/customers/key-accounts` 返回 `CUST-*` 客户 ID、标准客户名和别名。
-- 原始素材上传接口接收 `customerId / projectCode / projectName`。
-- 素材入库时保留系统项目 ID，同时写入业务项目编号、项目名、客户 ID 和标准客户名。
-- 素材库上传弹窗中，客户素材改为“选择客户”，项目素材改为“选择项目”；选择项目会自动带出所属客户、业务编号和项目名。
-- 项目材料路径接口改为返回系统项目 ID 目录，避免继续生成 `项目素材/业务编号/...` 这种容易混淆的路径。
-
-验证结果：
-
-- `python3 -m py_compile` 通过：`materials.py / auth.py / projects.py / material_store.py`。
-- `npm run build` 通过。
-- `.venv/bin/python -m pytest tests/test_toc_skill_scripts.py tests/test_wiki_generation.py` 通过，8 个测试全部通过。
-- 已重新 build 并 force recreate：`fastapi / worker / web`。
-- API 冒烟：
-  - `/api/customers/key-accounts` 返回 `CUST-HUANENG / CUST-DATANG / CUST-CHNENERGY`。
-  - `/api/projects?pageSize=3` 返回项目 `identity`。
-  - `/api/projects/PRJ-0021/materials-path` 返回 `项目素材/PRJ-0021/技术标`。
-
-注意事项：
-
-- 旧数据里的 `项目素材/1/技术标` 仍保留，不自动迁移；后续已改回以素材库项目 ID 为准，见下一条记录。
-
-## 2026-04-27 14:49 素材库身份作为项目创建依据
-
-改动目标：
-
-- 改回“素材库为准”：投标项目列表只是工作单，客户/素材项目身份由素材库提供。
-- 创建投标项目时选择素材库客户、素材库项目；同时保留普通客户、普通项目入口，由系统生成稳定 ID。
-- 后续 Wiki/目录/AI 检索使用绑定到投标项目上的素材库身份，而不是把投标工作单的 `PRJ-*` 当素材项目。
-
-改动内容：
-
-- 新增 `/api/materials/identity-options`：
-  - 返回素材库客户选项，当前包括 `CUST-HUANENG / CUST-DATANG / CUST-CHNENERGY`。
-  - 返回素材库项目选项，当前从 `项目素材/...` 与文件身份字段汇总，现有项目素材为 `projectId=1`。
-- 创建项目弹窗：
-  - 客户来源改为 `素材库客户 / 普通客户`。
-  - 素材项目来源改为 `素材库项目 / 普通项目`。
-  - 选择素材库项目时写入 `materialProjectId / materialProjectCode / materialProjectName`。
-  - 普通客户生成 `CUST-*`，普通项目生成 `MATPRJ-*`。
-- 项目身份结构：
-  - `id` 仍是投标工作单 ID，例如 `PRJ-0025`。
-  - `identity.projectId` 改为素材库项目 ID，例如 `1` 或 `MATPRJ-*`。
-  - `identity.workspaceProjectId / bidProjectId` 保留投标工作单 ID。
-  - `/api/projects/{id}/materials-path` 返回素材库项目路径，例如 `项目素材/1/技术标` 或 `项目素材/MATPRJ-.../技术标`。
-- 素材上传弹窗的“选择项目”改为读取素材库身份选项，不再读取投标项目列表。
-
-验证结果：
-
-- `python3 -m py_compile` 通过：`identity.py / store.py / material_store.py / materials.py / projects.py`。
-- `npm run build` 通过。
-- `.venv/bin/python -m pytest tests/test_toc_skill_scripts.py tests/test_wiki_generation.py` 通过，8 个测试全部通过。
-- 已重新 build 并 force recreate：`fastapi / worker / web`。
-- API 冒烟：
-  - `/api/materials/identity-options?bidType=技术标` 返回 3 个客户、1 个素材库项目。
-  - 普通客户 + 普通项目临时创建验证：生成 `CUST-C5CE12F7EB` 与 `MATPRJ-6D38EC5521`，材料路径为 `项目素材/MATPRJ-6D38EC5521/技术标`。
-  - 素材库客户 + 素材库项目临时创建验证：`CUST-HUANENG + projectId=1`，材料路径为 `项目素材/1/技术标`。
-
-注意事项：
-
-- 当前素材库项目只有旧数据 `1`；后续如果要更清晰，需要在素材库侧补“素材项目管理/重命名/归属客户”能力，而不是从投标项目列表里倒推。
-
-### 2026-04-27 14:55:31 post-commit 13b6d71
-
-提交摘要：chore(runtime): wire redis worker runtime
-
-变更文件：
-
-- `code/.env.airgap.example`
-- `code/.env.example`
-- `code/docker-compose.yml`
-- `code/sewpg-bid-backend/Dockerfile`
-- `code/sewpg-bid-backend/app/core/config.py`
-- `code/sewpg-bid-backend/app/services/job_queue.py`
-- `code/sewpg-bid-backend/app/workers/redis_worker.py`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-## 2026-05-05 S3 Word 填写正确率修复与分批验收
-
-- 修复 `bid-tech-word-placeholder-filler`：表格单元格上下文不再把占位符文本本身作为语义依据，避免 `[投标方案，待填写]` 抢占行名，导致 1.6 `投标关键数据一览表` 全部填成 `EW10.0-220-125`。
-- 增加 Word 行级语义校验：关键数据表只校验 AI 实际填写过的单元格；语义失败会拉低 `correctnessRate` 并进入 `needs_review`，不能再只靠证据链数量显示 100%。
-- 补充 `供货保障能力` 基地字段抽取：从 `固定-上海电气生产能力介绍.docx` 抽取高台生产基地名称与介绍，避免 fuzzy 到表头或品牌列表。
-- 验证：
-  - `PYTHONPATH=. .venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_turbine_model_selection.py tests/test_toc_skill_scripts.py -q` -> `72 passed`
-  - 已重建并重启 `fastapi / worker / opencode`。
-  - `PRJ-0003` 按 21 批重跑 102 个有填写任务的 gap，21 批均返回；最终字段覆盖率 `3850/4027 = 95.60%`，完整率 `95.60%`，证据链正确率口径 `100%`，语义校验 `46/46 = 100%`。
-  - 仍有 52 个任务级 `needs_review`，主要集中在 B/C/F/G 部分附表的低覆盖或无可识别目标字段；当前不再把这些任务包装为全部通过。
-
-### 2026-05-05 S3 填写链路端到端复核
-
-本轮修复：
-
-- S3 AI 填写强制以已确认项目事实表为前置条件，并按 Word/table fillTask 分别调用 `bid-tech-word-placeholder-filler` 与 `bid-tech-table-filler`。
-- 项目事实表补强项目优先、客户其次、通用兜底的来源优先级；`总装机容量`、`机组台数`、`轮毂高度`、`安全等级`、风资源字段均可从确认事实表进入填写 manifest。
-- Word 填写新增 `风资源报告` 综合占位规则，使用事实表生成风资源摘要。
-- 表格填写修复 `投标人响应值` 列识别、已填写单元格跳过、品牌表备注列误识别、项目事实表作为项目特定字段可信来源、sidecar 证据链回填、批量质量按字段数加权统计。
-
-验证结果：
-
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_turbine_model_selection.py tests/test_toc_skill_scripts.py -q`：69 passed。
-- 已重建并重启 `fastapi / worker / opencode / web`。
-- PRJ-0003 S3 端到端重跑结果：104/104 个 fillTask completed，字段级覆盖率 3851/4027 = 95.63%，证据链率 100%，剩余 176 个字段保留黄标人工补充。
-- 典型修复项：1.4 走 Word filler；A.1 从 9/19 提升到 15/19；B.1.2/B.1.3 不再把品牌表备注空列误判为待填；G.5.1 证据链恢复为 173 条并通过质量验收。
-
-### 2026-05-05 目标一/目标二验收闭环
-
-完成范围：
-
-- 目标一：`bid-tech-table-filler` 完成附表全量 v12 评测，输出目录为 `/data/documents/PRJ-0003/technical-workspace/s4_gap_workdir/table_filler_e2e_all/appendix_only_e2e_v12_tower_key/outputs`。
-- 目标二：新增并接入 `bid-tech-word-placeholder-filler`，批量填充 16 个素材库待填写 Word，输出目录为 `/data/documents/PRJ-0003/technical-workspace/s4_gap_workdir/target2_word_fill_all_v4/outputs`。
-- 后端 S3 AI 填写入口已能按任务类型分流到表格填充或 Word 占位符填充 Skill。
-
-评分证据：
-
-- 目标一人工附表对比：`strictCoverage=0.8521`，`tolerantCoverage=0.8547`，已超过 85%。
-- 目标二人工正文对比：`placeholderFillCoverage=1.0`，`residualPlaceholderCount=0`，`humanBodyNgramCoverage=0.9839`，`combinedCoverage=0.9903`，已超过 85%。
-
-验证结果：
-
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_toc_skill_scripts.py tests/test_gap_review_flow.py -q`：51 passed。
-- `docker compose build opencode && docker compose up -d opencode` 已执行，`opencode` 与 `fastapi` 容器均为 healthy。
-
-### 2026-05-04 S3 缺口识别实现收口
-
-改动目标：
-
-- 收住当前 S3 交付边界：本轮只交付并强化 `bid-tech-gap-planner` 第一阶段缺口识别，不把 `bid-tech-table-filler` 或 `bid-tech-gap-reviewer` 写成已验收能力。
-- 让缺口识别必须覆盖 S2 已确认目录全集，避免 Skill 只返回匹配项或问题项导致页面误判。
-- S3 页面改为以识别结果、素材边界、父章覆盖、待填写对象和 Office 预览为主，先方便人工检查第一步识别质量。
-
-实现摘要：
-
-- `bid-tech-gap-planner` 增加目录覆盖校验、素材范围过滤、通用父章整章覆盖识别、待填写 Word/空副表识别和四类 `decision` 统计。
-- OpenCode 调用缺口识别时使用 `s4gap` 早完成结果，减少等待完整对话结束的时间。
-- 后端重新生成缺口识别时清空旧填写产物/复查状态，只保留第一步纯识别计划；若 Skill 输出目录项数量不完整则返回 400。
-- S3 页面改为三栏：目录项列表、识别细节、OnlyOffice 预览；支持查看匹配素材、父章覆盖素材、空副表/待填写 Word 和限定范围内素材查询。
-- OnlyOffice artifact URL 改为区分浏览器可达 URL 与 Document Server 可达 URL，文件名做 URL 编码，避免带中文或空格的缺口产物预览失败。
-
-当前未纳入验收：
-
-- `bid-tech-table-filler` 仍只作为后续填写任务候选 Skill 名称和历史实验痕迹，不作为本轮已交付能力。
-- `bid-tech-gap-reviewer` 路径已从当前实现口径撤下，后续等填写产物结构稳定后再重新设计。
-
-验证结果：
-
-- `PYTHONPATH=. python -m pytest tests/test_opencode_client.py tests/test_toc_skill_scripts.py tests/test_gap_review_flow.py -q` 通过：54 passed。
-- `node --test src/pages/gapRecognitionHelpers.test.mjs` 通过：8 tests。
-- `npm run lint` 通过。
-- `npm run build` 通过；保留既有 Vite chunk size 提示。
-- `git diff --check` 通过。
-
-### 2026-05-03 19:34 素材库提升为一级准备模块并绑定项目读取范围
-
-改动目标：
-
-- 将素材库从技术标/商务标工作区二级入口提升为一级母菜单，作为解析前的资料准备模块。
-- 在项目确认参与并补全信息后，明确项目后续读取的素材范围：通用素材、当前客户素材、当前项目素材。
-- 让 S3 缺口处理选择已有素材时按项目范围搜索，避免跨客户、跨项目误选素材。
-
-改动内容：
-
-- 前端左侧一级菜单新增 `素材库`，工作区二级菜单移除素材库入口；旧 `/workspace/:workspace/materials/*` 路由继续保留兼容。
-- 后端新增项目素材范围 helper，并在 `/api/projects/{project_id}/materials-path` 返回 `readableScopes / paths / summary`。
-- S3 缺口处理页面加载项目素材范围，搜索已有素材时按 `通用素材/{标书类型}`、`客户素材/{客户}/{标书类型}`、`项目素材/{素材项目ID}/{标书类型}` 分别查询并合并。
-- 根 README、`code/AGENT.md` 和 `doc/12-数据存储与素材库数据说明.md` 同步更新当前口径。
-- 新增 Superpowers 实施计划文件 `doc/superpowers/plans/2026-05-03-material-library-top-level-scope.md`。
-
-验证结果：
-
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_store_persistence.py -q` 通过：1 passed，2 skipped。
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_store_persistence.py tests/test_project_material_scope.py -q` 通过：2 passed，2 skipped。
-- `npm run check` 通过；保留 Vite 主 chunk 超过 500KB 的既有提示。
-- `docker compose build web && docker compose up -d web` 通过，`web` 已重建并启动。
-- 后端也涉及接口变更，补充执行 `docker compose build fastapi && docker compose up -d fastapi web`，`fastapi` healthy。
-- `curl -I http://127.0.0.1/` 返回 HTTP 200。
-- `curl http://127.0.0.1/api/projects/PRJ-0012/materials-path` 已返回 `readableScopes / paths / summary`。
-
-### 2026-05-03 02:36 设置入口收敛、LLM opencode 语义与生成审计增强
-
-改动目标：
-
-- 系统设置只保留“默认 Word 模板、LLM 模型、OCR 模型、用户、审计、健康”。
-- 去掉 Excel/.dotx/备份旧入口，不再让默认模板上传 `.dotx`。
-- LLM 设置明确为 opencode 使用的 provider/model/baseUrl/apiKey 配置。
-- 审计日志补充生成标书过程中的开始、完成、失败记录。
-
-改动内容：
-
-- `Settings.jsx` 删除 Excel、dotx、备份三块 UI 和加载逻辑，新增审计入口，默认模板上传限制为 `.docx`。
-- `settingsAPI` 移除未使用的 Excel/dotx/backup 设置客户端入口。
-- `settings.py` 下线 `/api/settings/dotx-templates`、`/api/settings/excel-templates`、`/api/settings/backups*` 旧设置入口。
-- `system_settings.py` 增加 `providerId / modelId / opencodeBaseUrl / modelOptions`，健康检查会实际调用 LLM/OCR 模型测试。
-- `OpencodeClient` 读取系统设置中的 opencode provider/model/opencodeBaseUrl。
-- `generation.py` 在 S7 生成标书开始、完成、失败时写入审计日志，Redis worker 会携带触发用户快照。
-
-验证结果：
-
-- `python3 -m py_compile code/sewpg-bid-backend/app/services/system_settings.py code/sewpg-bid-backend/app/services/opencode_client.py code/sewpg-bid-backend/app/api/routes/generation.py code/sewpg-bid-backend/app/services/job_queue.py code/sewpg-bid-backend/app/workers/redis_worker.py code/sewpg-bid-backend/app/core/config.py` 通过。
-- `cd code/sewpg-bid-backend && .venv/bin/python -m pytest tests/test_security_settings_ocr_routes.py tests/test_fill_generation.py -q` 通过：12 passed。
-- `cd code/sewpg-bid-frontend && npm run build` 通过；仅保留 Vite chunk size warning。
-
-### 2026-05-01 21:39 S1 解析进度与 3.1 字段增强
-
-变更摘要：
-
-- S1 `/parse` 上传并解析改为记录真实后端进度，前端轮询展示进度条、步骤记录与 opencode 输出片段。
-- 解析结果按 3.1 要求拆成确定字段表：评分细则、项目基础信息、风机核心参数、性能保证指标、环境适应性。
-- 专题方案、供货范围、考核条款改为展示“是否有明确要求”及摘要/证据。
-- 附表识别支持 markdown 空表和 Word 招标文件中“附表/副表”标题后的空表，并生成 `.docx` 到技术标工作区 `technical-workspace/appendices`。
-- S1 opencode 调用继续使用 `bid-tender-structured-parser` skill；本地结构化结果会补齐 opencode 摘要里缺失的字段组、存在性判断和附表产物。
-
-验证结果：
-
-- `code/sewpg-bid-backend/.venv/bin/python -m pytest tests/test_parse_pipeline.py -q`：11 passed。
-- `code/sewpg-bid-backend/.venv/bin/python -m pytest -q`：65 passed, 6 skipped。
-- `code/sewpg-bid-frontend/npm run lint`：通过。
-- `code/sewpg-bid-frontend/npm run build`：通过，保留既有 Vite chunk > 500KB 提示。
-- `docker compose build opencode fastapi web`：通过。
-- `docker compose up -d opencode fastapi worker web`：通过，FastAPI healthy。
-- 真实 API 烟测：临时项目上传 markdown 招标文件，进度事件包含 `upload/extract/appendix/skill/opencode/complete`，评分项拆分为 2 条，附表 Word 生成到 `/data/documents/.../technical-workspace/appendices/`。
-
-### 2026-04-27 14:55:49 post-commit 6cdeaa9
-
-提交摘要：feat(material-store): add persisted materials and cleaning
-
-变更文件：
-
-- `code/initdb/01-init.sql`
-- `code/sewpg-bid-backend/app/api/routes/auth.py`
-- `code/sewpg-bid-backend/app/api/routes/materials.py`
-- `code/sewpg-bid-backend/app/api/routes/projects.py`
-- `code/sewpg-bid-backend/app/models/materials.py`
-- `code/sewpg-bid-backend/app/services/identity.py`
-- `code/sewpg-bid-backend/app/services/material_cleaning.py`
-- `code/sewpg-bid-backend/app/services/material_store.py`
-- `code/sewpg-bid-backend/app/services/peripheral.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/requirements.txt`
-- `code/sewpg-bid-backend/tests/test_peripheral_routes.py`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-04-27 14:56:02 post-commit 07ec90e
-
-提交摘要：feat(opencode-skills): refactor toc wiki and cleaner skills
-
-变更文件：
-
-- `code/sewpg-bid-backend/app/services/opencode_client.py`
-- `code/sewpg-bid-backend/app/services/outline_generation.py`
-- `code/sewpg-bid-backend/app/services/wiki_generation.py`
-- `code/sewpg-bid-backend/opencode/.opencode/skills/bid-outline-json/SKILL.md`
-- `code/sewpg-bid-backend/opencode/Dockerfile`
-- `code/sewpg-bid-backend/opencode/docker-entrypoint.sh`
-- `code/sewpg-bid-backend/opencode/opencode.json`
-- `code/sewpg-bid-backend/opencode/skill/bid-business-wiki-material-builder/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-outline-json/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-wiki-material-builder/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/references/example_run.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/build_plan.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/export_wiki_from_api.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/extract_attach.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/extract_template.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/extract_tender.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/wiki_lookup.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/references/example_run.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/references/style_spec.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/scripts/build_plan.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/scripts/extract_attach.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/scripts/extract_template.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/scripts/extract_tender.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/scripts/gen_toc.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven/scripts/wiki_lookup.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-wiki-bootstrap-json/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/references/card_template.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/references/wiki_material_rules.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/scripts/bootstrap_wiki.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/scripts/check.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/scripts/extract_headings.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-wiki-material-builder/scripts/parse_skeleton.py`
-- `code/sewpg-bid-backend/opencode/skill/format-cleaner-v4/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/format-cleaner-v4/scripts/driver.py`
-- `code/sewpg-bid-backend/opencode/skill/format-cleaner-v4/scripts/excel_to_word.py`
-- `code/sewpg-bid-backend/opencode/skill/format-cleaner-v4/scripts/pdf_to_word.py`
-- `code/sewpg-bid-backend/opencode/skill/format-cleaner-v4/scripts/word_cleaner.py`
-- `code/sewpg-bid-backend/tests/test_directory_generation.py`
-- `code/sewpg-bid-backend/tests/test_opencode_client.py`
-- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
-- `code/sewpg-bid-backend/tests/test_wiki_generation.py`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-04-27 14:56:11 post-commit 1cf5c15
-
-提交摘要：feat(frontend-materials): reorganize materials workspace
-
-变更文件：
-
-- `code/sewpg-bid-frontend/src/App.jsx`
-- `code/sewpg-bid-frontend/src/api/index.js`
-- `code/sewpg-bid-frontend/src/components/layout/AppShell.jsx`
-- `code/sewpg-bid-frontend/src/components/modals/AuditDetailModal.jsx`
-- `code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx`
-- `code/sewpg-bid-frontend/src/components/shared/MaterialsViewSwitch.jsx`
-- `code/sewpg-bid-frontend/src/components/shared/ProjectStageProgress.jsx`
-- `code/sewpg-bid-frontend/src/components/shared/StageBreadcrumb.jsx`
-- `code/sewpg-bid-frontend/src/pages/AuditLog.jsx`
-- `code/sewpg-bid-frontend/src/pages/CoCreationEditor.jsx`
-- `code/sewpg-bid-frontend/src/pages/CoverageHeatmap.jsx`
-- `code/sewpg-bid-frontend/src/pages/DirectoryGeneration.jsx`
-- `code/sewpg-bid-frontend/src/pages/GapFilling.jsx`
-- `code/sewpg-bid-frontend/src/pages/GapRecognition.jsx`
-- `code/sewpg-bid-frontend/src/pages/GenerateProgress.jsx`
-- `code/sewpg-bid-frontend/src/pages/MaterialDB.jsx`
-- `code/sewpg-bid-frontend/src/pages/MaterialReview.jsx`
-- `code/sewpg-bid-frontend/src/pages/MaterialWiki.jsx`
-- `code/sewpg-bid-frontend/src/pages/OutlineReview.jsx`
-- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
-- `code/sewpg-bid-frontend/src/pages/ProjectCockpit.jsx`
-- `code/sewpg-bid-frontend/src/pages/ProjectEntryRedirect.jsx`
-- `code/sewpg-bid-frontend/src/pages/ProjectList.jsx`
-- `code/sewpg-bid-frontend/src/pages/TenderReview.jsx`
-- `code/sewpg-bid-frontend/src/utils/stageFlow.js`
-- `code/sewpg-bid-frontend/src/utils/workspace.js`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-04-27 14:57:45 post-commit 2445c54
-
-提交摘要：docs: align delivery and storage guidance
-
-变更文件：
-
-- `code/AGENT.md`
-- `code/hooks/record-progress.sh`
-- `code/progress.md`
-- `"code/sewpg-bid-frontend/docs/10-API\346\216\245\345\217\243\346\200\273\350\247\210\344\270\216\345\245\221\347\272\246\350\257\264\346\230\216.md"`
-- `"code/sewpg-bid-frontend/docs/11-API\345\255\227\346\256\265\347\272\247\345\245\221\347\272\246\346\230\216\347\273\206.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-04-27 15:33:31 post-commit 560eeff
-
-提交摘要：refactor(storage): migrate project state to postgres
-
-变更文件：
-
-- `.github/workflows/mvp-quality.yml`
-- `README.md`
-- `code/.env.airgap.example`
-- `code/.env.example`
-- `code/AGENT.md`
-- `code/docker-compose.yml`
-- `code/initdb/01-init.sql`
-- `code/sewpg-bid-backend/app/api/routes/system.py`
-- `code/sewpg-bid-backend/app/core/config.py`
-- `code/sewpg-bid-backend/app/models/__init__.py`
-- `code/sewpg-bid-backend/app/services/material_store.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/pytest.ini`
-- `code/sewpg-bid-backend/requirements.txt`
-- `code/sewpg-bid-backend/tests/conftest.py`
-- `code/sewpg-bid-backend/tests/test_auth_routes.py`
-- `code/sewpg-bid-backend/tests/test_directory_generation.py`
-- `code/sewpg-bid-backend/tests/test_fill_generation.py`
-- `code/sewpg-bid-backend/tests/test_gap_review_flow.py`
-- `code/sewpg-bid-backend/tests/test_onlyoffice_document.py`
-- `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
-- `code/sewpg-bid-backend/tests/test_peripheral_routes.py`
-- `code/sewpg-bid-backend/tests/test_store_persistence.py`
-- `code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx`
-- `code/sewpg-bid-frontend/src/pages/MaterialDB.jsx`
-- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
-- `"doc/07-FastAPI\346\211\277\346\216\245\344\270\216\345\211\215\347\253\257\346\224\271\351\200\240.md"`
-- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
-- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-04-27 15:56:04 post-commit c93abb0
-
-提交摘要：fix(ci): restore backend quality gate
-
-变更文件：
-
-- `.github/workflows/mvp-quality.yml`
-- `code/sewpg-bid-backend/app/services/material_store.py`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-04-27 22:01:10 post-commit 6d4e9df
-
-提交摘要：fix(s7): assemble large bid materials via skill
-
-变更文件：
-
-- `code/.env.airgap.example`
-- `code/.env.example`
-- `code/docker-compose.yml`
-- `code/sewpg-bid-backend/app/api/routes/generation.py`
-- `code/sewpg-bid-backend/app/core/config.py`
-- `code/sewpg-bid-backend/app/services/draft_generation.py`
-- `code/sewpg-bid-backend/app/services/opencode_client.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/app/services/tech_assembly.py`
-- `code/sewpg-bid-backend/onlyoffice/docker-entrypoint.sh`
-- `code/sewpg-bid-backend/opencode/Dockerfile`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/references/heading_style.json`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/references/style_spec.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/_merger_core.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/_postprocessor_reference.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/build_assembly.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/cleaner.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/finalize.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/fix_invalid_headings.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/init_params.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/merger.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/merger_v1.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/numbering_fixer.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/officecli_adapter.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/parse_toc.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/preprocess.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/verify.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/tools/clean_master_numbering.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/tools/create_tech_master.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/tools/docx_xml.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/tools/render_docx.py`
-- `code/sewpg-bid-backend/requirements.txt`
-- `code/sewpg-bid-backend/tests/test_fill_generation.py`
-- `code/sewpg-bid-backend/tests/test_gap_review_flow.py`
-- `code/sewpg-bid-backend/tests/test_onlyoffice_document.py`
-- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-04-27 22:44:22 post-commit 266ae02
-
-提交摘要：docs: align MVP delivery status
-
-变更文件：
-
-- `README.md`
-- `code/AGENT.md`
-- `code/plan.md`
-- `code/progress.md`
-- `code/scripts/build-airgap-bundle.ps1`
-- `code/scripts/build-airgap-bundle.sh`
-- `"code/sewpg-bid-api/MVP\346\216\245\345\217\243\344\270\216\345\217\202\346\225\260\346\240\270\345\277\203\347\211\210_\346\236\201\347\256\200\347\211\210.md"`
-- `code/sewpg-bid-backend/README.md`
-- `code/sewpg-bid-backend/app/api/routes/projects.py`
-- `code/sewpg-bid-backend/app/services/outline_generation.py`
-- `code/sewpg-bid-backend/app/services/peripheral.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/SKILL.md`
-- `code/sewpg-bid-backend/tests/test_directory_generation.py`
-- `code/sewpg-bid-backend/tests/test_peripheral_routes.py`
-- `"code/sewpg-bid-frontend/docs/10-API\346\216\245\345\217\243\346\200\273\350\247\210\344\270\216\345\245\221\347\272\246\350\257\264\346\230\216.md"`
-- `"code/sewpg-bid-frontend/docs/11-API\345\255\227\346\256\265\347\272\247\345\245\221\347\272\246\346\230\216\347\273\206.md"`
-- `code/sewpg-bid-frontend/src/pages/CoverageHeatmap.jsx`
-- `code/sewpg-bid-frontend/src/pages/GapFilling.jsx`
-- `code/sewpg-bid-frontend/src/pages/GenerateProgress.jsx`
-- `"doc/01-\351\234\200\346\261\202\344\270\216\347\233\256\346\240\207.md"`
-- `"doc/03-UI\350\256\276\350\256\241.md"`
-- `"doc/04-\350\267\257\347\272\277\345\244\207\351\200\211\344\270\216\345\212\237\350\203\275\347\233\230\347\202\271.md"`
-- `"doc/05-MVP\344\270\273\351\223\276\350\267\257\350\257\264\346\230\216.md"`
-- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
-- `"doc/07-FastAPI\346\211\277\346\216\245\344\270\216\345\211\215\347\253\257\346\224\271\351\200\240.md"`
-- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
-- `"doc/09-\344\272\214\351\230\266\346\256\265\345\210\206\345\267\245\344\270\216\347\254\254\344\270\200\345\221\250\351\207\214\347\250\213\347\242\221.md"`
-- `"doc/10-\347\224\262\346\226\271\346\212\200\346\234\257\347\273\206\350\256\256\350\215\211\346\241\210-\345\220\210\345\220\214\351\242\204\346\234\237\346\234\200\347\273\210\344\272\244\344\273\230\347\211\210.md"`
-- `"doc/11-\345\206\205\347\275\221\347\246\273\347\272\277\351\203\250\347\275\262\350\257\264\346\230\216.md"`
-- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
-- `"doc/13-S7\346\212\200\346\234\257\346\240\207\346\255\243\346\226\207\346\213\274\350\243\205\344\270\216S8\347\264\240\346\235\220\346\240\241\351\252\214\350\257\264\346\230\216.md"`
-- `doc/README.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-04-27 22:44:49 post-commit d4f91de
-
-提交摘要：docs: record delivery status commit
-
-变更文件：
-
-- `code/progress.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 14:41:55 post-commit 8d47514
-
-提交摘要：fix(s7): keep material sub-headings out of word navigation
-
-变更文件：
-
-- `code/sewpg-bid-backend/app/services/tech_assembly.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/merger.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/numbering_fixer.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/verify.py`
-- `code/sewpg-bid-backend/tests/test_fill_generation.py`
-- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 14:42:53 post-commit 8e6108d
-
-提交摘要：docs: reorder customer backlog by implementation difficulty
-
-变更文件：
-
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 15:36:17 post-commit 4f8a115
-
-提交摘要：docs(backlog): add S7 agent matching as new high-difficulty item
-
-变更文件：
-
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 16:17:29 post-commit 3c96d92
-
-提交摘要：fix(web): resolve stale compose upstream dns
-
-变更文件：
-
-- `code/sewpg-bid-frontend/nginx.conf`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 16:17:35 post-commit e9c7547
-
-提交摘要：docs: consolidate bid requirements backlog
-
-变更文件：
-
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-- `"doc/15-\346\212\200\346\234\257\346\240\207\344\270\216\345\225\206\345\212\241\346\240\207\351\234\200\346\261\202\346\225\264\347\220\206.md"`
-- `doc/README.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 16:24:01 post-commit 802a3c1
-
-提交摘要：docs: simplify requirements backlog
-
-变更文件：
-
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 16:52:49 手动记录：待办推进规则更新
-
-改动目标：
-
-- 从现在开始按 `doc/14-甲方新增需求待办.md` 的待办清单推进。
-- 待办清单增加“完成情况”列，完成一项即在文档中勾选。
-- 每完成或推进一项待办，同步在本文件记录进度。
-
-变更文件：
-
-- `doc/14-甲方新增需求待办.md`
-- `code/progress.md`
-
-验证结果：
-
-- 文档结构调整，无代码验证。
-
-### 2026-05-01 17:00:09 手动记录：neat-freak 文档与记忆同步
-
-改动目标：
-
-- 把项目根 README、agent 执行说明、历史联调计划和子项目 README 同步到当前口径：后续按 `doc/14-甲方新增需求待办.md` 推进。
-- 明确待办完成后需要勾选“完成情况”，并同步记录到本文件。
-- 更新 Codex 记忆，避免后续会话继续把旧 MVP 联调计划当作下一阶段待办。
-
-变更文件：
-
-- `README.md`
-- `code/AGENT.md`
-- `code/plan.md`
-- `code/sewpg-bid-backend/README.md`
-- `code/sewpg-bid-frontend/README.md`
-- `doc/README.md`
-- `/Users/wlb/.codex/memories/MEMORY.md`
-- `/Users/wlb/.codex/memories/memory_summary.md`
-- `code/progress.md`
-
-验证结果：
-
-- 文档与记忆同步，无代码验证。
-
-### 2026-05-01 17:04:59 手动记录：doc 目录清理与新会话规则
-
-改动目标：
-
-- 清理 `doc/` 入口，把早期设计、路线讨论、迁移方案和阶段分工资料移入 `doc/archive/`。
-- 重写 `doc/README.md`，让新会话先看 `doc/14`、`doc/15`、根 README 和当前运行基线。
-- 记录用户的新协作规则：准备开始逐项做待办清单，每个待办默认开新会话。
-
-变更文件：
-
-- `doc/README.md`
-- `doc/archive/README.md`
-- `doc/archive/01-需求与目标.md`
-- `doc/archive/02-技术选型与架构.md`
-- `doc/archive/03-UI设计.md`
-- `doc/archive/04-路线备选与功能盘点.md`
-- `doc/archive/07-FastAPI承接与前端改造.md`
-- `doc/archive/09-二阶段分工与第一周里程碑.md`
-- `doc/14-甲方新增需求待办.md`
-- `README.md`
-- `code/AGENT.md`
-- `code/sewpg-bid-api/README.md`
-- `code/progress.md`
-
-验证结果：
-
-- 文档整理，无代码验证。
-
-### 2026-05-01 17:10:23 post-commit 243ddcf
-
-提交摘要：Organize doc archive and backlog workflow
-
-变更文件：
-
-- `README.md`
-- `code/AGENT.md`
-- `code/plan.md`
-- `code/progress.md`
-- `code/sewpg-bid-api/README.md`
-- `code/sewpg-bid-backend/README.md`
-- `code/sewpg-bid-frontend/README.md`
-- `"doc/01-\351\234\200\346\261\202\344\270\216\347\233\256\346\240\207.md"`
-- `"doc/02-\346\212\200\346\234\257\351\200\211\345\236\213\344\270\216\346\236\266\346\236\204.md"`
-- `"doc/03-UI\350\256\276\350\256\241.md"`
-- `"doc/04-\350\267\257\347\272\277\345\244\207\351\200\211\344\270\216\345\212\237\350\203\275\347\233\230\347\202\271.md"`
-- `"doc/07-FastAPI\346\211\277\346\216\245\344\270\216\345\211\215\347\253\257\346\224\271\351\200\240.md"`
-- `"doc/09-\344\272\214\351\230\266\346\256\265\345\210\206\345\267\245\344\270\216\347\254\254\344\270\200\345\221\250\351\207\214\347\250\213\347\242\221.md"`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-- `doc/README.md`
-- `"doc/archive/01-\351\234\200\346\261\202\344\270\216\347\233\256\346\240\207.md"`
-- `"doc/archive/02-\346\212\200\346\234\257\351\200\211\345\236\213\344\270\216\346\236\266\346\236\204.md"`
-- `"doc/archive/03-UI\350\256\276\350\256\241.md"`
-- `"doc/archive/04-\350\267\257\347\272\277\345\244\207\351\200\211\344\270\216\345\212\237\350\203\275\347\233\230\347\202\271.md"`
-- `"doc/archive/07-FastAPI\346\211\277\346\216\245\344\270\216\345\211\215\347\253\257\346\224\271\351\200\240.md"`
-- `"doc/archive/09-\344\272\214\351\230\266\346\256\265\345\210\206\345\267\245\344\270\216\347\254\254\344\270\200\345\221\250\351\207\214\347\250\213\347\242\221.md"`
-- `doc/archive/README.md`
-- `tmp/active-projects-20260427-230500.txt`
-- `tmp/bid-project-snapshot-20260427-230500.tar.gz`
-- `"tmp/docx_pdf/10-\347\224\262\346\226\271\346\212\200\346\234\257\347\273\206\350\256\256\350\215\211\346\241\210-\345\220\210\345\220\214\351\242\204\346\234\237\346\234\200\347\273\210\344\272\244\344\273\230\347\211\210.pdf"`
-- `tmp/export_contract_docx.py`
-- `tmp/orphan-before-documents-20260427-230500.txt`
-- `tmp/orphan-before-parsed-20260427-230500.txt`
-- `tmp/orphan-before-uploads-20260427-230500.txt`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 17:11:43 手动记录：待办 1 清理旧 mock/demo 资产
-
-改动目标：
-
-- 完成 `doc/14-甲方新增需求待办.md` 序号 1。
-- 清理前端历史 `mock-server`、`legacy/fastapi-mock` 残留目录。
-- 清理后端不再进入当前运行路径的 opencode FastAPI Word Skill demo。
-- 清理 OnlyOffice 独立 demo、smoke、样例文件、历史 compose、运行数据和日志，仅保留当前 Docker Compose 需要的 `docker-entrypoint.sh`。
-- 增加后端 `.dockerignore`，避免旧 demo 和本地运行产物重新进入 Docker build context。
-
-变更文件：
-
-- `doc/14-甲方新增需求待办.md`
-- `code/progress.md`
-- `code/AGENT.md`
-- `code/sewpg-bid-backend/README.md`
-- `code/sewpg-bid-backend/.dockerignore`
-- `code/sewpg-bid-backend/onlyoffice/README.md`
-- `code/sewpg-bid-backend/opencode/opencode-fastapi-word-skill-demo/`
-- `code/sewpg-bid-frontend/mock-server/`
-- `code/sewpg-bid-frontend/legacy/`
-
-验证结果：
-
-- 静态引用检查：无正式前后端代码引用已删除的 demo/smoke 入口。
-- `docker compose config --quiet`：通过。
-- `npm run build`：通过。
-- `python -m pytest`：56 passed, 6 skipped。
-
-### 2026-05-01 17:19:04 手动记录：待办 2 OnlyOffice 左右布局与全屏
-
-改动目标：
-
-- 完成 `doc/14-甲方新增需求待办.md` 序号 2。
-- 抽取统一的 `OnlyOfficeWorkspace` 工作台组件，提供左侧上下文、右侧文档和全屏/退出全屏开关。
-- S3 目录审核、S6 解析文档预览、S9 共创编辑统一接入左右布局。
-- 全屏状态支持 Esc 退出，并在全屏时锁定页面滚动。
-
-变更文件：
-
-- `doc/14-甲方新增需求待办.md`
-- `code/progress.md`
-- `code/sewpg-bid-frontend/src/components/shared/OnlyOfficeWorkspace.jsx`
-- `code/sewpg-bid-frontend/src/pages/OutlineReview.jsx`
-- `code/sewpg-bid-frontend/src/pages/MaterialReview.jsx`
-- `code/sewpg-bid-frontend/src/pages/CoCreationEditor.jsx`
-
-验证结果：
-
-- `npm run lint`：通过。
-- `npm run build`：通过。
-
-### 2026-05-01 17:26:35 手动记录：前端 Docker web 重新部署
-
-改动目标：
-
-- 用户反馈浏览器中未看到 OnlyOffice 布局变化后，确认此前只启动了 Vite 开发服务，Docker `sewpg_bid_web` 仍是旧镜像。
-- 重新构建并重启 compose 中的 `web` 服务，让正式入口 `http://127.0.0.1/` 也加载待办 2 的前端改动。
-
-变更文件：
-
-- `code/progress.md`
-
-验证结果：
-
-- `docker compose build web && docker compose up -d web`：通过。
-- `sewpg_bid_web`：已重启并运行。
-- `http://127.0.0.1/`：返回新前端 bundle `index-0YSUo2CI.js`。
-
-### 2026-05-01 17:29:48 手动记录：待办完成后的部署与提交规则
-
-改动目标：
-
-- 记录用户新规则：以后每完成一项待办，都要重新部署相关服务给用户检查。
-- 涉及前端展示的改动，至少要重建并重启 compose 的 `web` 服务，不能只启动 Vite 开发服务。
-- 每完成一项待办后，同步创建一次 git commit，保持一项待办一个提交的节奏。
-
-变更文件：
-
-- `code/AGENT.md`
-- `doc/README.md`
-- `code/progress.md`
-
-验证结果：
-
-- 文档规则更新，无代码验证。
-
-### 2026-05-01 17:22:45 post-commit 919ce2e
-
-提交摘要：chore: complete backlog items 1 & 2 — clean old demos, OnlyOffice layout
-
-变更文件：
-
-- `code/AGENT.md`
-- `code/progress.md`
-- `code/sewpg-bid-backend/.dockerignore`
-- `code/sewpg-bid-backend/README.md`
-- `code/sewpg-bid-backend/onlyoffice/README.md`
-- `code/sewpg-bid-backend/onlyoffice/data/.private/ds_release_date`
-- `code/sewpg-bid-backend/onlyoffice/docker-compose.onlyoffice.yml`
-- `code/sewpg-bid-backend/onlyoffice/files/sample.docx`
-- `code/sewpg-bid-backend/onlyoffice/frontend_bridge_reference.md`
-- `code/sewpg-bid-backend/onlyoffice/onlyoffice_demo_backend.py`
-- `code/sewpg-bid-backend/onlyoffice/requirements.txt`
-- `code/sewpg-bid-backend/onlyoffice/smoke_test.html`
-- `code/sewpg-bid-backend/opencode/opencode-fastapi-word-skill-demo/README.md`
-- `code/sewpg-bid-backend/opencode/opencode-fastapi-word-skill-demo/app/__init__.py`
-- `code/sewpg-bid-backend/opencode/opencode-fastapi-word-skill-demo/app/main.py`
-- `code/sewpg-bid-backend/opencode/opencode-fastapi-word-skill-demo/requirements.txt`
-- `code/sewpg-bid-frontend/src/components/shared/OnlyOfficeWorkspace.jsx`
-- `code/sewpg-bid-frontend/src/pages/CoCreationEditor.jsx`
-- `code/sewpg-bid-frontend/src/pages/MaterialReview.jsx`
-- `code/sewpg-bid-frontend/src/pages/OutlineReview.jsx`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 17:22:58 post-commit f28e5bb
-
-提交摘要：docs: add post-commit progress record for items 1 & 2
-
-变更文件：
-
-- `code/progress.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 17:23:06 post-commit ddd95b0
-
-提交摘要：docs: update progress log
-
-变更文件：
-
-- `code/progress.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 17:23:16 post-commit 27312d1
-
-提交摘要：docs: sync progress log
-
-变更文件：
-
-- `code/progress.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 17:47:18 手动记录：撤回待办 3 目录模板沉淀实现
-
-改动目标：
-
-- 撤回 `258a131 feat: add technical bid directory templates` 和 `723d6be docs: record directory template progress`。
-- 将 `doc/14-甲方新增需求待办.md` 序号 3 恢复为未完成。
-- 删除本次新增的内置通用/华能目录模板沉淀逻辑，恢复 S2 目录生成 skill 原有职责边界。
-
-撤回原因：
-
-- 当前 `bid-toc-wiki-driven-v2` 已负责读取招标文件、投标文件和素材 Wiki，并输出目录 JSON。
-- 内置目录模板沉淀会把目录结构配置写死到后端/skill，和当前“由 Skill 根据输入文件与 Wiki 生成目录”的方向不一致。
-- 真正有价值的下一项是待办 4：当用户不上传投标模板时，给 S2/S7 提供 fallback 模板文件来源。
-
-验证计划：
-
-- `.venv/bin/python -m pytest tests/test_directory_generation.py tests/test_toc_skill_scripts.py`：24 passed。
-- `.venv/bin/python -m py_compile app/services/outline_generation.py opencode/skill/bid-toc-wiki-driven-v2/scripts/build_plan.py opencode/skill/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py`：通过。
-- `docker compose build fastapi worker opencode && docker compose up -d fastapi worker opencode`：通过。
-- `docker compose ps fastapi worker opencode`：`fastapi`、`opencode` healthy，`worker` 已启动。
-- `GET http://127.0.0.1/api/healthz`：返回 `status=ok`。
-- 容器内验证：`app.services.directory_templates` 不存在；`bid-toc-wiki-driven-v2` 中无 `directoryTemplates / directory_template` 残留。
-
-### 2026-05-01 17:50:35 手动记录：删除无效的目录模板沉淀待办
-
-改动目标：
-
-- 从 `doc/14-甲方新增需求待办.md` 删除原序号 3“技术标通用/华能目录模板沉淀”。
-- 将后续待办重新编号，原“模板上传 Fallback 读取”成为新的序号 3。
-- 在 `doc/15-技术标与商务标需求整理.md` 中同步口径：不单独沉淀目录模板，目录仍由 S2 Skill 基于招标文件、投标模板和 Wiki 生成；后续重点是未上传投标模板时读取 fallback 模板。
-
-验证结果：
-
-- 文档清理，无代码变更。
-
-### 2026-05-01 18:06:21 post-commit e238a55
-
-提交摘要：feat: add fallback bid template source
-
-变更文件：
-
-- `code/.env.example`
-- `code/docker-compose.yml`
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/api/routes/parse.py`
-- `code/sewpg-bid-backend/app/api/routes/projects.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/app/services/template_store.py`
-- `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
-- `code/sewpg-bid-frontend/src/api/index.js`
-- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 18:06:44 post-commit 7913aaf
-
-提交摘要：feat: add fallback bid template source
-
-变更文件：
-
-- `code/.env.example`
-- `code/docker-compose.yml`
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/api/routes/parse.py`
-- `code/sewpg-bid-backend/app/api/routes/projects.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/app/services/template_store.py`
-- `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
-- `code/sewpg-bid-frontend/src/api/index.js`
-- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 20:08:08 post-commit 03d1f19
-
-提交摘要：feat: preview cleaned materials with onlyoffice
-
-变更文件：
-
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/api/routes/materials.py`
-- `code/sewpg-bid-backend/app/services/material_store.py`
-- `code/sewpg-bid-backend/tests/test_onlyoffice_document.py`
-- `code/sewpg-bid-frontend/src/api/index.js`
-- `code/sewpg-bid-frontend/src/pages/MaterialDB.jsx`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 20:57:06 post-commit 5ec4384
-
-提交摘要：Fix OnlyOffice fullscreen and folder loading
-
-变更文件：
-
-- `code/sewpg-bid-backend/app/api/routes/materials.py`
-- `code/sewpg-bid-backend/app/services/material_store.py`
-- `code/sewpg-bid-backend/app/services/peripheral.py`
-- `code/sewpg-bid-frontend/src/components/shared/OnlyOfficeWorkspace.jsx`
-- `code/sewpg-bid-frontend/src/pages/MaterialDB.jsx`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 21:13:06 post-commit cfe4488
-
-提交摘要：feat: add structured tender parsing and project dates
-
-变更文件：
-
-- `code/docker-compose.yml`
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/api/routes/projects.py`
-- `code/sewpg-bid-backend/app/core/config.py`
-- `code/sewpg-bid-backend/app/services/opencode_client.py`
-- `code/sewpg-bid-backend/app/services/parsing.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/opencode/Dockerfile`
-- `code/sewpg-bid-backend/opencode/skill/bid-tender-structured-parser/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tender-structured-parser/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
-- `code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx`
-- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
-- `code/sewpg-bid-frontend/src/pages/ProjectCockpit.jsx`
-- `code/sewpg-bid-frontend/src/pages/ProjectList.jsx`
-- `code/sewpg-bid-frontend/src/pages/TenderReview.jsx`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 21:40:20 post-commit 3f986b3
-
-提交摘要：feat: stream parse progress and appendix extraction
-
-变更文件：
-
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/api/routes/parse.py`
-- `code/sewpg-bid-backend/app/services/opencode_client.py`
-- `code/sewpg-bid-backend/app/services/parsing.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tender-structured-parser/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
-- `code/sewpg-bid-frontend/src/api/index.js`
-- `code/sewpg-bid-frontend/src/pages/TenderReview.jsx`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-01 22:28:25 S1 招标解析结构化增强
-
-- 将 S1 解析核心抽到 `bid-tender-structured-parser/scripts/parser_core.py`，后端本地解析和 opencode `s1parse` 共用同一套规则。
-- 新增多文件 Word 表格解析契约：`sourceDocuments`、分组 `scoringCriteria`、固定字段 `fieldGroups`、存在性 `requirementPresence`、覆盖度 `coverage` 与项目日期。
-- 前端解析结果改为分表展示技术评分、商务评分、报价评分、度电成本、符合性审查，并保留来源/章节/证据位置。
-- 真实华能两份招标文件本地解析烟测：技术评分 18 条、商务评分 11 条、报价 2 条、度电成本 1 条、符合性审查 13 条；风机核心参数从“招标机型要求/风资源情况”提取。
-- 已重建并启动 `opencode / fastapi / worker / web`，容器内 `s1parse` 烟测通过。
-
-验证：
-
-- `./.venv/bin/python -m pytest -q`：67 passed, 6 skipped。
-- `npm run lint`：通过。
-- `npm run build`：通过，保留 Vite chunk >500KB 既有警告。
-- `docker compose build opencode fastapi web`：通过。
-- `docker compose up -d opencode fastapi worker web`：通过。
-- `docker compose exec -T opencode ... s1parse ...`：通过。
-
-### 2026-05-01 22:51:10 S1 附表 Word 与 OnlyOffice 预览调整
-
-- 附表识别改为仅匹配明确“附表/副表/技术附表”标题，避免正文句子误入附表清单。
-- 所有识别到的附表条目都会生成 Word；没有空表样例时生成仅含标题的空 Word，并对历史 `required_no_template` 结果做读取时补齐。
-- 新增 S1 附表 OnlyOffice 预览 API，前端附表区改为左侧条目列表、右侧 OnlyOffice 预览框，不再显示“待处理/已生成 Word”状态列。
-
-验证：
-
-- `./.venv/bin/python -m pytest tests/test_parse_pipeline.py -q`：15 passed。
-- `./.venv/bin/python -m pytest -q`：69 passed, 6 skipped。
-- `npm run lint`：通过。
-- `npm run build`：通过，保留 Vite chunk >500KB 既有警告。
-- `docker compose build fastapi worker web && docker compose up -d --force-recreate fastapi worker web`：通过。
-- 浏览器验证 `http://127.0.0.1/parse`：附表 159 个，状态列消失，左侧条目 + 右侧 OnlyOffice 预览 iframe 可见。
-
-### 2026-05-02 12:51:52 post-commit 4b36b7e
-
-提交摘要：Refine tech bid workflow with real gap planning
-
-变更文件：
-
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/api/routes/parse.py`
-- `code/sewpg-bid-backend/app/services/onlyoffice_documents.py`
-- `code/sewpg-bid-backend/app/services/parsing.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/app/services/workspace_artifacts.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tender-structured-parser/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tender-structured-parser/scripts/parser_core.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tender-structured-parser/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/tests/test_onlyoffice_document.py`
-- `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
-- `code/sewpg-bid-frontend/src/api/index.js`
-- `code/sewpg-bid-frontend/src/index.css`
-- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
-- `code/sewpg-bid-frontend/src/pages/TenderReview.jsx`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-02 13:25:19 post-commit 84d4a20
-
-提交摘要：Implement tech bid gap planning workflow
-
-变更文件：
-
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/api/routes/gaps.py`
-- `code/sewpg-bid-backend/app/services/gap_planning.py`
-- `code/sewpg-bid-backend/app/services/opencode_client.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/app/services/tech_assembly.py`
-- `code/sewpg-bid-backend/opencode/Dockerfile`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/build_assembly.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-gap-planner/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-table-filler/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/tests/test_fill_generation.py`
-- `code/sewpg-bid-backend/tests/test_gap_review_flow.py`
-- `code/sewpg-bid-backend/tests/test_onlyoffice_document.py`
-- `code/sewpg-bid-frontend/src/App.jsx`
-- `code/sewpg-bid-frontend/src/api/index.js`
-- `code/sewpg-bid-frontend/src/pages/GapRecognition.jsx`
-- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
-- `code/sewpg-bid-frontend/src/utils/stageFlow.js`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-02 13:25:38 post-commit 33c3b66
-
-提交摘要：Record tech bid gap workflow progress
-
-变更文件：
-
-- `code/progress.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-02 13:39:34 待办 12/15 联合改造收尾审计
-
-- S4 缺口识别补齐读取 S2 目录生成产物中的 Wiki 卡片：当人工确认目录没有 `material_refs` 时，`bid-tech-gap-planner` 会按 Wiki frontmatter 的 `skeleton_section` 匹配素材。
-- S5/S6 缺口页上传改为浏览器读取真实文件 Data URL 后提交；后端对 `.docx` Data URL 保存原始 Word 字节并挂回 `gapPlan.resolvedArtifacts`，S7 可直接读取该路径拼接。
-- 保留纯文本上传兼容路径，用于测试或非 Word 输入生成可预览的补料 Word。
-
-验证：
-
-- `python3 -m py_compile app/services/gap_planning.py opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py`：通过。
-- `./.venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_onlyoffice_document.py -q`：26 passed。
-- `./.venv/bin/python -m pytest -q`：81 passed, 6 skipped。
-- `npm run lint`：通过。
-- `npm run build`：通过。
-- `docker compose build opencode fastapi worker web`：通过。
-- `docker compose up -d --force-recreate opencode fastapi worker web`：通过，`fastapi` healthy。
-- `curl -fsS http://127.0.0.1/api/healthz`：返回 `status=ok`。
-- `curl -fsS -o /tmp/bid-web-home.html -w '%{http_code}' http://127.0.0.1/`：200。
-- `docker compose exec -T opencode sh -lc 'command -v s4gap && command -v s4fill && command -v s7assemble'`：三个命令存在。
-- 容器内 `s4gap` 最小 Wiki 卡片匹配烟测：输出 `matched wiki`。
-- 容器内 `s4fill` 最小填写烟测：生成 `out.docx`，首段为“性能保证附表”。
-
-### 2026-05-02 13:52:37 待办 12/15 完成审计补齐
-
-- 完成审计时发现“缺口页选择已有素材 / AI 填写人工指定参考素材”已有计划但缺少前端主流程入口。
-- 缺口页新增素材库搜索、勾选和“挂回缺口”能力；后端新增 `POST /api/projects/{projectId}/gaps/{gapId}/select-material`。
-- 选择已有素材时，后端从真实素材库清洗稿或原始 Word 下载到项目 S4 工作目录，并以 `source=material_library` 挂回 `gapPlan.resolvedArtifacts`，确保 S7 可按真实 `path` 拼接。
-- AI 填写会优先使用人工勾选的素材 ID 作为 `referenceMaterialIds`，未勾选时才 fallback 到已匹配素材。
-
-验证：
-
-- `python3 -m py_compile app/services/gap_planning.py app/services/store.py app/api/routes/gaps.py`：通过。
-- `./.venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_onlyoffice_document.py -q`：27 passed。
-- `./.venv/bin/python -m pytest -q`：82 passed, 6 skipped。
-- `npm run lint && npm run build`：通过，保留既有 Vite chunk size warning。
-- `docker compose build fastapi worker web`：通过。
-- `docker compose up -d --force-recreate fastapi worker web`：通过，`fastapi` healthy。
-- `curl -fsS http://127.0.0.1/api/healthz`：返回 `status=ok`。
-- `curl -fsS -o /tmp/bid-web-home.html -w '%{http_code}' http://127.0.0.1/`：200。
-- `docker compose exec -T opencode sh -lc 'command -v s4gap && command -v s4fill && command -v s7assemble'`：三个命令存在。
-
-### 2026-05-02 14:04:56 待办 12/15 S4 OpenCode 调用审计补齐
-
-- 完成最终审计时发现 S4 缺口识别虽已沉淀为 `bid-tech-gap-planner` Skill，但后端入口仍直接跑本地 runner。
-- `run_gap_planner_skill` 已改为 OpenCode-first：先调用 `OpencodeClient.run_bid_tech_gap_planner_with_trace()`，prompt 明确要求使用 `bid-tech-gap-planner` 并执行 `s4gap <manifest>`。
-- 保留本地 runner fallback，用于离线测试或 OpenCode 服务异常时生成同一份 `bid-tech-gap-plan-v1` 契约。
-- `OpencodeClient` 新增 S4 缺口识别 session、返回 JSON 校验和 repair schema，和 S4 AI 填写、S7 正文拼装的调用形态保持一致。
-- 测试补齐 S4 缺口识别 OpenCode-first 行为，并在相关后端测试中 mock OpenCode 调用，避免测试套件依赖外部模型服务。
-
-验证：
-
-- `python3 -m py_compile code/sewpg-bid-backend/app/services/gap_planning.py code/sewpg-bid-backend/app/services/opencode_client.py`：通过。
-- `python3 -m py_compile code/sewpg-bid-backend/app/services/store.py`：通过。
-- `./.venv/bin/python -m pytest tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_onlyoffice_document.py tests/test_opencode_client.py -q`：34 passed。
-- `./.venv/bin/python -m pytest -q`：83 passed, 6 skipped。
-- `npm run lint && npm run build`：通过，保留既有 Vite chunk size warning。
-- `docker compose build fastapi worker`：通过。
-- `docker compose up -d --force-recreate fastapi worker`：通过，`fastapi` healthy。
-- `curl -fsS http://127.0.0.1/api/healthz`：返回 `status=ok`。
-- `curl -fsS -o /tmp/bid-web-home.html -w '%{http_code}' http://127.0.0.1/`：200。
-- `docker compose exec -T opencode sh -lc 'command -v s4gap && command -v s4fill && command -v s7assemble'`：三个命令存在。
-
-### 2026-05-02 14:21:23 待办 12/15 主流程进度条同步
-
-- 将项目阶段进度条从旧 10 节点展示收敛为 6 个主流程节点：模板与目录、审核目录、缺口处理、生成标书、共创、导出。
-- 后端 `/projects/{project_id}/stages` 保留内部阶段范围 `stageIds` 和跳转用 `routeStageId`，避免破坏现有阶段状态推进。
-- 前端进度条圆点改为 1-6 连续编号，点击合并节点时按 `routeStageId` 跳转到真实页面。
-- 生成标书页完成后直接进入共创，不再把旧 S8 校验作为主流程下一步。
-
-验证：
-
-- `python3 -m py_compile code/sewpg-bid-backend/app/services/store.py`：通过。
-- `./.venv/bin/python -m pytest tests/test_stage_progress.py tests/test_gap_review_flow.py tests/test_fill_generation.py -q`：16 passed。
-- `./.venv/bin/python -m pytest -q`：85 passed, 6 skipped。
-- `npm run lint && npm run build`：通过，保留既有 Vite chunk size warning。
-- `docker compose build fastapi worker web`：通过。
-- `docker compose up -d --force-recreate fastapi worker web`：通过，`fastapi` healthy。
-- `curl -fsS http://127.0.0.1/api/healthz`：返回 `status=ok`。
-- `curl -fsS -o /tmp/bid-web-home.html -w '%{http_code}' http://127.0.0.1/`：200。
-- `/api/projects/{project_id}/stages` 烟测返回 6 个节点：模板与目录、审核目录、缺口处理、生成标书、共创、导出；烟测项目已删除。
-
-### 2026-05-02 14:38:49 当前项目阶段与收紧审计
-
-- 核对当前项目阶段：`PRJ-0007/0006/0005/0003` 仍在“模板与目录”，`PRJ-0001` 在“导出”；`/api/projects/{id}/stages` 返回 6 个合并节点。
-- 进一步收紧前端主线：内部 S8 自动跳转从 `/coverage` 改回 `/generate`，`/coverage` 仅保留为诊断/导出检查入口。
-- 删除主流程已不再引用的旧页面：`DirectoryGeneration.jsx`、`GapFilling.jsx`、`MaterialReview.jsx`。
-- 用户可见文案从旧 `S5/S6/S7 填充` 收敛为“缺口处理/缺口处理确认预览/生成标书”；项目 `stageLabel` 也改为 6 节点名称。
-- 更新 `doc/README.md`、`doc/05`、`doc/06`、`doc/12`、`doc/13`，补充 2026-05-02 当前基线，并说明内部 S 段/兼容接口与 6 节点主流程的关系。
-
-验证：
-
-- `python3 -m py_compile code/sewpg-bid-backend/app/services/store.py code/sewpg-bid-backend/app/api/routes/review.py code/sewpg-bid-backend/app/services/tech_assembly.py code/sewpg-bid-backend/app/api/routes/projects.py code/sewpg-bid-backend/app/api/routes/generation.py`：通过。
-- `PYTHONPATH=. pytest tests/test_stage_progress.py tests/test_gap_review_flow.py tests/test_onlyoffice_document.py tests/test_fill_generation.py -q`：29 passed。
-- `npm run lint`：通过。
-- `npm run build`：通过，保留既有 Vite chunk size warning。
-
-### 2026-05-02 20:01:33 post-commit 89c4a1c
-
-提交摘要：Fix OnlyOffice evidence jump and directory review flow
-
-变更文件：
-
-- `README.md`
-- `code/docker-compose.yml`
-- `code/sewpg-bid-backend/README.md`
-- `code/sewpg-bid-backend/app/api/routes/auth.py`
-- `code/sewpg-bid-backend/app/api/routes/directory.py`
-- `code/sewpg-bid-backend/app/api/routes/outline.py`
-- `code/sewpg-bid-backend/app/core/config.py`
-- `code/sewpg-bid-backend/app/services/gap_planning.py`
-- `code/sewpg-bid-backend/app/services/outline_generation.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/app/services/tech_assembly.py`
-- `code/sewpg-bid-backend/app/services/toc_engine.py`
-- `code/sewpg-bid-backend/app/services/wiki_export.py`
-- `code/sewpg-bid-backend/opencode/Dockerfile`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/references/example_run.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/build_plan.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/export_wiki_from_api.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/extract_attach.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/extract_template.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/extract_tender.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-toc-wiki-driven-v2/scripts/wiki_lookup.py`
-- `code/sewpg-bid-backend/tests/test_auth_routes.py`
-- `code/sewpg-bid-backend/tests/test_directory_generation.py`
-- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
-- `code/sewpg-bid-frontend/.env.production`
-- `code/sewpg-bid-frontend/public/onlyoffice-host.html`
-- `code/sewpg-bid-frontend/public/onlyoffice-search-plugin/config.json`
-- `code/sewpg-bid-frontend/public/onlyoffice-search-plugin/index.html`
-- `code/sewpg-bid-frontend/public/onlyoffice-search-plugin/plugin.js`
-- `code/sewpg-bid-frontend/public/onlyoffice-search-plugin/translations/en-US.json`
-- `code/sewpg-bid-frontend/public/onlyoffice-search-plugin/translations/langs.json`
-- `code/sewpg-bid-frontend/public/onlyoffice-search-plugin/translations/zh-CN.json`
-- `code/sewpg-bid-frontend/src/App.jsx`
-- `code/sewpg-bid-frontend/src/api/index.js`
-- `code/sewpg-bid-frontend/src/components/shared/OnlyOfficeEmbed.jsx`
-- `code/sewpg-bid-frontend/src/config/onlyoffice.js`
-- `code/sewpg-bid-frontend/src/pages/OutlineReview.jsx`
-- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
-- `code/sewpg-bid-frontend/vite.config.js`
-- `"doc/05-MVP\344\270\273\351\223\276\350\267\257\350\257\264\346\230\216.md"`
-- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
-- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
-- `"doc/13-S7\346\212\200\346\234\257\346\240\207\346\255\243\346\226\207\346\213\274\350\243\205\344\270\216S8\347\264\240\346\235\220\346\240\241\351\252\214\350\257\264\346\230\216.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-02 23:56:48 post-commit f99bb1a
-
-提交摘要：Exclude tender attachments from generated TOC
-
-变更文件：
-
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/api/routes/directory.py`
-- `code/sewpg-bid-backend/app/core/config.py`
-- `code/sewpg-bid-backend/app/services/opencode_client.py`
-- `code/sewpg-bid-backend/app/services/outline_generation.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/app/services/toc_engine.py`
-- `code/sewpg-bid-backend/opencode/Dockerfile`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-outline-generator/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-outline-generator/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/tests/test_directory_generation.py`
-- `code/sewpg-bid-backend/tests/test_opencode_client.py`
-- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
-- `code/sewpg-bid-frontend/src/pages/OutlineReview.jsx`
-- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
-- `code/sewpg-bid-frontend/src/pages/TenderReview.jsx`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-03 00:24 S2 工作目录 staging/归档与文档收口
-
-改动目标：
-
-- S2 目录生成失败时不再破坏上一轮成功产物，保留失败现场方便排查。
-- 删除 `parsed/{project_id}/s2.json` alias，统一使用 canonical manifest。
-- 同步 README、接口、部署、数据落点和 agent 指南中的 S2 运行口径。
-
-改动内容：
-
-- `app/services/outline_generation.py` 将 S2 工作区改为先写 `s2_toc_workdir.new/`，成功后发布为 `s2_toc_workdir/`。
-- 旧的成功 `s2_toc_workdir/` 会归档到 `s2_toc_workdir.runs/`；失败时旧成功目录保持不动，`.new` 留作排查。
-- `manifestPath` 与 `canonicalManifestPath` 统一指向 `s2_toc_workdir/s2_input.json`，不再写 `parsed/{project_id}/s2.json`。
-- 发布成功后会回写 manifest、toc、evidence 和 agent review 输入中的 staging 路径，避免 `.new` 路径泄漏给后续 S4/S7。
-- 补充回归测试，覆盖 alias 删除、成功归档旧目录、失败保留旧目录。
-- 同步文档：
-  - `README.md`
-  - `code/AGENT.md`
-  - `doc/05-MVP主链路说明.md`
-  - `doc/06-MVP接口文档.md`
-  - `doc/08-MVP部署说明.md`
-  - `doc/12-数据存储与素材库数据说明.md`
-  - `doc/README.md`
-
-验证结果：
-
-- `python3 -m py_compile app/services/outline_generation.py` 通过。
-- `PYTHONPATH=. pytest tests/test_directory_generation.py tests/test_gap_review_flow.py -q` 通过：25 passed。
-- `PYTHONPATH=. pytest tests/test_toc_skill_scripts.py tests/test_opencode_client.py -q` 通过：24 passed。
-- 已在 `code/` 下重建并 force recreate `opencode / fastapi / worker`。
-- `http://127.0.0.1/api/healthz` 返回 `status=ok`。
-- `http://127.0.0.1:4096/global/health` 返回 `healthy=true`。
-- PRJ-0007 重新跑 S2 成功：`143 条目录项（保留57，新增-副表86）`。
-- 容器内核对：`s2.json` 不存在，`s2_toc_workdir.new` 不残留，`s2_toc_workdir.runs` 已生成归档，`s2_input.json / toc.json / toc_evidence.json` 均无 `.new` 路径。
-
-遗留问题：
-
-- task 2 仍显示为 `futurecode 语义审核`，但当前 S2 的稳定链路是 futurecode/opencode 执行 `s2toc` + 后端读取脚本产物；是否改文案或增加 digest 级 agentDecisions，需要另起小改处理。
-
-### 2026-05-03 01:29:13 post-commit ba7ea5b
-
-提交摘要：Complete settings auth audit and OCR todos
-
-变更文件：
-
-- `code/.env.example`
-- `code/docker-compose.yml`
-- `code/initdb/01-init.sql`
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/api/router.py`
-- `code/sewpg-bid-backend/app/api/routes/audit.py`
-- `code/sewpg-bid-backend/app/api/routes/auth.py`
-- `code/sewpg-bid-backend/app/api/routes/ocr.py`
-- `code/sewpg-bid-backend/app/api/routes/projects.py`
-- `code/sewpg-bid-backend/app/api/routes/settings.py`
-- `code/sewpg-bid-backend/app/core/config.py`
-- `code/sewpg-bid-backend/app/main.py`
-- `code/sewpg-bid-backend/app/models/materials.py`
-- `code/sewpg-bid-backend/app/services/audit_service.py`
-- `code/sewpg-bid-backend/app/services/auth_service.py`
-- `code/sewpg-bid-backend/app/services/material_store.py`
-- `code/sewpg-bid-backend/app/services/ocr_service.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/app/services/system_settings.py`
-- `code/sewpg-bid-backend/app/services/template_store.py`
-- `code/sewpg-bid-backend/tests/test_security_settings_ocr_routes.py`
-- `code/sewpg-bid-frontend/src/api/index.js`
-- `code/sewpg-bid-frontend/src/pages/Login.jsx`
-- `code/sewpg-bid-frontend/src/pages/OutlineReview.jsx`
-- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
-- `code/sewpg-bid-frontend/src/pages/Settings.jsx`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-03 13:23:26 设置模型显示与审计导航收口
-
-提交摘要：Polish settings model display and audit navigation
-
-变更文件：
-
-- `code/docker-compose.yml`
-- `code/sewpg-bid-backend/app/core/config.py`
-- `code/sewpg-bid-backend/app/services/system_settings.py`
-- `code/sewpg-bid-backend/tests/test_security_settings_ocr_routes.py`
-- `code/sewpg-bid-frontend/src/components/layout/AppShell.jsx`
-- `code/sewpg-bid-frontend/src/pages/Settings.jsx`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-03 13:24:20 post-commit 6792424
-
-提交摘要：Polish settings model display and audit navigation
-
-变更文件：
-
-- `code/docker-compose.yml`
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/core/config.py`
-- `code/sewpg-bid-backend/app/services/system_settings.py`
-- `code/sewpg-bid-backend/tests/test_security_settings_ocr_routes.py`
-- `code/sewpg-bid-frontend/src/components/layout/AppShell.jsx`
-- `code/sewpg-bid-frontend/src/pages/Settings.jsx`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-03 14:16:07 post-commit ce45939
-
-提交摘要：Protect S2 workspace publishing
-
-变更文件：
-
-- `README.md`
-- `code/AGENT.md`
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/services/outline_generation.py`
-- `code/sewpg-bid-backend/tests/test_directory_generation.py`
-- `"doc/05-MVP\344\270\273\351\223\276\350\267\257\350\257\264\346\230\216.md"`
-- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
-- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
-- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
-- `doc/README.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-03 18:37:20 素材库 Wiki Skill 与原始素材预览收口
-
-目标：
-
-- 将当前最小 Wiki 构建思路规范封装到运行时 OpenCode Skill。
-- 让 Wiki 生成避开大 JSON 直出导致的超时、摘要和截断问题。
-- 将原始素材库页面收敛为三层素材入口下的 Finder 列表模式，并支持点击已清洗文件在右侧 OnlyOffice 预览。
-- 同步文档口径，确保后续接手者知道 `wikibuild`、`_wiki_build` 工作区、5 节点 Wiki 结构和素材库页面行为。
-
-完成内容：
-
-- 重写技术标/商务标 Wiki 构建 Skill，统一为 `01-素材总表 / 02-章节映射表 / 03-素材卡片 / 04-待填写清单 / 05-使用规则` 最小结构。
-- 新增 `wikibuild` 容器命令，OpenCode 调用 `wikibuild <manifest>` 后只在 stdout 返回小摘要，完整 Wiki 蓝图写入共享 `parsed/_wiki_build/*/wiki_blueprint.json`。
-- 后端 Wiki 生成改为写共享 manifest，并在收到 `outputFile` 摘要后读取完整 `wiki_blueprint.json` 导入数据库。
-- 修复 OpenCode 早停 trace，使 `completionSource` 能按实际工具命令记录。
-- 原始素材库页面固定展示 `通用素材 / 客户素材 / 项目素材` 三层入口，目录可展开到文件，点击已清洗素材后在右侧 OnlyOffice 区域预览清洗稿。
-- 同步根 README、`code/AGENT.md`、`doc/06`、`doc/11`、`doc/12` 的运行口径。
-
-变更文件：
-
-- `README.md`
-- `code/AGENT.md`
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/services/opencode_client.py`
-- `code/sewpg-bid-backend/app/services/wiki_generation.py`
-- `code/sewpg-bid-backend/opencode/Dockerfile`
-- `code/sewpg-bid-backend/opencode/skill/bid-business-wiki-material-builder/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-business-wiki-material-builder/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-wiki-material-builder/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-wiki-material-builder/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/tests/test_opencode_client.py`
-- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
-- `code/sewpg-bid-backend/tests/test_wiki_generation.py`
-- `code/sewpg-bid-frontend/src/pages/MaterialDB.jsx`
-- `doc/06-MVP接口文档.md`
-- `doc/11-内网离线部署说明.md`
-- `doc/12-数据存储与素材库数据说明.md`
-
-验证结果：
-
-- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_wiki_generation.py tests/test_opencode_client.py tests/test_toc_skill_scripts.py::TocSkillScriptTests::test_bid_wiki_builder_writes_full_blueprint_and_returns_small_summary -q`：20 passed。
-- `npm run check`：通过；Vite 保留大 chunk 体积警告。
-- `docker compose ps opencode fastapi worker web`：相关服务运行，`fastapi` 和 `opencode` healthy。
-- `curl -fsS http://127.0.0.1/api/healthz`：返回 ok。
-- `curl -fsS http://127.0.0.1:4096/global/health`：返回 healthy。
-- `POST /api/materials/wiki/bootstrap {"mode":"replace","bidType":"技术标"}`：成功重建技术标 Wiki；`03-素材卡片` 下共导入 93 张卡片，通用 63、客户 11、项目 19。
-
-### 2026-05-03 14:16:48 post-commit 67af5e3
-
-提交摘要：Protect S2 workspace publishing
-
-变更文件：
-
-- `README.md`
-- `code/AGENT.md`
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/services/outline_generation.py`
-- `code/sewpg-bid-backend/tests/test_directory_generation.py`
-- `"doc/05-MVP\344\270\273\351\223\276\350\267\257\350\257\264\346\230\216.md"`
-- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
-- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
-- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
-- `doc/README.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-03 16:02:40 post-commit c8fda2f
-
-提交摘要：Use settings default templates for bid generation
-
-变更文件：
-
-- `README.md`
-- `code/.env.example`
-- `code/AGENT.md`
-- `code/docker-compose.yml`
-- `code/progress.md`
-- `"code/sewpg-bid-api/MVP\346\216\245\345\217\243\344\270\216\345\217\202\346\225\260\346\240\270\345\277\203\347\211\210_\346\236\201\347\256\200\347\211\210.md"`
-- `code/sewpg-bid-backend/app/api/routes/parse.py`
-- `code/sewpg-bid-backend/app/core/config.py`
-- `code/sewpg-bid-backend/app/services/gap_planning.py`
-- `code/sewpg-bid-backend/app/services/ocr_service.py`
-- `code/sewpg-bid-backend/app/services/opencode_client.py`
-- `code/sewpg-bid-backend/app/services/outline_generation.py`
-- `code/sewpg-bid-backend/app/services/parsing.py`
-- `code/sewpg-bid-backend/app/services/system_settings.py`
-- `code/sewpg-bid-backend/app/services/tech_assembly.py`
-- `code/sewpg-bid-backend/app/services/template_store.py`
-- `code/sewpg-bid-backend/app/services/workspace_artifacts.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-gap-planner/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-table-filler/SKILL.md`
-- `code/sewpg-bid-backend/tests/test_directory_generation.py`
-- `code/sewpg-bid-backend/tests/test_fill_generation.py`
-- `code/sewpg-bid-backend/tests/test_gap_review_flow.py`
-- `code/sewpg-bid-backend/tests/test_opencode_client.py`
-- `code/sewpg-bid-backend/tests/test_parse_pipeline.py`
-- `code/sewpg-bid-backend/tests/test_security_settings_ocr_routes.py`
-- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
-- `code/sewpg-bid-frontend/src/pages/Settings.jsx`
-- `"doc/05-MVP\344\270\273\351\223\276\350\267\257\350\257\264\346\230\216.md"`
-- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
-- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
-- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-- `doc/README.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-03 16:35:27 post-commit fde292b
-
-提交摘要：Align workflow stages to S0-S6
-
-变更文件：
-
-- `README.md`
-- `code/AGENT.md`
-- `code/progress.md`
-- `"code/sewpg-bid-api/MVP\346\216\245\345\217\243\344\270\216\345\217\202\346\225\260\346\240\270\345\277\203\347\211\210_\346\236\201\347\256\200\347\211\210.md"`
-- `code/sewpg-bid-backend/README.md`
-- `code/sewpg-bid-backend/app/api/routes/export.py`
-- `code/sewpg-bid-backend/app/api/routes/generation.py`
-- `code/sewpg-bid-backend/app/api/routes/projects.py`
-- `code/sewpg-bid-backend/app/services/draft_generation.py`
-- `code/sewpg-bid-backend/app/services/opencode_client.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/app/services/tech_assembly.py`
-- `code/sewpg-bid-backend/onlyoffice/README.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-assembler/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-gap-planner/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-outline-generator/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tender-structured-parser/SKILL.md`
-- `code/sewpg-bid-backend/tests/test_fill_generation.py`
-- `code/sewpg-bid-backend/tests/test_stage_progress.py`
-- `code/sewpg-bid-frontend/src/App.jsx`
-- `code/sewpg-bid-frontend/src/components/shared/ProjectStageProgress.jsx`
-- `code/sewpg-bid-frontend/src/pages/CoCreationEditor.jsx`
-- `code/sewpg-bid-frontend/src/pages/CoverageHeatmap.jsx`
-- `code/sewpg-bid-frontend/src/pages/FinalExport.jsx`
-- `code/sewpg-bid-frontend/src/pages/GapRecognition.jsx`
-- `code/sewpg-bid-frontend/src/pages/GenerateProgress.jsx`
-- `code/sewpg-bid-frontend/src/pages/OutlineReview.jsx`
-- `code/sewpg-bid-frontend/src/pages/ParseResult.jsx`
-- `code/sewpg-bid-frontend/src/pages/ProjectCockpit.jsx`
-- `code/sewpg-bid-frontend/src/pages/ProjectEntryRedirect.jsx`
-- `code/sewpg-bid-frontend/src/pages/TenderReview.jsx`
-- `code/sewpg-bid-frontend/src/utils/stageFlow.js`
-- `"doc/05-MVP\344\270\273\351\223\276\350\267\257\350\257\264\346\230\216.md"`
-- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
-- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
-- `"doc/11-\345\206\205\347\275\221\347\246\273\347\272\277\351\203\250\347\275\262\350\257\264\346\230\216.md"`
-- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
-- `"doc/13-S4\347\224\237\346\210\220\346\240\207\344\271\246\344\270\216\350\246\206\347\233\226\350\257\212\346\226\255\350\257\264\346\230\216.md"`
-- `"doc/13-S7\346\212\200\346\234\257\346\240\207\346\255\243\346\226\207\346\213\274\350\243\205\344\270\216S8\347\264\240\346\235\220\346\240\241\351\252\214\350\257\264\346\230\216.md"`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-- `"doc/15-\346\212\200\346\234\257\346\240\207\344\270\216\345\225\206\345\212\241\346\240\207\351\234\200\346\261\202\346\225\264\347\220\206.md"`
-- `doc/README.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-03 18:40:06 post-commit d74e7f2
-
-提交摘要：feat(materials): stabilize wiki builder workflow
-
-变更文件：
-
-- `README.md`
-- `code/AGENT.md`
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/services/opencode_client.py`
-- `code/sewpg-bid-backend/app/services/wiki_generation.py`
-- `code/sewpg-bid-backend/opencode/Dockerfile`
-- `code/sewpg-bid-backend/opencode/skill/bid-business-wiki-material-builder/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-business-wiki-material-builder/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-wiki-material-builder/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-wiki-material-builder/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/tests/test_opencode_client.py`
-- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
-- `code/sewpg-bid-backend/tests/test_wiki_generation.py`
-- `code/sewpg-bid-frontend/src/pages/MaterialDB.jsx`
-- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
-- `"doc/11-\345\206\205\347\275\221\347\246\273\347\272\277\351\203\250\347\275\262\350\257\264\346\230\216.md"`
-- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-03 20:08 素材库层级纠偏：技术标顶层启用，商务标保留为空
-
-- 修正素材库目录口径：顶层为 `技术标 / 商务标`；当前只启用 `技术标`，其下分为 `通用素材 / 客户素材 / 项目素材` 三档。
-- `/api/projects/{id}/materials-path` 改为返回 `技术标/通用素材`、`技术标/客户素材/{客户}`、`技术标/项目素材/{素材项目ID}`。
-- 原始素材上传、项目骨架初始化、S3 缺口素材搜索统一使用技术标新路径；旧路径仅保留读取兼容，不再作为新数据生成口径。
-- 商务标素材库暂时只保留空根目录：不上传商务标素材，不生成商务标 Wiki；Wiki 构建当前只开放 `bid-tech-wiki-material-builder`。
-- 前端素材库树改为 Finder 式顶层 `技术标 / 商务标`，技术标下可展开三档素材并点击文件在右侧 OnlyOffice 预览清洗稿。
-- 同步修正 README、AGENT 说明、数据存储说明和本次 superpowers 执行计划里的路径口径。
-- 验证：`pytest tests/test_project_material_scope.py tests/test_store_persistence.py tests/test_wiki_generation.py tests/test_toc_skill_scripts.py tests/test_fill_generation.py tests/test_gap_review_flow.py -q` 通过，结果 `37 passed, 2 skipped`。
-- 验证：`npm run check` 通过，仅保留 Vite chunk size 提示。
-- 运行态：已重建并启动 `fastapi/web`；`/api/healthz` 和首页返回 200；`/api/materials/raw/tree` 返回顶层 `技术标 / 商务标`，`技术标` 下三档，`商务标` 空；临时项目 `/materials-path` 返回 `技术标/通用素材`、`技术标/客户素材/华能集团`、`技术标/项目素材/MAT-HN-RUNTIME`。
-
-### 2026-05-03 19:43:00 post-commit 559ff82
-
-提交摘要：feat(materials): promote library and scope project lookup
-
-变更文件：
-
-- `README.md`
-- `code/AGENT.md`
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/api/routes/projects.py`
-- `code/sewpg-bid-backend/app/services/identity.py`
-- `code/sewpg-bid-backend/tests/test_project_material_scope.py`
-- `code/sewpg-bid-backend/tests/test_store_persistence.py`
-- `code/sewpg-bid-frontend/src/components/layout/AppShell.jsx`
-- `code/sewpg-bid-frontend/src/pages/GapRecognition.jsx`
-- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
-- `doc/superpowers/plans/2026-05-03-material-library-top-level-scope.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-03 20:21:26 post-commit a131bad
-
-提交摘要：fix(materials): align technical library hierarchy
-
-变更文件：
-
-- `README.md`
-- `code/AGENT.md`
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/api/routes/projects.py`
-- `code/sewpg-bid-backend/app/services/identity.py`
-- `code/sewpg-bid-backend/app/services/material_store.py`
-- `code/sewpg-bid-backend/app/services/peripheral.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/app/services/wiki_generation.py`
-- `code/sewpg-bid-backend/tests/test_fill_generation.py`
-- `code/sewpg-bid-backend/tests/test_gap_review_flow.py`
-- `code/sewpg-bid-backend/tests/test_peripheral_routes.py`
-- `code/sewpg-bid-backend/tests/test_project_material_scope.py`
-- `code/sewpg-bid-backend/tests/test_store_persistence.py`
-- `code/sewpg-bid-backend/tests/test_toc_skill_scripts.py`
-- `code/sewpg-bid-backend/tests/test_wiki_generation.py`
-- `code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx`
-- `code/sewpg-bid-frontend/src/pages/MaterialDB.jsx`
-- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
-- `doc/superpowers/plans/2026-05-03-material-library-top-level-scope.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-03 20:59 素材库技术标/商务标分层与技术标 Wiki 重建收口
-
-- 素材库页面收口为 `技术标 / 商务标` 顶层切换，每个标类下仍是 `原始素材 / Wiki`；当前只启用技术标，商务标原始素材与 Wiki 均保留为空状态。
-- 技术标原始素材已按最新版下载目录导入运行库：`通用素材 63`、`客户素材 11`、`项目素材 19`，合计 `93` 个文件；商务标素材接口返回 `0`。
-- 技术标 Wiki 生成主路径改为 `fastapi` 直接执行 `bid-tech-wiki-material-builder/scripts/run_from_manifest.py`，不再依赖 OpenCode 会话中转调用，避免 93 份素材时 Wiki 构建超时。
-- 后端镜像已把 `scripts/` 与 `opencode/skill/` 一起打入 fastapi/worker，导入脚本和技术标 Wiki runner 均随镜像交付。
-- 已重新生成技术标 Wiki，根节点为 `技术标Wiki（自动生成）`，一级节点固定为 `01-素材总表 / 02-章节映射表 / 03-素材卡片 / 04-待填写清单 / 05-使用规则`；商务标 Wiki API 返回空树。
-- 同步更新 README、AGENT、接口文档、数据存储说明和离线部署说明，统一口径为“技术标 Wiki 由 FastAPI 直接运行技术标专用 Skill runner”。
-- 验证：`python -m py_compile code/sewpg-bid-backend/app/services/wiki_generation.py code/sewpg-bid-backend/scripts/import_technical_materials.py code/sewpg-bid-backend/opencode/skill/bid-tech-wiki-material-builder/scripts/run_from_manifest.py` 通过。
-- 验证：`.venv/bin/python -m unittest tests/test_wiki_generation.py` 通过，结果 `Ran 5 tests ... OK`。
-- 验证：`npm run lint` 通过；`npm run build` 通过，仅保留既有 Vite chunk size 提示。
-- 验证：`docker compose -f code/docker-compose.yml build fastapi worker web` 和 `up -d fastapi worker web` 成功；`/api/healthz` 返回 `ok`。
-- 验证：`/api/materials/raw/files?bidType=技术标&pageSize=1000` 返回 `total=93`、`standard=63`、`customer=11`、`project=19`；`/api/materials/raw/files?bidType=商务标&pageSize=1000` 返回 `total=0`。
-- 验证：`/api/materials/wiki?bidType=技术标` 返回技术标 Wiki 五节点结构；`/api/materials/wiki?bidType=商务标` 返回 `treeCount=0`。
-
-### 2026-05-03 21:20:04 文档口径收口：素材库/Wiki 与 S0-S6 阶段统一
-
-- 按 neat-freak 流程整理现阶段文档，清理会误导接手者的旧 S1-S10、S7/S8/S9/S10、600 秒超时和 main-only Git 口径。
-- README 验收步骤补充“先维护素材库和技术标 Wiki”，并把 `OPENCODE_TIMEOUT_SEC` 统一为 compose 默认 `1800` 秒。
-- 前端 README 和前端 docs 下两份旧接口长文改为当前 `S0-S6` 索引，正式接口细节统一指向根目录 `doc/06-MVP接口文档.md` 和 `code/sewpg-bid-api/MVP接口与参数核心版_极简版.md`。
-- `doc/GIT_WORKFLOW.md` 统一为当前 `wlb -> Dev -> main` 协作口径；`doc/13` 同步 S4 素材导出范围为技术标通用、客户、项目三档。
-- 补充 `code/AGENT.md`、后端 README、`doc/README.md`、`doc/14`、`doc/15`，明确技术标 Wiki 由 FastAPI 直接执行技术标专用 runner，商务标素材/Wiki 当前为空。
-- 验证：旧阶段与超时口径扫描通过，剩余旧词仅出现在历史说明或需求原文映射中。
-- 验证：`git diff --check` 通过。
-
-### 2026-05-03 21:20:57 post-commit 7359d7e
-
-提交摘要：docs(repo): align material library docs
-
-变更文件：
-
-- `README.md`
-- `code/AGENT.md`
-- `code/progress.md`
-- `code/sewpg-bid-backend/README.md`
-- `code/sewpg-bid-frontend/README.md`
-- `"code/sewpg-bid-frontend/docs/10-API\346\216\245\345\217\243\346\200\273\350\247\210\344\270\216\345\245\221\347\272\246\350\257\264\346\230\216.md"`
-- `"code/sewpg-bid-frontend/docs/11-API\345\255\227\346\256\265\347\272\247\345\245\221\347\272\246\346\230\216\347\273\206.md"`
-- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
-- `"doc/13-S4\347\224\237\346\210\220\346\240\207\344\271\246\344\270\216\350\246\206\347\233\226\350\257\212\346\226\255\350\257\264\346\230\216.md"`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-- `"doc/15-\346\212\200\346\234\257\346\240\207\344\270\216\345\225\206\345\212\241\346\240\207\351\234\200\346\261\202\346\225\264\347\220\206.md"`
-- `doc/GIT_WORKFLOW.md`
-- `doc/README.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-03 22:20 人工指定投标机型并延续到缺口处理/生成标书
-
-- 完成待办 4“人工指定机型后选择素材”：项目确认页新增技术标投标机型选择，候选来自素材库真实 `X2平台机型投标参数_20250106.xlsx`，并支持候选选择和人工录入兜底。
-- 新增机型候选提取服务，只识别 `EW/W/SE + 功率-叶轮直径` 形态的整机投标机型，并过滤证书号、日期、发电机/变流器/齿轮箱/供应商编号等非机型噪声。
-- 项目 payload 持久化 `turbineModel / selectedTurbineModel / turbineModelLabel`，并在项目列表、项目详情和项目素材读取范围接口返回。
-- 不改 S1 模板与目录生成；从 S3 缺口处理开始将 `projectTurbineModel` 写入 `s4_gap_input.json / gap_plan.json / table_fill_input.json`，并传给 S4 `s7_assembly_input.json / project_params.json`。
-- S3 选择已有素材时带上项目机型，素材搜索优先同机型并过滤明显冲突机型；通用素材不因没有机型字段而被排除。
-- 缺口页展示当前投标机型，AI 填写 fallback 产物会写入投标机型上下文，后续一致性审计可沿用同一结构化字段。
-- 验证：`PYTHONPATH=./app .venv/bin/python -m unittest tests/test_turbine_model_selection.py tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_project_material_scope.py tests/test_store_persistence.py tests/test_wiki_generation.py` 通过，结果 `26 tests OK`。
-- 验证：`PYTHONPATH=./app .venv/bin/python -m py_compile app/services/turbine_models.py app/services/material_store.py app/services/gap_planning.py app/services/tech_assembly.py app/services/store.py app/api/routes/materials.py app/api/routes/projects.py opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py` 通过。
-- 验证：`npm run lint` 通过；`npm run build` 通过，仅保留既有 Vite chunk size 提示。
-- 运行态：已执行 `docker compose -f code/docker-compose.yml build fastapi worker web` 与 `up -d fastapi worker web`；`/api/healthz` 返回 ok，首页返回 200。
-- 运行态：`/api/materials/turbine-model-options?bidType=技术标` 从真实素材库返回 26 个候选，噪声检查未发现证书号、日期或组件编号；真实 Postgres 项目创建/查询验证可保存并返回 `turbineModel`，验证后已删除临时项目。
-
-### 2026-05-03 22:23:40 post-commit db4ce1d
-
-提交摘要：feat(projects): carry selected turbine model through gaps
-
-变更文件：
-
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/api/routes/materials.py`
-- `code/sewpg-bid-backend/app/api/routes/projects.py`
-- `code/sewpg-bid-backend/app/models/materials.py`
-- `code/sewpg-bid-backend/app/services/gap_planning.py`
-- `code/sewpg-bid-backend/app/services/material_store.py`
-- `code/sewpg-bid-backend/app/services/store.py`
-- `code/sewpg-bid-backend/app/services/tech_assembly.py`
-- `code/sewpg-bid-backend/app/services/turbine_models.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/tests/test_turbine_model_selection.py`
-- `code/sewpg-bid-frontend/src/api/index.js`
-- `code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx`
-- `code/sewpg-bid-frontend/src/pages/GapRecognition.jsx`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-03 22:55 项目信息页文案与机型选择 UI 收口
-
-改动目标：
-
-- 按用户要求优化“完善项目信息”页面布局和字段文案。
-- 将当前页面口径与文档口径统一，避免后续继续使用“素材库客户 / 素材库项目”描述项目信息页。
-- 明确机型候选和选中机型的存储边界。
-
-改动内容：
-
-- `ProjectWizardModal.jsx` 中，`业务项目编号` 与 `负责人` 并列，`客户来源` 与 `业主单位（客户）` 并列。
-- `素材项目来源 / 素材库项目` 改为 `项目来源 / 项目`，下拉选项使用 `已有项目 / 普通项目`。
-- `客户来源` 的 `素材库客户` 改为 `重要客户`，确认页摘要同步展示 `重要客户 / 普通客户`。
-- `投标机型` 从输入框、筛选框和候选按钮改为下拉菜单；候选来自 `/api/materials/turbine-model-options`，仍保留 `人工指定机型` 兜底。
-- 机型参数继续在右侧展示平台、功率、叶轮和状态。
-- 同步 README、`code/AGENT.md`、`doc/05`、`doc/06`、`doc/12`、`doc/13`、`doc/14`、`doc/README.md`、`code/sewpg-bid-api` 和前端字段索引：候选机型从素材库 Excel 动态解析，不单独保存静态 JSON；只有用户选中的 `turbineModel` 随项目 payload JSONB 保存并延续到 S3/S4。
-
-验证结果：
-
-- `npm run lint` 通过。
-- `npm run build` 通过；保留既有 Vite chunk size 提示。
-- `git diff --check` 通过。
-- 已重新构建并启动 `web`：`docker compose -f code/docker-compose.yml build web && docker compose -f code/docker-compose.yml up -d web`。
-- `http://127.0.0.1/` 返回 HTTP 200；构建后的前端包中能搜索到 `重要客户`。
-
-### 2026-05-03 23:07:22 post-commit 1d6a2b4
-
-提交摘要：docs: align project info wording and turbine model docs
-
-变更文件：
-
-- `README.md`
-- `code/AGENT.md`
-- `code/progress.md`
-- `"code/sewpg-bid-api/MVP\346\216\245\345\217\243\344\270\216\345\217\202\346\225\260\346\240\270\345\277\203\347\211\210_\346\236\201\347\256\200\347\211\210.md"`
-- `"code/sewpg-bid-frontend/docs/11-API\345\255\227\346\256\265\347\272\247\345\245\221\347\272\246\346\230\216\347\273\206.md"`
-- `code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx`
-- `"doc/05-MVP\344\270\273\351\223\276\350\267\257\350\257\264\346\230\216.md"`
-- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
-- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
-- `"doc/13-S4\347\224\237\346\210\220\346\240\207\344\271\246\344\270\216\350\246\206\347\233\226\350\257\212\346\226\255\350\257\264\346\230\216.md"`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-- `doc/README.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-04 00:09 S3 缺口识别前端决策展示改造
-
-改动目标：
-
-- 按用户确认的 S3 缺口识别技术路线，允许前端从旧 `status` 展示调整为新 `decision` 业务判断展示。
-- 先让用户在真实项目 `PRJ-0003` 的 Codex 样例 `gap_plan.json` 上审核业务判断，再封装第一个 OpenCode Skill。
-
-改动内容：
-
-- `GapRecognition.jsx` 新增四类缺口判断：`可直接合并 / 需填写空表 / 缺素材 / 需人工复核`。
-- 顶部统计卡改为展示四类决策和 AI 填写任务数。
-- 列表新增决策筛选，表格状态列优先展示 `decision`，并保留旧 `status` 兼容信息。
-- 详情侧栏新增“缺口判断”“素材边界与机型判断”“解析生成的空副表/Word”“识别依据”等区域。
-- 详情展示 `materialScope.allowedPaths / actualMatchedPaths`、`turbineCheck`、`appendixTasks`、`fillTasks`、`nextActions`、`evidenceRefs`。
-- 保留旧 gap payload 兼容：当接口没有 `decision` 字段时仍回退到原 `statusConfig` 展示。
-
-验证结果：
-
-- `npm run lint` 通过。
-- `npm run build` 通过；保留既有 Vite chunk size 提示。
-- `git diff --check` 通过。
-- 已重新构建并启动 `web`：`docker compose build web && docker compose up -d --force-recreate web`。
-- `http://127.0.0.1/projects/PRJ-0003/gaps` 返回 HTTP 200。
-- `GET /api/projects/PRJ-0003/gaps-detection` 返回样例统计：目录项 143，可直接合并 36，需填写空表 103，缺素材 1，需人工复核 3，AI 填写任务 101，空副表任务 101。
-
-### 2026-05-04 01:50 S3 缺口识别第三章整章覆盖修正
-
-改动目标：
-
-- 修正 S3 缺口识别里“一个目录项多份最终匹配素材”的问题。
-- 将 `第3章 风资源评估与机位排布方案` 按整章 Word 覆盖处理，避免 3.1-3.7 子节重复识别为独立缺口或独立素材匹配。
-- 将空副表填写任务与正文目录匹配隔离，尤其是 `附表E.1 投标人风资源评估与机位排布方案` 不再挂到第3章及其子节。
-
-改动内容：
-
-- `bid-tech-gap-planner` runner 增加 `candidateMaterials` 与 `appendixTasks[].recommendedMaterials`，`matchedMaterials` 只保留最终选中的一份素材。
-- 增加第3章特例：父章 `coverageRole=chapter_master`，最终素材选 `RAW-0473 定制-风资源评估与机位排布方案.docx`；3.1-3.7 标记 `covered_by_parent`。
-- 后端生成缺口识别 manifest 时加入 `materialScope` 和已按项目/客户/通用边界过滤的 `materialIndex`，供 OpenCode/Skill 判断使用。
-- 前端 S3 页面将“匹配素材”拆成“最终匹配素材”和“候选/参考素材”，列表显示“父章覆盖”。
-
-验证结果：
-
-- `python -m pytest tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_turbine_model_selection.py -q` 通过：19 passed。
-- `npm run lint` 通过。
-- `npm run build` 通过；保留既有 Vite chunk size 提示。
-- `python -m py_compile app/services/gap_planning.py opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py` 通过。
-- `git diff --check` 通过。
-- 已重新构建并启动 `fastapi / worker / opencode / web`。
-- 已重新触发 `POST /api/projects/PRJ-0003/gaps-detection/run`。
-- 运行态 `gap_plan.json` 检查：`multiMatchedCount=0`；第3章最终素材为 `RAW-0473`；`3.4` 等子节 `coveredByParent=GAP-0013`；`附表E.1` 为 `fill_required`，最终匹配素材为空，推荐素材首位为 `RAW-0473`。
-- 浏览器核对 `http://127.0.0.1/projects/PRJ-0003/gaps`：页面显示新统计、`1 份最终素材`、`父章覆盖`、`候选/参考素材`。
-
-### 2026-05-04 02:12 S3 缺口识别 OpenCode Skill 封装与实测
-
-改动目标：
-
-- 检查第一个 Skill（缺口识别）是否满足当前业务口径。
-- 将已验证的 S3 缺口识别逻辑写回 OpenCode runtime Skill，让 OpenCode 冷启动时按同一规则调用。
-- 更新本地 OpenCode 网关 API key 并进行真实 OpenCode 调用验证。
-
-改动内容：
-
-- `bid-tech-gap-planner/SKILL.md` 补齐输入边界、输出结构、判断规则、第3章整章覆盖规则和空副表规则。
-- 后端缺口识别 prompt 从历史 “S4 技术标缺口识别” 调整为当前 “S3 技术标缺口识别”，并明确 manifest 中包含项目/客户/通用素材边界、素材索引和投标机型。
-- 本地 `code/.env` 已更新 OpenCode 网关 key；该文件被 `.gitignore` 忽略，不进入 git diff。
-- 已重建并重启 `opencode`，确认容器内新版 Skill 文档生效。
-
-验证结果：
-
-- OpenCode 健康检查通过：`/global/health` 返回 healthy。
-- 容器内确认 `OPENCODE_PROVIDER_ID=mimo`、`OPENCODE_MODEL_ID=mimo-v2.5`、key 已设置。
-- 已真实触发 `POST /api/projects/PRJ-0003/gaps-detection/run`，返回 `opencodeOutput.providerId=mimo`、`modelId=mimo-v2.5`，不是 fallback 的 `local-skill`。
-- 运行态 `gapPlan` 检查：`itemCount=143`、`multiMatchedCount=0`；第3章 `coverageRole=chapter_master` 且最终素材为 `RAW-0473`；3.1-3.7 均 `covered_by_parent`；`附表E.1` 为 `fill_required`，最终素材为空，推荐素材首位 `RAW-0473`。
-- `python -m pytest tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_turbine_model_selection.py -q` 通过：19 passed。
-- `python -m py_compile app/services/gap_planning.py opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py` 通过。
-- `npm run lint` 通过。
-- `npm run build` 通过；保留既有 Vite chunk size 提示。
-- `git diff --check` 通过。
-
-### 2026-05-04 02:45 S3 空副表/Word 填写 OpenCode Skill 封装与实测
-
-改动目标：
-
-- 检查第二个 Skill（空副表/Word 填写）是否满足当前业务口径。
-- 将已验证的填表逻辑封装为 OpenCode Skill `bid-tech-table-filler`，让 S3 的 AI 填写必须经 OpenCode 调用。
-- 在前端 S3 页面展示填写产物、填充报告、参考素材、未填字段和 OnlyOffice 预览入口。
-
-改动内容：
-
-- 新增 `opencode/skill/bid-tech-table-filler/SKILL.md` 和 `scripts/run_from_manifest.py`。
-- 填写 Skill 只读取 manifest 中的 `blankSource`、`appendixTask`、`referenceMaterials`、`parseFields` 和 `projectTurbineModel`，禁止搜索全库或读取 manifest 外素材。
-- 后端 AI 填写 manifest 增加 `gapItem`、空表来源、参考素材、解析字段、推荐素材和投标机型。
-- 前端默认参考素材选择顺序为：人工已选素材、已匹配素材、空表推荐素材；并展示 AI 填写后的 `fillReport`、`referenceMaterials`、`unfilledFields` 和预览链接。
-- S3 页面左右区域改为固定响应式高度和独立滚动，避免目录列表过长时与右侧卡片高度不匹配。
-- 新增 `gapRecognitionHelpers.js` 和对应 node test，覆盖默认参考素材与解析字段选择逻辑。
-
-验证结果：
-
-- 容器内确认 `bid-tech-table-filler` Skill 已同步到 `/workspace/.opencode/skills/bid-tech-table-filler/`。
-- 已真实触发 `POST /api/projects/PRJ-0003/gaps/GAP-0090/ai-fill`，返回 `opencodeResult.providerId=mimo`、`modelId=mimo-v2.5`，不是本地 fallback。
-- 产物 `投标人风资源评估与机位排布方案_AI填写.docx` 已生成并挂回 `GAP-0090`，缺口状态为 `resolved`。
-- 运行态 `fillReport`：已填字段 6，未填字段 0，参考素材 1。
-- 浏览器 DOM 核对 `http://127.0.0.1/projects/PRJ-0003/gaps`：页面可见 `处理产物`、产物文件名、`已填字段`、`未填字段`、参考素材 `定制-风资源评估与机位排布方案.docx` 和 `OnlyOffice 预览`。
-- `python -m pytest tests/test_gap_review_flow.py tests/test_fill_generation.py tests/test_turbine_model_selection.py -q` 通过：20 passed。
-- `python -m py_compile app/services/gap_planning.py opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py` 通过。
-- `npm run lint` 通过。
-- `npm run build` 通过；保留既有 Vite chunk size 提示。
-- `node --test src/pages/gapRecognitionHelpers.test.mjs` 通过：3 tests。
-- `git diff --check` 通过。
-
-### 2026-05-04 02:42:36 post-commit 4fc2294
-
-提交摘要：feat(s3): package gap table filler skill
-
-变更文件：
-
-- `code/progress.md`
-- `code/sewpg-bid-backend/app/services/gap_planning.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-gap-planner/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-gap-planner/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-table-filler/SKILL.md`
-- `code/sewpg-bid-backend/opencode/skill/bid-tech-table-filler/scripts/run_from_manifest.py`
-- `code/sewpg-bid-backend/tests/test_gap_review_flow.py`
-- `code/sewpg-bid-frontend/src/pages/GapRecognition.jsx`
-- `code/sewpg-bid-frontend/src/pages/gapRecognitionHelpers.js`
-- `code/sewpg-bid-frontend/src/pages/gapRecognitionHelpers.test.mjs`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-04 14:02:30 post-commit 78c419d
-
-提交摘要：fix: align project identity options with material library
-
-变更文件：
-
-- `code/sewpg-bid-backend/app/services/material_store.py`
-- `code/sewpg-bid-backend/tests/test_material_identity_options.py`
-- `code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-04 S3 缺口识别 Skill 验收口径收口
-
-改动目标：
-
-- 按用户明确反馈修正文档口径：S3 当前满意并认可的只有第一个 Skill `bid-tech-gap-planner`。
-- 防止后续会话把第二个空副表/Word 填写 Skill、第三个审阅/完整性复查 Skill 当成已验收能力继续扩展。
-- 保留第一个 Skill 的当前技术路线：OpenCode 只调用 `s4gap <manifest>`，确定性脚本根据 S2 已确认目录、Wiki、素材边界、投标机型和素材索引生成完整 `gap_plan.json`。
-
-文档同步：
-
-- 根 `README.md`：S3 当前验收步骤改为先验收缺口识别结果。
-- `doc/README.md`：新增 2026-05-04 S3 收口口径。
-- `code/AGENT.md`：提醒后续智能体不要把第二、第三个 Skill 写成已验收。
-- `doc/05-MVP主链路说明.md`、`doc/06-MVP接口文档.md`、`doc/08-MVP部署说明.md`、`doc/12-数据存储与素材库数据说明.md`、`doc/13-S4生成标书与覆盖诊断说明.md`：统一调整为“当前只认可缺口识别，补料/填写/复查待后续收口”。
-- `doc/14-甲方新增需求待办.md`：将 S3 三 Skill 计划改为第一个已认可，第二、第三个待重新规划。
-
-当前未纳入验收：
-
-- `bid-tech-table-filler` 的现有实验结果不作为已验收能力。
-- `bid-tech-gap-reviewer` 的现有实验结果不作为已验收能力。
-
-### 2026-05-04 16:24:36 post-commit 52fd3ca
-
-提交摘要：docs: clarify s3 gap planner acceptance
-
-变更文件：
-
-- `README.md`
-- `code/AGENT.md`
-- `code/progress.md`
-- `"doc/05-MVP\344\270\273\351\223\276\350\267\257\350\257\264\346\230\216.md"`
-- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
-- `"doc/08-MVP\351\203\250\347\275\262\350\257\264\346\230\216.md"`
-- `"doc/12-\346\225\260\346\215\256\345\255\230\345\202\250\344\270\216\347\264\240\346\235\220\345\272\223\346\225\260\346\215\256\350\257\264\346\230\216.md"`
-- `"doc/13-S4\347\224\237\346\210\220\346\240\207\344\271\246\344\270\216\350\246\206\347\233\226\350\257\212\346\226\255\350\257\264\346\230\216.md"`
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-- `doc/README.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-04 18:08:10 post-commit f109774
-
-提交摘要：Document table filler sample work
-
-变更文件：
-
-- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
-- `"tmp/table-filler-sample/APPX-0017-Codex\346\240\267\344\276\213\345\241\253\345\205\205\346\212\245\345\221\212.json"`
-- `"tmp/table-filler-sample/APPX-0017-Codex\346\240\267\344\276\213\345\241\253\345\205\205\346\212\245\345\221\212.md"`
-- `"tmp/table-filler-sample/APPX-0017-\350\257\255\344\271\211\346\230\240\345\260\204\346\240\267\344\276\213\345\241\253\345\205\205\346\212\245\345\221\212.md"`
-- `"tmp/table-filler-sample/APPX-0017-\351\231\204\350\241\250C.1 \346\200\273\344\275\223\346\212\200\346\234\257\345\217\202\346\225\260\344\270\216\350\247\204\346\240\274-Codex\346\240\267\344\276\213\345\241\253\345\205\205.docx"`
-- `"tmp/table-filler-sample/APPX-0017-\351\231\204\350\241\250C.1 \346\200\273\344\275\223\346\212\200\346\234\257\345\217\202\346\225\260\344\270\216\350\247\204\346\240\274-\350\257\255\344\271\211\346\230\240\345\260\204\346\240\267\344\276\213\345\241\253\345\205\205.docx"`
-- `"tmp/table-filler-sample/APPX-0017-\351\231\204\350\241\250C.1 \346\200\273\344\275\223\346\212\200\346\234\257\345\217\202\346\225\260\344\270\216\350\247\204\346\240\274.docx"`
-- `"tmp/table-filler-sample/APPX-0018-\351\231\204\350\241\250C.2 \351\243\216\350\275\256\347\263\273\347\273\237\346\212\200\346\234\257\345\217\202\346\225\260.docx"`
-- `"tmp/table-filler-sample/APPX-0019-\351\231\204\350\241\250C.3 \346\234\272\346\242\260\344\274\240\345\212\250\351\203\250\344\273\266\346\212\200\346\234\257\345\217\202\346\225\260.docx"`
-- `"tmp/table-filler-sample/X2\345\271\263\345\217\260\346\234\272\345\236\213\346\212\225\346\240\207\345\217\202\346\225\260_20250106.xlsx"`
-- `tmp/table-filler-sample/field_mapping.semantic.json`
-- `tmp/table-filler-sample/fill_c1_sample.py`
-- `tmp/table-filler-sample/fill_c1_semantic_sample.py`
-- `tmp/table-filler-sample/fill_c2_c3_semantic_sample.py`
-- `tmp/table-filler-sample/parse_result.json`
-- `"tmp/table-filler-sample/preview/APPX-0017-\351\231\204\350\241\250C.1 \346\200\273\344\275\223\346\212\200\346\234\257\345\217\202\346\225\260\344\270\216\350\247\204\346\240\274-Codex\346\240\267\344\276\213\345\241\253\345\205\205.pdf"`
-- `tmp/table-filler-sample/preview/c1-page-1.png`
-- `tmp/table-filler-sample/preview/c1-page-2.png`
-- `"tmp/table-filler-sample/preview_semantic/APPX-0017-\351\231\204\350\241\250C.1 \346\200\273\344\275\223\346\212\200\346\234\257\345\217\202\346\225\260\344\270\216\350\247\204\346\240\274-\350\257\255\344\271\211\346\230\240\345\260\204\346\240\267\344\276\213\345\241\253\345\205\205.pdf"`
-- `tmp/table-filler-sample/preview_semantic/c1-semantic-page-1.png`
-- `tmp/table-filler-sample/preview_semantic/c1-semantic-page-2.png`
-- `tmp/table-filler-sample/reference_facts.semantic.json`
-- `tmp/table-filler-sample/s4_gap_input.json`
-- `"tmp/table-filler-sample/semantic_c2_c3/APPX-0018-\351\231\204\350\241\250C.2 \351\243\216\350\275\256\347\263\273\347\273\237\346\212\200\346\234\257\345\217\202\346\225\260-\350\257\255\344\271\211\346\230\240\345\260\204\346\240\267\344\276\213\345\241\253\345\205\205.docx"`
-- `"tmp/table-filler-sample/semantic_c2_c3/APPX-0019-\351\231\204\350\241\250C.3 \346\234\272\346\242\260\344\274\240\345\212\250\351\203\250\344\273\266\346\212\200\346\234\257\345\217\202\346\225\260-\350\257\255\344\271\211\346\230\240\345\260\204\346\240\267\344\276\213\345\241\253\345\205\205.docx"`
-- `tmp/table-filler-sample/semantic_c2_c3/c2_c3_semantic_summary.json`
-- `tmp/table-filler-sample/semantic_c2_c3/c2_field_mapping.semantic.json`
-- `tmp/table-filler-sample/semantic_c2_c3/c2_semantic_fill_report.md`
-- `tmp/table-filler-sample/semantic_c2_c3/c2_target_fields.semantic.json`
-- `tmp/table-filler-sample/semantic_c2_c3/c3_field_mapping.semantic.json`
-- `tmp/table-filler-sample/semantic_c2_c3/c3_semantic_fill_report.md`
-- `tmp/table-filler-sample/semantic_c2_c3/c3_target_fields.semantic.json`
-- `"tmp/table-filler-sample/semantic_c2_c3/preview/APPX-0018-\351\231\204\350\241\250C.2 \351\243\216\350\275\256\347\263\273\347\273\237\346\212\200\346\234\257\345\217\202\346\225\260-\350\257\255\344\271\211\346\230\240\345\260\204\346\240\267\344\276\213\345\241\253\345\205\205-page-1.png"`
-- `"tmp/table-filler-sample/semantic_c2_c3/preview/APPX-0018-\351\231\204\350\241\250C.2 \351\243\216\350\275\256\347\263\273\347\273\237\346\212\200\346\234\257\345\217\202\346\225\260-\350\257\255\344\271\211\346\230\240\345\260\204\346\240\267\344\276\213\345\241\253\345\205\205-page-2.png"`
-- `"tmp/table-filler-sample/semantic_c2_c3/preview/APPX-0018-\351\231\204\350\241\250C.2 \351\243\216\350\275\256\347\263\273\347\273\237\346\212\200\346\234\257\345\217\202\346\225\260-\350\257\255\344\271\211\346\230\240\345\260\204\346\240\267\344\276\213\345\241\253\345\205\205.pdf"`
-- `"tmp/table-filler-sample/semantic_c2_c3/preview/APPX-0019-\351\231\204\350\241\250C.3 \346\234\272\346\242\260\344\274\240\345\212\250\351\203\250\344\273\266\346\212\200\346\234\257\345\217\202\346\225\260-\350\257\255\344\271\211\346\230\240\345\260\204\346\240\267\344\276\213\345\241\253\345\205\205-page-1.png"`
-- `"tmp/table-filler-sample/semantic_c2_c3/preview/APPX-0019-\351\231\204\350\241\250C.3 \346\234\272\346\242\260\344\274\240\345\212\250\351\203\250\344\273\266\346\212\200\346\234\257\345\217\202\346\225\260-\350\257\255\344\271\211\346\230\240\345\260\204\346\240\267\344\276\213\345\241\253\345\205\205-page-2.png"`
-- `"tmp/table-filler-sample/semantic_c2_c3/preview/APPX-0019-\351\231\204\350\241\250C.3 \346\234\272\346\242\260\344\274\240\345\212\250\351\203\250\344\273\266\346\212\200\346\234\257\345\217\202\346\225\260-\350\257\255\344\271\211\346\230\240\345\260\204\346\240\267\344\276\213\345\241\253\345\205\205.pdf"`
-- `tmp/table-filler-sample/semantic_c2_c3/reference_facts.c2_c3.semantic.json`
-- `tmp/table-filler-sample/target_fields.semantic.json`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-05 15:48:59 post-commit b50bbb2
-
-提交摘要：docs: tidy project documentation entrypoints
-
-变更文件：
-
-- `README.md`
-- `code/AGENT.md`
-- `"doc/16-\347\233\256\346\240\207\344\270\200\344\270\216\347\233\256\346\240\207\344\272\214\346\234\200\347\273\210\347\233\256\346\240\207.md"`
-- `doc/README.md`
-- `doc/superpowers/plans/2026-05-03-material-library-top-level-scope.md`
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
-
-### 2026-05-23 21:25:32 post-commit 1ab9f2e
-
-提交摘要：Merge origin/Dev business UI updates
-
-变更文件：
-
-- 无文件列表
-
-验证结果：提交后自动记录，需结合提交前测试记录确认。
+- 如需开始真实提交，按上面的 5 包 dry-run 命令去掉 `-n` 分包 stage：文档口径、后端核心、素材/Wiki、前端 workspace、测试契约。
+- 真实 stage 后再做提交前最终审计：工作树分类、旧入口扫描、完整后端回归、前端 lint/build 和 `git diff --check`。
+- 对仍保留的共享前端组件继续分层判断：通用 UI 零件可以保留，带业务路线、阶段、API 语义的组件继续拆成 business/technical 两套。
+
+Redis worker 标类兜底与最新口径补充：
+
+```bash
+PYTHONPATH=. pytest tests/test_bid_material_scope_services.py::test_workspace_project_access_owns_bid_type_guards tests/test_bid_material_scope_services.py::test_bid_type_rules_have_single_source_of_truth -q
+PYTHONPATH=. .venv/bin/python -m pytest -q
+npm run lint
+npm run build
+git diff --shortstat
+git status --short
+git diff --cached --name-only
+```
+
+结果：`redis_worker.py` 的正文生成任务不再把缺失 `__bidType` 默认归到技术标，而是从项目运行态读取标类并通过 `require_bid_type` 校验；源码防回退断言确认 `redis_worker.py` 中不再出现 `or TECHNICAL_BID_TYPE`，聚焦组合 `2 passed`。最新完整回归为后端 `484 passed, 17 skipped`；前端 `npm run lint` 与 `npm run build` 通过，build 仅保留 Vite 大 chunk 警告。当前工作树仍未 stage、未 commit；最新盘点为 `101 ??` / `99 M` / `67 D`，tracked diff 为 `166 files changed, 15204 insertions(+), 48294 deletions(-)`；index 仍为空。
+
+Agent 交接口径与 Markdown 自检补充：
+
+```bash
+rg -n "兼容跳转|/projects/:id/parse|/projects/:id/template-directory" README.md code/AGENT.md code/plan.md doc code/sewpg-bid-backend/README.md code/sewpg-bid-frontend/README.md code/sewpg-bid-frontend/docs -g '*.md'
+# 相对时间词扫描使用固定中英文列表，忽略 fenced code 内容。
+python - <<'PY'
+from pathlib import Path
+import re
+roots = [Path('README.md'), Path('code/AGENT.md'), Path('code/plan.md'), Path('code/progress.md'), Path('doc'), Path('code/sewpg-bid-api'), Path('code/sewpg-bid-backend/README.md'), Path('code/sewpg-bid-frontend/README.md'), Path('code/sewpg-bid-frontend/docs')]
+files = []
+for root in roots:
+    if root.is_file():
+        files.append(root)
+    elif root.is_dir():
+        files.extend(p for p in root.rglob('*.md') if '.git' not in p.parts and 'node_modules' not in p.parts)
+link_re = re.compile(r'!?\[([^\]]*)\]\(([^)]+)\)')
+broken = []
+for path in sorted(set(files)):
+    raw = path.read_text(encoding='utf-8', errors='ignore').splitlines()
+    kept = []
+    in_fence = False
+    for line in raw:
+        if line.lstrip().startswith('```'):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            kept.append(line)
+    text = '\n'.join(kept)
+    for m in link_re.finditer(text):
+        target = m.group(2).strip()
+        if not target or re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', target) or target.startswith('#'):
+            continue
+        target = target.split('#', 1)[0].strip()
+        if not target or target.startswith('mailto:'):
+            continue
+        if target.startswith('<') and target.endswith('>'):
+            target = target[1:-1]
+        if not (path.parent / target).resolve().exists():
+            broken.append((str(path), target))
+print(f'checked_files={len(set(files))} broken_links={len(broken)}')
+PY
+git diff --check
+```
+
+结果：`code/AGENT.md` 已修正旧根项目 URL 说明，明确 `/projects/:id/parse` 与 `/projects/:id/template-directory` 不再作为当前入口或兼容跳转；技术标和商务标 `S1 模板与目录` 分别以 `/workspace/tech/projects/:id/template-directory` 与 `/workspace/business/projects/:id/template-directory` 为准。旧根项目路径扫描仅剩“已删除/不再兼容”的说明和当前 workspace 路径；相对时间词扫描无命中；忽略 fenced code 后 Markdown 链接检查为 `checked_files=32 broken_links=0`；`git diff --check` 通过。
+
+S3 交接口径补充：
+
+结果：`code/AGENT.md` 已清理 2026-05-04 的旧 S3 验收说法，不再把缺口处理写成只完成一个 Skill。当前交接口径改为：技术标和商务标 S3 的缺口识别、补料、AI 填写、素材选择、预览、完整性复查和审核入口已按双轨 service 边界实现；是否对外宣称业务验收通过，必须以带具体日期的真实回归和人工验收记录为准。旧说法复扫无命中，`git diff --check` 通过。
+
+真实 staging 前最终审计补充：
+
+```bash
+PYTHONPATH=. python - <<'PY'
+from app.main import app
+routes = [getattr(r, 'path', '') for r in app.routes]
+legacy_prefixes = ['/api/projects', '/api/materials', '/api/audit', '/api/parse', '/api/directory', '/api/gaps', '/api/generation', '/api/document', '/api/export', '/api/coverage', '/api/ocr', '/api/outline', '/api/review']
+legacy = [p for p in routes if any(p.startswith(prefix) for prefix in legacy_prefixes)]
+technical = [p for p in routes if p.startswith('/api/technical')]
+business = [p for p in routes if p.startswith('/api/business')]
+print(f'legacy={len(legacy)} technical={len(technical)} business={len(business)} total={len(routes)}')
+PY
+rg -n "app\.services\.(gap_planning|draft_generation|bid_flow_service)|from app\.services import (gap_planning|draft_generation|bid_flow_service)|routes\.(projects|parse|directory|generation|document|export|audit|coverage|materials|ocr|outline|review|gaps)|include_router\((projects|parse|directory|generation|document|export|audit|coverage|materials|ocr|outline|review|gaps)" code/sewpg-bid-backend/app -g '*.py'
+rg --pcre2 -n "path=\"/(projects|materials|audit|review)|to=\{?['\"]/(projects|materials|audit|review)|navigate\(['\"]/(projects|materials|audit|review)|/api/(projects|materials|audit)(?!-)|projectsAPI|materialsAPI|auditAPI|parseAPI|directoryAPI|gapsAPI|generateAPI|coverageAPI|documentAPI|exportAPI|reviewAPI|ocrAPI" code/sewpg-bid-frontend/src -g '*.{js,jsx,mjs}'
+rg -n "from app\.services import store|from app\.services\.store import|app\.services\.store|\bstore\." code/sewpg-bid-backend/app -g '*.py'
+rg -n "or TECHNICAL_BID_TYPE|or BUSINESS_BID_TYPE|or self\.bid_type|default: str = TECHNICAL_BID_TYPE|bid_type: str = TECHNICAL_BID_TYPE|bid_type: str = \"技术标\"|bidType\": \"技术标\"|/api/projects|/api/materials|/api/audit" code/sewpg-bid-backend/app code/sewpg-bid-frontend/src -g '*.{py,js,jsx,mjs}'
+PYTHONPATH=. .venv/bin/python -m pytest -q
+npm run lint
+npm run build
+git diff --check
+```
+
+结果：当前仍未执行真实 `git add`，index 为空；后端 FastAPI 路由表保持 `legacy=0` / `technical=99` / `business=105`；旧通用后端 route/service 引用扫描无命中；前端旧根 API/路由名扫描无命中；直接 `store` 依赖只剩 `workspace_project_access.py`；隐式标类兜底扫描只剩商务素材 facade 内部固定商务域兜底和 `scoped_material_urls.py` 兼容替换。后端完整回归 `484 passed, 17 skipped`；前端 `npm run lint` 与 `npm run build` 通过，build 仅保留 Vite 大 chunk 警告；`git diff --check` 通过。当前工作树仍未 stage、未 commit；最新盘点为 `101 ??` / `99 M` / `67 D`，tracked diff 为 `166 files changed, 15204 insertions(+), 48294 deletions(-)`。
+
+临时 index 分包 staging 模拟：
+
+```bash
+tmp_index=$(mktemp /tmp/bid-project-index.XXXXXX)
+cp .git/index "$tmp_index"
+GIT_INDEX_FILE="$tmp_index" git add -A -- .gitignore README.md code/AGENT.md code/plan.md code/progress.md code/sewpg-bid-api code/sewpg-bid-backend/README.md code/sewpg-bid-frontend/README.md code/sewpg-bid-frontend/docs doc
+GIT_INDEX_FILE="$tmp_index" git add -A -- code/sewpg-bid-backend/app ':!code/sewpg-bid-backend/app/models/materials.py' ':!code/sewpg-bid-backend/app/api/routes/materials.py' ':!code/sewpg-bid-backend/app/services/material*' ':!code/sewpg-bid-backend/app/services/business_material*' ':!code/sewpg-bid-backend/app/services/technical_material*' ':!code/sewpg-bid-backend/app/services/scoped_material_urls.py' ':!code/sewpg-bid-backend/app/services/technical_turbine_material_options.py' ':!code/sewpg-bid-backend/app/services/wiki_*'
+GIT_INDEX_FILE="$tmp_index" git add -A -- code/sewpg-bid-backend/app/models/materials.py code/sewpg-bid-backend/app/api/routes/materials.py 'code/sewpg-bid-backend/app/services/material*' 'code/sewpg-bid-backend/app/services/business_material*' 'code/sewpg-bid-backend/app/services/technical_material*' code/sewpg-bid-backend/app/services/scoped_material_urls.py code/sewpg-bid-backend/app/services/technical_turbine_material_options.py 'code/sewpg-bid-backend/app/services/wiki_*'
+GIT_INDEX_FILE="$tmp_index" git add -A -- code/sewpg-bid-frontend/src
+GIT_INDEX_FILE="$tmp_index" git add -A -- code/sewpg-bid-backend/tests
+GIT_INDEX_FILE="$tmp_index" git status --porcelain=v1 --untracked-files=all
+GIT_INDEX_FILE="$tmp_index" git diff --cached --name-status
+rm -f "$tmp_index"
+```
+
+结果：五包命令在临时 index 上执行后覆盖完整当前工作树，模拟暂存后 `unstaged_paths=0`、`untracked_paths=0`；临时 index 识别为 `99 M` / `95 A` / `61 D` / `6 R`，共 `261` 个暂存路径。真实 index 仍为空，未执行真实 `git add`。

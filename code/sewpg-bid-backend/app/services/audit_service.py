@@ -6,7 +6,7 @@ from sqlalchemy import desc, select
 
 from app.models import async_session
 from app.models.materials import AuditLog
-from app.services.material_store import material_store
+from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.peripheral import PeripheralError, now_day
 
 
@@ -24,7 +24,7 @@ def user_name_of(user: dict[str, Any] | None) -> str:
 class AuditService:
     async def _ensure_tables(self) -> None:
         async with async_session() as session:
-            await material_store._ensure_runtime_tables(session)
+            await ensure_material_runtime_tables(session)
             await session.commit()
 
     async def record(
@@ -86,6 +86,7 @@ class AuditService:
         status = str(filters.get("status") or "").strip()
         start_date = str(filters.get("startDate") or "").strip()
         end_date = str(filters.get("endDate") or "").strip()
+        bid_type = str(filters.get("bidType") or "").strip()
 
         def matched(item: dict[str, Any]) -> bool:
             if keyword and keyword not in f"{item['user']} {item['action']} {item['target']}":
@@ -102,6 +103,11 @@ class AuditService:
                 return False
             if end_date and str(item["time"])[:10] > end_date:
                 return False
+            if bid_type:
+                metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+                item_bid_type = str(metadata.get("bidType") or metadata.get("bid_type") or "").strip()
+                if item_bid_type != bid_type:
+                    return False
             return True
 
         filtered = [item for item in items if matched(item)]

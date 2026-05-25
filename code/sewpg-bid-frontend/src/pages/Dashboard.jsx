@@ -364,7 +364,7 @@ export default function Dashboard({ currentUser }) {
             action={
               <button
                 type="button"
-                onClick={() => navigate(isTB ? '/projects' : workspaceRoute(role === 'B' ? 'business' : 'tech', '/projects'))}
+                onClick={() => navigate(workspaceRoute(role === 'B' ? 'business' : 'tech', '/projects'))}
                 className="text-xs text-primary hover:underline"
               >
                 查看全部 →

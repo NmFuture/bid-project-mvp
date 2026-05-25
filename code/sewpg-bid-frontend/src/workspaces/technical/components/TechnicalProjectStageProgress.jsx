@@ -1,17 +1,28 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { stagesAPI } from '../../../api'
-import { getStageNavigationRoute, getStrictStageLockReason } from '../../../utils/stageFlow'
-import { useWorkspaceSlug } from '../../../utils/workspace'
+import { technicalStagesAPI } from '../../../api'
+import { getStrictStageLockReason } from '../../../utils/stageFlow'
+import { projectRoute } from '../../../utils/workspace'
 import TechnicalStageProgress from './TechnicalStageProgress'
 
-const COMPACT_STAGE_GROUPS = [
+const TECHNICAL_WORKSPACE = 'tech'
+
+const TECHNICAL_COMPACT_STAGE_GROUPS = [
   { id: 1, name: '目录生成', stageIds: [1], pendingRouteStageId: 1, completedRouteStageId: 1 },
   { id: 2, name: '目录确认', stageIds: [2], pendingRouteStageId: 2, completedRouteStageId: 2 },
   { id: 3, name: '素材匹配', stageIds: [3], pendingRouteStageId: 3, completedRouteStageId: 3, routePath: '/gaps' },
   { id: 4, name: '标书生成', stageIds: [4], pendingRouteStageId: 4, completedRouteStageId: 4, routePath: '/generate' },
   { id: 5, name: '编辑导出', stageIds: [5, 6], pendingRouteStageId: 5, completedRouteStageId: 6 },
 ]
+
+const TECHNICAL_STAGE_ROUTES = {
+  1: '/template-directory',
+  2: '/outline',
+  3: '/gaps',
+  4: '/generate',
+  5: '/editor',
+  6: '/export',
+}
 
 const toStageId = (value) => {
   const parsed = Number(value)
@@ -28,11 +39,22 @@ const stageStatusRank = {
 const compactProjectStages = (rawStages = []) => {
   if (!Array.isArray(rawStages) || !rawStages.length) return []
 
+  if (rawStages.some((stage) => Array.isArray(stage?.sourceStages))) {
+    return rawStages.map((stage) => ({
+      ...stage,
+      id: toStageId(stage?.id),
+      routeStageId: toStageId(stage?.routeStageId || stage?.id),
+      sourceStageIds: Array.isArray(stage?.sourceStages)
+        ? stage.sourceStages.map(toStageId).filter(Boolean)
+        : [],
+    }))
+  }
+
   const rawById = new Map(rawStages.map((stage) => [toStageId(stage?.id), stage]).filter(([id]) => id))
   const activeRawStage = rawStages.find((stage) => stage?.status === 'active')
   const activeRawStageId = toStageId(activeRawStage?.id)
 
-  return COMPACT_STAGE_GROUPS.map((group) => {
+  return TECHNICAL_COMPACT_STAGE_GROUPS.map((group) => {
     const groupStages = group.stageIds.map((stageId) => rawById.get(stageId)).filter(Boolean)
     const activeStage = groupStages.find((stage) => stage?.status === 'active')
     const hasActiveStage = Boolean(activeStage)
@@ -64,11 +86,16 @@ const compactProjectStages = (rawStages = []) => {
       routeStageId,
       sourceStageIds: group.stageIds,
       routePath: group.routePath || '',
-      pseudo: Boolean(group.pseudo),
       isSkipped: groupStages.length > 0 && groupStages.every((stage) => Boolean(stage?.isSkipped)),
       sourceStatus: strongestStage?.status || status,
     }
   })
+}
+
+const technicalStageRoute = (projectId, stage) => {
+  const routeStageId = toStageId(stage?.routeStageId || stage?.id)
+  const routePath = TECHNICAL_STAGE_ROUTES[routeStageId]
+  return routePath && projectId ? projectRoute(projectId, routePath, TECHNICAL_WORKSPACE) : ''
 }
 
 export default function TechnicalProjectStageProgress({
@@ -77,17 +104,19 @@ export default function TechnicalProjectStageProgress({
   onStageSixClick,
 }) {
   const navigate = useNavigate()
-  const workspaceSlug = useWorkspaceSlug()
   const [stages, setStages] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   const loadStages = useCallback(async () => {
-    if (!projectId) return
+    if (!projectId) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     setError('')
     try {
-      const payload = await stagesAPI.list(projectId)
+      const payload = await technicalStagesAPI.list(projectId)
       setStages(compactProjectStages(payload))
     } catch (e) {
       setError(e?.message || '进度加载失败')
@@ -116,41 +145,39 @@ export default function TechnicalProjectStageProgress({
         return
       }
 
-      if (Number(stage.routeStageId || stage.id) === 6) {
-        if (typeof onStageSixClick === 'function') {
-          onStageSixClick()
-          return
-        }
+      if (Number(stage.routeStageId || stage.id) === 6 && typeof onStageSixClick === 'function') {
+        onStageSixClick()
+        return
       }
 
       const route = stage.routePath
-        ? `/workspace/${workspaceSlug || 'tech'}/projects/${projectId}${stage.routePath}`
-        : getStageNavigationRoute(projectId, stage, workspaceSlug)
+        ? projectRoute(projectId, stage.routePath, TECHNICAL_WORKSPACE)
+        : technicalStageRoute(projectId, stage)
       if (!route) {
         showToast?.(`${stage.name || `S${stage.id}`} 页面正在建设中`, 'error')
         return
       }
       navigate(route)
     },
-    [getStageLockReason, navigate, onStageSixClick, projectId, showToast, workspaceSlug],
+    [getStageLockReason, navigate, onStageSixClick, projectId, showToast],
   )
 
   if (loading) {
     return (
-      <section className="stage-progress-shell min-h-[74px] rounded-md border border-outline-variant/45 bg-[#f7fbff] px-4 py-3">
-        <div className="animate-shimmer h-12 w-full rounded-md"></div>
+      <section className="technical-progress-loading rounded-md border border-outline-variant/45 bg-[#f7fbff] px-4 py-3">
+        <div className="animate-shimmer h-10 w-full"></div>
       </section>
     )
   }
 
   if (error) {
     return (
-      <section className="stage-progress-shell min-h-[74px] rounded-md border border-error/20 bg-error-container/10 px-4 py-3">
-        <div className="flex min-h-12 flex-wrap items-center justify-between gap-3">
+      <section className="rounded-md border border-error/20 bg-error-container/20 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="text-sm text-error">阶段进度加载失败：{error}</div>
           <button
             onClick={loadStages}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-error text-on-error"
+            className="rounded-lg bg-error px-3 py-1.5 text-xs font-medium text-on-error"
           >
             重试
           </button>

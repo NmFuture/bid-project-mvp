@@ -94,6 +94,39 @@
   background: transparent !important;
 }
 
+.technical-ui-shell {
+  --technical-panel-border: rgba(188, 202, 216, 0.72);
+  --technical-panel-shadow: 0 1px 2px rgba(13, 33, 55, 0.05);
+}
+
+.technical-ui-shell .technical-panel,
+.technical-ui-shell article:not(.stage-progress-shell) {
+  border-color: var(--technical-panel-border) !important;
+  box-shadow: var(--technical-panel-shadow) !important;
+}
+
+.technical-section-head {
+  min-height: 54px;
+  border-bottom: 1px solid var(--color-surface-container-high);
+  background: #f7fafc;
+}
+
+.technical-dropzone {
+  border-color: #b6cde3 !important;
+  background: #f2f8fd;
+}
+
+.technical-dropzone:hover {
+  border-color: var(--color-primary) !important;
+  background: #eef7ff;
+}
+
+.technical-metric {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbfe 100%);
+}
+
 .technical-workspace .material-symbols-outlined.text-\[12px\] { font-size: 12px; }
 .technical-workspace .material-symbols-outlined.text-\[13px\] { font-size: 13px; }
 .technical-workspace .material-symbols-outlined.text-\[14px\] { font-size: 14px; }

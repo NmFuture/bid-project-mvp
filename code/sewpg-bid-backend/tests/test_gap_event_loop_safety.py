@@ -1,10 +1,10 @@
-"""Regression tests for the production hang on /gaps/ai-fill-all.
+"""Regression tests for the production hang on sync-to-async material helpers.
 
-The bug: ``gap_planning._run_async`` runs an awaitable from sync code by
+The bug: the sync bridge runs an awaitable from sync code by
 spawning a worker thread that runs its own event loop, then ``thread.join``s
 to wait for the result. If the *calling* thread is already an event loop's
 own thread (which is what happens when an ``async def`` FastAPI handler
-calls into store -> gap_planning), the join blocks the event loop and the
+calls into a sync helper), the join blocks the event loop and the
 entire FastAPI process stops responding (including ``/healthz``).
 
 These tests pin two invariants so the bug can't silently come back:
@@ -23,8 +23,8 @@ import asyncio
 import inspect
 import unittest
 
-from app.api.routes import gaps as gaps_routes
-from app.services import gap_planning
+from app.api.routes import technical as technical_routes
+from app.services.file_utils import run_awaitable_sync
 
 
 class RunAsyncEventLoopGuardTests(unittest.TestCase):
@@ -38,7 +38,7 @@ class RunAsyncEventLoopGuardTests(unittest.TestCase):
 
         async def caller() -> None:
             with self.assertRaises(RuntimeError) as ctx:
-                gap_planning._run_async(inner_coro())
+                run_awaitable_sync(inner_coro())
             self.assertIn("event loop", str(ctx.exception).lower())
 
         asyncio.run(caller())
@@ -49,33 +49,33 @@ class RunAsyncEventLoopGuardTests(unittest.TestCase):
         async def inner_coro() -> str:
             return "ok"
 
-        result = gap_planning._run_async(inner_coro())
+        result = run_awaitable_sync(inner_coro())
         self.assertEqual(result, "ok")
 
 
 class GapHeavySyncRouteHandlersAreNotAsyncTests(unittest.TestCase):
-    """The four ``/api/projects/.../gaps[-detection]?/...`` endpoints whose
-    store call chain reaches ``gap_planning._run_async`` MUST be ``def``
+    """The technical ``/api/technical/projects/.../gaps[-detection]?/...`` endpoints whose
+    sync-to-async bridge MUST be ``def``
     handlers, not ``async def``. FastAPI then dispatches them via
     ``run_in_threadpool`` and the thread-blocking ``thread.join`` inside
     ``_run_async`` no longer freezes the event loop."""
 
     EXPECTED_SYNC_HANDLERS = [
-        "run_gap_detection",
-        "ai_fill_all_gap_materials",
-        "ai_fill_gap_material",
-        "upload_gap_material",
+        "run_technical_gap_detection",
+        "ai_fill_all_technical_gap_materials",
+        "ai_fill_technical_gap_material",
+        "upload_technical_gap_material",
     ]
 
     def test_handlers_are_plain_def_not_async_def(self) -> None:
         for name in self.EXPECTED_SYNC_HANDLERS:
-            handler = getattr(gaps_routes, name, None)
-            self.assertIsNotNone(handler, f"handler {name} not found in gaps routes")
+            handler = getattr(technical_routes, name, None)
+            self.assertIsNotNone(handler, f"handler {name} not found in technical routes")
             self.assertFalse(
                 inspect.iscoroutinefunction(handler),
                 msg=(
                     f"{name} is async def — calling it on the FastAPI event loop "
-                    f"would deadlock when the chain reaches gap_planning._run_async. "
+                    f"would deadlock when the chain reaches run_awaitable_sync. "
                     f"Change it to plain 'def' so FastAPI runs it in a worker thread."
                 ),
             )

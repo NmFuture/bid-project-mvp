@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { auditAPI } from '../../../api'
+import { technicalAuditAPI } from '../../../api'
 import AuditDetailModal from '../../../components/modals/AuditDetailModal'
 import { PageEmpty, PageError, PageLoading } from '../components/TechnicalPageState'
 import { bidTypeFromWorkspace, useWorkspaceSlug } from '../../../utils/workspace'
@@ -79,7 +79,7 @@ export default function AuditLog({ showToast = () => {} }) {
     }
     setError('')
     try {
-      const response = await auditAPI.list({
+      const response = await technicalAuditAPI.list({
         ...filters,
         bidType: lockedBidType,
       })
@@ -127,7 +127,7 @@ export default function AuditLog({ showToast = () => {} }) {
   const handleExportCsv = async () => {
     setExporting(true)
     try {
-      const payload = await auditAPI.exportCsv({
+      const payload = await technicalAuditAPI.exportCsv({
         ...queryFilters,
         bidType: lockedBidType,
       })
@@ -380,6 +380,7 @@ export default function AuditLog({ showToast = () => {} }) {
       {detailAuditId && (
         <AuditDetailModal
           auditId={detailAuditId}
+          loadDetail={technicalAuditAPI.detail}
           onClose={() => setDetailAuditId('')}
         />
       )}

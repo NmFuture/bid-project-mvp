@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { parseAPI, projectsAPI } from '../../../api'
+import { technicalMaterialsAPI, technicalParseAPI, technicalProjectsAPI } from '../../../api'
 import { PageEmpty, PageError, PageLoading } from '../components/TechnicalPageState'
 import DataCard from '../components/TechnicalDataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import OnlyOfficeWorkspace from '../components/TechnicalOnlyOfficeWorkspace'
 import PageHeader from '../../../components/shared/PageHeader'
 import ProjectWizardModal from '../../../components/modals/ProjectWizardModal'
-import { normalizeBidType, projectRoute, slugFromBidType } from '../../../utils/workspace'
+import { normalizeBidType, projectRoute } from '../../../utils/workspace'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -120,7 +120,6 @@ const TECHNICAL_REVIEW_CONFIG = {
   appendixEmptyHint: '未识别到附表要求。',
   scoringGroups: [
     ['technical', '技术评分标准'],
-    ['business', '商务评分标准'],
     ['price', '投标报价评分标准'],
     ['lcoe', '投标度电成本评分标准'],
     ['compliance', '符合性审查标准'],
@@ -138,56 +137,6 @@ const TECHNICAL_REVIEW_CONFIG = {
     { label: '供货范围', item: presence.supplyScope },
     { label: '考核条款', item: presence.assessmentTerms },
   ]),
-}
-
-const BUSINESS_REVIEW_CONFIG = {
-  bidType: '商务标',
-  pageTitle: '商务标解析模块',
-  pageDescription: '上传商务招标文件，提取商务评分、响应要求、资格支撑、保证金与承诺函线索，为商务标项目后续编制提供入口数据。',
-  createProjectNamePrefix: '商务标待解析项目',
-  createButtonLabel: '新建商务标解析项目',
-  createSuccessMessage: '已新建商务标解析项目，请上传商务招标文件并解析。',
-  emptyTitle: '暂无待解析商务标项目',
-  emptyDescription: '你可以在这里先新建商务标解析项目，再上传商务招标文件进行判断。',
-  currentProjectLabel: '当前商务标解析项目',
-  uploadSectionTitle: '商务招标文件上传与关键参数解析',
-  uploadSectionDescription: '本模块负责上传商务招标文件并解析商务响应、资格支撑、附表与承诺函要求，供商务标项目后续使用。',
-  uploadFileLabel: '商务招标文件（必选）',
-  sourceFilesLabel: '已上传商务招标文件（当前项目）',
-  resultTitle: '商务标结构化解析结果',
-  pendingParseHint: '请点击上方“上传并解析”开始提取商务标结构化要求。',
-  noSourceHint: '当前项目尚未上传商务招标文件。',
-  appendixTitle: '商务附件模板产物',
-  appendixSwitchHint: '已提取招标文件中的商务附件模板，可切换预览并审核；确认参与投标后自动同步至项目素材库。',
-  appendixEmptyHint: '未识别到可保存的商务附件模板。',
-  scoringGroups: [
-    ['business', '商务评分标准'],
-    ['price', '投标报价评分标准'],
-    ['compliance', '符合性审查标准'],
-  ],
-  fallbackScoringTitle: '商务评分细则',
-  fieldGroupSections: [],
-  showPresence: false,
-  showCommitmentClues: false,
-  showEvidenceDetails: false,
-  showEvidenceLocationColumn: false,
-  showApproveBusinessScoring: true,
-  showApproveAppendices: true,
-  showApproveCommitmentLetters: true,
-  buildPresenceRows: () => [],
-}
-
-const commitmentTypeLabel = (value = '') => {
-  if (value === 'disqualification') return '否决项承诺函'
-  if (value === 'general_commitment') return '一般承诺函/承诺书'
-  return value || '-'
-}
-
-const commitmentStatusLabel = (value = '') => {
-  if (value === 'generated') return '已生成'
-  if (value === 'pending_review') return '待复核'
-  if (value === 'needs_review') return '待确认'
-  return value || '-'
 }
 
 const assetReviewStatusLabel = (value = '') => {
@@ -308,35 +257,6 @@ function ReviewInfoTile({
           </p>
         )}
       </div>
-    </div>
-  )
-}
-
-function ParseModeSwitch({ activeBidType, onSwitch }) {
-  const items = [
-    { bidType: '技术标', label: '技术标解析', icon: 'engineering', path: '/parse/technical' },
-    { bidType: '商务标', label: '商务标解析', icon: 'request_quote', path: '/parse/business' },
-  ]
-  return (
-    <div className="inline-grid grid-flow-col auto-cols-[7.5rem] gap-1 rounded-md border border-outline-variant/50 bg-white p-1">
-      {items.map((item) => {
-        const active = item.bidType === activeBidType
-        return (
-          <button
-            key={item.bidType}
-            type="button"
-            onClick={() => onSwitch(item.path)}
-            className={`inline-flex h-8 items-center justify-center gap-1.5 rounded px-2 text-xs font-semibold transition-colors ${
-              active
-                ? 'bg-primary text-on-primary'
-                : 'text-on-surface-variant hover:bg-surface-container-high'
-            }`}
-          >
-            <span className="material-symbols-outlined text-[15px]">{item.icon}</span>
-            {item.label}
-          </button>
-        )
-      })}
     </div>
   )
 }
@@ -473,66 +393,8 @@ function PresenceTable({ title = '专题方案 / 供货范围 / 考核条款', r
   )
 }
 
-function CommitmentClueTable({ clues = [], showEvidenceLocationColumn = true }) {
-  return (
-    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
-      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
-        <h4 className="text-sm font-semibold text-on-surface">待确认承诺线索</h4>
-        <span className="text-xs text-outline">{clues.length} 个</span>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[1040px]">
-          <thead>
-            <tr className="border-b border-surface-container-high">
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">线索</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">状态</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">触发词</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">建议动作</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
-              {showEvidenceLocationColumn ? (
-                <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
-              ) : null}
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">风险标记</th>
-            </tr>
-          </thead>
-          <tbody>
-            {clues.length ? clues.map((item) => (
-              <tr key={item.id || item.title} className="border-b border-surface-container-high last:border-b-0">
-                <td className="px-4 py-2 text-on-surface font-medium min-w-[220px]">{item.title || '-'}</td>
-                <td className="px-4 py-2 whitespace-nowrap">
-                  <span className="text-xs px-2 py-0.5 rounded-md font-semibold bg-surface-container-high text-on-surface-variant">
-                    {commitmentStatusLabel(item.status)}
-                  </span>
-                </td>
-                <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.triggerText || '-'}</td>
-                <td className="px-4 py-2 text-on-surface-variant min-w-[260px]">{item.recommendedAction || '-'}</td>
-                <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{item.sourceFile || '-'}</td>
-                {showEvidenceLocationColumn ? (
-                  <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.evidenceLocation || '-'}</td>
-                ) : null}
-                <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{Array.isArray(item.riskFlags) && item.riskFlags.length ? item.riskFlags.join('，') : '-'}</td>
-              </tr>
-            )) : (
-              <tr>
-                <td className="px-4 py-3 text-outline" colSpan={showEvidenceLocationColumn ? 7 : 6}>未识别到待确认承诺线索。</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-const commitmentLetterKey = (letter, index = 0) =>
-  String(letter?.id || letter?.title || `commitment-letter-${index}`)
-
-export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONFIG }) {
-  const reviewConfig = useMemo(() => (
-    normalizeBidType(config?.bidType) === '商务标'
-      ? { ...BUSINESS_REVIEW_CONFIG, ...config, bidType: '商务标' }
-      : { ...TECHNICAL_REVIEW_CONFIG, ...config, bidType: '技术标' }
-  ), [config])
+export default function TechnicalTenderReview({ showToast }) {
+  const reviewConfig = TECHNICAL_REVIEW_CONFIG
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const queryProjectId = String(searchParams.get('projectId') || '').trim()
@@ -555,19 +417,12 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
   const [appendixPreview, setAppendixPreview] = useState(null)
   const [appendixPreviewLoading, setAppendixPreviewLoading] = useState(false)
   const [appendixPreviewError, setAppendixPreviewError] = useState('')
-  const [selectedCommitmentLetterId, setSelectedCommitmentLetterId] = useState('')
-  const [commitmentLetterPreview, setCommitmentLetterPreview] = useState(null)
-  const [commitmentLetterPreviewLoading, setCommitmentLetterPreviewLoading] = useState(false)
-  const [commitmentLetterPreviewError, setCommitmentLetterPreviewError] = useState('')
   const [savingAppendixId, setSavingAppendixId] = useState('')
   const [savingAllAppendices, setSavingAllAppendices] = useState(false)
-  const [savingBusinessScoring, setSavingBusinessScoring] = useState(false)
-  const [savingCommitmentLetterId, setSavingCommitmentLetterId] = useState('')
-  const [savingAllCommitmentLetters, setSavingAllCommitmentLetters] = useState(false)
 
   const refreshParseResult = useCallback(async () => {
     if (!selectedProjectId) return null
-    const data = await parseAPI.results(selectedProjectId)
+    const data = await technicalParseAPI.results(selectedProjectId)
     setParseData(data)
     return data
   }, [selectedProjectId])
@@ -576,9 +431,9 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
     setLoadingProjects(true)
     setError('')
     try {
-      const data = await projectsAPI.list({ page: 1, pageSize: 200, bidType: reviewConfig.bidType })
+      const data = await technicalProjectsAPI.list({ page: 1, pageSize: 200, bidType: reviewConfig.bidType })
       const items = (Array.isArray(data?.items) ? data.items : []).filter(
-        (item) => normalizeBidType(item?.bidType || reviewConfig.bidType) === reviewConfig.bidType,
+        (item) => normalizeBidType(item?.bidType) === reviewConfig.bidType,
       )
       const reviewItemsBase = items.filter((item) => String(item?.reviewDecision || 'pending') !== 'participate')
       const forced = queryProjectId ? items.find((item) => item.id === queryProjectId) : null
@@ -608,9 +463,9 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
     setError('')
     try {
       const [projectData, parseResult, progressResult] = await Promise.all([
-        projectsAPI.get(selectedProjectId),
-        parseAPI.results(selectedProjectId),
-        parseAPI.progress(selectedProjectId).catch(() => null),
+        technicalProjectsAPI.get(selectedProjectId),
+        technicalParseAPI.results(selectedProjectId),
+        technicalParseAPI.progress(selectedProjectId).catch(() => null),
       ])
       setProject(projectData)
       setParseData(parseResult)
@@ -627,7 +482,7 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
     try {
       const now = new Date()
       const pad = (num) => String(num).padStart(2, '0')
-      const created = await projectsAPI.create({
+      const created = await technicalProjectsAPI.create({
         name: `${reviewConfig.createProjectNamePrefix}-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`,
         customerName: '',
         owner: '',
@@ -671,7 +526,7 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
     let stopped = false
     const loadProgress = async () => {
       try {
-        const progress = await parseAPI.progress(selectedProjectId)
+        const progress = await technicalParseAPI.progress(selectedProjectId)
         if (!stopped) setParseProgress(progress)
       } catch {
         // Keep the previous progress snapshot while the upload request owns the main path.
@@ -722,25 +577,6 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
   const appendices = Array.isArray(parseData?.structured?.appendices)
     ? parseData.structured.appendices
     : EMPTY_APPENDICES
-  const businessScoringAsset = parseData?.structured?.businessScoringAsset || {}
-  const commitmentLetters = Array.isArray(parseData?.structured?.commitmentLetters)
-    ? parseData.structured.commitmentLetters
-    : EMPTY_APPENDICES
-  const commitmentClues = Array.isArray(parseData?.structured?.commitmentClues)
-    ? parseData.structured.commitmentClues
-    : EMPTY_APPENDICES
-  const activeCommitmentLetterId = commitmentLetters.length
-    && commitmentLetters.some((letter, index) => commitmentLetterKey(letter, index) === selectedCommitmentLetterId)
-    ? selectedCommitmentLetterId
-    : commitmentLetters.length
-      ? commitmentLetterKey(commitmentLetters[0], 0)
-      : ''
-  const selectedCommitmentLetter = useMemo(
-    () => commitmentLetters.find((letter, index) => commitmentLetterKey(letter, index) === activeCommitmentLetterId)
-      || commitmentLetters[0]
-      || null,
-    [activeCommitmentLetterId, commitmentLetters],
-  )
   const activeAppendixId = appendices.length && appendices.some((appendix, index) => appendixKey(appendix, index) === selectedAppendixId)
     ? selectedAppendixId
     : appendices.length
@@ -794,8 +630,6 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
   const isParseCompleted = parseData?.status === 'completed'
   const reviewDecision = String(project?.reviewDecision || 'pending')
   const reviewDecisionLabel = REVIEW_DECISION_LABELS[reviewDecision] || REVIEW_DECISION_LABELS.pending
-  const isBusinessBid = reviewConfig.bidType === '商务标'
-  const showBusinessCompactUpload = isBusinessBid && !isParseCompleted
 
   useEffect(() => {
     const appendixId = selectedAppendix?.id
@@ -808,7 +642,7 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
       setAppendixPreviewLoading(true)
       setAppendixPreview(null)
       setAppendixPreviewError('')
-      parseAPI.appendixPreview(selectedProjectId, appendixId)
+      technicalParseAPI.appendixPreview(selectedProjectId, appendixId)
         .then((data) => {
           if (!cancelled) setAppendixPreview(data)
         })
@@ -828,38 +662,6 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
       clearTimeout(timer)
     }
   }, [selectedProjectId, selectedAppendix?.docxPath, selectedAppendix?.id])
-
-  useEffect(() => {
-    const letterId = selectedCommitmentLetter?.id
-    if (!selectedProjectId || !letterId || reviewConfig.bidType !== '商务标') {
-      return undefined
-    }
-
-    let cancelled = false
-    const timer = setTimeout(() => {
-      setCommitmentLetterPreviewLoading(true)
-      setCommitmentLetterPreview(null)
-      setCommitmentLetterPreviewError('')
-      parseAPI.commitmentLetterPreview(selectedProjectId, letterId)
-        .then((data) => {
-          if (!cancelled) setCommitmentLetterPreview(data)
-        })
-        .catch((e) => {
-          if (!cancelled) {
-            setCommitmentLetterPreview(null)
-            setCommitmentLetterPreviewError(e?.message || '承诺函 Word 预览加载失败')
-          }
-        })
-        .finally(() => {
-          if (!cancelled) setCommitmentLetterPreviewLoading(false)
-        })
-    }, 0)
-
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
-  }, [reviewConfig.bidType, selectedCommitmentLetter?.docxPath, selectedCommitmentLetter?.id, selectedProjectId])
 
   const handleFilesPicked = (event) => {
     const picked = Array.from(event.target.files || [])
@@ -889,7 +691,7 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
       return
     }
     if (!tenderFiles.length) {
-      const message = `请先上传${reviewConfig.bidType === '商务标' ? '商务' : '技术'}招标文件后再解析。`
+      const message = '请先上传技术招标文件后再解析。'
       setUploadError(message)
       showToast?.(message, 'error')
       return
@@ -900,18 +702,18 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
     setParseProgress({
       status: 'running',
       percentage: 3,
-      summary: `正在上传${reviewConfig.bidType === '商务标' ? '商务' : '技术'}招标文件。`,
-      events: [{ step: 'upload', level: 'info', message: `正在上传${reviewConfig.bidType === '商务标' ? '商务' : '技术'}招标文件。` }],
+      summary: '正在上传技术招标文件。',
+      events: [{ step: 'upload', level: 'info', message: '正在上传技术招标文件。' }],
       opencodeOutput: { parts: [] },
     })
     try {
       const formData = new FormData()
       tenderFiles.forEach((file) => formData.append('tenderFiles', file))
-      const response = await parseAPI.uploadAndRun(selectedProjectId, { formData })
+      const response = await technicalParseAPI.uploadAndRun(selectedProjectId, { formData })
       setParseData(response)
-      const latestProgress = await parseAPI.progress(selectedProjectId).catch(() => null)
+      const latestProgress = await technicalParseAPI.progress(selectedProjectId).catch(() => null)
       if (latestProgress) setParseProgress(latestProgress)
-      const latestProject = await projectsAPI.get(selectedProjectId)
+      const latestProject = await technicalProjectsAPI.get(selectedProjectId)
       setProject(latestProject)
       setProjects((prev) => prev.map((item) => (
         item.id === latestProject.id ? { ...item, ...latestProject } : item
@@ -941,7 +743,7 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
 
     setDeciding(decision)
     try {
-      await projectsAPI.delete(selectedProjectId)
+      await technicalProjectsAPI.delete(selectedProjectId)
       setProjects((prev) => prev.filter((item) => item.id !== selectedProjectId))
       setProject(null)
       setParseData(null)
@@ -965,12 +767,12 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
     if (!selectedProjectId || !appendixId) return
     setSavingAppendixId(appendixId)
     try {
-      const result = await parseAPI.approveAppendixAsset(selectedProjectId, appendixId)
+      const result = await technicalParseAPI.approveAppendixAsset(selectedProjectId, appendixId)
       if (result?.parseResult) setParseData(result.parseResult)
       else await refreshParseResult()
-      showToast?.(result?.message || '商务附件模板已审核通过。')
+      showToast?.(result?.message || '附表 Word 已审核通过。')
     } catch (e) {
-      showToast?.(e?.message || '商务附件模板审核失败', 'error')
+      showToast?.(e?.message || '附表 Word 审核失败', 'error')
     } finally {
       setSavingAppendixId('')
     }
@@ -980,59 +782,14 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
     if (!selectedProjectId || !appendices.length) return
     setSavingAllAppendices(true)
     try {
-      const result = await parseAPI.approveAllAppendixAssets(selectedProjectId)
+      const result = await technicalParseAPI.approveAllAppendixAssets(selectedProjectId)
       if (result?.parseResult) setParseData(result.parseResult)
       else await refreshParseResult()
-      showToast?.(result?.message || '商务附件模板已批量审核通过。')
+      showToast?.(result?.message || '附表 Word 已批量审核通过。')
     } catch (e) {
-      showToast?.(e?.message || '商务附件模板批量审核失败', 'error')
+      showToast?.(e?.message || '附表 Word 批量审核失败', 'error')
     } finally {
       setSavingAllAppendices(false)
-    }
-  }
-
-  const handleApproveBusinessScoringAsset = async () => {
-    if (!selectedProjectId) return
-    setSavingBusinessScoring(true)
-    try {
-      const result = await parseAPI.approveBusinessScoringAsset(selectedProjectId)
-      if (result?.parseResult) setParseData(result.parseResult)
-      else await refreshParseResult()
-      showToast?.(result?.message || '商务评分标准已审核通过。')
-    } catch (e) {
-      showToast?.(e?.message || '商务评分标准审核失败', 'error')
-    } finally {
-      setSavingBusinessScoring(false)
-    }
-  }
-
-  const handleApproveCommitmentLetterAsset = async (letterId) => {
-    if (!selectedProjectId || !letterId) return
-    setSavingCommitmentLetterId(letterId)
-    try {
-      const result = await parseAPI.approveCommitmentLetterAsset(selectedProjectId, letterId)
-      if (result?.parseResult) setParseData(result.parseResult)
-      else await refreshParseResult()
-      showToast?.(result?.message || '承诺函已审核通过。')
-    } catch (e) {
-      showToast?.(e?.message || '承诺函审核失败', 'error')
-    } finally {
-      setSavingCommitmentLetterId('')
-    }
-  }
-
-  const handleApproveAllCommitmentLetterAssets = async () => {
-    if (!selectedProjectId || !commitmentLetters.length) return
-    setSavingAllCommitmentLetters(true)
-    try {
-      const result = await parseAPI.approveAllCommitmentLetterAssets(selectedProjectId)
-      if (result?.parseResult) setParseData(result.parseResult)
-      else await refreshParseResult()
-      showToast?.(result?.message || '承诺函已批量审核通过。')
-    } catch (e) {
-      showToast?.(e?.message || '承诺函批量审核失败', 'error')
-    } finally {
-      setSavingAllCommitmentLetters(false)
     }
   }
 
@@ -1121,38 +878,6 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
     )
   }
 
-  const renderBusinessCompactProgress = () => {
-    const status = uploading ? 'running' : (parseProgress?.status || 'idle')
-    const percentage = Math.max(0, Math.min(100, Number(parseProgress?.percentage || (uploading ? 3 : 0))))
-    const statusText = status === 'completed' ? '解析完成' : status === 'failed' ? '解析失败' : status === 'running' ? '解析中' : '等待上传'
-    const summary = parseProgress?.summary || (uploading ? '正在上传并解析商务招标文件，请稍候。' : '上传商务招标文件后开始解析。')
-
-    return (
-      <div className="mt-4 rounded-md border border-surface-container-high bg-surface-container-low px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold text-on-surface">解析进度</p>
-            <p className="mt-1 text-xs text-outline">{summary}</p>
-          </div>
-          <span className={[
-            'shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold',
-            status === 'failed'
-              ? 'bg-error-container text-error'
-              : status === 'running'
-                ? 'bg-primary/10 text-primary'
-                : 'bg-surface-container-high text-on-surface-variant',
-          ].join(' ')}
-          >
-            {statusText} · {percentage}%
-          </span>
-        </div>
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-container-high">
-          <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${percentage}%` }} />
-        </div>
-      </div>
-    )
-  }
-
   if (loadingProjects) return <PageLoading title="正在加载解析模块..." />
   if (error) return <PageError title="解析模块加载失败" description={error} onRetry={loadProjects} />
   if (!reviewProjects.length) {
@@ -1160,7 +885,6 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
       <div className="review-page flex flex-col gap-6 animate-fade-in max-w-none">
         <PageHeader
           title={reviewConfig.pageTitle}
-          leftExtra={<ParseModeSwitch activeBidType={reviewConfig.bidType} onSwitch={navigate} />}
           className="command-surface rounded-xl px-5 py-4"
           titleClassName="!text-[22px] !font-bold !text-ink-strong"
           actionsClassName="stage-header-actions"
@@ -1186,73 +910,10 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
   }
   if (loadingDetail) return <PageLoading title="正在加载项目解析详情..." />
 
-  if (showBusinessCompactUpload) {
-    return (
-      <div className="review-page flex min-h-[calc(100vh-10rem)] justify-center pt-6 animate-fade-in">
-        <DataCard className="w-full max-w-[760px] !p-0 overflow-hidden">
-          <div className="border-b border-surface-container-high px-5 py-4">
-            <p className="text-xs font-semibold text-primary">商务解析</p>
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
-              <h3 className="text-sm font-semibold text-on-surface">上传招标文件</h3>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleUploadAndParse}
-                  disabled={uploading || reviewDecision === 'abandon'}
-                  className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {uploading ? '上传解析中...' : '上传并解析'}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="px-5 py-5">
-            <label
-              htmlFor="business-review-tender-upload"
-              className={[
-                'flex min-h-[160px] cursor-pointer flex-col items-center justify-center rounded-md border border-dashed border-outline-variant bg-surface-container-lowest px-6 py-8 text-center transition-colors',
-                uploading || reviewDecision === 'abandon' ? 'pointer-events-none opacity-60' : 'hover:border-primary hover:bg-primary/5',
-              ].join(' ')}
-            >
-              <span className="material-symbols-outlined text-2xl text-primary">upload_file</span>
-              <span className="mt-2 text-sm font-semibold text-on-surface">选择商务招标文件</span>
-              <span className="mt-1 text-xs text-outline">支持 Word、PDF、Excel 等招标附件</span>
-            </label>
-            <input
-              id="business-review-tender-upload"
-              type="file"
-              className="hidden"
-              accept={FILE_ACCEPT}
-              multiple
-              disabled={uploading || reviewDecision === 'abandon'}
-              onChange={handleFilesPicked}
-            />
-            <div className="mt-3">
-              {renderPickedFiles()}
-            </div>
-            {uploadError && (
-              <div className="mt-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
-                {uploadError}
-              </div>
-            )}
-            {uploading && (
-              <div className="mt-3 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
-                正在上传并解析商务招标文件，请稍候。
-              </div>
-            )}
-            {renderBusinessCompactProgress()}
-          </div>
-        </DataCard>
-      </div>
-    )
-  }
-
   return (
     <div className="review-page flex flex-col gap-5 animate-fade-in max-w-none">
       <PageHeader
         title={reviewConfig.pageTitle}
-        leftExtra={<ParseModeSwitch activeBidType={reviewConfig.bidType} onSwitch={navigate} />}
         className="command-surface rounded-xl px-5 py-4 md:!items-center"
         titleClassName="!text-[22px] !font-bold !text-ink-strong"
         actionsClassName="items-center self-start md:self-center"
@@ -1268,8 +929,7 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
         )}
       />
 
-      {!(isBusinessBid && isParseCompleted) ? (
-        <DataCard className="!p-0 overflow-hidden">
+      <DataCard className="!p-0 overflow-hidden">
           <div className="grid gap-5 p-5">
             <section className="mx-auto flex w-full max-w-[760px] flex-col items-center gap-4 rounded-lg border border-dashed border-outline-variant/70 bg-white px-5 py-7 text-center">
               <ReviewIconBox icon="upload_file" />
@@ -1362,10 +1022,9 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
               </div>
             </aside>
           </div>
-        </DataCard>
-      ) : null}
+      </DataCard>
 
-      {!(isBusinessBid && isParseCompleted) ? renderParseProgress() : null}
+      {renderParseProgress()}
 
       <DataCard className="!p-0 overflow-hidden">
         <div className="border-b border-outline-variant/45 px-5 py-4">
@@ -1394,29 +1053,6 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
           </div>
         ) : (
           <div className="p-5 flex flex-col gap-5">
-            {reviewConfig.showApproveBusinessScoring && (
-              <div className="rounded-md border border-surface-container-high bg-surface-container-low px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-on-surface">商务评分标准审核</p>
-                  <p className="mt-1 text-xs text-outline">
-                    复核无误后先标记为后续可用资产；确认参与投标并完善项目信息后，自动同步到项目素材库的“03-模板底稿与过程文件”。
-                  </p>
-                  <p className="mt-1 text-xs text-outline">
-                    状态：{assetReviewStatusLabel(businessScoringAsset.reviewStatus || businessScoringAsset.status)}
-                    {' · '}
-                    {assetSyncStatusLabel(businessScoringAsset.syncStatus)}
-                  </p>
-                </div>
-                <button
-                  onClick={handleApproveBusinessScoringAsset}
-                  disabled={savingBusinessScoring || !isParseCompleted}
-                  className="whitespace-nowrap rounded-md bg-primary px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {savingBusinessScoring ? '审核中...' : '审核通过'}
-                </button>
-              </div>
-            )}
-
             <section className="flex flex-col gap-4">
               <div className="flex items-center gap-2">
                 <span className="material-symbols-outlined text-[18px] text-primary">grading</span>
@@ -1459,130 +1095,6 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
                   />
                 )}
               </section>
-            ) : null}
-
-            {reviewConfig.bidType === '商务标' ? (
-              <>
-                {reviewConfig.showCommitmentClues !== false && (
-                  <CommitmentClueTable
-                    clues={commitmentClues}
-                    showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
-                  />
-                )}
-                <div className="border border-surface-container-high rounded-md overflow-hidden">
-                  <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
-                    <h4 className="text-sm font-semibold text-on-surface">承诺函 Word 预览</h4>
-                    <div className="flex items-center gap-2">
-                      {reviewConfig.showApproveCommitmentLetters && commitmentLetters.length ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => handleApproveCommitmentLetterAsset(selectedCommitmentLetter?.id)}
-                            disabled={savingAllCommitmentLetters || Boolean(savingCommitmentLetterId) || !selectedCommitmentLetter?.id}
-                            className="rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {savingCommitmentLetterId ? '审核中...' : '审核当前'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleApproveAllCommitmentLetterAssets}
-                            disabled={savingAllCommitmentLetters || Boolean(savingCommitmentLetterId)}
-                            className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {savingAllCommitmentLetters ? '审核中...' : '审核全部'}
-                          </button>
-                        </>
-                      ) : null}
-                      <span className="text-xs text-outline">{commitmentLetters.length} 个</span>
-                    </div>
-                  </div>
-                  {commitmentLetters.length ? (
-                    <OnlyOfficeWorkspace
-                      className="m-4 appendix-preview-workspace"
-                      heightClass="appendix-preview-shell"
-                      gridClassName="grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]"
-                      sidebarClassName="appendix-preview-aside"
-                      documentAreaClassName="appendix-preview-document"
-                      documentTitle={selectedCommitmentLetter?.title || '承诺函预览'}
-                      documentSubtitle={selectedCommitmentLetter?.workspacePath || selectedCommitmentLetter?.sourceFile || ''}
-                      documentMeta={(
-                        <span className="whitespace-nowrap rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant">
-                          {commitmentStatusLabel(selectedCommitmentLetter?.status)}
-                          {reviewConfig.showApproveCommitmentLetters ? ` · ${assetReviewStatusLabel(selectedCommitmentLetter?.assetReviewStatus)} · ${assetSyncStatusLabel(selectedCommitmentLetter?.assetSyncStatus)}` : ''}
-                        </span>
-                      )}
-                      sidebar={(
-                        <div className="appendix-preview-sidebar flex h-full min-h-0 flex-col">
-                          <div className="border-b border-surface-container-high px-4 py-3">
-                            <p className="text-sm font-semibold text-on-surface">承诺函条目</p>
-                            <p className="mt-1 text-xs text-outline">已生成解析草稿，可切换预览并复核。</p>
-                          </div>
-                          <div className="appendix-preview-list min-h-0 flex-1 overflow-y-auto p-2">
-                            {commitmentLetters.map((letter, index) => {
-                              const key = commitmentLetterKey(letter, index)
-                              const active = key === activeCommitmentLetterId
-                              return (
-                                <button
-                                  key={key}
-                                  type="button"
-                                  aria-pressed={active}
-                                  onClick={() => setSelectedCommitmentLetterId(key)}
-                                  className={[
-                                    'mb-2 flex w-full flex-col items-start gap-1 rounded-md border px-3 py-2 text-left transition-colors',
-                                    active
-                                      ? 'border-primary bg-primary/5 text-primary'
-                                      : 'border-surface-container-high bg-white text-on-surface hover:border-outline-variant hover:bg-surface-container-low',
-                                  ].join(' ')}
-                                >
-                                  <span className="line-clamp-2 text-sm font-semibold">{letter.title || '-'}</span>
-                                  <span className="text-xs text-on-surface-variant">{commitmentTypeLabel(letter.commitmentType)}</span>
-                                  <span className="text-xs text-outline">{letter.workspacePath || letter.docxPath || '-'}</span>
-                                  {reviewConfig.showApproveCommitmentLetters ? (
-                                    <span className="text-xs text-outline">
-                                      {assetReviewStatusLabel(letter.assetReviewStatus)}
-                                      {' · '}
-                                      {assetSyncStatusLabel(letter.assetSyncStatus)}
-                                    </span>
-                                  ) : null}
-                                </button>
-                              )
-                            })}
-                          </div>
-                        </div>
-                      )}
-                    >
-                      {commitmentLetterPreviewLoading ? (
-                        <div className="flex h-full min-h-0 items-center justify-center text-sm text-on-surface-variant">
-                          正在加载承诺函预览...
-                        </div>
-                      ) : commitmentLetterPreview?.onlyoffice?.fileUrl && commitmentLetterPreview?.onlyoffice?.callbackUrl && !commitmentLetterPreviewError ? (
-                        <OnlyOfficeEmbed
-                          session={commitmentLetterPreview.onlyoffice}
-                          mode="view"
-                          className="h-full min-h-0 w-full rounded-md border border-surface-container-high bg-white"
-                          onError={(message) => setCommitmentLetterPreviewError(message || 'OnlyOffice 承诺函预览加载失败')}
-                        />
-                      ) : (
-                        <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 text-center text-sm text-on-surface-variant">
-                          <p>{commitmentLetterPreviewError || '当前承诺函暂时无法载入 OnlyOffice 预览。'}</p>
-                          {commitmentLetterPreview?.onlyoffice?.browserFileUrl ? (
-                            <a
-                              href={commitmentLetterPreview.onlyoffice.browserFileUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-on-primary"
-                            >
-                              打开 Word 文件
-                            </a>
-                          ) : null}
-                        </div>
-                      )}
-                    </OnlyOfficeWorkspace>
-                  ) : (
-                    <div className="px-4 py-3 text-sm text-outline">未识别到可自动生成的承诺文件。</div>
-                  )}
-                </div>
-              </>
             ) : null}
 
             <section className="border border-surface-container-high rounded-md overflow-hidden">
@@ -1817,6 +1329,10 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
           forceReviewDecision="participate"
           defaultBidType={reviewConfig.bidType}
           lockBidType
+          requiresTurbineModel
+          projectsApi={technicalProjectsAPI}
+          materialsApi={technicalMaterialsAPI}
+          turbineModelOptionsApi={technicalMaterialsAPI}
           onClose={() => {
             setShowProjectInfoModal(false)
             setProjectToComplete(null)
@@ -1829,7 +1345,7 @@ export default function TenderReview({ showToast, config = TECHNICAL_REVIEW_CONF
               item.id === updatedProject.id ? { ...item, ...updatedProject } : item
             )))
             showToast?.('已确认参与投标，正在进入对应工作区。')
-            navigate(projectRoute(updatedProject.id, '/template-directory', slugFromBidType(updatedProject.bidType)))
+            navigate(projectRoute(updatedProject.id, '/template-directory', 'tech'))
           }}
         />
       )}
