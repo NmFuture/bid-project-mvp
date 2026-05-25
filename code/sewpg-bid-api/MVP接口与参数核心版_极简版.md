@@ -16,7 +16,8 @@
 - 解析：`/api/technical/projects/{project_id}/parse-results...`
 - 模板与目录：`/api/technical/projects/{project_id}/template-fallback`、`/api/technical/projects/{project_id}/directory-generation...`、`/api/technical/projects/{project_id}/outline...`
 - 缺口处理：`/api/technical/projects/{project_id}/gaps...`
-- 生成、覆盖、文档、导出：`/api/technical/projects/{project_id}/fill-generation...`、`/api/technical/projects/{project_id}/coverage`、`/api/technical/projects/{project_id}/document...`、`/api/technical/projects/{project_id}/export`
+- 生成、文档、下载：`/api/technical/projects/{project_id}/fill-generation...`、`/api/technical/projects/{project_id}/document...`、`/api/technical/projects/{project_id}/final-document...`
+- 后端诊断/兼容交付：`/api/technical/projects/{project_id}/coverage`、`/api/technical/projects/{project_id}/export...`；前端主流程不再保留对应页面或 API facade。
 - 素材库和 Wiki：`/api/technical/materials...`
 - OCR：`/api/technical/projects/{project_id}/ocr...`
 - 审计：`/api/technical/audit...`

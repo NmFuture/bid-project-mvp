@@ -23,6 +23,8 @@
 
 - 前端旧根入口和 workspace 内部旧别名已清理，当前从 `/parse/technical`、`/parse/business`、`/workspace/tech/...`、`/workspace/business/...` 进入。
 - 商务标和技术标页面已按 workspace 拆分，阶段进度组件也已拆成 business/technical 两套。
+- 技术标主流程 UI 已靠拢商务标：两边都只保留 `template-directory`、`outline`、`gaps`、`editor` 项目页面；技术标 S3/S4 在 `/gaps` 内完成素材匹配、弹出式素材预览和正文生成，S5/S6 在 `/editor` 内完成共创、格式和 Word/PDF 下载。
+- 技术标旧独立 `facts`、`generate`、`coverage`、`export` 前端页面、旧 `TechnicalStageProgress` 和 `technical.css` 已删除，前端 `technicalCoverageAPI` / `technicalExportAPI` 封装也已移除。
 - 后端旧通用 route 文件已移除，当前业务入口挂在 business/technical 两组 route 上。
 - 项目、解析、目录、生成、文档、OCR、素材库、Wiki、审计、技术标缺口和商务标缺口都已有第一层 business/technical service 边界。
 - 旧通用 store、material_store 仍是底层持久化底座，但对外不再作为业务入口直接暴露。
@@ -533,7 +535,7 @@ npm run check
 
 结果：通过，仅有 Vite 大 chunk 警告。
 
-旧入口扫描结论：商务标 `/generate`、`/coverage`、`/export` 路由不再保留；`/workspace/tech/projects/:id/generate` 是技术标正式生成页，不属于旧入口。旧 `/api/projects...`、`/api/materials...`、`/api/audit...` 只剩 404 防回退测试和内部 URL 兼容替换函数。
+旧入口扫描结论：商务标和技术标前端都不再保留 `/generate`、`/coverage`、`/export` 独立项目路由；两边阶段路线统一为 `/gaps` 和 `/editor` 承接后半段。旧 `/api/projects...`、`/api/materials...`、`/api/audit...` 只剩 404 防回退测试和内部 URL 兼容替换函数。
 
 旧结构化素材门面删除补充：
 
@@ -916,26 +918,26 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/test_bid_material_scope_services.p
 
 结果：`BidOcrService` 已从 business/technical 项目 service 获取已 guard 的项目，并把 `projectId`、`projectName`、`projectCode`、`customerName`、`bidType` 注入底层 OCR 审计 metadata；OCR 执行、候选确认和候选忽略写入审计时都会携带标类信息，便于 `/api/business/audit` 与 `/api/technical/audit` 按标类过滤。新增非集成防回退测试 `1 passed`；OCR/项目范围聚焦组合 `4 passed`；后端边界扩展组合 `99 passed, 8 skipped`；`compileall app` 通过；随后完整后端回归 `484 passed, 17 skipped`。
 
-前端共享项目弹窗 API 边界补充：
+前端项目弹窗 API 边界补充：
 
 ```bash
-rg -n "from ['\"]\\.\\./\\.\\./api|businessProjectsAPI|businessMaterialsAPI|technicalProjectsAPI|technicalMaterialsAPI|workspaceApisForBidType|workspaceKind" code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx code/sewpg-bid-frontend/src/components/shared code/sewpg-bid-frontend/src/components/ui
-rg -n "<ProjectWizardModal" -g "*.jsx" code/sewpg-bid-frontend/src
+rg -n "workspaceApisForBidType|workspaceKind|components/modals" code/sewpg-bid-frontend/src/workspaces code/sewpg-bid-frontend/src/components
+rg -n "<BusinessProjectWizardModal|<TechnicalProjectWizardModal" -g "*.jsx" code/sewpg-bid-frontend/src/workspaces
 npm run lint
 npm run build
 ```
 
-结果：`ProjectWizardModal.jsx` 已移除 business/technical API 直接 import 和 `workspaceApisForBidType` 分流函数，改为由调用页显式传入 `projectsApi`、`materialsApi` 和技术标专用 `turbineModelOptionsApi`；技术标项目列表、技术标解析审核和商务标解析审核三个调用点都已注入各自 workspace API。共享 modal/API 依赖扫描无命中；前端 `npm run lint` 通过；前端 `npm run build` 通过，仅保留 Vite 大 chunk 警告。
+结果：旧共享项目弹窗已继续拆为 `BusinessProjectWizardModal.jsx` 和 `TechnicalProjectWizardModal.jsx`；两边调用页只挂载本工作区弹窗，各自持有项目 API、素材 API、字段校验和文案。共享 modal/API 依赖扫描无命中；前端 `npm run lint` 通过；前端 `npm run build` 通过，仅保留 Vite 大 chunk 警告。
 
-前端共享项目弹窗机型字段配置化补充：
+前端项目弹窗机型字段拆分补充：
 
 ```bash
-rg -n "form\\.bidType === '技术标'|form\\.bidType !== '技术标'|defaultBidType \\|\\| '技术标'|<option>技术标|<option>商务标|businessProjectsAPI|businessMaterialsAPI|technicalProjectsAPI|technicalMaterialsAPI|workspaceApisForBidType|workspaceKind" code/sewpg-bid-frontend/src/components/modals/ProjectWizardModal.jsx code/sewpg-bid-frontend/src/components/shared code/sewpg-bid-frontend/src/components/ui
+rg -n "投标机型|turbineModel" code/sewpg-bid-frontend/src/workspaces/business code/sewpg-bid-frontend/src/workspaces/technical
 npm run lint
 npm run build
 ```
 
-结果：`ProjectWizardModal.jsx` 不再通过 `form.bidType === '技术标'` 判断是否加载/校验/提交投标机型，也不再内置技术标/商务标下拉选项；机型字段改为由调用页显式传入 `requiresTurbineModel`，技术标项目列表和技术标解析审核页传入该配置，商务标解析审核页不传。共享 modal 技术/商务硬编码扫描无命中；前端 `npm run lint` 与 `npm run build` 通过，build 仅保留 Vite 大 chunk 警告。
+结果：投标机型字段只保留在技术标项目弹窗和技术标解析审核页；商务标项目弹窗不携带技术标机型配置分支。技术/商务硬编码扫描无命中；前端 `npm run lint` 与 `npm run build` 通过，build 仅保留 Vite 大 chunk 警告。
 
 素材无标类兜底补充：
 

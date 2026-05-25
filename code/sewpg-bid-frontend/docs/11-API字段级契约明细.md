@@ -41,6 +41,17 @@
 
 页面只读取本 workspace 的阶段配置，不共享主流程阶段表。
 
+当前前端阶段路由压缩为：
+
+```text
+S1 -> /template-directory
+S2 -> /outline
+S3/S4 -> /gaps
+S5/S6 -> /editor
+```
+
+不再把 `generate`、`coverage`、`export` 作为项目主流程页面字段依赖。
+
 ## Materials
 
 素材范围由对应 workspace 项目接口返回：

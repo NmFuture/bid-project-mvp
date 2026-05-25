@@ -6,16 +6,16 @@ const TECHNICAL_STAGE_ROUTES = {
   1: '/template-directory',
   2: '/outline',
   3: '/gaps',
-  4: '/generate',
+  4: '/gaps',
   5: '/editor',
-  6: '/export',
+  6: '/editor',
 }
 
 const TECHNICAL_COMPACT_STAGE_LABELS = {
   1: '目录生成',
   2: '目录确认',
   3: '素材匹配',
-  4: '标书生成',
+  4: '素材匹配',
   5: '编辑导出',
   6: '编辑导出',
 }

@@ -24,6 +24,20 @@ const normalizeMaterialProjects = (list = []) =>
     .filter((item) => item.id && item.name)
 
 const today = () => new Date().toISOString().slice(0, 10)
+const BUSINESS_BID_TYPE = '商务标'
+
+const buildInitialForm = (project = null) => ({
+  bidType: BUSINESS_BID_TYPE,
+  projectCode: String(project?.projectCode || ''),
+  name: String(project?.name || ''),
+  customerName: String(project?.customerName || ''),
+  customerId: String(project?.materialCustomerId || project?.customerId || ''),
+  customerCanonicalName: String(project?.materialCustomerName || project?.customerCanonicalName || project?.customerName || ''),
+  materialProjectName: String(project?.materialProjectName || ''),
+  manager: String(project?.manager || ''),
+  startDate: String(project?.startDate || today()),
+  endDate: String(project?.endDate || project?.deadline || ''),
+})
 
 const customerLabel = (item) => `${item.name}${item.customerId ? ` / ${item.customerId}` : ''}`
 
@@ -36,25 +50,29 @@ const materialProjectLabel = (item) => {
   return `${item.name}${parts.length ? `（${parts.join(' / ')}）` : ''}`
 }
 
-export default function BusinessProjectWizardModal({ onClose, onCreated }) {
-  const [form, setForm] = useState({
-    bidType: '商务标',
-    projectCode: '',
-    name: '',
-    customerName: '',
-    customerId: '',
-    customerCanonicalName: '',
-    materialProjectName: '',
-    manager: '',
-    startDate: today(),
-    endDate: '',
-  })
-  const [customerMode, setCustomerMode] = useState('ordinary')
-  const [materialProjectMode, setMaterialProjectMode] = useState('ordinary')
+export default function BusinessProjectWizardModal({
+  onClose,
+  onCreated,
+  mode = 'create',
+  project = null,
+  forceReviewDecision = '',
+}) {
+  const isUpdateMode = mode === 'update' && Boolean(project?.id)
+  const [form, setForm] = useState(() => buildInitialForm(project))
+  const [customerMode, setCustomerMode] = useState(
+    project?.materialCustomerId || project?.customerId || project?.isKeyAccount ? 'library' : 'ordinary',
+  )
+  const [materialProjectMode, setMaterialProjectMode] = useState(
+    project?.materialProjectMode || (project?.materialProjectId ? 'library' : 'ordinary'),
+  )
   const [materialCustomers, setMaterialCustomers] = useState([])
   const [materialProjects, setMaterialProjects] = useState([])
-  const [selectedMaterialCustomerId, setSelectedMaterialCustomerId] = useState('')
-  const [selectedMaterialProjectId, setSelectedMaterialProjectId] = useState('')
+  const [selectedMaterialCustomerId, setSelectedMaterialCustomerId] = useState(
+    String(project?.materialCustomerId || project?.customerId || project?.keyAccountId || ''),
+  )
+  const [selectedMaterialProjectId, setSelectedMaterialProjectId] = useState(
+    String(project?.materialProjectId || ''),
+  )
   const [loadingIdentities, setLoadingIdentities] = useState(false)
   const [identityError, setIdentityError] = useState('')
   const [creating, setCreating] = useState(false)
@@ -77,25 +95,36 @@ export default function BusinessProjectWizardModal({ onClose, onCreated }) {
         setMaterialCustomers(customers)
         setMaterialProjects(projects)
         if (customers.length) {
-          const firstCustomer = customers[0]
-          setCustomerMode('library')
-          setSelectedMaterialCustomerId(firstCustomer.id)
-          setForm((prev) => ({
-            ...prev,
-            customerId: firstCustomer.customerId,
-            customerCanonicalName: firstCustomer.name,
-            customerName: firstCustomer.name,
-          }))
+          const expectedCustomerId = String(project?.materialCustomerId || project?.customerId || project?.keyAccountId || '')
+          const selectedCustomer = isUpdateMode
+            ? customers.find((item) => item.id === expectedCustomerId || item.customerId === expectedCustomerId)
+              || customers.find((item) => item.name === String(project?.customerName || ''))
+            : customers[0]
+          if (selectedCustomer) {
+            setCustomerMode('library')
+            setSelectedMaterialCustomerId(selectedCustomer.id)
+            setForm((prev) => ({
+              ...prev,
+              customerId: selectedCustomer.customerId,
+              customerCanonicalName: selectedCustomer.name,
+              customerName: selectedCustomer.name,
+            }))
+          }
         }
         if (projects.length) {
-          const firstProject = projects[0]
-          setMaterialProjectMode('library')
-          setSelectedMaterialProjectId(firstProject.id)
-          setForm((prev) => ({
-            ...prev,
-            materialProjectName: firstProject.name,
-            projectCode: prev.projectCode || firstProject.projectCode,
-          }))
+          const expectedProjectId = String(project?.materialProjectId || '')
+          const selectedProject = isUpdateMode
+            ? projects.find((item) => item.id === expectedProjectId || item.projectId === expectedProjectId)
+            : projects[0]
+          if (selectedProject) {
+            setMaterialProjectMode(project?.materialProjectMode || 'library')
+            setSelectedMaterialProjectId(selectedProject.id)
+            setForm((prev) => ({
+              ...prev,
+              materialProjectName: selectedProject.name,
+              projectCode: prev.projectCode || selectedProject.projectCode,
+            }))
+          }
         }
       } catch (e) {
         if (!mounted) return
@@ -112,7 +141,7 @@ export default function BusinessProjectWizardModal({ onClose, onCreated }) {
     return () => {
       mounted = false
     }
-  }, [])
+  }, [isUpdateMode, project?.customerId, project?.customerName, project?.keyAccountId, project?.materialCustomerId, project?.materialProjectId, project?.materialProjectMode])
 
   const missingRequiredItems = useMemo(() => {
     const items = []
@@ -146,7 +175,7 @@ export default function BusinessProjectWizardModal({ onClose, onCreated }) {
     try {
       const payload = {
         ...form,
-        bidType: '商务标',
+        bidType: BUSINESS_BID_TYPE,
         deadline: form.endDate,
         owner: form.customerName,
         isKeyAccount: customerMode === 'library' && Boolean(selectedMaterialCustomerId),
@@ -161,10 +190,13 @@ export default function BusinessProjectWizardModal({ onClose, onCreated }) {
         materialProjectName: materialProjectMode === 'library' ? selectedMaterialProject?.name || selectedMaterialProjectId : (form.materialProjectName || form.name),
         turbineModel: {},
       }
-      const createdProject = await businessProjectsAPI.create(payload)
-      onCreated(createdProject)
+      if (forceReviewDecision) payload.reviewDecision = forceReviewDecision
+      const savedProject = isUpdateMode
+        ? await businessProjectsAPI.update(project.id, payload)
+        : await businessProjectsAPI.create(payload)
+      onCreated(savedProject)
     } catch (e) {
-      setCreateError(e?.message || '商务标项目创建失败，请稍后重试。')
+      setCreateError(e?.message || `商务标项目${isUpdateMode ? '保存' : '创建'}失败，请稍后重试。`)
     } finally {
       setCreating(false)
     }
@@ -178,8 +210,12 @@ export default function BusinessProjectWizardModal({ onClose, onCreated }) {
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-[#d8e0ea] bg-white">
           <div>
-            <h2 className="text-[18px] font-headline font-semibold text-on-surface">新建商务标项目</h2>
-            <p className="text-xs text-on-surface-variant mt-1">该入口只创建商务标项目，并按商务资料字段维护。</p>
+            <h2 className="text-[18px] font-headline font-semibold text-on-surface">
+              {isUpdateMode ? '完善商务标项目信息' : '新建商务标项目'}
+            </h2>
+            <p className="text-xs text-on-surface-variant mt-1">
+              {isUpdateMode ? '确认参与投标前补齐商务资料字段。' : '该入口只创建商务标项目，并按商务资料字段维护。'}
+            </p>
           </div>
           <button
             onClick={onClose}
@@ -197,7 +233,7 @@ export default function BusinessProjectWizardModal({ onClose, onCreated }) {
                 <label className="block text-sm font-semibold text-on-surface mb-2">标书类型</label>
                 <input
                   className="w-full min-h-0 h-9 px-4 bg-[#eef3f7] border border-[#c2d0df] text-sm text-on-surface"
-                  value="商务标"
+                  value={BUSINESS_BID_TYPE}
                   disabled
                 />
               </div>
@@ -426,7 +462,7 @@ export default function BusinessProjectWizardModal({ onClose, onCreated }) {
             size="stage"
             variant="primary"
           >
-            {creating ? '创建中...' : '确认提交'}
+            {creating ? (isUpdateMode ? '保存中...' : '创建中...') : '确认提交'}
           </Button>
         </div>
       </div>

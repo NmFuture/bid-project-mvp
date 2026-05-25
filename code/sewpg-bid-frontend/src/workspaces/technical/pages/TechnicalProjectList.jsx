@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { technicalMaterialsAPI, technicalProjectsAPI } from '../../../api'
+import { technicalProjectsAPI } from '../../../api'
 import Pagination from '../../../components/shared/Pagination'
-import ProjectWizardModal from '../../../components/modals/ProjectWizardModal'
+import TechnicalProjectWizardModal from './TechnicalProjectWizardModal'
 import { PageLoading, PageEmpty, PageError } from '../../../components/states/PageState'
 import FilterBar from '../../../components/shared/FilterBar'
 import { parseRouteFromBidType, projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
@@ -314,16 +314,9 @@ export default function TechnicalProjectList({ showToast, viewMode = 'projects',
         </div>
       )}
 
-      {/* New Project Wizard Modal */}
       {showWizard && (
-        <ProjectWizardModal
+        <TechnicalProjectWizardModal
           onClose={() => setShowWizard(false)}
-          defaultBidType="技术标"
-          lockBidType
-          requiresTurbineModel
-          projectsApi={technicalProjectsAPI}
-          materialsApi={technicalMaterialsAPI}
-          turbineModelOptionsApi={technicalMaterialsAPI}
           onCreated={() => {
             setShowWizard(false)
             showToast('项目创建成功！')

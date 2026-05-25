@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { technicalStagesAPI } from '../../../api'
-import { getStrictStageLockReason } from '../../../utils/stageFlow'
+import StageProgress from '../../../components/shared/StageProgress'
+import { getStrictStageLockReason } from '../../../utils/stageLocking'
 import { projectRoute } from '../../../utils/workspace'
-import TechnicalStageProgress from './TechnicalStageProgress'
 
 const TECHNICAL_WORKSPACE = 'tech'
 
 const TECHNICAL_COMPACT_STAGE_GROUPS = [
   { id: 1, name: '目录生成', stageIds: [1], pendingRouteStageId: 1, completedRouteStageId: 1 },
   { id: 2, name: '目录确认', stageIds: [2], pendingRouteStageId: 2, completedRouteStageId: 2 },
-  { id: 3, name: '素材匹配', stageIds: [3], pendingRouteStageId: 3, completedRouteStageId: 3, routePath: '/gaps' },
-  { id: 4, name: '标书生成', stageIds: [4], pendingRouteStageId: 4, completedRouteStageId: 4, routePath: '/generate' },
+  { id: 3, name: '素材匹配', stageIds: [3, 4], pendingRouteStageId: 3, completedRouteStageId: 4, routePath: '/gaps' },
   { id: 5, name: '编辑导出', stageIds: [5, 6], pendingRouteStageId: 5, completedRouteStageId: 6 },
 ]
 
@@ -19,9 +18,9 @@ const TECHNICAL_STAGE_ROUTES = {
   1: '/template-directory',
   2: '/outline',
   3: '/gaps',
-  4: '/generate',
+  4: '/gaps',
   5: '/editor',
-  6: '/export',
+  6: '/editor',
 }
 
 const toStageId = (value) => {
@@ -164,7 +163,7 @@ export default function TechnicalProjectStageProgress({
 
   if (loading) {
     return (
-      <section className="technical-progress-loading rounded-md border border-outline-variant/45 bg-[#f7fbff] px-4 py-3">
+      <section className="bg-white px-0 py-2">
         <div className="animate-shimmer h-10 w-full"></div>
       </section>
     )
@@ -172,7 +171,7 @@ export default function TechnicalProjectStageProgress({
 
   if (error) {
     return (
-      <section className="rounded-md border border-error/20 bg-error-container/20 px-4 py-3">
+      <section className="bg-white px-0 py-2">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="text-sm text-error">阶段进度加载失败：{error}</div>
           <button
@@ -187,7 +186,7 @@ export default function TechnicalProjectStageProgress({
   }
 
   return (
-    <TechnicalStageProgress
+    <StageProgress
       stages={stages}
       getStageLockReason={getStageLockReason}
       onStageClick={handleStageClick}

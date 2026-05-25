@@ -18,7 +18,5 @@ def rewrite_material_urls(payload: Any, *, raw_prefix: str, wiki_prefix: str) ->
         return (
             payload.replace(INTERNAL_RAW_URL_PREFIX, raw_prefix)
             .replace(INTERNAL_WIKI_URL_PREFIX, wiki_prefix)
-            .replace("/api/materials/raw", raw_prefix)
-            .replace("/api/materials/wiki", wiki_prefix)
         )
     return payload

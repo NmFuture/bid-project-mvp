@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { businessMaterialsAPI, businessParseAPI, businessProjectsAPI } from '../../../api'
+import { businessParseAPI, businessProjectsAPI } from '../../../api'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import OnlyOfficeWorkspace from '../../../components/shared/OnlyOfficeWorkspace'
 import PageHeader from '../../../components/shared/PageHeader'
-import ProjectWizardModal from '../../../components/modals/ProjectWizardModal'
+import BusinessProjectWizardModal from './BusinessProjectWizardModal'
 import Button from '../../../components/ui/Button'
 import { normalizeBidType, projectRoute } from '../../../utils/workspace'
 
@@ -1553,14 +1553,10 @@ export default function BusinessTenderReview({ showToast }) {
       </div>
 
       {showProjectInfoModal && projectToComplete && (
-        <ProjectWizardModal
+        <BusinessProjectWizardModal
           mode="update"
           project={projectToComplete}
           forceReviewDecision="participate"
-          defaultBidType={BUSINESS_BID_TYPE}
-          lockBidType
-          projectsApi={businessProjectsAPI}
-          materialsApi={businessMaterialsAPI}
           onClose={() => {
             setShowProjectInfoModal(false)
             setProjectToComplete(null)

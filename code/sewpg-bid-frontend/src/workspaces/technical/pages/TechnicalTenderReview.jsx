@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { technicalMaterialsAPI, technicalParseAPI, technicalProjectsAPI } from '../../../api'
+import { technicalParseAPI, technicalProjectsAPI } from '../../../api'
 import { PageEmpty, PageError, PageLoading } from '../components/TechnicalPageState'
 import DataCard from '../components/TechnicalDataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import OnlyOfficeWorkspace from '../components/TechnicalOnlyOfficeWorkspace'
 import PageHeader from '../../../components/shared/PageHeader'
-import ProjectWizardModal from '../../../components/modals/ProjectWizardModal'
+import TechnicalProjectWizardModal from './TechnicalProjectWizardModal'
 import { normalizeBidType, projectRoute } from '../../../utils/workspace'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
@@ -1323,16 +1323,10 @@ export default function TechnicalTenderReview({ showToast }) {
       </DataCard>
 
       {showProjectInfoModal && projectToComplete && (
-        <ProjectWizardModal
+        <TechnicalProjectWizardModal
           mode="update"
           project={projectToComplete}
           forceReviewDecision="participate"
-          defaultBidType={reviewConfig.bidType}
-          lockBidType
-          requiresTurbineModel
-          projectsApi={technicalProjectsAPI}
-          materialsApi={technicalMaterialsAPI}
-          turbineModelOptionsApi={technicalMaterialsAPI}
           onClose={() => {
             setShowProjectInfoModal(false)
             setProjectToComplete(null)

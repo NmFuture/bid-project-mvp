@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import Button from '../ui/Button'
+import { technicalMaterialsAPI, technicalProjectsAPI } from '../../../api'
+import Button from '../../../components/ui/Button'
 
 const MANUAL_TURBINE_VALUE = '__manual_turbine_model__'
-const PROJECT_WIZARD_DRAFT_VERSION = 1
-const PROJECT_WIZARD_DRAFT_PREFIX = 'sewpg.projectWizardDraft'
+const TECHNICAL_BID_TYPE = '技术标'
+const TECHNICAL_BID_TYPE_OPTIONS = [TECHNICAL_BID_TYPE]
+const TECHNICAL_PROJECT_WIZARD_DRAFT_VERSION = 1
+const TECHNICAL_PROJECT_WIZARD_DRAFT_PREFIX = 'sewpg.technicalProjectWizardDraft'
 const FORM_REQUIRED_STEP = 0
 
 const normalizeCustomers = (list = []) =>
@@ -74,7 +77,7 @@ const buildInitialForm = (project = null, defaultBidType = '') => ({
 })
 
 const buildDraftKey = ({ mode = 'create', project = null, defaultBidType = '' }) => [
-  PROJECT_WIZARD_DRAFT_PREFIX,
+  TECHNICAL_PROJECT_WIZARD_DRAFT_PREFIX,
   mode,
   project?.id || 'new',
   project?.bidType || defaultBidType || 'unknown',
@@ -84,7 +87,7 @@ const readDraft = (key) => {
   if (typeof window === 'undefined' || !key) return null
   try {
     const parsed = JSON.parse(window.localStorage.getItem(key) || 'null')
-    if (!parsed || parsed.version !== PROJECT_WIZARD_DRAFT_VERSION || !parsed.form) return null
+    if (!parsed || parsed.version !== TECHNICAL_PROJECT_WIZARD_DRAFT_VERSION || !parsed.form) return null
     return {
       ...parsed,
       step: FORM_REQUIRED_STEP,
@@ -106,7 +109,7 @@ const readDraft = (key) => {
 const writeDraft = (key, data) => {
   if (typeof window === 'undefined' || !key) return
   window.localStorage.setItem(key, JSON.stringify({
-    version: PROJECT_WIZARD_DRAFT_VERSION,
+    version: TECHNICAL_PROJECT_WIZARD_DRAFT_VERSION,
     ...data,
     updatedAt: new Date().toISOString(),
   }))
@@ -128,20 +131,20 @@ const materialProjectLabel = (item) => {
   return `${item.name}${parts.length ? `（${parts.join(' / ')}）` : ''}`
 }
 
-export default function ProjectWizardModal({
+export default function TechnicalProjectWizardModal({
   onClose,
   onCreated,
   mode = 'create',
   project = null,
   forceReviewDecision = '',
-  defaultBidType = '',
-  lockBidType = false,
-  bidTypeOptions = [],
-  requiresTurbineModel = false,
-  projectsApi = null,
-  materialsApi = null,
-  turbineModelOptionsApi = null,
 }) {
+  const defaultBidType = TECHNICAL_BID_TYPE
+  const lockBidType = true
+  const bidTypeOptions = TECHNICAL_BID_TYPE_OPTIONS
+  const requiresTurbineModel = true
+  const projectsApi = technicalProjectsAPI
+  const materialsApi = technicalMaterialsAPI
+  const turbineModelOptionsApi = technicalMaterialsAPI
   const isUpdateMode = mode === 'update' && Boolean(project?.id)
   const draftKey = useMemo(() => buildDraftKey({ mode, project, defaultBidType }), [defaultBidType, mode, project])
   const draft = useMemo(() => readDraft(draftKey), [draftKey])
@@ -234,7 +237,7 @@ export default function ProjectWizardModal({
       setIdentityError('')
       try {
         if (!materialsApi?.identityOptions) {
-          throw new Error('项目素材身份接口未配置。')
+          throw new Error('技术标素材身份接口未配置。')
         }
         const payload = await materialsApi.identityOptions({ bidType: form.bidType })
         if (!mounted) return
@@ -294,7 +297,7 @@ export default function ProjectWizardModal({
         setMaterialCustomers([])
         setMaterialProjects([])
         if (!isUpdateMode) setCustomerMode('ordinary')
-        setIdentityError(e?.message || '客户/项目候选加载失败，可选择普通客户或普通项目。')
+        setIdentityError(e?.message || '技术标客户/项目候选加载失败，可选择普通客户或普通项目。')
       } finally {
         if (mounted) setLoadingIdentities(false)
       }
@@ -317,7 +320,7 @@ export default function ProjectWizardModal({
       setTurbineError('')
       try {
         if (!turbineModelOptionsApi?.turbineModelOptions) {
-          throw new Error('投标机型候选接口未配置。')
+          throw new Error('技术标投标机型候选接口未配置。')
         }
         const payload = await turbineModelOptionsApi.turbineModelOptions({ bidType: form.bidType })
         if (!mounted) return
@@ -331,7 +334,7 @@ export default function ProjectWizardModal({
       } catch (e) {
         if (!mounted) return
         setTurbineOptions([])
-        setTurbineError(e?.message || '投标机型候选加载失败，可手工录入。')
+        setTurbineError(e?.message || '技术标投标机型候选加载失败，可手工录入。')
       } finally {
         if (mounted) setLoadingTurbines(false)
       }
@@ -397,7 +400,7 @@ export default function ProjectWizardModal({
       }
       if (forceReviewDecision) payload.reviewDecision = forceReviewDecision
 
-      if (!projectsApi) throw new Error('项目接口未配置。')
+      if (!projectsApi) throw new Error('技术标项目接口未配置。')
       if (isUpdateMode) {
         const updatedProject = await projectsApi.update(project.id, payload)
         clearDraft(draftKey)
@@ -425,7 +428,7 @@ export default function ProjectWizardModal({
         <div className="flex items-center justify-between px-5 py-4 border-b border-[#d8e0ea] bg-white">
           <div className="flex items-center gap-3">
             <h2 className="text-[18px] font-headline font-semibold text-on-surface">
-              {isUpdateMode ? '完善项目信息' : '新建投标项目'}
+              {isUpdateMode ? '完善项目信息' : '新建技术标项目'}
             </h2>
           </div>
           <button
@@ -552,7 +555,7 @@ export default function ProjectWizardModal({
                   )}
                   {(identityError || loadingIdentities) && (
                     <p className={`text-xs mt-2 ${identityError ? 'text-error' : 'text-outline'}`}>
-                      {identityError || '正在加载客户/项目...'}
+                      {identityError || '正在加载技术标客户/项目...'}
                     </p>
                   )}
                 </div>
@@ -718,7 +721,7 @@ export default function ProjectWizardModal({
               </div>
               {missingRequiredItems.length > 0 && (
                 <div
-                  id="project-wizard-required-hint"
+                id="technical-project-required-hint"
                   className="border border-[#f2c169] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a4d00]"
                 >
                   {nextDisabledReason}
@@ -749,7 +752,7 @@ export default function ProjectWizardModal({
             onClick={handleCreate}
             disabled={creating || !canSubmit}
             title={!canSubmit ? nextDisabledReason : undefined}
-            aria-describedby={!canSubmit ? 'project-wizard-required-hint' : undefined}
+            aria-describedby={!canSubmit ? 'technical-project-required-hint' : undefined}
             size="stage"
             variant="primary"
           >

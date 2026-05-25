@@ -47,7 +47,9 @@
 - 技术标页面只调用 `technical*API`。
 - 商务标页面只调用 `business*API`。
 - 共享 UI 组件可以复用，但不能在组件内部直接调用业务 API。
-- 新建/完善项目弹窗是共享 UI 壳，必须通过 `workspaceKind` 选择对应双轨 API。
+- 新建/完善项目弹窗已经拆成 business/technical 两个入口文件，各自持有本工作区 API。
+- 技术标和商务标主流程都只保留 `template-directory`、`outline`、`gaps`、`editor` 项目页面；不再新增独立 `generate`、`coverage`、`export` 页面。
+- 素材预览是素材匹配页内的弹出层，不作为路由或 API facade 的页面入口。
 
 ## 当前事实来源
 

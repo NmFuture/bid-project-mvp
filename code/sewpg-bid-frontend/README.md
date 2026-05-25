@@ -20,9 +20,19 @@
 ```text
 /parse/technical
 /parse/business
-/workspace/tech/...
-/workspace/business/...
+/workspace/tech/projects
+/workspace/tech/projects/:id/template-directory
+/workspace/tech/projects/:id/outline
+/workspace/tech/projects/:id/gaps
+/workspace/tech/projects/:id/editor
+/workspace/business/projects
+/workspace/business/projects/:id/template-directory
+/workspace/business/projects/:id/outline
+/workspace/business/projects/:id/gaps
+/workspace/business/projects/:id/editor
 ```
+
+技术标和商务标都不再保留独立 `/generate`、`/coverage`、`/export` 项目页面。素材匹配页内的素材预览使用弹出层，正文生成在 `/gaps` 内触发，共创、格式和 Word/PDF 下载在 `/editor` 内完成。
 
 ## API 规则
 

@@ -31,7 +31,7 @@
 - 技术标和商务标共用一个前端工程，但通过 `src/workspaces/business` 与 `src/workspaces/technical` 分开入口。
 - 当前改造方向是两条独立生产线：技术标页面、接口、后端逻辑、Skill、素材库和导出链路与商务标分开。
 - 可以共享登录、权限、基础组件、API request 封装和部署底座；主流程页面和业务逻辑要业务化分离。
-- 商务标主流程不再把 `/generate`、`/coverage`、`/export` 作为必经页面；当前后半段以 `/gaps` 和 `/editor` 为主。
+- 商务标和技术标主流程都不再把 `/generate`、`/coverage`、`/export` 作为独立前端页面；当前后半段以 `/gaps` 和 `/editor` 为主，素材预览在素材匹配页内弹出。
 - 旧根入口和旧通用业务接口已不再作为当前前后端契约；当前以 `/parse/technical`、`/parse/business`、`/workspace/tech/...`、`/workspace/business/...` 以及 business/technical API 为准。
 - 旧 `S7/S8/S9/S10` 不再作为当前基线；如果代码或旧记录出现这些阶段号，以本文件、根 README、`doc/31` 和 `code/progress.md` 的最新记录为准。
 

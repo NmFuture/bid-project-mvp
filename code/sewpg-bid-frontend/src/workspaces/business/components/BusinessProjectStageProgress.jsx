@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { businessStagesAPI } from '../../../api'
 import StageProgress from '../../../components/shared/StageProgress'
-import { getStrictStageLockReason } from '../../../utils/stageFlow'
+import { getStrictStageLockReason } from '../../../utils/stageLocking'
 import { projectRoute } from '../../../utils/workspace'
 
 const BUSINESS_WORKSPACE = 'business'

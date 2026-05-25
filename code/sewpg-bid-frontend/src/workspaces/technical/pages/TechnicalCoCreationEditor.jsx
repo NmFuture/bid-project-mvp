@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { technicalDocumentAPI, technicalProjectsAPI } from '../../../api'
-import { PageError, PageLoading } from '../components/TechnicalPageState'
+import { technicalDocumentAPI } from '../../../api'
+import { PageError, PageLoading } from '../../../components/states/PageState'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
+import IconButton from '../../../components/ui/IconButton'
 
 const FONT_OPTIONS = {
   zh: ['等线', '宋体', '仿宋', '黑体', '楷体', '微软雅黑', '方正仿宋_GBK', '方正小标宋_GBK'],
@@ -25,6 +26,9 @@ const technicalFormatPresets = [
   },
 ]
 
+const TECHNICAL_BID_LABEL = '技术标'
+const TECHNICAL_DOCUMENT_PART_LABEL = '技术部分'
+
 const triggerDownload = (url, fileName) => {
   if (!url) return false
   const link = document.createElement('a')
@@ -40,14 +44,15 @@ const triggerDownload = (url, fileName) => {
 export default function TechnicalCoCreationEditor({ showToast }) {
   const { id } = useParams()
   const [data, setData] = useState(null)
-  const [project, setProject] = useState(null)
   const [finalData, setFinalData] = useState(null)
   const [fallbackContent, setFallbackContent] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [onlyofficeError, setOnlyofficeError] = useState('')
   const [savingFallback, setSavingFallback] = useState(false)
+  const [technicalPreviewFullscreen, setTechnicalPreviewFullscreen] = useState(false)
   const [pdfPreparing, setPdfPreparing] = useState(false)
+  const [pdfData, setPdfData] = useState(null)
   const [formatPreset, setFormatPreset] = useState('standard')
   const [formatApplying, setFormatApplying] = useState('')
   const [customFormat, setCustomFormat] = useState({
@@ -68,20 +73,18 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     tableLineSpacing: 1,
     insertToc: true,
     tocPageBreakAfter: true,
-    headerTextTemplate: '{projectName}技术标投标文件',
+    headerTextTemplate: `{projectName}投标文件-${TECHNICAL_DOCUMENT_PART_LABEL}`,
   })
 
   const loadDocument = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const [payload, projectPayload, finalPayload] = await Promise.all([
+      const [payload, finalPayload] = await Promise.all([
         technicalDocumentAPI.get(id),
-        technicalProjectsAPI.get(id).catch(() => null),
         technicalDocumentAPI.final(id).catch(() => null),
       ])
       setData(payload)
-      setProject(projectPayload)
       setFinalData(finalPayload)
       setFallbackContent(payload?.fallback?.content || '')
       setOnlyofficeError('')
@@ -101,8 +104,25 @@ export default function TechnicalCoCreationEditor({ showToast }) {
 
   const hasOnlyOfficeSession = Boolean(data?.onlyoffice?.fileUrl && data?.onlyoffice?.callbackUrl)
   const useFallbackEditor = !hasOnlyOfficeSession || Boolean(onlyofficeError)
-  const projectName = project?.name || data?.projectName || id
   const fileName = finalData?.fileName || data?.fileName || '技术标投标文件.docx'
+  const bidLabel = TECHNICAL_BID_LABEL
+  const defaultWordFileName = `${TECHNICAL_BID_LABEL}投标文件.docx`
+  const defaultPdfFileName = `${TECHNICAL_BID_LABEL}投标文件.pdf`
+  const editorModeLabel = useFallbackEditor ? '文本兜底' : 'OnlyOffice 在线编辑'
+
+  useEffect(() => {
+    if (!technicalPreviewFullscreen) return undefined
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setTechnicalPreviewFullscreen(false)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [technicalPreviewFullscreen])
 
   const handleSaveFallback = async () => {
     const content = fallbackContent.trim()
@@ -128,7 +148,8 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     setPdfPreparing(true)
     try {
       const response = await technicalDocumentAPI.finalPdf(id)
-      const downloaded = triggerDownload(response?.fileUrl, response?.fileName || '技术标投标文件.pdf')
+      setPdfData(response)
+      const downloaded = triggerDownload(response?.fileUrl, response?.fileName || defaultPdfFileName)
       showToast?.(downloaded ? 'PDF 已生成并开始下载' : (response?.message || 'PDF 已生成'))
     } catch (e) {
       showToast?.(e?.message || 'PDF 生成失败', 'error')
@@ -164,25 +185,27 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   }
 
   const renderFormatNumberInput = (field, label, props = {}) => (
-    <label className="flex flex-col gap-1 text-xs font-semibold text-on-surface-variant">
-      {label}
+    <label className="block">
+      <span className="mb-1 block text-[11px] font-semibold text-on-surface-variant">{label}</span>
       <input
         type="number"
         value={customFormat[field]}
+        min={props.min}
+        max={props.max}
+        step={props.step || 0.1}
         onChange={(event) => updateCustomNumber(field, event.target.value)}
-        className="h-9 rounded-md border border-surface-container-high bg-white px-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
-        {...props}
+        className="h-9 w-full rounded-md border border-surface-container-high bg-white px-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30"
       />
     </label>
   )
 
   const renderFormatFontSelect = (field, label, options) => (
-    <label className="flex flex-col gap-1 text-xs font-semibold text-on-surface-variant">
-      {label}
+    <label className="block">
+      <span className="mb-1 block text-[11px] font-semibold text-on-surface-variant">{label}</span>
       <select
-        value={customFormat[field]}
+        value={customFormat[field] || options[0] || ''}
         onChange={(event) => updateCustomFormat(field, event.target.value)}
-        className="h-9 rounded-md border border-surface-container-high bg-white px-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
+        className="h-9 w-full rounded-md border border-surface-container-high bg-white px-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30"
       >
         {options.map((option) => <option key={option} value={option}>{option}</option>)}
       </select>
@@ -190,21 +213,50 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   )
 
   const renderFormatTextInput = (field, label, props = {}) => (
-    <label className="flex flex-col gap-1 text-xs font-semibold text-on-surface-variant">
-      {label}
+    <label className="block">
+      <span className="mb-1 block text-[11px] font-semibold text-on-surface-variant">{label}</span>
       <input
         type="text"
-        value={customFormat[field]}
+        value={customFormat[field] || ''}
         onChange={(event) => updateCustomFormat(field, event.target.value)}
-        className="h-9 rounded-md border border-surface-container-high bg-white px-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
+        className="h-9 w-full rounded-md border border-surface-container-high bg-white px-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30"
         {...props}
       />
     </label>
   )
 
+  const renderDocumentEditor = (minHeight = '740px') => {
+    const minHeightClass = minHeight === '740px' ? 'min-h-[740px]' : minHeight === '690px' ? 'min-h-[690px]' : 'min-h-[680px]'
+    return (
+      <>
+        <div className={useFallbackEditor ? 'hidden' : 'min-h-0 flex-1'}>
+          <OnlyOfficeEmbed
+            session={data?.onlyoffice}
+            className={`h-full ${minHeightClass} w-full rounded-md border border-outline-variant bg-white`}
+            onReady={() => setOnlyofficeError('')}
+            onError={(message) => setOnlyofficeError(message || 'OnlyOffice 文档加载失败，已切换到文本兜底。')}
+          />
+        </div>
+
+        <div className={useFallbackEditor ? 'flex min-h-0 flex-1 flex-col gap-3' : 'hidden'}>
+          <textarea
+            value={fallbackContent}
+            onChange={(event) => setFallbackContent(event.target.value)}
+            className={`${minHeightClass} flex-1 rounded-md border border-outline-variant bg-surface-container-lowest px-3 py-3 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30`}
+          />
+          <div className="flex justify-end">
+            <Button variant="primary" onClick={handleSaveFallback} disabled={savingFallback}>
+              {savingFallback ? '保存中...' : '保存回写'}
+            </Button>
+          </div>
+        </div>
+      </>
+    )
+  }
+
   const renderTechnicalFormatPanel = () => (
-    <section className="flex min-h-0 flex-col overflow-hidden rounded-md border border-outline-variant/60 bg-surface-container-lowest shadow-[0_1px_2px_rgba(13,33,55,0.05)]">
-      <div className="flex min-h-[58px] items-center justify-between gap-3 border-b border-surface-container-high px-4 py-3">
+    <section className="business-panel flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-outline-variant/60 bg-surface-container-lowest shadow-[0_1px_2px_rgba(13,33,55,0.05)]">
+      <div className="business-section-head business-editor-tool-head flex min-h-[58px] items-center justify-between gap-3 border-b border-surface-container-high px-4 py-3">
         <h3 className="truncate text-base font-semibold text-on-surface">技术标格式设置</h3>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
@@ -223,7 +275,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
         </div>
 
         {formatPreset === 'custom' && (
-          <div className="mt-4 space-y-4">
+          <div className="mt-4 space-y-4 rounded-md border border-surface-container-high bg-white p-3">
             <div>
               <div className="text-sm font-semibold text-on-surface">正文格式</div>
               <div className="mt-2 grid grid-cols-2 gap-2">
@@ -275,7 +327,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
                   />
                   目录后分页
                 </label>
-                {renderFormatTextInput('headerTextTemplate', '页眉模板', { placeholder: '{projectName}技术标投标文件' })}
+                {renderFormatTextInput('headerTextTemplate', '页眉模板', { placeholder: `{projectName}投标文件-${TECHNICAL_DOCUMENT_PART_LABEL}` })}
               </div>
             </div>
           </div>
@@ -293,6 +345,76 @@ export default function TechnicalCoCreationEditor({ showToast }) {
         </button>
       </div>
     </section>
+  )
+
+  const renderProjectWorkspace = () => (
+    <div className="business-ui-shell grid min-h-[885px] grid-cols-1 items-stretch gap-4 xl:min-h-[calc(100vh-4.5rem)] xl:grid-cols-[minmax(0,1fr)_420px] 2xl:grid-cols-[minmax(0,1fr)_460px]">
+      <section className={`business-panel flex min-h-0 flex-col overflow-hidden rounded-md border border-outline-variant/60 bg-white shadow-[0_1px_2px_rgba(13,33,55,0.05)] ${
+        technicalPreviewFullscreen ? 'fixed inset-0 z-[160] rounded-none border-0' : ''
+      }`}>
+        <div className="business-section-head flex min-h-[58px] flex-wrap items-center justify-between gap-3 px-4 py-3">
+          <div className="min-w-0">
+            <h3 className="truncate text-base font-semibold text-on-surface">{bidLabel}正文预览</h3>
+            <p className="mt-1 truncate text-xs text-outline" title={fileName}>{fileName || '未生成文档'}</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${useFallbackEditor ? 'bg-error-container text-on-error-container' : 'bg-secondary-container text-on-secondary-container'}`}>
+              {editorModeLabel}
+            </span>
+            <IconButton
+              type="button"
+              aria-label={technicalPreviewFullscreen ? '退出全屏' : '全屏查看'}
+              title={technicalPreviewFullscreen ? '退出全屏' : '全屏查看'}
+              icon={technicalPreviewFullscreen ? 'close_fullscreen' : 'open_in_full'}
+              onClick={() => setTechnicalPreviewFullscreen((value) => !value)}
+              size="sm"
+              variant="quiet"
+            />
+            <Button
+              as="a"
+              href={finalData?.fileUrl || data?.fileUrl || '#'}
+              download={finalData?.fileName || data?.fileName || defaultWordFileName}
+              size="sm"
+              variant="primary"
+            >
+              下载Word
+            </Button>
+            {pdfData?.fileUrl ? (
+              <Button
+                type="button"
+                onClick={() => triggerDownload(pdfData.fileUrl, pdfData.fileName || defaultPdfFileName)}
+                size="sm"
+                variant="primary"
+              >
+                下载PDF
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                onClick={handlePreparePdf}
+                disabled={pdfPreparing}
+                size="sm"
+                variant="primary"
+              >
+                {pdfPreparing ? '生成中...' : '下载PDF'}
+              </Button>
+            )}
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 p-4">
+          {onlyofficeError && (
+            <div className="mb-3 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+              {onlyofficeError}
+            </div>
+          )}
+          {renderDocumentEditor('740px')}
+        </div>
+      </section>
+
+      <aside className="flex min-h-[885px] flex-col overflow-hidden xl:h-[calc(100vh-4.5rem)]">
+        {renderTechnicalFormatPanel()}
+      </aside>
+    </div>
   )
 
   if (loading) {
@@ -315,60 +437,10 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   }
 
   return (
-    <div className="stage-page flex flex-col gap-4 animate-fade-in">
+    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
+      <StageBreadcrumb />
       <TechnicalProjectStageProgress projectId={id} showToast={showToast} />
-      <StageBreadcrumb projectId={id} activeKey="editor" />
-
-      <div className="grid min-h-[720px] grid-cols-1 items-stretch gap-4 xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_400px]">
-        <section className="rounded-md border border-outline-variant/60 bg-white shadow-[0_1px_2px_rgba(13,33,55,0.05)]">
-          <div className="flex min-h-[58px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high px-4 py-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-outline">技术标共创编辑</p>
-              <h2 className="mt-1 text-lg font-headline font-bold text-on-surface">{projectName}</h2>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-md bg-surface-container-low px-3 py-1 text-xs font-semibold text-on-surface-variant">
-                {fileName}
-              </span>
-              <Button variant="secondary" size="sm" onClick={loadDocument}>刷新</Button>
-              <Button variant="secondary" size="sm" onClick={handlePreparePdf} disabled={pdfPreparing}>
-                {pdfPreparing ? '生成中...' : '导出 PDF'}
-              </Button>
-            </div>
-          </div>
-
-          <div className="min-h-[720px] p-4">
-            {useFallbackEditor ? (
-              <div className="flex min-h-[680px] flex-col gap-3">
-                {onlyofficeError ? (
-                  <div className="rounded-md border border-error/20 bg-error-container px-3 py-2 text-sm text-error">
-                    {onlyofficeError}
-                  </div>
-                ) : null}
-                <textarea
-                  value={fallbackContent}
-                  onChange={(event) => setFallbackContent(event.target.value)}
-                  className="min-h-[620px] flex-1 rounded-md border border-surface-container-high bg-white p-4 font-mono text-sm leading-6 text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
-                />
-                <div className="flex justify-end">
-                  <Button variant="primary" onClick={handleSaveFallback} disabled={savingFallback}>
-                    {savingFallback ? '保存中...' : '保存文本兜底'}
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <OnlyOfficeEmbed
-                session={data?.onlyoffice}
-                className="h-full min-h-[680px] w-full rounded-md border border-outline-variant bg-white"
-                onReady={() => setOnlyofficeError('')}
-                onError={(message) => setOnlyofficeError(message || 'OnlyOffice 文档加载失败，已切换到文本兜底。')}
-              />
-            )}
-          </div>
-        </section>
-
-        {renderTechnicalFormatPanel()}
-      </div>
+      {renderProjectWorkspace()}
     </div>
   )
 }

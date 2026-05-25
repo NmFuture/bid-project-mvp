@@ -33,9 +33,9 @@
 | 目录审核 | `/api/technical/projects/{project_id}/outline` |
 | 缺口识别和处理 | `/api/technical/projects/{project_id}/gaps` |
 | 正文生成 | `/api/technical/projects/{project_id}/fill-generation` |
-| 覆盖诊断 | `/api/technical/projects/{project_id}/coverage` |
 | 共创文档 | `/api/technical/projects/{project_id}/document` |
-| 最终文档和导出 | `/api/technical/projects/{project_id}/final-document`、`/api/technical/projects/{project_id}/export` |
+| 最终文档和下载 | `/api/technical/projects/{project_id}/final-document` |
+| 后端诊断/兼容交付 | `/api/technical/projects/{project_id}/coverage`、`/api/technical/projects/{project_id}/export` |
 | 素材库和 Wiki | `/api/technical/materials` |
 | 审计 | `/api/technical/audit` |
 
@@ -64,6 +64,8 @@
 - 商务标页面：`businessProjectsAPI`、`businessParseAPI`、`businessDirectoryAPI`、`businessOutlineAPI`、`businessGapsAPI`、`businessGenerateAPI`、`businessDocumentAPI`、`businessMaterialsAPI`、`businessAuditAPI`
 
 共享 UI 组件不能直接调用业务 API，必须由页面传入 workspace 语义或回调。
+
+前端当前不再使用技术标独立覆盖/导出 API 封装；`coverage` / `export` 仅作为技术标后端诊断或外围兼容交付能力保留，不对应独立前端页面，Word/PDF 下载走 `technicalDocumentAPI.final*`。
 
 ## 5. 权威代码位置
 

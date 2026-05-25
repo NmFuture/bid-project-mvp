@@ -432,10 +432,6 @@ export const technicalGenerateAPI = {
     }),
 }
 
-export const technicalCoverageAPI = {
-  get: (projectId) => request(`/technical/projects/${projectId}/coverage`),
-}
-
 export const technicalDocumentAPI = {
   get: (projectId) => request(`/technical/projects/${projectId}/document`),
   save: (projectId, data) =>
@@ -446,11 +442,6 @@ export const technicalDocumentAPI = {
     request(`/technical/projects/${projectId}/document/technical-format`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
   final: (projectId) => request(`/technical/projects/${projectId}/final-document`),
   finalPdf: (projectId) => request(`/technical/projects/${projectId}/final-document/pdf`, { timeoutMs: 5 * 60 * 1000, retryCount: 0 }),
-}
-
-export const technicalExportAPI = {
-  check: (projectId) => request(`/technical/projects/${projectId}/export/check`),
-  doExport: (projectId, data) => request(`/technical/projects/${projectId}/export`, { method: 'POST', body: data }),
 }
 
 export const technicalMaterialsAPI = {

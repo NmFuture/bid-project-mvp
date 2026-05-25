@@ -5,24 +5,17 @@ import TechnicalProjectList from './pages/TechnicalProjectList'
 import TechnicalProjectEntryRedirect from './pages/TechnicalProjectEntryRedirect'
 import TechnicalParseResult from './pages/TechnicalParseResult'
 import TechnicalOutlineReview from './pages/TechnicalOutlineReview'
-import TechnicalFactTable from './pages/TechnicalFactTable'
 import TechnicalGapRecognition from './pages/TechnicalGapRecognition'
-import TechnicalGenerateProgress from './pages/TechnicalGenerateProgress'
-import TechnicalCoverageHeatmap from './pages/TechnicalCoverageHeatmap'
 import TechnicalCoCreationEditor from './pages/TechnicalCoCreationEditor'
-import TechnicalFinalExport from './pages/TechnicalFinalExport'
 import TechnicalMaterialDB from './pages/TechnicalMaterialDB'
 import TechnicalMaterialWiki from './pages/TechnicalMaterialWiki'
 import TechnicalAuditLog from './pages/TechnicalAuditLog'
-import './technical.css'
 
 const WORKSPACE = 'tech'
 
 const withAccess = (user, element) => (
   <WorkspaceAccess user={user} workspace={WORKSPACE}>
-    <div className="technical-workspace">
-      {element}
-    </div>
+    {element}
   </WorkspaceAccess>
 )
 
@@ -54,28 +47,12 @@ export function renderTechnicalRoutes({ user, showToast }) {
         element={withAccess(user, <TechnicalOutlineReview showToast={showToast} />)}
       />
       <Route
-        path="/workspace/tech/projects/:id/facts"
-        element={withAccess(user, <TechnicalFactTable showToast={showToast} />)}
-      />
-      <Route
         path="/workspace/tech/projects/:id/gaps"
         element={withAccess(user, <TechnicalGapRecognition showToast={showToast} />)}
       />
       <Route
-        path="/workspace/tech/projects/:id/generate"
-        element={withAccess(user, <TechnicalGenerateProgress showToast={showToast} />)}
-      />
-      <Route
-        path="/workspace/tech/projects/:id/coverage"
-        element={withAccess(user, <TechnicalCoverageHeatmap showToast={showToast} />)}
-      />
-      <Route
         path="/workspace/tech/projects/:id/editor"
         element={withAccess(user, <TechnicalCoCreationEditor showToast={showToast} />)}
-      />
-      <Route
-        path="/workspace/tech/projects/:id/export"
-        element={withAccess(user, <TechnicalFinalExport showToast={showToast} />)}
       />
       <Route
         path="/workspace/tech/materials/raw"

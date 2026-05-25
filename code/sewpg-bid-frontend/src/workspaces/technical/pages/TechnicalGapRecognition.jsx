@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { technicalGapsAPI, technicalMaterialsAPI, technicalOutlineAPI, technicalParseAPI, technicalProjectsAPI, technicalStagesAPI } from '../../../api'
+import { technicalGapsAPI, technicalGenerateAPI, technicalMaterialsAPI, technicalParseAPI, technicalProjectsAPI, technicalStagesAPI } from '../../../api'
 import { PageLoading, PageError } from '../../../components/states/PageState'
 import PageHeader from '../../../components/shared/PageHeader'
 import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
-import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
+import IconButton from '../../../components/ui/IconButton'
 import Toolbar from '../../../components/ui/Toolbar'
 import { projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
 import {
@@ -167,7 +167,7 @@ const SmallStat = ({ label, value, active, onClick }) => (
   <button
     type="button"
     onClick={onClick}
-    className={`technical-metric h-[58px] rounded-md border px-3 text-left transition-colors ${
+    className={`h-[58px] rounded-md border px-3 text-left transition-colors ${
       active
         ? 'border-primary bg-primary text-on-primary'
         : 'border-surface-container-high bg-surface-container-lowest text-on-surface hover:bg-surface-container-low'
@@ -349,6 +349,144 @@ const FactMaintenanceModal = ({
   )
 }
 
+function TechnicalGenerationProgressModal({
+  open,
+  status,
+  progress,
+  onClose,
+}) {
+  if (!open) return null
+  const running = status?.status === 'running'
+  const completed = status?.status === 'completed'
+  const failed = status?.status === 'failed'
+  const title = running ? '正在生成技术标正文' : completed ? '技术标正文已生成' : failed ? '技术标正文生成失败' : '技术标正文生成'
+  const summary = status?.summary || (running ? '系统正在根据当前素材匹配结果生成正文。' : completed ? '可继续进入共创导出。' : failed ? '请检查任务状态后重新生成。' : '准备生成技术标正文。')
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
+      <div className="w-full max-w-xl rounded-lg bg-surface shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
+          <div className="min-w-0">
+            <h3 className="text-lg font-headline font-bold text-on-surface">{title}</h3>
+            <p className="mt-1 text-sm text-on-surface-variant">{summary}</p>
+          </div>
+          {!running ? <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" /> : null}
+        </div>
+        <div className="space-y-4 p-5">
+          <div className="flex items-center gap-3">
+            <div className="h-3 flex-1 overflow-hidden rounded-full bg-surface-container-high">
+              <div
+                className={`h-full transition-all duration-700 ${failed ? 'bg-error' : 'bg-primary'}`}
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <span className="w-12 text-right text-xs font-semibold text-outline">{progress}%</span>
+          </div>
+          {completed ? (
+            <div className="rounded-md border border-secondary/20 bg-secondary-container/40 px-3 py-2 text-sm text-on-secondary-container">
+              技术标正文已生成。可返回本页继续调整素材匹配并重新生成，或进入共创导出。
+            </div>
+          ) : null}
+          {failed ? (
+            <div className="rounded-md border border-error/25 bg-error/10 px-3 py-2 text-sm text-error">
+              {status?.error || '生成失败，请稍后重试。'}
+            </div>
+          ) : null}
+        </div>
+        <div className="flex justify-end border-t border-surface-container-high bg-surface-container-low px-5 py-4">
+          <Button type="button" onClick={onClose} disabled={running} variant={completed ? 'primary' : 'quiet'}>
+            {running ? '生成中...' : '关闭'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TechnicalPreviewModal({
+  open,
+  selectedPreviewChoice,
+  visiblePreviewChoices,
+  previewLoading,
+  previewSession,
+  previewError,
+  onSelectPreviewChoice,
+  onClose,
+}) {
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6">
+      <section className="flex max-h-[92vh] w-full max-w-7xl flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
+        <div className="flex min-h-[58px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
+          <div className="min-w-0">
+            <h4 className="truncate text-base font-semibold text-on-surface">
+              {selectedPreviewChoice?.title || '素材预览'}
+            </h4>
+            <p className="mt-1 truncate text-xs text-outline" title={selectedPreviewChoice?.subtitle || ''}>
+              {selectedPreviewChoice
+                ? `${previewKindLabels[selectedPreviewChoice.kind] || '预览'} · ${selectedPreviewChoice.subtitle || '-'}`
+                : '当前目录项还没有可预览的素材、空表或处理产物。'}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {visiblePreviewChoices.length > 1 ? (
+              visiblePreviewChoices.map((choice) => {
+                const active = selectedPreviewChoice?.key === choice.key
+                return (
+                  <button
+                    key={choice.key}
+                    type="button"
+                    onClick={() => onSelectPreviewChoice(choice.key)}
+                    className={`inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold transition-colors ${
+                      active
+                        ? 'bg-primary text-on-primary'
+                        : 'bg-surface-container-high text-on-surface-variant hover:bg-surface-dim'
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[15px]">{previewKindIcons[choice.kind] || 'description'}</span>
+                    {choice.label}
+                  </button>
+                )
+              })
+            ) : selectedPreviewChoice ? (
+              <span className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-semibold text-on-primary">
+                <span className="material-symbols-outlined text-[15px]">{previewKindIcons[selectedPreviewChoice.kind] || 'description'}</span>
+                {selectedPreviewChoice.label}
+              </span>
+            ) : null}
+            <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" />
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 p-4">
+          {previewLoading ? (
+            <div className="flex h-[min(76vh,760px)] min-h-[520px] items-center justify-center rounded-md border border-surface-container-high bg-surface-container-lowest px-6 text-center">
+              <div>
+                <span className="material-symbols-outlined text-4xl text-primary">hourglass_empty</span>
+                <p className="mt-3 text-sm text-on-surface-variant">正在加载预览...</p>
+              </div>
+            </div>
+          ) : previewSession?.onlyoffice ? (
+            <OnlyOfficeEmbed
+              session={previewSession.onlyoffice}
+              mode="view"
+              className="h-[min(76vh,760px)] min-h-[520px] w-full rounded-md border border-surface-container-high bg-white"
+              onError={() => {}}
+            />
+          ) : (
+            <div className="flex h-[min(76vh,760px)] min-h-[520px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest px-6 text-center">
+              <p className="max-w-md text-sm text-on-surface-variant">
+                {previewError || (selectedPreviewChoice ? '当前对象暂时无法预览，请检查素材是否已清洗为 Word。' : '当前目录项还没有可预览的素材、空表或处理产物。')}
+              </p>
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
 export default function TechnicalGapRecognition({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -368,9 +506,12 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
   const [manualPreviewChoice, setManualPreviewChoice] = useState(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
   const [factModalOpen, setFactModalOpen] = useState(false)
   const [factTable, setFactTable] = useState(null)
   const [factFields, setFactFields] = useState([])
+  const [generationStatus, setGenerationStatus] = useState(null)
+  const [generationModalOpen, setGenerationModalOpen] = useState(false)
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
     if (!silent) {
@@ -397,12 +538,23 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
   }, [id])
 
+  const loadGenerationStatus = useCallback(async () => {
+    try {
+      const payload = await technicalGenerateAPI.status(id)
+      setGenerationStatus(payload)
+      return payload
+    } catch {
+      return null
+    }
+  }, [id])
+
   useEffect(() => {
     const timer = setTimeout(() => {
       loadData()
+      loadGenerationStatus()
     }, 0)
     return () => clearTimeout(timer)
-  }, [loadData])
+  }, [loadData, loadGenerationStatus])
 
   const items = useMemo(() => normalizeItems(data), [data])
   const filteredItems = useMemo(
@@ -540,10 +692,10 @@ export default function TechnicalGapRecognition({ showToast }) {
     ]
   }, [items, summary])
   const factConfirmed = factTable?.status === 'confirmed'
-  const fillablePendingCount = useMemo(() => items.filter((item) => (
-    decisionOf(item) === 'fill_required'
-    && asObjectArray(item?.fillTasks).some((task) => task?.status !== 'completed')
-  )).length, [items])
+  const hasTechnicalGapPlan = data?.status === 'completed' && Boolean(data?.gapPlan || items.length)
+  const generationRunning = generationStatus?.status === 'running'
+  const generationCompleted = generationStatus?.status === 'completed'
+  const generationProgress = Math.max(0, Math.min(100, Number(generationStatus?.percentage) || 0))
 
   useEffect(() => {
     let cancelled = false
@@ -551,7 +703,7 @@ export default function TechnicalGapRecognition({ showToast }) {
       setPreviewSession(null)
       setPreviewError('')
 
-      if (!selectedPreviewChoice) return
+      if (!previewOpen || !selectedPreviewChoice) return
 
       if (selectedPreviewChoice.kind === 'artifact') {
         setPreviewSession({
@@ -583,7 +735,7 @@ export default function TechnicalGapRecognition({ showToast }) {
     return () => {
       cancelled = true
     }
-  }, [id, selectedPreviewChoice])
+  }, [id, previewOpen, selectedPreviewChoice])
 
   const updatePayload = (payload) => {
     const next = payload?.payload || payload
@@ -773,6 +925,7 @@ export default function TechnicalGapRecognition({ showToast }) {
     ))
     if (existing) {
       setPreviewChoiceKey(existing.key)
+      setPreviewOpen(true)
       return
     }
     const choice = {
@@ -786,24 +939,7 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
     setManualPreviewChoice(choice)
     setPreviewChoiceKey(choice.key)
-  }
-
-  const handleAiFillAll = async () => {
-    if (!factConfirmed && !(await ensureFactTableReady())) {
-      return null
-    }
-    const payload = await runAction(
-      'ai-fill-all',
-      () => technicalGapsAPI.aiFillAll(id, { operator: '当前用户' }),
-      (result) => `一键填写完成：通过 ${result?.summary?.passed || 0} 项，待复核 ${result?.summary?.needsReview || 0} 项`,
-    )
-    if (payload) {
-      setPreviewChoiceKey('')
-      setPreviewSession(null)
-      setPreviewError('')
-      setManualPreviewChoice(null)
-    }
-    return payload
+    setPreviewOpen(true)
   }
 
   const handleAiFill = async () => {
@@ -835,16 +971,48 @@ export default function TechnicalGapRecognition({ showToast }) {
     return payload
   }
 
-  const handleAdvanceToS4 = async () => {
+  useEffect(() => {
+    if (!generationRunning) return undefined
+    const timer = window.setInterval(() => {
+      loadGenerationStatus()
+    }, 1200)
+    return () => window.clearInterval(timer)
+  }, [generationRunning, loadGenerationStatus])
+
+  const runTechnicalAssembly = async () => {
     if (busyAction) return
-    setBusyAction('advance-s4')
+    if (!hasTechnicalGapPlan) {
+      showToast?.('素材匹配完成后可生成技术标正文。', 'error')
+      return
+    }
+    setBusyAction('technical-generate')
+    setGenerationModalOpen(true)
     try {
-      await technicalOutlineAPI.confirm(id)
-      await technicalStagesAPI.update(id, 3, { status: 'completed', allowUnconfirmedTechnicalGap: true })
-      showToast?.(isCompleted ? '素材匹配已确认，已进入标书生成。' : '已跳过素材匹配，进入标书生成。')
-      navigate(projectRoute(id, '/generate', workspaceSlug))
+      const payload = await technicalGenerateAPI.run(id)
+      setGenerationStatus(payload)
+      loadGenerationStatus()
+      showToast?.(payload?.message || '已开始生成技术标正文。')
     } catch (e) {
-      showToast?.(e?.message || '进入标书生成失败', 'error')
+      setGenerationModalOpen(false)
+      showToast?.(e?.message || '生成技术标正文失败', 'error')
+    } finally {
+      setBusyAction('')
+    }
+  }
+
+  const advanceToTechnicalEditor = async () => {
+    if (busyAction) return
+    if (!generationCompleted) {
+      showToast?.('请先完成技术标正文生成，再进入共创导出。', 'error')
+      return
+    }
+    setBusyAction('advance-technical-editor')
+    try {
+      await technicalStagesAPI.update(id, 4, { status: 'completed', allowUnconfirmedTechnicalGap: true })
+      showToast?.('已进入共创导出。')
+      navigate(projectRoute(id, '/editor', workspaceSlug))
+    } catch (e) {
+      showToast?.(e?.message || '进入共创导出失败', 'error')
     } finally {
       setBusyAction('')
     }
@@ -854,49 +1022,39 @@ export default function TechnicalGapRecognition({ showToast }) {
   if (error) return <PageError title="素材匹配加载失败" description={error} onRetry={loadData} />
 
   return (
-    <div className="stage-page technical-ui-shell flex flex-col gap-6 animate-fade-in w-full max-w-none">
-      <StageBreadcrumb currentLabel="素材匹配" />
+    <div className="business-ui-shell flex flex-col gap-6">
       <TechnicalProjectStageProgress projectId={id} showToast={showToast} />
 
       <PageHeader
-        actionsClassName="stage-header-actions"
         actions={(
           <Toolbar>
             <Button
               type="button"
-              onClick={handleAiFillAll}
-              disabled={Boolean(busyAction) || !isCompleted || !fillablePendingCount}
+              onClick={() => setFactModalOpen(true)}
+              disabled={Boolean(busyAction) || data?.status !== 'completed'}
+              size="stage"
+              variant={factConfirmed ? 'secondary' : 'quiet'}
+            >
+              {factConfirmed ? '项目事实表已确认' : '维护项目事实表'}
+            </Button>
+            <Button
+              type="button"
+              onClick={runTechnicalAssembly}
+              disabled={Boolean(busyAction) || !hasTechnicalGapPlan || generationRunning}
+              title={!hasTechnicalGapPlan ? '素材匹配完成后可生成正文' : '允许带未确认项生成正文，生成结果会保留复核提示'}
               size="stage"
               variant="primary"
             >
-              {busyAction === 'ai-fill-all' ? '一键填写中...' : `一键AI填写${fillablePendingCount ? `(${fillablePendingCount})` : ''}`}
+              {generationRunning ? '生成中...' : generationCompleted ? '重新生成正文' : '生成技术标正文'}
             </Button>
             <Button
               type="button"
-              onClick={() => loadData()}
-              size="stage"
-              variant="quiet"
-            >
-              刷新
-            </Button>
-            <Button
-              type="button"
-              onClick={handleRunDetection}
-              disabled={Boolean(busyAction)}
-              size="stage"
-              variant="primary"
-            >
-              {busyAction === 'detect' ? '识别中...' : isCompleted ? '重新识别缺口' : '识别缺口'}
-            </Button>
-            <Button
-              type="button"
-              onClick={handleAdvanceToS4}
-              disabled={Boolean(busyAction)}
-              title={isCompleted ? '进入标书生成；未确认的技术缺口会在生成和共创阶段继续提示' : '技术标已允许跳过素材匹配直接进入标书生成'}
+              onClick={advanceToTechnicalEditor}
+              disabled={Boolean(busyAction) || !generationCompleted}
               size="stage"
               variant="success"
             >
-              {busyAction === 'advance-s4' ? '进入中...' : '进入标书生成'}
+              {busyAction === 'advance-technical-editor' ? '进入中...' : '进入共创导出'}
             </Button>
           </Toolbar>
         )}
@@ -916,8 +1074,8 @@ export default function TechnicalGapRecognition({ showToast }) {
         </div>
       ) : null}
 
-      <DataCard className="!p-0 overflow-hidden technical-panel">
-        <div className="technical-section-head border-b border-surface-container-high px-4 py-3">
+      <DataCard className="business-panel !p-0 overflow-hidden">
+        <div className="business-section-head border-b border-surface-container-high px-4 py-3">
           <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-start 2xl:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
@@ -953,9 +1111,18 @@ export default function TechnicalGapRecognition({ showToast }) {
             <p className="text-sm text-on-surface-variant max-w-xl leading-relaxed">
               点击“识别缺口”后会按已确认目录、限定素材库、技术标 Wiki、投标机型和解析空副表生成第一步识别结果。
             </p>
+            <Button
+              type="button"
+              onClick={handleRunDetection}
+              disabled={Boolean(busyAction)}
+              className="mt-5"
+              variant="primary"
+            >
+              {busyAction === 'detect' ? '识别中...' : '识别缺口'}
+            </Button>
           </div>
         ) : (
-          <div className="grid h-[min(850px,calc(100vh-205px))] min-h-[650px] min-w-[72rem] grid-cols-[repeat(3,minmax(0,1fr))] overflow-x-auto">
+          <div className="grid h-[min(850px,calc(100vh-205px))] min-h-[650px] min-w-[58rem] grid-cols-[minmax(260px,0.8fr)_minmax(0,1.45fr)] overflow-x-auto">
             <div className="border-r border-surface-container-high min-h-0 flex flex-col">
               <div className="h-12 shrink-0 border-b border-surface-container-high bg-surface-container-lowest px-4 py-3">
                 <div className="text-xs font-semibold text-on-surface">
@@ -978,6 +1145,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                           setPreviewSession(null)
                           setPreviewError('')
                           setManualPreviewChoice(null)
+                          setPreviewOpen(false)
                         }}
                         className={`block w-full px-4 py-3 text-left transition-colors hover:bg-surface-container-low/70 ${active ? 'bg-primary/5 shadow-[inset_3px_0_0_var(--md-sys-color-primary)]' : 'bg-transparent'}`}
                       >
@@ -1054,6 +1222,25 @@ export default function TechnicalGapRecognition({ showToast }) {
                         value={selectedPreviewChoice ? previewKindLabels[selectedPreviewChoice.kind] : '暂无'}
                       />
                     </div>
+                    {visiblePreviewChoices.length ? (
+                      <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md bg-surface-container-low px-3 py-2">
+                        <span className="text-xs font-semibold text-on-surface-variant">素材预览</span>
+                        {visiblePreviewChoices.map((choice) => (
+                          <button
+                            key={choice.key}
+                            type="button"
+                            onClick={() => {
+                              setPreviewChoiceKey(choice.key)
+                              setPreviewOpen(true)
+                            }}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-surface-container-high px-2.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim"
+                          >
+                            <span className="material-symbols-outlined text-[15px]">{previewKindIcons[choice.kind] || 'description'}</span>
+                            {choice.label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="min-h-0 flex-1 overflow-y-auto bg-surface-container-low">
@@ -1270,78 +1457,6 @@ export default function TechnicalGapRecognition({ showToast }) {
               )}
             </div>
 
-            <section className="flex min-h-0 flex-col bg-white">
-              {selected ? (
-                <>
-                      <div className="flex min-h-[58px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
-                        <div className="min-w-0">
-                          <h4 className="truncate text-base font-semibold text-on-surface">
-                            {selectedPreviewChoice?.title || 'Office 预览'}
-                          </h4>
-                          <p className="mt-1 truncate text-xs text-outline" title={selectedPreviewChoice?.subtitle || ''}>
-                            {selectedPreviewChoice
-                              ? `${previewKindLabels[selectedPreviewChoice.kind] || '预览'} · ${selectedPreviewChoice.subtitle || '-'}`
-                              : '选择左侧目录项后显示最终匹配结果。'}
-                          </p>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          {visiblePreviewChoices.length > 1 ? (
-                            visiblePreviewChoices.map((choice) => {
-                              const active = selectedPreviewChoice?.key === choice.key
-                              return (
-                                <button
-                                  key={choice.key}
-                                  type="button"
-                                  onClick={() => setPreviewChoiceKey(choice.key)}
-                                  className={`inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold transition-colors ${
-                                    active
-                                      ? 'bg-primary text-on-primary'
-                                      : 'bg-surface-container-high text-on-surface-variant hover:bg-surface-dim'
-                                  }`}
-                                >
-                                  <span className="material-symbols-outlined text-[15px]">{previewKindIcons[choice.kind] || 'description'}</span>
-                                  {choice.label}
-                                </button>
-                              )
-                            })
-                          ) : selectedPreviewChoice ? (
-                            <span className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-semibold text-on-primary">
-                              <span className="material-symbols-outlined text-[15px]">{previewKindIcons[selectedPreviewChoice.kind] || 'description'}</span>
-                              {selectedPreviewChoice.label}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      <div className="min-h-0 flex-1 p-4">
-                        {previewLoading ? (
-                          <div className="flex h-full min-h-[480px] items-center justify-center rounded-md border border-surface-container-high bg-surface-container-lowest px-6 text-center">
-                            <div>
-                              <span className="material-symbols-outlined text-4xl text-primary">hourglass_empty</span>
-                              <p className="mt-3 text-sm text-on-surface-variant">正在加载预览...</p>
-                            </div>
-                          </div>
-                        ) : previewSession?.onlyoffice ? (
-                          <OnlyOfficeEmbed
-                            session={previewSession.onlyoffice}
-                            mode="view"
-                            className="h-full min-h-[480px] w-full rounded-md border border-surface-container-high bg-white"
-                            onReady={() => setPreviewError('')}
-                            onError={(message) => setPreviewError(message || 'OnlyOffice 预览加载失败')}
-                          />
-                        ) : (
-                          <div className="flex h-full min-h-[480px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest px-6 text-center">
-                            <p className="max-w-md text-sm text-on-surface-variant">
-                              {previewError || (selectedPreviewChoice ? '当前对象暂时无法预览，请检查素材是否已清洗为 Word。' : '当前目录项还没有可预览的素材、空表或处理产物。')}
-                            </p>
-                          </div>
-                        )}
-                      </div>
-                </>
-              ) : (
-                <div className="h-full flex items-center justify-center text-sm text-outline">选择一个目录项查看处理详情</div>
-              )}
-            </section>
           </div>
         )}
       </DataCard>
@@ -1355,6 +1470,22 @@ export default function TechnicalGapRecognition({ showToast }) {
         onConfirm={handleConfirmFactTable}
         onFieldChange={handleFactFieldChange}
         onAddField={handleAddFactField}
+      />
+      <TechnicalGenerationProgressModal
+        open={generationModalOpen || generationRunning}
+        status={generationStatus}
+        progress={generationProgress}
+        onClose={() => setGenerationModalOpen(false)}
+      />
+      <TechnicalPreviewModal
+        open={previewOpen}
+        selectedPreviewChoice={selectedPreviewChoice}
+        visiblePreviewChoices={visiblePreviewChoices}
+        previewLoading={previewLoading}
+        previewSession={previewSession}
+        previewError={previewError}
+        onSelectPreviewChoice={(key) => setPreviewChoiceKey(key)}
+        onClose={() => setPreviewOpen(false)}
       />
     </div>
   )
