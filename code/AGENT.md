@@ -1,7 +1,7 @@
 # 项目执行说明
 
 > 这份文件给后续参与这个项目的开发同学和智能体使用。
-> 当前目标：在已跑通 Docker Compose MVP 的基础上，继续实施技术标 / 商务标双轨独立化，并保持文档、接口和代码边界一致。
+> 当前目标：在已跑通 Docker Compose MVP 的基础上，保持技术标 / 商务标双轨独立化边界、文档、接口和代码口径一致。
 
 ## 0. 当前推进规则
 
@@ -209,7 +209,7 @@ S0 解析
 当前目标是：
 
 ```text
-docker compose up
+docker compose up -d
 ```
 
 直接拉起：
@@ -231,6 +231,17 @@ docker compose up
 - `uploads`
 - `documents`
 - `parsed`
+
+已有本机容器时，重建当前代码镜像并强制替换容器：
+
+```bash
+docker compose build --no-cache
+docker compose up -d --force-recreate
+curl -fsS http://127.0.0.1/api/healthz
+curl -fsSI http://127.0.0.1/
+```
+
+2026-05-26 已按上述重建并验证：`web` 返回 200，`/api/healthz` 返回 ok。
 
 ## 7. 开发原则
 

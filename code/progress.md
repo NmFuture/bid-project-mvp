@@ -2,16 +2,16 @@
 
 > 当前用途：只记录双轨独立化之后的最新进度口径。
 > 历史 MVP 联调过程和旧接口调用记录不再放在当前工作树中，避免新会话和 AI 把旧通用入口当成现状；需要追溯时查 git 历史。
-> 更新日期：2026-05-25
+> 更新日期：2026-05-26
 
 ## 当前主线
 
-技术标和商务标正在拆成两条独立生产线：
+技术标和商务标已经完成第一轮独立生产线拆分：
 
 ```text
-技术标入口 -> 技术标页面 -> 技术标 API -> 技术标 service -> 技术标 Skill -> 技术标素材/Wiki -> 技术标文档/导出
+技术标入口 -> 技术标页面 -> 技术标 API -> 技术标 service -> 技术标 Skill -> 技术标素材/Wiki -> 技术标文档/共创/下载
 
-商务标入口 -> 商务标页面 -> 商务标 API -> 商务标 service -> 商务标 Skill -> 商务标素材/Wiki -> 商务标文档/导出
+商务标入口 -> 商务标页面 -> 商务标 API -> 商务标 service -> 商务标 Skill -> 商务标素材/Wiki -> 商务标文档/共创/下载
 ```
 
 权威计划看：
@@ -21,6 +21,8 @@
 
 ## 已完成到哪里
 
+- 2026-05-26 当前分支 `wlb` 已提交并推送到 `origin/wlb`：`0123ced feat: align technical bid workflow with business UI`。
+- 2026-05-26 已用当前代码执行 `docker compose build --no-cache` 和 `docker compose up -d --force-recreate`；`web` 返回 200，`/api/healthz` 返回 ok。
 - 前端旧根入口和 workspace 内部旧别名已清理，当前从 `/parse/technical`、`/parse/business`、`/workspace/tech/...`、`/workspace/business/...` 进入。
 - 商务标和技术标页面已按 workspace 拆分，阶段进度组件也已拆成 business/technical 两套。
 - 技术标主流程 UI 已靠拢商务标：两边都只保留 `template-directory`、`outline`、`gaps`、`editor` 项目页面；技术标 S3/S4 在 `/gaps` 内完成素材匹配、弹出式素材预览和正文生成，S5/S6 在 `/editor` 内完成共创、格式和 Word/PDF 下载。
@@ -509,7 +511,7 @@ git status --short --untracked-files=all | awk '$1=="??" {print $2}' | sed -n '1
 git diff --name-status --diff-filter=D | sed -n '1,220p'
 ```
 
-结果：`.qoder/` 与 `.understand-anything/` 确认为本机/插件生成的记忆、索引和知识图谱文件，已加入 `.gitignore`，不再混入项目成果。剩余未跟踪项按计划归类为后端双轨 route/service/test、新前端 business/technical workspace 文件和新文档；删除项按计划归类为旧通用后端 route/service、旧共享前端业务页面/组件和过期过程文档；修改项按计划归类为双轨拆分承接文件、文档入口压缩和 API/README 口径更新。当前未 stage、未 commit。
+结果：`.qoder/` 与 `.understand-anything/` 确认为本机/插件生成的记忆、索引和知识图谱文件，已加入 `.gitignore`，不再混入项目成果。提交前剩余未跟踪项按计划归类为后端双轨 route/service/test、新前端 business/technical workspace 文件和新文档；删除项按计划归类为旧通用后端 route/service、旧共享前端业务页面/组件和过期过程文档；修改项归类为双轨拆分承接文件、文档入口压缩和 API/README 口径更新；后续已进入 `0123ced`。
 
 阶段流程专项：
 
@@ -1058,13 +1060,13 @@ git add -A -n -- code/sewpg-bid-frontend/src
 git add -A -n -- code/sewpg-bid-backend/tests
 ```
 
-结果：dry-run stage 行数分别为 `01-docs=40`、`02-backend-core=91`、`03-material-wiki=38`、`04-frontend=77`、`05-tests=21`，合计 `267`；与 `git status --porcelain=v1 --untracked-files=all` 展开口径一致。未执行真实 `git add`，当前 index 仍未 stage。
+结果：dry-run stage 行数分别为 `01-docs=40`、`02-backend-core=91`、`03-material-wiki=38`、`04-frontend=77`、`05-tests=21`，合计 `267`；与 `git status --porcelain=v1 --untracked-files=all` 展开口径一致。该记录是提交前 staging 模拟，后续已完成真实提交。
 
-## 下一步
+## 当前下一步
 
-- 如需开始真实提交，按上面的 5 包 dry-run 命令去掉 `-n` 分包 stage：文档口径、后端核心、素材/Wiki、前端 workspace、测试契约。
-- 真实 stage 后再做提交前最终审计：工作树分类、旧入口扫描、完整后端回归、前端 lint/build 和 `git diff --check`。
+- 用真实技术标、商务标样本分别跑端到端验收：解析、目录、素材匹配、正文生成、共创、Word/PDF 下载。
 - 对仍保留的共享前端组件继续分层判断：通用 UI 零件可以保留，带业务路线、阶段、API 语义的组件继续拆成 business/technical 两套。
+- 生产级权限边界另开专项确认：前端 workspace guard 只做体验约束，后端 route/service 才是强授权边界。
 
 Redis worker 标类兜底与最新口径补充：
 
@@ -1078,7 +1080,7 @@ git status --short
 git diff --cached --name-only
 ```
 
-结果：`redis_worker.py` 的正文生成任务不再把缺失 `__bidType` 默认归到技术标，而是从项目运行态读取标类并通过 `require_bid_type` 校验；源码防回退断言确认 `redis_worker.py` 中不再出现 `or TECHNICAL_BID_TYPE`，聚焦组合 `2 passed`。最新完整回归为后端 `484 passed, 17 skipped`；前端 `npm run lint` 与 `npm run build` 通过，build 仅保留 Vite 大 chunk 警告。当前工作树仍未 stage、未 commit；最新盘点为 `101 ??` / `99 M` / `67 D`，tracked diff 为 `166 files changed, 15204 insertions(+), 48294 deletions(-)`；index 仍为空。
+结果：`redis_worker.py` 的正文生成任务不再把缺失 `__bidType` 默认归到技术标，而是从项目运行态读取标类并通过 `require_bid_type` 校验；源码防回退断言确认 `redis_worker.py` 中不再出现 `or TECHNICAL_BID_TYPE`，聚焦组合 `2 passed`。提交前完整回归为后端 `484 passed, 17 skipped`；前端 `npm run lint` 与 `npm run build` 通过，build 仅保留 Vite 大 chunk 警告。
 
 Agent 交接口径与 Markdown 自检补充：
 
@@ -1152,7 +1154,7 @@ npm run build
 git diff --check
 ```
 
-结果：当前仍未执行真实 `git add`，index 为空；后端 FastAPI 路由表保持 `legacy=0` / `technical=99` / `business=105`；旧通用后端 route/service 引用扫描无命中；前端旧根 API/路由名扫描无命中；直接 `store` 依赖只剩 `workspace_project_access.py`；隐式标类兜底扫描只剩商务素材 facade 内部固定商务域兜底和 `scoped_material_urls.py` 兼容替换。后端完整回归 `484 passed, 17 skipped`；前端 `npm run lint` 与 `npm run build` 通过，build 仅保留 Vite 大 chunk 警告；`git diff --check` 通过。当前工作树仍未 stage、未 commit；最新盘点为 `101 ??` / `99 M` / `67 D`，tracked diff 为 `166 files changed, 15204 insertions(+), 48294 deletions(-)`。
+结果：后端 FastAPI 路由表保持 `legacy=0` / `technical=99` / `business=105`；旧通用后端 route/service 引用扫描无命中；前端旧根 API/路由名扫描无命中；直接 `store` 依赖只剩 `workspace_project_access.py`；隐式标类兜底扫描只剩商务素材 facade 内部固定商务域兜底和 `scoped_material_urls.py` 兼容替换。后端完整回归 `484 passed, 17 skipped`；前端 `npm run lint` 与 `npm run build` 通过，build 仅保留 Vite 大 chunk 警告；`git diff --check` 通过。该审计随后已落入 `0123ced`。
 
 临时 index 分包 staging 模拟：
 
@@ -1169,4 +1171,4 @@ GIT_INDEX_FILE="$tmp_index" git diff --cached --name-status
 rm -f "$tmp_index"
 ```
 
-结果：五包命令在临时 index 上执行后覆盖完整当前工作树，模拟暂存后 `unstaged_paths=0`、`untracked_paths=0`；临时 index 识别为 `99 M` / `95 A` / `61 D` / `6 R`，共 `261` 个暂存路径。真实 index 仍为空，未执行真实 `git add`。
+结果：五包命令在临时 index 上执行后覆盖完整提交前工作树，模拟暂存后 `unstaged_paths=0`、`untracked_paths=0`；临时 index 识别为 `99 M` / `95 A` / `61 D` / `6 R`，共 `261` 个暂存路径。该模拟随后已转为真实提交并推送到 `origin/wlb`。

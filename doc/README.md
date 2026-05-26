@@ -1,7 +1,7 @@
 # doc 目录说明
 
 > 用途：给新会话和 AI 一个明确入口，避免旧计划、过程记录和历史阶段号干扰当前判断。
-> 更新日期：2026-05-25
+> 更新日期：2026-05-26
 
 ## 先看这 6 份
 
@@ -34,6 +34,7 @@
 - 商务标和技术标主流程都不再把 `/generate`、`/coverage`、`/export` 作为独立前端页面；当前后半段以 `/gaps` 和 `/editor` 为主，素材预览在素材匹配页内弹出。
 - 旧根入口和旧通用业务接口已不再作为当前前后端契约；当前以 `/parse/technical`、`/parse/business`、`/workspace/tech/...`、`/workspace/business/...` 以及 business/technical API 为准。
 - 旧 `S7/S8/S9/S10` 不再作为当前基线；如果代码或旧记录出现这些阶段号，以本文件、根 README、`doc/31` 和 `code/progress.md` 的最新记录为准。
+- 2026-05-26 当前分支 `wlb` 已提交并推送 `0123ced feat: align technical bid workflow with business UI`；Docker 已用当前代码 `build --no-cache` 并 `force-recreate`，`web` 和 `/api/healthz` 冒烟通过。
 
 ## 运行、接口与交付
 
