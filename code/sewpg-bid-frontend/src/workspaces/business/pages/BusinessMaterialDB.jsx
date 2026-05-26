@@ -477,8 +477,9 @@ function TreeNode({
   const isDropTarget = dragTargetPath === normalizedNodePath
   return (
     <div>
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         draggable={canDragFolder}
         onDragStart={(event) => {
           if (!canDragFolder) {
@@ -568,7 +569,7 @@ function TreeNode({
             </button>
           )}
         </span>
-      </button>
+      </div>
       {!collapsed && directFiles.length > 0 && (
         <div className="mt-0.5 space-y-0.5">
           {directFiles.map((item) => {

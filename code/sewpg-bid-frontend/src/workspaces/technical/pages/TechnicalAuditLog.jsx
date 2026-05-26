@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { technicalAuditAPI } from '../../../api'
 import AuditDetailModal from '../../../components/modals/AuditDetailModal'
-import { PageEmpty, PageError, PageLoading } from '../components/TechnicalPageState'
+import { PageEmpty, PageError, PageLoading } from '../../../components/states/PageState'
 import { bidTypeFromWorkspace, useWorkspaceSlug } from '../../../utils/workspace'
 
 const defaultFilters = {

@@ -12,12 +12,12 @@ const TECHNICAL_STAGE_ROUTES = {
 }
 
 const TECHNICAL_COMPACT_STAGE_LABELS = {
-  1: '目录生成',
-  2: '目录确认',
+  1: '模板与目录',
+  2: '审核目录',
   3: '素材匹配',
   4: '素材匹配',
-  5: '编辑导出',
-  6: '编辑导出',
+  5: '共创导出',
+  6: '共创导出',
 }
 
 const toStageId = (value) => {

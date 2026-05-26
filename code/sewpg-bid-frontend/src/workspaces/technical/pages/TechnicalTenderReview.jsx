@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { technicalParseAPI, technicalProjectsAPI } from '../../../api'
-import { PageEmpty, PageError, PageLoading } from '../components/TechnicalPageState'
-import DataCard from '../components/TechnicalDataCard'
+import { PageError, PageLoading } from '../../../components/states/PageState'
+import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
-import OnlyOfficeWorkspace from '../components/TechnicalOnlyOfficeWorkspace'
+import OnlyOfficeWorkspace from '../../../components/shared/OnlyOfficeWorkspace'
 import PageHeader from '../../../components/shared/PageHeader'
 import TechnicalProjectWizardModal from './TechnicalProjectWizardModal'
+import Button from '../../../components/ui/Button'
 import { normalizeBidType, projectRoute } from '../../../utils/workspace'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
@@ -16,25 +17,6 @@ const ALLOWED_EXTENSIONS = new Set([
   'pdf', 'doc', 'docx', 'md', 'xls', 'xlsx', 'zip',
   'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
 ])
-
-const REVIEW_DECISION_LABELS = {
-  pending: '待解析',
-  participate: '参与投标',
-  abandon: '不参与',
-}
-
-const REVIEW_DECISION_BADGE_CLASSES = {
-  pending: 'bg-[#e8eef2] text-on-surface-variant',
-  participate: 'bg-secondary-container text-on-secondary-container',
-  abandon: 'bg-error-container text-error',
-}
-
-const REVIEW_ACTION_VARIANTS = {
-  primary: 'command-button-primary disabled:bg-primary/55 disabled:text-white',
-  secondary: 'command-button-secondary disabled:bg-surface-container-high disabled:text-outline',
-  danger: 'bg-error-container text-error hover:bg-error-container/80 disabled:text-error/55',
-  muted: 'bg-surface-container-high text-on-surface-variant hover:bg-surface-dim disabled:text-outline',
-}
 
 const EMPTY_APPENDICES = []
 
@@ -57,13 +39,6 @@ const fileSizeLabel = (size) => {
   const value = Number(size || 0)
   if (!Number.isFinite(value) || value <= 0) return '0 MB'
   return `${(value / 1024 / 1024).toFixed(1)} MB`
-}
-
-const formatDateTime = (value) => {
-  if (!value) return '未解析'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '未解析'
-  return date.toLocaleString('zh-CN', { hour12: false })
 }
 
 const validatePickedFiles = (picked = []) => {
@@ -100,10 +75,10 @@ const appendixKey = (appendix, index = 0) =>
 
 const TECHNICAL_REVIEW_CONFIG = {
   bidType: '技术标',
-  pageTitle: '技术标解析模块',
-  pageDescription: '上传技术招标文件，提取评分标准、项目基础参数、附表与关键技术要求，为技术标项目后续链路提供入口数据。',
+  pageTitle: '技术标解析',
+  pageDescription: '',
   createProjectNamePrefix: '技术标待解析项目',
-  createButtonLabel: '新建技术标解析项目',
+  createButtonLabel: '新建项目',
   createSuccessMessage: '已新建技术标解析项目，请上传招标文件并解析。',
   emptyTitle: '暂无待解析技术标项目',
   emptyDescription: '你可以在这里先新建技术标解析项目，再上传技术招标文件进行判断。',
@@ -168,99 +143,6 @@ const appendixExtractionModeLabel = (value = '') => {
   return value || '未识别'
 }
 
-function ReviewActionButton({
-  icon,
-  variant = 'secondary',
-  children,
-  className = '',
-  type = 'button',
-  ...props
-}) {
-  return (
-    <button
-      type={type}
-      className={`command-button ${REVIEW_ACTION_VARIANTS[variant] || REVIEW_ACTION_VARIANTS.secondary} disabled:cursor-not-allowed disabled:opacity-70 ${className}`.trim()}
-      {...props}
-    >
-      {icon && (
-        <span
-          className="material-symbols-outlined shrink-0 text-[18px]"
-          style={{ fontVariationSettings: "'FILL' 0" }}
-        >
-          {icon}
-        </span>
-      )}
-      <span>{children}</span>
-    </button>
-  )
-}
-
-function ReviewIconBox({ icon, tone = 'primary' }) {
-  const toneClass = tone === 'success'
-    ? 'bg-secondary-container text-on-secondary-container'
-    : tone === 'warn'
-      ? 'bg-tertiary-container text-on-tertiary-container'
-      : 'bg-primary-fixed text-primary'
-  return (
-    <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${toneClass}`}>
-      <span
-        className="material-symbols-outlined text-[21px]"
-        style={{ fontVariationSettings: "'FILL' 1" }}
-      >
-        {icon}
-      </span>
-    </span>
-  )
-}
-
-function ReviewStatusBadge({ reviewDecision, children }) {
-  return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${REVIEW_DECISION_BADGE_CLASSES[reviewDecision] || REVIEW_DECISION_BADGE_CLASSES.pending}`}>
-      {children}
-    </span>
-  )
-}
-
-function ReviewInfoTile({
-  label,
-  value,
-  icon,
-  tone = 'neutral',
-  children,
-  className = '',
-  valueClassName = '',
-}) {
-  const toneClass = tone === 'primary'
-    ? 'bg-primary-fixed text-primary'
-    : tone === 'success'
-      ? 'bg-secondary-container text-on-secondary-container'
-      : 'bg-surface-container-low text-on-surface-variant'
-  const title = typeof value === 'string' ? value : undefined
-
-  return (
-    <div className={`flex min-h-[82px] items-start gap-3 rounded-lg border border-outline-variant/55 bg-white px-4 py-3 ${className}`.trim()}>
-      {icon && (
-        <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-md ${toneClass}`}>
-          <span
-            className="material-symbols-outlined text-[18px]"
-            style={{ fontVariationSettings: "'FILL' 0" }}
-          >
-            {icon}
-          </span>
-        </span>
-      )}
-      <div className="min-w-0 flex-1">
-        <p className="text-xs font-medium text-outline">{label}</p>
-        {children || (
-          <p className={`mt-1 truncate text-sm font-semibold text-on-surface ${valueClassName}`.trim()} title={title}>
-            {value || '-'}
-          </p>
-        )}
-      </div>
-    </div>
-  )
-}
-
 function FieldGroupTable({ title, fields = [], showEvidenceLocationColumn = true }) {
   return (
     <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
@@ -271,11 +153,11 @@ function FieldGroupTable({ title, fields = [], showEvidenceLocationColumn = true
         <table className="w-full text-sm min-w-[640px]">
           <thead>
             <tr className="border-b border-surface-container-high">
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">字段</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">提取结果</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface">字段</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface">解析内容</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface">来源</th>
               {showEvidenceLocationColumn ? (
-                <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+                <th className="px-4 py-2 text-center font-semibold text-on-surface">证据位置</th>
               ) : null}
             </tr>
           </thead>
@@ -299,46 +181,87 @@ function FieldGroupTable({ title, fields = [], showEvidenceLocationColumn = true
   )
 }
 
-function ScoringCriteriaTable({ title, rows = [], emptyText = '未识别到相关评分细则。', showEvidenceLocationColumn = true }) {
+function ScoringCriteriaTable({
+  title,
+  rows = [],
+  emptyText = '未识别到相关评分细则。',
+  showEvidenceLocationColumn = true,
+  showSourceColumns = true,
+  showCount = true,
+  showScoreColumn = true,
+  showRequirementColumn = true,
+  showProofRequirementColumn = true,
+  scoringItemAlign = 'center',
+  headerAction = null,
+}) {
+  const emptyColSpan = 2
+    + (showScoreColumn ? 1 : 0)
+    + (showRequirementColumn ? 1 : 0)
+    + (showProofRequirementColumn ? 1 : 0)
+    + (showSourceColumns ? 2 : 0)
+    + (showEvidenceLocationColumn ? 1 : 0)
+
   return (
     <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
       <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
         <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
-        <span className="text-xs text-outline">{rows.length} 条</span>
+        {headerAction || (showCount ? <span className="text-xs text-outline">{rows.length} 条</span> : null)}
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[980px]">
+        <table className={`business-scoring-table w-full table-fixed text-sm ${showSourceColumns ? 'min-w-[980px]' : 'min-w-[860px]'}`}>
+          <colgroup>
+            <col className="w-16" />
+            <col className={showSourceColumns ? 'w-44' : 'w-52'} />
+            {showScoreColumn ? <col className="w-32" /> : null}
+            {showRequirementColumn ? <col className="w-96" /> : null}
+            {showProofRequirementColumn ? <col className="w-72" /> : null}
+            {showSourceColumns ? (
+              <>
+                <col className="w-56" />
+                <col className="w-48" />
+              </>
+            ) : null}
+            {showEvidenceLocationColumn ? <col className="w-44" /> : null}
+          </colgroup>
           <thead>
             <tr className="border-b border-surface-container-high">
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">序号</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">评分/审查项</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">分值</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">得分点/要求</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">证明材料要求</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">章节</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">序号</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">评分/审查项</th>
+              {showScoreColumn ? <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">分值</th> : null}
+              {showRequirementColumn ? <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">得分点/要求</th> : null}
+              {showProofRequirementColumn ? <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">证明材料要求</th> : null}
+              {showSourceColumns ? (
+                <>
+                  <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">来源</th>
+                  <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">章节</th>
+                </>
+              ) : null}
               {showEvidenceLocationColumn ? (
-                <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+                <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">证据位置</th>
               ) : null}
             </tr>
           </thead>
           <tbody>
             {rows.length ? rows.map((item, index) => (
               <tr key={item.id || `${title}-${index}`} className="border-b border-surface-container-high last:border-b-0">
-                <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.order || index + 1}</td>
-                <td className="px-4 py-2 text-on-surface font-medium min-w-[160px]">{item.scoringItem || '-'}</td>
-                <td className="px-4 py-2 text-primary whitespace-nowrap">{item.score || '-'}</td>
-                <td className="px-4 py-2 text-on-surface-variant min-w-[260px]">{item.scorePoint || '-'}</td>
-                <td className="px-4 py-2 text-on-surface-variant min-w-[220px]">{item.proofRequirement || '-'}</td>
-                <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{item.sourceFile || '-'}</td>
-                <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{item.section || '-'}</td>
+                <td className="px-4 py-2 text-center text-on-surface-variant whitespace-nowrap">{item.order || index + 1}</td>
+                <td className={`business-scoring-text-cell px-4 py-2 text-on-surface font-medium align-middle ${scoringItemAlign === 'left' ? 'text-left' : 'text-center'}`}>{item.scoringItem || '-'}</td>
+                {showScoreColumn ? <td className="business-scoring-text-cell px-4 py-2 text-center text-primary align-top">{item.score || '-'}</td> : null}
+                {showRequirementColumn ? <td className="business-scoring-text-cell px-4 py-2 text-on-surface-variant align-top">{item.scorePoint || '-'}</td> : null}
+                {showProofRequirementColumn ? <td className="business-scoring-text-cell px-4 py-2 text-on-surface-variant align-top">{item.proofRequirement || '-'}</td> : null}
+                {showSourceColumns ? (
+                  <>
+                    <td className="business-scoring-text-cell px-4 py-2 text-on-surface-variant align-top">{item.sourceFile || '-'}</td>
+                    <td className="business-scoring-text-cell px-4 py-2 text-on-surface-variant align-top">{item.section || '-'}</td>
+                  </>
+                ) : null}
                 {showEvidenceLocationColumn ? (
                   <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.evidenceLocation || '-'}</td>
                 ) : null}
               </tr>
             )) : (
               <tr>
-                <td className="px-4 py-3 text-outline" colSpan={showEvidenceLocationColumn ? 8 : 7}>{emptyText}</td>
+                <td className="px-4 py-3 text-outline" colSpan={emptyColSpan}>{emptyText}</td>
               </tr>
             )}
           </tbody>
@@ -358,12 +281,12 @@ function PresenceTable({ title = '专题方案 / 供货范围 / 考核条款', r
         <table className="w-full text-sm min-w-[860px]">
           <thead>
             <tr className="border-b border-surface-container-high">
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">项目</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">识别结果</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">摘要</th>
-              <th className="px-4 py-2 text-left font-semibold text-on-surface">来源</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface">项目</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface">识别结果</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface">摘要</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface">来源</th>
               {showEvidenceLocationColumn ? (
-                <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+                <th className="px-4 py-2 text-center font-semibold text-on-surface">证据位置</th>
               ) : null}
             </tr>
           </thead>
@@ -586,11 +509,6 @@ export default function TechnicalTenderReview({ showToast }) {
     () => appendices.find((appendix, index) => appendixKey(appendix, index) === activeAppendixId) || appendices[0] || null,
     [activeAppendixId, appendices],
   )
-  const structuredCategories = useMemo(
-    () => (Array.isArray(parseData?.structured?.categories) ? parseData.structured.categories : []),
-    [parseData],
-  )
-  const parsedDates = parseData?.structured?.projectDates || parseData?.summary?.projectDates || {}
   const structuredRows = useMemo(() => {
     if (!parsedItems.length) return []
     return parsedItems.map((item, index) => {
@@ -629,7 +547,7 @@ export default function TechnicalTenderReview({ showToast }) {
   const rows = structuredRows.length ? structuredRows : fallbackRows
   const isParseCompleted = parseData?.status === 'completed'
   const reviewDecision = String(project?.reviewDecision || 'pending')
-  const reviewDecisionLabel = REVIEW_DECISION_LABELS[reviewDecision] || REVIEW_DECISION_LABELS.pending
+  const showTechnicalCompactUpload = !isParseCompleted
 
   useEffect(() => {
     const appendixId = selectedAppendix?.id
@@ -818,63 +736,38 @@ export default function TechnicalTenderReview({ showToast }) {
     )
   }
 
-  const renderParseProgress = () => {
-    if (!parseProgress || (parseProgress.status === 'idle' && !uploading)) return null
-    const events = Array.isArray(parseProgress.events) ? parseProgress.events.slice(-6).reverse() : []
-    const parts = Array.isArray(parseProgress.opencodeOutput?.parts)
-      ? parseProgress.opencodeOutput.parts.filter((part) => part?.text).slice(-3)
-      : []
-    const percentage = Math.max(0, Math.min(100, Number(parseProgress.percentage || 0)))
+  const renderTechnicalCompactProgress = () => {
+    if (!uploading && (!parseProgress || parseProgress.status === 'idle')) return null
+    const status = uploading ? 'running' : (parseProgress?.status || 'idle')
+    const percentage = Math.max(0, Math.min(100, Number(parseProgress?.percentage || (uploading ? 3 : 0))))
+    const statusText = status === 'completed' ? '解析完成' : status === 'failed' ? '解析失败' : status === 'running' ? '解析中' : '等待上传'
+    const summary = parseProgress?.summary === '尚未触发招标文件解析。'
+      ? '正在上传并解析技术招标文件，请稍候。'
+      : (parseProgress?.summary || '正在上传并解析技术招标文件，请稍候。')
+
     return (
-      <DataCard className="!p-5 flex flex-col gap-4">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="mt-4 rounded-md border border-surface-container-high bg-surface-container-low px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-on-surface">解析进度</h3>
-            <p className="text-xs text-outline mt-1">{parseProgress.summary || `正在解析${reviewConfig.bidType}招标文件。`}</p>
+            <p className="text-sm font-semibold text-on-surface">解析进度</p>
+            <p className="mt-1 text-xs text-outline">{summary}</p>
           </div>
-          <span className={`text-xs px-2.5 py-1 rounded-md font-semibold ${
-            parseProgress.status === 'completed'
-              ? 'bg-secondary-container text-on-secondary-container'
-              : parseProgress.status === 'failed'
-                ? 'bg-error-container text-error'
-                : 'bg-surface-container-high text-on-surface-variant'
-          }`}>
-            {parseProgress.status === 'completed' ? '完成' : parseProgress.status === 'failed' ? '失败' : '进行中'} · {percentage}%
+          <span className={[
+            'shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold',
+            status === 'failed'
+              ? 'bg-error-container text-error'
+              : status === 'running'
+                ? 'bg-primary/10 text-primary'
+                : 'bg-surface-container-high text-on-surface-variant',
+          ].join(' ')}
+          >
+            {statusText} · {percentage}%
           </span>
         </div>
-        <div className="h-2 bg-surface-container-high overflow-hidden">
-          <div className="h-full bg-primary transition-all" style={{ width: `${percentage}%` }} />
+        <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-container-high">
+          <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${percentage}%` }} />
         </div>
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <div className="rounded-md border border-surface-container-high bg-[#f7f7f7] p-3">
-            <p className="text-xs font-semibold text-on-surface mb-2">步骤记录</p>
-            <div className="flex flex-col gap-2">
-              {events.length ? events.map((event, index) => (
-                <div key={`${event.at || ''}-${index}`} className="text-xs text-on-surface-variant flex items-start gap-2">
-                  <span className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${event.level === 'success' ? 'bg-secondary' : event.level === 'warning' ? 'bg-tertiary' : 'bg-primary'}`} />
-                  <span>{event.message || '-'}</span>
-                </div>
-              )) : (
-                <p className="text-xs text-outline">等待解析服务返回进度。</p>
-              )}
-            </div>
-          </div>
-          <div className="rounded-md border border-surface-container-high bg-[#f7f7f7] p-3">
-            <p className="text-xs font-semibold text-on-surface mb-2">futurecode 输出</p>
-            {parts.length ? (
-              <div className="flex flex-col gap-2">
-                {parts.map((part, index) => (
-                  <pre key={`${part.type || 'text'}-${index}`} className="max-h-24 overflow-auto whitespace-pre-wrap break-words rounded bg-white px-2 py-1 text-[11px] leading-relaxed text-on-surface-variant">
-                    {part.text}
-                  </pre>
-                ))}
-              </div>
-            ) : (
-              <p className="text-xs text-outline">尚未收到 futurecode 流式片段；当前显示后端真实步骤进度。</p>
-            )}
-          </div>
-        </div>
-      </DataCard>
+      </div>
     )
   }
 
@@ -882,220 +775,158 @@ export default function TechnicalTenderReview({ showToast }) {
   if (error) return <PageError title="解析模块加载失败" description={error} onRetry={loadProjects} />
   if (!reviewProjects.length) {
     return (
-      <div className="review-page flex flex-col gap-6 animate-fade-in max-w-none">
+      <div className="review-page business-ui-shell flex flex-col gap-5 animate-fade-in max-w-none">
         <PageHeader
           title={reviewConfig.pageTitle}
-          className="command-surface rounded-xl px-5 py-4"
-          titleClassName="!text-[22px] !font-bold !text-ink-strong"
-          actionsClassName="stage-header-actions"
-          actions={(
-            <ReviewActionButton
-              icon="add"
+          description=""
+          actions={null}
+        />
+        <section className="business-parse-empty rounded-md border border-surface-container-high bg-surface-container-lowest px-6 py-8">
+          <div className="mx-auto flex max-w-[720px] flex-col items-center text-center">
+            <span className="material-symbols-outlined text-[32px] text-primary/70">document_scanner</span>
+            <h2 className="mt-3 text-base font-headline font-bold text-on-surface">{reviewConfig.emptyTitle}</h2>
+            <p className="mt-2 max-w-[520px] text-sm leading-relaxed text-on-surface-variant">{reviewConfig.emptyDescription}</p>
+            <Button
+              className="mt-5"
               onClick={handleCreateReviewProject}
               disabled={creatingReview}
+              size="stage"
               variant="primary"
             >
               {creatingReview ? '新建中...' : reviewConfig.createButtonLabel}
-            </ReviewActionButton>
-          )}
-        />
-        <DataCard className="!p-6 flex flex-col gap-4 items-center text-center">
-          <PageEmpty
-            title={reviewConfig.emptyTitle}
-            description=""
-          />
-        </DataCard>
+            </Button>
+          </div>
+        </section>
       </div>
     )
   }
   if (loadingDetail) return <PageLoading title="正在加载项目解析详情..." />
 
+  if (showTechnicalCompactUpload) {
+    return (
+      <div className="review-page business-ui-shell flex flex-col gap-6 animate-fade-in max-w-none">
+        <DataCard className="mt-6 w-full max-w-[760px] !p-0 overflow-hidden self-center">
+          <div className="business-section-head flex items-center px-5 py-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h3 className="text-xl font-headline font-bold text-[#0067B6]">技术标解析</h3>
+              <span className="text-xs text-outline">{project?.name || '待解析技术标项目'}</span>
+            </div>
+          </div>
+
+          <div className="px-5 py-5">
+            <label
+              htmlFor="technical-review-tender-upload"
+              className={[
+                'business-dropzone flex min-h-[160px] cursor-pointer flex-col items-center justify-center rounded-md border border-dashed px-6 py-8 text-center transition-colors',
+                uploading || reviewDecision === 'abandon' ? 'pointer-events-none opacity-60' : 'hover:border-primary hover:bg-primary/5',
+              ].join(' ')}
+            >
+              <span className="material-symbols-outlined text-2xl text-primary">upload_file</span>
+              <span className="mt-2 text-sm font-semibold text-on-surface">选择技术招标文件</span>
+              <span className="mt-1 text-xs text-outline">支持 Word、PDF、Excel 等招标附件</span>
+            </label>
+            <input
+              id="technical-review-tender-upload"
+              type="file"
+              className="hidden"
+              accept={FILE_ACCEPT}
+              multiple
+              disabled={uploading || reviewDecision === 'abandon'}
+              onChange={handleFilesPicked}
+            />
+            <div className="mt-3">
+              {renderPickedFiles()}
+            </div>
+            <div className="mt-4 flex justify-center">
+              <Button
+                type="button"
+                onClick={handleUploadAndParse}
+                disabled={uploading || reviewDecision === 'abandon'}
+                size="stage"
+                variant="primary"
+              >
+                {uploading ? '上传解析中...' : '上传并解析'}
+              </Button>
+            </div>
+            {uploadError && (
+              <div className="mt-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
+                {uploadError}
+              </div>
+            )}
+            {uploading && (
+              <div className="mt-3 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
+                正在上传并解析技术招标文件，请稍候。
+              </div>
+            )}
+            {renderTechnicalCompactProgress()}
+          </div>
+        </DataCard>
+      </div>
+    )
+  }
+
   return (
-    <div className="review-page flex flex-col gap-5 animate-fade-in max-w-none">
+    <div className="review-page flex flex-col gap-6 animate-fade-in max-w-none">
       <PageHeader
         title={reviewConfig.pageTitle}
-        className="command-surface rounded-xl px-5 py-4 md:!items-center"
-        titleClassName="!text-[22px] !font-bold !text-ink-strong"
-        actionsClassName="items-center self-start md:self-center"
+        description={isParseCompleted ? '' : reviewConfig.pageDescription}
+        actionsClassName="stage-header-actions"
         actions={(
-          <ReviewActionButton
-            icon="add"
+          <Button
             onClick={handleCreateReviewProject}
             disabled={creatingReview}
+            size="lg"
             variant="primary"
           >
             {creatingReview ? '新建中...' : reviewConfig.createButtonLabel}
-          </ReviewActionButton>
+          </Button>
         )}
       />
 
-      <DataCard className="!p-0 overflow-hidden">
-          <div className="grid gap-5 p-5">
-            <section className="mx-auto flex w-full max-w-[760px] flex-col items-center gap-4 rounded-lg border border-dashed border-outline-variant/70 bg-white px-5 py-7 text-center">
-              <ReviewIconBox icon="upload_file" />
-              <div>
-                <h2 className="text-base font-headline font-semibold text-ink-strong">{reviewConfig.uploadFileLabel}</h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => document.getElementById('review-tender-upload')?.click()}
-                disabled={uploading || reviewDecision === 'abandon'}
-                className="flex min-h-[56px] w-full max-w-[420px] items-center justify-center gap-2 rounded-lg border border-dashed border-primary/70 bg-primary-fixed/35 px-4 text-sm font-semibold text-primary transition-colors hover:bg-primary-fixed disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <span className="material-symbols-outlined text-[22px] text-primary">add_to_drive</span>
-                选择招标文件
-              </button>
-              <input
-                id="review-tender-upload"
-                type="file"
-                className="hidden"
-                accept={FILE_ACCEPT}
-                multiple
-                disabled={uploading || reviewDecision === 'abandon'}
-                onChange={handleFilesPicked}
-              />
-              <ReviewActionButton
-                icon={uploading ? 'progress_activity' : 'upload_file'}
-                onClick={handleUploadAndParse}
-                disabled={uploading || reviewDecision === 'abandon'}
-                variant="primary"
-                className="w-full max-w-[420px]"
-              >
-                {uploading ? '上传解析中' : '上传并解析'}
-              </ReviewActionButton>
-              {uploadError && (
-                <div className="w-full max-w-[620px] rounded-lg border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
-                  {uploadError}
-                </div>
-              )}
-              {tenderFiles.length ? (
-                <div className="w-full max-w-[620px] text-left">{renderPickedFiles()}</div>
-              ) : null}
-            </section>
-
-            <aside className="grid gap-3 border-t border-outline-variant/45 pt-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-semibold text-ink-strong">技术标信息</h3>
-                </div>
-                <ReviewStatusBadge reviewDecision={reviewDecision}>
-                  {reviewDecisionLabel}
-                </ReviewStatusBadge>
-              </div>
-
-              <div className="grid gap-3 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.8fr)]">
-                <ReviewInfoTile
-                  label={reviewConfig.currentProjectLabel}
-                  value={`${project?.id || '-'} · ${project?.name || '未命名项目'}`}
-                  icon="folder_open"
-                  tone="primary"
-                  className="bg-surface-container-low/70"
-                  valueClassName="text-ink-strong"
-                />
-                <ReviewInfoTile
-                  label={reviewConfig.sourceFilesLabel}
-                  icon="draft"
-                  tone="primary"
-                >
-                  <p className="mt-1 line-clamp-2 text-sm font-medium text-on-surface">
-                    {sourceFiles.length ? sourceFiles.map((file) => file.name).join('，') : '暂无'}
-                  </p>
-                </ReviewInfoTile>
-                <ReviewInfoTile
-                  label="解析时间"
-                  value={formatDateTime(parseData?.parsedAt)}
-                  icon="schedule"
-                  valueClassName="font-mono tabular-nums"
-                />
-                <ReviewInfoTile
-                  label="投标起始日期"
-                  value={parsedDates?.startDate || '-'}
-                  icon="event_available"
-                  valueClassName="font-mono tabular-nums"
-                />
-                <ReviewInfoTile
-                  label="投标截止日期"
-                  value={parsedDates?.endDate || '-'}
-                  icon="event_busy"
-                  valueClassName="font-mono tabular-nums"
-                />
-              </div>
-            </aside>
-          </div>
-      </DataCard>
-
-      {renderParseProgress()}
-
-      <DataCard className="!p-0 overflow-hidden">
-        <div className="border-b border-outline-variant/45 px-5 py-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <ReviewIconBox icon="fact_check" tone={isParseCompleted ? 'success' : 'primary'} />
-              <div>
-                <h3 className="text-base font-headline font-semibold text-ink-strong">{reviewConfig.resultTitle}</h3>
-              </div>
-            </div>
-            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${isParseCompleted ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
-              {isParseCompleted ? `解析完成${structuredCategories.length ? ` · ${structuredCategories.length} 类` : ''}` : '待解析'}
-            </span>
-          </div>
-        </div>
-
+      <DataCard className={isParseCompleted ? '!border-0 !bg-transparent !p-0 !shadow-none overflow-visible' : '!p-0 overflow-hidden'}>
         {!sourceFiles.length ? (
-          <div className="flex min-h-[72px] items-center gap-3 bg-surface-container-lowest px-5 py-4 text-sm text-on-surface-variant">
-            <ReviewIconBox icon="upload_file" />
-            <span>{reviewConfig.noSourceHint}</span>
-          </div>
+          <div className="p-6 text-sm text-on-surface-variant">{reviewConfig.noSourceHint}</div>
         ) : !isParseCompleted ? (
-          <div className="flex min-h-[72px] items-center gap-3 bg-surface-container-lowest px-5 py-4 text-sm text-on-surface-variant">
-            <ReviewIconBox icon="pending_actions" />
-            <span>{reviewConfig.pendingParseHint}</span>
-          </div>
+          <div className="p-6 text-sm text-on-surface-variant">{reviewConfig.pendingParseHint}</div>
         ) : (
-          <div className="p-5 flex flex-col gap-5">
-            <section className="flex flex-col gap-4">
-              <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-[18px] text-primary">grading</span>
-                <h4 className="text-sm font-semibold text-on-surface">评分条款</h4>
-              </div>
+          <div className="flex flex-col gap-5">
+            <div className="flex flex-col gap-4">
               {scoringGroups.map((group) => (
                 <ScoringCriteriaTable
                   key={group.key}
                   title={group.title}
                   rows={group.rows}
-                  showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
+                  showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false && group.key !== 'compliance'}
+                  showSourceColumns={group.key !== 'compliance'}
+                  showCount={!['price', 'compliance'].includes(group.key)}
+                  showScoreColumn={group.key !== 'compliance'}
+                  showRequirementColumn={group.key !== 'compliance'}
+                  showProofRequirementColumn={!['price', 'compliance'].includes(group.key)}
+                  scoringItemAlign={group.key === 'compliance' ? 'left' : 'center'}
                 />
               ))}
-            </section>
+            </div>
 
-            {reviewConfig.fieldGroupSections.length || reviewConfig.showPresence !== false ? (
-              <section className="flex flex-col gap-4">
-                <div className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-[18px] text-primary">tune</span>
-                  <h4 className="text-sm font-semibold text-on-surface">项目参数</h4>
-                </div>
-                {reviewConfig.fieldGroupSections.length ? (
-                  <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
-                    {reviewConfig.fieldGroupSections.map(([key, title]) => (
-                      <FieldGroupTable
-                        key={key}
-                        title={title}
-                        fields={fieldGroups[key] || []}
-                        showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
-                      />
-                    ))}
-                  </div>
-                ) : null}
-
-                {reviewConfig.showPresence !== false && (
-                  <PresenceTable
-                    title={reviewConfig.presenceTitle}
-                    rows={presenceRows}
+            {reviewConfig.fieldGroupSections.length ? (
+              <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
+                {reviewConfig.fieldGroupSections.map(([key, title]) => (
+                  <FieldGroupTable
+                    key={key}
+                    title={title}
+                    fields={fieldGroups[key] || []}
                     showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
                   />
-                )}
-              </section>
+                ))}
+              </div>
             ) : null}
+
+            {reviewConfig.showPresence !== false && (
+              <PresenceTable
+                title={reviewConfig.presenceTitle}
+                rows={presenceRows}
+                showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
+              />
+            )}
 
             <section className="border border-surface-container-high rounded-md overflow-hidden">
               <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
@@ -1253,14 +1084,14 @@ export default function TechnicalTenderReview({ showToast }) {
                   <table className="w-full text-sm min-w-[1120px]">
                     <thead>
                       <tr className="bg-surface-container-low border-b border-surface-container-high">
-                        <th className="px-4 py-2 text-left font-semibold text-on-surface">类别</th>
-                        <th className="px-4 py-2 text-left font-semibold text-on-surface">字段</th>
-                        <th className="px-4 py-2 text-left font-semibold text-on-surface">提取值</th>
-                        <th className="px-4 py-2 text-left font-semibold text-on-surface">来源文件</th>
+                        <th className="px-4 py-2 text-center font-semibold text-on-surface">类别</th>
+                        <th className="px-4 py-2 text-center font-semibold text-on-surface">字段</th>
+                        <th className="px-4 py-2 text-center font-semibold text-on-surface">提取值</th>
+                        <th className="px-4 py-2 text-center font-semibold text-on-surface">来源文件</th>
                         {reviewConfig.showEvidenceLocationColumn !== false ? (
-                          <th className="px-4 py-2 text-left font-semibold text-on-surface">证据位置</th>
+                          <th className="px-4 py-2 text-center font-semibold text-on-surface">证据位置</th>
                         ) : null}
-                        <th className="px-4 py-2 text-left font-semibold text-on-surface">证据文本</th>
+                        <th className="px-4 py-2 text-center font-semibold text-on-surface">证据文本</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1285,42 +1116,29 @@ export default function TechnicalTenderReview({ showToast }) {
         )}
       </DataCard>
 
-      <DataCard className="!p-0 overflow-hidden">
-        <div className="grid min-h-[86px] gap-4 px-5 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-          <div className="flex min-w-0 items-start gap-3">
-            <ReviewIconBox icon="how_to_reg" tone={isParseCompleted ? 'success' : 'primary'} />
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-ink-strong">项目参与决策</h3>
-              <p className="mt-1 text-xs text-on-surface-variant">
-                解析完成后确认是否进入后续工作区；不参与会结束当前解析项目。
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center lg:justify-end">
-            <ReviewActionButton
-              icon="block"
-              onClick={() => handleDecision('abandon')}
-              disabled={Boolean(deciding)}
-              variant="danger"
-            >
-              {deciding === 'abandon' ? '提交中...' : '不参与该项目'}
-            </ReviewActionButton>
-            <ReviewActionButton
-              icon="login"
-              onClick={() => handleDecision('participate')}
-              disabled={Boolean(deciding) || !isParseCompleted}
-              variant="primary"
-            >
-              {deciding === 'participate' ? '提交中...' : '参与该项目并进入工作区'}
-            </ReviewActionButton>
-          </div>
+      <div className="w-full pt-1">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <Button
+            onClick={() => handleDecision('abandon')}
+            disabled={Boolean(deciding)}
+            size="stage"
+            variant="quiet"
+          >
+            {deciding === 'abandon' ? '提交中...' : '不参与该项目'}
+          </Button>
+          <Button
+            onClick={() => handleDecision('participate')}
+            disabled={Boolean(deciding) || !isParseCompleted}
+            size="stage"
+            variant="primary"
+          >
+            {deciding === 'participate' ? '提交中...' : '参与该项目并进入工作区'}
+          </Button>
         </div>
         {reviewDecision === 'abandon' && (
-          <div className="mx-5 mb-4 rounded-md border border-error/25 bg-error-container/20 px-3 py-2 text-sm text-error">
-            当前项目已标记为不参与，流程在解析阶段结束。
-          </div>
+          <div className="mt-2 text-sm text-error">当前项目已标记为不参与，流程在解析阶段结束。</div>
         )}
-      </DataCard>
+      </div>
 
       {showProjectInfoModal && projectToComplete && (
         <TechnicalProjectWizardModal

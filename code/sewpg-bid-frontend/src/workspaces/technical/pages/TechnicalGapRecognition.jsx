@@ -23,13 +23,6 @@ import {
   uniqueStrings,
 } from './technicalGapRecognitionHelpers'
 
-const formatDateTime = (value) => {
-  if (!value) return '未执行'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '未执行'
-  return date.toLocaleString('zh-CN', { hour12: false })
-}
-
 const statusConfig = {
   matched: { label: '已匹配', tone: 'bg-secondary-container text-on-secondary-container', icon: 'check_circle' },
   structural: { label: '结构章节', tone: 'bg-surface-container-high text-on-surface-variant', icon: 'account_tree' },
@@ -163,20 +156,16 @@ const MiniFact = ({ label, value }) => (
   </div>
 )
 
-const SmallStat = ({ label, value, active, onClick }) => (
-  <button
-    type="button"
-    onClick={onClick}
-    className={`h-[58px] rounded-md border px-3 text-left transition-colors ${
-      active
-        ? 'border-primary bg-primary text-on-primary'
-        : 'border-surface-container-high bg-surface-container-lowest text-on-surface hover:bg-surface-container-low'
-    }`}
-  >
-    <div className={`text-[11px] ${active ? 'text-on-primary/80' : 'text-outline'}`}>{label}</div>
-    <div className="mt-1 text-xl font-headline font-bold">{value}</div>
-  </button>
-)
+function StatCard({ label, value }) {
+  return (
+    <div className="business-metric rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+      <div className="flex min-h-7 items-center justify-between gap-3">
+        <div className="min-w-0 truncate text-xs font-semibold text-on-surface-variant">{label}</div>
+        <div className="shrink-0 text-lg font-headline font-bold tabular-nums text-primary">{value || 0}</div>
+      </div>
+    </div>
+  )
+}
 
 const factStatusLabels = {
   empty: '待生成',
@@ -500,7 +489,6 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [materialSearch, setMaterialSearch] = useState({ items: [], total: 0 })
   const [materialLoading, setMaterialLoading] = useState(false)
   const [materialScope, setMaterialScope] = useState(null)
-  const [decisionFilter, setDecisionFilter] = useState('all')
   const [previewChoiceKey, setPreviewChoiceKey] = useState('')
   const [previewSession, setPreviewSession] = useState(null)
   const [previewLoading, setPreviewLoading] = useState(false)
@@ -557,10 +545,7 @@ export default function TechnicalGapRecognition({ showToast }) {
   }, [loadData, loadGenerationStatus])
 
   const items = useMemo(() => normalizeItems(data), [data])
-  const filteredItems = useMemo(
-    () => (decisionFilter === 'all' ? items : items.filter((item) => decisionOf(item) === decisionFilter)),
-    [decisionFilter, items],
-  )
+  const filteredItems = items
   const effectiveSelectedId = filteredItems.some((item) => item.id === selectedId)
     ? selectedId
     : (filteredItems[0]?.id || '')
@@ -569,7 +554,6 @@ export default function TechnicalGapRecognition({ showToast }) {
     [effectiveSelectedId, filteredItems],
   )
   const summary = useMemo(() => data?.gapPlan?.summary || data?.summary || {}, [data])
-  const sampleVersion = data?.gapPlan?.sampleVersion || data?.sampleVersion || ''
   const isCompleted = data?.status === 'completed'
   const readableScopes = useMemo(
     () => (Array.isArray(materialScope?.readableScopes) ? materialScope.readableScopes : []),
@@ -682,15 +666,12 @@ export default function TechnicalGapRecognition({ showToast }) {
       ? `${gapWorkRoot}/manual_upload/${selected?.id || '<gapId>'}`
       : gapWorkRoot
   const selectedCurrentArtifactPath = selectedResolvedArtifact?.path || selectedBlankPath || selectedMaterialMatch?.material?.path || ''
-  const summaryCards = useMemo(() => {
-    return [
-      ['all', '全部', items.length],
-      ['ready', '可直接合并', summary[decisionSummaryKeys.ready] ?? items.filter((item) => decisionOf(item) === 'ready').length],
-      ['fill_required', '需填写空表/Word', summary[decisionSummaryKeys.fill_required] ?? items.filter((item) => decisionOf(item) === 'fill_required').length],
-      ['material_required', '缺素材', summary[decisionSummaryKeys.material_required] ?? items.filter((item) => decisionOf(item) === 'material_required').length],
-      ['review_required', '需人工复核', summary[decisionSummaryKeys.review_required] ?? items.filter((item) => decisionOf(item) === 'review_required').length],
-    ]
-  }, [items, summary])
+  const actionCounts = useMemo(() => ({
+    fixed_material: summary[decisionSummaryKeys.ready] ?? items.filter((item) => decisionOf(item) === 'ready').length,
+    ai_table_fill: summary[decisionSummaryKeys.fill_required] ?? items.filter((item) => decisionOf(item) === 'fill_required').length,
+    manual_upload: summary[decisionSummaryKeys.material_required] ?? items.filter((item) => decisionOf(item) === 'material_required').length,
+    manual_select: summary[decisionSummaryKeys.review_required] ?? items.filter((item) => decisionOf(item) === 'review_required').length,
+  }), [items, summary])
   const factConfirmed = factTable?.status === 'confirmed'
   const hasTechnicalGapPlan = data?.status === 'completed' && Boolean(data?.gapPlan || items.length)
   const generationRunning = generationStatus?.status === 'running'
@@ -1061,45 +1042,37 @@ export default function TechnicalGapRecognition({ showToast }) {
       />
 
       {isCompleted ? (
-        <div className="grid auto-rows-max gap-2 sm:grid-cols-2 lg:grid-cols-5">
-          {summaryCards.map(([key, label, value]) => (
-            <SmallStat
-              key={key}
-              label={label}
-              value={value}
-              active={decisionFilter === key}
-              onClick={() => setDecisionFilter(key)}
-            />
-          ))}
+        <div className="grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.56fr)]">
+          <div className="grid auto-rows-max gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard label="目录节点" value={summary.totalTocItems ?? items.length} />
+            <StatCard label="处理任务" value={items.length} />
+            <StatCard label="待处理" value={(actionCounts.manual_upload || 0) + (actionCounts.manual_select || 0)} />
+            <StatCard label="已就绪" value={actionCounts.fixed_material || 0} />
+          </div>
+          <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+            <div className="flex min-h-7 items-center gap-2">
+              <div className="shrink-0 text-xs font-semibold text-on-surface-variant">处理方式统计</div>
+              <div className="grid min-w-0 flex-1 grid-cols-4 gap-1.5 text-center">
+                {[
+                  ['fixed_material', '固定素材'],
+                  ['ai_table_fill', 'AI填表'],
+                  ['manual_upload', '人工补充'],
+                  ['manual_select', '人工指定'],
+                ].map(([key, label]) => (
+                  <div key={key} className="flex min-h-7 items-center justify-center gap-1 rounded-md bg-surface-container-low px-2 py-0.5">
+                    <span className="text-[11px] text-on-surface-variant">{label}</span>
+                    <span className="text-sm font-headline font-bold tabular-nums text-primary">{actionCounts[key] || 0}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       ) : null}
 
-      <DataCard className="business-panel !p-0 overflow-hidden">
-        <div className="business-section-head border-b border-surface-container-high px-4 py-3">
-          <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-start 2xl:justify-between">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h3 className="text-sm font-semibold text-on-surface">缺口识别结果</h3>
-                <span className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-semibold ${isCompleted ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
-                  <span className="material-symbols-outlined text-[15px]">{isCompleted ? 'check_circle' : 'pending'}</span>
-                  {isCompleted ? '已识别' : '待识别'}
-                </span>
-              </div>
-              <p className="mt-1 text-xs text-on-surface-variant">
-                识别时间：{formatDateTime(data?.recognizedAt)} · 目录项：{summary.totalTocItems ?? items.length}
-              </p>
-              {turbineModelLabel || scopeSummary || sampleVersion ? (
-                <p className="mt-1 truncate text-xs text-outline" title={[turbineModelLabel, scopeSummary, sampleVersion].filter(Boolean).join(' · ')}>
-                  {[
-                    turbineModelLabel ? `投标机型：${turbineModelLabel}` : '',
-                    scopeSummary ? `素材边界：${scopeSummary}` : '',
-                    sampleVersion ? `样例版本：${sampleVersion}` : '',
-                  ].filter(Boolean).join(' · ')}
-                </p>
-              ) : null}
-            </div>
-
-          </div>
+      <DataCard className="!p-0 overflow-hidden">
+        <div className="business-section-head flex items-center border-b border-surface-container-high px-4 py-3">
+          <h3 className="text-base font-headline font-bold text-on-surface">技术目录</h3>
         </div>
 
         {!isCompleted ? (
@@ -1122,15 +1095,15 @@ export default function TechnicalGapRecognition({ showToast }) {
             </Button>
           </div>
         ) : (
-          <div className="grid h-[min(850px,calc(100vh-205px))] min-h-[650px] min-w-[58rem] grid-cols-[minmax(260px,0.8fr)_minmax(0,1.45fr)] overflow-x-auto">
-            <div className="border-r border-surface-container-high min-h-0 flex flex-col">
-              <div className="h-12 shrink-0 border-b border-surface-container-high bg-surface-container-lowest px-4 py-3">
+          <div className="grid min-h-[720px] gap-4 p-3 xl:grid-cols-[460px_minmax(0,1fr)] 2xl:grid-cols-[520px_minmax(0,1fr)]">
+            <div className="min-h-0 flex flex-col overflow-hidden">
+              <div className="h-12 shrink-0 px-2 py-3">
                 <div className="text-xs font-semibold text-on-surface">
                   目录项 · {filteredItems.length}/{items.length}
                 </div>
               </div>
               <div className="min-h-0 flex-1 overflow-auto">
-                <div className="divide-y divide-surface-container-high">
+                <div>
                   {filteredItems.map((item) => {
                     const cfg = configForItem(item)
                     const result = resultSummaryForItem(item, items)
@@ -1147,7 +1120,8 @@ export default function TechnicalGapRecognition({ showToast }) {
                           setManualPreviewChoice(null)
                           setPreviewOpen(false)
                         }}
-                        className={`block w-full px-4 py-3 text-left transition-colors hover:bg-surface-container-low/70 ${active ? 'bg-primary/5 shadow-[inset_3px_0_0_var(--md-sys-color-primary)]' : 'bg-transparent'}`}
+                        className={`business-toc-item mb-2 block h-auto w-full rounded-md border px-3 py-3 text-left transition-colors ${active ? 'border-primary bg-primary-fixed shadow-sm' : 'border-surface-container-high bg-surface-container-lowest hover:bg-surface-container-low'}`}
+                        data-active={active ? 'true' : 'false'}
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
@@ -1179,7 +1153,7 @@ export default function TechnicalGapRecognition({ showToast }) {
               </div>
             </div>
 
-            <div className="min-h-0 overflow-hidden border-r border-surface-container-high bg-surface-container-lowest">
+            <div className="min-h-0 overflow-hidden rounded-md border border-surface-container-high bg-surface-container-lowest">
               {selected ? (
                 <div className="flex h-full min-h-0 flex-col">
                   <div className="shrink-0 border-b border-surface-container-high bg-surface-container-lowest px-5 py-4">

@@ -53,6 +53,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const [technicalPreviewFullscreen, setTechnicalPreviewFullscreen] = useState(false)
   const [pdfPreparing, setPdfPreparing] = useState(false)
   const [pdfData, setPdfData] = useState(null)
+  const [technicalRightTab, setTechnicalRightTab] = useState('chat')
   const [formatPreset, setFormatPreset] = useState('standard')
   const [formatApplying, setFormatApplying] = useState('')
   const [customFormat, setCustomFormat] = useState({
@@ -254,11 +255,43 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     )
   }
 
+  const renderTechnicalChatPanel = () => (
+    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-4">
+      <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-surface-container-high bg-white">
+        <div className="shrink-0 border-b border-surface-container-high px-3 py-2">
+          <div className="text-sm font-semibold text-on-surface">通用 AI 对话</div>
+        </div>
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 pr-2">
+          <div className="mr-8 rounded-lg bg-surface-container-low px-3 py-2 text-sm leading-6 text-on-surface">
+            <div className="mb-1 text-[11px] font-semibold opacity-70">AI助手</div>
+            <div className="whitespace-pre-wrap">技术标 AI 对话接口尚未接入；当前技术标正文仍通过左侧文档和下方格式设置完成受控处理。</div>
+          </div>
+        </div>
+      </section>
+
+      <section className="shrink-0 overflow-hidden rounded-lg border border-primary/20 bg-primary/5">
+        <div className="flex w-full items-start justify-between gap-3 px-3 py-3 text-left">
+          <div>
+            <h4 className="text-sm font-semibold text-on-surface">受控应用到 Word</h4>
+          </div>
+          <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-primary">人工确认后写入</span>
+        </div>
+        <div className="border-t border-primary/10 p-3">
+          <Button
+            type="button"
+            onClick={() => setTechnicalRightTab('format')}
+            size="sm"
+            variant="primary"
+          >
+            前往格式设置
+          </Button>
+        </div>
+      </section>
+    </div>
+  )
+
   const renderTechnicalFormatPanel = () => (
-    <section className="business-panel flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-outline-variant/60 bg-surface-container-lowest shadow-[0_1px_2px_rgba(13,33,55,0.05)]">
-      <div className="business-section-head business-editor-tool-head flex min-h-[58px] items-center justify-between gap-3 border-b border-surface-container-high px-4 py-3">
-        <h3 className="truncate text-base font-semibold text-on-surface">技术标格式设置</h3>
-      </div>
+    <>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className="grid grid-cols-1 gap-2">
           {technicalFormatPresets.map((preset) => (
@@ -335,16 +368,17 @@ export default function TechnicalCoCreationEditor({ showToast }) {
       </div>
 
       <div className="border-t border-surface-container-high bg-surface-container-low p-3">
-        <button
+        <Button
           type="button"
           onClick={() => handleApplyTechnicalFormat(formatPreset)}
           disabled={!!formatApplying}
-          className="w-full rounded-md bg-secondary px-4 py-2 text-sm font-semibold text-on-secondary hover:bg-secondary/90 disabled:opacity-50"
+          className="w-full"
+          variant="success"
         >
           {formatApplying ? '应用中...' : formatPreset === 'custom' ? '应用自定义格式' : '应用标准格式'}
-        </button>
+        </Button>
       </div>
-    </section>
+    </>
   )
 
   const renderProjectWorkspace = () => (
@@ -412,7 +446,29 @@ export default function TechnicalCoCreationEditor({ showToast }) {
       </section>
 
       <aside className="flex min-h-[885px] flex-col overflow-hidden xl:h-[calc(100vh-4.5rem)]">
-        {renderTechnicalFormatPanel()}
+        <section className="business-panel flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-outline-variant/60 bg-surface-container-lowest shadow-[0_1px_2px_rgba(13,33,55,0.05)]">
+          <div className="business-section-head business-editor-tool-head flex items-center justify-between gap-3 border-b border-surface-container-high px-3 py-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <h3 className="truncate text-base font-semibold text-on-surface">{bidLabel}共创工具</h3>
+            </div>
+            <div className="grid w-[176px] shrink-0 grid-cols-2 gap-1 rounded-md bg-surface-container-high p-1">
+              {[
+                { key: 'chat', label: 'AI 对话' },
+                { key: 'format', label: '格式设置' },
+              ].map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setTechnicalRightTab(tab.key)}
+                  className={`rounded px-2 py-1.5 text-xs font-semibold transition-colors ${technicalRightTab === tab.key ? 'bg-surface-container-lowest text-primary shadow-sm' : 'text-on-surface-variant hover:bg-surface-dim'}`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {technicalRightTab === 'chat' ? renderTechnicalChatPanel() : renderTechnicalFormatPanel()}
+        </section>
       </aside>
     </div>
   )

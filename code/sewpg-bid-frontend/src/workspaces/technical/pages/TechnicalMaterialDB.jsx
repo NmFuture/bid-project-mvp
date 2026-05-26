@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { technicalMaterialsAPI } from '../../../api'
 import MaterialsViewSwitch from '../components/TechnicalMaterialsViewSwitch'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
-import OnlyOfficeWorkspace from '../components/TechnicalOnlyOfficeWorkspace'
-import { PageError, PageLoading } from '../components/TechnicalPageState'
+import OnlyOfficeWorkspace from '../../../components/shared/OnlyOfficeWorkspace'
+import { PageError, PageLoading } from '../../../components/states/PageState'
 import { useWorkspaceSlug, workspaceRoute } from '../../../utils/workspace'
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024
@@ -526,8 +526,9 @@ function TreeNode({
   const isDropTarget = dragTargetPath === normalizedNodePath
   return (
     <div>
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         draggable={canDragFolder}
         onDragStart={(event) => {
           if (!canDragFolder) {
@@ -617,7 +618,7 @@ function TreeNode({
             </button>
           )}
         </span>
-      </button>
+      </div>
       {!collapsed && directFiles.length > 0 && (
         <div className="mt-0.5 space-y-0.5">
           {directFiles.map((item) => {
@@ -775,9 +776,7 @@ export default function MaterialDB({ showToast = () => {} }) {
   const canDeleteFolder = Boolean(selectedFolderPath) && !isProtectedDeleteFolderPath(selectedFolderPath)
 
   const fileItems = useMemo(() => filesPayload?.items || [], [filesPayload?.items])
-  const totalCount = Number(filesPayload?.total || 0)
   const filesByFolderPath = useMemo(() => groupFilesByFolderPath(fileItems), [fileItems])
-  const visibleTreeFileCount = useMemo(() => getVisibleFileCount(tree), [tree])
   const cleanedFileCount = useMemo(
     () => fileItems.filter((item) => item?.cleanStatus === 'cleaned').length,
     [fileItems],
@@ -1328,47 +1327,8 @@ export default function MaterialDB({ showToast = () => {} }) {
       <MaterialsViewSwitch
         active="raw"
         activeBidType={activeBidType}
-        title="原始材料库"
-        subtitle={refreshing || error ? (error || '正在刷新...') : '管理技术标通用、客户、项目三档原始素材。'}
-        actions={(
-          <div className="flex flex-nowrap gap-2">
-            <button
-              type="button"
-              onClick={() => loadLibrary({ silent: true })}
-              className="command-button command-button-secondary h-8 min-h-8 whitespace-nowrap px-3 text-xs"
-            >
-              <span aria-hidden="true" className="material-symbols-outlined text-[16px]">refresh</span>
-              刷新
-            </button>
-            <button
-              type="button"
-              onClick={() => openUploadModal({ mode: 'tier' })}
-              className="command-button command-button-primary h-8 min-h-8 whitespace-nowrap px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <span aria-hidden="true" className="material-symbols-outlined text-[16px]">upload_file</span>
-              上传文件
-            </button>
-          </div>
-        )}
-        meta={(
-          <div className="flex flex-nowrap items-center gap-1.5 text-xs">
-            <span className="whitespace-nowrap rounded px-2 py-1 font-semibold text-primary">
-              {activeBidType}
-            </span>
-            <span className="h-4 w-px shrink-0 bg-surface-container-high" aria-hidden="true" />
-            <span className="max-w-[280px] truncate whitespace-nowrap rounded px-2 py-1 text-on-surface-variant">
-              当前目录 {selectedFolderPath || '-'}
-            </span>
-            <span className="h-4 w-px shrink-0 bg-surface-container-high" aria-hidden="true" />
-            <span className="whitespace-nowrap rounded px-2 py-1 text-on-surface-variant">
-              文件 {fileItems.length}/{visibleTreeFileCount || totalCount}
-            </span>
-            <span className="h-4 w-px shrink-0 bg-surface-container-high" aria-hidden="true" />
-            <span className="whitespace-nowrap rounded px-2 py-1 text-on-surface-variant">
-              权限 可编辑
-            </span>
-          </div>
-        )}
+        title="技术标素材库"
+        subtitle={refreshing || error ? (error || '正在刷新...') : ''}
         basePath={materialsBasePath}
       />
 

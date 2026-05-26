@@ -394,9 +394,9 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
         )}
       />
 
-      <div className="technical-ui-shell mx-auto w-full max-w-[1120px]">
+      <div className="business-ui-shell mx-auto w-full max-w-[1120px]">
         <DataCard className="!p-0 overflow-hidden">
-          <div className="technical-section-head flex items-center px-6 py-5">
+          <div className="business-section-head flex items-center px-6 py-5">
             <div className="flex items-center">
               <h2 className="text-2xl font-headline font-extrabold text-primary">生成投标文件目录</h2>
             </div>
@@ -451,7 +451,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
           </div>
         )}
 
-        <div className="technical-panel flex min-h-[208px] flex-col gap-3 rounded-md border border-surface-container-high bg-surface-container-lowest p-4">
+        <div className="business-panel flex min-h-[208px] flex-col gap-3 rounded-md border border-surface-container-high bg-surface-container-lowest p-4">
           <div className="flex items-center justify-between">
             <div>
               <h4 className="text-sm font-semibold text-on-surface">模板文件</h4>
@@ -459,7 +459,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
             </div>
             <span className="text-xs px-2 py-0.5 rounded-md bg-surface-container-high text-on-surface-variant">可选</span>
           </div>
-          <div className="technical-dropzone flex min-h-[116px] flex-1 items-center justify-center rounded-md border border-dashed">
+          <div className="business-dropzone flex min-h-[116px] flex-1 items-center justify-center rounded-md border border-dashed">
             <Button
               onClick={() => document.getElementById('s1-template-upload')?.click()}
               className="min-w-[180px] bg-white text-on-surface shadow-sm hover:bg-surface-container-low"
@@ -550,7 +550,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
           </div>
         )}
 
-        <div className="technical-panel rounded-md bg-surface-container-low p-3 border border-surface-container-high text-xs text-outline">
+        <div className="business-panel rounded-md bg-surface-container-low p-3 border border-surface-container-high text-xs text-outline">
           <p className="font-medium text-on-surface mb-1">已上传模板文件（当前项目）</p>
           <p>{uploadedTemplateFiles.length ? uploadedTemplateFiles.map((file) => file.name).join('，') : (fallbackWillBeUsed ? '暂无，生成目录时将使用默认模板' : '暂无')}</p>
         </div>
@@ -591,7 +591,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
 
           <div className="flex min-h-[164px] items-center">
             {(isDirectoryRunning || isDirectoryCompleted || isDirectoryFailed) ? (
-              <div className="technical-panel flex w-full items-center gap-3 rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-3">
+              <div className="business-panel flex w-full items-center gap-3 rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-3">
                 <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-[#e8eef2]">
                   <div className={`h-full transition-all duration-700 ${isDirectoryFailed ? 'bg-error' : 'bg-primary'}`} style={{ width: `${directoryProgress}%` }} />
                 </div>

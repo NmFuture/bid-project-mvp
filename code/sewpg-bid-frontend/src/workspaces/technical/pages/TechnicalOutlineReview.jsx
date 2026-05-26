@@ -683,7 +683,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   const activeRefs = collectSourceRefs(activeNode)
 
   return (
-    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none technical-ui-shell">
+    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none business-ui-shell">
       <StageBreadcrumb />
       <TechnicalProjectStageProgress projectId={id} showToast={showToast} />
 

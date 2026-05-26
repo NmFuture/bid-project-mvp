@@ -8,11 +8,20 @@ import { projectRoute } from '../../../utils/workspace'
 const BUSINESS_WORKSPACE = 'business'
 
 const BUSINESS_COMPACT_STAGE_GROUPS = [
-  { id: 1, name: '目录生成', stageIds: [1], pendingRouteStageId: 1, completedRouteStageId: 1 },
-  { id: 2, name: '目录确认', stageIds: [2], pendingRouteStageId: 2, completedRouteStageId: 2 },
+  { id: 1, name: '模板与目录', stageIds: [1], pendingRouteStageId: 1, completedRouteStageId: 1 },
+  { id: 2, name: '审核目录', stageIds: [2], pendingRouteStageId: 2, completedRouteStageId: 2 },
   { id: 3, name: '素材匹配', stageIds: [3, 4], pendingRouteStageId: 3, completedRouteStageId: 4, routePath: '/gaps' },
-  { id: 5, name: '编辑导出', stageIds: [5, 6], pendingRouteStageId: 5, completedRouteStageId: 6 },
+  { id: 4, name: '共创导出', stageIds: [5, 6], pendingRouteStageId: 5, completedRouteStageId: 6 },
 ]
+
+const BUSINESS_COMPACT_STAGE_LABELS = {
+  1: '模板与目录',
+  2: '审核目录',
+  3: '素材匹配',
+  4: '素材匹配',
+  5: '共创导出',
+  6: '共创导出',
+}
 
 const BUSINESS_STAGE_ROUTES = {
   1: '/template-directory',
@@ -35,6 +44,18 @@ const stageStatusRank = {
   pending: 1,
 }
 
+const compactStageName = (stage, fallback = '') => {
+  const sourceStageIds = Array.isArray(stage?.sourceStages)
+    ? stage.sourceStages.map(toStageId).filter(Boolean)
+    : []
+  const displayStageId = sourceStageIds.some((stageId) => stageId >= 5)
+    ? 5
+    : sourceStageIds.some((stageId) => stageId >= 3)
+      ? 3
+      : toStageId(stage?.routeStageId || stage?.id)
+  return BUSINESS_COMPACT_STAGE_LABELS[displayStageId] || fallback
+}
+
 const compactProjectStages = (rawStages = []) => {
   if (!Array.isArray(rawStages) || !rawStages.length) return []
 
@@ -42,6 +63,7 @@ const compactProjectStages = (rawStages = []) => {
     return rawStages.map((stage) => ({
       ...stage,
       id: toStageId(stage?.id),
+      name: compactStageName(stage, stage?.name || ''),
       routeStageId: toStageId(stage?.routeStageId || stage?.id),
       sourceStageIds: Array.isArray(stage?.sourceStages)
         ? stage.sourceStages.map(toStageId).filter(Boolean)

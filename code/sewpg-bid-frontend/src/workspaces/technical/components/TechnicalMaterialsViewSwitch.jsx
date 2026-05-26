@@ -15,8 +15,7 @@ export default function TechnicalMaterialsViewSwitch({
   basePath = '/workspace/tech/materials',
 }) {
   const normalizedBasePath = String(basePath || '/workspace/tech/materials').replace(/\/+$/, '')
-  const bidType = '技术标'
-  const bidTypeQuery = `?bidType=${encodeURIComponent(bidType)}`
+
   return (
     <div className="overflow-hidden rounded-lg border border-outline-variant/55 bg-white shadow-[0_12px_28px_-24px_rgba(13,33,55,0.35)]">
       <div className="flex flex-col gap-3 px-4 py-3 lg:px-5 xl:min-h-[64px] xl:flex-row xl:items-center xl:justify-between">
@@ -24,7 +23,7 @@ export default function TechnicalMaterialsViewSwitch({
           <div className="min-w-0 lg:w-[240px] xl:w-[270px]">
             <div className="flex min-w-0 items-center gap-2">
               <span aria-hidden="true" className="h-5 w-1 shrink-0 rounded-full bg-primary/80" />
-              <h1 className="truncate text-base font-headline font-bold text-ink-strong">{title}</h1>
+              <h1 className="truncate text-base font-headline font-bold text-ink-strong">{title || '技术标素材库'}</h1>
             </div>
             {subtitle ? (
               <p className="mt-1 truncate pl-3 text-xs text-outline" title={typeof subtitle === 'string' ? subtitle : undefined}>
@@ -34,16 +33,17 @@ export default function TechnicalMaterialsViewSwitch({
           </div>
 
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <div className="inline-flex h-8 w-fit items-center rounded-md border border-outline-variant/65 bg-primary px-3 text-xs font-medium text-on-primary">
+            <span className="inline-flex h-8 items-center gap-1.5 rounded-md border border-primary/20 bg-primary/10 px-3 text-xs font-semibold text-primary">
+              <span aria-hidden="true" className="material-symbols-outlined text-[16px]">engineering</span>
               {activeBidType}
-            </div>
+            </span>
             <div className="inline-flex h-8 w-fit rounded-md border border-outline-variant/65 bg-surface-container-low p-0.5 text-xs">
               {ITEMS.map((item) => {
                 const selected = active === item.key
                 return (
                   <NavLink
                     key={item.key}
-                    to={`${normalizedBasePath}${item.path}${bidTypeQuery}`}
+                    to={`${normalizedBasePath}${item.path}`}
                     className={`inline-flex h-7 min-w-[74px] items-center justify-center rounded px-2.5 transition-colors ${
                       selected
                         ? 'bg-primary text-on-primary font-medium'
