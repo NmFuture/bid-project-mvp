@@ -1,7 +1,7 @@
 # SEWPG Bid Frontend
 
 > 当前口径：前端已经进入技术标/商务标双轨独立化阶段。
-> 更新日期：2026-05-26
+> 更新日期：2026-05-27
 
 ## 项目简介
 
@@ -14,6 +14,8 @@
 - 商务标页面：`src/workspaces/business`
 
 当前不是旧单线 MVP 页面结构。开发时先判断需求属于技术标还是商务标，再进入对应 workspace。
+
+当前研发先跑通商务标端到端，技术标质量提升后续单独梳理。
 
 ## 当前入口
 
@@ -88,6 +90,8 @@ npm run check
 
 ## 文档入口
 
-- `/Users/wlb/Agent/bid-project/doc/31-技术标与商务标双轨独立化实施计划.md`
+- `/Users/wlb/Agent/bid-project/doc/代码结构梳理.md`
+- `/Users/wlb/Agent/bid-project/doc/需求梳理.md`
+- `/Users/wlb/Agent/bid-project/doc/研发计划.md`
 - `/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/docs/10-API接口总览与契约说明.md`
 - `/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/docs/11-API字段级契约明细.md`

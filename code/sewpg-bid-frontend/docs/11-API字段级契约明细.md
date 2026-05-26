@@ -1,6 +1,6 @@
 # 前端 API 字段依赖索引
 
-> 更新时间：2026-05-26
+> 更新时间：2026-05-27
 > 适用范围：前端页面字段依赖梳理。
 
 ## 全局约定
@@ -81,3 +81,4 @@ S5/S6 -> /editor
 - `/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/src/api/index.js`
 - `/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/technical.py`
 - `/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/business.py`
+- `/Users/wlb/Agent/bid-project/doc/代码结构梳理.md`

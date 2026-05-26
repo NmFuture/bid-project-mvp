@@ -1,6 +1,6 @@
 # 前端 API 接口总览
 
-> 更新时间：2026-05-26
+> 更新时间：2026-05-27
 > 适用范围：`sewpg-bid-frontend` 通过双轨 API 调用正式 FastAPI。
 
 当前前端已经从旧单线接口改为双轨接口：
@@ -56,4 +56,6 @@
 - `/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/src/api/index.js`
 - `/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/technical.py`
 - `/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/business.py`
-- `/Users/wlb/Agent/bid-project/doc/31-技术标与商务标双轨独立化实施计划.md`
+- `/Users/wlb/Agent/bid-project/doc/代码结构梳理.md`
+- `/Users/wlb/Agent/bid-project/doc/需求梳理.md`
+- `/Users/wlb/Agent/bid-project/doc/研发计划.md`

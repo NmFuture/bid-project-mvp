@@ -1,13 +1,12 @@
 # progress.md
 
 > 当前用途：记录当前状态、验证基线和下一步。历史 MVP 联调流水和旧接口记录不再放在当前正文；需要追溯时查 git 历史或 `doc/archive/2026-05-26-old-docs/`。
-> 更新日期：2026-05-26
+> 更新日期：2026-05-27
 
 ## 1. 当前状态
 
-文档已经收口为 4 份：
+文档已经收口为 3 份：
 
-- `doc/值得留下来的内容.md`
 - `doc/代码结构梳理.md`
 - `doc/需求梳理.md`
 - `doc/研发计划.md`
@@ -22,17 +21,17 @@
 
 当前保留的工作重点：
 
-- 技术标真实样本端到端验收。
-- 商务标真实样本端到端验收。
-- 附表填写、待填写 Word、事实库、证据链、格式导出质量。
-- 商务评分、报价、符合性、附件、承诺、否决项、业绩链路验证。
+- 先跑通商务标真实样本端到端。
+- 素材库标签、商务 Wiki、共用业绩库。
+- 商务素材匹配、三类处理方式、项目事实表、AI填写。
+- 商务正文生成、格式处理和 Word/PDF 导出。
 - 后端角色、工作区、项目类型强授权。
 - 临时文件、文档工作区、MinIO 对象的项目删除清理和 TTL 策略。
 
 ## 2. 本轮文档和命名收口
 
 - 旧文档已归档到 `doc/archive/2026-05-26-old-docs/`。
-- 根 `README.md` 已改为 4 份当前文档入口。
+- 根 `README.md` 已改为 3 份当前文档入口。
 - `doc/代码结构梳理.md` 已梳理页面、API、services、OpenCode/Skill、素材库/模板/Wiki 存储范围。
 - 技术标解析 Skill 已统一为 `bid-tech-tender-structured-parser`。
 - 商务目录 Skill 已统一为 `bid-business-outline-generator`。
@@ -70,10 +69,22 @@ git diff --check
 
 结果：运行态恢复聚焦组合 `2 passed`；diff 检查通过。
 
+```bash
+PYTHONPATH=. pytest tests/test_business_gap_planner.py::BusinessGapPlannerTests::test_business_gap_table_fill_creates_artifact_from_target_and_sources tests/test_business_gap_planner.py::BusinessGapPlannerTests::test_business_gap_table_fill_allows_project_fact_table_only tests/test_bid_material_scope_services.py::test_business_gap_table_fill_stays_in_business_service
+```
+
+结果：`3 passed`。
+
+```bash
+npx eslint src/workspaces/business/pages/BusinessGapRecognition.jsx src/workspaces/technical/pages/TechnicalGapRecognition.jsx
+```
+
+结果：通过。
+
 ## 4. 下一步
 
-1. 启动当前 Docker 环境。
-2. 用真实技术标样本跑完整流程，记录阻断点。
-3. 用真实商务标样本跑完整流程，记录阻断点。
-4. 把阻断点转成研发任务，优先处理影响交付的解析、目录、填表、正文生成、格式和导出问题。
-5. 单独补生产权限和临时/对象存储清理策略。
+1. 2026-05-28 王立博整理真实商务标样本和验收清单。
+2. 彭维锋并行优化商务标智能解析和目录生成。
+3. 安博成先完成素材库标签、共用业绩库、素材清洗和商务 Wiki。
+4. 肖雨航基于素材库/Wiki 做素材匹配、项目事实表和 AI填写。
+5. 最后串起正文生成、格式处理和 Word/PDF 导出。

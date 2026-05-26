@@ -80,7 +80,7 @@ const taskActionLabels = {
   manual_select: '人工指定',
   manual_upload: '人工补料',
   ignored: '忽略',
-  ai_table_fill: 'AI填表',
+  ai_table_fill: 'AI填写',
 }
 
 const taskActionVariant = (mode) => {
@@ -985,7 +985,7 @@ export default function TechnicalGapRecognition({ showToast }) {
               <div className="grid min-w-0 flex-1 grid-cols-4 gap-1.5 text-center">
                 {[
                   ['fixed_material', '固定素材'],
-                  ['ai_table_fill', 'AI填表'],
+                  ['ai_table_fill', 'AI填写'],
                   ['manual_upload', '人工补充'],
                   ['manual_select', '人工指定'],
                 ].map(([key, label]) => (

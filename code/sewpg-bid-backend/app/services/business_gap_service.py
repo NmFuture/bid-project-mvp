@@ -1307,8 +1307,8 @@ class BusinessGapService:
         target = prepare_business_table_fill_target(target, work_dir)
         prepared_sources = prepare_business_table_fill_sources(source_materials, work_dir)
         output_name = (
-            f"{safe_filename(str(target.get('name') or target.get('fileName') or task.get('title') or '商务填表'), '商务填表')}"
-            "-AI填表.docx"
+            f"{safe_filename(str(target.get('name') or target.get('fileName') or task.get('title') or '商务填写'), '商务填写')}"
+            "-AI填写.docx"
         )
         output_path = unique_path(work_dir, output_name)
         manifest_path = work_dir / "business_table_fill_input.json"
@@ -1333,7 +1333,7 @@ class BusinessGapService:
         result = run_business_table_fill_skill(manifest_path)
         resolved_output = Path(str(result.get("outputFile") or output_path))
         if not resolved_output.exists():
-            raise RuntimeError(f"AI 填表未生成输出文件：{resolved_output}")
+            raise RuntimeError(f"AI填写未生成输出文件：{resolved_output}")
 
         existing_count = len(task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else [])
         artifact_id = f"BART-{safe_filename(task_id, 'TASK')}-TBL-{existing_count + 1}"
@@ -1381,7 +1381,7 @@ class BusinessGapService:
         self._finalize_plan_update(project, business_gap_state, plan, updated_at=created_at)
         self._refresh_plan_urls(project_id, plan, url_scope)
         return {
-            "message": "AI 填表产物已生成。",
+            "message": "AI填写产物已生成。",
             "task": copy.deepcopy(task),
             "artifact": copy.deepcopy(artifact),
             "plan": copy.deepcopy(plan),

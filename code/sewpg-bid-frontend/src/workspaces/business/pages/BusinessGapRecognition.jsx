@@ -28,7 +28,7 @@ const taskActionLabels = {
   manual_select: '人工指定',
   manual_upload: '人工补料',
   ignored: '忽略',
-  ai_table_fill: 'AI填表',
+  ai_table_fill: 'AI填写',
 }
 
 const statusVariant = (status) => {
@@ -54,7 +54,7 @@ const usageModeLabels = {
   attach_whole: '整件挂载',
   extract_fields: '抽字段',
   extract_image: '摘图/扫描件',
-  fill_table: '填表',
+  fill_table: '填写',
   fill_template: '填模板',
   embed_scan: '嵌入扫描件',
   extract_and_summarize: '提取总结',
@@ -66,8 +66,8 @@ const usageModeLabels = {
 const sourceModeLabels = {
   uploaded_in_business_s3: '人工上传补料',
   selected_from_business_material_library: '已选素材快照',
-  generated_by_business_s3_ai_draft: 'AI填表产物',
-  generated_by_business_table_fill: 'AI填表产物',
+  generated_by_business_s3_ai_draft: 'AI填写产物',
+  generated_by_business_table_fill: 'AI填写产物',
   generated_by_s1_business_parser: '解析生成承诺函',
   parsed_from_tender_attachment_template: '解析附件模板',
   parsed_business_scoring: '解析商务评分',
@@ -237,7 +237,7 @@ const tableFillTargetKey = (item) =>
   item?.artifactId || item?.templateId || item?.materialId || item?.id || item?.filePath || item?.path || item?.fileName || ''
 
 const tableFillTargetTitle = (item) =>
-  item?.templateName || item?.fileName || item?.materialName || item?.name || item?.title || item?.templateId || item?.artifactId || '待填表'
+  item?.templateName || item?.fileName || item?.materialName || item?.name || item?.title || item?.templateId || item?.artifactId || '待填写'
 
 const isProjectUploadedBidTemplate = (item) =>
   ['project_uploaded_bid_template', 'system_default_bid_template', 'selected_from_bid_template'].includes(String(item?.sourceMode || ''))
@@ -932,7 +932,7 @@ function BusinessTableFillModal({
       <div className="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
           <div className="min-w-0">
-            <h3 className="text-lg font-headline font-bold text-on-surface">AI填表</h3>
+            <h3 className="text-lg font-headline font-bold text-on-surface">AI填写</h3>
           </div>
           <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" />
         </div>
@@ -952,7 +952,7 @@ function BusinessTableFillModal({
         <div className="grid min-h-0 flex-1 gap-0 overflow-hidden lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.2fr)]">
           <div className="min-h-0 overflow-auto border-b border-surface-container-high p-4 lg:border-b-0 lg:border-r">
             <div className="mb-3 flex items-center justify-between gap-3">
-              <h4 className="text-sm font-semibold text-on-surface">待填表</h4>
+              <h4 className="text-sm font-semibold text-on-surface">待填写</h4>
               <Badge size="xs" variant={targets.length ? 'pending' : 'warn'}>{targets.length} 个</Badge>
             </div>
             {targets.length ? (
@@ -986,7 +986,7 @@ function BusinessTableFillModal({
               </div>
             ) : (
               <div className="rounded-md border border-dashed border-surface-container-high p-8 text-center text-sm text-on-surface-variant">
-                当前任务还没有可填表模板或附件。可先在候选素材中选择表格、人工指定素材库表格，或上传补充表格。
+                当前任务还没有可填写模板或附件。可先在候选素材中选择表格、人工指定素材库表格，或上传补充表格。
               </div>
             )}
           </div>
@@ -1078,7 +1078,7 @@ function BusinessTableFillModal({
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-surface-container-high bg-surface-container-low px-5 py-4">
           <div className="text-xs text-on-surface-variant">
             {payload?.summary ? `可选素材 ${payload.summary.materialCount || 0} 个` : '从当前商务标素材库加载'}
-            {selectedTarget ? ` · 待填表：${tableFillTargetTitle(selectedTarget)}` : ''}
+            {selectedTarget ? ` · 待填写：${tableFillTargetTitle(selectedTarget)}` : ''}
             {selectedSources.length ? ` · 数据来源 ${selectedSources.length} 个` : ' · 默认包含项目事实表'}
           </div>
           <div className="flex items-center gap-2">
@@ -1089,7 +1089,7 @@ function BusinessTableFillModal({
               disabled={busy || loading || !selectedTarget}
               variant="primary"
             >
-              {busy ? '填表中...' : '开始AI填表'}
+              {busy ? '填写中...' : '开始AI填写'}
             </Button>
           </div>
         </div>
@@ -1365,7 +1365,7 @@ export default function BusinessGapRecognition({ showToast }) {
       const data = await businessGapsAPI.selectableMaterials(id, { keyword: keyword.trim() })
       setTableFillPayload(data)
     } catch (e) {
-      showToast?.(e?.message || 'AI填表数据来源加载失败', 'error')
+      showToast?.(e?.message || 'AI填写数据来源加载失败', 'error')
       setTableFillPayload({ items: [], summary: {} })
     } finally {
       setTableFillLoading(false)
@@ -1499,9 +1499,9 @@ export default function BusinessGapRecognition({ showToast }) {
         setFactFields(asArray(data.projectFactTable.fields))
       }
       setTableFillOpen(false)
-      showToast?.(data?.message || 'AI填表产物已生成')
+      showToast?.(data?.message || 'AI填写产物已生成')
     } catch (e) {
-      showToast?.(e?.message || 'AI填表失败', 'error')
+      showToast?.(e?.message || 'AI填写失败', 'error')
     } finally {
       setActionLoading('')
     }
@@ -1692,7 +1692,7 @@ export default function BusinessGapRecognition({ showToast }) {
             <div className="grid min-w-0 flex-1 grid-cols-4 gap-1.5 text-center">
               {[
                 ['fixed_material', '固定素材'],
-                ['ai_table_fill', 'AI填表'],
+                ['ai_table_fill', 'AI填写'],
                 ['manual_upload', '人工补充'],
                 ['manual_select', '人工指定'],
               ].map(([key, label]) => (
@@ -1799,7 +1799,7 @@ export default function BusinessGapRecognition({ showToast }) {
                         {actionLoading === 'upload' ? '上传中...' : '人工上传补充'}
                       </FileButton>
                       <Button type="button" disabled={!!actionLoading} onClick={() => openTableFillModal(task)} size="sm" variant="primary">
-                        {actionLoading === `table-fill:${task.id}` ? '填表中...' : 'AI填表'}
+                        {actionLoading === `table-fill:${task.id}` ? '填写中...' : 'AI填写'}
                       </Button>
                       <Button type="button" disabled={!!actionLoading} onClick={() => ignoreTask(task)} size="sm" variant="quiet">
                         {actionLoading === `ignore:${task.id}` ? '处理中...' : '忽略'}

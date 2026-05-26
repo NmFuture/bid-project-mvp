@@ -11,11 +11,14 @@
 
 当前正式口径以这些文件为准：
 
-- `../../doc/31-技术标与商务标双轨独立化实施计划.md`
-- `../../doc/06-MVP接口文档.md`
-- `./MVP接口与参数核心版_极简版.md`
+- `./当前API接口核心版.md`
+- `../../doc/代码结构梳理.md`
+- `../../doc/需求梳理.md`
+- `../../doc/研发计划.md`
 - `../sewpg-bid-backend/app/api/routes/technical.py`
 - `../sewpg-bid-backend/app/api/routes/business.py`
+- `../sewpg-bid-backend/app/api/routes/business_gaps.py`
+- `../sewpg-bid-frontend/src/api/index.js`
 
 历史 FastAPI 迁移方案和旧单线接口不再作为下一阶段开发入口。
 

@@ -20,9 +20,8 @@ sewpg-bid-backend/
 - 前端最终只调这里提供的 FastAPI
 - 当前业务入口按 `/api/technical/...` 与 `/api/business/...` 双轨注册
 - `onlyoffice/` 和 `opencode/` 只保留当前 compose 与主链路需要的运行资产
-- 当前主链路真实阶段：`S0 解析 / S1 模板与目录 / S2 审核目录 / S3 缺口处理 / S4 生成标书 / S5 共创 / S6 导出`
-- 项目阶段条只展示 `S1-S6`；`S0` 是全局解析/审核模块
-- 旧 `S7/S8/S9/S10` 仅作为历史请求兼容或内部文件名保留，不再作为当前阶段口径
+- 当前主链路按产品口径理解为：智能解析、建项目、目录、素材匹配、正文生成、在线共创、格式处理、导出。
+- 旧阶段号仅作为部分内部文件名或历史兼容保留，不再作为产品文档口径。
 - 旧 `/api/projects...`、`/api/materials...`、`/api/audit...` 不再作为真实业务入口注册，只在防回退测试和内部 URL 兼容替换中出现
 
 ## 当前代码分层
@@ -53,4 +52,4 @@ sewpg-bid-backend/
 
 ## 下一步
 
-后续不要再按旧单线 route 或旧三条独立拆任务推进。当前以 `/Users/wlb/Agent/bid-project/doc/31-技术标与商务标双轨独立化实施计划.md` 和 `/Users/wlb/Agent/bid-project/code/progress.md` 为准，继续收瘦 `store.py` / `material_store.py`，并同步更新文档口径。
+后续不要再按旧单线 route 或旧三条独立拆任务推进。当前以 `/Users/wlb/Agent/bid-project/doc/需求梳理.md`、`/Users/wlb/Agent/bid-project/doc/研发计划.md` 和 `/Users/wlb/Agent/bid-project/code/progress.md` 为准，先跑通商务标端到端。

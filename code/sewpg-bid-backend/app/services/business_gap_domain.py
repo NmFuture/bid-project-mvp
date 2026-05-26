@@ -509,7 +509,7 @@ def table_fill_target(task: dict[str, Any], data: dict[str, Any]) -> dict[str, A
     for candidate in candidates:
         if table_fill_target_looks_fillable(candidate):
             return copy.deepcopy(candidate)
-    raise ValueError("请先选择一个待填表模板或附件。")
+    raise ValueError("请先选择一个待填写模板或附件。")
 
 
 def table_fill_target_looks_fillable(item: dict[str, Any]) -> bool:
