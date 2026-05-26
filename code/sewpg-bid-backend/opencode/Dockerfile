@@ -54,7 +54,7 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       '  echo "usage: business-outline <manifest>" >&2' \
       '  exit 64' \
       'fi' \
-      'exec python3 /workspace/.opencode/skills/business-bid-outline/scripts/run_from_manifest.py --manifest "$1" --response summary' \
+      'exec python3 /workspace/.opencode/skills/bid-business-outline-generator/scripts/run_from_manifest.py --manifest "$1" --response summary' \
       > /usr/local/bin/business-outline \
     && printf '%s\n' \
       '#!/bin/sh' \

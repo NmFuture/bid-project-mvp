@@ -70,7 +70,7 @@ def _get_sync_cleaning_loop() -> asyncio.AbstractEventLoop:
 
 
 def _skill_driver_path() -> Path:
-    return BASE_DIR / "opencode" / "skill" / "format-cleaner-v4" / "scripts" / "driver.py"
+    return BASE_DIR / "opencode" / "skill" / "bid-material-format-cleaner" / "scripts" / "driver.py"
 
 
 def _extract_driver_line(output: str, file_name: str) -> tuple[str, str]:
@@ -153,7 +153,7 @@ async def clean_material_file(file_id: str, data: dict[str, Any] | None = None) 
         return await set_material_clean_status(
             file_id,
             "failed",
-            "format-cleaner-v4 skill 未安装到后端镜像。",
+            "bid-material-format-cleaner skill 未安装到后端镜像。",
             extra={"cleanError": str(driver_path)},
         )
 

@@ -8,7 +8,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.services.bid_type import require_bid_type
-from app.services.workspace_artifacts import business_workspace_dir, workspace_parse_dir
+from app.services.workspace_artifacts import business_workspace_dir, workspace_dir, workspace_parse_dir
 
 
 def now_iso() -> str:
@@ -194,13 +194,18 @@ def recover_parse_storage(project: dict[str, Any]) -> dict[str, Any]:
 
 def recover_directory_state(project: dict[str, Any]) -> dict[str, Any]:
     project_id = str(project.get("id") or "")
-    toc_path = recover_business_toc_path(project)
+    bid_type = require_bid_type(
+        project.get("bidType"),
+        error_message="目录状态恢复必须显式传入技术标或商务标项目。",
+    )
+    toc_path = recover_toc_path(project)
     generated_at = now_iso()
     if toc_path:
+        message = f"已从{bid_type} S2 目录产物恢复目录状态。"
         return {
             "status": "completed",
             "percentage": 100,
-            "summary": "已从商务标 S2 目录产物恢复目录状态。",
+            "summary": message,
             "generatedAt": generated_at,
             "output": {
                 "fileName": f"{str(project.get('name') or project_id)}_目录.docx",
@@ -215,7 +220,7 @@ def recover_directory_state(project: dict[str, Any]) -> dict[str, Any]:
             "ruleEvidence": {},
             "events": [
                 build_directory_event(
-                    "已从商务标 S2 目录产物恢复目录状态。",
+                    message,
                     level="info",
                     step="recovered",
                     at=generated_at,
@@ -249,7 +254,7 @@ def default_directory_state() -> dict[str, Any]:
 
 
 def recover_outline_state(project: dict[str, Any]) -> dict[str, Any]:
-    toc_path = recover_business_toc_path(project)
+    toc_path = recover_toc_path(project)
     nodes: list[dict[str, Any]] = []
     generated_at = now_iso()
     if toc_path:
@@ -310,22 +315,27 @@ def ensure_project_runtime_states(project: dict[str, Any]) -> dict[str, Any]:
     return project
 
 
-def recover_business_toc_path(project: dict[str, Any]) -> Path | None:
+def recover_toc_path(project: dict[str, Any]) -> Path | None:
     project_id = str(project.get("id") or "")
     if not project_id:
         return None
+    bid_type = require_bid_type(
+        project.get("bidType"),
+        error_message="目录产物恢复必须显式传入技术标或商务标项目。",
+    )
     candidates: list[Path] = []
     directory_state = project.get("directory_state") if isinstance(project.get("directory_state"), dict) else {}
     opencode_output = directory_state.get("opencodeOutput") if isinstance(directory_state.get("opencodeOutput"), dict) else {}
     for value in (opencode_output.get("tocJsonPath"), opencode_output.get("outputFile")):
         if value:
             candidates.append(Path(str(value)).expanduser())
+    root = workspace_dir(project_id, bid_type)
     candidates.extend(
         [
-            settings.documents_dir / project_id / "business-workspace" / "s2_toc_workdir" / settings.s2_toc_output_file_name,
-            settings.documents_dir / project_id / "business-workspace" / "s2_toc_workdir" / "toc.json",
-            settings.documents_dir / project_id / "business-workspace" / "gaps" / settings.s2_toc_output_file_name,
-            settings.documents_dir / project_id / "business-workspace" / "gaps" / "toc.json",
+            root / "s2_toc_workdir" / settings.s2_toc_output_file_name,
+            root / "s2_toc_workdir" / "toc.json",
+            root / "gaps" / settings.s2_toc_output_file_name,
+            root / "gaps" / "toc.json",
         ]
     )
     for candidate in candidates:
@@ -334,8 +344,12 @@ def recover_business_toc_path(project: dict[str, Any]) -> Path | None:
     return None
 
 
+def recover_business_toc_path(project: dict[str, Any]) -> Path | None:
+    return recover_toc_path(project)
+
+
 def outline_nodes_from_directory_toc(project: dict[str, Any]) -> list[dict[str, Any]]:
-    toc_path = recover_business_toc_path(project)
+    toc_path = recover_toc_path(project)
     if not toc_path:
         return []
     toc = read_json_file(toc_path)

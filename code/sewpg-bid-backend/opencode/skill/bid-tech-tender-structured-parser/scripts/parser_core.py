@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover
     Document = None  # type: ignore[assignment]
 
 
-SKILL_NAME = "bid-tender-structured-parser"
+SKILL_NAME = "bid-tech-tender-structured-parser"
 WORD_NAMESPACE = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 

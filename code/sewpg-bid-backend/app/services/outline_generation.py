@@ -29,7 +29,7 @@ from app.services.workspace_project_access import (
 )
 
 OUTLINE_SKILL_NAME = "bid-tech-outline-generator"
-BUSINESS_OUTLINE_SKILL_NAME = "business-bid-outline"
+BUSINESS_OUTLINE_SKILL_NAME = "bid-business-outline-generator"
 OUTLINE_SKILL_COMMAND = "s2toc"
 BUSINESS_OUTLINE_SKILL_COMMAND = "business-outline"
 OUTLINE_SKILL_RUNNER = (
@@ -230,7 +230,7 @@ def _run_business_outline_skill(
             raise RuntimeError(
                 "商务标目录生成失败："
                 f"futurecode 执行失败：{exc}；"
-                f"本地 business-bid-outline 兜底也失败：{fallback_exc}"
+                f"本地 bid-business-outline-generator 兜底也失败：{fallback_exc}"
             ) from fallback_exc
     return _load_outline_result(result, manifest_path)
 
@@ -314,7 +314,7 @@ def _build_business_outline_prompt(manifest_path: Path) -> str:
     return f"""
 Use the {BUSINESS_OUTLINE_SKILL_NAME} skill.
 
-你现在在做 S2 商务标目录生成。必须完整执行 business-bid-outline Skill，并严格遵循原有 Skill 的产物边界：准备脚本只生成输入材料，最终 outline.json 只能由 AI 判断后写入。
+你现在在做 S2 商务标目录生成。必须完整执行 bid-business-outline-generator Skill，并严格遵循原有 Skill 的产物边界：准备脚本只生成输入材料，最终 outline.json 只能由 AI 判断后写入。
 
 manifest：{manifest_path}
 
@@ -328,7 +328,7 @@ manifest：{manifest_path}
 
 该命令不得被视为最终目录生成；不得把它的 stdout、summary 或任何候选信息当作最终 outline.json。
 
-AI 判断动作：命令完成后，继续按 business-bid-outline Skill 的步骤 2-7 做 AI 判断：学习历史商务标目录结构，分析当前招标文件，匹配每个目录项的 source_text，判断 required_status，补强必须提交材料，最终写入 outline.json。
+AI 判断动作：命令完成后，继续按 bid-business-outline-generator Skill 的步骤 2-7 做 AI 判断：学习历史商务标目录结构，分析当前招标文件，匹配每个目录项的 source_text，判断 required_status，补强必须提交材料，最终写入 outline.json。
 
 必须使用后端 manifest.templateFile 作为历史商务标/商务模板来源，不扫描当前工作目录，不使用 user_confirmed_inputs.json。
 
@@ -336,7 +336,7 @@ AI 判断动作：命令完成后，继续按 business-bid-outline Skill 的步�
 - 历史商务标输入：{history_file}
 - 招标文件输入：{tender_file}
 
-禁止调用 read 工具；不要使用 cat/head/tail/grep 直接打印 JSON 大文件。需要访问文件内容或写回结果时，只能调用 Bash 工具执行 python3 脚本读取上述原始产物、按 business-bid-outline Skill 逻辑分析和写回。Python 脚本可以完整读取 JSON 文件到内存，但每次 stdout 只输出当前判断所需的简短检查结果，避免刷屏或截断。
+禁止调用 read 工具；不要使用 cat/head/tail/grep 直接打印 JSON 大文件。需要访问文件内容或写回结果时，只能调用 Bash 工具执行 python3 脚本读取上述原始产物、按 bid-business-outline-generator Skill 逻辑分析和写回。Python 脚本可以完整读取 JSON 文件到内存，但每次 stdout 只输出当前判断所需的简短检查结果，避免刷屏或截断。
 
 必须把最终 AI 判断后的原生产物写入：
 {business_outline_file}
@@ -514,7 +514,7 @@ def _write_business_toc_from_outline_payload(
     }
     evidence = {
         "schema_version": "bid-toc-evidence-v1",
-        "engine": "business-bid-outline",
+        "engine": "bid-business-outline-generator",
         "inputs": source_files,
         "businessOutlineFile": str(business_outline_file),
         "decisions": business_outline.get("review_items") if isinstance(business_outline.get("review_items"), list) else [],

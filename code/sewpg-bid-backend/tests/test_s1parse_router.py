@@ -75,7 +75,7 @@ class S1ParseRouterTests(unittest.TestCase):
             runner = ROUTER.resolve_runner(manifest_path)
 
         self.assertEqual(runner.name, "run_from_manifest.py")
-        self.assertIn("bid-tender-structured-parser", str(runner))
+        self.assertIn("bid-tech-tender-structured-parser", str(runner))
 
     def test_main_dispatches_manifest_to_resolved_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

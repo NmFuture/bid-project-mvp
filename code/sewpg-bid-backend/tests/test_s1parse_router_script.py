@@ -63,7 +63,7 @@ class S1ParseRouterScriptTests(unittest.TestCase):
 
             self.assertEqual(summary["schemaVersion"], "bid-tender-structured-v1")
             self.assertEqual(payload["structured"]["schemaVersion"], "bid-tender-structured-v1")
-            self.assertEqual(payload["structured"]["targetSkill"], "bid-tender-structured-parser")
+            self.assertEqual(payload["structured"]["targetSkill"], "bid-tech-tender-structured-parser")
 
     def test_router_executes_business_manifest(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]

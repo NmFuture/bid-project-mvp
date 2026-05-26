@@ -1,5 +1,5 @@
 ---
-name: business-bid-outline
+name: bid-business-outline-generator
 description: 当用户要求生成商务标目录、商务标大纲、商务响应目录、投标文件目录结构或 outline.json 时使用。先学习历史商务标投标文件目录结构，再用当前招标文件要求匹配 source_text 并补强特殊提交材料，最终只输出 outline.json。
 ---
 

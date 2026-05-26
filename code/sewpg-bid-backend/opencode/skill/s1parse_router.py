@@ -13,7 +13,7 @@ CURRENT = Path(__file__).resolve()
 SKILL_ROOT = CURRENT.parent
 
 RUNNERS = {
-    "技术标": SKILL_ROOT / "bid-tender-structured-parser" / "scripts" / "run_from_manifest.py",
+    "技术标": SKILL_ROOT / "bid-tech-tender-structured-parser" / "scripts" / "run_from_manifest.py",
     "商务标": SKILL_ROOT / "bid-business-tender-structured-parser" / "scripts" / "run_from_manifest.py",
 }
 

@@ -210,9 +210,9 @@ class DirectoryGenerationTests(unittest.TestCase):
         return result
 
     def _mock_business_futurecode_outline(self, prompt: str, *args, **kwargs) -> dict:
-        self.assertIn("Use the business-bid-outline skill", prompt)
+        self.assertIn("Use the bid-business-outline-generator skill", prompt)
         self.assertNotIn('"agentDecisions"', prompt)
-        self.assertIn("完整执行 business-bid-outline Skill", prompt)
+        self.assertIn("完整执行 bid-business-outline-generator Skill", prompt)
         self.assertIn("准备脚本只生成输入材料", prompt)
         self.assertIn("不要自行生成或修改前端兼容 toc.json", prompt)
         self.assertIn("manifest.templateFile", prompt)
@@ -381,8 +381,8 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertIn("business-workspace", str(work_dir))
         self.assertNotIn("technical-workspace", str(work_dir))
         self.assertEqual(work_dir, business_workspace_dir(project_id) / "s2_toc_workdir")
-        self.assertEqual(payload["opencodeOutput"]["engine"], "business-bid-outline")
-        self.assertEqual(payload["opencodeOutput"]["skill"], "business-bid-outline")
+        self.assertEqual(payload["opencodeOutput"]["engine"], "bid-business-outline-generator")
+        self.assertEqual(payload["opencodeOutput"]["skill"], "bid-business-outline-generator")
         self.assertEqual(manifest["bidType"], "商务标")
         self.assertIn("business-workspace", manifest["workDir"])
         self.assertEqual(Path(manifest["templateFile"]).parent, work_dir)
@@ -600,7 +600,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / "opencode"
             / "skill"
-            / "business-bid-outline"
+            / "bid-business-outline-generator"
             / "scripts"
             / "run_from_manifest.py"
         )

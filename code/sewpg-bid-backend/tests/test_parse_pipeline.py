@@ -695,7 +695,7 @@ class ParsePipelineTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / "opencode"
             / "skill"
-            / "bid-tender-structured-parser"
+            / "bid-tech-tender-structured-parser"
             / "scripts"
             / "run_from_manifest.py"
         )

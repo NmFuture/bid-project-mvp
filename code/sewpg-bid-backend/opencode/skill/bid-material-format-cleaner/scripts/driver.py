@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-driver.py — format-cleaner-v4 的总控入口。
+driver.py — bid-material-format-cleaner 的总控入口。
 
 职责：
 - 只依赖 venv 解释器运行，不依赖 activate
@@ -775,7 +775,7 @@ def _send_feishu_summary(source_dir: Path, output_dir: Path, records: list[FileR
         "msg_type": "text",
         "content": {
             "text": (
-                "【format-cleaner-v4 清洗完成】\n"
+                "【bid-material-format-cleaner 清洗完成】\n"
                 f"源目录: {source_dir}\n"
                 f"输出目录: {output_dir}\n"
                 f"PDF: {sum(r.status == 'OK' for r in pdf_records)}/{len(pdf_records)} | "
@@ -837,7 +837,7 @@ def run(source_dir: Path, output_dir: Path, *, notify: bool) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="format-cleaner-v4 总控驱动")
+    parser = argparse.ArgumentParser(description="bid-material-format-cleaner 总控驱动")
     parser.add_argument("source_dir", help="素材根目录")
     parser.add_argument(
         "--output-dir",

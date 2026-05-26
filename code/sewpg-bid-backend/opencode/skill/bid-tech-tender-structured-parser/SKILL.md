@@ -1,5 +1,5 @@
 ---
-name: bid-tender-structured-parser
+name: bid-tech-tender-structured-parser
 description: Parse one or more tender documents into structured bid requirements, scoring tables, fixed project and wind turbine fields, requirement presence, source evidence, and project dates.
 ---
 

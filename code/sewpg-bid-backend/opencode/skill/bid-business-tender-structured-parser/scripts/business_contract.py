@@ -9,7 +9,7 @@ from typing import Any
 
 
 CURRENT = Path(__file__).resolve()
-TECHNICAL_PARSER_DIR = CURRENT.parents[2] / "bid-tender-structured-parser" / "scripts"
+TECHNICAL_PARSER_DIR = CURRENT.parents[2] / "bid-tech-tender-structured-parser" / "scripts"
 if str(TECHNICAL_PARSER_DIR) not in sys.path:
     sys.path.insert(0, str(TECHNICAL_PARSER_DIR))
 

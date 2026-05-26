@@ -1,10 +1,10 @@
 ---
-name: format-cleaner-v4
+name: bid-material-format-cleaner
 description: >
   清洗不同格式的素材文件（PDF/Excel/Word），统一转换为固定格式的 Word 文件，
   剥离封面、目录、前言等无用内容，只保留正文及其原有的标题、图片和排版。
-  V4 在 V3 的 driver 总控、事务式 Word 清洗基础上，补充标题去编号并保留/补齐 Heading、以及 PDF 标题默认 Heading 1。
-  当用户明确提到"format-cleaner-v4"、"V4版清洗"、"标题去编号清洗"、"Heading增强版清洗"时使用此 skill。
+  driver 总控基于原素材清洗流程，补充标题去编号并保留/补齐 Heading、以及 PDF 标题默认 Heading 1。
+  当用户明确要求素材清洗、标题去编号清洗或 Heading 增强版清洗时使用此 skill。
 allowed-tools:
   - Read
   - Glob
@@ -14,11 +14,11 @@ allowed-tools:
   - Edit
 ---
 
-# format-cleaner-v4
+# bid-material-format-cleaner
 
 批量清洗素材文件（PDF/Excel/Word），统一转换为标准 Word (.docx) 文件，剥离无用前序内容。
 
-这是 `format-cleaner-v3` 的独立升级副本：保留原有 driver 总控、Word 单临时副本事务与预检快路径，只补两项能力：
+这是素材清洗通用工具：保留 driver 总控、Word 单临时副本事务与预检快路径，并补充两项能力：
 - Word 标题在规范化阶段会去掉前置数字编号，并保留或补齐对应 Heading
 - PDF 转 Word 时插入的标题默认带 `Heading 1`
 

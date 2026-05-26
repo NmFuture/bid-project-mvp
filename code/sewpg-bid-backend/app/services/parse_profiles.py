@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE, require_bid_type
 
 
-TECHNICAL_PARSE_SKILL_NAME = "bid-tender-structured-parser"
+TECHNICAL_PARSE_SKILL_NAME = "bid-tech-tender-structured-parser"
 BUSINESS_PARSE_SKILL_NAME = "bid-business-tender-structured-parser"
 TECHNICAL_SCHEMA_VERSION = "bid-tender-structured-v1"
 BUSINESS_SCHEMA_VERSION = "bid-business-tender-structured-v1"

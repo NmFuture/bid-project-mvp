@@ -651,8 +651,41 @@ def test_bid_runtime_recovery_rules_are_outside_store() -> None:
     assert "def ensure_project_runtime_states" in runtime_source
     assert "def now_iso" in runtime_source
     assert "def outline_nodes_from_toc_items" in runtime_source
-    assert "business-workspace" in runtime_source
+    assert "business_workspace_dir" in runtime_source
     assert "technical-workspace" in runtime_source
+
+
+def test_technical_runtime_can_recover_directory_from_existing_toc(tmp_path, monkeypatch) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "documents_dir", tmp_path)
+    toc_path = tmp_path / "PRJ-TECH-TOC" / "technical-workspace" / "s2_toc_workdir" / "toc.json"
+    toc_path.parent.mkdir(parents=True)
+    toc_path.write_text(
+        json.dumps(
+            {
+                "generatedAt": "2026-05-26T00:00:00Z",
+                "items": [
+                    {"level": 1, "title": "技术方案", "number": "1"},
+                    {"level": 2, "title": "风机参数", "number": "1.1"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    recovered = ensure_project_runtime_states(
+        {"id": "PRJ-TECH-TOC", "name": "技术目录恢复项目", "bidType": "技术标"}
+    )
+
+    assert recovered["directory_state"]["status"] == "completed"
+    assert recovered["directory_state"]["opencodeOutput"]["tocJsonPath"] == str(toc_path)
+    assert recovered["directory_state"]["summary"] == "已从技术标 S2 目录产物恢复目录状态。"
+    assert recovered["outline_state"]["reviewStatus"] == "confirmed"
+    assert recovered["outline_state"]["nodes"][0]["title"] == "技术方案"
+    assert recovered["outline_state"]["nodes"][0]["children"][0]["title"] == "风机参数"
+    assert recovered["outline_state"]["recoveredFrom"] == str(toc_path)
 
 
 def test_bid_parse_state_rules_are_outside_store() -> None:

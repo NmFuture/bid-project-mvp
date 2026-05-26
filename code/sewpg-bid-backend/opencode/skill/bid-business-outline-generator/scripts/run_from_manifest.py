@@ -93,7 +93,7 @@ def run_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any
 
     summary = {
         "schema_version": "business-outline-inputs-v1",
-        "skill": "business-bid-outline",
+        "skill": "bid-business-outline-generator",
         "businessOutlineFile": str(outline_file),
         "tenderMapInputsFile": str(tender_map_inputs_file),
         "historyBidOutlineInputsFile": str(history_inputs_file),
@@ -125,7 +125,7 @@ def build_fallback_outline(
                 "number": None,
                 "level": 1,
                 "required_status": "待确认",
-                "source_text": "本目录由 business-bid-outline 本地兜底生成，请人工确认商务标目录结构。",
+                "source_text": "本目录由 bid-business-outline-generator 本地兜底生成，请人工确认商务标目录结构。",
                 "source_refs": [],
                 "reason": "历史商务标模板和招标文件未解析出明确目录项，生成兜底父节点供人工审核。",
                 "children": [],
