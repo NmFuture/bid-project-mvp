@@ -1196,3 +1196,29 @@ rm -f "$tmp_index"
 - `doc/README.md`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-26 10:46:36 post-commit 511b2e7
+
+提交摘要：feat: align technical workspace UI with business flow
+
+变更文件：
+
+- `code/sewpg-bid-frontend/src/workspaces/business/businessStageFlow.js`
+- `code/sewpg-bid-frontend/src/workspaces/business/components/BusinessProjectStageProgress.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/business/pages/BusinessMaterialDB.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/components/TechnicalDataCard.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/components/TechnicalMaterialsViewSwitch.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/components/TechnicalOnlyOfficeWorkspace.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/components/TechnicalPageState.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/components/TechnicalProjectStageProgress.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalAuditLog.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalCoCreationEditor.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalGapRecognition.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalMaterialDB.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalMaterialWiki.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalOutlineReview.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalParseResult.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalTenderReview.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/technicalStageFlow.js`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
