@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { technicalOutlineAPI, technicalStagesAPI } from '../../../api'
+import { technicalGapsAPI, technicalOutlineAPI, technicalStagesAPI } from '../../../api'
 import { PageLoading, PageError } from '../../../components/states/PageState'
 import PageHeader from '../../../components/shared/PageHeader'
 import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
+import MaterialMatchProgressModal from '../../../components/shared/MaterialMatchProgressModal'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import OnlyOfficeWorkspace from '../../../components/shared/OnlyOfficeWorkspace'
 import Button from '../../../components/ui/Button'
@@ -13,6 +14,7 @@ import { projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
 import { getTechnicalStageRoute } from '../technicalStageFlow'
 
 const cloneNodes = (nodes = []) => JSON.parse(JSON.stringify(nodes))
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const createNode = (title = '新章节') => ({
   id: `OL-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -187,23 +189,6 @@ const requiredStatusClassName = (status) => {
   return 'border-secondary/20 bg-secondary-container text-on-secondary-container'
 }
 
-const relationLabel = (relation = '') => {
-  const labels = {
-    direct_requirement: '直接要求',
-    chapter_requirement: '章节要求',
-    appendix_requirement: '附表要求',
-    appendix_required: '附表要求',
-    supporting_requirement: '支撑要求',
-    semantic_match: '语义匹配',
-  }
-  return labels[relation] || relation || ''
-}
-
-const confidenceLabel = (value) => {
-  if (typeof value !== 'number' || Number.isNaN(value)) return ''
-  return `置信 ${Math.round(value * 100)}%`
-}
-
 const sendOnlyOfficeSearch = (text, onlyofficeEmbedRef = null, beforeSend = null) => {
   const cleanText = String(text || '').replace(/\s+/g, ' ').trim()
   if (!cleanText) return null
@@ -243,13 +228,17 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const [materialMatchProgress, setMaterialMatchProgress] = useState({
+    open: false,
+    running: false,
+    error: '',
+  })
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState('')
   const [tenderPreview, setTenderPreview] = useState(null)
   const [onlyofficeError, setOnlyofficeError] = useState('')
   const [collapsedNodeIds, setCollapsedNodeIds] = useState(new Set())
   const [pendingSearchText, setPendingSearchText] = useState('')
-  const [activeBasisRef, setActiveBasisRef] = useState(null)
   const [dragNodeId, setDragNodeId] = useState('')
   const [dragOverNodeId, setDragOverNodeId] = useState('')
   const [dragPlacement, setDragPlacement] = useState('before')
@@ -328,7 +317,6 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     const searchText = sourceRefSearchText(basisRef)
     if (!searchText) return
 
-    setActiveBasisRef(basisRef)
     const refFileId = String(basisRef.fileId || '').trim()
     const activeFileId = String(tenderPreview?.activeFile?.id || '').trim()
     if (basisRef?.type === 'tender' && refFileId && refFileId !== activeFileId) {
@@ -355,7 +343,6 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     }
     const searchText = nodeSearchText(node)
     if (searchText) {
-      setActiveBasisRef(null)
       sendOnlyOfficeSearch(searchText, onlyofficeEmbedRef, markPendingSearch)
     }
   }, [focusSourceRef, markPendingSearch])
@@ -392,6 +379,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     }
 
     setConfirming(true)
+    setMaterialMatchProgress({ open: true, running: true, error: '' })
     try {
       if (dirty) {
         const nodesToSave = renumberOutlineNodes(nodes)
@@ -401,13 +389,19 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       }
 
       await technicalOutlineAPI.confirm(id)
+      showToast?.('目录确认已完成，正在执行素材匹配...')
+      await technicalGapsAPI.runDetection(id)
+      setMaterialMatchProgress({ open: true, running: false, error: '' })
       const stageResult = await technicalStagesAPI.update(id, 2, { status: 'completed' })
       const nextStageId = Number(stageResult?.currentStage) || 3
       const nextRoute = getTechnicalStageRoute(id, nextStageId, workspaceSlug) || projectRoute(id, '/gaps', workspaceSlug)
-      showToast?.('目录确认已完成，已进入素材匹配')
+      showToast?.('素材匹配已完成，已进入素材匹配')
+      await delay(350)
       navigate(nextRoute)
     } catch (e) {
-      showToast?.(e?.message || '目录确认失败，请稍后重试', 'error')
+      const message = e?.message || '目录确认或素材匹配失败，请稍后重试'
+      setMaterialMatchProgress({ open: true, running: false, error: message })
+      showToast?.(message, 'error')
     } finally {
       setConfirming(false)
     }
@@ -679,8 +673,6 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
 
   const hasOnlyOfficeSession = Boolean(tenderPreview?.onlyoffice?.fileUrl && tenderPreview?.onlyoffice?.callbackUrl)
   const activeTenderFileName = tenderPreview?.activeFile?.name || '未选择文件'
-  const activeNode = findNodeContext(nodes, activeNodeId)?.node || null
-  const activeRefs = collectSourceRefs(activeNode)
 
   return (
     <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none business-ui-shell">
@@ -730,13 +722,6 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
                   {collapsedNodeIds.size ? '展开全部' : '收起全部'}
                 </Button>
                 <Button
-                  onClick={handleAddRoot}
-                  size="sm"
-                  variant="primary"
-                >
-                  新增一级
-                </Button>
-                <Button
                   onClick={handleSave}
                   disabled={saving}
                   size="sm"
@@ -765,62 +750,6 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
                 </div>
               )}
             </div>
-            {activeRefs.length ? (
-              <div className="max-h-[34%] min-h-[140px] overflow-y-auto border-t border-surface-container-high bg-white px-5 py-4">
-                <h4 className="text-xs font-semibold text-on-surface">当前目录依据</h4>
-                <div className="mt-2 flex flex-col gap-2">
-                  {activeRefs.slice(0, 4).map((ref, index) => {
-                    const searchText = sourceRefSearchText(ref)
-                    const isTender = ref?.type === 'tender'
-                    const isSemantic = ref?.kind === 'codex_semantic'
-                    const relation = relationLabel(ref?.relation)
-                    const confidence = confidenceLabel(ref?.confidence)
-                    const selected = activeBasisRef === ref
-                    return (
-                      <button
-                        key={`${ref?.type || 'ref'}-${ref?.paragraphIndex || index}-${index}`}
-                        type="button"
-                        onClick={() => {
-                          if (!isTender || !searchText) return
-                          setActiveBasisRef(ref)
-                          focusSourceRef(ref)
-                        }}
-                        disabled={!isTender || !searchText}
-                        className={`rounded-md border px-3 py-2 text-left text-xs transition-colors disabled:cursor-default disabled:opacity-70 ${
-                          selected
-                            ? 'border-primary bg-primary/5 text-on-surface'
-                            : 'border-surface-container-high bg-surface-container-low text-on-surface-variant enabled:hover:border-primary enabled:hover:bg-primary/5'
-                        }`}
-                        title={searchText}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex min-w-0 items-center gap-1.5">
-                            <span className="font-semibold text-on-surface">
-                              {isTender ? (isSemantic ? '语义依据' : '招标依据') : '模板骨架'}
-                            </span>
-                            {relation ? (
-                              <span className="rounded bg-secondary-container px-1.5 py-0.5 text-[10px] font-semibold text-on-secondary-container">
-                                {relation}
-                              </span>
-                            ) : null}
-                            {confidence ? (
-                              <span className="rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] font-semibold text-on-surface-variant">
-                                {confidence}
-                              </span>
-                            ) : null}
-                          </div>
-                          <span className="shrink-0">{ref?.fileName || ref?.type || '-'}</span>
-                        </div>
-                        {ref?.reason ? (
-                          <div className="mt-1 line-clamp-2 text-on-surface">{ref.reason}</div>
-                        ) : null}
-                        <div className="mt-1 line-clamp-2">{searchText || ref?.rawText || ref?.raw_text || '-'}</div>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            ) : null}
           </section>
         )}
       >
@@ -853,6 +782,12 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
           </div>
         )}
       </OnlyOfficeWorkspace>
+      <MaterialMatchProgressModal
+        open={materialMatchProgress.open}
+        running={materialMatchProgress.running}
+        error={materialMatchProgress.error}
+        onClose={() => setMaterialMatchProgress({ open: false, running: false, error: '' })}
+      />
     </div>
   )
 }

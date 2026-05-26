@@ -1068,6 +1068,20 @@ git add -A -n -- code/sewpg-bid-backend/tests
 - 对仍保留的共享前端组件继续分层判断：通用 UI 零件可以保留，带业务路线、阶段、API 语义的组件继续拆成 business/technical 两套。
 - 生产级权限边界另开专项确认：前端 workspace guard 只做体验约束，后端 route/service 才是强授权边界。
 
+权限边界文档同步补充：
+
+```bash
+rg -n "WORKSPACE_BY_ROLE|canWriteSettings|WorkspaceAccess|ensure_role_seed_users|current_user|/api/settings|projectsParallel" \
+  code/sewpg-bid-frontend/src/utils/permissions.js \
+  code/sewpg-bid-frontend/src/workspaces/shared/WorkspaceAccess.jsx \
+  code/sewpg-bid-frontend/src/components/layout/AppShell.jsx \
+  code/sewpg-bid-backend/app/services/auth_service.py \
+  code/sewpg-bid-backend/app/api/routes/settings.py \
+  code/sewpg-bid-backend/app/services/dashboard_service.py
+```
+
+结果：确认安博=`T`、马哥=`B`、肖哥=`TB` 的种子账号和前端角色映射存在；`T -> tech`、`B -> business`、`TB -> tech + business` 的前端工作区限制已由 `permissions.js` / `WorkspaceAccess` 实现，工作台后端也按角色返回技术、商务或双线并列项目。同步纠偏：`current_user` 只校验 token，不校验角色；`/api/settings/...` 当前只是登录校验，不是 `TB` 强授权；business/technical API 还需要统一补后端角色依赖和项目 `bidType` scope。已把该口径写入 `README.md`、`doc/06-MVP接口文档.md`、`doc/27-双轨开发协作规范与权限加固计划.md`、`doc/31-技术标与商务标双轨独立化实施计划.md`、`doc/README.md`、`doc/14-甲方新增需求待办.md` 和 `code/AGENT.md`。
+
 Redis worker 标类兜底与最新口径补充：
 
 ```bash
@@ -1220,5 +1234,34 @@ rm -f "$tmp_index"
 - `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalParseResult.jsx`
 - `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalTenderReview.jsx`
 - `code/sewpg-bid-frontend/src/workspaces/technical/technicalStageFlow.js`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-26 15:36:45 post-commit 7ba9471
+
+提交摘要：feat: align material matching flow and permission docs
+
+变更文件：
+
+- `README.md`
+- `code/AGENT.md`
+- `code/progress.md`
+- `code/sewpg-bid-frontend/src/api/index.js`
+- `code/sewpg-bid-frontend/src/components/shared/MaterialMatchProgressModal.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/business/businessStageFlow.js`
+- `code/sewpg-bid-frontend/src/workspaces/business/components/BusinessProjectStageProgress.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/business/pages/BusinessGapRecognition.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/business/pages/BusinessOutlineReview.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/business/pages/BusinessParseResult.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/components/TechnicalProjectStageProgress.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalGapRecognition.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalOutlineReview.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalParseResult.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/technicalStageFlow.js`
+- `"doc/06-MVP\346\216\245\345\217\243\346\226\207\346\241\243.md"`
+- `"doc/14-\347\224\262\346\226\271\346\226\260\345\242\236\351\234\200\346\261\202\345\276\205\345\212\236.md"`
+- `"doc/27-\345\217\214\350\275\250\345\274\200\345\217\221\345\215\217\344\275\234\350\247\204\350\214\203\344\270\216\346\235\203\351\231\220\345\212\240\345\233\272\350\256\241\345\210\222.md"`
+- `"doc/31-\346\212\200\346\234\257\346\240\207\344\270\216\345\225\206\345\212\241\346\240\207\345\217\214\350\275\250\347\213\254\347\253\213\345\214\226\345\256\236\346\226\275\350\256\241\345\210\222.md"`
+- `doc/README.md`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。

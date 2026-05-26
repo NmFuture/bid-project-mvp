@@ -67,7 +67,31 @@
 
 前端当前不再使用技术标独立覆盖/导出 API 封装；`coverage` / `export` 仅作为技术标后端诊断或外围兼容交付能力保留，不对应独立前端页面，Word/PDF 下载走 `technicalDocumentAPI.final*`。
 
-## 5. 权威代码位置
+## 5. 权限与鉴权边界
+
+当前代码区分三类登录角色：
+
+| 角色 | 示例账号 | 工作区 |
+|---|---|---|
+| `T` | 安博 | 技术标 |
+| `B` | 马哥 | 商务标 |
+| `TB` | 肖哥 | 技术标 + 商务标 |
+
+已实现的边界：
+
+- 登录 token 与 `/api/auth/me` 可确认当前用户。
+- 前端通过 `permissions.js` 和 `WorkspaceAccess` 限制 workspace 路由可见性。
+- `/api/dashboard` 会按 `T/B/TB` 返回技术标、商务标或双线并列项目。
+
+尚未闭环的生产级边界：
+
+- `current_user` 只校验 token，不校验角色能否访问对应 workspace。
+- `/api/business/...` 和 `/api/technical/...` 还没有统一挂载角色依赖；项目级接口也需要继续校验 `project.bidType` 与当前路由、用户角色一致。
+- `/api/settings/...` 当前只要求登录，还没有限制为 `TB`。
+
+因此当前 API 文档只能说明“接口已双轨化”，不能把它理解为“后端权限已经生产级隔离”。权限加固路线见 `doc/27-双轨开发协作规范与权限加固计划.md`。
+
+## 6. 权威代码位置
 
 - `/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/technical.py`
 - `/Users/wlb/Agent/bid-project/code/sewpg-bid-backend/app/api/routes/business.py`

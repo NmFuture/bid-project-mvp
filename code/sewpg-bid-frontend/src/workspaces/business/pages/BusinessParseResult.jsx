@@ -46,13 +46,6 @@ const fileSizeLabel = (size) => {
   return `${(value / 1024 / 1024).toFixed(1)} MB`
 }
 
-const formatDateTime = (value) => {
-  if (!value) return '未解析'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '未解析'
-  return date.toLocaleString('zh-CN', { hour12: false })
-}
-
 const directoryGenerationSourceMeta = (output = {}, status = 'idle') => {
   const providerId = String(output?.providerId || output?.providerID || '').trim()
   const modelId = String(output?.modelId || output?.modelID || output?.skill || output?.engine || '').trim()
@@ -116,12 +109,6 @@ const validatePickedFiles = (picked = []) => {
   return ''
 }
 
-const REVIEW_DECISION_LABELS = {
-  pending: '待解析',
-  participate: '参与投标',
-  abandon: '不参与',
-}
-
 export default function BusinessParseResult({ showToast }) {
   const navigate = useNavigate()
   const { id } = useParams()
@@ -136,9 +123,9 @@ export default function BusinessParseResult({ showToast }) {
   const [uploadError, setUploadError] = useState('')
   const [templateFiles, setTemplateFiles] = useState([])
   const [templateFallback, setTemplateFallback] = useState(null)
-  const [savingFallback, setSavingFallback] = useState(false)
   const [directoryState, setDirectoryState] = useState(null)
   const [generatingDirectory, setGeneratingDirectory] = useState(false)
+  const [autoAdvanceAfterDirectory, setAutoAdvanceAfterDirectory] = useState(false)
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -180,16 +167,9 @@ export default function BusinessParseResult({ showToast }) {
   const fallbackEnabled = Boolean(templateFallback?.enabled ?? project?.templateFallback?.enabled ?? true)
   const fallbackAvailable = Boolean(fallbackTemplate?.available)
   const fallbackWillBeUsed = fallbackEnabled && fallbackAvailable && uploadedTemplateFiles.length === 0
-  const fallbackStatus = fallbackWillBeUsed
-    ? '未上传项目模板时使用系统默认模板'
-    : fallbackEnabled
-      ? (fallbackAvailable ? '已启用，项目模板优先' : '已启用，等待系统默认模板入库')
-      : '未启用'
 
   const reviewDecision = String(project?.reviewDecision || 'participate')
-  const reviewDecisionLabel = REVIEW_DECISION_LABELS[reviewDecision] || REVIEW_DECISION_LABELS.pending
   const isParseCompleted = data?.status === 'completed'
-  const parsedDates = data?.structured?.projectDates || data?.summary?.projectDates || {}
   const isReviewApproved = reviewDecision === 'participate' || (isParseCompleted && sourceFiles.length > 0)
   const isProjectInfoComplete = Boolean(
     String(project?.name || '').trim()
@@ -204,7 +184,6 @@ export default function BusinessParseResult({ showToast }) {
   const isDirectoryCompleted = directoryStatus === 'completed'
   const isDirectoryFailed = directoryStatus === 'failed'
   const directoryProgress = Math.max(0, Math.min(100, Number(directoryState?.percentage) || 0))
-  const directoryTasks = Array.isArray(directoryState?.tasks) ? directoryState.tasks : []
   const directoryStatusLabel = isDirectoryCompleted
     ? '已完成'
     : isDirectoryFailed
@@ -212,13 +191,6 @@ export default function BusinessParseResult({ showToast }) {
       : isDirectoryRunning
         ? '生成中'
         : '待生成'
-  const directoryTaskLabel = (task) => {
-    const label = String(task?.label || '')
-    if (label.includes('futurecode')) return '目录语义审核'
-    if (label.includes('准备目录候选')) return '准备目录材料'
-    if (label.includes('保存审核目录')) return '保存目录结果'
-    return label || '-'
-  }
   const directorySourceMeta = directoryGenerationSourceMeta(directoryState?.opencodeOutput || {}, directoryStatus)
 
   useEffect(() => {
@@ -233,6 +205,33 @@ export default function BusinessParseResult({ showToast }) {
     }, 1000)
     return () => window.clearInterval(timer)
   }, [id, isDirectoryRunning])
+
+  useEffect(() => {
+    if (!autoAdvanceAfterDirectory || !isDirectoryCompleted) return undefined
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      setAdvancing(true)
+      try {
+        await businessStagesAPI.update(id, 1, { status: 'completed' })
+        if (!cancelled) {
+          setAutoAdvanceAfterDirectory(false)
+          showToast?.('目录生成完成，已进入目录确认')
+          navigate(projectRoute(id, '/outline', workspaceSlug))
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setAutoAdvanceAfterDirectory(false)
+          showToast?.(e?.message || '自动进入目录确认失败，请点击按钮进入。', 'error')
+        }
+      } finally {
+        if (!cancelled) setAdvancing(false)
+      }
+    }, 0)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [autoAdvanceAfterDirectory, id, isDirectoryCompleted, navigate, showToast, workspaceSlug])
 
   const handleFilesPicked = (event) => {
     const picked = Array.from(event.target.files || [])
@@ -294,23 +293,6 @@ export default function BusinessParseResult({ showToast }) {
     }
   }
 
-  const handleToggleFallback = async () => {
-    if (!fallbackAvailable && !fallbackEnabled) {
-      showToast?.('系统默认模板尚未入库。', 'error')
-      return
-    }
-    setSavingFallback(true)
-    try {
-      const payload = await businessProjectsAPI.updateTemplateFallback(id, { enabled: !fallbackEnabled })
-      setTemplateFallback(payload)
-      showToast?.(!fallbackEnabled ? '已启用系统默认模板。' : '已停用系统默认模板。')
-    } catch (e) {
-      showToast?.(e?.message || '系统默认模板设置失败', 'error')
-    } finally {
-      setSavingFallback(false)
-    }
-  }
-
   const handleGoNextStage = async () => {
     if (!isProjectInfoComplete) {
       showToast?.('请先返回“解析”模块，重新确认参与并补全项目信息。', 'error')
@@ -355,19 +337,21 @@ export default function BusinessParseResult({ showToast }) {
         showToast?.(`请先上传${bidLabel}模板文件。`, 'error')
         return
       }
+      setAutoAdvanceAfterDirectory(true)
       await businessStagesAPI.update(id, 1, { status: 'completed' })
       const payload = await businessDirectoryAPI.run(id)
       setDirectoryState(payload)
       showToast?.(payload?.message || '已开始生成目录。')
     } catch (e) {
+      setAutoAdvanceAfterDirectory(false)
       showToast?.(e?.message || '目录生成失败', 'error')
     } finally {
       setGeneratingDirectory(false)
     }
   }
 
-  if (loading) return <PageLoading title="正在加载 S1 模板与目录..." />
-  if (error) return <PageError title="S1 模板与目录加载失败" description={error} onRetry={loadData} />
+  if (loading) return <PageLoading title="正在加载目录生成..." />
+  if (error) return <PageError title="目录生成加载失败" description={error} onRetry={loadData} />
 
   return (
     <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
@@ -401,29 +385,6 @@ export default function BusinessParseResult({ showToast }) {
           </div>
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.82fr)]">
           <div className="flex min-h-[388px] flex-col gap-4 border-b border-surface-container-high p-6 lg:border-b-0 lg:border-r">
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 text-xs">
-            <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-              <p className="font-medium text-on-surface mb-1">解析决策状态</p>
-              <p className="text-on-surface-variant">{reviewDecisionLabel}</p>
-            </div>
-            <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-              <p className="font-medium text-on-surface mb-1">招标文件解析状态</p>
-              <p className="text-on-surface-variant">{isParseCompleted ? `已完成（${formatDateTime(data?.parsedAt)}）` : '未完成'}</p>
-            </div>
-            <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-              <p className="font-medium text-on-surface mb-1">已上传招标文件（只读）</p>
-              <p className="text-on-surface-variant">{sourceFiles.length ? sourceFiles.map((item) => item.name).join('，') : '暂无'}</p>
-            </div>
-            <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-              <p className="font-medium text-on-surface mb-1">投标起始日期</p>
-              <p className="text-on-surface-variant">{parsedDates?.startDate || '-'}</p>
-            </div>
-            <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-              <p className="font-medium text-on-surface mb-1">投标截止日期</p>
-              <p className="text-on-surface-variant">{parsedDates?.endDate || '-'}</p>
-            </div>
-          </div>
-
         {!isReviewApproved && (
           <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error flex items-center justify-between gap-3">
             <span>当前项目尚未确认参与投标，请先到“解析”模块完成决策。</span>
@@ -453,7 +414,6 @@ export default function BusinessParseResult({ showToast }) {
           <div className="flex items-center justify-between">
             <div>
               <h4 className="text-sm font-semibold text-on-surface">模板文件</h4>
-              <p className="mt-1 text-xs text-outline">未上传时使用默认模板兜底。</p>
             </div>
             <span className="text-xs px-2 py-0.5 rounded-md bg-surface-container-high text-on-surface-variant">可选</span>
           </div>
@@ -509,49 +469,12 @@ export default function BusinessParseResult({ showToast }) {
           </Button>
         </div>
 
-          <div className="border border-surface-container-high rounded-md p-4 flex flex-col gap-3">
-            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              <div className="min-w-0">
-                <h4 className="text-sm font-semibold text-on-surface">系统默认模板来源</h4>
-                <p className="mt-1 text-sm text-on-surface-variant truncate" title={fallbackTemplate?.name || ''}>
-                  {fallbackTemplate?.name || '未配置，请到设置页维护'}
-                </p>
-              </div>
-              <button
-                onClick={handleToggleFallback}
-                disabled={savingFallback || (!fallbackAvailable && !fallbackEnabled)}
-                className="stage-action-btn h-9 px-4 bg-surface-container-high text-on-surface text-sm font-semibold hover:bg-surface-dim transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <span className="material-symbols-outlined text-[18px]">{fallbackEnabled ? 'toggle_on' : 'toggle_off'}</span>
-                {savingFallback ? '保存中...' : fallbackEnabled ? '停用' : '启用'}
-              </button>
-            </div>
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
-              <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-                <p className="font-medium text-on-surface mb-1">状态</p>
-                <p className="text-on-surface-variant">{fallbackStatus}</p>
-              </div>
-              <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-                <p className="font-medium text-on-surface mb-1">MinIO Bucket</p>
-                <p className="text-on-surface-variant break-all">{fallbackTemplate?.minioBucket || '-'}</p>
-              </div>
-              <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-                <p className="font-medium text-on-surface mb-1">MinIO Key</p>
-                <p className="text-on-surface-variant break-all">{fallbackTemplate?.minioKey || '-'}</p>
-              </div>
-            </div>
-          </div>
-
         {uploadError && (
           <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
             {uploadError}
           </div>
         )}
 
-        <div className="business-panel rounded-md bg-surface-container-low p-3 border border-surface-container-high text-xs text-outline">
-          <p className="font-medium text-on-surface mb-1">已上传模板文件（当前项目）</p>
-          <p>{uploadedTemplateFiles.length ? uploadedTemplateFiles.map((file) => file.name).join('，') : (fallbackWillBeUsed ? '暂无，生成目录时将使用默认模板' : '暂无')}</p>
-        </div>
           </div>
 
           <div className="flex min-h-[388px] flex-col gap-4 p-6">
@@ -619,20 +542,6 @@ export default function BusinessParseResult({ showToast }) {
           </div>
         ) : null}
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-            {directoryTasks.length ? directoryTasks.map((task) => (
-              <div key={task.id} className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
-                <p className="text-sm font-medium text-on-surface">{directoryTaskLabel(task)}</p>
-                <p className="text-xs text-on-surface-variant mt-1">
-                  {task.status === 'done' ? '已完成' : task.status === 'running' ? '进行中' : task.status === 'failed' ? '失败' : '待处理'}
-                </p>
-              </div>
-            )) : (
-              <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high text-sm text-on-surface-variant">
-                尚未生成目录。
-              </div>
-            )}
-          </div>
           </div>
         </div>
         </DataCard>

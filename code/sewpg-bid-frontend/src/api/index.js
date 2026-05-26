@@ -384,7 +384,12 @@ export const technicalOutlineAPI = {
 
 export const technicalGapsAPI = {
   detectionStatus: (projectId) => request(`/technical/projects/${projectId}/gaps-detection`),
-  runDetection: (projectId) => request(`/technical/projects/${projectId}/gaps-detection/run`, { method: 'POST' }),
+  runDetection: (projectId) =>
+    request(`/technical/projects/${projectId}/gaps-detection/run`, {
+      method: 'POST',
+      timeoutMs: 10 * 60 * 1000,
+      retryCount: 0,
+    }),
   list: (projectId) => request(`/technical/projects/${projectId}/gaps`),
   update: (projectId, gid, data) =>
     request(`/technical/projects/${projectId}/gaps/${gid}`, { method: 'PUT', body: data }),

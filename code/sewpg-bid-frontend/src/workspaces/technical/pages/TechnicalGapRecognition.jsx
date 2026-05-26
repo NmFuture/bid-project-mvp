@@ -6,6 +6,7 @@ import PageHeader from '../../../components/shared/PageHeader'
 import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
+import Badge from '../../../components/ui/Badge'
 import Button from '../../../components/ui/Button'
 import IconButton from '../../../components/ui/IconButton'
 import Toolbar from '../../../components/ui/Toolbar'
@@ -19,70 +20,14 @@ import {
   matchedMaterialForItem,
   previewChoicesForItem,
   primaryBlankSource,
-  resultSummaryForItem,
   uniqueStrings,
 } from './technicalGapRecognitionHelpers'
 
-const statusConfig = {
-  matched: { label: '已匹配', tone: 'bg-secondary-container text-on-secondary-container', icon: 'check_circle' },
-  structural: { label: '结构章节', tone: 'bg-surface-container-high text-on-surface-variant', icon: 'account_tree' },
-  missing: { label: '缺素材', tone: 'bg-error/10 text-error', icon: 'error' },
-  needs_input: { label: '需处理', tone: 'bg-tertiary-fixed text-on-tertiary-fixed', icon: 'edit_note' },
-  filling: { label: '处理中', tone: 'bg-primary/10 text-primary', icon: 'pending' },
-  resolved: { label: '已解决', tone: 'bg-secondary-container text-on-secondary-container', icon: 'task_alt' },
-  ignored: { label: '已忽略', tone: 'bg-surface-container-high text-on-surface-variant', icon: 'do_not_disturb_on' },
-}
-
 const decisionConfig = {
-  ready: {
-    label: '可直接合并',
-    shortLabel: '合并',
-    tone: 'bg-secondary-container text-on-secondary-container',
-    icon: 'library_add_check',
-  },
-  fill_required: {
-    label: '需填写空表/Word',
-    shortLabel: '填写',
-    tone: 'bg-tertiary-fixed text-on-tertiary-fixed',
-    icon: 'edit_document',
-  },
-  material_required: {
-    label: '缺素材',
-    shortLabel: '补料',
-    tone: 'bg-error/10 text-error',
-    icon: 'upload_file',
-  },
-  review_required: {
-    label: '需人工复核',
-    shortLabel: '复核',
-    tone: 'bg-primary/10 text-primary',
-    icon: 'rule_settings',
-  },
-}
-
-const decisionSummaryKeys = {
-  ready: 'readyCount',
-  fill_required: 'fillRequiredCount',
-  material_required: 'materialRequiredCount',
-  review_required: 'reviewRequiredCount',
-}
-
-const usageLabels = {
-  chapter_master: '整章合并',
-  covered_by_parent: '父章覆盖',
-  section_merge: '章节合并',
-  table_source: '空表填写参考',
-  appendix_fill: '副表填写',
-  section_fill: 'Word 填写',
-  structural: '结构章节',
-  both: '合并与填写',
-}
-
-const turbineStatusLabels = {
-  matched: '机型匹配',
-  generic: '通用素材',
-  conflict: '机型冲突',
-  unknown: '未命中素材',
+  ready: true,
+  fill_required: true,
+  material_required: true,
+  review_required: true,
 }
 
 const previewKindLabels = {
@@ -99,16 +44,6 @@ const previewKindIcons = {
   artifact: 'task',
 }
 
-const resultToneClasses = {
-  resolved: 'bg-secondary-container text-on-secondary-container',
-  material: 'bg-secondary-container text-on-secondary-container',
-  fill: 'bg-tertiary-fixed text-on-tertiary-fixed',
-  missing: 'bg-error/10 text-error',
-  none: 'bg-surface-container-high text-on-surface-variant',
-}
-
-const fallbackDocumentRoot = (projectId) => `/data/documents/${projectId}/technical-workspace/s4_gap_workdir`
-
 const compactList = (items, limit = 4) => {
   const list = uniqueStrings(items)
   return {
@@ -122,13 +57,6 @@ const decisionOf = (item) => {
   const decision = String(item?.decision || '').trim()
   return decisionConfig[decision] ? decision : ''
 }
-
-const configForItem = (item) => {
-  const decision = decisionOf(item)
-  return decision ? decisionConfig[decision] : (statusConfig[item?.status] || statusConfig.missing)
-}
-
-const labelForUsage = (usage) => usageLabels[usage] || usage || '未指定'
 
 const normalizeItems = (payload) => {
   const planItems = payload?.gapPlan?.items
@@ -147,14 +75,51 @@ const normalizeItems = (payload) => {
   }))
 }
 
-const MiniFact = ({ label, value }) => (
-  <div className="rounded-md bg-surface-container-low px-3 py-2">
-    <div className="text-[11px] text-outline">{label}</div>
-    <div className="mt-1 truncate text-xs font-semibold text-on-surface" title={String(value || '')}>
-      {value || '-'}
-    </div>
-  </div>
+const taskActionLabels = {
+  fixed_material: '固定素材',
+  manual_select: '人工指定',
+  manual_upload: '人工补料',
+  ignored: '忽略',
+  ai_table_fill: 'AI填表',
+}
+
+const taskActionVariant = (mode) => {
+  if (mode === 'ignored') return 'pending'
+  if (mode === 'ai_table_fill') return 'info'
+  if (mode === 'manual_upload') return 'error'
+  if (mode === 'manual_select') return 'warn'
+  return 'done'
+}
+
+const isStructuralItem = (item) => (
+  String(item?.status || '') === 'structural'
+    || String(item?.usage || '') === 'structural'
+    || asArray(item?.usages).includes('structural')
 )
+
+const technicalActionMode = (item) => {
+  if (!item || isStructuralItem(item)) return ''
+  const decision = decisionOf(item)
+  if (decision === 'fill_required') return 'ai_table_fill'
+  if (decision === 'material_required') return 'manual_upload'
+  if (decision === 'review_required') return 'manual_select'
+  if (decision === 'ready') return 'fixed_material'
+  if (String(item.status || '') === 'ignored') return 'ignored'
+  if (String(item.status || '') === 'resolved' || String(item.status || '') === 'matched') return 'fixed_material'
+  return 'manual_upload'
+}
+
+function TechnicalTocActionBadge({ item }) {
+  const mode = technicalActionMode(item)
+  if (!mode) {
+    return <Badge className="business-toc-status-badge" shape="square" size="xs" variant="pending">空章节</Badge>
+  }
+  return (
+    <Badge className="business-toc-status-badge" shape="square" size="xs" variant={taskActionVariant(mode)}>
+      {taskActionLabels[mode]}
+    </Badge>
+  )
+}
 
 function StatCard({ label, value }) {
   return (
@@ -231,7 +196,7 @@ const FactMaintenanceModal = ({
               className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
             >
               <span className="material-symbols-outlined text-[16px]">fact_check</span>
-              确认并用于填写
+              保存
             </button>
             <button
               type="button"
@@ -563,25 +528,13 @@ export default function TechnicalGapRecognition({ showToast }) {
     () => readableScopes.map((scope) => String(scope?.path || '')).filter(Boolean),
     [readableScopes],
   )
-  const scopeSummary = materialScope?.summary || scopePaths.join('；')
   const projectTurbineModel = data?.gapPlan?.projectTurbineModel || data?.projectTurbineModel || materialScope?.turbineModel || null
-  const turbineModelLabel = projectTurbineModel?.model
-    ? [
-        projectTurbineModel.model,
-        projectTurbineModel.platform,
-        projectTurbineModel.ratedPowerKw ? `${projectTurbineModel.ratedPowerKw}kW` : '',
-        projectTurbineModel.rotorDiameterM ? `叶轮${projectTurbineModel.rotorDiameterM}m` : '',
-      ].filter(Boolean).join(' / ')
-    : ''
-  const selectedConfig = selected ? configForItem(selected) : null
   const selectedDecision = decisionOf(selected)
-  const selectedMaterialScope = selected?.materialScope || {}
-  const selectedTurbineCheck = selected?.turbineCheck || {}
+  const selectedActionMode = technicalActionMode(selected)
   const selectedAppendixTasks = asArray(selected?.appendixTasks)
   const selectedCandidateMaterials = asObjectArray(selected?.candidateMaterials)
   const selectedMaterialMatch = matchedMaterialForItem(selected, items)
   const selectedBlankSource = primaryBlankSource(selected)
-  const selectedResultSummary = resultSummaryForItem(selected, items)
   const selectedPreviewChoices = useMemo(
     () => previewChoicesForItem(selected, items),
     [items, selected],
@@ -606,14 +559,6 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
     return choices
   }, [manualPreviewActive, selectedPreviewChoices])
-  const selectedUsages = compactList([
-    selected?.usage,
-    ...asObjectArray(selected?.matchedMaterials).map((item) => item.usage),
-    ...selectedCandidateMaterials.map((item) => item.usage),
-    ...selectedAppendixTasks.flatMap((task) => asObjectArray(task?.recommendedMaterials).map((item) => item.usage)),
-  ], 4)
-  const selectedAllowedPaths = compactList(selectedMaterialScope.allowedPaths)
-  const selectedEvidenceRefs = asArray(selected?.evidenceRefs).slice(0, 6)
   const selectedFillTasks = asObjectArray(selected?.fillTasks)
   const selectedFillTask = selectedFillTasks[0] || null
   const selectedReferenceCandidates = (() => {
@@ -651,27 +596,12 @@ export default function TechnicalGapRecognition({ showToast }) {
     ...selectedCandidateMaterials.flatMap((item) => asArray(item?.placeholderLabels)),
   ], 10)
   const selectedBlankPath = selectedBlankSource?.docxPath || selectedBlankSource?.workspacePath || selectedBlankSource?.path || ''
-  const gapWorkRoot = fallbackDocumentRoot(id)
-  const selectedSourceMaterialId = [
-    selectedBlankSource?.materialId,
-    selectedBlankSource?.id,
-    selectedMaterialMatch?.material?.id,
-  ].map((value) => String(value || '')).find((value) => value.startsWith('RAW-')) || ''
-  const selectedSourceObjectLabel = selectedSourceMaterialId
-    ? `bid-materials/cleaned/${selectedSourceMaterialId}/...`
-    : (selectedBlankPath || selectedMaterialMatch?.material?.path || selectedMaterialMatch?.material?.folderPath || '-')
-  const selectedWorkDir = selectedDecision === 'fill_required'
-    ? `${gapWorkRoot}/ai_fill/${selected?.id || '<gapId>'}`
-    : selectedDecision === 'material_required'
-      ? `${gapWorkRoot}/manual_upload/${selected?.id || '<gapId>'}`
-      : gapWorkRoot
-  const selectedCurrentArtifactPath = selectedResolvedArtifact?.path || selectedBlankPath || selectedMaterialMatch?.material?.path || ''
   const actionCounts = useMemo(() => ({
-    fixed_material: summary[decisionSummaryKeys.ready] ?? items.filter((item) => decisionOf(item) === 'ready').length,
-    ai_table_fill: summary[decisionSummaryKeys.fill_required] ?? items.filter((item) => decisionOf(item) === 'fill_required').length,
-    manual_upload: summary[decisionSummaryKeys.material_required] ?? items.filter((item) => decisionOf(item) === 'material_required').length,
-    manual_select: summary[decisionSummaryKeys.review_required] ?? items.filter((item) => decisionOf(item) === 'review_required').length,
-  }), [items, summary])
+    fixed_material: items.filter((item) => technicalActionMode(item) === 'fixed_material').length,
+    ai_table_fill: items.filter((item) => technicalActionMode(item) === 'ai_table_fill').length,
+    manual_upload: items.filter((item) => technicalActionMode(item) === 'manual_upload').length,
+    manual_select: items.filter((item) => technicalActionMode(item) === 'manual_select').length,
+  }), [items])
   const factConfirmed = factTable?.status === 'confirmed'
   const hasTechnicalGapPlan = data?.status === 'completed' && Boolean(data?.gapPlan || items.length)
   const generationRunning = generationStatus?.status === 'running'
@@ -857,10 +787,10 @@ export default function TechnicalGapRecognition({ showToast }) {
       setFactTable(payload)
       setFactFields(asObjectArray(payload?.fields))
       setData((current) => current ? { ...current, projectFactTable: payload } : current)
-      showToast?.('项目事实表已确认，可以开始 AI 填写')
+      showToast?.('项目事实表已保存，可以开始 AI 填写')
       return payload
     } catch (e) {
-      showToast?.(e?.message || '项目事实表确认失败', 'error')
+      showToast?.(e?.message || '项目事实表保存失败', 'error')
       return null
     } finally {
       setBusyAction('')
@@ -1105,8 +1035,6 @@ export default function TechnicalGapRecognition({ showToast }) {
               <div className="min-h-0 flex-1 overflow-auto">
                 <div>
                   {filteredItems.map((item) => {
-                    const cfg = configForItem(item)
-                    const result = resultSummaryForItem(item, items)
                     const active = effectiveSelectedId === item.id
                     return (
                       <button
@@ -1128,19 +1056,8 @@ export default function TechnicalGapRecognition({ showToast }) {
                             <div className="text-[11px] font-medium text-outline">{item.number || item.section || '-'}</div>
                             <div className="mt-1 line-clamp-2 text-sm font-semibold leading-snug text-on-surface">{item.title}</div>
                           </div>
-                          <span className={`inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold ${cfg.tone}`}>
-                            <span className="material-symbols-outlined text-[14px]">{cfg.icon}</span>
-                            {cfg.shortLabel || cfg.label}
-                          </span>
+                          <TechnicalTocActionBadge item={item} />
                         </div>
-                        <div className="mt-2 flex items-center gap-2 text-xs">
-                          <span className={`min-w-0 truncate rounded-md px-2 py-1 ${resultToneClasses[result.tone] || resultToneClasses.none}`} title={result.label}>
-                            {result.label}
-                          </span>
-                        </div>
-                        {item.gapReason ? (
-                          <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-on-surface-variant">{item.gapReason}</p>
-                        ) : null}
                       </button>
                     )
                   })}
@@ -1160,65 +1077,21 @@ export default function TechnicalGapRecognition({ showToast }) {
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0">
                         <div className="text-xs font-medium text-outline">{selected.number || selected.section || '-'}</div>
-                        <div className="mt-1 flex flex-wrap items-center gap-2">
-                          <h3 className="text-lg font-headline font-bold leading-snug text-on-surface">{selected.title}</h3>
-                          {selectedConfig ? (
-                            <span className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-semibold ${selectedConfig.tone}`}>
-                              <span className="material-symbols-outlined text-[16px]">{selectedConfig.icon}</span>
-                              {selectedConfig.label}
-                            </span>
-                          ) : null}
-                          <span className={`rounded-md px-2.5 py-1 text-xs font-semibold ${resultToneClasses[selectedResultSummary.tone] || resultToneClasses.none}`}>
-                            {selectedResultSummary.label}
-                          </span>
-                        </div>
-                        <p className="mt-2 max-w-4xl text-sm leading-relaxed text-on-surface-variant">
-                          {selected.gapReason || selected.reason || '当前目录项已纳入缺口处理计划。'}
-                        </p>
+                        <h3 className="mt-1 text-lg font-headline font-bold leading-snug text-on-surface">{selected.title}</h3>
                       </div>
                     </div>
-
-                    <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
-                      <MiniFact
-                        label="用途"
-                        value={selectedUsages.visible.length ? selectedUsages.visible.map(labelForUsage).join('；') : labelForUsage(selected.usage)}
-                      />
-                      <MiniFact
-                        label="读取边界"
-                        value={selectedAllowedPaths.visible.length ? selectedAllowedPaths.visible.join('；') : scopeSummary}
-                      />
-                      <MiniFact
-                        label="机型判断"
-                        value={turbineStatusLabels[selectedTurbineCheck.status] || selectedTurbineCheck.status || '未判断'}
-                      />
-                      <MiniFact
-                        label="当前预览"
-                        value={selectedPreviewChoice ? previewKindLabels[selectedPreviewChoice.kind] : '暂无'}
-                      />
-                    </div>
-                    {visiblePreviewChoices.length ? (
-                      <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md bg-surface-container-low px-3 py-2">
-                        <span className="text-xs font-semibold text-on-surface-variant">素材预览</span>
-                        {visiblePreviewChoices.map((choice) => (
-                          <button
-                            key={choice.key}
-                            type="button"
-                            onClick={() => {
-                              setPreviewChoiceKey(choice.key)
-                              setPreviewOpen(true)
-                            }}
-                            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-surface-container-high px-2.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim"
-                          >
-                            <span className="material-symbols-outlined text-[15px]">{previewKindIcons[choice.kind] || 'description'}</span>
-                            {choice.label}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
                   </div>
 
                   <div className="min-h-0 flex-1 overflow-y-auto bg-surface-container-low">
                     <div className="space-y-4 p-4">
+                      {!selectedActionMode ? (
+                        <div className="business-dropzone rounded-md border border-dashed border-surface-container-high p-8 text-center">
+                          <span className="material-symbols-outlined text-4xl text-outline">inventory_2</span>
+                          <h3 className="mt-3 text-base font-headline font-bold text-on-surface">当前章节暂无系统任务</h3>
+                          <p className="mt-2 text-sm text-on-surface-variant">结构性目录项不需要单独匹配素材。</p>
+                        </div>
+                      ) : (
+                        <>
                         {selectedMaterialMatch?.material ? (
                           <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
                             <div className="flex items-start gap-2">
@@ -1229,9 +1102,6 @@ export default function TechnicalGapRecognition({ showToast }) {
                             <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-xs">
                               <div className="font-medium text-on-surface">{selectedMaterialMatch.material.name || selectedMaterialMatch.material.id}</div>
                               <div className="mt-1 break-all text-outline">{selectedMaterialMatch.material.path || selectedMaterialMatch.material.folderPath || '-'}</div>
-                              <div className="mt-1 text-outline">
-                                {selectedMaterialMatch.material.materialTier || '素材'} · {labelForUsage(selectedMaterialMatch.material.usage)}
-                              </div>
                             </div>
                           </section>
                         ) : null}
@@ -1260,10 +1130,6 @@ export default function TechnicalGapRecognition({ showToast }) {
                                 {aiFillBusy ? 'AI填写中' : selectedAiFillCompleted ? 'AI已填写' : '等待AI填写'}
                               </span>
                             </div>
-                            <div className="mt-3 grid grid-cols-1 gap-2">
-                              <MiniFact label="执行 Skill" value={selectedFillTask?.skill || 'bid-tech-table-filler'} />
-                              <MiniFact label="空白来源" value={selectedBlankSource?.sourceFile || selectedBlankSource?.folderPath || selectedBlankSource?.id || '-'} />
-                            </div>
                             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-surface-container-low px-3 py-2">
                               <div className="min-w-0 text-xs">
                                 <div className="font-semibold text-on-surface">
@@ -1283,13 +1149,6 @@ export default function TechnicalGapRecognition({ showToast }) {
                                 {aiFillBusy ? 'AI填写中...' : selectedAiFillCompleted ? '重新AI填写' : 'AI填写'}
                               </button>
                             </div>
-                            {selectedResolvedArtifact?.qualityReport ? (
-                              <div className="mt-3 grid grid-cols-3 gap-2">
-                                <MiniFact label="覆盖率" value={`${Math.round(Number(selectedResolvedArtifact.qualityReport.coverageRate || 0) * 100)}%`} />
-                                <MiniFact label="正确率" value={`${Math.round(Number(selectedResolvedArtifact.qualityReport.correctnessRate || 0) * 100)}%`} />
-                                <MiniFact label="完整率" value={`${Math.round(Number(selectedResolvedArtifact.qualityReport.completenessRate || 0) * 100)}%`} />
-                              </div>
-                            ) : null}
                             {selectedPlaceholderLabels.total ? (
                               <div className="mt-3">
                                 <div className="text-[11px] font-semibold text-on-surface">识别到的待填字段</div>
@@ -1360,11 +1219,6 @@ export default function TechnicalGapRecognition({ showToast }) {
                                 {materialLoading ? '查询中...' : '查询'}
                               </button>
                             </div>
-                            {scopeSummary ? (
-                              <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-[11px] text-outline">
-                                {scopeSummary}{turbineModelLabel ? `；${turbineModelLabel}` : ''}
-                              </div>
-                            ) : null}
                             <div className="mt-3 max-h-48 space-y-2 overflow-y-auto">
                               {materialSearch.items.length ? materialSearch.items.map((item) => {
                                 return (
@@ -1390,39 +1244,8 @@ export default function TechnicalGapRecognition({ showToast }) {
                           </section>
                         ) : null}
 
-                        <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
-                          <div className="text-xs font-semibold text-on-surface">存储位置</div>
-                          <div className="mt-2 space-y-2 text-xs">
-                            <div className="rounded-md bg-surface-container-low px-3 py-2">
-                              <div className="text-[11px] text-outline">来源对象</div>
-                              <div className="mt-1 break-all font-medium text-on-surface">{selectedSourceObjectLabel}</div>
-                            </div>
-                            <div className="rounded-md bg-surface-container-low px-3 py-2">
-                              <div className="text-[11px] text-outline">项目工作区</div>
-                              <div className="mt-1 break-all font-medium text-on-surface">{selectedWorkDir}</div>
-                            </div>
-                            <div className="rounded-md bg-surface-container-low px-3 py-2">
-                              <div className="text-[11px] text-outline">当前产物</div>
-                              <div className="mt-1 break-all font-medium text-on-surface">{selectedCurrentArtifactPath || '-'}</div>
-                            </div>
-                          </div>
-                        </section>
-
-                        {selectedEvidenceRefs.length ? (
-                          <details className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
-                            <summary className="cursor-pointer text-xs font-semibold text-on-surface marker:text-outline">识别依据</summary>
-                            <div className="mt-3 space-y-2">
-                              {selectedEvidenceRefs.map((ref, index) => (
-                                <div key={`${ref.id || ref.title || ref.name}-${index}`} className="rounded-md bg-surface-container-low px-3 py-2 text-xs">
-                                  <div className="font-medium text-on-surface">{ref.title || ref.name || ref.id || '依据'}</div>
-                                  <div className="mt-1 break-all text-outline">
-                                    {[ref.type, ref.number, ref.folderPath, ref.id].filter(Boolean).join(' · ') || '-'}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </details>
-                        ) : null}
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>

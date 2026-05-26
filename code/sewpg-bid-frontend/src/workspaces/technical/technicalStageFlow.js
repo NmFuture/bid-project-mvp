@@ -12,7 +12,7 @@ const TECHNICAL_STAGE_ROUTES = {
 }
 
 const TECHNICAL_COMPACT_STAGE_LABELS = {
-  1: '模板与目录',
+  1: '目录生成',
   2: '审核目录',
   3: '素材匹配',
   4: '素材匹配',

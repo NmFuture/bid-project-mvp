@@ -384,7 +384,6 @@ function FactMaintenanceModal({
   fields,
   busy,
   onClose,
-  onSave,
   onConfirm,
   onFieldChange,
 }) {
@@ -409,21 +408,12 @@ function FactMaintenanceModal({
           <Toolbar>
             <Button
               type="button"
-              onClick={onSave}
-              disabled={busy || !fields.length}
-              size="sm"
-              variant="quiet"
-            >
-              保存修改
-            </Button>
-            <Button
-              type="button"
               onClick={onConfirm}
               disabled={busy || !fields.length}
               size="sm"
               variant="primary"
             >
-              确认并用于商务标填写
+              保存
             </Button>
             <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" />
           </Toolbar>
@@ -1598,23 +1588,6 @@ export default function BusinessGapRecognition({ showToast }) {
     )))
   }
 
-  const saveFactTable = async () => {
-    if (actionLoading || !factFields.length) return null
-    setActionLoading('facts-save')
-    try {
-      const data = await businessGapsAPI.saveFacts(id, { fields: factFields, confirm: false, operator: '当前用户' })
-      setFactTable(data)
-      setFactFields(asArray(data?.fields))
-      showToast?.('商务标项目事实表已保存')
-      return data
-    } catch (e) {
-      showToast?.(e?.message || '商务标项目事实表保存失败', 'error')
-      return null
-    } finally {
-      setActionLoading('')
-    }
-  }
-
   const confirmFactTable = async () => {
     if (actionLoading || !factFields.length) return null
     setActionLoading('facts-confirm')
@@ -1622,10 +1595,10 @@ export default function BusinessGapRecognition({ showToast }) {
       const data = await businessGapsAPI.saveFacts(id, { fields: factFields, confirm: true, operator: '当前用户' })
       setFactTable(data)
       setFactFields(asArray(data?.fields))
-      showToast?.('商务标项目事实表已确认，可用于后续 S4 填写')
+      showToast?.('商务标项目事实表已保存，可用于后续填写')
       return data
     } catch (e) {
-      showToast?.(e?.message || '商务标项目事实表确认失败', 'error')
+      showToast?.(e?.message || '商务标项目事实表保存失败', 'error')
       return null
     } finally {
       setActionLoading('')
@@ -1934,9 +1907,8 @@ export default function BusinessGapRecognition({ showToast }) {
         open={factModalOpen}
         factTable={factTable}
         fields={factFields}
-        busy={['facts-build', 'facts-load', 'facts-save', 'facts-confirm'].includes(actionLoading)}
+        busy={['facts-build', 'facts-load', 'facts-confirm'].includes(actionLoading)}
         onClose={() => setFactModalOpen(false)}
-        onSave={saveFactTable}
         onConfirm={confirmFactTable}
         onFieldChange={changeFactField}
       />

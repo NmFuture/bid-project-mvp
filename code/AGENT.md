@@ -48,6 +48,7 @@
 - 旧阶段号 `S7/S8/S9/S10` 不再作为当前产品或接口基线；只在历史内部目录名和 legacy 请求映射中保留。
 - 旧的 Agent 决策素材匹配已经前移到 `S3 缺口处理`，不要再恢复为独立生成后步骤。
 - 业务入口只认 `/api/technical/...` 和 `/api/business/...`；旧 `/api/projects...`、`/api/materials...`、`/api/audit...` 仅可作为 404 防回退测试和内部 URL 兼容替换依据。
+- 权限口径不要说过头：安博=`T` 技术标、马哥=`B` 商务标、肖哥=`TB` 项目经理/标书统筹；前端 `permissions.js` / `WorkspaceAccess` 和工作台角色过滤已实现，但后端 business/technical/settings 尚未统一完成角色与 workspace 强授权，`/api/settings/...` 也还不是仅 `TB` 可用。
 - 运行态时间戳统一由 `app/services/bid_runtime_state.py::now_iso` 提供，不要再从 `app.services.store` 重导出或新增第二份时间戳函数。
 
 ## 1. 当前目录结构
