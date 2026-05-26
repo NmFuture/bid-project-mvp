@@ -321,7 +321,7 @@ export default function TechnicalTenderReview({ showToast }) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const queryProjectId = String(searchParams.get('projectId') || '').trim()
-  const [projects, setProjects] = useState([])
+  const [, setProjects] = useState([])
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [project, setProject] = useState(null)
   const [parseData, setParseData] = useState(null)
@@ -400,7 +400,7 @@ export default function TechnicalTenderReview({ showToast }) {
     }
   }, [selectedProjectId])
 
-  const createReviewProject = useCallback(async ({ toastMessage } = {}) => {
+  const createReviewProject = useCallback(async ({ toastMessage, silent = false } = {}) => {
     setCreatingReview(true)
     try {
       const now = new Date()
@@ -416,10 +416,12 @@ export default function TechnicalTenderReview({ showToast }) {
       })
       await loadProjects()
       setSelectedProjectId(created?.id || '')
-      if (toastMessage) {
-        showToast?.(toastMessage)
-      } else {
-        showToast?.(reviewConfig.createSuccessMessage)
+      if (!silent) {
+        if (toastMessage) {
+          showToast?.(toastMessage)
+        } else {
+          showToast?.(reviewConfig.createSuccessMessage)
+        }
       }
       return created
     } catch (e) {
@@ -466,13 +468,6 @@ export default function TechnicalTenderReview({ showToast }) {
   const sourceFiles = Array.isArray(parseData?.sourceFiles) && parseData.sourceFiles.length
     ? parseData.sourceFiles
     : buildFallbackSourceFiles(project?.files || [])
-  const reviewProjects = useMemo(() => {
-    const base = projects.filter((item) => String(item?.reviewDecision || 'pending') !== 'participate')
-    const forced = queryProjectId ? projects.find((item) => item.id === queryProjectId) : null
-    if (forced && !base.some((item) => item.id === forced.id)) return [forced, ...base]
-    return base
-  }, [projects, queryProjectId])
-
   const parsedItems = useMemo(() => parseData?.items || [], [parseData?.items])
   const fieldGroups = parseData?.structured?.fieldGroups || {}
   const structuredScoring = useMemo(
@@ -600,18 +595,25 @@ export default function TechnicalTenderReview({ showToast }) {
   }
 
   const handleUploadAndParse = async () => {
-    if (!selectedProjectId) {
-      showToast?.(`当前没有可解析${reviewConfig.bidType}项目，请先新建解析项目。`, 'error')
-      return
-    }
-    if (reviewDecision === 'abandon') {
-      showToast?.('当前项目已标记为不参与，如需继续请先切换为“参与投标”。', 'error')
-      return
-    }
     if (!tenderFiles.length) {
       const message = '请先上传技术招标文件后再解析。'
       setUploadError(message)
       showToast?.(message, 'error')
+      return
+    }
+    let targetProjectId = selectedProjectId
+    if (!targetProjectId) {
+      const created = await createReviewProject({ silent: true })
+      targetProjectId = created?.id || ''
+      if (!targetProjectId) {
+        const message = '技术标解析项目创建失败，请稍后重试。'
+        setUploadError(message)
+        showToast?.(message, 'error')
+        return
+      }
+    }
+    if (reviewDecision === 'abandon') {
+      showToast?.('当前项目已标记为不参与，如需继续请先切换为“参与投标”。', 'error')
       return
     }
 
@@ -627,11 +629,11 @@ export default function TechnicalTenderReview({ showToast }) {
     try {
       const formData = new FormData()
       tenderFiles.forEach((file) => formData.append('tenderFiles', file))
-      const response = await technicalParseAPI.uploadAndRun(selectedProjectId, { formData })
+      const response = await technicalParseAPI.uploadAndRun(targetProjectId, { formData })
       setParseData(response)
-      const latestProgress = await technicalParseAPI.progress(selectedProjectId).catch(() => null)
+      const latestProgress = await technicalParseAPI.progress(targetProjectId).catch(() => null)
       if (latestProgress) setParseProgress(latestProgress)
-      const latestProject = await technicalProjectsAPI.get(selectedProjectId)
+      const latestProject = await technicalProjectsAPI.get(targetProjectId)
       setProject(latestProject)
       setProjects((prev) => prev.map((item) => (
         item.id === latestProject.id ? { ...item, ...latestProject } : item
@@ -773,33 +775,6 @@ export default function TechnicalTenderReview({ showToast }) {
 
   if (loadingProjects) return <PageLoading title="正在加载解析模块..." />
   if (error) return <PageError title="解析模块加载失败" description={error} onRetry={loadProjects} />
-  if (!reviewProjects.length) {
-    return (
-      <div className="review-page business-ui-shell flex flex-col gap-5 animate-fade-in max-w-none">
-        <PageHeader
-          title={reviewConfig.pageTitle}
-          description=""
-          actions={null}
-        />
-        <section className="business-parse-empty rounded-md border border-surface-container-high bg-surface-container-lowest px-6 py-8">
-          <div className="mx-auto flex max-w-[720px] flex-col items-center text-center">
-            <span className="material-symbols-outlined text-[32px] text-primary/70">document_scanner</span>
-            <h2 className="mt-3 text-base font-headline font-bold text-on-surface">{reviewConfig.emptyTitle}</h2>
-            <p className="mt-2 max-w-[520px] text-sm leading-relaxed text-on-surface-variant">{reviewConfig.emptyDescription}</p>
-            <Button
-              className="mt-5"
-              onClick={handleCreateReviewProject}
-              disabled={creatingReview}
-              size="stage"
-              variant="primary"
-            >
-              {creatingReview ? '新建中...' : reviewConfig.createButtonLabel}
-            </Button>
-          </div>
-        </section>
-      </div>
-    )
-  }
   if (loadingDetail) return <PageLoading title="正在加载项目解析详情..." />
 
   if (showTechnicalCompactUpload) {
@@ -809,7 +784,7 @@ export default function TechnicalTenderReview({ showToast }) {
           <div className="business-section-head flex items-center px-5 py-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-xl font-headline font-bold text-[#0067B6]">技术标解析</h3>
-              <span className="text-xs text-outline">{project?.name || '待解析技术标项目'}</span>
+              <span className="text-xs text-outline">{project?.name || reviewConfig.createProjectNamePrefix}</span>
             </div>
           </div>
 
@@ -841,11 +816,11 @@ export default function TechnicalTenderReview({ showToast }) {
               <Button
                 type="button"
                 onClick={handleUploadAndParse}
-                disabled={uploading || reviewDecision === 'abandon'}
+                disabled={uploading || creatingReview || reviewDecision === 'abandon'}
                 size="stage"
                 variant="primary"
               >
-                {uploading ? '上传解析中...' : '上传并解析'}
+                {creatingReview ? '正在创建项目...' : uploading ? '上传解析中...' : '上传并解析'}
               </Button>
             </div>
             {uploadError && (
