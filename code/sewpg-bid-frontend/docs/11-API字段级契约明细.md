@@ -29,6 +29,8 @@
 | `turbineModelLabel` | 投标机型展示名 |
 | `currentStage` | 项目内阶段 |
 | `stageLabel` | 当前阶段名称 |
+| `reviewDecision` | 解析后投标判断状态：`pending`、`participate`、`abandon`。项目总览只请求 `participate`，解析页可处理 `pending`。 |
+| `reviewDecisionLabel` | 投标判断状态展示文案。 |
 | `files` | 招标文件展示摘要 |
 | `templateFiles` | 项目真实上传模板展示摘要 |
 

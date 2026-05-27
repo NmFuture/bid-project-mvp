@@ -33,12 +33,14 @@ def _business_payload(data: dict[str, Any] | None = None) -> dict[str, Any]:
 @router.get("/api/business/projects")
 async def list_business_projects(
     status: str = "",
+    reviewDecision: str = "",
     dateRange: str = "",
     page: int = 1,
     pageSize: int = 12,
 ) -> dict[str, Any]:
     return business_project_service.list(
         status=status,
+        review_decision=reviewDecision,
         date_range=dateRange,
         page=page,
         page_size=pageSize,

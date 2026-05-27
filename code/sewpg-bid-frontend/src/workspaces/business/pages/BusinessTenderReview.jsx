@@ -98,19 +98,19 @@ const BUSINESS_REVIEW_CONFIG = {
   bidType: BUSINESS_BID_TYPE,
   pageTitle: '商务标解析',
   pageDescription: '',
-  createProjectNamePrefix: '商务标待解析项目',
-  createButtonLabel: '新建项目',
-  createSuccessMessage: '已新建商务标解析项目，请上传商务招标文件并解析。',
-  emptyTitle: '暂无待解析商务标项目',
-  emptyDescription: '你可以在这里先新建商务标解析项目，再上传商务招标文件进行判断。',
-  currentProjectLabel: '当前商务标解析项目',
+  createProjectNamePrefix: '商务标解析暂存',
+  createButtonLabel: '解析新的招标文件',
+  createSuccessMessage: '已准备好上传解析，请选择商务招标文件。',
+  emptyTitle: '正在准备上传解析',
+  emptyDescription: '系统正在准备商务招标文件上传入口。',
+  currentProjectLabel: '当前解析',
   uploadSectionTitle: '商务招标文件上传与关键参数解析',
   uploadSectionDescription: '本模块负责上传商务招标文件并解析商务响应、资格支撑、附表与承诺函要求，供商务标项目后续使用。',
   uploadFileLabel: '商务招标文件（必选）',
-  sourceFilesLabel: '已上传商务招标文件（当前项目）',
+  sourceFilesLabel: '已上传商务招标文件',
   resultTitle: '商务标解析结果',
   pendingParseHint: '请点击上方“上传并解析”开始提取商务标结构化要求。',
-  noSourceHint: '当前项目尚未上传商务招标文件。',
+  noSourceHint: '当前尚未上传商务招标文件。',
   appendixTitle: '商务附件模板产物',
   appendixSwitchHint: '已提取招标文件中的商务附件模板，可切换预览并审核；确认参与投标后自动同步至项目素材库。',
   appendixEmptyHint: '未识别到可保存的商务附件模板。',
@@ -378,7 +378,7 @@ export default function BusinessTenderReview({ showToast }) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const queryProjectId = String(searchParams.get('projectId') || '').trim()
-  const [projects, setProjects] = useState([])
+  const [, setProjects] = useState([])
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [project, setProject] = useState(null)
   const [parseData, setParseData] = useState(null)
@@ -435,7 +435,7 @@ export default function BusinessTenderReview({ showToast }) {
         return reviewItems[0]?.id || ''
       })
     } catch (e) {
-      setError(e?.message || '解析项目列表加载失败')
+      setError(e?.message || '解析列表加载失败')
     } finally {
       setLoadingProjects(false)
     }
@@ -465,7 +465,7 @@ export default function BusinessTenderReview({ showToast }) {
     }
   }, [parseClient, projectsClient, selectedProjectId])
 
-  const createReviewProject = useCallback(async ({ toastMessage } = {}) => {
+  const createReviewProject = useCallback(async ({ toastMessage, silent = false } = {}) => {
     setCreatingReview(true)
     try {
       const now = new Date()
@@ -481,14 +481,18 @@ export default function BusinessTenderReview({ showToast }) {
       })
       await loadProjects()
       setSelectedProjectId(created?.id || '')
-      if (toastMessage) {
-        showToast?.(toastMessage)
-      } else {
-        showToast?.(reviewConfig.createSuccessMessage)
+      if (!silent) {
+        if (toastMessage) {
+          showToast?.(toastMessage)
+        } else {
+          showToast?.(reviewConfig.createSuccessMessage)
+        }
       }
       return created
     } catch (e) {
-      showToast?.(e?.message || '新建解析项目失败', 'error')
+      const message = e?.message || '准备上传解析失败'
+      if (silent) setError(message)
+      else showToast?.(message, 'error')
       return null
     } finally {
       setCreatingReview(false)
@@ -531,13 +535,6 @@ export default function BusinessTenderReview({ showToast }) {
   const sourceFiles = Array.isArray(parseData?.sourceFiles) && parseData.sourceFiles.length
     ? parseData.sourceFiles
     : buildFallbackSourceFiles(project?.files || [])
-  const reviewProjects = useMemo(() => {
-    const base = projects.filter((item) => String(item?.reviewDecision || 'pending') !== 'participate')
-    const forced = queryProjectId ? projects.find((item) => item.id === queryProjectId) : null
-    if (forced && !base.some((item) => item.id === forced.id)) return [forced, ...base]
-    return base
-  }, [projects, queryProjectId])
-
   const parsedItems = useMemo(() => parseData?.items || [], [parseData?.items])
   const fieldGroups = parseData?.structured?.fieldGroups || {}
   const structuredScoring = useMemo(
@@ -734,12 +731,8 @@ export default function BusinessTenderReview({ showToast }) {
   }
 
   const handleUploadAndParse = async () => {
-    if (!selectedProjectId) {
-      showToast?.(`当前没有可解析${BUSINESS_BID_TYPE}项目，请先新建解析项目。`, 'error')
-      return
-    }
     if (reviewDecision === 'abandon') {
-      showToast?.('当前项目已标记为不参与，如需继续请先切换为“参与投标”。', 'error')
+      showToast?.('本次解析已标记为不参与，如需继续请先切换为“参与投标”。', 'error')
       return
     }
     if (!tenderFiles.length) {
@@ -759,17 +752,27 @@ export default function BusinessTenderReview({ showToast }) {
       opencodeOutput: { parts: [] },
     })
     try {
+      let targetProjectId = selectedProjectId
+      if (!targetProjectId) {
+        const created = await createReviewProject({ silent: true })
+        targetProjectId = created?.id || ''
+      }
+      if (!targetProjectId) {
+        throw new Error('上传解析入口准备失败，请刷新后重试。')
+      }
       const formData = new FormData()
       tenderFiles.forEach((file) => formData.append('tenderFiles', file))
-      const response = await parseClient.uploadAndRun(selectedProjectId, { formData })
+      const response = await parseClient.uploadAndRun(targetProjectId, { formData })
       setParseData(response)
-      const latestProgress = await parseClient.progress(selectedProjectId).catch(() => null)
+      const latestProgress = await parseClient.progress(targetProjectId).catch(() => null)
       if (latestProgress) setParseProgress(latestProgress)
-      const latestProject = await projectsClient.get(selectedProjectId)
+      const latestProject = await projectsClient.get(targetProjectId)
+      setSelectedProjectId(targetProjectId)
       setProject(latestProject)
-      setProjects((prev) => prev.map((item) => (
-        item.id === latestProject.id ? { ...item, ...latestProject } : item
-      )))
+      setProjects((prev) => {
+        const next = prev.map((item) => (item.id === latestProject.id ? { ...item, ...latestProject } : item))
+        return next.some((item) => item.id === latestProject.id) ? next : [latestProject, ...prev]
+      })
       setTenderFiles([])
       showToast?.(response?.message || `${BUSINESS_BID_TYPE}招标文件解析完成。`)
     } catch (e) {
@@ -797,13 +800,13 @@ export default function BusinessTenderReview({ showToast }) {
     try {
       await projectsClient.delete(selectedProjectId)
       setProjects((prev) => prev.filter((item) => item.id !== selectedProjectId))
+      setSelectedProjectId('')
       setProject(null)
       setParseData(null)
+      setParseProgress(null)
       setTenderFiles([])
       setUploadError('')
-      await createReviewProject({
-        toastMessage: `该${BUSINESS_BID_TYPE}项目已设为不参与并移出项目总览，已自动新建解析项目。`,
-      })
+      showToast?.(`本次${BUSINESS_BID_TYPE}解析已设为不参与并移出项目总览，可继续上传新的招标文件。`)
     } catch (e) {
       showToast?.(e?.message || '处理不参与流程失败', 'error')
     } finally {
@@ -812,7 +815,23 @@ export default function BusinessTenderReview({ showToast }) {
   }
 
   const handleCreateReviewProject = async () => {
-    await createReviewProject()
+    setCreatingReview(true)
+    try {
+      if (selectedProjectId && String(project?.reviewDecision || 'pending') !== 'participate') {
+        await projectsClient.delete(selectedProjectId)
+        setProjects((prev) => prev.filter((item) => item.id !== selectedProjectId))
+      }
+      setSelectedProjectId('')
+      setProject(null)
+      setParseData(null)
+      setParseProgress(null)
+      setTenderFiles([])
+      setUploadError('')
+    } catch (e) {
+      showToast?.(e?.message || '准备新的解析失败', 'error')
+    } finally {
+      setCreatingReview(false)
+    }
   }
 
   const handleApproveAppendixAsset = async (appendixId) => {
@@ -1080,34 +1099,7 @@ export default function BusinessTenderReview({ showToast }) {
 
   if (loadingProjects) return <PageLoading title="正在加载解析模块..." />
   if (error) return <PageError title="解析模块加载失败" description={error} onRetry={loadProjects} />
-  if (!reviewProjects.length) {
-    return (
-      <div className="review-page business-ui-shell flex flex-col gap-5 animate-fade-in max-w-none">
-        <PageHeader
-          title={reviewConfig.pageTitle}
-          description=""
-          actions={null}
-        />
-        <section className="business-parse-empty rounded-md border border-surface-container-high bg-surface-container-lowest px-6 py-8">
-          <div className="mx-auto flex max-w-[720px] flex-col items-center text-center">
-            <span className="material-symbols-outlined text-[32px] text-primary/70">document_scanner</span>
-            <h2 className="mt-3 text-base font-headline font-bold text-on-surface">{reviewConfig.emptyTitle}</h2>
-            <p className="mt-2 max-w-[520px] text-sm leading-relaxed text-on-surface-variant">{reviewConfig.emptyDescription}</p>
-            <Button
-              className="mt-5"
-              onClick={handleCreateReviewProject}
-              disabled={creatingReview}
-              size="stage"
-              variant="primary"
-            >
-              {creatingReview ? '新建中...' : reviewConfig.createButtonLabel}
-            </Button>
-          </div>
-        </section>
-      </div>
-    )
-  }
-  if (loadingDetail) return <PageLoading title="正在加载项目解析详情..." />
+  if (loadingDetail) return <PageLoading title="正在加载解析详情..." />
 
   if (showBusinessCompactUpload) {
     return (
@@ -1116,7 +1108,7 @@ export default function BusinessTenderReview({ showToast }) {
           <div className="business-section-head flex items-center px-5 py-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-xl font-headline font-bold text-[#0067B6]">商务标解析</h3>
-              <span className="text-xs text-outline">{project?.name || '待解析商务标项目'}</span>
+              <span className="text-xs text-outline">上传招标文件后自动解析</span>
             </div>
           </div>
 
@@ -1186,7 +1178,7 @@ export default function BusinessTenderReview({ showToast }) {
               size="lg"
               variant="primary"
             >
-              {creatingReview ? '新建中...' : reviewConfig.createButtonLabel}
+              {creatingReview ? '准备中...' : reviewConfig.createButtonLabel}
             </Button>
             {isParseCompleted ? null : (
               <button
@@ -1208,7 +1200,9 @@ export default function BusinessTenderReview({ showToast }) {
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
             <div className="xl:col-span-8 rounded-md bg-[#f7f7f7] border border-surface-container-high px-4 py-3">
               <p className="text-xs text-outline mb-1">{reviewConfig.currentProjectLabel}</p>
-              <p className="text-sm font-semibold text-on-surface">{project?.id || '-'} · {project?.name || '未命名项目'}</p>
+              <p className="text-sm font-semibold text-on-surface">
+                {sourceFiles[0]?.name ? `${sourceFiles.length} 个文件 · ${sourceFiles[0].name}` : '等待上传商务招标文件'}
+              </p>
             </div>
             <div className="xl:col-span-4 rounded-md bg-[#f7f7f7] border border-surface-container-high px-4 py-3 flex items-center justify-between">
               <span className="text-sm text-on-surface-variant">解析状态</span>
@@ -1548,7 +1542,7 @@ export default function BusinessTenderReview({ showToast }) {
           </Button>
         </div>
         {reviewDecision === 'abandon' && (
-          <div className="mt-2 text-sm text-error">当前项目已标记为不参与，流程在解析阶段结束。</div>
+          <div className="mt-2 text-sm text-error">本次解析已标记为不参与，流程在解析阶段结束。</div>
         )}
       </div>
 

@@ -60,6 +60,7 @@ def list_workspace_projects(
     *,
     status: str = "",
     bid_type: str = "",
+    review_decision: str = "",
     date_range: str = "",
     page: int = 1,
     page_size: int = 12,
@@ -67,6 +68,7 @@ def list_workspace_projects(
     return store.list_projects(
         status=status,
         bid_type=bid_type,
+        review_decision=review_decision,
         date_range=date_range,
         page=page,
         page_size=page_size,

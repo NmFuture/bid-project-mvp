@@ -44,6 +44,7 @@ export default function BusinessProjectList({ showToast }) {
       const data = await businessProjectsAPI.list({
         status: statusFilter !== 'all' ? statusFilter : '',
         bidType: BUSINESS_BID_TYPE,
+        reviewDecision: 'participate',
         dateRange: dateFilter !== 'all' ? dateFilter : '',
         page: currentPage,
         pageSize: pagination.pageSize,

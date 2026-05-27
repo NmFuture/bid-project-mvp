@@ -32,6 +32,7 @@ export default function TechnicalProjectList({ showToast, viewMode = 'projects',
       const data = await technicalProjectsAPI.list({
         status: statusFilter !== 'all' ? statusFilter : '',
         bidType: effectiveBidType,
+        reviewDecision: 'participate',
         dateRange: dateFilter !== 'all' ? dateFilter : '',
         page: currentPage,
         pageSize: pagination.pageSize,

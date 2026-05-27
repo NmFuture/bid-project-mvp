@@ -123,6 +123,7 @@ def project_list_state(
     *,
     status: str = "",
     bid_type: str = "",
+    review_decision: str = "",
     date_range: str = "",
     page: int = 1,
     page_size: int = 12,
@@ -131,6 +132,13 @@ def project_list_state(
     normalized_bid_type = str(bid_type or "").strip()
     if normalized_bid_type:
         items = [item for item in items if str(item.get("bidType") or "").strip() == normalized_bid_type]
+    normalized_review_decision = str(review_decision or "").strip().lower()
+    if normalized_review_decision:
+        items = [
+            item
+            for item in items
+            if str(item.get("reviewDecision") or "").strip().lower() == normalized_review_decision
+        ]
     items.sort(key=lambda item: item["updatedAt"], reverse=True)
     start = max(0, (page - 1) * page_size)
     end = start + page_size

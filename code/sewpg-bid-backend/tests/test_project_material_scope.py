@@ -96,6 +96,26 @@ class ProjectMaterialScopeRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
 
+    def test_project_list_filters_participate_review_decision(self) -> None:
+        pending = self.client.post(
+            "/api/business/projects",
+            json={"name": "商务解析暂存", "customerName": "", "reviewDecision": "pending"},
+        )
+        pending.raise_for_status()
+        participate = self.client.post(
+            "/api/business/projects",
+            json={"name": "商务参与项目", "customerName": "测试业主", "reviewDecision": "participate"},
+        )
+        participate.raise_for_status()
+
+        response = self.client.get("/api/business/projects?reviewDecision=participate&pageSize=20")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual([item["id"] for item in payload["items"]], [participate.json()["id"]])
+        self.assertNotIn(pending.json()["id"], [item["id"] for item in payload["items"]])
+
     def test_workspace_ocr_task_routes_are_split(self) -> None:
         technical = self.client.post(
             "/api/technical/projects",

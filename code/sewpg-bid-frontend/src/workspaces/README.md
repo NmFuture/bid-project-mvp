@@ -14,3 +14,4 @@ Rules for future changes:
 4. Do not add new `if 商务标 / if 技术标` branches to shared pages when a workspace-specific entry can own the difference.
 5. Keep both workspaces on the same main route shape: `template-directory`, `outline`, `gaps`, and `editor`. Do not reintroduce project-level `generate`, `coverage`, or `export` pages.
 6. Material preview belongs inside the matching page as a modal or overlay, not as an independent route.
+7. Keep parse pages as upload-and-parse entrances. Do not expose "create project first" in `technical/pages/TechnicalTenderReview.jsx` or `business/pages/BusinessTenderReview.jsx`; confirmed project creation happens after the participate decision.

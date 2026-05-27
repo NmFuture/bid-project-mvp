@@ -57,10 +57,19 @@ class BidProjectService:
             payload["turbineModel"] = payload.get("turbineModel") if isinstance(payload.get("turbineModel"), dict) else {}
         return payload
 
-    def list(self, *, status: str = "", date_range: str = "", page: int = 1, page_size: int = 12) -> dict[str, Any]:
+    def list(
+        self,
+        *,
+        status: str = "",
+        review_decision: str = "",
+        date_range: str = "",
+        page: int = 1,
+        page_size: int = 12,
+    ) -> dict[str, Any]:
         return list_workspace_projects(
             status=status,
             bid_type=self.bid_type,
+            review_decision=review_decision,
             date_range=date_range,
             page=page,
             page_size=page_size,

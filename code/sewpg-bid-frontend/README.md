@@ -34,6 +34,8 @@
 /workspace/business/projects/:id/editor
 ```
 
+`/parse/technical` 和 `/parse/business` 是上传招标文件并解析的入口，不是面向用户的“新建项目”入口。上传解析时可以后台静默创建临时承载；解析完成后选择参与投标才进入项目总览和后续流程，不参与则删除临时承载。
+
 技术标和商务标都不再保留独立 `/generate`、`/coverage`、`/export` 项目页面。素材匹配页内的素材预览使用弹出层，正文生成在 `/gaps` 内触发，共创、格式和 Word/PDF 下载在 `/editor` 内完成。
 
 ## API 规则

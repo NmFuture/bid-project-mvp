@@ -77,19 +77,19 @@ const TECHNICAL_REVIEW_CONFIG = {
   bidType: '技术标',
   pageTitle: '技术标解析',
   pageDescription: '',
-  createProjectNamePrefix: '技术标待解析项目',
-  createButtonLabel: '新建项目',
-  createSuccessMessage: '已新建技术标解析项目，请上传招标文件并解析。',
-  emptyTitle: '暂无待解析技术标项目',
-  emptyDescription: '你可以在这里先新建技术标解析项目，再上传技术招标文件进行判断。',
-  currentProjectLabel: '当前技术标解析项目',
+  createProjectNamePrefix: '技术标解析暂存',
+  createButtonLabel: '解析新的招标文件',
+  createSuccessMessage: '已准备好上传解析，请选择技术招标文件。',
+  emptyTitle: '正在准备上传解析',
+  emptyDescription: '系统正在准备技术招标文件上传入口。',
+  currentProjectLabel: '当前解析',
   uploadSectionTitle: '技术招标文件上传与关键参数解析',
   uploadSectionDescription: '本模块负责上传技术招标文件并解析结构化要求，供技术标项目立项和后续目录生成使用。',
   uploadFileLabel: '技术招标文件（必选）',
-  sourceFilesLabel: '已上传技术招标文件（当前项目）',
+  sourceFilesLabel: '已上传技术招标文件',
   resultTitle: '技术标结构化解析结果',
   pendingParseHint: '请点击上方“上传并解析”开始提取技术标结构化要求。',
-  noSourceHint: '当前项目尚未上传技术招标文件。',
+  noSourceHint: '当前尚未上传技术招标文件。',
   appendixTitle: '附表空表产物',
   appendixSwitchHint: '空表 Word 已生成，可切换预览。',
   appendixEmptyHint: '未识别到附表要求。',
@@ -370,7 +370,7 @@ export default function TechnicalTenderReview({ showToast }) {
         return reviewItems[0]?.id || ''
       })
     } catch (e) {
-      setError(e?.message || '解析项目列表加载失败')
+      setError(e?.message || '解析列表加载失败')
     } finally {
       setLoadingProjects(false)
     }
@@ -425,7 +425,9 @@ export default function TechnicalTenderReview({ showToast }) {
       }
       return created
     } catch (e) {
-      showToast?.(e?.message || '新建解析项目失败', 'error')
+      const message = e?.message || '准备上传解析失败'
+      if (silent) setError(message)
+      else showToast?.(message, 'error')
       return null
     } finally {
       setCreatingReview(false)
@@ -606,14 +608,14 @@ export default function TechnicalTenderReview({ showToast }) {
       const created = await createReviewProject({ silent: true })
       targetProjectId = created?.id || ''
       if (!targetProjectId) {
-        const message = '技术标解析项目创建失败，请稍后重试。'
+        const message = '上传解析入口准备失败，请刷新后重试。'
         setUploadError(message)
         showToast?.(message, 'error')
         return
       }
     }
     if (reviewDecision === 'abandon') {
-      showToast?.('当前项目已标记为不参与，如需继续请先切换为“参与投标”。', 'error')
+      showToast?.('本次解析已标记为不参与，如需继续请先切换为“参与投标”。', 'error')
       return
     }
 
@@ -634,10 +636,12 @@ export default function TechnicalTenderReview({ showToast }) {
       const latestProgress = await technicalParseAPI.progress(targetProjectId).catch(() => null)
       if (latestProgress) setParseProgress(latestProgress)
       const latestProject = await technicalProjectsAPI.get(targetProjectId)
+      setSelectedProjectId(targetProjectId)
       setProject(latestProject)
-      setProjects((prev) => prev.map((item) => (
-        item.id === latestProject.id ? { ...item, ...latestProject } : item
-      )))
+      setProjects((prev) => {
+        const next = prev.map((item) => (item.id === latestProject.id ? { ...item, ...latestProject } : item))
+        return next.some((item) => item.id === latestProject.id) ? next : [latestProject, ...prev]
+      })
       setTenderFiles([])
       showToast?.(response?.message || `${reviewConfig.bidType}招标文件解析完成。`)
     } catch (e) {
@@ -665,13 +669,13 @@ export default function TechnicalTenderReview({ showToast }) {
     try {
       await technicalProjectsAPI.delete(selectedProjectId)
       setProjects((prev) => prev.filter((item) => item.id !== selectedProjectId))
+      setSelectedProjectId('')
       setProject(null)
       setParseData(null)
+      setParseProgress(null)
       setTenderFiles([])
       setUploadError('')
-      await createReviewProject({
-        toastMessage: `该${reviewConfig.bidType}项目已设为不参与并移出项目总览，已自动新建解析项目。`,
-      })
+      showToast?.(`本次${reviewConfig.bidType}解析已设为不参与并移出项目总览，可继续上传新的招标文件。`)
     } catch (e) {
       showToast?.(e?.message || '处理不参与流程失败', 'error')
     } finally {
@@ -680,7 +684,23 @@ export default function TechnicalTenderReview({ showToast }) {
   }
 
   const handleCreateReviewProject = async () => {
-    await createReviewProject()
+    setCreatingReview(true)
+    try {
+      if (selectedProjectId && String(project?.reviewDecision || 'pending') !== 'participate') {
+        await technicalProjectsAPI.delete(selectedProjectId)
+        setProjects((prev) => prev.filter((item) => item.id !== selectedProjectId))
+      }
+      setSelectedProjectId('')
+      setProject(null)
+      setParseData(null)
+      setParseProgress(null)
+      setTenderFiles([])
+      setUploadError('')
+    } catch (e) {
+      showToast?.(e?.message || '准备新的解析失败', 'error')
+    } finally {
+      setCreatingReview(false)
+    }
   }
 
   const handleApproveAppendixAsset = async (appendixId) => {
@@ -775,7 +795,7 @@ export default function TechnicalTenderReview({ showToast }) {
 
   if (loadingProjects) return <PageLoading title="正在加载解析模块..." />
   if (error) return <PageError title="解析模块加载失败" description={error} onRetry={loadProjects} />
-  if (loadingDetail) return <PageLoading title="正在加载项目解析详情..." />
+  if (loadingDetail) return <PageLoading title="正在加载解析详情..." />
 
   if (showTechnicalCompactUpload) {
     return (
@@ -784,7 +804,7 @@ export default function TechnicalTenderReview({ showToast }) {
           <div className="business-section-head flex items-center px-5 py-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-xl font-headline font-bold text-[#0067B6]">技术标解析</h3>
-              <span className="text-xs text-outline">{project?.name || reviewConfig.createProjectNamePrefix}</span>
+              <span className="text-xs text-outline">上传招标文件后自动解析</span>
             </div>
           </div>
 
@@ -820,7 +840,7 @@ export default function TechnicalTenderReview({ showToast }) {
                 size="stage"
                 variant="primary"
               >
-                {creatingReview ? '正在创建项目...' : uploading ? '上传解析中...' : '上传并解析'}
+                {creatingReview ? '准备中...' : uploading ? '上传解析中...' : '上传并解析'}
               </Button>
             </div>
             {uploadError && (
@@ -853,7 +873,7 @@ export default function TechnicalTenderReview({ showToast }) {
             size="lg"
             variant="primary"
           >
-            {creatingReview ? '新建中...' : reviewConfig.createButtonLabel}
+            {creatingReview ? '准备中...' : reviewConfig.createButtonLabel}
           </Button>
         )}
       />
@@ -1111,7 +1131,7 @@ export default function TechnicalTenderReview({ showToast }) {
           </Button>
         </div>
         {reviewDecision === 'abandon' && (
-          <div className="mt-2 text-sm text-error">当前项目已标记为不参与，流程在解析阶段结束。</div>
+          <div className="mt-2 text-sm text-error">本次解析已标记为不参与，流程在解析阶段结束。</div>
         )}
       </div>
 

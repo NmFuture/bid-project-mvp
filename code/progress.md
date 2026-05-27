@@ -22,6 +22,7 @@
 当前保留的工作重点：
 
 - 先跑通商务标真实样本端到端。
+- 商务标和技术标解析页都按“上传解析 -> 人工判断是否参与投标”处理；项目总览只展示已确认参与投标的项目。
 - 素材库标签、商务 Wiki、共用业绩库。
 - 商务素材匹配、三类处理方式、项目事实表、AI填写。
 - 商务正文生成、格式处理和 Word/PDF 导出。
@@ -38,6 +39,7 @@
 - 素材清洗通用 Skill 已统一为 `bid-material-format-cleaner`。
 - `bid-tech-format-cleaner/SKILL.md` 已补齐。
 - 技术标运行态恢复已支持从项目 workspace 下既有 `toc.json` 恢复目录状态，和商务标行为对齐。
+- 商务标/技术标解析入口已去掉“先新建项目”的前端口径：上传解析时后台静默创建临时承载，不参与后删除，参与后再进入正式项目推进；项目列表 API 支持按 `reviewDecision=participate` 过滤。
 
 ## 3. 当前验证基线
 
@@ -115,5 +117,38 @@ npx eslint src/workspaces/business/pages/BusinessGapRecognition.jsx src/workspac
 - `code/sewpg-bid-backend/tests/test_business_gap_planner.py`
 - `code/sewpg-bid-frontend/src/workspaces/business/pages/BusinessGapRecognition.jsx`
 - `code/sewpg-bid-frontend/src/workspaces/business/pages/BusinessMaterialDB.jsx`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-27 23:31:01 post-commit 1dfe5e9
+
+提交摘要：fix: align parse review flow
+
+变更文件：
+
+- `README.md`
+- `code/AGENT.md`
+- `code/plan.md`
+- `code/progress.md`
+- `code/sewpg-bid-backend/README.md`
+- `code/sewpg-bid-backend/app/api/routes/business.py`
+- `code/sewpg-bid-backend/app/api/routes/technical.py`
+- `code/sewpg-bid-backend/app/services/bid_project_service.py`
+- `code/sewpg-bid-backend/app/services/bid_project_state.py`
+- `code/sewpg-bid-backend/app/services/store.py`
+- `code/sewpg-bid-backend/app/services/workspace_project_access.py`
+- `code/sewpg-bid-backend/tests/test_bid_material_scope_services.py`
+- `code/sewpg-bid-backend/tests/test_project_material_scope.py`
+- `code/sewpg-bid-frontend/README.md`
+- `"code/sewpg-bid-frontend/docs/10-API\346\216\245\345\217\243\346\200\273\350\247\210\344\270\216\345\245\221\347\272\246\350\257\264\346\230\216.md"`
+- `"code/sewpg-bid-frontend/docs/11-API\345\255\227\346\256\265\347\272\247\345\245\221\347\272\246\346\230\216\347\273\206.md"`
+- `code/sewpg-bid-frontend/src/workspaces/README.md`
+- `code/sewpg-bid-frontend/src/workspaces/business/pages/BusinessProjectList.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/business/pages/BusinessTenderReview.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalProjectList.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalTenderReview.jsx`
+- `"doc/\344\273\243\347\240\201\347\273\223\346\236\204\346\242\263\347\220\206.md"`
+- `"doc/\347\240\224\345\217\221\350\256\241\345\210\222.md"`
+- `"doc/\351\234\200\346\261\202\346\242\263\347\220\206.md"`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。

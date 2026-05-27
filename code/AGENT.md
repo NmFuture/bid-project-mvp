@@ -49,6 +49,7 @@ docker compose up -d --build
 ```text
 招标文件导入
 -> 智能解析
+-> 投标判断
 -> 目录与模板
 -> 素材匹配与缺口处理
 -> 标书生成
@@ -60,6 +61,8 @@ docker compose up -d --build
 技术标入口使用 `/api/technical/...` 和 `/workspace/tech/...`。
 
 商务标入口使用 `/api/business/...` 和 `/workspace/business/...`。
+
+解析页入口使用 `/parse/technical` 和 `/parse/business`。前端不要把它表达成“先新建项目”；上传解析需要的后台临时承载是实现细节。确认参与投标后才补齐项目身份信息并进入项目总览，不参与则删除临时承载。
 
 旧 `/api/projects...`、旧根项目路由、旧单线阶段号和旧 mock 网关不再作为当前基线。
 

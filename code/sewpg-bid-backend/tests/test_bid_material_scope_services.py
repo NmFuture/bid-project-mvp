@@ -914,6 +914,15 @@ def test_bid_project_state_rules_are_outside_store() -> None:
             "reviewDecision": "unknown",
         },
     )
+    participating_project = create_project_state(
+        "PRJ-BIZ-PARTICIPATE",
+        {
+            "name": "商务参与项目",
+            "customerName": "测试业主",
+            "bidType": "商务标",
+            "reviewDecision": "participate",
+        },
+    )
     update_project_state(
         project,
         "PRJ-BIZ-STATE",
@@ -939,6 +948,13 @@ def test_bid_project_state_rules_are_outside_store() -> None:
     stage_payload = update_stage_state(project, 3, {"status": "active"})
     stages_payload = project_stages_state(project)
     list_payload = project_list_state([project], bid_type="商务标", page=1, page_size=10)
+    participate_list_payload = project_list_state(
+        [project, participating_project],
+        bid_type="商务标",
+        review_decision="participate",
+        page=1,
+        page_size=10,
+    )
     summary = project_summary_state(project)
     detail = project_detail_state(project)
     store_source = Path("app/services/store.py").read_text(encoding="utf-8")
@@ -967,6 +983,8 @@ def test_bid_project_state_rules_are_outside_store() -> None:
     }
     assert list_payload["total"] == 1
     assert list_payload["items"][0]["id"] == "PRJ-BIZ-STATE"
+    assert participate_list_payload["total"] == 1
+    assert participate_list_payload["items"][0]["id"] == "PRJ-BIZ-PARTICIPATE"
     assert [stage["name"] for stage in stages_payload] == ["模板与目录", "审核目录", "素材匹配", "共创导出"]
     assert stage_payload["stageLabel"] == "素材匹配"
     assert summary["stageLabel"] == "审核终止"
