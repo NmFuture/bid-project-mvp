@@ -195,6 +195,8 @@ def summarize_business_gap_plan(plan: dict[str, Any]) -> dict[str, Any]:
         decision = str(task.get("decision") or "")
         module_key = str(task.get("moduleKey") or "")
         handling_mode = str(task.get("handlingMode") or "")
+        if handling_mode == "manual_select":
+            handling_mode = "manual_upload"
         if status:
             statuses[status] = statuses.get(status, 0) + 1
         if decision:

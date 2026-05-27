@@ -129,12 +129,13 @@ def refresh_material_kind_labels(project: dict[str, Any], business_gap_state: di
             if isinstance(artifact, dict):
                 apply_kind(artifact, str(artifact.get("materialId") or ""))
         artifacts = task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else []
-        if str(task.get("handlingMode") or "") == "manual_select" and any(
-            str(item.get("businessMaterialKind") or "") == "fixed"
-            for item in artifacts
-            if isinstance(item, dict)
-        ):
-            task["handlingMode"] = "fixed_material"
+        if str(task.get("handlingMode") or "") == "manual_select":
+            has_fixed_artifact = any(
+                str(item.get("businessMaterialKind") or "") == "fixed"
+                for item in artifacts
+                if isinstance(item, dict)
+            )
+            task["handlingMode"] = "fixed_material" if has_fixed_artifact else "manual_upload"
             changed = True
     return changed
 

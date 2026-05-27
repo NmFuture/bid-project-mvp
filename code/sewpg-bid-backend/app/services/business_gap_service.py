@@ -673,7 +673,7 @@ class BusinessGapService:
             "selectedEvidenceSegments": [],
             "riskFlags": ["manual_upload_required"],
             "requirementLevel": "required",
-            "assigneeMode": "manual_select",
+            "assigneeMode": "manual_upload",
             "displayOrder": 9000 + base_index,
             "fingerprint": f"manual:{project_id}:{toc_node_id}:{base_index}",
             "updatedAt": created_at,
@@ -1093,12 +1093,16 @@ class BusinessGapService:
         if not explicit_mode:
             explicit_mode = next((str(material.get("handlingMode") or "") for material in selected if str(material.get("handlingMode") or "")), "")
         explicit_mode = explicit_mode.strip()
+        if explicit_mode == "manual_select":
+            explicit_mode = "manual_upload"
+        if explicit_mode not in {"fixed_material", "manual_upload", "ignored", "ai_table_fill"}:
+            explicit_mode = ""
         if explicit_mode:
             task["handlingMode"] = explicit_mode
         elif any(str(artifact.get("businessMaterialKind") or "") == "fixed" for artifact in artifacts):
             task["handlingMode"] = "fixed_material"
         else:
-            task["handlingMode"] = "manual_select"
+            task["handlingMode"] = "manual_upload"
         task["updatedAt"] = created_at
         task["resolvedAt"] = created_at
         task["resolvedSource"] = artifacts[0]["fileName"]
@@ -1172,7 +1176,7 @@ class BusinessGapService:
         task.setdefault("resolvedArtifacts", []).append(artifact)
         apply_task_artifact_intent(task, [artifact])
         recompute_task_after_artifact_change(task)
-        task["handlingMode"] = "manual_select"
+        task["handlingMode"] = "manual_upload"
         task["updatedAt"] = created_at
         task["resolvedAt"] = created_at
         task["resolvedSource"] = artifact["fileName"]

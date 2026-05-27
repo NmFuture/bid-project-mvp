@@ -100,3 +100,20 @@ npx eslint src/workspaces/business/pages/BusinessGapRecognition.jsx src/workspac
 - `"doc/\351\234\200\346\261\202\346\242\263\347\220\206.md"`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-05-27 22:53:02 post-commit f29bc78
+
+提交摘要：fix(business-gap): remove manual select handling mode
+
+变更文件：
+
+- `code/sewpg-bid-backend/app/services/business_gap_planning.py`
+- `code/sewpg-bid-backend/app/services/business_gap_refresh.py`
+- `code/sewpg-bid-backend/app/services/business_gap_service.py`
+- `code/sewpg-bid-backend/opencode/skill/bid-business-gap-planner/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_bid_material_scope_services.py`
+- `code/sewpg-bid-backend/tests/test_business_gap_planner.py`
+- `code/sewpg-bid-frontend/src/workspaces/business/pages/BusinessGapRecognition.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/business/pages/BusinessMaterialDB.jsx`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

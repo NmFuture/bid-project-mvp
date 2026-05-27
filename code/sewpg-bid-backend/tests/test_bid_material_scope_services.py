@@ -3974,6 +3974,80 @@ def test_business_gap_select_material_stays_in_business_service() -> None:
     assert feedback[0]["materialId"] == "RAW-BIZ-001"
 
 
+def test_business_gap_select_non_fixed_material_counts_as_manual_supplement() -> None:
+    project_id = _seed_business_gap_project(
+        {
+            "schemaVersion": "bid-business-gap-plan-v1",
+            "tocRefs": [{"nodeId": "TOC-1", "title": "资质文件", "taskIds": ["BTASK-001"], "status": "partial"}],
+            "tasks": [
+                {
+                    "id": "BTASK-001",
+                    "title": "资质证书",
+                    "taskType": "certificate",
+                    "decision": "material_required",
+                    "status": "needs_input",
+                    "moduleKey": "qualification_compliance_certificates",
+                    "candidateMaterials": [],
+                    "selectedMaterialRefs": [],
+                    "resolvedArtifacts": [],
+                    "riskFlags": ["missing_material"],
+                }
+            ],
+            "summary": {},
+        }
+    )
+
+    async def fake_download_content(material_id: str) -> dict[str, str]:
+        return {
+            "fileId": material_id,
+            "fileName": "商务补充材料.pdf",
+            "bucket": "mock-bucket",
+            "key": "mock-key",
+            "mimeType": "application/pdf",
+        }
+
+    def fake_download_file(bucket: str, key: str, target_path) -> None:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(b"%PDF-business-material")
+
+    with patch(
+        "app.services.business_gap_service.business_material_store.raw_download_cleaned_content",
+        side_effect=RuntimeError("no cleaned content in this test"),
+    ), patch(
+        "app.services.business_gap_service.business_material_store.raw_download_content",
+        side_effect=fake_download_content,
+    ), patch(
+        "app.services.business_gap_service.minio_client.download_file",
+        side_effect=fake_download_file,
+    ):
+        payload = asyncio.run(
+            business_gap_service.select_material(
+                project_id,
+                "BTASK-001",
+                _DummyRequest(),
+                {
+                    "materials": [
+                        {
+                            "materialId": "RAW-BIZ-OTHER",
+                            "materialName": "商务补充材料.pdf",
+                            "folderPath": "商务标/通用素材/其他材料",
+                            "materialTier": "standard",
+                            "businessMaterialKind": "other",
+                            "businessMaterialKindLabel": "其他",
+                            "handlingMode": "manual_select",
+                        }
+                    ],
+                    "handlingMode": "manual_select",
+                },
+            )
+        )
+
+    assert payload["task"]["status"] == "ready"
+    assert payload["task"]["handlingMode"] == "manual_upload"
+    assert payload["artifact"]["sourceMode"] == "selected_from_business_material_library"
+    assert payload["artifact"]["businessMaterialKind"] == "other"
+
+
 def test_business_gap_select_template_stays_in_business_service(tmp_path) -> None:
     template_path = tmp_path / "投标函模板.docx"
     template_path.write_bytes(b"fake-docx-template")

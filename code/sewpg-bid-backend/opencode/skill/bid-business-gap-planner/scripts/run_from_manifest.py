@@ -833,7 +833,7 @@ def feedback_material_candidates(
                 "cleanStatus": str(material.get("cleanStatus") or item.get("cleanStatus") or ""),
                 "cleanedFileName": str(material.get("cleanedFileName") or item.get("cleanedFileName") or ""),
                 "score": round(score, 4),
-                "reason": "人工指定反馈命中 + 同项目历史选择优先",
+                "reason": "人工纠偏反馈命中 + 同项目历史选择优先",
                 "path": folder_path,
                 "fileType": file_type(material) if material else file_type({"name": material_name}),
                 "previewable": True,
@@ -1631,7 +1631,7 @@ def status_from_decision(decision: str) -> str:
 
 def assignee_mode(task_type: str, decision: str) -> str:
     if task_type in {"attachment", "certificate", "bundle"}:
-        return "manual_select"
+        return "manual_upload"
     if decision == "fill_required":
         return "generate_or_fill"
     if decision == "ai_draft_required":

@@ -35,7 +35,7 @@ const BUSINESS_MATERIAL_KIND_OPTIONS = [
   {
     value: 'other',
     label: '其他',
-    description: '作为填表、人工指定或后续处理的数据来源。',
+    description: '作为填表、人工补充或后续处理的数据来源。',
   },
 ]
 const CLEAN_STATUS_OPTIONS = [

@@ -364,7 +364,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
                         "materialIndex": [
                             {
                                 "id": "RAW-FB-001",
-                                "name": "人工指定过的EW6.25机型认证证书.pdf",
+                                "name": "人工纠偏过的EW6.25机型认证证书.pdf",
                                 "folderPath": "商务标/通用素材/05-专题证书库/01-机型认证证书",
                                 "materialTier": "standard",
                             }
@@ -380,7 +380,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
                                     "assemblyMode": "embed_scan_or_image",
                                     "materialUsage": "embed_scan",
                                     "materialId": "RAW-FB-001",
-                                    "materialName": "人工指定过的EW6.25机型认证证书.pdf",
+                                    "materialName": "人工纠偏过的EW6.25机型认证证书.pdf",
                                     "folderPath": "商务标/通用素材/05-专题证书库/01-机型认证证书",
                                     "evidenceSegmentId": "SEG-FB-001",
                                     "evidenceSegmentTitle": "EW6.25机型认证证书页",
@@ -407,7 +407,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         candidate = certificate["candidateMaterials"][0]
         self.assertEqual(candidate["materialId"], "RAW-FB-001")
         self.assertEqual(candidate["feedbackKey"], "biz-feedback-test")
-        self.assertIn("人工指定反馈命中", candidate["reason"])
+        self.assertIn("人工纠偏反馈命中", candidate["reason"])
         self.assertIn("manual_feedback_candidate", certificate["riskFlags"])
         self.assertEqual(certificate["selectedEvidenceSegments"][0]["segmentId"], "SEG-FB-001")
 

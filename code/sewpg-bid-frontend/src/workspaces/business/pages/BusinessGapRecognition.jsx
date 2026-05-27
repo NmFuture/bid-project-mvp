@@ -25,8 +25,7 @@ const statusLabels = {
 
 const taskActionLabels = {
   fixed_material: '固定素材',
-  manual_select: '人工指定',
-  manual_upload: '人工补料',
+  manual_upload: '人工补充',
   ignored: '忽略',
   ai_table_fill: 'AI填写',
 }
@@ -331,7 +330,7 @@ function taskActionMode(task) {
   if (artifactType === 'business_table_fill' || sourceMode === 'generated_by_business_table_fill') return 'ai_table_fill'
   if (sourceMode === 'uploaded_in_business_s3') return 'manual_upload'
   if (sourceMode === 'selected_from_business_material_library') {
-    return String(latest?.businessMaterialKind || '') === 'fixed' ? 'fixed_material' : 'manual_select'
+    return String(latest?.businessMaterialKind || '') === 'fixed' ? 'fixed_material' : 'manual_upload'
   }
   return ''
 }
@@ -728,7 +727,7 @@ function BusinessMaterialPickerModal({
       <div className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
           <div className="min-w-0">
-            <h3 className="text-lg font-headline font-bold text-on-surface">人工指定素材库材料/模板</h3>
+            <h3 className="text-lg font-headline font-bold text-on-surface">选择素材库材料/模板</h3>
           </div>
           <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" />
         </div>
@@ -986,7 +985,7 @@ function BusinessTableFillModal({
               </div>
             ) : (
               <div className="rounded-md border border-dashed border-surface-container-high p-8 text-center text-sm text-on-surface-variant">
-                当前任务还没有可填写模板或附件。可先在候选素材中选择表格、人工指定素材库表格，或上传补充表格。
+                当前任务还没有可填写模板或附件。可先在候选素材中选择表格、选择素材库表格，或上传补充表格。
               </div>
             )}
           </div>
@@ -1202,7 +1201,6 @@ export default function BusinessGapRecognition({ showToast }) {
   const actionCounts = useMemo(() => {
     const initial = {
       fixed_material: 0,
-      manual_select: 0,
       manual_upload: 0,
       ignored: 0,
       ai_table_fill: 0,
@@ -1423,7 +1421,7 @@ export default function BusinessGapRecognition({ showToast }) {
   const selectCandidateMaterial = async (task, material) => {
     const selectedMaterial = materialSelectionPayload(material, 'materials')
     if (!selectedMaterial) return
-    await selectMaterials(task, [{ ...selectedMaterial, handlingMode: businessMaterialKindLabel(material) === '固定素材' ? 'fixed_material' : 'manual_select' }])
+    await selectMaterials(task, [{ ...selectedMaterial, handlingMode: businessMaterialKindLabel(material) === '固定素材' ? 'fixed_material' : 'manual_upload' }])
   }
 
   const ignoreTask = async (task) => {
@@ -1689,12 +1687,11 @@ export default function BusinessGapRecognition({ showToast }) {
         <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
           <div className="flex min-h-7 items-center gap-2">
             <div className="shrink-0 text-xs font-semibold text-on-surface-variant">处理方式统计</div>
-            <div className="grid min-w-0 flex-1 grid-cols-4 gap-1.5 text-center">
+            <div className="grid min-w-0 flex-1 grid-cols-3 gap-1.5 text-center">
               {[
                 ['fixed_material', '固定素材'],
                 ['ai_table_fill', 'AI填写'],
                 ['manual_upload', '人工补充'],
-                ['manual_select', '人工指定'],
               ].map(([key, label]) => (
                 <div key={key} className="flex min-h-7 items-center justify-center gap-1 rounded-md bg-surface-container-low px-2 py-0.5">
                   <span className="text-[11px] text-on-surface-variant">{label}</span>
@@ -1793,7 +1790,7 @@ export default function BusinessGapRecognition({ showToast }) {
                   >
                     <div className="flex flex-wrap gap-2">
                       <Button type="button" onClick={() => openMaterialPicker(task)} disabled={!!actionLoading} size="sm" variant="primary">
-                        人工指定素材库材料
+                        选择素材库材料
                       </Button>
                       <FileButton accept={SUPPLEMENT_ACCEPT} disabled={!!actionLoading} icon="" multiple onChange={(event) => uploadSupplementForTask(event, task)} size="sm" variant="primary">
                         {actionLoading === 'upload' ? '上传中...' : '人工上传补充'}
