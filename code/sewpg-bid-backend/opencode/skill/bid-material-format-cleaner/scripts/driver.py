@@ -25,6 +25,7 @@ import sys
 import tempfile
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -766,6 +767,61 @@ def _render_report(source_dir: Path, output_dir: Path, records: list[FileRecord]
     return "\n".join(lines)
 
 
+def _summary_counts(records: list[FileRecord]) -> dict[str, Any]:
+    by_kind: dict[str, dict[str, int]] = {}
+    by_status: dict[str, int] = {}
+    for record in records:
+        by_status[record.status] = by_status.get(record.status, 0) + 1
+        kind_counts = by_kind.setdefault(record.kind, {})
+        kind_counts[record.status] = kind_counts.get(record.status, 0) + 1
+    return {
+        "total": len(records),
+        "successTotal": sum(1 for record in records if record.status in {"OK", "SKIP"}),
+        "reviewTotal": sum(1 for record in records if record.status == "REVIEW"),
+        "failedTotal": sum(1 for record in records if record.status == "FAIL"),
+        "byStatus": by_status,
+        "byKind": by_kind,
+    }
+
+
+def _record_to_manifest(record: FileRecord, source_dir: Path, output_dir: Path) -> dict[str, Any]:
+    relative_source = _relative_display(record.source, source_dir)
+    relative_output = _relative_display(record.output, output_dir) if record.output else ""
+    output_exists = bool(record.output and record.output.exists())
+    return {
+        "kind": record.kind,
+        "status": record.status,
+        "detail": record.detail,
+        "sourcePath": str(record.source),
+        "outputPath": str(record.output) if record.output else "",
+        "relativeSourcePath": relative_source,
+        "relativeOutputPath": relative_output,
+        "sourceFileName": record.source.name,
+        "outputFileName": record.output.name if record.output else "",
+        "sourceSuffix": record.source.suffix.lower(),
+        "outputSuffix": record.output.suffix.lower() if record.output else "",
+        "outputExists": output_exists,
+        "outputSize": record.output.stat().st_size if output_exists and record.output else 0,
+        "isUsableForRetrieval": record.status in {"OK", "SKIP", "REVIEW"} and output_exists,
+        "needsHumanReview": record.status == "REVIEW",
+    }
+
+
+def _write_json_report(source_dir: Path, output_dir: Path, records: list[FileRecord], report_file: Path) -> None:
+    if not report_file.is_absolute():
+        report_file = output_dir / report_file
+    report_file.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schemaVersion": "material-cleaning-manifest/v1",
+        "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "sourceDir": str(source_dir),
+        "outputDir": str(output_dir),
+        "summary": _summary_counts(records),
+        "records": [_record_to_manifest(record, source_dir, output_dir) for record in records],
+    }
+    report_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _send_feishu_summary(source_dir: Path, output_dir: Path, records: list[FileRecord]) -> None:
     pdf_records = [r for r in records if r.kind == "pdf"]
     excel_records = [r for r in records if r.kind == "excel"]
@@ -795,7 +851,7 @@ def _send_feishu_summary(source_dir: Path, output_dir: Path, records: list[FileR
         print(f"飞书通知: {resp.read().decode('utf-8')}")
 
 
-def run(source_dir: Path, output_dir: Path, *, notify: bool) -> int:
+def run(source_dir: Path, output_dir: Path, *, notify: bool, report_file: Path | None = None) -> int:
     _ensure_venv()
     _ensure_runtime_dependencies()
 
@@ -826,6 +882,9 @@ def run(source_dir: Path, output_dir: Path, *, notify: bool) -> int:
 
     report = _render_report(source_dir, output_dir, records)
     print("\n" + report)
+    if report_file is not None:
+        _write_json_report(source_dir, output_dir, records, report_file)
+        print(f"结构化清洗清单: {report_file if report_file.is_absolute() else output_dir / report_file}")
 
     if notify:
         try:
@@ -849,6 +908,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="处理完成后不发送飞书通知（适合本地验证）",
     )
+    parser.add_argument(
+        "--report-file",
+        default="cleaning_manifest.json",
+        help="输出结构化 JSON 清单路径；相对路径会写入输出目录（默认: cleaning_manifest.json）",
+    )
     args = parser.parse_args(argv)
 
     source_dir = Path(args.source_dir).resolve()
@@ -859,7 +923,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        return run(source_dir, output_dir, notify=not args.no_feishu)
+        return run(source_dir, output_dir, notify=not args.no_feishu, report_file=Path(args.report_file))
     except Exception as exc:
         sys.stderr.write(f"driver 执行失败: {exc}\n")
         return 1

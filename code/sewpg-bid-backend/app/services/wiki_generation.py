@@ -25,6 +25,7 @@ from app.services.bid_type import BUSINESS_BID_TYPE, GENERAL_BID_TYPE, TECHNICAL
 from app.services.identity import canonical_customer, classify_material_path, material_identity
 from app.services.business_material_store import business_material_store
 from app.services.business_wiki_blueprint import build_business_wiki_blueprint
+from app.services.material_tags import normalize_material_tags
 from app.services.minio_client import minio_client
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.peripheral import PeripheralError
@@ -687,6 +688,9 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
     cleaned_minio_key = str(ext_fields.get("cleanedMinioKey") or "")
     cleaned_bucket = str(ext_fields.get("cleanedMinioBucket") or item.minio_bucket or "")
     cleaned_file_name = str(ext_fields.get("cleanedFileName") or "")
+    tags = normalize_material_tags(ext_fields.get("tags"))
+    clean_report = ext_fields.get("cleanReport") if isinstance(ext_fields.get("cleanReport"), dict) else {}
+    clean_report_record = clean_report.get("record") if isinstance(clean_report.get("record"), dict) else {}
     has_cleaned_word = bool(cleaned_minio_key)
     ext = "docx" if source_ext == "docx" or has_cleaned_word else source_ext
     inferred_bid_type = _material_bid_type(folder_path, file_name, folder_bid_type)
@@ -739,7 +743,20 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
         "path": path,
         "ext": ext,
         "sourceExt": source_ext,
+        "tags": tags,
+        "businessMaterialKind": str(ext_fields.get("businessMaterialKind") or ""),
+        "businessMaterialKindLabel": str(ext_fields.get("businessMaterialKindLabel") or ""),
         "hasCleanedWord": has_cleaned_word,
+        "cleanStatus": str(ext_fields.get("cleanStatus") or ""),
+        "cleanMessage": str(ext_fields.get("cleanMessage") or ""),
+        "cleanUpdatedAt": str(ext_fields.get("cleanUpdatedAt") or ""),
+        "cleanResultStatus": str(ext_fields.get("cleanResultStatus") or ""),
+        "cleanError": str(ext_fields.get("cleanError") or ""),
+        "cleanNeedsHumanReview": bool(ext_fields.get("cleanNeedsHumanReview")),
+        "cleanUsableForRetrieval": bool(ext_fields.get("cleanUsableForRetrieval", has_cleaned_word)),
+        "cleanRelativeSourcePath": str(ext_fields.get("cleanRelativeSourcePath") or clean_report_record.get("relativeSourcePath") or ""),
+        "cleanRelativeOutputPath": str(ext_fields.get("cleanRelativeOutputPath") or clean_report_record.get("relativeOutputPath") or ""),
+        "cleanReport": clean_report,
         "cleanedFileName": cleaned_file_name,
         "cleanedMinioBucket": cleaned_bucket,
         "cleanedMinioKey": cleaned_minio_key,

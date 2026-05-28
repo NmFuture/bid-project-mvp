@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom'
 const ITEMS = [
   { key: 'raw', label: '原始素材', path: '/raw' },
   { key: 'wiki', label: 'Wiki', path: '/wiki' },
+  { key: 'performance', label: '业绩库', path: '/performance' },
 ]
 
 export default function BusinessMaterialsViewSwitch({

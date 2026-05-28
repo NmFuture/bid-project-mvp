@@ -102,6 +102,25 @@ const cleanStatusMeta = (status) => {
 const businessMaterialKindMeta = (value) =>
   BUSINESS_MATERIAL_KIND_OPTIONS.find((item) => item.value === value) || BUSINESS_MATERIAL_KIND_OPTIONS[1]
 
+const normalizeTagList = (value) => {
+  const source = Array.isArray(value)
+    ? value
+    : String(value || '').split(/[,，;；\n\r\t]+/)
+  const seen = new Set()
+  const tags = []
+  source.forEach((item) => {
+    const tag = String(item || '').replace(/\s+/g, ' ').trim().slice(0, 40)
+    if (!tag) return
+    const key = tag.toLocaleLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    tags.push(tag)
+  })
+  return tags.slice(0, 20)
+}
+
+const tagsToInputValue = (tags) => normalizeTagList(tags).join('，')
+
 const canPreviewCleaned = (item) => item?.cleanStatus === 'cleaned' && Boolean(item?.hasCleanedWord)
 
 const cleanedPreviewBlockedMessage = (item) => {
@@ -451,6 +470,7 @@ function TreeNode({
   onRenameFile,
   onDeleteFile,
   onUpdateBusinessMaterialKind,
+  onEditTags,
   onSplitFile,
   onDeleteFolder,
   onMoveDrop,
@@ -619,6 +639,11 @@ function TreeNode({
                     {item.businessMaterialKindLabel || kindMeta.label}
                   </span>
                 )}
+                {!!normalizeTagList(item.tags).length && (
+                  <span className="hidden max-w-[8rem] shrink-0 truncate rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary sm:inline-flex">
+                    {normalizeTagList(item.tags).join(' / ')}
+                  </span>
+                )}
                 <span className="hidden shrink-0 items-center gap-1 group-hover:inline-flex">
                   <button
                     type="button"
@@ -644,6 +669,20 @@ function TreeNode({
                       className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-secondary-container/50 hover:text-secondary"
                     >
                       <span aria-hidden="true" className="material-symbols-outlined text-[15px]">sell</span>
+                    </button>
+                  )}
+                  {item.bidType === '商务标' && (
+                    <button
+                      type="button"
+                      title="编辑标签"
+                      aria-label={`编辑标签 ${item.name || item.id}`}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onEditTags?.(item)
+                      }}
+                      className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-primary/10 hover:text-primary"
+                    >
+                      <span aria-hidden="true" className="material-symbols-outlined text-[15px]">label</span>
                     </button>
                   )}
                   {canSplit && (
@@ -691,6 +730,7 @@ function TreeNode({
               onRenameFile={onRenameFile}
               onDeleteFile={onDeleteFile}
               onUpdateBusinessMaterialKind={onUpdateBusinessMaterialKind}
+              onEditTags={onEditTags}
               onSplitFile={onSplitFile}
               onDeleteFolder={onDeleteFolder}
               onMoveDrop={onMoveDrop}
@@ -748,6 +788,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
   const [uploadProjectCode, setUploadProjectCode] = useState('')
   const [uploadProjectName, setUploadProjectName] = useState('')
   const [uploadBusinessMaterialKind, setUploadBusinessMaterialKind] = useState('other')
+  const [uploadTagsInput, setUploadTagsInput] = useState('')
   const [uploadFiles, setUploadFiles] = useState([])
   const [uploadAfterSplit, setUploadAfterSplit] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -939,6 +980,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
     setUploadProjectCode(options.projectCode || '')
     setUploadProjectName(options.projectName || '')
     setUploadBusinessMaterialKind('other')
+    setUploadTagsInput('')
     setUploadFiles([])
     setUploadAfterSplit(false)
     setUploadError('')
@@ -1058,6 +1100,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
       payload.append('bidType', uploadBidType)
       payload.append('materialTier', materialTier)
       payload.append('businessMaterialKind', uploadBidType === '商务标' ? uploadBusinessMaterialKind : '')
+      normalizeTagList(uploadTagsInput).forEach((tag) => payload.append('tags', tag))
       payload.append('customerId', customerId)
       payload.append('customerName', customerName)
       if (onConflict) {
@@ -1173,6 +1216,26 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
       await loadLibrary({ silent: true })
     } catch (e) {
       showToast(safeMessage(e, '素材类型更新失败'), 'error')
+    }
+  }
+
+  const editMaterialTags = async (item) => {
+    if (!item?.id || item.bidType !== '商务标') return
+    const nextValue = window.prompt('请输入素材标签，多个标签用逗号、分号或换行分隔', tagsToInputValue(item.tags))
+    if (nextValue === null) return
+    const nextTags = normalizeTagList(nextValue)
+    try {
+      const result = await businessMaterialsAPI.raw.updateFile(item.id, {
+        businessMaterialKind: item.businessMaterialKind || '',
+        tags: nextTags,
+      })
+      showToast(result?.message || '素材标签已更新')
+      if (previewItem?.id === item.id) {
+        setPreviewItem((prev) => ({ ...(prev || {}), tags: nextTags }))
+      }
+      await loadLibrary({ silent: true })
+    } catch (e) {
+      showToast(safeMessage(e, '素材标签更新失败'), 'error')
     }
   }
 
@@ -1633,6 +1696,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                       onRenameFile={handleRenameFile}
                       onDeleteFile={handleDeleteFile}
                       onUpdateBusinessMaterialKind={updateBusinessMaterialKind}
+                      onEditTags={editMaterialTags}
                       onSplitFile={openBusinessSplitModal}
                       onDeleteFolder={handleDeleteFolder}
                       onMoveDrop={handleMoveDrop}
@@ -1833,6 +1897,22 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                     })}
                   </div>
                 </div>
+              )}
+
+              {uploadBidType === '商务标' && (
+                <label className="text-sm text-on-surface-variant block">
+                  <span className="block mb-1">素材标签</span>
+                  <input
+                    type="text"
+                    value={uploadTagsInput}
+                    onChange={(event) => setUploadTagsInput(event.target.value)}
+                    placeholder="例如：资质，承诺函，商务附件"
+                    className="w-full h-10 px-3 py-2 rounded-lg bg-surface-container-highest border-none text-sm"
+                  />
+                  <span className="mt-1 block text-xs text-outline">
+                    多个标签用逗号、分号或换行分隔，上传后会写入素材元数据。
+                  </span>
+                </label>
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

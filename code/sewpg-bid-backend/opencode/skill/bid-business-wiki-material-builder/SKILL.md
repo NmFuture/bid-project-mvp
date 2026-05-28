@@ -70,6 +70,8 @@ For every real business material:
 - include it once in `01-素材总表`
 - create or reference one evidence card under `03-证据卡片`
 - preserve source path and cleaned file name if it exists
+- preserve raw material `tags`, because downstream material matching uses them to narrow retrieval scope
+- preserve cleaning metadata such as `cleanStatus`, `cleanResultStatus`, `cleanMessage`, source object key, cleaned object key, and review flags
 - preserve AI identity fields so later agents can correctly filter general, customer, and project materials
 - give it a recommended business category and module usage mode
 
@@ -88,6 +90,8 @@ Must include:
 - identity scope
 - business category
 - recommended module
+- raw tags
+- cleaning status
 - cleaning strategy
 - evidence type
 - original path
@@ -145,6 +149,7 @@ Each card should cover these field groups:
 
 - basic identity and path fields
 - AI identity fields
+- source fields: original MinIO key, cleaned MinIO key, cleaned file name, and cleaning report status when available
 - module decision fields
 - content summary and keywords
 - validity fields such as issue date and expiry date when detectable

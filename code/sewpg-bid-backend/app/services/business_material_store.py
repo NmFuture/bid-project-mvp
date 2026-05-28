@@ -151,6 +151,7 @@ class BusinessMaterialStore:
         business_material_kind: str = "",
         customer_id: str = "",
         customer_name: str = "",
+        tags: Any = None,
         on_conflict: str = "",
         files: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
@@ -164,6 +165,7 @@ class BusinessMaterialStore:
             business_material_kind=business_material_kind,
             customer_id=customer_id,
             customer_name=customer_name,
+            tags=tags,
             on_conflict=on_conflict,
             files=list(files or []),
         ))
@@ -183,13 +185,23 @@ class BusinessMaterialStore:
         )
         return self._with_urls(_force_business_tree(payload))
 
-    async def raw_update_file(self, file_id: str, *, name: str = "", business_material_kind: str = "") -> dict[str, Any]:
+    async def raw_update_file(
+        self,
+        file_id: str,
+        *,
+        name: str = "",
+        business_material_kind: str = "",
+        tags: Any = None,
+        update_tags: bool = False,
+    ) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)
         return self._with_urls(await material_store.raw_update_file(
             file_id,
             bid_type=BUSINESS_BID_TYPE,
             name=name,
             business_material_kind=business_material_kind,
+            tags=tags,
+            update_tags=update_tags,
         ))
 
     async def raw_delete_file(self, file_id: str) -> dict[str, Any]:

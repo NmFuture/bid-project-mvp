@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -90,6 +91,43 @@ def _extract_driver_line(output: str, file_name: str) -> tuple[str, str]:
 def _tail_output(stdout: str, stderr: str, limit: int = 8000) -> str:
     text = "\n".join(part for part in [stdout.strip(), stderr.strip()] if part)
     return text[-limit:] if len(text) > limit else text
+
+
+def _read_cleaning_manifest(output_dir: Path) -> dict[str, Any]:
+    manifest_path = output_dir / "cleaning_manifest.json"
+    if not manifest_path.exists():
+        return {}
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("failed to read material cleaning manifest %s: %s", manifest_path, exc)
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _cleaning_manifest_record(manifest: dict[str, Any], source_name: str) -> dict[str, Any]:
+    records = manifest.get("records") if isinstance(manifest, dict) else []
+    if not isinstance(records, list):
+        return {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("sourceFileName") or "") == source_name:
+            return record
+        if PurePosixPath(str(record.get("relativeSourcePath") or "")).name == source_name:
+            return record
+    return {}
+
+
+def _compact_cleaning_manifest(manifest: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    if not manifest and not record:
+        return {}
+    return {
+        "schemaVersion": str(manifest.get("schemaVersion") or ""),
+        "generatedAt": str(manifest.get("generatedAt") or ""),
+        "summary": manifest.get("summary") if isinstance(manifest.get("summary"), dict) else {},
+        "record": record,
+    }
 
 
 async def set_material_clean_status(
@@ -186,7 +224,12 @@ async def clean_material_file(file_id: str, data: dict[str, Any] | None = None) 
 
         candidates = sorted(output_dir.rglob("*.docx"), key=lambda path: path.stat().st_mtime, reverse=True)
         report_tail = _tail_output(proc.stdout, proc.stderr)
+        manifest = _read_cleaning_manifest(output_dir)
+        manifest_record = _cleaning_manifest_record(manifest, source_name)
         driver_status, driver_detail = _extract_driver_line(proc.stdout, source_name)
+        if manifest_record:
+            driver_status = str(manifest_record.get("status") or driver_status)
+            driver_detail = str(manifest_record.get("detail") or driver_detail)
 
         if not candidates:
             message = "清洗失败，未生成 Word 文件。"
@@ -202,6 +245,9 @@ async def clean_material_file(file_id: str, data: dict[str, Any] | None = None) 
                     "cleanError": message,
                     "cleanLogTail": report_tail,
                     "cleanResultStatus": driver_status or "FAIL",
+                    "cleanReport": _compact_cleaning_manifest(manifest, manifest_record),
+                    "cleanRelativeSourcePath": str(manifest_record.get("relativeSourcePath") or ""),
+                    "cleanRelativeOutputPath": str(manifest_record.get("relativeOutputPath") or ""),
                 },
             )
 
@@ -223,6 +269,11 @@ async def clean_material_file(file_id: str, data: dict[str, Any] | None = None) 
                 "cleanedSize": size,
                 "cleanedAt": _now_iso(),
                 "cleanLogTail": report_tail,
+                "cleanReport": _compact_cleaning_manifest(manifest, manifest_record),
+                "cleanRelativeSourcePath": str(manifest_record.get("relativeSourcePath") or source_name),
+                "cleanRelativeOutputPath": str(manifest_record.get("relativeOutputPath") or cleaned_path.name),
+                "cleanNeedsHumanReview": bool(manifest_record.get("needsHumanReview")),
+                "cleanUsableForRetrieval": bool(manifest_record.get("isUsableForRetrieval", True)),
             },
         )
 

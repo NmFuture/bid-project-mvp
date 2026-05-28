@@ -103,6 +103,7 @@ driver 负责完成以下全部编排动作：
 4. 按后缀路由到 PDF / Excel / Word / `.doc` 分支
 5. 维护 `OUTPUT_DIR` 的镜像目录结构
 6. 汇总统计并输出统一报告
+7. 写入结构化清洗清单 `cleaning_manifest.json`，供后端保存清洗状态、来源路径和复核信息
 
 
 支持的输入类型：
@@ -194,7 +195,49 @@ driver 会把每个文件固定归类为以下状态之一：
 
 ## Step 5 — 报告通知
 
-处理完成后，driver 在控制台输出统一报告，格式类似：
+处理完成后，driver 在控制台输出统一报告，并默认在输出目录写入
+`cleaning_manifest.json`。后端集成会读取这份 JSON，把 `status/detail`、源文件相对路径、清洗稿相对路径、是否可检索、是否需人工复核等信息保存到素材元数据，供商务 Wiki 和后续素材匹配引用。
+
+如需指定 JSON 清单位置：
+
+```bash
+"$VENV_PY" "<skill-path>/scripts/driver.py" "<SOURCE_DIR>" --output-dir "<OUTPUT_DIR>" --report-file cleaning_manifest.json
+```
+
+JSON 结构固定包含：
+
+```json
+{
+  "schemaVersion": "material-cleaning-manifest/v1",
+  "generatedAt": "2026-05-28T00:00:00Z",
+  "sourceDir": "<SOURCE_DIR>",
+  "outputDir": "<OUTPUT_DIR>",
+  "summary": {
+    "total": 1,
+    "successTotal": 1,
+    "reviewTotal": 0,
+    "failedTotal": 0,
+    "byStatus": {"OK": 1},
+    "byKind": {"excel": {"OK": 1}}
+  },
+  "records": [
+    {
+      "kind": "excel",
+      "status": "OK",
+      "detail": "已转换为 Word",
+      "relativeSourcePath": "subdir/file.xlsx",
+      "relativeOutputPath": "subdir/file.docx",
+      "sourceFileName": "file.xlsx",
+      "outputFileName": "file.docx",
+      "outputExists": true,
+      "isUsableForRetrieval": true,
+      "needsHumanReview": false
+    }
+  ]
+}
+```
+
+控制台报告格式类似：
 
 ```text
 ═══════════════════════════════════════

@@ -12,6 +12,7 @@ from app.services.material_taxonomy import (
     normalize_business_material_kind,
     normalize_material_tier,
 )
+from app.services.material_tags import normalize_material_tags
 from app.services.turbine_models import turbine_model_from_material_name
 
 
@@ -42,6 +43,7 @@ def build_raw_upload_ext_fields(
     source_relative_path: str = "",
     source_root_folder: str = "",
     clean_updated_at: str = "",
+    tags: Any = None,
 ) -> tuple[dict[str, Any], str]:
     location = classify_material_path(folder_path, requested_bid_type or GENERAL_BID_TYPE)
     material_tier = (
@@ -91,6 +93,7 @@ def build_raw_upload_ext_fields(
         "cleanStatus": clean_status,
         "cleanMessage": clean_message,
         "cleanUpdatedAt": clean_updated_at or _now_utc_iso(),
+        "tags": normalize_material_tags(tags),
     }
     if bid_type == BUSINESS_BID_TYPE:
         business_kind = normalize_business_material_kind(business_material_kind) or "other"

@@ -114,6 +114,7 @@ class RawFile(Base):
             "materialTierLabel": ext.get("materialTierLabel") or "",
             "businessMaterialKind": ext.get("businessMaterialKind") or "",
             "businessMaterialKindLabel": ext.get("businessMaterialKindLabel") or "",
+            "tags": ext.get("tags") or [],
             "version": self.version,
             "lastAction": ext.get("lastAction") or "upload",
             "lastOperator": ext.get("lastOperator") or "",

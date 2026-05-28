@@ -30,6 +30,8 @@ async def update_raw_file(
     bid_type: str,
     name: str = "",
     business_material_kind: str = "",
+    tags: Any = None,
+    update_tags: bool = False,
     ensure_runtime_tables: EnsureRuntimeTables,
     raw_object_key: RawObjectKeyBuilder,
 ) -> dict[str, Any]:
@@ -53,7 +55,8 @@ async def update_raw_file(
         if not next_name:
             raise PeripheralError(400, "文件名不能为空。", "RAW_FILE_NAME_REQUIRED")
 
-        if next_name != item.name:
+        renamed = next_name != item.name
+        if renamed:
             conflict = await session.execute(
                 select(RawFile).where(
                     RawFile.folder_id == item.folder_id,
@@ -76,10 +79,13 @@ async def update_raw_file(
             source_minio_key=next_key,
             source_file_name=next_name,
             business_material_kind=business_material_kind,
+            tags=tags,
+            update_tags=update_tags,
         )
         await session.commit()
         refreshed = await session.execute(
             select(RawFile).where(RawFile.id == numeric_id).options(selectinload(RawFile.folder))
         )
         updated = refreshed.scalar_one()
-        return {"message": "重命名成功", "item": updated.to_dict()}
+        message = "重命名成功" if renamed else "文件信息已更新"
+        return {"message": message, "item": updated.to_dict()}

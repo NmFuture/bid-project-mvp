@@ -17,6 +17,8 @@ from app.services.business_material_store import business_material_store
 from app.services.bid_ocr_service import business_ocr_service
 from app.services.bid_parse_service import business_parse_service
 from app.services.bid_project_service import business_project_service
+from app.services.material_tags import normalize_material_tags
+from app.services.performance_library_service import performance_library_service
 from app.services.wiki_generation import generate_platform_wiki
 
 router = APIRouter()
@@ -444,6 +446,57 @@ async def business_identity_options() -> dict[str, Any]:
     return await business_material_store.identity_options()
 
 
+@router.get("/api/business/materials/performance")
+async def list_business_performance_records(
+    keyword: str = "",
+    customerName: str = "",
+    bidType: str = "",
+    tag: str = "",
+    page: int = 1,
+    pageSize: int = 20,
+) -> dict[str, Any]:
+    return await performance_library_service.list_records(
+        keyword=keyword,
+        customer_name=customerName,
+        bid_type=bidType,
+        tag=tag,
+        page=page,
+        page_size=pageSize,
+    )
+
+
+@router.post("/api/business/materials/performance")
+async def create_business_performance_record(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await performance_library_service.create_record(data)
+
+
+@router.put("/api/business/materials/performance/{record_id}")
+async def update_business_performance_record(
+    record_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    return await performance_library_service.update_record(record_id, data)
+
+
+@router.delete("/api/business/materials/performance/{record_id}")
+async def delete_business_performance_record(record_id: str) -> dict[str, Any]:
+    return await performance_library_service.delete_record(record_id)
+
+
+@router.post("/api/business/materials/performance/{record_id}/word")
+async def upload_business_performance_word(record_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+    try:
+        return await performance_library_service.upload_word(record_id, file)
+    finally:
+        await file.close()
+
+
+@router.get("/api/business/materials/performance/{record_id}/word")
+async def download_business_performance_word(record_id: str) -> StreamingResponse:
+    payload = await performance_library_service.download_word(record_id)
+    return minio_streaming_response(payload)
+
+
 @router.get("/api/business/materials/raw/tree")
 async def business_raw_tree() -> dict[str, Any]:
     return await business_material_store.raw_tree()
@@ -491,6 +544,7 @@ async def business_raw_upload(request: Request) -> dict[str, Any]:
             "bidType": BUSINESS_BID_TYPE,
             "materialTier": str(form.get("materialTier") or ""),
             "businessMaterialKind": str(form.get("businessMaterialKind") or ""),
+            "tags": normalize_material_tags(form.getlist("tags") or form.get("tags")),
             "customerId": str(form.get("customerId") or ""),
             "customerName": str(form.get("customerName") or ""),
             "onConflict": str(form.get("onConflict") or ""),
@@ -520,6 +574,7 @@ async def business_raw_upload(request: Request) -> dict[str, Any]:
         project_name=str(data.get("projectName") or ""),
         material_tier=str(data.get("materialTier") or ""),
         business_material_kind=str(data.get("businessMaterialKind") or ""),
+        tags=data.get("tags"),
         customer_id=str(data.get("customerId") or ""),
         customer_name=str(data.get("customerName") or ""),
         on_conflict=str(data.get("onConflict") or ""),
@@ -546,6 +601,8 @@ async def business_raw_update_file(file_id: str, data: dict[str, Any] = Body(def
         file_id,
         name=str(data.get("name") or ""),
         business_material_kind=str(data.get("businessMaterialKind") or ""),
+        tags=data.get("tags"),
+        update_tags="tags" in data,
     )
 
 

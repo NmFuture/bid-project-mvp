@@ -482,6 +482,13 @@ def dedupe_strings(values: list[Any], limit: int = 12) -> list[str]:
     return result
 
 
+def raw_tags(item: dict[str, Any], limit: int = 12) -> list[str]:
+    value = item.get("tags")
+    if not isinstance(value, list):
+        return []
+    return dedupe_strings(value, limit=limit)
+
+
 def ocr_payload(item: dict[str, Any]) -> dict[str, Any]:
     payload = item.get("businessWikiOcr") if isinstance(item.get("businessWikiOcr"), dict) else {}
     return payload
@@ -510,6 +517,7 @@ def collect_keywords(item: dict[str, Any], title: str, category: str, limit: int
         candidates = [str(value).strip() for value in raw_keywords if str(value).strip()]
     else:
         candidates = []
+    candidates.extend(raw_tags(item, limit=20))
     candidates.extend([category, title])
     for token in str(ocr_text(item)[:1000]).split():
         if any(marker in token for marker in ("证书", "认证", "有效期", "机型", "部件", "编号")):
@@ -601,6 +609,7 @@ def infer_usage_mode(ext: str, path: str, title: str, category: str) -> str:
 
 def extract_text_blob(item: dict[str, Any], title: str, path: str, category: str) -> str:
     parts = [title, path, category]
+    parts.extend(raw_tags(item, limit=20))
     parts.extend(collect_headings(item, 12))
     parts.extend(collect_paragraphs(item, 6))
     parts.extend(collect_tables(item, 4))
@@ -698,6 +707,9 @@ def infer_applicable_conditions(item: dict[str, Any], tier: str) -> str:
 def infer_risk_notes(item: dict[str, Any], ext: str, validity_status: str) -> str:
     notes: list[str] = []
     ocr_status = str(item.get("ocrStatus") or ocr_payload(item).get("status") or "")
+    clean_status = str(item.get("cleanStatus") or "").strip()
+    clean_result_status = str(item.get("cleanResultStatus") or "").strip()
+    clean_message = str(item.get("cleanMessage") or item.get("cleanError") or "").strip()
     if ext in IMAGE_EXTS:
         notes.append("图片原件不做清洗，使用前需人工核验证书内容与版式。")
     if ext == "pdf":
@@ -708,6 +720,10 @@ def infer_risk_notes(item: dict[str, Any], ext: str, validity_status: str) -> st
         notes.append("未获得可用 OCR 文本，图片/PDF 内容需人工核验。")
     if str(item.get("parseError") or "").strip():
         notes.append(f"解析异常：{item.get('parseError')}")
+    if clean_status == "failed" or clean_result_status == "FAIL":
+        notes.append(f"清洗失败：{clean_message or '未生成可检索清洗稿'}")
+    elif clean_result_status == "REVIEW" or item.get("cleanNeedsHumanReview"):
+        notes.append(f"清洗结果需人工复核：{clean_message or 'driver 标记 REVIEW'}")
     if not collect_headings(item) and ext in {"doc", "docx", "wps", "rtf"}:
         notes.append("未检测到 Heading，后续引用时优先整件挂载或人工定位。")
     if validity_status in {"pending_verify", "unknown"}:
@@ -803,6 +819,7 @@ def profile_material(item: dict[str, Any]) -> dict[str, Any]:
     evidence_type = infer_evidence_type(ext, path, title, category)
     evidence_topic = infer_evidence_topic(path, title, category, document_type)
     usage_mode = infer_usage_mode(ext, path, title, category)
+    tags = raw_tags(item)
     keywords = collect_keywords(item, title, category)
     text_blob = extract_text_blob(item, title, path, category)
     fields = ocr_fields(item)
@@ -825,16 +842,31 @@ def profile_material(item: dict[str, Any]) -> dict[str, Any]:
         "material_id": str(item.get("id") or ""),
         "title": title,
         "path": path,
+        "raw_tags": tags,
         "segments": segments,
         "material_tier": tier,
         "group_name": group_name,
         "subgroup_name": third_group(item, tier, group_name, segments),
         "bucket_name": bucket_name(item, tier, segments),
         "business_category": category,
+        "business_material_kind": str(item.get("businessMaterialKind") or ""),
+        "business_material_kind_label": str(item.get("businessMaterialKindLabel") or ""),
         "evidence_topic": evidence_topic,
         "document_type": document_type,
         "evidence_type": evidence_type,
         "cleaned_file_name": str(item.get("cleanedFileName") or ""),
+        "clean_status": str(item.get("cleanStatus") or ""),
+        "clean_message": str(item.get("cleanMessage") or ""),
+        "clean_result_status": str(item.get("cleanResultStatus") or ""),
+        "clean_updated_at": str(item.get("cleanUpdatedAt") or ""),
+        "clean_relative_source_path": str(item.get("cleanRelativeSourcePath") or ""),
+        "clean_relative_output_path": str(item.get("cleanRelativeOutputPath") or ""),
+        "clean_needs_human_review": bool(item.get("cleanNeedsHumanReview")),
+        "clean_usable_for_retrieval": bool(item.get("cleanUsableForRetrieval", bool(item.get("cleanedMinioKey")))),
+        "source_bucket": str(item.get("sourceBucket") or item.get("bucket") or ""),
+        "source_minio_key": str(item.get("sourceMinioKey") or ""),
+        "cleaned_bucket": str(item.get("cleanedMinioBucket") or ""),
+        "cleaned_minio_key": str(item.get("cleanedMinioKey") or ""),
         "cleaning_strategy": cleaned_strategy,
         "identity_scope": identity_scope(item),
         "customer_id": str(item.get("customerId") or ""),
@@ -863,7 +895,7 @@ def profile_material(item: dict[str, Any]) -> dict[str, Any]:
         "usage_mode": usage_mode,
         "priority_score": infer_priority_score(tier, usage_mode, final_version),
         "needs_human_confirm": False,
-        "retrieval_source": "path+title+headings+keywords",
+        "retrieval_source": "path+title+headings+tags+keywords+cleaning_metadata",
         "applicable_modules": [],
         "applicable_chapters": [],
         "chapter_keywords": [],
@@ -1017,19 +1049,21 @@ def build_inventory_node(profiles: list[dict[str, Any]], inventory: dict[str, An
         f"- 当前纳入商务标 Wiki 的素材数：{len(profiles)}",
         f"- 已解析 Word：{inventory.get('parsedDocxTotal', 0)}",
         "",
-        "| 素材 | 层级 | AI身份 | 业务分类 | 推荐模块 | 清洗策略 | 证据类型 | 原始路径 |",
-        "|---|---|---|---|---|---|---|---|",
+        "| 素材 | 层级 | AI身份 | 标签 | 业务分类 | 推荐模块 | 清洗状态 | 清洗策略 | 证据类型 | 原始路径 |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     if not profiles:
-        lines.append("| 待补料 | - | - | 当前未检出商务标真实素材 | - | - | - | - |")
+        lines.append("| 待补料 | - | - | - | 当前未检出商务标真实素材 | - | - | - | - | - |")
     for profile in profiles:
         lines.append(
-            "| {title} | {tier} | {identity} | {category} | {modules} | {strategy} | {evidence} | `{path}` |".format(
+            "| {title} | {tier} | {identity} | {tags} | {category} | {modules} | {clean_status} | {strategy} | {evidence} | `{path}` |".format(
                 title=md_escape(profile["title"]),
                 tier=md_escape(profile["material_tier"]),
                 identity=md_escape(profile["identity_scope"]),
+                tags=md_escape("、".join(profile.get("raw_tags") or []) or "-"),
                 category=md_escape(profile["business_category"]),
                 modules=md_escape("、".join(profile["applicable_modules"][:3]) or "待映射"),
+                clean_status=md_escape(profile.get("clean_result_status") or profile.get("clean_status") or "未清洗"),
                 strategy=md_escape(profile["cleaning_strategy"]),
                 evidence=md_escape(profile["evidence_type"]),
                 path=md_escape(profile["path"]),
@@ -1112,6 +1146,9 @@ def build_card_markdown(profile: dict[str, Any]) -> str:
         f"- material_id: {profile['material_id']}",
         f"- title: {profile['title']}",
         f"- path: {profile['path']}",
+        f"- raw_tags: {'、'.join(profile.get('raw_tags') or []) or '无'}",
+        f"- business_material_kind: {profile.get('business_material_kind') or '未标记'}",
+        f"- business_material_kind_label: {profile.get('business_material_kind_label') or '未标记'}",
         f"- cleaned_file_name: {profile['cleaned_file_name']}",
         f"- material_tier: {profile['material_tier']}",
         f"- business_category: {profile['business_category']}",
@@ -1139,6 +1176,20 @@ def build_card_markdown(profile: dict[str, Any]) -> str:
         f"- keywords: {'、'.join(profile['keywords']) or profile['title']}",
         f"- document_type: {profile['document_type']}",
         f"- summary: {profile['summary']}",
+        "",
+        "## 来源字段",
+        f"- source_bucket: {profile.get('source_bucket') or '待识别'}",
+        f"- source_minio_key: {profile.get('source_minio_key') or '待识别'}",
+        f"- cleaned_bucket: {profile.get('cleaned_bucket') or '未生成'}",
+        f"- cleaned_minio_key: {profile.get('cleaned_minio_key') or '未生成'}",
+        f"- clean_relative_source_path: {profile.get('clean_relative_source_path') or '未记录'}",
+        f"- clean_relative_output_path: {profile.get('clean_relative_output_path') or '未记录'}",
+        f"- clean_status: {profile.get('clean_status') or '未清洗'}",
+        f"- clean_result_status: {profile.get('clean_result_status') or '未运行'}",
+        f"- clean_message: {profile.get('clean_message') or '无'}",
+        f"- clean_updated_at: {profile.get('clean_updated_at') or '未记录'}",
+        f"- clean_usable_for_retrieval: {'yes' if profile.get('clean_usable_for_retrieval') else 'no'}",
+        f"- clean_needs_human_review: {'yes' if profile.get('clean_needs_human_review') else 'no'}",
         "",
         "## 有效性字段",
         f"- issuer: {profile['issuer'] or '待识别'}",
@@ -1232,7 +1283,13 @@ def render_tree_node(title: str, subtree: dict[str, Any], path_hint: str) -> dic
         child = subtree["children"][child_title]
         children.append(render_tree_node(child_title, child, f"{path_hint}/{child_title}".strip("/")))
     for profile in sorted(subtree.get("cards", []), key=lambda entry: entry["title"]):
-        children.append(node(profile["title"], build_card_markdown(profile), ["商务标", "证据卡片", profile["material_tier"]]))
+        children.append(
+            node(
+                profile["title"],
+                build_card_markdown(profile),
+                dedupe_strings(["商务标", "证据卡片", profile["material_tier"], *(profile.get("raw_tags") or [])], limit=20),
+            )
+        )
     return node(title, build_tree_container_markdown(title, count_tree_cards(subtree), path_hint), ["商务标", "证据卡片", title], children)
 
 

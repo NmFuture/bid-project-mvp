@@ -162,6 +162,35 @@ class MaterialRuntimeTables:
                 """
             )
         )
+        await session.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS performance_records (
+                    id BIGSERIAL PRIMARY KEY,
+                    name VARCHAR(300) NOT NULL,
+                    customer_name VARCHAR(200),
+                    project_type VARCHAR(120),
+                    scale TEXT,
+                    location VARCHAR(200),
+                    started_at VARCHAR(40),
+                    completed_at VARCHAR(40),
+                    amount VARCHAR(120),
+                    turbine_model VARCHAR(120),
+                    tags JSONB DEFAULT '[]'::jsonb,
+                    applicable_bid_types JSONB DEFAULT '[]'::jsonb,
+                    scope VARCHAR(40) DEFAULT 'standard',
+                    word_object_key VARCHAR(500),
+                    word_file_name VARCHAR(255),
+                    word_size_bytes BIGINT DEFAULT 0,
+                    word_mime_type VARCHAR(120),
+                    cleaned_object_key VARCHAR(500),
+                    review_status VARCHAR(40) DEFAULT 'draft',
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            )
+        )
         await session.execute(text("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS meta JSONB"))
         await session.execute(text("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS ip_address VARCHAR(80)"))
         await session.execute(text("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS user_agent TEXT"))

@@ -639,6 +639,18 @@ export const businessDocumentAPI = {
 
 export const businessMaterialsAPI = {
   identityOptions: () => request('/business/materials/identity-options'),
+  performance: {
+    list: (params = {}) => {
+      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      return request(`/business/materials/performance${qs ? `?${qs}` : ''}`)
+    },
+    create: (data) => request('/business/materials/performance', { method: 'POST', body: data }),
+    update: (id, data) => request(`/business/materials/performance/${id}`, { method: 'PUT', body: data }),
+    delete: (id) => request(`/business/materials/performance/${id}`, { method: 'DELETE' }),
+    uploadWord: (id, data) =>
+      request(`/business/materials/performance/${id}/word`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    wordUrl: (id) => joinUrl(ENV.API_BASE_URL, `/business/materials/performance/${id}/word`),
+  },
   raw: {
     tree: () => request('/business/materials/raw/tree'),
     files: (params = {}) => {

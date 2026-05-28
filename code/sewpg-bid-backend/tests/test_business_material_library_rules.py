@@ -42,6 +42,7 @@ from app.services.material_taxonomy import (
     is_raw_material_protected_folder_path,
     material_suffix,
 )
+from app.services.material_tags import normalize_material_tags
 from app.services.material_upload_metadata import (
     build_raw_upload_existing_ext_fields,
     build_raw_upload_ext_fields,
@@ -154,6 +155,7 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
             source_minio_bucket="bid-materials",
             source_minio_key="raw/business.docx",
             clean_updated_at="2026-05-24T00:00:00Z",
+            tags=["资质", "授权书", "资质"],
         )
 
         self.assertEqual(clean_status, "pending")
@@ -163,6 +165,12 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
         self.assertEqual(ext["customerId"], "CUST-HN")
         self.assertEqual(ext["customerName"], "华能集团")
         self.assertEqual(ext["cleanUpdatedAt"], "2026-05-24T00:00:00Z")
+        self.assertEqual(ext["tags"], ["资质", "授权书"])
+
+    def test_material_tags_normalize_arrays_json_and_delimited_text(self) -> None:
+        self.assertEqual(normalize_material_tags(["资质", " 资质 ", "承诺函"]), ["资质", "承诺函"])
+        self.assertEqual(normalize_material_tags('["报价", "商务附件", "报价"]'), ["报价", "商务附件"])
+        self.assertEqual(normalize_material_tags("业绩，资格; 授权书\n承诺函"), ["业绩", "资格", "授权书", "承诺函"])
 
     def test_technical_upload_metadata_adds_turbine_hint_without_business_kind(self) -> None:
         ext, clean_status = build_raw_upload_ext_fields(
@@ -529,6 +537,26 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
         self.assertEqual(ext["businessMaterialKind"], "fixed")
         self.assertEqual(ext["businessMaterialKindLabel"], "固定素材")
         self.assertEqual(ext["lastAction"], "update")
+
+    def test_raw_update_metadata_updates_and_clears_tags(self) -> None:
+        ext = build_raw_update_file_ext_fields(
+            {"bidType": "商务标", "tags": ["旧标签"]},
+            source_minio_key="raw/商务标/通用素材/授权书.docx",
+            source_file_name="授权书.docx",
+            tags="资质，承诺函，资质",
+            update_tags=True,
+        )
+        cleared = build_raw_update_file_ext_fields(
+            ext,
+            source_minio_key="raw/商务标/通用素材/授权书.docx",
+            source_file_name="授权书.docx",
+            tags=[],
+            update_tags=True,
+        )
+
+        self.assertEqual(ext["tags"], ["资质", "承诺函"])
+        self.assertEqual(ext["lastAction"], "update")
+        self.assertEqual(cleared["tags"], [])
 
     def test_raw_update_metadata_keeps_technical_updates_as_rename(self) -> None:
         ext = build_raw_update_file_ext_fields(
