@@ -137,6 +137,9 @@ def title_strength(text: str, block: dict) -> tuple[int, list[str]]:
     if has_business_topic(compact):
         score += 15
         signals.append("business_topic")
+        if bool(block.get("isPageFirstNonEmpty") or block.get("hasPageBreakBefore") or block.get("isLikelyHeading")):
+            score += 12
+            signals.append("structured_business_topic")
     if len(compact) <= 36:
         score += 8
         signals.append("short_line")

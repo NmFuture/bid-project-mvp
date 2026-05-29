@@ -25,6 +25,7 @@ def detect_candidate_anchors(blocks: list[dict], regions: list[dict]) -> list[di
             or "format_code" in signals
             or "sub_table_code" in signals
             or "template_word" in signals
+            or "structured_business_topic" in signals
             or ("business_topic" in signals and block.get("isLikelyHeading"))
         )
         if not has_template_shape:
