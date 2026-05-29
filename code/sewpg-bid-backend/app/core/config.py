@@ -96,6 +96,7 @@ class Settings:
     opencode_model_id: str
     opencode_timeout_sec: float
     s1_parse_opencode_enabled: bool
+    business_template_extractor_enabled: bool
     bid_internal_api_base_url: str
     onlyoffice_internal_url: str
     onlyoffice_backend_base_url: str
@@ -159,6 +160,7 @@ settings = Settings(
         "S1_PARSE_OPENCODE_ENABLED",
         os.getenv("APP_ENV", "development") == "production",
     ),
+    business_template_extractor_enabled=_bool_env("BUSINESS_TEMPLATE_EXTRACTOR_ENABLED", True),
     bid_internal_api_base_url=os.getenv("BID_INTERNAL_API_BASE_URL", "http://fastapi:8000").rstrip("/"),
     onlyoffice_internal_url=os.getenv("ONLYOFFICE_INTERNAL_URL", "http://127.0.0.1:8080"),
     onlyoffice_backend_base_url=os.getenv("ONLYOFFICE_BACKEND_BASE_URL", "").rstrip("/"),

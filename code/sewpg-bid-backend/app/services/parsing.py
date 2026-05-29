@@ -4625,7 +4625,7 @@ def parse_tender_documents(
     template_extraction_warning = ""
     template_extraction_path = project_dir / "business_template_extraction" / "business_template_extraction.json"
 
-    if profile.key == "business":
+    if profile.key == "business" and settings.business_template_extractor_enabled:
         extractor_appendices, template_extraction_payload, template_extraction_warning = run_business_template_extractor(
             project_id=project_id,
             documents=documents,
@@ -4647,6 +4647,18 @@ def parse_tender_documents(
                     profile=profile,
                 )
             )
+    elif profile.key == "business":
+        appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
+        appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices), profile=profile))
+        appendices.extend(
+            _extract_text_business_appendices(
+                project_id,
+                documents,
+                texts_by_id,
+                start_index=len(appendices),
+                profile=profile,
+            )
+        )
     else:
         appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
         appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices), profile=profile))

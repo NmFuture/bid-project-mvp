@@ -1485,6 +1485,27 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertTrue(all(item["extractionMode"] == "business_template_extractor_skill" for item in appendices))
         self.assertTrue(any("表1 A-1" in item["title"] and "附件2 投标价格表" in item["title"] for item in appendices))
 
+    def test_business_template_extractor_can_fallback_to_legacy_when_disabled(self) -> None:
+        project_id = self.create_business_project()
+        with patch("app.services.parsing.settings.business_template_extractor_enabled", False):
+            response = self.client.post(
+                self.parse_results_url(project_id, "/upload-and-run"),
+                files=[
+                    (
+                        "tenderFiles",
+                        (
+                            "商务招标文件.docx",
+                            build_business_attachment_templates_docx_bytes(),
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        ),
+                    )
+                ],
+            )
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        self.assertTrue(appendices)
+        self.assertFalse(all(item.get("extractionMode") == "business_template_extractor_skill" for item in appendices))
+
     def test_business_bid_docx_attachment_templates_ignore_toc_and_keep_following_table(self) -> None:
         project_id = self.create_business_project()
         response = self.client.post(
