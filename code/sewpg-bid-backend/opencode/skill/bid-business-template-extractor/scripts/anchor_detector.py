@@ -24,6 +24,7 @@ def detect_candidate_anchors(blocks: list[dict], regions: list[dict]) -> list[di
             "appendix_prefix" in signals
             or "format_code" in signals
             or "sub_table_code" in signals
+            or "letter_prefix_code" in signals
             or "template_word" in signals
             or "structured_business_topic" in signals
             or ("business_topic" in signals and block.get("isLikelyHeading"))
@@ -37,6 +38,7 @@ def detect_candidate_anchors(blocks: list[dict], regions: list[dict]) -> list[di
             or block.get("isLikelyHeading")
             or "format_code" in signals
             or "sub_table_code" in signals
+            or "letter_prefix_code" in signals
             or ("appendix_prefix" in signals and block.get("hasPageBreakAfter"))
         )
         if not strong_structure:
@@ -45,6 +47,7 @@ def detect_candidate_anchors(blocks: list[dict], regions: list[dict]) -> list[di
             block.get("isPageFirstNonEmpty")
             or block.get("isLikelyHeading")
             or "format_code" in signals
+            or "letter_prefix_code" in signals
             or block.get("hasPageBreakAfter")
         ):
             continue

@@ -18,6 +18,7 @@ from xml.etree import ElementTree as ET
 from docx import Document
 
 from app.core.config import settings
+from app.services.business_template_extractor import run_business_template_extractor
 from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.opencode_client import OpencodeClient
@@ -2859,6 +2860,7 @@ def materialize_appendix_docx(project_id: str, appendix: dict[str, Any], *, prof
     existing_path = Path(str(item.get("docxPath") or ""))
     if not existing_path.is_absolute():
         existing_path = Path()
+    extractor_docx_path = existing_path if str(item.get("extractionMode") or "") == "business_template_extractor_skill" else Path()
     existing_path_allowed = (
         bool(existing_path)
         and (
@@ -2871,6 +2873,14 @@ def materialize_appendix_docx(project_id: str, appendix: dict[str, Any], *, prof
         existing_path, workspace_path = _appendix_asset_path(project_id, appendix_id, title)
     else:
         workspace_path = str(item.get("workspacePath") or f"{profile.workspace_dirname}/appendices/{existing_path.name}")
+    if (
+        extractor_docx_path
+        and extractor_docx_path.is_file()
+        and existing_path != extractor_docx_path
+        and not existing_path.exists()
+    ):
+        existing_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(extractor_docx_path), str(existing_path))
 
     should_rewrite = False
     if should_rewrite or isinstance(slice_info, dict) or not existing_path.exists():
@@ -3030,7 +3040,10 @@ def _dedupe_appendix_page_number_artifacts(
         item
         for item in appendices
         if isinstance(item, dict) and (
-            str(item.get("extractionMode") or "") == "source_docx_table_fingerprint"
+            str(item.get("extractionMode") or "") in {
+                "source_docx_table_fingerprint",
+                "business_template_extractor_skill",
+            }
             or (
                 isinstance(item.get("tableFingerprint"), dict)
                 and bool(str(item["tableFingerprint"].get("type") or "").strip())
@@ -3079,7 +3092,10 @@ def _prepare_appendix_outputs(
         if profile.key == "business":
             rows = item.get("rows") if isinstance(item.get("rows"), list) else []
             content_blocks = item.get("contentBlocks") if isinstance(item.get("contentBlocks"), list) else []
-            if not _business_template_should_materialize(item, rows, content_blocks):
+            if (
+                str(item.get("extractionMode") or "") != "business_template_extractor_skill"
+                and not _business_template_should_materialize(item, rows, content_blocks)
+            ):
                 continue
         if renumber:
             new_id = f"APPX-{index:04d}"
@@ -4605,20 +4621,37 @@ def parse_tender_documents(
     combined_text_path.write_text(combined_text, encoding="utf-8")
 
     structured_result = _extract_structured_requirements(documents, texts_by_id)
-    appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
-    appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices), profile=profile))
+    template_extraction_payload: dict[str, Any] | None = None
+    template_extraction_warning = ""
+    template_extraction_path = project_dir / "business_template_extraction" / "business_template_extraction.json"
+
     if profile.key == "business":
-        appendices.extend(
-            _extract_text_business_appendices(
-                project_id,
-                documents,
-                texts_by_id,
-                start_index=len(appendices),
-                profile=profile,
-            )
+        extractor_appendices, template_extraction_payload, template_extraction_warning = run_business_template_extractor(
+            project_id=project_id,
+            documents=documents,
+            project_dir=project_dir,
         )
+        if extractor_appendices:
+            appendices = extractor_appendices
+        else:
+            if template_extraction_warning:
+                warnings.append(template_extraction_warning)
+            appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
+            appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices), profile=profile))
+            appendices.extend(
+                _extract_text_business_appendices(
+                    project_id,
+                    documents,
+                    texts_by_id,
+                    start_index=len(appendices),
+                    profile=profile,
+                )
+            )
+    else:
+        appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
+        appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices), profile=profile))
     appendices = _prepare_appendix_outputs(project_id, appendices, renumber=True, profile=profile)
-    if profile.key == "business":
+    if profile.key == "business" and not template_extraction_payload:
         appendices = _apply_business_template_semantic_review(
             appendices,
             run_semantic_review=not settings.s1_parse_opencode_enabled,
@@ -4651,6 +4684,12 @@ def parse_tender_documents(
         "targetSkill": profile.skill_name,
         "combinedTextPath": str(combined_text_path),
         "structuredResultPath": str(structured_path),
+        "businessTemplateExtractionPath": str(template_extraction_path) if profile.key == "business" and template_extraction_path.is_file() else "",
+        "businessTemplateExtractionSummary": (
+            template_extraction_payload.get("summary")
+            if profile.key == "business" and isinstance(template_extraction_payload, dict)
+            else {}
+        ),
         "documents": documents,
         "targets": list(profile.targets),
     }
@@ -4687,7 +4726,18 @@ def parse_tender_documents(
                 run_semantic_review=True,
             )
     resolved_structured = structured_result.setdefault("structured", {})
-    if not resolved_structured.get("appendices"):
+    extractor_appendices_are_authoritative = (
+        profile.key == "business"
+        and bool(appendices)
+        and all(
+            isinstance(item, dict)
+            and str(item.get("extractionMode") or "") == "business_template_extractor_skill"
+            for item in appendices
+        )
+    )
+    if extractor_appendices_are_authoritative:
+        resolved_structured["appendices"] = appendices
+    elif not resolved_structured.get("appendices"):
         resolved_structured["appendices"] = appendices
     elif isinstance(resolved_structured.get("appendices"), list):
         resolved_structured["appendices"] = _prepare_appendix_outputs(

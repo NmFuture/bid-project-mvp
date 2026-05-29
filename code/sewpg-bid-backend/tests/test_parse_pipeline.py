@@ -152,6 +152,32 @@ def build_business_attachment_templates_docx_bytes() -> bytes:
     return file_obj.getvalue()
 
 
+def build_business_multilevel_template_cluster_docx_bytes() -> bytes:
+    file_obj = io.BytesIO()
+    doc = Document()
+    doc.add_paragraph("第一章 招标公告")
+    doc.add_paragraph("投标文件格式目录")
+    doc.add_paragraph("附件2 投标价格表 ........ 12")
+    doc.add_page_break()
+    doc.add_paragraph("第六章 投标文件格式")
+    doc.add_paragraph("附件2 投标价格表")
+    doc.add_paragraph("A投标价格总表")
+    doc.add_paragraph("表1 A-1  标段一")
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "序号"
+    table.cell(0, 1).text = "价格"
+    table.cell(1, 0).text = "1"
+    table.cell(1, 1).text = ""
+    doc.add_page_break()
+    doc.add_paragraph("D 技术服务的分项报价")
+    doc.add_paragraph("D-1除质保期服务外的技术指导")
+    next_table = doc.add_table(rows=1, cols=2)
+    next_table.cell(0, 0).text = "服务"
+    next_table.cell(0, 1).text = "报价"
+    doc.save(file_obj)
+    return file_obj.getvalue()
+
+
 def build_business_attachment_templates_with_toc_docx_bytes() -> bytes:
     file_obj = io.BytesIO()
     doc = Document()
@@ -1401,6 +1427,63 @@ class ParsePipelineTests(unittest.TestCase):
         with zipfile.ZipFile(price_docx_path) as zf:
             doc_xml = zf.read("word/document.xml").decode("utf-8")
         self.assertIn("gridSpan", doc_xml)
+
+    def test_business_bid_uses_template_extractor_and_keeps_header_cluster(self) -> None:
+        project_id = self.create_business_project()
+        response = self.client.post(
+            self.parse_results_url(project_id, "/upload-and-run"),
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "商务招标文件.docx",
+                        build_business_multilevel_template_cluster_docx_bytes(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        structured = payload["structured"]
+        appendices = structured["appendices"]
+        self.assertGreaterEqual(len(appendices), 2)
+        first = next(item for item in appendices if "表1 A-1" in item["title"])
+        self.assertEqual(first["extractionMode"], "business_template_extractor_skill")
+        self.assertIn("附件2 投标价格表", first["title"])
+        self.assertIn("A投标价格总表", first["title"])
+        self.assertTrue(Path(first["docxPath"]).is_file())
+        first_doc = Document(str(Path(first["docxPath"])))
+        first_text = "\n".join(paragraph.text for paragraph in first_doc.paragraphs if paragraph.text.strip())
+        self.assertTrue(first_text.startswith("附件2 投标价格表\nA投标价格总表\n表1 A-1  标段一"))
+        self.assertNotIn("D 技术服务的分项报价", first_text)
+        parse_dir = settings.parsed_dir / project_id
+        extraction_path = parse_dir / "business_template_extraction" / "business_template_extraction.json"
+        self.assertTrue(extraction_path.is_file())
+        skill_manifest = json.loads((parse_dir / "s1_parse_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(skill_manifest["businessTemplateExtractionPath"], str(extraction_path))
+        self.assertEqual(skill_manifest["businessTemplateExtractionSummary"]["templateCount"], len(appendices))
+
+    def test_business_template_extractor_appendices_survive_skill_result_merge(self) -> None:
+        project_id = self.create_business_project()
+        response = self.client.post(
+            self.parse_results_url(project_id, "/upload-and-run"),
+            files=[
+                (
+                    "tenderFiles",
+                    (
+                        "商务招标文件.docx",
+                        build_business_multilevel_template_cluster_docx_bytes(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                )
+            ],
+        )
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        self.assertTrue(appendices)
+        self.assertTrue(all(item["extractionMode"] == "business_template_extractor_skill" for item in appendices))
+        self.assertTrue(any("表1 A-1" in item["title"] and "附件2 投标价格表" in item["title"] for item in appendices))
 
     def test_business_bid_docx_attachment_templates_ignore_toc_and_keep_following_table(self) -> None:
         project_id = self.create_business_project()

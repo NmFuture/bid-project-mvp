@@ -25,6 +25,8 @@ SUB_TABLE_CODE_RE = re.compile(
     re.IGNORECASE,
 )
 
+LETTER_PREFIX_CODE_RE = re.compile(r"^[A-Z](?:-\d+)?(?=\s|\(|（|[\u4e00-\u9fff])", re.IGNORECASE)
+
 BUSINESS_TOPIC_TOKENS = (
     "投标函",
     "法定代表人",
@@ -36,6 +38,7 @@ BUSINESS_TOPIC_TOKENS = (
     "投标价格",
     "开标价格",
     "价格表",
+    "分项报价",
     "商务偏差",
     "合同条款偏差",
     "货物规格",
@@ -125,6 +128,9 @@ def title_strength(text: str, block: dict) -> tuple[int, list[str]]:
     if SUB_TABLE_CODE_RE.search(normalized):
         score += 24
         signals.append("sub_table_code")
+    if LETTER_PREFIX_CODE_RE.search(normalized):
+        score += 22
+        signals.append("letter_prefix_code")
     if bool(block.get("isLikelyHeading")):
         score += 18
         signals.append("heading_style")
@@ -143,6 +149,14 @@ def title_strength(text: str, block: dict) -> tuple[int, list[str]]:
     if len(compact) <= 36:
         score += 8
         signals.append("short_line")
+    position_in_page = block.get("positionInPageSegment")
+    if isinstance(position_in_page, int) and position_in_page <= 5 and (
+        "appendix_prefix" in signals
+        or "sub_table_code" in signals
+        or "letter_prefix_code" in signals
+    ):
+        score += 18
+        signals.append("near_page_start")
     if looks_like_body_sentence(normalized):
         score -= 45
         signals.append("body_sentence_penalty")

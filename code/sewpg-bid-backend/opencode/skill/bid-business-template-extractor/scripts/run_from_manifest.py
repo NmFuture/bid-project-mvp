@@ -48,14 +48,31 @@ def _build_empty_result(project_id: str, output_dir: Path) -> dict[str, Any]:
     }
 
 
+def _cluster_title(raw: dict[str, Any], blocks_by_id: dict[int, dict[str, Any]]) -> str:
+    header_ids = raw.get("headerBlockIds") if isinstance(raw.get("headerBlockIds"), list) else []
+    titles: list[str] = []
+    for block_id in header_ids:
+        try:
+            block = blocks_by_id.get(int(block_id))
+        except (TypeError, ValueError):
+            block = None
+        text = str((block or {}).get("text") or "").strip()
+        if text:
+            titles.append(text)
+    if titles:
+        return "\n".join(dict.fromkeys(titles))
+    return str(raw.get("title") or raw.get("evidence") or "").strip()
+
+
 def _normalize_appendix(
     raw: dict[str, Any],
     *,
     document: dict[str, Any],
     index: int,
     output_dir: Path,
+    blocks_by_id: dict[int, dict[str, Any]],
 ) -> dict[str, Any]:
-    title = str(raw.get("title") or raw.get("evidence") or f"商务附件模板{index}").strip()
+    title = _cluster_title(raw, blocks_by_id) or f"商务附件模板{index}"
     docx_path = Path(str(raw.get("docxPath") or raw.get("outputPath") or ""))
     if not docx_path.is_absolute():
         docx_path = output_dir / docx_path
@@ -104,7 +121,14 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
         try:
             pipeline_result = run_pipeline(source, document_output)
             boundaries_path = document_output / "boundaries.json"
+            blocks_path = document_output / "blocks.json"
             boundaries = json.loads(boundaries_path.read_text(encoding="utf-8")) if boundaries_path.is_file() else {"templates": []}
+            raw_blocks = json.loads(blocks_path.read_text(encoding="utf-8")) if blocks_path.is_file() else []
+            blocks_by_id = {
+                int(block["blockId"]): block
+                for block in raw_blocks
+                if isinstance(block, dict) and isinstance(block.get("blockId"), int)
+            }
             result["documents"].append(
                 {
                     "id": str(document.get("id") or ""),
@@ -122,6 +146,7 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
                             document=document,
                             index=len(appendices) + 1,
                             output_dir=document_output,
+                            blocks_by_id=blocks_by_id,
                         )
                     )
         except Exception as exc:
