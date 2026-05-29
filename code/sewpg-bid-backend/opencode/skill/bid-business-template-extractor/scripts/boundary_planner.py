@@ -30,12 +30,30 @@ def _content_text_between(blocks_by_id: dict[int, dict], start_block_id: int, en
     )
 
 
-def _should_skip_container_cluster(cluster: dict, next_cluster: dict | None, content_text: str) -> bool:
+def _has_table_between(blocks_by_id: dict[int, dict], start_block_id: int, end_block_id: int) -> bool:
+    return any(
+        blocks_by_id[block_id].get("type") == "table"
+        for block_id in range(start_block_id, end_block_id + 1)
+        if block_id in blocks_by_id
+    )
+
+
+def _should_skip_container_cluster(
+    blocks_by_id: dict[int, dict],
+    cluster: dict,
+    next_cluster: dict | None,
+    content_text: str,
+    *,
+    start_block_id: int,
+    end_block_id: int,
+) -> bool:
     if next_cluster is None:
         return False
     signals = set(cluster.get("signals") or [])
     next_signals = set(next_cluster.get("signals") or [])
     if len(content_text) >= MIN_STANDALONE_TEXT_LENGTH:
+        return False
+    if _has_table_between(blocks_by_id, start_block_id, end_block_id):
         return False
     if "appendix_prefix" not in signals:
         return False
@@ -68,7 +86,14 @@ def plan_boundaries(blocks: list[dict], regions: list[dict], anchors: list[dict]
             if end_block_id <= start_block_id:
                 continue
             content_text = _content_text_between(blocks_by_id, start_block_id, end_block_id)
-            if _should_skip_container_cluster(cluster, next_cluster, content_text):
+            if _should_skip_container_cluster(
+                blocks_by_id,
+                cluster,
+                next_cluster,
+                content_text,
+                start_block_id=start_block_id,
+                end_block_id=end_block_id,
+            ):
                 continue
             templates.append(
                 {

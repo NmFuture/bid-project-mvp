@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from scripts.text_rules import clean_text, looks_like_body_sentence, looks_like_list_item_or_field, title_strength
+from scripts.text_rules import clean_text, has_business_topic, looks_like_body_sentence, looks_like_list_item_or_field, title_strength
 
 
 MAX_PREFIX_LOOKBACK_BLOCKS = 4
@@ -70,6 +70,9 @@ def heading_code(text: str) -> dict[str, str]:
     letter_match = LETTER_PREFIX_CODE_RE.match(normalized)
     if letter_match:
         result["letterPrefix"] = letter_match.group(1).upper()
+
+    if has_business_topic(compact) and compact.endswith(("函", "表", "书", "文件")) and len(compact) <= 36:
+        result["businessDocumentTitle"] = "1"
 
     return result
 
@@ -221,6 +224,8 @@ def _codes_are_compatible(prefix_code: dict[str, str], anchor_code: dict[str, st
     if prefix_code.get("appendix") and anchor_code.get("numberedFull"):
         return _prefix_code_matches(prefix_code["appendix"], anchor_code["numberedFull"])
     if prefix_code.get("appendix") and anchor_code.get("letterPrefix"):
+        return True
+    if prefix_code.get("specialAppendix") and anchor_code.get("businessDocumentTitle"):
         return True
     if prefix_code.get("specialAppendix") and not anchor_code:
         return True

@@ -38,6 +38,40 @@ def build_business_format_docx(path: Path) -> None:
     doc.save(path)
 
 
+def build_boundary_regression_docx(path: Path) -> None:
+    doc = Document()
+    doc.add_paragraph("第六章 投标文件格式")
+    doc.add_paragraph("附件3 货物规格一览表")
+    doc.add_paragraph("表3 A")
+    doc.add_table(rows=1, cols=2).cell(0, 0).text = "货物名称"
+    doc.add_page_break()
+    doc.add_paragraph("附件4 商务条款偏差表")
+    doc.add_table(rows=1, cols=2).cell(0, 0).text = "条款号"
+    doc.add_page_break()
+    doc.add_paragraph("附件6 履约保证函格式")
+    doc.add_paragraph("履约保证函正文")
+    doc.add_page_break()
+    doc.add_paragraph("附件7 资格证明文件")
+    doc.add_paragraph("附件7A 商务部分摘要表")
+    doc.add_table(rows=1, cols=2).cell(0, 0).text = "摘要"
+    doc.add_page_break()
+    doc.add_paragraph("7D-4表 现金流量表")
+    doc.add_table(rows=1, cols=2).cell(0, 0).text = "现金流量"
+    doc.add_page_break()
+    doc.add_paragraph("附件7E")
+    doc.add_paragraph("7E-1表 企业资信等级证书情况")
+    doc.add_table(rows=1, cols=2).cell(0, 0).text = "资信"
+    doc.add_page_break()
+    doc.add_paragraph("开标价格表")
+    doc.add_table(rows=1, cols=2).cell(0, 0).text = "开标价"
+    doc.add_page_break()
+    doc.add_page_break()
+    doc.add_paragraph("特殊附件1")
+    doc.add_paragraph("保密承诺书")
+    doc.add_paragraph("承诺正文")
+    doc.save(path)
+
+
 def docx_text(path: Path) -> str:
     doc = Document(str(path))
     return "\n".join(paragraph.text for paragraph in doc.paragraphs if paragraph.text.strip())
@@ -96,6 +130,58 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
         self.assertIn("法定代表人或其委托代理人(签字)：", text)
         self.assertIn("日期：       年    月   日", text)
         self.assertNotIn("法定代表人（单位负责人）身份证明：B", text)
+
+    def test_runner_regression_boundaries_do_not_swallow_next_template_clusters(self) -> None:
+        source = self.temp_dir / "边界回归.docx"
+        output_dir = self.temp_dir / "regression-output"
+        manifest = self.temp_dir / "regression-manifest.json"
+        build_boundary_regression_docx(source)
+        manifest.write_text(
+            json.dumps(
+                {
+                    "projectId": "proj-regression",
+                    "outputDir": str(output_dir),
+                    "documents": [
+                        {
+                            "id": "DOC-1",
+                            "name": "边界回归.docx",
+                            "sourcePath": str(source),
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        completed = subprocess.run(
+            [sys.executable, str(RUNNER), str(manifest)],
+            cwd=str(ROOT),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        payload = json.loads((output_dir / "business_template_extraction.json").read_text(encoding="utf-8"))
+        titles = [item["title"] for item in payload["appendices"]]
+        self.assertTrue(any("附件3 货物规格一览表" in title and "表3 A" in title for title in titles))
+        self.assertTrue(any("附件4 商务条款偏差表" in title for title in titles))
+        self.assertTrue(any("附件7 资格证明文件" in title for title in titles))
+        self.assertTrue(any("7D-4" in title for title in titles))
+        self.assertTrue(any("7E-1" in title for title in titles))
+        self.assertTrue(any("保密承诺书" in title for title in titles))
+
+        def item_text(title_part: str) -> str:
+            item = next(item for item in payload["appendices"] if title_part in item["title"])
+            return docx_text(Path(item["docxPath"]))
+
+        self.assertNotIn("附件4 商务条款偏差表", item_text("表3 A"))
+        self.assertNotIn("附件7 资格证明文件", item_text("履约保证函格式"))
+        self.assertNotIn("附件7E", item_text("7D-4"))
+        self.assertNotIn("特殊附件1", item_text("开标价格表"))
+        self.assertTrue(item_text("保密承诺书").startswith("特殊附件1\n保密承诺书"))
 
 
 class BusinessTemplateExtractorWrapperTests(unittest.TestCase):

@@ -146,6 +146,9 @@ def title_strength(text: str, block: dict) -> tuple[int, list[str]]:
         if bool(block.get("isPageFirstNonEmpty") or block.get("hasPageBreakBefore") or block.get("isLikelyHeading")):
             score += 12
             signals.append("structured_business_topic")
+        if compact.endswith(("函", "表", "书", "文件")) and len(compact) <= 36:
+            score += 20
+            signals.append("business_document_title")
     if len(compact) <= 36:
         score += 8
         signals.append("short_line")
@@ -157,6 +160,9 @@ def title_strength(text: str, block: dict) -> tuple[int, list[str]]:
     ):
         score += 18
         signals.append("near_page_start")
+    if isinstance(position_in_page, int) and position_in_page <= 3 and "business_document_title" in signals:
+        score += 12
+        signals.append("near_page_business_title")
     if looks_like_body_sentence(normalized):
         score -= 45
         signals.append("body_sentence_penalty")

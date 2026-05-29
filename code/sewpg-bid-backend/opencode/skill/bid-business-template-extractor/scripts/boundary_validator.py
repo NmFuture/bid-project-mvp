@@ -26,12 +26,19 @@ def validate_boundaries(blocks: list[dict], regions: list[dict], boundaries: dic
             raise BoundaryValidationError(f"模板 {template.get('id')} 缺少有效格式章节。")
         if not (int(region["startBlockId"]) <= start <= end <= int(region["endBlockId"])):
             raise BoundaryValidationError(f"模板 {template.get('id')} 超出格式章节范围。")
-        content_text = "\n".join(
-            clean_text(blocks_by_id[block_id].get("text"))
+        content_blocks = [
+            blocks_by_id[block_id]
             for block_id in range(start, end + 1)
             if block_id in blocks_by_id
-        )
-        if len(content_text.replace("\n", "")) < 20:
+        ]
+        content_text = "\n".join(clean_text(block.get("text")) for block in content_blocks)
+        body_blocks = [
+            block
+            for block in content_blocks[1:]
+            if block.get("type") == "table" or clean_text(block.get("text"))
+        ]
+        has_table = any(block.get("type") == "table" for block in content_blocks)
+        if len(content_text.replace("\n", "")) < 20 and not (has_table or body_blocks):
             raise BoundaryValidationError(f"模板 {template.get('id')} 内容过少。")
         item = dict(template)
         item["blockCount"] = end - start + 1
