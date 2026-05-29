@@ -15,9 +15,9 @@ def field_by_key(fields: list[dict], key: str) -> dict:
 
 
 class BusinessParseSkillScriptTests(unittest.TestCase):
-    def test_business_skill_script_outputs_business_contract(self) -> None:
+    def runner_path(self) -> Path:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = (
+        return (
             backend_root
             / "opencode"
             / "skill"
@@ -25,6 +25,9 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             / "scripts"
             / "run_from_manifest.py"
         )
+
+    def test_business_skill_script_outputs_business_contract(self) -> None:
+        script_path = self.runner_path()
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -163,3 +166,59 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             self.assertEqual(fact_by_key["tenderNo"]["value"], "HN-BUS-2026-001")
             self.assertEqual(fact_by_key["tenderer"]["value"], "华能集团")
             self.assertGreaterEqual(len(payload["items"]), 10)
+
+    def test_business_parser_preserves_template_extractor_appendices(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_dir = Path(temp)
+            structured_path = temp_dir / "s1_structured_result.json"
+            manifest_path = temp_dir / "manifest.json"
+            structured_path.write_text(
+                json.dumps(
+                    {
+                        "structured": {
+                            "appendices": [
+                                {
+                                    "id": "APPX-0001",
+                                    "title": "附件2 投标价格表\nA投标价格总表\n表1 A-1  标段一",
+                                    "artifactType": "business_attachment_template",
+                                    "extractionMode": "business_template_extractor_skill",
+                                    "docxPath": "C:/tmp/TPL-0001.docx",
+                                }
+                            ]
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            combined_path = temp_dir / "combined.txt"
+            combined_path.write_text("第六章 投标文件格式\n商务评分 企业业绩 5分", encoding="utf-8")
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "proj-1",
+                        "parseProfile": "business",
+                        "combinedTextPath": str(combined_path),
+                        "structuredResultPath": str(structured_path),
+                        "documents": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [sys.executable, str(self.runner_path()), str(manifest_path)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            payload = json.loads(completed.stdout)
+            self.assertEqual(payload["targetSkill"], "bid-business-tender-structured-parser")
+            result = json.loads(structured_path.read_text(encoding="utf-8"))
+            appendices = result["structured"]["appendices"]
+            self.assertEqual(len(appendices), 1)
+            self.assertEqual(appendices[0]["extractionMode"], "business_template_extractor_skill")
+            self.assertIn("表1 A-1", appendices[0]["title"])

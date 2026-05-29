@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
 import sys
 from dataclasses import dataclass
@@ -125,6 +126,22 @@ def _load_texts_by_id(documents: list[dict[str, Any]]) -> dict[str, str]:
                 text = extract_docx_text(source_path)
         texts_by_id[document_id] = text
     return texts_by_id
+
+
+def _load_existing_appendices(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    structured_result_path = manifest.get("structuredResultPath")
+    if not structured_result_path:
+        return []
+    path = Path(str(structured_result_path))
+    if not path.is_file():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    structured = payload.get("structured") if isinstance(payload, dict) else {}
+    appendices = structured.get("appendices") if isinstance(structured, dict) else []
+    return copy.deepcopy(appendices) if isinstance(appendices, list) else []
 
 
 def _copy_meta_fields(item: dict[str, Any]) -> dict[str, Any]:
@@ -1455,6 +1472,7 @@ def build_business_result(manifest: dict[str, Any], *, mode: str = "opencode-ski
     merged_items = [*copy.deepcopy(base_items), *docx_candidate_items, *hint_items]
 
     scoring = _merge_business_scoring(structured.get("scoringCriteria") or {}, _extract_markdown_scoring(documents, texts_by_id))
+    existing_appendices = _load_existing_appendices(manifest) or copy.deepcopy(structured.get("appendices") or [])
     project_dates = structured.get("projectDates") if isinstance(structured.get("projectDates"), dict) else {}
     field_groups = {
         "projectBasics": _build_business_project_basics(merged_items, project_dates),
@@ -1490,7 +1508,7 @@ def build_business_result(manifest: dict[str, Any], *, mode: str = "opencode-ski
                 "startDate": str(project_dates.get("startDate") or ""),
                 "endDate": str(project_dates.get("endDate") or ""),
             },
-            "appendices": copy.deepcopy(structured.get("appendices") or []),
+            "appendices": existing_appendices,
             "commitmentLetters": commitment_letters,
             "commitmentClues": commitment_clues,
             "projectFactFields": project_fact_fields,
@@ -1498,7 +1516,7 @@ def build_business_result(manifest: dict[str, Any], *, mode: str = "opencode-ski
                 "商务评分": len(scoring.get("business") or []),
                 "报价评分": len(scoring.get("price") or []),
                 "合规审查": len(scoring.get("compliance") or []),
-                "商务附表": len(structured.get("appendices") or []),
+                "商务附表": len(existing_appendices),
                 "承诺文件": len(commitment_letters),
                 "待确认承诺线索": len(commitment_clues),
             },
