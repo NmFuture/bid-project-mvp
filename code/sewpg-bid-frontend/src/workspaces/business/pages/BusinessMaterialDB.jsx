@@ -30,12 +30,10 @@ const BUSINESS_MATERIAL_KIND_OPTIONS = [
   {
     value: 'fixed',
     label: '固定素材',
-    description: '原件可直接挂载或嵌入商务标正文。',
   },
   {
     value: 'other',
     label: '其他',
-    description: '作为填表、人工补充或后续处理的数据来源。',
   },
 ]
 const CLEAN_STATUS_OPTIONS = [
@@ -119,7 +117,10 @@ const normalizeTagList = (value) => {
   return tags.slice(0, 20)
 }
 
-const tagsToInputValue = (tags) => normalizeTagList(tags).join('，')
+const tagInputPreview = (committedTags, draftValue) => normalizeTagList([
+  ...normalizeTagList(committedTags),
+  ...normalizeTagList(draftValue),
+])
 
 const canPreviewCleaned = (item) => item?.cleanStatus === 'cleaned' && Boolean(item?.hasCleanedWord)
 
@@ -317,6 +318,24 @@ const groupFilesByFolderPath = (items = []) => {
   return byPath
 }
 
+const filterTreeByMatchedFiles = (nodes = [], filesByFolderPath = new Map()) =>
+  (Array.isArray(nodes) ? nodes : [])
+    .map((node) => {
+      const path = normalizePath(node?.path)
+      const directFileCount = filesByFolderPath.get(path)?.length || 0
+      const children = filterTreeByMatchedFiles(node?.children || [], filesByFolderPath)
+      const childFileCount = children.reduce((sum, child) => sum + Number(child?.fileCount || 0), 0)
+      const fileCount = directFileCount + childFileCount
+      if (fileCount <= 0) return null
+      return {
+        ...node,
+        children,
+        directFileCount,
+        fileCount,
+      }
+    })
+    .filter(Boolean)
+
 const getVisibleFileCount = (nodes = []) =>
   (Array.isArray(nodes) ? nodes : []).reduce((sum, node) => sum + Number(node?.fileCount || 0), 0)
 
@@ -461,6 +480,85 @@ function IconButton({
   )
 }
 
+function TagInput({
+  value,
+  inputValue,
+  onChange,
+  onInputChange,
+  placeholder = '输入标签后按 Enter',
+  disabled = false,
+  autoFocus = false,
+}) {
+  const tags = normalizeTagList(value)
+
+  const commitInput = (rawValue = inputValue) => {
+    const nextTags = tagInputPreview(tags, rawValue)
+    onChange(nextTags)
+    onInputChange('')
+  }
+
+  const removeTag = (tag) => {
+    onChange(tags.filter((item) => item !== tag))
+  }
+
+  return (
+    <div className="rounded-lg border border-surface-container-high bg-surface-container-highest px-2 py-2 focus-within:border-primary">
+      <div className="flex min-h-8 flex-wrap items-center gap-1.5">
+        {tags.map((tag) => (
+          <span key={tag} className="inline-flex max-w-full items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
+            <span className="truncate">{tag}</span>
+            <button
+              type="button"
+              onClick={() => removeTag(tag)}
+              disabled={disabled}
+              aria-label={`移除标签 ${tag}`}
+              className="inline-flex h-4 w-4 items-center justify-center rounded-full text-primary hover:bg-primary/10 disabled:opacity-50"
+            >
+              <span aria-hidden="true" className="material-symbols-outlined text-[14px]">close</span>
+            </button>
+          </span>
+        ))}
+        <input
+          type="text"
+          value={inputValue}
+          disabled={disabled || tags.length >= 20}
+          autoFocus={autoFocus}
+          onChange={(event) => {
+            const nextValue = event.target.value
+            if (/[,，;；\n\r\t]/.test(nextValue)) {
+              commitInput(nextValue)
+            } else {
+              onInputChange(nextValue)
+            }
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              commitInput()
+              return
+            }
+            if (event.key === 'Backspace' && !inputValue && tags.length) {
+              event.preventDefault()
+              onChange(tags.slice(0, -1))
+            }
+          }}
+          onBlur={() => {
+            if (String(inputValue || '').trim()) commitInput()
+          }}
+          onPaste={(event) => {
+            const text = event.clipboardData?.getData('text') || ''
+            if (!/[,，;；\n\r\t]/.test(text)) return
+            event.preventDefault()
+            commitInput(text)
+          }}
+          placeholder={tags.length ? '' : placeholder}
+          className="h-7 min-w-[12rem] flex-1 bg-transparent px-1 text-sm text-on-surface outline-none placeholder:text-outline disabled:cursor-not-allowed"
+        />
+      </div>
+    </div>
+  )
+}
+
 function TreeNode({
   node,
   selectedPath,
@@ -481,11 +579,12 @@ function TreeNode({
   onToggle,
   scale = 100,
   filesByFolderPath,
+  forceExpanded = false,
 }) {
   const hasChildren = Array.isArray(node.children) && node.children.length > 0
   const directFileCount = Number(node.directFileCount || 0)
   const canExpand = hasChildren || directFileCount > 0
-  const collapsed = canExpand ? Boolean(collapsedMap[node.path]) : false
+  const collapsed = canExpand && !forceExpanded ? Boolean(collapsedMap[node.path]) : false
   const selected = selectedPath === node.path
   const indent = (12 + level * 16) * (scale / 100)
   const fileIndent = (34 + (level + 1) * 16) * (scale / 100)
@@ -598,6 +697,7 @@ function TreeNode({
             const meta = cleanStatusMeta(item.cleanStatus)
             const kindMeta = businessMaterialKindMeta(item.businessMaterialKind)
             const canSplit = item.bidType === '商务标' && extOf(item.name) === 'docx'
+            const itemTags = normalizeTagList(item.tags)
             return (
               <div
                 key={item.id}
@@ -639,9 +739,21 @@ function TreeNode({
                     {item.businessMaterialKindLabel || kindMeta.label}
                   </span>
                 )}
-                {!!normalizeTagList(item.tags).length && (
-                  <span className="hidden max-w-[8rem] shrink-0 truncate rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary sm:inline-flex">
-                    {normalizeTagList(item.tags).join(' / ')}
+                {!!itemTags.length && (
+                  <span
+                    className="hidden max-w-[14rem] shrink-0 items-center gap-1 overflow-hidden sm:inline-flex"
+                    title={itemTags.join('，')}
+                  >
+                    {itemTags.slice(0, 3).map((tag) => (
+                      <span key={tag} className="max-w-[4.5rem] truncate rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                        {tag}
+                      </span>
+                    ))}
+                    {itemTags.length > 3 && (
+                      <span className="rounded-full bg-surface-container-high px-1.5 py-0.5 text-[10px] font-medium text-on-surface-variant">
+                        +{itemTags.length - 3}
+                      </span>
+                    )}
                   </span>
                 )}
                 <span className="hidden shrink-0 items-center gap-1 group-hover:inline-flex">
@@ -657,20 +769,6 @@ function TreeNode({
                   >
                     <span aria-hidden="true" className="material-symbols-outlined text-[15px]">drive_file_rename_outline</span>
                   </button>
-                  {item.bidType === '商务标' && (
-                    <button
-                      type="button"
-                      title={item.businessMaterialKind === 'fixed' ? '标记为其他素材' : '标记为固定素材'}
-                      aria-label={`切换素材类型 ${item.name || item.id}`}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        onUpdateBusinessMaterialKind?.(item)
-                      }}
-                      className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-secondary-container/50 hover:text-secondary"
-                    >
-                      <span aria-hidden="true" className="material-symbols-outlined text-[15px]">sell</span>
-                    </button>
-                  )}
                   {item.bidType === '商务标' && (
                     <button
                       type="button"
@@ -741,6 +839,7 @@ function TreeNode({
               onToggle={onToggle}
               scale={scale}
               filesByFolderPath={filesByFolderPath}
+              forceExpanded={forceExpanded}
             />
           ))}
         </div>
@@ -757,21 +856,17 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
   const libraryLoadedRef = useRef(false)
   const [tree, setTree] = useState([])
   const [collapsedMap, setCollapsedMap] = useState({})
-  const [treeScale, setTreeScale] = useState(100)
   const [dragTargetPath, setDragTargetPath] = useState('')
   const [filesPayload, setFilesPayload] = useState({ items: [], total: 0, page: 1, pageSize: 20 })
   const [parseStatus, setParseStatus] = useState(null)
   const [selectedFolderPath, setSelectedFolderPath] = useState('')
   const [filters, setFilters] = useState({
     keyword: '',
-    customerName: '',
-    projectId: '',
-    materialTier: '',
+    tag: '',
+    businessMaterialKind: '',
     cleanStatus: '',
   })
-  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
 
   const [showUploadModal, setShowUploadModal] = useState(false)
@@ -787,7 +882,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
   const [uploadProjectId, setUploadProjectId] = useState('')
   const [uploadProjectCode, setUploadProjectCode] = useState('')
   const [uploadProjectName, setUploadProjectName] = useState('')
-  const [uploadBusinessMaterialKind, setUploadBusinessMaterialKind] = useState('other')
+  const [uploadTags, setUploadTags] = useState([])
   const [uploadTagsInput, setUploadTagsInput] = useState('')
   const [uploadFiles, setUploadFiles] = useState([])
   const [uploadAfterSplit, setUploadAfterSplit] = useState(false)
@@ -798,6 +893,11 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
   const [onlyofficePreviewError, setOnlyofficePreviewError] = useState('')
+  const [tagEditorItem, setTagEditorItem] = useState(null)
+  const [tagEditorTags, setTagEditorTags] = useState([])
+  const [tagEditorValue, setTagEditorValue] = useState('')
+  const [tagEditorSaving, setTagEditorSaving] = useState(false)
+  const [tagEditorError, setTagEditorError] = useState('')
   const [splitModalOpen, setSplitModalOpen] = useState(false)
   const [splitLoading, setSplitLoading] = useState(false)
   const [splitConfirming, setSplitConfirming] = useState(false)
@@ -828,16 +928,19 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
   const selectedUploadProject = projectOptions.find((option) => option.id === uploadProjectId)
   const activeFilterCount = [
     filters.keyword,
-    filters.customerName,
-    filters.projectId,
-    filters.materialTier,
+    filters.tag,
+    filters.businessMaterialKind,
     filters.cleanStatus,
   ].filter((value) => String(value || '').trim()).length
+  const hasActiveFilters = activeFilterCount > 0
+  const displayTree = useMemo(
+    () => (hasActiveFilters ? filterTreeByMatchedFiles(tree, filesByFolderPath) : tree),
+    [filesByFolderPath, hasActiveFilters, tree],
+  )
 
   const loadLibrary = useCallback(async (options = {}) => {
     const silent = Boolean(options.silent || libraryLoadedRef.current)
-    if (silent) setRefreshing(true)
-    else setLoading(true)
+    if (!silent) setLoading(true)
     setError('')
     try {
       const treeResponse = await businessMaterialsAPI.raw.tree()
@@ -870,31 +973,19 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
         recursive: true,
         keyword: filters.keyword.trim(),
         bidType: activeBidType,
-        customerName: filters.customerName.trim(),
-        projectId: filters.projectId.trim(),
-        materialTier: filters.materialTier,
+        tag: filters.tag.trim(),
+        businessMaterialKind: filters.businessMaterialKind,
         cleanStatus: filters.cleanStatus,
         page: 1,
         pageSize: filePageSize,
       })
       setFilesPayload(payload || { items: [], total: 0, page: 1, pageSize: filePageSize })
-
-      if (filters.projectId.trim()) {
-        try {
-          const status = await businessMaterialsAPI.raw.parseStatus(filters.projectId.trim())
-          setParseStatus(status)
-        } catch {
-          setParseStatus(null)
-        }
-      } else {
-        setParseStatus(null)
-      }
+      setParseStatus(null)
     } catch (e) {
       setError(safeMessage(e, '原始材料库加载失败，请稍后重试。'))
     } finally {
       libraryLoadedRef.current = true
-      if (silent) setRefreshing(false)
-      else setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [activeBidType, filters, selectedFolderPath])
 
@@ -960,26 +1051,22 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
     }))
   }
 
-  const changeTreeScale = (delta) => {
-    setTreeScale((prev) => Math.max(80, Math.min(140, prev + delta)))
-  }
-
   const openUploadModal = (options = {}) => {
     const targetPath = options.targetPath || selectedFolderPath
     const rootTier = materialTierFromRootPath(targetPath)
     const mode = options.mode || (rootTier ? 'tier' : 'tier')
-    const nextTier = options.materialTier || rootTier || (filters.projectId.trim() ? 'project' : 'standard')
+    const nextTier = options.materialTier || rootTier || 'standard'
     setShowUploadModal(true)
     setUploadKind(options.kind || 'files')
     setUploadMode(mode)
     setUploadPath(targetPath)
     setUploadMaterialTier(nextTier)
     setUploadCustomerId(options.customerId || '')
-    setUploadCustomerName(options.customerName || filters.customerName.trim())
-    setUploadProjectId(options.projectId || filters.projectId.trim())
+    setUploadCustomerName(options.customerName || '')
+    setUploadProjectId(options.projectId || '')
     setUploadProjectCode(options.projectCode || '')
     setUploadProjectName(options.projectName || '')
-    setUploadBusinessMaterialKind('other')
+    setUploadTags([])
     setUploadTagsInput('')
     setUploadFiles([])
     setUploadAfterSplit(false)
@@ -988,6 +1075,8 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
 
   const closeUploadModal = () => {
     setShowUploadModal(false)
+    setUploadTags([])
+    setUploadTagsInput('')
     setUploadFiles([])
     setUploadError('')
     if (uploadPickerRef.current) {
@@ -996,9 +1085,16 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
   }
 
   useEffect(() => {
-    if (!showUploadModal && !conflictContext) return undefined
+    if (!showUploadModal && !conflictContext && !tagEditorItem) return undefined
     const handleKeyDown = (event) => {
       if (event.key !== 'Escape') return
+      if (tagEditorItem && !tagEditorSaving) {
+        setTagEditorItem(null)
+        setTagEditorTags([])
+        setTagEditorValue('')
+        setTagEditorError('')
+        return
+      }
       if (conflictContext) {
         setConflictContext(null)
         return
@@ -1007,7 +1103,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [conflictContext, showUploadModal, uploading])
+  }, [conflictContext, showUploadModal, tagEditorItem, tagEditorSaving, uploading])
 
   const onUploadFilesChanged = (event) => {
     const files = Array.from(event.target.files || [])
@@ -1099,8 +1195,8 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
       payload.append('projectName', projectName)
       payload.append('bidType', uploadBidType)
       payload.append('materialTier', materialTier)
-      payload.append('businessMaterialKind', uploadBidType === '商务标' ? uploadBusinessMaterialKind : '')
-      normalizeTagList(uploadTagsInput).forEach((tag) => payload.append('tags', tag))
+      payload.append('businessMaterialKind', uploadBidType === '商务标' ? 'other' : '')
+      tagInputPreview(uploadTags, uploadTagsInput).forEach((tag) => payload.append('tags', tag))
       payload.append('customerId', customerId)
       payload.append('customerName', customerName)
       if (onConflict) {
@@ -1219,23 +1315,44 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
     }
   }
 
-  const editMaterialTags = async (item) => {
+  const openTagEditor = (item) => {
     if (!item?.id || item.bidType !== '商务标') return
-    const nextValue = window.prompt('请输入素材标签，多个标签用逗号、分号或换行分隔', tagsToInputValue(item.tags))
-    if (nextValue === null) return
-    const nextTags = normalizeTagList(nextValue)
+    const currentTags = normalizeTagList(item.tags)
+    setTagEditorItem(item)
+    setTagEditorTags(currentTags)
+    setTagEditorValue('')
+    setTagEditorError('')
+  }
+
+  const closeTagEditor = () => {
+    setTagEditorItem(null)
+    setTagEditorTags([])
+    setTagEditorValue('')
+    setTagEditorError('')
+  }
+
+  const saveMaterialTags = async () => {
+    if (!tagEditorItem?.id) return
+    const nextTags = tagInputPreview(tagEditorTags, tagEditorValue)
+    setTagEditorSaving(true)
+    setTagEditorError('')
     try {
-      const result = await businessMaterialsAPI.raw.updateFile(item.id, {
-        businessMaterialKind: item.businessMaterialKind || '',
+      const result = await businessMaterialsAPI.raw.updateFile(tagEditorItem.id, {
+        businessMaterialKind: tagEditorItem.businessMaterialKind || '',
         tags: nextTags,
       })
       showToast(result?.message || '素材标签已更新')
-      if (previewItem?.id === item.id) {
+      if (previewItem?.id === tagEditorItem.id) {
         setPreviewItem((prev) => ({ ...(prev || {}), tags: nextTags }))
       }
+      closeTagEditor()
       await loadLibrary({ silent: true })
     } catch (e) {
-      showToast(safeMessage(e, '素材标签更新失败'), 'error')
+      const message = safeMessage(e, '素材标签更新失败')
+      setTagEditorError(message)
+      showToast(message, 'error')
+    } finally {
+      setTagEditorSaving(false)
     }
   }
 
@@ -1480,9 +1597,8 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
   const clearFilters = () => {
     setFilters({
       keyword: '',
-      customerName: '',
-      projectId: '',
-      materialTier: '',
+      tag: '',
+      businessMaterialKind: '',
       cleanStatus: '',
     })
   }
@@ -1511,7 +1627,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
       <MaterialsViewSwitch
         active="raw"
         title="商务标素材库"
-        subtitle={refreshing || error ? (error || '正在刷新...') : ''}
+        subtitle={error || ''}
         basePath={materialsBasePath}
       />
 
@@ -1544,13 +1660,12 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
         documentAreaClassName="flex flex-col"
         sidebar={(
           <section className="flex h-full min-h-0 flex-col">
-            <div className="flex h-[72px] min-h-[72px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
+            <div className="flex min-h-[56px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
               <div className="min-w-0">
                 <h3 className="text-base font-semibold text-on-surface">素材目录</h3>
-                <p className="mt-1 truncate text-xs text-outline">{selectedFolderPath || '未选择目录'}</p>
               </div>
               <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant">
-                已加载 {fileItems.length}
+                {hasActiveFilters ? '已筛选' : '已加载'} {fileItems.length}
               </span>
             </div>
 
@@ -1559,84 +1674,79 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0">
                     <div className="text-sm font-semibold text-on-surface">目录与文件</div>
-                    <div className="mt-0.5 truncate text-xs text-outline">
-                      {selectedFolderPath || '请选择目录'}
-                    </div>
                   </div>
                   <div className="flex flex-wrap items-center justify-end gap-1" role="toolbar" aria-label="素材目录工具栏">
-                    <IconButton icon="unfold_more" label="展开全部" onClick={() => setCollapseForAll(false)} />
-                    <IconButton icon="unfold_less" label="收起全部" onClick={() => setCollapseForAll(true)} />
+                    <button type="button" onClick={() => setCollapseForAll(false)} className="rounded-md bg-surface-container-high px-2.5 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim">
+                      展开全部
+                    </button>
+                    <button type="button" onClick={() => setCollapseForAll(true)} className="rounded-md bg-surface-container-high px-2.5 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim">
+                      收起全部
+                    </button>
                     <span className="mx-1 h-4 w-px bg-surface-container-high" aria-hidden="true" />
-                    <IconButton label="缩小目录" onClick={() => changeTreeScale(-10)}>-</IconButton>
-                    <span className="w-9 text-center text-xs text-on-surface-variant" aria-label={`目录缩放 ${treeScale}%`}>{treeScale}%</span>
-                    <IconButton label="放大目录" onClick={() => changeTreeScale(10)}>+</IconButton>
-                    <span className="mx-1 h-4 w-px bg-surface-container-high" aria-hidden="true" />
-                    <IconButton icon="create_new_folder" label="新建文件夹" onClick={handleCreateFolder} disabled={!canCreateFolder} />
-                    <IconButton
-                      icon="folder_delete"
-                      label="删除文件夹"
+                    <button type="button" onClick={handleCreateFolder} disabled={!canCreateFolder} className="rounded-md bg-surface-container-high px-2.5 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-45">
+                      新建文件夹
+                    </button>
+                    <button
+                      type="button"
                       title={selectedFolderPath && isProtectedDeleteFolderPath(selectedFolderPath) ? '基础素材目录不可删除' : '删除文件夹'}
                       onClick={handleDeleteFolder}
                       disabled={!canDeleteFolder}
-                      variant="danger"
-                    />
-                    <IconButton
-                      icon="upload_file"
-                      label="上传到当前目录"
+                      className="rounded-md bg-error-container/45 px-2.5 py-1.5 text-xs font-semibold text-error hover:bg-error-container disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      删除文件夹
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => openUploadModal({ mode: 'path', targetPath: selectedFolderPath })}
                       disabled={!canManageCurrentFolder || !selectedFolderPath}
-                      variant="primary"
-                    />
+                      className="rounded-md bg-primary px-2.5 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      上传
+                    </button>
                   </div>
                 </div>
 
                 <div className="mt-2 rounded-md border border-surface-container-high bg-surface-container-low px-3 py-2">
                   <div className="mb-1.5 flex items-center justify-between gap-2">
                     <span className="text-xs font-semibold text-on-surface">筛选</span>
-                    <div className="flex items-center gap-2">
-                      {activeFilterCount > 0 && (
-                        <button
-                          type="button"
-                          onClick={clearFilters}
-                          className="text-xs font-medium text-primary hover:text-on-primary-container"
-                        >
-                          清除 {activeFilterCount}
-                        </button>
-                      )}
+                    {activeFilterCount > 0 && (
                       <button
                         type="button"
-                        onClick={() => setShowAdvancedFilters((value) => !value)}
-                        aria-expanded={showAdvancedFilters}
-                        className="inline-flex items-center gap-0.5 rounded px-1.5 py-1 text-xs font-medium text-on-surface-variant hover:bg-surface-container-high"
+                        onClick={clearFilters}
+                        className="text-xs font-medium text-primary hover:text-on-primary-container"
                       >
-                        高级
-                        <span aria-hidden="true" className="material-symbols-outlined text-[15px]">
-                          {showAdvancedFilters ? 'expand_less' : 'expand_more'}
-                        </span>
+                        清除 {activeFilterCount}
                       </button>
-                    </div>
+                    )}
                   </div>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_8rem]">
-                    <label className="relative">
-                      <span className="sr-only">搜索文件名</span>
-                      <span aria-hidden="true" className="material-symbols-outlined pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[17px] text-outline">search</span>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_8rem_8rem]">
+                    <label>
+                      <span className="sr-only">关键词</span>
                       <input
                         value={filters.keyword}
                         onChange={(e) => updateFilter('keyword', e.target.value)}
-                        placeholder="搜索文件名"
-                        className="h-8 w-full rounded-md border-none bg-surface-container-highest px-8 text-xs"
+                        placeholder="关键词：文件名/标签/类型/状态"
+                        className="h-8 w-full rounded-md border-none bg-surface-container-highest px-3 text-xs"
                       />
-                      {filters.keyword && (
-                        <button
-                          type="button"
-                          aria-label="清空文件名搜索"
-                          onClick={() => updateFilter('keyword', '')}
-                          className="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-outline hover:bg-surface-container-high hover:text-on-surface"
-                        >
-                          <span aria-hidden="true" className="material-symbols-outlined text-[15px]">close</span>
-                        </button>
-                      )}
                     </label>
+                    <input
+                      aria-label="按标签筛选"
+                      value={filters.tag}
+                      onChange={(e) => updateFilter('tag', e.target.value)}
+                      placeholder="标签"
+                      className="h-8 rounded-md border-none bg-surface-container-highest px-3 text-xs"
+                    />
+                    <select
+                      aria-label="素材类型"
+                      value={filters.businessMaterialKind}
+                      onChange={(e) => updateFilter('businessMaterialKind', e.target.value)}
+                      className="h-8 rounded-md border-none bg-surface-container-highest px-3 text-xs"
+                    >
+                      <option value="">全部类型</option>
+                      {BUSINESS_MATERIAL_KIND_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
                     <select
                       aria-label="清洗状态"
                       value={filters.cleanStatus}
@@ -1647,67 +1757,45 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                         <option key={option.value || 'all'} value={option.value}>{option.label}</option>
                       ))}
                     </select>
-                    {showAdvancedFilters && (
-                      <>
-                        <select
-                          aria-label="素材层级"
-                          value={filters.materialTier}
-                          onChange={(e) => updateFilter('materialTier', e.target.value)}
-                          className="h-8 rounded-md border-none bg-surface-container-highest px-3 text-xs"
-                        >
-                          <option value="">全部层级</option>
-                          {MATERIAL_TIER_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>{option.label}</option>
-                          ))}
-                        </select>
-                        <input
-                          aria-label="按客户筛选"
-                          value={filters.customerName}
-                          onChange={(e) => updateFilter('customerName', e.target.value)}
-                          placeholder="客户"
-                          className="h-8 rounded-md border-none bg-surface-container-highest px-3 text-xs"
-                        />
-                        <input
-                          aria-label="按项目筛选"
-                          value={filters.projectId}
-                          onChange={(e) => updateFilter('projectId', e.target.value)}
-                          placeholder="项目ID/编号"
-                          className="h-8 rounded-md border-none bg-surface-container-highest px-3 text-xs"
-                        />
-                      </>
-                    )}
                   </div>
                 </div>
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
                 <div className="min-h-full rounded-md border border-surface-container-high bg-surface-container-lowest p-2">
-                  {tree.map((node) => (
-                    <TreeNode
-                      key={node.id}
-                      node={node}
-                      selectedPath={selectedFolderPath}
-                      selectedFileId={previewItem?.id}
-                      onSelect={(path) => setSelectedFolderPath(path)}
-                      onFileSelect={(item) => {
-                        setSelectedFolderPath(item.folderPath || selectedFolderPath)
-                        handlePreviewCleaned(item)
-                      }}
-                      onRenameFile={handleRenameFile}
-                      onDeleteFile={handleDeleteFile}
-                      onUpdateBusinessMaterialKind={updateBusinessMaterialKind}
-                      onEditTags={editMaterialTags}
-                      onSplitFile={openBusinessSplitModal}
-                      onDeleteFolder={handleDeleteFolder}
-                      onMoveDrop={handleMoveDrop}
-                      dragTargetPath={dragTargetPath}
-                      setDragTargetPath={setDragTargetPath}
-                      collapsedMap={collapsedMap}
-                      onToggle={toggleNode}
-                      scale={treeScale}
-                      filesByFolderPath={filesByFolderPath}
-                    />
-                  ))}
+                  {displayTree.length > 0 ? (
+                    displayTree.map((node) => (
+                      <TreeNode
+                        key={node.id}
+                        node={node}
+                        selectedPath={selectedFolderPath}
+                        selectedFileId={previewItem?.id}
+                        onSelect={(path) => setSelectedFolderPath(path)}
+                        onFileSelect={(item) => {
+                          setSelectedFolderPath(item.folderPath || selectedFolderPath)
+                          handlePreviewCleaned(item)
+                        }}
+                        onRenameFile={handleRenameFile}
+                        onDeleteFile={handleDeleteFile}
+                        onUpdateBusinessMaterialKind={updateBusinessMaterialKind}
+                        onEditTags={openTagEditor}
+                        onSplitFile={openBusinessSplitModal}
+                        onDeleteFolder={handleDeleteFolder}
+                        onMoveDrop={handleMoveDrop}
+                        dragTargetPath={dragTargetPath}
+                        setDragTargetPath={setDragTargetPath}
+                        collapsedMap={collapsedMap}
+                        onToggle={toggleNode}
+                        scale={100}
+                        filesByFolderPath={filesByFolderPath}
+                        forceExpanded={hasActiveFilters}
+                      />
+                    ))
+                  ) : (
+                    <div className="flex min-h-[10rem] items-center justify-center rounded-md text-sm text-outline">
+                      {hasActiveFilters ? '未找到匹配素材' : '暂无素材目录'}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1753,7 +1841,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
               </button>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-5 sm:p-6 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="max-w-sm">
                 <div className="text-sm text-on-surface-variant">
                   <span className="block mb-1">落位方式</span>
                   <div className="grid h-10 grid-cols-2 rounded-lg bg-surface-container-highest p-1" role="group" aria-label="落位方式">
@@ -1775,12 +1863,6 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                       )
                     })}
                   </div>
-                </div>
-                <div className="rounded-lg bg-surface-container-highest px-3 py-2 text-sm text-on-surface-variant">
-                  <span className="block mb-1">标书类型</span>
-                  <span className="flex h-10 items-center rounded-lg bg-white px-3 text-sm font-semibold text-primary">
-                    商务标
-                  </span>
                 </div>
               </div>
 
@@ -1877,42 +1959,19 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
               )}
 
               {uploadBidType === '商务标' && (
-                <div className="rounded-lg border border-surface-container-high bg-surface-container-low px-3 py-3">
-                  <div className="text-sm font-semibold text-on-surface">素材类型</div>
-                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {BUSINESS_MATERIAL_KIND_OPTIONS.map((option) => {
-                      const active = uploadBusinessMaterialKind === option.value
-                      return (
-                        <button
-                          key={option.value}
-                          type="button"
-                          onClick={() => setUploadBusinessMaterialKind(option.value)}
-                          aria-pressed={active}
-                          className={`rounded-md border px-3 py-2 text-left transition-colors ${active ? 'border-primary bg-primary/5 text-primary' : 'border-surface-container-high bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container-low'}`}
-                        >
-                          <span className="block text-sm font-semibold">{option.label}</span>
-                          <span className="mt-1 block text-xs text-outline">{option.description}</span>
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {uploadBidType === '商务标' && (
-                <label className="text-sm text-on-surface-variant block">
+                <div className="text-sm text-on-surface-variant block">
                   <span className="block mb-1">素材标签</span>
-                  <input
-                    type="text"
-                    value={uploadTagsInput}
-                    onChange={(event) => setUploadTagsInput(event.target.value)}
+                  <TagInput
+                    value={uploadTags}
+                    inputValue={uploadTagsInput}
+                    onChange={setUploadTags}
+                    onInputChange={setUploadTagsInput}
                     placeholder="例如：资质，承诺函，商务附件"
-                    className="w-full h-10 px-3 py-2 rounded-lg bg-surface-container-highest border-none text-sm"
                   />
                   <span className="mt-1 block text-xs text-outline">
-                    多个标签用逗号、分号或换行分隔，上传后会写入素材元数据。
+                    支持中文逗号、中文分号、英文逗号、英文分号、换行或 Enter 拆分，最多 20 个。
                   </span>
-                </label>
+                </div>
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -2084,6 +2143,71 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                 className="px-3 py-2 text-sm rounded-lg bg-primary text-on-primary hover:bg-primary-container"
               >
                 生成 v2
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tagEditorItem && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-2xl">
+            <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between">
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-on-surface">编辑素材标签</h3>
+                <p className="mt-1 truncate text-xs text-outline">{tagEditorItem.name || tagEditorItem.id}</p>
+              </div>
+              <button
+                onClick={closeTagEditor}
+                disabled={tagEditorSaving}
+                className="close-plain text-on-surface-variant hover:text-primary transition-colors disabled:opacity-50"
+                aria-label="关闭"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div className="p-6 space-y-3">
+              <div className="block text-sm text-on-surface-variant">
+                <span className="block mb-1">标签</span>
+                <TagInput
+                  value={tagEditorTags}
+                  inputValue={tagEditorValue}
+                  onChange={(nextTags) => {
+                    setTagEditorTags(nextTags)
+                    setTagEditorError('')
+                  }}
+                  onInputChange={(nextValue) => {
+                    setTagEditorValue(nextValue)
+                    setTagEditorError('')
+                  }}
+                  disabled={tagEditorSaving}
+                  autoFocus
+                  placeholder="资质，承诺函，商务附件"
+                />
+                <span className="mt-1 block text-xs text-outline">
+                  支持粘贴整串标签，系统会按中英文逗号和分号自动拆分。
+                </span>
+              </div>
+              {tagEditorError && (
+                <div className="rounded-lg border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
+                  {tagEditorError}
+                </div>
+              )}
+            </div>
+            <div className="px-6 py-4 border-t border-surface-container-high bg-surface-container-low flex justify-end gap-2 rounded-b-xl">
+              <button
+                onClick={closeTagEditor}
+                disabled={tagEditorSaving}
+                className="px-4 py-2 text-sm rounded-lg text-on-surface-variant hover:bg-surface-container-high disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={saveMaterialTags}
+                disabled={tagEditorSaving}
+                className="px-4 py-2 text-sm rounded-lg bg-primary text-on-primary hover:bg-primary-container disabled:opacity-50"
+              >
+                {tagEditorSaving ? '保存中...' : '保存'}
               </button>
             </div>
           </div>

@@ -4,7 +4,8 @@ from typing import Any
 
 from app.services.identity import customer_matches, project_matches
 from app.services.material_folder_scope import MATERIAL_BID_TYPES
-from app.services.material_taxonomy import normalize_material_tier
+from app.services.material_tags import normalize_material_tags
+from app.services.material_taxonomy import normalize_business_material_kind, normalize_material_tier
 
 
 def build_raw_files_payload(
@@ -15,6 +16,9 @@ def build_raw_files_payload(
     customer_name: str = "",
     material_tier: str = "",
     clean_status: str = "",
+    business_material_kind: str = "",
+    tag: str = "",
+    keyword: str = "",
     page: int = 1,
     page_size: int = 20,
 ) -> dict[str, Any]:
@@ -28,6 +32,9 @@ def build_raw_files_payload(
             bid_type=bid_type,
             material_tier=material_tier,
             clean_status=clean_status,
+            business_material_kind=business_material_kind,
+            tag=tag,
+            keyword=keyword,
         )
     ]
     current_page = max(1, int(page or 1))
@@ -50,6 +57,9 @@ def raw_file_matches_scope(
     customer_name: str = "",
     material_tier: str = "",
     clean_status: str = "",
+    business_material_kind: str = "",
+    tag: str = "",
+    keyword: str = "",
 ) -> bool:
     ext = getattr(item, "ext_fields", None) or {}
     if project_id and not project_matches(project_id, ext):
@@ -72,6 +82,37 @@ def raw_file_matches_scope(
     requested_clean_status = str(clean_status or "").strip()
     if requested_clean_status and requested_clean_status != "all":
         if str(ext.get("cleanStatus") or "") != requested_clean_status:
+            return False
+
+    requested_business_kind = normalize_business_material_kind(business_material_kind)
+    if requested_business_kind and str(ext.get("businessMaterialKind") or "") != requested_business_kind:
+        return False
+
+    tags = normalize_material_tags(ext.get("tags"))
+    requested_tag = str(tag or "").strip()
+    if requested_tag and not any(requested_tag in item for item in tags):
+        return False
+
+    requested_keyword = str(keyword or "").strip().casefold()
+    if requested_keyword:
+        haystack = " ".join(
+            str(value or "")
+            for value in [
+                getattr(item, "name", ""),
+                getattr(getattr(item, "folder", None), "path", ""),
+                ext.get("sourceFileName"),
+                ext.get("cleanedFileName"),
+                ext.get("businessMaterialKindLabel"),
+                ext.get("materialTierLabel"),
+                ext.get("cleanMessage"),
+                ext.get("cleanStatus"),
+                ext.get("customerName"),
+                ext.get("projectName"),
+                ext.get("projectCode"),
+                *tags,
+            ]
+        ).casefold()
+        if requested_keyword not in haystack:
             return False
 
     return True

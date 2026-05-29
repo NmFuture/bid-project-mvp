@@ -543,6 +543,86 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertEqual(bid_letter["candidateMaterials"], [])
         self.assertEqual(bid_letter["status"], "needs_input")
 
+    def test_businessgap_runner_uses_shared_performance_library_for_performance_task(self) -> None:
+        backend_root = Path(__file__).resolve().parents[1]
+        script_path = backend_root / "opencode" / "skill" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse_result.json"
+            output_path = root / "business_gap_plan.json"
+            toc_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "bid-toc-json-v1",
+                        "items": [
+                            {"order": 1, "number": "一", "title": "投标函", "level": 1},
+                            {"order": 2, "number": "九", "title": "近年类似项目业绩表", "level": 1},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            parse_path.write_text(json.dumps({"status": "completed", "structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest_path = root / "business_gap_input.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-BG-PERFORMANCE",
+                        "projectName": "商务业绩候选测试",
+                        "bidType": "商务标",
+                        "workDir": str(root),
+                        "tocJsonPath": str(toc_path),
+                        "parseResultPath": str(parse_path),
+                        "businessWikiDir": "",
+                        "materialScope": {"bidType": "商务标", "readableScopes": []},
+                        "materialIndex": [
+                            {
+                                "id": "PERF-0009",
+                                "materialId": "PERF-0009",
+                                "name": "华能风电机组供货业绩",
+                                "fileName": "华能风电机组供货业绩.docx",
+                                "folderPath": "商务标/共用业绩库/华能集团",
+                                "path": "商务标/共用业绩库/华能集团/华能风电机组供货业绩",
+                                "materialTier": "customer",
+                                "libraryScope": "customer",
+                                "sourceType": "performance_library",
+                                "candidateType": "performance_record",
+                                "businessMaterialKind": "performance",
+                                "businessMaterialKindLabel": "共用业绩",
+                                "cleanStatus": "original_only",
+                                "tags": ["业绩", "合同", "中标"],
+                                "keywords": ["业绩", "业绩证明", "合同", "中标通知书", "240h"],
+                                "summary": "华能集团；风电机组供货；中标通知书；合同；240h试运行",
+                                "businessCategory": "业绩证明",
+                                "documentType": "业绩记录",
+                            }
+                        ],
+                        "selectedBusinessTurbineModel": {},
+                        "outputFile": str(output_path),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [sys.executable, str(script_path), "--manifest", str(manifest_path), "--response", "summary"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            plan = json.loads(output_path.read_text(encoding="utf-8"))
+
+        performance_task = next(task for task in plan["tasks"] if "业绩" in task["title"])
+        performance_candidate = performance_task["candidateMaterials"][0]
+        self.assertEqual(performance_candidate["materialId"], "PERF-0009")
+        self.assertEqual(performance_candidate["sourceType"], "performance_library")
+        self.assertEqual(performance_candidate["candidateType"], "performance_record")
+        self.assertIn("共用业绩库候选", performance_candidate["reason"])
+        bid_letter = next(task for task in plan["tasks"] if task["title"] == "投标函")
+        self.assertEqual(bid_letter["candidateMaterials"], [])
+
     def test_businessgap_runner_emits_template_candidates_from_template_index(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
         script_path = backend_root / "opencode" / "skill" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"

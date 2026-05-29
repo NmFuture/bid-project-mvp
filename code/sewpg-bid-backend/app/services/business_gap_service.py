@@ -73,6 +73,7 @@ from app.services.bid_runtime_state import now_iso
 from app.services.file_utils import safe_filename
 from app.services.material_folder_scope import project_material_root_path
 from app.services.minio_client import minio_client
+from app.services.performance_library_service import performance_library_service
 from app.services.url_utils import onlyoffice_backend_base_url
 from app.services.workspace_artifacts import business_workspace_dir
 
@@ -364,7 +365,21 @@ class BusinessGapService:
                 continue
             name = str(material.get("name") or material.get("fileName") or material_id)
             folder_path = str(material.get("folderPath") or "")
-            haystack = " ".join([name, folder_path, str(material.get("cleanedFileName") or ""), str(material.get("turbineModelLabel") or "")])
+            haystack = " ".join(
+                [
+                    name,
+                    folder_path,
+                    str(material.get("cleanedFileName") or ""),
+                    str(material.get("turbineModelLabel") or ""),
+                    str(material.get("summary") or ""),
+                    str(material.get("businessCategory") or ""),
+                    str(material.get("documentType") or ""),
+                    str(material.get("customerName") or ""),
+                    str(material.get("projectType") or ""),
+                    " ".join(str(item) for item in material.get("tags") or []),
+                    " ".join(str(item) for item in material.get("keywords") or []),
+                ]
+            )
             if not matches(haystack):
                 continue
             selectable_materials.append(
@@ -377,9 +392,16 @@ class BusinessGapService:
                     "materialTier": str(material.get("materialTier") or ""),
                     "businessMaterialKind": str(material.get("businessMaterialKind") or ""),
                     "businessMaterialKindLabel": str(material.get("businessMaterialKindLabel") or ""),
+                    "sourceType": str(material.get("sourceType") or ""),
+                    "candidateType": str(material.get("candidateType") or ""),
                     "cleanStatus": str(material.get("cleanStatus") or ""),
                     "hasCleanedWord": bool(material.get("hasCleanedWord")),
                     "cleanedFileName": str(material.get("cleanedFileName") or ""),
+                    "fileName": str(material.get("fileName") or ""),
+                    "summary": str(material.get("summary") or ""),
+                    "tags": [str(item) for item in material.get("tags") or [] if str(item).strip()][:16],
+                    "keywords": [str(item) for item in material.get("keywords") or [] if str(item).strip()][:24],
+                    "reviewStatus": str(material.get("reviewStatus") or ""),
                     "size": int(material.get("size") or 0),
                     "turbineModelLabel": str(material.get("turbineModelLabel") or ""),
                     "updatedAt": str(material.get("updatedAt") or ""),
@@ -416,7 +438,30 @@ class BusinessGapService:
         mode: str = "quick",
     ) -> dict[str, Any]:
         material = self._readable_material(project_id, material_id)
-        payload = await business_material_store.raw_download_content(str(material["id"]))
+        if self._is_performance_material(material) and not str(material.get("wordObjectKey") or ""):
+            quick_summary = self._material_preview_summary(material)
+            return {
+                "schemaVersion": "bid-business-material-preview-v1",
+                "projectId": project_id,
+                "materialId": str(material["id"]),
+                "materialName": str(material.get("name") or material.get("fileName") or material["id"]),
+                "fileName": str(material.get("fileName") or material.get("name") or material["id"]),
+                "folderPath": str(material.get("folderPath") or ""),
+                "materialTier": str(material.get("materialTier") or material.get("libraryScope") or ""),
+                "businessMaterialKind": str(material.get("businessMaterialKind") or ""),
+                "businessMaterialKindLabel": str(material.get("businessMaterialKindLabel") or ""),
+                "mimeType": "",
+                "renderer": "record",
+                "browserFileUrl": "",
+                "quickSummary": quick_summary,
+                "cleanStatus": str(material.get("cleanStatus") or ""),
+                "hasCleanedWord": False,
+                "cleanedFileName": "",
+                "officeAvailable": False,
+                "previewMode": "metadata",
+                "message": "该业绩暂未上传 Word 文件，可先核对业绩字段。",
+            }
+        payload, source_kind = await self._material_preview_download_payload(material)
         file_name = str(payload.get("fileName") or material.get("name") or material["id"])
         mime_type = str(payload.get("mimeType") or mimetypes.guess_type(file_name)[0] or "application/octet-stream")
         renderer = self._preview_renderer(file_name, mime_type)
@@ -459,7 +504,7 @@ class BusinessGapService:
                 "renderer": renderer,
                 "officeAvailable": True,
                 "onlyoffice": {
-                    "documentKey": f"business-gap-material-{material['id']}-v{payload.get('version') or material.get('version') or 1}",
+                    "documentKey": f"business-gap-material-{material['id']}-{source_kind}-v{payload.get('version') or material.get('version') or 1}",
                     "title": file_name,
                     "fileUrl": document_server_url,
                     "browserFileUrl": browser_file_url,
@@ -471,7 +516,7 @@ class BusinessGapService:
                         "name": "当前用户",
                     },
                 },
-                "message": "已生成原素材 OnlyOffice 预览。",
+                "message": "已生成业绩 Word 预览。" if source_kind == "performance_library" else "已生成原素材 OnlyOffice 预览。",
             }
 
         return {
@@ -482,10 +527,27 @@ class BusinessGapService:
 
     async def material_preview_content(self, project_id: str, material_id: str) -> dict[str, Any]:
         material = self._readable_material(project_id, material_id)
-        return await business_material_store.raw_download_content(str(material["id"]))
+        payload, _source_kind = await self._material_preview_download_payload(material)
+        return payload
 
     @staticmethod
-    async def _business_material_download_payload(material_id: str) -> tuple[dict[str, Any], str]:
+    def _is_performance_material(material: dict[str, Any] | None) -> bool:
+        if not isinstance(material, dict):
+            return False
+        material_id = str(material.get("id") or material.get("materialId") or "")
+        return str(material.get("sourceType") or "") == "performance_library" or material_id.startswith("PERF-")
+
+    @staticmethod
+    async def _material_preview_download_payload(material: dict[str, Any]) -> tuple[dict[str, Any], str]:
+        material_id = str(material.get("id") or material.get("materialId") or "")
+        if BusinessGapService._is_performance_material(material):
+            return await performance_library_service.download_word(material_id), "performance_library"
+        return await business_material_store.raw_download_content(material_id), "raw"
+
+    @staticmethod
+    async def _business_material_download_payload(material_id: str, material: dict[str, Any] | None = None) -> tuple[dict[str, Any], str]:
+        if BusinessGapService._is_performance_material(material or {"id": material_id}):
+            return await performance_library_service.download_word(material_id), "performance_library"
         try:
             payload = await business_material_store.raw_download_cleaned_content(material_id)
             return payload, "cleaned"
@@ -983,44 +1045,58 @@ class BusinessGapService:
             material_id = str(material.get("id") or material.get("materialId") or "").strip()
             if not material_id:
                 continue
-            raw_payload, source_kind = await self._business_material_download_payload(material_id)
+            material_context = dict(material)
+            if self._is_performance_material({**material_context, "id": material_id}):
+                try:
+                    readable_material = self._readable_material(project_id, material_id)
+                    material_context = {**readable_material, **material_context}
+                except Exception:
+                    material_context = {**material_context, "id": material_id, "sourceType": "performance_library"}
+            raw_payload, source_kind = await self._business_material_download_payload(material_id, material_context)
             raw_name = safe_filename(
-                str(raw_payload.get("fileName") or material.get("materialName") or material.get("name") or f"{material_id}.bin"),
+                str(raw_payload.get("fileName") or material_context.get("materialName") or material_context.get("name") or f"{material_id}.bin"),
                 f"{material_id}.bin",
             )
             target_path = unique_path(work_dir, f"{index:02d}-{raw_name}")
             minio_client.download_file(str(raw_payload["bucket"]), str(raw_payload["key"]), target_path)
             mime_type = str(raw_payload.get("mimeType") or mimetypes.guess_type(target_path.name)[0] or "application/octet-stream")
             cleaned_snapshot: dict[str, Any] = {}
-            try:
-                cleaned_payload = await business_material_store.raw_download_cleaned_content(material_id)
-                cleaned_name = safe_filename(
-                    str(cleaned_payload.get("fileName") or material.get("cleanedFileName") or f"{material_id}-cleaned.docx"),
-                    f"{material_id}-cleaned.docx",
-                )
-                cleaned_target_path = unique_path(work_dir, f"{index:02d}-清洗稿-{cleaned_name}")
-                minio_client.download_file(str(cleaned_payload["bucket"]), str(cleaned_payload["key"]), cleaned_target_path)
-                if cleaned_target_path.exists():
-                    cleaned_snapshot = {
-                        "cleanedFileName": cleaned_target_path.name,
-                        "cleanedFilePath": str(cleaned_target_path),
-                        "cleanedMimeType": str(
-                            cleaned_payload.get("mimeType")
-                            or mimetypes.guess_type(cleaned_target_path.name)[0]
-                            or "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                        ),
-                    }
-                    source_kind = "raw_with_cleaned"
-            except Exception:
-                cleaned_snapshot = {}
+            if source_kind != "performance_library":
+                try:
+                    cleaned_payload = await business_material_store.raw_download_cleaned_content(material_id)
+                    cleaned_name = safe_filename(
+                        str(cleaned_payload.get("fileName") or material_context.get("cleanedFileName") or f"{material_id}-cleaned.docx"),
+                        f"{material_id}-cleaned.docx",
+                    )
+                    cleaned_target_path = unique_path(work_dir, f"{index:02d}-清洗稿-{cleaned_name}")
+                    minio_client.download_file(str(cleaned_payload["bucket"]), str(cleaned_payload["key"]), cleaned_target_path)
+                    if cleaned_target_path.exists():
+                        cleaned_snapshot = {
+                            "cleanedFileName": cleaned_target_path.name,
+                            "cleanedFilePath": str(cleaned_target_path),
+                            "cleanedMimeType": str(
+                                cleaned_payload.get("mimeType")
+                                or mimetypes.guess_type(cleaned_target_path.name)[0]
+                                or "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                            ),
+                        }
+                        source_kind = "raw_with_cleaned"
+                except Exception:
+                    cleaned_snapshot = {}
             ref = {
                 "materialId": material_id,
-                "materialName": str(material.get("materialName") or material.get("name") or raw_payload.get("fileName") or material_id),
-                "folderPath": str(material.get("folderPath") or material.get("path") or ""),
-                "materialTier": str(material.get("materialTier") or material.get("libraryScope") or ""),
-                "businessMaterialKind": str(material.get("businessMaterialKind") or ""),
-                "businessMaterialKindLabel": str(material.get("businessMaterialKindLabel") or ""),
+                "materialName": str(
+                    material_context.get("materialName")
+                    or material_context.get("name")
+                    or raw_payload.get("fileName")
+                    or material_id
+                ),
+                "folderPath": str(material_context.get("folderPath") or material_context.get("path") or ""),
+                "materialTier": str(material_context.get("materialTier") or material_context.get("libraryScope") or ""),
+                "businessMaterialKind": str(material_context.get("businessMaterialKind") or ""),
+                "businessMaterialKindLabel": str(material_context.get("businessMaterialKindLabel") or ""),
                 "sourceKind": source_kind,
+                "sourceType": str(material_context.get("sourceType") or ""),
                 "selectedAt": created_at,
             }
             artifact_id = f"BART-{safe_filename(task_id, 'TASK')}-MAT-{existing_count + index}"
@@ -1032,10 +1108,10 @@ class BusinessGapService:
                 "sourceMode": "selected_from_business_material_library",
                 "assemblyMode": assembly_mode_for_artifact(
                     task,
-                    {**material, "fileName": target_path.name, "mimeType": mime_type},
+                    {**material_context, "fileName": target_path.name, "mimeType": mime_type},
                 ),
-                "materialUsage": str(material.get("wikiUsageMode") or ""),
-                "materialSourceType": "material_library",
+                "materialUsage": str(material_context.get("wikiUsageMode") or ""),
+                "materialSourceType": "performance_library" if source_kind == "performance_library" else "material_library",
                 "materialId": material_id,
                 "materialName": ref["materialName"],
                 "folderPath": ref["folderPath"],
@@ -1043,6 +1119,7 @@ class BusinessGapService:
                 "businessMaterialKind": ref["businessMaterialKind"],
                 "businessMaterialKindLabel": ref["businessMaterialKindLabel"],
                 "sourceKind": source_kind,
+                "sourceType": ref["sourceType"],
                 "version": 1,
                 "previewable": True,
                 "confirmed": True,
@@ -1051,17 +1128,17 @@ class BusinessGapService:
                 "selectedAt": created_at,
                 "operator": str(payload.get("operator") or "当前用户"),
                 "mimeType": mime_type,
-                "wikiCardId": str(material.get("wikiCardId") or ""),
-                "wikiUsageMode": str(material.get("wikiUsageMode") or ""),
-                "evidenceSegmentId": str(material.get("evidenceSegmentId") or ""),
-                "evidenceSegmentTitle": str(material.get("evidenceSegmentTitle") or ""),
-                "evidenceSegmentType": str(material.get("evidenceSegmentType") or ""),
-                "evidenceSourcePages": str(material.get("evidenceSourcePages") or ""),
-                "evidenceSummary": str(material.get("evidenceSummary") or ""),
+                "wikiCardId": str(material_context.get("wikiCardId") or ""),
+                "wikiUsageMode": str(material_context.get("wikiUsageMode") or ""),
+                "evidenceSegmentId": str(material_context.get("evidenceSegmentId") or ""),
+                "evidenceSegmentTitle": str(material_context.get("evidenceSegmentTitle") or ""),
+                "evidenceSegmentType": str(material_context.get("evidenceSegmentType") or ""),
+                "evidenceSourcePages": str(material_context.get("evidenceSourcePages") or ""),
+                "evidenceSummary": str(material_context.get("evidenceSummary") or material_context.get("summary") or ""),
                 "selectedEvidenceSegments": copy.deepcopy(
-                    material.get("evidenceSegments") if isinstance(material.get("evidenceSegments"), list) else []
+                    material_context.get("evidenceSegments") if isinstance(material_context.get("evidenceSegments"), list) else []
                 ),
-                "wikiEvidence": copy.deepcopy(material.get("wikiEvidence") or {}),
+                "wikiEvidence": copy.deepcopy(material_context.get("wikiEvidence") or {}),
                 "rawFileName": target_path.name,
                 "rawFilePath": str(target_path),
                 "rawMimeType": mime_type,

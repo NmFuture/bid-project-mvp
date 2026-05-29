@@ -233,7 +233,7 @@ def _wiki_skill_name(bid_type: str) -> str:
 
 def _wiki_skill_runner(bid_type: str) -> Path:
     skill_name = _wiki_skill_name(bid_type)
-    return BASE_DIR / "opencode" / "skill" / skill_name / "scripts" / "run_from_manifest.py"
+    return BASE_DIR / "opencode" / "skills" / skill_name / "scripts" / "run_from_manifest.py"
 
 
 def _wiki_root_title(bid_type: str) -> str:

@@ -54,7 +54,7 @@ TASK_SYNONYMS = {
 NEGATIVE_MATCH_RULES = [
     {
         "taskModules": {"base_documents_guarantees", "structured_response_tables", "commitments_and_notes"},
-        "materialHints": ["通用素材/03-业绩资产池", "中标通知书", "合同扫描件", "验收报告", "240h"],
+        "materialHints": ["通用素材/03-业绩资产池", "共用业绩库", "共用业绩", "业绩证明", "performance_library", "中标通知书", "合同扫描件", "验收报告", "240h"],
         "penalty": 0.42,
         "reason": "业绩资产不适合作为当前响应件",
     },
@@ -603,6 +603,8 @@ def add_candidate_materials(tasks: list[dict[str, Any]], manifest: dict[str, Any
                 "libraryScope": str(material.get("materialTier") or material.get("libraryScope") or ""),
                 "businessMaterialKind": str(material.get("businessMaterialKind") or ""),
                 "businessMaterialKindLabel": str(material.get("businessMaterialKindLabel") or ""),
+                "sourceType": str(material.get("sourceType") or "material_library"),
+                "candidateType": str(material.get("candidateType") or "raw_material"),
                 "cleanStatus": str(material.get("cleanStatus") or ""),
                 "cleanedFileName": str(material.get("cleanedFileName") or ""),
                 "score": round(score, 4),
@@ -611,6 +613,10 @@ def add_candidate_materials(tasks: list[dict[str, Any]], manifest: dict[str, Any
                 "fileType": file_type(material),
                 "previewable": True,
                 "folderPath": str(material.get("folderPath") or ""),
+                "reviewStatus": str(material.get("reviewStatus") or ""),
+                "tags": [str(item) for item in material.get("tags") or [] if str(item).strip()][:16],
+                "keywords": [str(item) for item in material.get("keywords") or [] if str(item).strip()][:24],
+                "summary": str(material.get("summary") or ""),
             }
             merge_candidate_material(candidates_by_key, candidate)
             for flag in risk_flags:
@@ -1450,7 +1456,35 @@ def negative_match_penalty(task: dict[str, Any], material: dict[str, Any]) -> tu
 
 
 def material_match_score(task: dict[str, Any], material: dict[str, Any], selected_model: dict[str, Any]) -> tuple[float, str, list[str]]:
-    haystack = normalize_text(" ".join(str(material.get(key) or "") for key in ("name", "fileName", "folderPath", "cleanedFileName", "turbineModelLabel")))
+    haystack = normalize_text(
+        " ".join(
+            [
+                *[str(material.get(key) or "") for key in (
+                    "name",
+                    "fileName",
+                    "folderPath",
+                    "path",
+                    "cleanedFileName",
+                    "turbineModelLabel",
+                    "businessMaterialKind",
+                    "businessMaterialKindLabel",
+                    "sourceType",
+                    "candidateType",
+                    "businessCategory",
+                    "documentType",
+                    "summary",
+                    "customerName",
+                    "projectType",
+                    "scale",
+                    "location",
+                    "amount",
+                    "turbineModel",
+                )],
+                " ".join(str(item) for item in material.get("tags") or []),
+                " ".join(str(item) for item in material.get("keywords") or []),
+            ]
+        )
+    )
     task_title = normalize_text(str(task.get("title") or ""))
     module_key = str(task.get("moduleKey") or "")
     task_type = str(task.get("taskType") or "")
@@ -1481,6 +1515,12 @@ def material_match_score(task: dict[str, Any], material: dict[str, Any], selecte
     elif str(material.get("materialTier") or "") == "customer":
         score += 0.05
         reasons.append("客户素材")
+    if str(material.get("sourceType") or "") == "performance_library":
+        if module_key == "performance_cooperation_support":
+            score += 0.18
+            reasons.append("共用业绩库候选")
+        else:
+            score -= 0.12
 
     if task_type == "certificate":
         score += certificate_model_score(material, selected_model, risks, reasons)
@@ -2024,6 +2064,8 @@ def remove_value(target: dict[str, Any], key: str, value: Any) -> None:
 
 
 def file_type(material: dict[str, Any]) -> str:
+    if str(material.get("sourceType") or "") == "performance_library" and str(material.get("cleanStatus") or "") == "metadata_only":
+        return "record"
     name = str(material.get("name") or material.get("fileName") or material.get("cleanedFileName") or "").lower()
     suffix = Path(name).suffix.lower().strip(".")
     return suffix or "file"

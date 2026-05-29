@@ -26,12 +26,12 @@ RUN python3 -m pip install --no-cache-dir --break-system-packages "lxml>=5.2.0" 
 
 COPY opencode.json /workspace/opencode.json
 COPY .opencode /workspace/.opencode
-COPY skill /workspace/skill
+COPY skills /workspace/skills
 COPY docker-entrypoint.sh /usr/local/bin/opencode-entrypoint
 
 RUN chmod +x /usr/local/bin/opencode-entrypoint \
     && mkdir -p /root/.local/share/opencode /workspace/.opencode/skills \
-    && cp -R /workspace/skill/. /workspace/.opencode/skills/ \
+    && cp -R /workspace/skills/. /workspace/.opencode/skills/ \
     && printf '%s\n' \
       '#!/bin/sh' \
       'if [ "$#" -ne 1 ]; then' \

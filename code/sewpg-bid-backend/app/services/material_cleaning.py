@@ -71,7 +71,7 @@ def _get_sync_cleaning_loop() -> asyncio.AbstractEventLoop:
 
 
 def _skill_driver_path() -> Path:
-    return BASE_DIR / "opencode" / "skill" / "bid-material-format-cleaner" / "scripts" / "driver.py"
+    return BASE_DIR / "opencode" / "skills" / "bid-material-format-cleaner" / "scripts" / "driver.py"
 
 
 def _extract_driver_line(output: str, file_name: str) -> tuple[str, str]:

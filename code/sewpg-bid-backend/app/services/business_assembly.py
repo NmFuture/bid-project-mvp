@@ -31,11 +31,11 @@ from app.services.workspace_artifacts import business_workspace_dir
 
 BUSINESS_ASSEMBLER_SKILL_NAME = "bid-business-assembler"
 BUSINESS_ASSEMBLER_SKILL_COMMAND = "businessassemble"
-BUSINESS_ASSEMBLER_SKILL_DIR = BASE_DIR / "opencode" / "skill" / BUSINESS_ASSEMBLER_SKILL_NAME
+BUSINESS_ASSEMBLER_SKILL_DIR = BASE_DIR / "opencode" / "skills" / BUSINESS_ASSEMBLER_SKILL_NAME
 BUSINESS_ASSEMBLER_RUNNER = BUSINESS_ASSEMBLER_SKILL_DIR / "scripts" / "run_from_manifest.py"
 BUSINESS_FORMAT_CLEANER_SKILL_NAME = "bid-business-format-cleaner"
 BUSINESS_FORMAT_CLEANER_SKILL_COMMAND = "businessformat"
-BUSINESS_FORMAT_CLEANER_SKILL_DIR = BASE_DIR / "opencode" / "skill" / BUSINESS_FORMAT_CLEANER_SKILL_NAME
+BUSINESS_FORMAT_CLEANER_SKILL_DIR = BASE_DIR / "opencode" / "skills" / BUSINESS_FORMAT_CLEANER_SKILL_NAME
 BUSINESS_FORMAT_CLEANER_RUNNER = BUSINESS_FORMAT_CLEANER_SKILL_DIR / "scripts" / "run_from_manifest.py"
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 BUSINESS_FORMAT_PRESETS = {

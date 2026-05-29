@@ -69,7 +69,7 @@ def _outline_skill_command(bid_type: Any) -> str:
 
 
 def _outline_skill_runner(skill_name: str) -> Path:
-    return BASE_DIR / "opencode" / "skill" / skill_name / "scripts" / "run_from_manifest.py"
+    return BASE_DIR / "opencode" / "skills" / skill_name / "scripts" / "run_from_manifest.py"
 
 
 def generate_outline_for_project(project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:

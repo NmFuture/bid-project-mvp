@@ -26,6 +26,7 @@ from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.minio_client import minio_client
 from app.services.opencode_client import OpencodeClient
 from app.services.parse_profiles import BUSINESS_PARSE_PROFILE
+from app.services.performance_library_service import performance_library_service
 from app.services.template_store import resolve_fallback_bid_template_file_sync
 from app.services.turbine_models import project_turbine_model
 from app.services.workspace_artifacts import business_workspace_dir, legacy_workspace_roots
@@ -1004,22 +1005,48 @@ def _business_material_index(material_scope: dict[str, Any], selected_model: dic
             if not material_id or material_id in seen:
                 continue
             seen.add(material_id)
+            folder = str(raw.get("folderPath") or "")
+            name = str(raw.get("name") or "")
             items.append(
                 {
                     "id": material_id,
-                    "name": str(raw.get("name") or ""),
-                    "folderPath": str(raw.get("folderPath") or ""),
+                    "materialId": material_id,
+                    "name": name,
+                    "fileName": str(raw.get("fileName") or name),
+                    "folderPath": folder,
+                    "path": str(raw.get("path") or "/".join(part for part in (folder, name) if part)),
                     "materialTier": str(raw.get("materialTier") or scope.get("materialTier") or ""),
+                    "libraryScope": str(raw.get("materialTier") or scope.get("materialTier") or ""),
                     "businessMaterialKind": str(raw.get("businessMaterialKind") or ""),
                     "businessMaterialKindLabel": str(raw.get("businessMaterialKindLabel") or ""),
+                    "sourceType": str(raw.get("sourceType") or "material_library"),
+                    "candidateType": str(raw.get("candidateType") or "raw_material"),
                     "hasCleanedWord": bool(raw.get("hasCleanedWord")),
                     "cleanedFileName": str(raw.get("cleanedFileName") or ""),
                     "cleanStatus": str(raw.get("cleanStatus") or ""),
                     "size": int(raw.get("size") or raw.get("sizeBytes") or 0),
                     "turbineModelLabel": str(raw.get("turbineModelLabel") or ""),
+                    "tags": [str(tag) for tag in raw.get("tags") or [] if str(tag).strip()],
+                    "keywords": [str(keyword) for keyword in raw.get("keywords") or [] if str(keyword).strip()],
+                    "summary": str(raw.get("summary") or ""),
+                    "businessCategory": str(raw.get("businessCategory") or raw.get("business_category") or ""),
+                    "documentType": str(raw.get("documentType") or raw.get("document_type") or ""),
+                    "reviewStatus": str(raw.get("reviewStatus") or ""),
                     "updatedAt": str(raw.get("updatedAt") or ""),
                 }
             )
+    try:
+        performance_candidates = _run_async(performance_library_service.list_match_candidates(material_scope, limit=300))
+    except Exception:
+        performance_candidates = []
+    for candidate in performance_candidates:
+        if not isinstance(candidate, dict):
+            continue
+        material_id = str(candidate.get("id") or candidate.get("materialId") or "")
+        if not material_id or material_id in seen:
+            continue
+        seen.add(material_id)
+        items.append(candidate)
     return items
 
 

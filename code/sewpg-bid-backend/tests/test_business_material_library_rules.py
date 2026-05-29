@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import unittest
+from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from app.services.bid_type import BUSINESS_BID_TYPE, GENERAL_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.material_store import material_store
@@ -66,6 +69,58 @@ from app.services.material_wiki_attachment_operations import wiki_doc_matches_bi
 from app.services.material_wiki_tree import build_wiki_tree_context
 from app.services.material_wiki_scope import wiki_node_bid_types, wiki_root_bid_type, wiki_root_visible_for_bid_type
 from app.services.peripheral import PeripheralError
+
+
+class _FakePerformanceResult:
+    def __init__(self, row: dict | None = None, *, rows: list[dict] | None = None, scalar: int | None = None) -> None:
+        self.row = row
+        self.rows = rows
+        self.scalar = scalar
+
+    def first(self):
+        if self.row is None:
+            return None
+        return SimpleNamespace(_mapping=self.row)
+
+    def scalar_one(self):
+        return self.scalar if self.scalar is not None else 0
+
+    def __iter__(self):
+        return iter([SimpleNamespace(_mapping=row) for row in (self.rows if self.rows is not None else [])])
+
+
+class _FakePerformanceSession:
+    def __init__(
+        self,
+        row: dict | None = None,
+        *,
+        rows: list[dict] | None = None,
+        scalar: int | None = None,
+        results: list[_FakePerformanceResult] | None = None,
+    ) -> None:
+        self.row = row
+        self.rows = rows
+        self.scalar = scalar
+        self.results = list(results or [])
+        self.statements: list[str] = []
+        self.params: list[dict] = []
+        self.committed = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def execute(self, statement, params=None):
+        self.statements.append(str(statement))
+        self.params.append(dict(params or {}))
+        if self.results:
+            return self.results.pop(0)
+        return _FakePerformanceResult(self.row, rows=self.rows, scalar=self.scalar)
+
+    async def commit(self):
+        self.committed = True
 
 
 class BusinessMaterialLibraryRulesTests(unittest.TestCase):
@@ -169,6 +224,7 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
 
     def test_material_tags_normalize_arrays_json_and_delimited_text(self) -> None:
         self.assertEqual(normalize_material_tags(["资质", " 资质 ", "承诺函"]), ["资质", "承诺函"])
+        self.assertEqual(normalize_material_tags(["资质，承诺函", "授权书;报价"]), ["资质", "承诺函", "授权书", "报价"])
         self.assertEqual(normalize_material_tags('["报价", "商务附件", "报价"]'), ["报价", "商务附件"])
         self.assertEqual(normalize_material_tags("业绩，资格; 授权书\n承诺函"), ["业绩", "资格", "授权书", "承诺函"])
 
@@ -699,6 +755,226 @@ class RawMaterialProtectedFolderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(context.exception.code, "RAW_FOLDER_DELETE_PROTECTED")
 
         self.assertFalse(is_raw_material_protected_folder_path("商务标/客户素材/华能集团/临时目录"))
+
+
+class BusinessPerformanceLibraryTests(unittest.IsolatedAsyncioTestCase):
+    def _performance_row(self, **overrides) -> dict:
+        row = {
+            "id": 7,
+            "name": "华能风电业绩",
+            "customer_name": "华能集团",
+            "project_type": "风电项目",
+            "scale": "100MW",
+            "location": "内蒙古",
+            "started_at": "2024-01",
+            "completed_at": "2024-12",
+            "amount": "1200万",
+            "turbine_model": "EW6.25",
+            "tags": ["业绩"],
+            "applicable_bid_types": ["商务标"],
+            "scope": "customer",
+            "word_object_key": "performance/PERF-0007/业绩.docx",
+            "word_file_name": "业绩.docx",
+            "word_size_bytes": 128,
+            "word_mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "cleaned_object_key": "",
+            "review_status": "reviewed",
+            "created_at": None,
+            "updated_at": None,
+        }
+        row.update(overrides)
+        return row
+
+    async def test_performance_list_filters_disabled_records_by_default(self) -> None:
+        from app.services.performance_library_service import PerformanceLibraryService
+
+        session = _FakePerformanceSession(
+            results=[
+                _FakePerformanceResult(scalar=1),
+                _FakePerformanceResult(rows=[self._performance_row()]),
+            ]
+        )
+        with patch("app.services.performance_library_service.async_session", return_value=session), patch(
+            "app.services.performance_library_service.ensure_material_runtime_tables", new=AsyncMock()
+        ):
+            payload = await PerformanceLibraryService().list_records(page=1, page_size=20)
+
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["items"][0]["id"], "PERF-0007")
+        self.assertIn("review_status <> 'disabled'", session.statements[0])
+        self.assertIn("review_status <> 'disabled'", session.statements[1])
+
+    async def test_performance_create_and_update_normalize_payload_fields(self) -> None:
+        from app.services.performance_library_service import PerformanceLibraryService
+
+        service = PerformanceLibraryService()
+        create_session = _FakePerformanceSession(row=self._performance_row(tags=["业绩", "合同"], applicable_bid_types=["商务标"]))
+        update_session = _FakePerformanceSession(row=self._performance_row(tags=["业绩", "中标"], applicable_bid_types=["商务标", "技术标"]))
+        with patch("app.services.performance_library_service.ensure_material_runtime_tables", new=AsyncMock()):
+            with patch("app.services.performance_library_service.async_session", return_value=create_session):
+                created = await service.create_record(
+                    {
+                        "name": " 华能风电业绩 ",
+                        "customerName": "华能集团",
+                        "tags": "业绩，合同，业绩",
+                        "applicableBidTypes": ["商务标", "bad"],
+                        "scope": "bad-scope",
+                        "reviewStatus": "bad-status",
+                    }
+                )
+            with patch("app.services.performance_library_service.async_session", return_value=update_session):
+                updated = await service.update_record(
+                    "PERF-0007",
+                    {
+                        "tags": ["业绩", "中标", "业绩"],
+                        "applicableBidTypes": ["商务标", "技术标"],
+                        "reviewStatus": "reviewed",
+                    },
+                )
+
+        create_params = create_session.params[0]
+        update_params = update_session.params[0]
+        self.assertEqual(create_params["name"], "华能风电业绩")
+        self.assertEqual(create_params["scope"], "standard")
+        self.assertEqual(create_params["review_status"], "draft")
+        self.assertEqual(json.loads(create_params["tags"]), ["业绩", "合同"])
+        self.assertEqual(json.loads(create_params["applicable_bid_types"]), ["商务标"])
+        self.assertIn("CAST(:tags AS JSONB)", update_session.statements[0])
+        self.assertEqual(json.loads(update_params["tags"]), ["业绩", "中标"])
+        self.assertEqual(json.loads(update_params["applicable_bid_types"]), ["商务标", "技术标"])
+        self.assertEqual(created["item"]["name"], "华能风电业绩")
+        self.assertEqual(updated["item"]["reviewStatus"], "reviewed")
+
+    async def test_performance_delete_soft_disables_record_without_removing_word_object(self) -> None:
+        from app.services.performance_library_service import PerformanceLibraryService
+
+        session = _FakePerformanceSession(self._performance_row(review_status="disabled"))
+        service = PerformanceLibraryService()
+
+        with patch("app.services.performance_library_service.async_session", return_value=session), patch(
+            "app.services.performance_library_service.ensure_material_runtime_tables", new=AsyncMock()
+        ), patch("app.services.performance_library_service.minio_client.remove_object") as remove_object:
+            result = await service.delete_record("PERF-0007")
+
+        self.assertIn("停用", result["message"])
+        self.assertEqual(result["item"]["reviewStatus"], "disabled")
+        self.assertTrue(session.committed)
+        self.assertIn("UPDATE performance_records", session.statements[0])
+        self.assertIn("review_status = 'disabled'", session.statements[0])
+        self.assertNotIn("DELETE FROM performance_records", session.statements[0])
+        remove_object.assert_not_called()
+
+    async def test_performance_word_upload_and_download_use_minio_payload(self) -> None:
+        from app.services.performance_library_service import PerformanceLibraryService
+
+        service = PerformanceLibraryService()
+        upload = SimpleNamespace(
+            filename='华能/业绩?.docx',
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            file=BytesIO(b"docx-bytes"),
+        )
+        upload_session = _FakePerformanceSession(row=self._performance_row(word_file_name="华能-业绩-.docx", word_size_bytes=10))
+
+        with patch("app.services.performance_library_service.async_session", return_value=upload_session), patch(
+            "app.services.performance_library_service.ensure_material_runtime_tables", new=AsyncMock()
+        ), patch("app.services.performance_library_service.minio_client.put_object_stream") as put_object:
+            result = await service.upload_word("PERF-0007", upload)
+
+        put_object.assert_called_once()
+        _bucket, object_key, _stream, size = put_object.call_args.args[:4]
+        self.assertEqual(object_key, "performance/PERF-0007/华能-业绩-.docx")
+        self.assertEqual(size, 10)
+        self.assertEqual(upload_session.params[0]["word_file_name"], "华能-业绩-.docx")
+        self.assertEqual(result["item"]["wordFileName"], "华能-业绩-.docx")
+
+        with patch.object(service, "get_record", AsyncMock(return_value=result["item"])):
+            payload = await service.download_word("PERF-0007")
+
+        self.assertEqual(payload["key"], "performance/PERF-0007/业绩.docx")
+        self.assertEqual(payload["fileName"], "华能-业绩-.docx")
+
+    async def test_performance_match_candidates_filter_scope_and_shape_materials(self) -> None:
+        from app.services.performance_library_service import PerformanceLibraryService
+
+        rows = [
+            self._performance_row(id=1, scope="standard", customer_name="平台标准", name="平台标准供货业绩"),
+            self._performance_row(id=2, scope="customer", customer_name="华能集团", name="华能集团供货业绩"),
+            self._performance_row(id=3, scope="customer", customer_name="大唐集团", name="大唐集团供货业绩"),
+            self._performance_row(id=4, scope="project", customer_name="华能集团", name="MAT-001 项目供货业绩"),
+            self._performance_row(id=5, scope="project", customer_name="华能集团", name="其他项目业绩"),
+        ]
+        session = _FakePerformanceSession(rows=rows)
+        scope = {
+            "identity": {"customerCanonicalName": "华能集团", "projectId": "MAT-001"},
+            "readableScopes": [
+                {"customerName": "华能集团"},
+                {"projectId": "MAT-001"},
+            ],
+        }
+
+        with patch("app.services.performance_library_service.async_session", return_value=session), patch(
+            "app.services.performance_library_service.ensure_material_runtime_tables", new=AsyncMock()
+        ):
+            items = await PerformanceLibraryService().list_match_candidates(scope, limit=10)
+
+        self.assertEqual([item["id"] for item in items], ["PERF-0001", "PERF-0002", "PERF-0004"])
+        self.assertTrue(all(item["sourceType"] == "performance_library" for item in items))
+        self.assertEqual(items[1]["businessMaterialKindLabel"], "共用业绩")
+        self.assertIn("华能集团", items[1]["summary"])
+        self.assertIn("业绩证明", items[1]["keywords"])
+        self.assertIn("review_status <> 'disabled'", session.statements[0])
+
+    async def test_business_material_index_includes_performance_candidates(self) -> None:
+        from app.services import business_gap_planning
+
+        material_scope = {
+            "bidType": "商务标",
+            "identity": {"customerCanonicalName": "华能集团", "projectId": "MAT-001"},
+            "readableScopes": [{"path": "商务标/通用素材", "materialTier": "standard"}],
+        }
+        performance_candidate = {
+            "id": "PERF-0008",
+            "materialId": "PERF-0008",
+            "name": "华能风电供货业绩",
+            "folderPath": "商务标/共用业绩库/华能集团",
+            "materialTier": "customer",
+            "sourceType": "performance_library",
+            "candidateType": "performance_record",
+            "businessMaterialKind": "performance",
+            "businessMaterialKindLabel": "共用业绩",
+            "cleanStatus": "original_only",
+            "tags": ["业绩"],
+            "summary": "华能集团；风电供货；合同",
+        }
+
+        async def fake_raw_files(**_kwargs):
+            return {
+                "items": [
+                    {
+                        "id": "RAW-0001",
+                        "name": "授权书.docx",
+                        "folderPath": "商务标/通用素材/01-资质合规库",
+                        "materialTier": "standard",
+                        "tags": ["授权"],
+                    }
+                ]
+            }
+
+        async def fake_performance_candidates(scope, *, limit=300):
+            self.assertEqual(scope, material_scope)
+            self.assertEqual(limit, 300)
+            return [performance_candidate]
+
+        with patch.object(business_gap_planning.business_material_store, "raw_files", side_effect=fake_raw_files), patch.object(
+            business_gap_planning.performance_library_service,
+            "list_match_candidates",
+            side_effect=fake_performance_candidates,
+        ):
+            items = business_gap_planning._business_material_index(material_scope, {})
+
+        self.assertEqual([item["id"] for item in items], ["RAW-0001", "PERF-0008"])
+        self.assertEqual(items[1]["sourceType"], "performance_library")
+        self.assertEqual(items[1]["businessMaterialKindLabel"], "共用业绩")
 
 
 if __name__ == "__main__":

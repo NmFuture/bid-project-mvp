@@ -48,6 +48,19 @@ const normalizeTags = (value) => {
 
 const tagsText = (value) => normalizeTags(value).join('，')
 
+const scopeLabel = (value) => SCOPE_OPTIONS.find((item) => item.value === value)?.label || '通用'
+const reviewStatusLabel = (value) => STATUS_OPTIONS.find((item) => item.value === value)?.label || '草稿'
+
+const compactParts = (...parts) =>
+  parts.map((part) => String(part || '').trim()).filter(Boolean).join(' · ')
+
+const dateRangeLabel = (startedAt, completedAt) => {
+  const start = String(startedAt || '').trim()
+  const end = String(completedAt || '').trim()
+  if (start && end) return `${start} 至 ${end}`
+  return start || end || ''
+}
+
 const sizeLabel = (bytes) => {
   const value = Number(bytes || 0)
   if (!value) return ''
@@ -88,7 +101,10 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
   }, [query, showToast])
 
   useEffect(() => {
-    loadRecords()
+    const timer = setTimeout(() => {
+      loadRecords()
+    }, 0)
+    return () => clearTimeout(timer)
   }, [loadRecords])
 
   const openCreate = () => {
@@ -161,14 +177,14 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
     }
   }
 
-  const deleteRecord = async (item) => {
-    if (!window.confirm(`确认删除业绩：${item.name || item.id}？`)) return
+  const disableRecord = async (item) => {
+    if (!window.confirm(`确认停用业绩：${item.name || item.id}？`)) return
     try {
       const result = await businessMaterialsAPI.performance.delete(item.id)
-      showToast(result?.message || '业绩记录已删除')
+      showToast(result?.message || '业绩记录已停用')
       await loadRecords()
     } catch (error) {
-      showToast(error?.message || '业绩记录删除失败', 'error')
+      showToast(error?.message || '业绩记录停用失败', 'error')
     }
   }
 
@@ -220,7 +236,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
 
         <section className="rounded-lg border border-surface-container-high bg-surface-container-lowest p-3">
           <div className="grid gap-2 md:grid-cols-4">
-            <input value={filters.keyword} onChange={(e) => updateFilter('keyword', e.target.value)} placeholder="搜索业绩/客户/类型" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
+            <input value={filters.keyword} onChange={(e) => updateFilter('keyword', e.target.value)} placeholder="搜索业绩/客户/机型/规模" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
             <input value={filters.customerName} onChange={(e) => updateFilter('customerName', e.target.value)} placeholder="客户名称" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
             <input value={filters.tag} onChange={(e) => updateFilter('tag', e.target.value)} placeholder="标签" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
             <select value={filters.bidType} onChange={(e) => updateFilter('bidType', e.target.value)} className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm">
@@ -236,56 +252,70 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
           ) : !items.length ? (
             <div className="p-6 text-sm text-on-surface-variant">暂无业绩记录</div>
           ) : (
-            <table className="w-full min-w-[960px] text-left text-sm">
+            <table className="w-full min-w-[1080px] text-left text-sm">
               <thead className="sticky top-0 bg-surface-container-low text-xs text-on-surface-variant">
                 <tr>
                   <th className="px-3 py-2">业绩</th>
-                  <th className="px-3 py-2">客户</th>
-                  <th className="px-3 py-2">类型/金额</th>
+                  <th className="px-3 py-2">客户/范围</th>
+                  <th className="px-3 py-2">机型</th>
+                  <th className="px-3 py-2">规模/地点/时间</th>
                   <th className="px-3 py-2">标签</th>
-                  <th className="px-3 py-2">适用标类</th>
-                  <th className="px-3 py-2">Word</th>
+                  <th className="px-3 py-2">证明文件</th>
                   <th className="px-3 py-2 text-right">操作</th>
                 </tr>
               </thead>
               <tbody>
-                {items.map((item) => (
-                  <tr key={item.id} className="border-t border-surface-container-high">
-                    <td className="px-3 py-3">
-                      <div className="font-semibold text-on-surface">{item.name || '-'}</div>
-                      <div className="mt-1 text-xs text-outline">{item.location || '-'} · {item.startedAt || '-'} 至 {item.completedAt || '-'}</div>
-                    </td>
-                    <td className="px-3 py-3">{item.customerName || '-'}</td>
-                    <td className="px-3 py-3">
-                      <div>{item.projectType || '-'}</div>
-                      <div className="mt-1 text-xs text-outline">{item.amount || item.scale || '-'}</div>
-                    </td>
-                    <td className="px-3 py-3">
-                      <div className="flex max-w-[220px] flex-wrap gap-1">
-                        {normalizeTags(item.tags).map((tag) => (
-                          <span key={tag} className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">{tag}</span>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="px-3 py-3">{(item.applicableBidTypes || []).join('、') || '-'}</td>
-                    <td className="px-3 py-3">
-                      {item.wordObjectKey ? (
-                        <a className="text-primary hover:underline" href={businessMaterialsAPI.performance.wordUrl(item.id)} target="_blank" rel="noreferrer">
-                          {item.wordFileName || '下载 Word'} {sizeLabel(item.wordSizeBytes)}
-                        </a>
-                      ) : (
-                        <span className="text-outline">未上传</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-3">
-                      <div className="flex justify-end gap-2">
-                        <button onClick={() => openEdit(item)} className="rounded-md bg-surface-container-high px-2.5 py-1.5 text-xs hover:bg-surface-dim">编辑</button>
-                        <button onClick={() => chooseWordFile(item)} className="rounded-md bg-primary/10 px-2.5 py-1.5 text-xs text-primary hover:bg-primary/15">上传 Word</button>
-                        <button onClick={() => deleteRecord(item)} className="rounded-md bg-error-container/40 px-2.5 py-1.5 text-xs text-error hover:bg-error-container">删除</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {items.map((item) => {
+                  const itemTags = normalizeTags(item.tags)
+                  const bidTypes = item.applicableBidTypes || []
+                  const detailLine = compactParts(item.projectType, item.amount)
+                  const rangeLine = compactParts(scopeLabel(item.scope), reviewStatusLabel(item.reviewStatus), bidTypes.join('、'))
+                  const deliveryLine = compactParts(item.scale, item.location, dateRangeLabel(item.startedAt, item.completedAt))
+                  return (
+                    <tr key={item.id} className="border-t border-surface-container-high align-top">
+                      <td className="px-3 py-3">
+                        <div className="max-w-[15rem] font-semibold text-on-surface">{item.name || '-'}</div>
+                        <div className="mt-1 text-xs text-outline">{detailLine || item.id}</div>
+                      </td>
+                      <td className="px-3 py-3">
+                        <div>{item.customerName || '-'}</div>
+                        <div className="mt-1 text-xs text-outline">{rangeLine || '-'}</div>
+                      </td>
+                      <td className="px-3 py-3">
+                        <span className="inline-flex rounded-full bg-secondary-container px-2 py-0.5 text-xs font-semibold text-on-secondary-container">
+                          {item.turbineModel || '未填写机型'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="max-w-[18rem] text-on-surface-variant">{deliveryLine || '-'}</div>
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="flex max-w-[220px] flex-wrap gap-1">
+                          {itemTags.length ? itemTags.map((tag) => (
+                            <span key={tag} className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">{tag}</span>
+                          )) : <span className="text-outline">-</span>}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3">
+                        {item.wordObjectKey ? (
+                          <a className="inline-flex max-w-[15rem] flex-col text-primary hover:underline" href={businessMaterialsAPI.performance.wordUrl(item.id)} target="_blank" rel="noreferrer">
+                            <span className="truncate">{item.wordFileName || '下载 Word'}</span>
+                            <span className="text-xs text-outline">{sizeLabel(item.wordSizeBytes) || 'Word 证明'}</span>
+                          </a>
+                        ) : (
+                          <span className="text-outline">未上传</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="flex justify-end gap-2">
+                          <button onClick={() => openEdit(item)} className="rounded-md bg-surface-container-high px-2.5 py-1.5 text-xs hover:bg-surface-dim">编辑</button>
+                          <button onClick={() => chooseWordFile(item)} className="rounded-md bg-primary/10 px-2.5 py-1.5 text-xs text-primary hover:bg-primary/15">上传 Word</button>
+                          <button onClick={() => disableRecord(item)} className="rounded-md bg-error-container/40 px-2.5 py-1.5 text-xs text-error hover:bg-error-container">停用</button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           )}

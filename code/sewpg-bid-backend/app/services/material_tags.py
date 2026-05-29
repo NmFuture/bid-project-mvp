@@ -32,7 +32,10 @@ def _coerce_tag_values(value: Any) -> list[Any]:
     if value is None:
         return []
     if isinstance(value, (list, tuple, set)):
-        return list(value)
+        values: list[Any] = []
+        for item in value:
+            values.extend(_coerce_tag_values(item))
+        return values
     if isinstance(value, str):
         text = value.strip()
         if not text:

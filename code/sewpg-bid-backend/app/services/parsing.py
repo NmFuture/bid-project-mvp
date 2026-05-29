@@ -31,7 +31,7 @@ from app.services.parse_profiles import (
 from app.services.peripheral import PeripheralError
 
 PARSER_CORE_DIR = (
-    Path(__file__).resolve().parents[2] / "opencode" / "skill" / TECHNICAL_PARSE_SKILL_NAME / "scripts"
+    Path(__file__).resolve().parents[2] / "opencode" / "skills" / TECHNICAL_PARSE_SKILL_NAME / "scripts"
 )
 if str(PARSER_CORE_DIR) not in sys.path:
     sys.path.insert(0, str(PARSER_CORE_DIR))

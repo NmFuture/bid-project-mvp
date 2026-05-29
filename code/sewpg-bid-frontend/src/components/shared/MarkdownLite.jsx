@@ -16,46 +16,94 @@ function parseMarkdownLite(content = '') {
     listItems = []
   }
 
-  lines.forEach((rawLine) => {
+  const flushInlineBlocks = () => {
+    flushParagraph()
+    flushList()
+  }
+
+  const parseTableRow = (line) => {
+    const normalized = line.trim().replace(/^\|/, '').replace(/\|$/, '')
+    return normalized.split('|').map((cell) => cell.trim())
+  }
+
+  const isTableSeparator = (line) => {
+    const cells = parseTableRow(line)
+    return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell))
+  }
+
+  const isTableStart = (index) => {
+    const current = lines[index]?.trim()
+    const next = lines[index + 1]?.trim()
+    return Boolean(
+      current
+      && next
+      && current.includes('|')
+      && next.includes('|')
+      && isTableSeparator(next),
+    )
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index]
     const line = rawLine.trimEnd()
     const trimmed = line.trim()
 
     if (!trimmed) {
       flushParagraph()
       flushList()
-      return
+      continue
+    }
+
+    if (isTableStart(index)) {
+      flushInlineBlocks()
+      const headers = parseTableRow(trimmed)
+      const rows = []
+      index += 2
+      while (index < lines.length) {
+        const rowLine = lines[index].trim()
+        if (!rowLine || !rowLine.includes('|')) {
+          index -= 1
+          break
+        }
+        const cells = parseTableRow(rowLine)
+        rows.push(headers.map((_, cellIndex) => cells[cellIndex] || ''))
+        index += 1
+      }
+      if (index >= lines.length) index -= 1
+      blocks.push({ type: 'table', headers, rows })
+      continue
     }
 
     if (trimmed.startsWith('# ')) {
       flushParagraph()
       flushList()
       blocks.push({ type: 'h1', text: trimmed.slice(2).trim() })
-      return
+      continue
     }
 
     if (trimmed.startsWith('## ')) {
       flushParagraph()
       flushList()
       blocks.push({ type: 'h2', text: trimmed.slice(3).trim() })
-      return
+      continue
     }
 
     if (trimmed.startsWith('### ')) {
       flushParagraph()
       flushList()
       blocks.push({ type: 'h3', text: trimmed.slice(4).trim() })
-      return
+      continue
     }
 
     if (trimmed.startsWith('- ')) {
       flushParagraph()
       listItems.push(trimmed.slice(2).trim())
-      return
+      continue
     }
 
     flushList()
     paragraph.push(trimmed)
-  })
+  }
 
   flushParagraph()
   flushList()
@@ -101,9 +149,44 @@ export default function MarkdownLite({ content = '' }) {
             </ul>
           )
         }
+        if (block.type === 'table') {
+          return (
+            <div key={index} className="overflow-x-auto rounded-lg border border-surface-container-high">
+              <table className="w-full min-w-[640px] text-left text-sm">
+                <thead>
+                  <tr>
+                    {block.headers.map((header, headerIndex) => (
+                      <th key={headerIndex} className="px-3 py-2 align-top">
+                        {header}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {block.rows.length > 0 ? (
+                    block.rows.map((row, rowIndex) => (
+                      <tr key={rowIndex}>
+                        {row.map((cell, cellIndex) => (
+                          <td key={cellIndex} className="px-3 py-2 align-top">
+                            {cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td className="px-3 py-2 text-outline" colSpan={block.headers.length}>
+                        暂无数据
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )
+        }
         return <p key={index}>{block.text}</p>
       })}
     </div>
   )
 }
-

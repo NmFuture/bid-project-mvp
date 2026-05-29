@@ -18,6 +18,8 @@ async def raw_files_operation(
     customer_name: str = "",
     material_tier: str = "",
     clean_status: str = "",
+    business_material_kind: str = "",
+    tag: str = "",
     keyword: str = "",
     recursive: bool = True,
     page: int = 1,
@@ -36,8 +38,6 @@ async def raw_files_operation(
                 )
             else:
                 stmt = stmt.join(RawFolder).where(RawFolder.path == normalized_folder_path)
-        if keyword:
-            stmt = stmt.where(RawFile.name.ilike(f"%{keyword}%"))
         stmt = stmt.order_by(desc(RawFile.updated_at))
         result = await session.execute(stmt)
         items = result.scalars().all()
@@ -49,6 +49,9 @@ async def raw_files_operation(
             bid_type=bid_type,
             material_tier=material_tier,
             clean_status=clean_status,
+            business_material_kind=business_material_kind,
+            tag=tag,
+            keyword=keyword,
             page=page,
             page_size=page_size,
         )
