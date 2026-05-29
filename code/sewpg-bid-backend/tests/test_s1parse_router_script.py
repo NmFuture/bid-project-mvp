@@ -133,10 +133,14 @@ class S1ParseRouterScriptTests(unittest.TestCase):
             self.assertEqual(summary["schemaVersion"], "bid-business-tender-structured-v1")
             self.assertEqual(structured["schemaVersion"], "bid-business-tender-structured-v1")
             self.assertEqual(structured["targetSkill"], "bid-business-tender-structured-parser")
-            self.assertEqual(
-                list(structured["fieldGroups"].keys()),
-                ["projectBasics", "businessResponse", "qualificationSupport", "commitmentRequirements"],
-            )
+            field_group_keys = list(structured["fieldGroups"].keys())
+            self.assertIn("projectBasics", field_group_keys)
+            self.assertIn("businessResponse", field_group_keys)
+            self.assertIn("qualificationSupport", field_group_keys)
+            self.assertIn("commitmentRequirements", field_group_keys)
+            self.assertIn("qualificationRequirements", field_group_keys)
+            self.assertIn("bidderInstructions", field_group_keys)
+            self.assertIn("commercialRejectionClauses", field_group_keys)
             self.assertEqual(len(structured["commitmentLetters"]), 3)
             self.assertEqual(structured["commitmentLetters"][0]["title"], "供货能力承诺函")
             self.assertEqual(structured["commitmentLetters"][1]["title"], "保密承诺书")

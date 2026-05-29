@@ -1,6 +1,6 @@
 ---
 name: bid-business-tender-structured-parser
-description: Parse one or more business tender documents into business-specific structured requirements, scoring tables, response fields, qualification support, commitment letters, and source evidence.
+description: Parse one or more business tender documents into business-specific structured requirements, core review fields, bidder instruction table rows, commercial rejection clauses, scoring tables, commitment letters, and source evidence.
 ---
 
 # Bid Business Tender Structured Parser
@@ -21,9 +21,12 @@ The full output JSON must preserve:
 
 - `structured.sourceDocuments[]` with `id`, `name`, `role`, and text length.
 - `structured.scoringCriteria` split into `business`, `price`, and `compliance`.
-- `structured.fieldGroups.projectBasics` for project name, tender number, tenderer, management unit, bid section scale, delivery period, and warranty period.
+- `structured.fieldGroups.projectBasics` for `projectName`, `tenderNo`, `tenderer`, `tenderAgency`, and `bidDeadline`. Prefer cover table and bidder instruction preface table over generic full-text matches; do not use reference-only values such as `见投标人须知前附表` as final values.
 - `structured.fieldGroups.businessResponse` for bid letter, authorization letter, integrity commitment, seal validity statement, price/specification/deviation/supply-scope tables, bid security, performance bond commitment, and attachment-9 requirements.
 - `structured.fieldGroups.qualificationSupport` for qualification, performance, financial, credit, certification, and customer-specific proof requirements.
+- `structured.fieldGroups.qualificationRequirements[]` as concise bidder qualification requirement rows, reusing existing qualification support evidence where possible.
+- `structured.fieldGroups.bidderInstructions[]` as row-level records extracted from the `投标人须知前附表` table, with `clauseNo`, `clauseName`, `content`, and source evidence.
+- `structured.fieldGroups.commercialRejectionClauses[]` as row-level commercial rejection/disqualification clauses matching `否决`, `废标`, `无效投标`, `不予受理`, `★`, `实质性响应`, `投标人不得存在`, or `不得存在下列情形`.
 - `structured.fieldGroups.commitmentRequirements` for commitment count, disqualification commitment, other-commitment section, and commitment-generation basis.
 - `structured.requirementPresence` for qualification documents, performance documents, deviation response, bid security, other commitments, and disqualification clauses.
 - `structured.commitmentLetters[]` with commitment type, trigger evidence, placement hint, and preview metadata.

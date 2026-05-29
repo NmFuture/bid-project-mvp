@@ -119,10 +119,13 @@ print(json.dumps({
         self.assertEqual(response["targetSkill"], "bid-business-tender-structured-parser")
         self.assertEqual(payload["schemaVersion"], "bid-business-tender-structured-v1")
         self.assertEqual(payload["targetSkill"], "bid-business-tender-structured-parser")
-        self.assertEqual(
-            payload["fieldGroupKeys"],
-            ["projectBasics", "businessResponse", "qualificationSupport", "commitmentRequirements"],
-        )
+        self.assertIn("projectBasics", payload["fieldGroupKeys"])
+        self.assertIn("businessResponse", payload["fieldGroupKeys"])
+        self.assertIn("qualificationSupport", payload["fieldGroupKeys"])
+        self.assertIn("commitmentRequirements", payload["fieldGroupKeys"])
+        self.assertIn("qualificationRequirements", payload["fieldGroupKeys"])
+        self.assertIn("bidderInstructions", payload["fieldGroupKeys"])
+        self.assertIn("commercialRejectionClauses", payload["fieldGroupKeys"])
         self.assertEqual(set(payload["scoringCounts"].keys()), {"business", "price", "compliance"})
         self.assertGreaterEqual(payload["scoringCounts"]["business"], 1)
         self.assertEqual(payload["commitmentLetterCount"], 1)

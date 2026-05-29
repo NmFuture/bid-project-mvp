@@ -4,6 +4,7 @@ import copy
 import re
 import sys
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,11 @@ TECHNICAL_PARSER_DIR = CURRENT.parents[2] / "bid-tech-tender-structured-parser" 
 if str(TECHNICAL_PARSER_DIR) not in sys.path:
     sys.path.insert(0, str(TECHNICAL_PARSER_DIR))
 
-from parser_core import parse_manifest as parse_technical_manifest  # type: ignore[import-not-found]
+from parser_core import (  # type: ignore[import-not-found]
+    _iter_docx_blocks,
+    extract_docx_text,
+    parse_manifest as parse_technical_manifest,
+)
 
 
 SKILL_NAME = "bid-business-tender-structured-parser"
@@ -31,13 +36,11 @@ class FieldSpec:
 
 
 PROJECT_BASIC_FIELDS: tuple[FieldSpec, ...] = (
-    FieldSpec("projectName", "项目名称", ("项目名称",)),
+    FieldSpec("projectName", "项目名称", ("项目名称", "招标项目名称")),
     FieldSpec("tenderNo", "招标编号", ("招标编号", "项目编号", "招标文件编号")),
     FieldSpec("tenderer", "招标人", ("招标人", "业主", "建设单位", "项目单位")),
-    FieldSpec("managementUnit", "管理单位", ("管理单位",)),
-    FieldSpec("bidSectionScale", "标段规模", ("标段规模", "招标规模", "建设规模", "项目规模", "总装机容量")),
-    FieldSpec("deliveryPeriod", "交货周期", ("交货周期", "交货期", "交货进度", "供货周期")),
-    FieldSpec("warrantyPeriod", "质保期", ("质保期", "质量保证期", "质保")),
+    FieldSpec("tenderAgency", "招标代理机构", ("招标代理机构", "代理机构")),
+    FieldSpec("bidDeadline", "递交截止时间", ("递交截止时间", "投标截止时间", "投标文件递交截止时间", "开标时间")),
 )
 
 BUSINESS_RESPONSE_FIELDS: tuple[FieldSpec, ...] = (
@@ -71,6 +74,17 @@ COMMITMENT_REQUIREMENT_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("disqualificationCommitmentRequired", "不得存在下列情形承诺要求", ("不得存在下列情形", "不得存在下列情形之一")),
     FieldSpec("otherCommitmentSectionRequired", "其他承诺章节要求", ("投标人需要说明的其他内容", "其他内容", "其他承诺")),
     FieldSpec("commitmentGenerationBasis", "承诺文件生成依据", ("承诺函", "承诺书", "不得存在下列情形")),
+)
+
+COMMERCIAL_REJECTION_KEYWORDS = (
+    "否决",
+    "废标",
+    "无效投标",
+    "不予受理",
+    "★",
+    "实质性响应",
+    "投标人不得存在",
+    "不得存在下列情形",
 )
 
 
@@ -107,6 +121,8 @@ def _load_texts_by_id(documents: list[dict[str, Any]]) -> dict[str, str]:
             source_path = Path(source_path_value)
             if source_path.suffix.lower() in {".md", ".txt"} and source_path.exists() and source_path.is_file():
                 text = source_path.read_text(encoding="utf-8", errors="replace")
+            elif source_path.suffix.lower() == ".docx" and source_path.exists() and source_path.is_file():
+                text = extract_docx_text(source_path)
         texts_by_id[document_id] = text
     return texts_by_id
 
@@ -155,11 +171,135 @@ def _find_business_item(items: list[dict[str, Any]], spec: FieldSpec) -> dict[st
     return None
 
 
-def _build_business_project_basics(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _is_reference_only_value(value: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(value or ""))
+    if not normalized:
+        return False
+    return normalized in {
+        "见投标人须知前附表",
+        "详见招标公告",
+        "详见技术规范书",
+        "详见招标文件",
+        "按招标文件要求",
+    } or normalized.startswith("见投标人须知前附表")
+
+
+def _block_number(location: str) -> int:
+    match = re.match(r"B(\d+)", str(location or ""))
+    return int(match.group(1)) if match else 0
+
+
+def _business_core_field_score(item: dict[str, Any], spec: FieldSpec) -> int:
+    value = str(item.get("value") or item.get("keyValue") or "").strip()
+    section = str(item.get("section") or "")
+    evidence = str(item.get("evidence") or "")
+    location = str(item.get("evidenceLocation") or "")
+    block_no = _block_number(location)
+    score = 0
+    if location.startswith("B"):
+        score += 40
+        if 0 < block_no <= 30:
+            score += 25
+    if section == "封面":
+        score += 90
+    if "投标人须知前附表" in section:
+        score += 80
+    if "招标公告" in section or "联系方式" in section:
+        score += 50
+    if _is_reference_only_value(value):
+        score -= 220
+    if re.search(r"\d{4}-\d{2}-\d{2}|20\d{2}年", value):
+        score += 30
+    if spec.key == "projectName":
+        if "项目" in value and len(value) <= 120:
+            score += 45
+        if value.endswith("招标") or "采购" in value:
+            score += 20
+    if spec.key == "tenderNo":
+        if re.search(r"[A-Z]{2,}.*\d", value):
+            score += 70
+        if value in {"招标编号", "项目编号", "招标文件编号"}:
+            score -= 100
+    if spec.key in {"tenderer", "tenderAgency"}:
+        if len(value) <= 100:
+            score += 35
+        if "：" in value or ":" in value:
+            score -= 10
+    if len(value) > 180:
+        score -= 50
+    if not value:
+        score -= 300
+    if "目录" in evidence:
+        score -= 60
+    return score
+
+
+def _normalize_bid_deadline(value: str) -> str:
+    match = re.search(r"(20\d{2})\s*(?:年|[-/.])\s*(\d{1,2})\s*(?:月|[-/.])\s*(\d{1,2})\s*日?", str(value or ""))
+    if not match:
+        return str(value or "").strip()
+    try:
+        return date(int(match.group(1)), int(match.group(2)), int(match.group(3))).isoformat()
+    except ValueError:
+        return str(value or "").strip()
+
+
+def _strip_core_party_contact_tail(value: str) -> str:
+    text = _clean(value).strip(" ：:")
+    tail_match = re.search(
+        r"\s*(?:地\s*址|联\s*系\s*人|电\s*话|电子\s*邮\s*件|邮\s*箱|传\s*真|网\s*址)\s*[：:]",
+        text,
+    )
+    if tail_match:
+        text = text[: tail_match.start()]
+    return text.strip(" ：:")
+
+
+def _normalize_core_field_value(spec: FieldSpec, value: str) -> str:
+    cleaned = _clean(value)
+    if spec.key == "bidDeadline":
+        return _normalize_bid_deadline(cleaned)
+    stripped = cleaned
+    for alias in sorted(spec.aliases, key=len, reverse=True):
+        alias_pattern = r"\s*".join(re.escape(char) for char in alias)
+        stripped_candidate = re.sub(rf"^\s*{alias_pattern}\s*[：:]\s*", "", cleaned, count=1)
+        if stripped_candidate != cleaned:
+            stripped = stripped_candidate.strip()
+            break
+    if spec.key in {"tenderer", "tenderAgency"}:
+        return _strip_core_party_contact_tail(stripped)
+    return stripped
+
+
+def _build_business_project_basics(
+    items: list[dict[str, Any]],
+    project_dates: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    project_dates = project_dates or {}
     fields: list[dict[str, Any]] = []
     for spec in PROJECT_BASIC_FIELDS:
-        matched = _find_business_item(items, spec)
-        fields.append(_business_field_from_item(spec, matched) if matched else _empty_business_field(spec))
+        if spec.key == "bidDeadline":
+            value = _normalize_bid_deadline(str(project_dates.get("endDate") or ""))
+            if value:
+                field = _empty_business_field(spec, value=value)
+                field["status"] = "found"
+                field["confidence"] = 0.78
+                fields.append(field)
+                continue
+        candidates = [
+            item
+            for item in items
+            if any(
+                alias in " ".join(str(item.get(key) or "") for key in ("title", "keyEntity", "evidence", "section"))
+                for alias in spec.aliases
+            )
+        ]
+        matched = max(candidates, key=lambda item: _business_core_field_score(item, spec)) if candidates else None
+        if matched and _business_core_field_score(matched, spec) > -50:
+            value_override = _normalize_core_field_value(spec, str(matched.get("value") or matched.get("keyValue") or ""))
+            fields.append(_business_field_from_item(spec, matched, value_override=value_override))
+        else:
+            fields.append(_empty_business_field(spec))
     return fields
 
 
@@ -175,6 +315,226 @@ def _build_qualification_support_fields(items: list[dict[str, Any]]) -> list[dic
         _business_field_from_item(spec, matched) if (matched := _find_business_item(items, spec)) else _empty_business_field(spec)
         for spec in QUALIFICATION_SUPPORT_FIELDS
     ]
+
+
+def _new_docx_candidate_item(
+    items: list[dict[str, Any]],
+    *,
+    document: dict[str, Any],
+    label: str,
+    value: str,
+    section: str,
+    evidence: str,
+    location: str,
+    confidence: float = 0.86,
+) -> None:
+    cleaned_label = _clean(label)
+    cleaned_value = _clean(value)
+    if not cleaned_label or not cleaned_value:
+        return
+    items.append(
+        {
+            "id": f"DOCX-{len(items) + 1:04d}",
+            "type": "商务核心字段候选",
+            "category": "business_core_candidate",
+            "title": cleaned_label,
+            "keyEntity": cleaned_label,
+            "keyValue": cleaned_value,
+            "value": cleaned_value,
+            "sourceFile": str(document.get("name") or document.get("id") or "招标文件"),
+            "sourceDocumentId": str(document.get("id") or ""),
+            "section": section,
+            "evidence": evidence,
+            "evidenceLocation": location,
+            "confidence": confidence,
+        }
+    )
+
+
+def _is_docx_source(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() == ".docx"
+
+
+def _extract_docx_core_candidate_items(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for document in documents:
+        source_path = Path(str(document.get("sourcePath") or ""))
+        if not _is_docx_source(source_path):
+            continue
+        blocks = _iter_docx_blocks(source_path)
+        current_section = "封面"
+        for block_index, block in enumerate(blocks, start=1):
+            if block.get("type") == "paragraph":
+                text = _clean(block.get("text"))
+                if text:
+                    current_section = text
+                continue
+            if block.get("type") != "table":
+                continue
+            rows = block.get("rows") or []
+            section = current_section or ("封面" if block_index <= 30 else "")
+            for row_index, row in enumerate(rows, start=1):
+                cells = [_clean(cell) for cell in row if _clean(cell)]
+                if len(cells) < 2:
+                    continue
+                label = cells[0].strip(" ：:")
+                value = cells[-1].strip(" ：:")
+                evidence = " | ".join(cells)
+                _new_docx_candidate_item(
+                    items,
+                    document=document,
+                    label=label,
+                    value=value,
+                    section=section,
+                    evidence=evidence,
+                    location=f"B{block_index}/R{row_index}",
+                    confidence=0.9 if block_index <= 30 or "投标人须知前附表" in section else 0.82,
+                )
+    return items
+
+
+def _looks_like_bidder_instruction_table(title: str, rows: list[list[str]]) -> bool:
+    title_text = _clean(title)
+    header_text = "".join("".join(_clean(cell) for cell in row) for row in rows[:2])
+    return "投标人须知前附表" in title_text and all(token in header_text for token in ("条款", "编列"))
+
+
+def _parse_bidder_instruction_rows(
+    rows: list[list[str]],
+    *,
+    document: dict[str, Any],
+    section: str,
+    block_index: int,
+) -> list[dict[str, Any]]:
+    cleaned_rows = [[_clean(cell) for cell in row] for row in rows if any(_clean(cell) for cell in row)]
+    if len(cleaned_rows) <= 1:
+        return []
+    header = cleaned_rows[0]
+    data_rows = cleaned_rows[1:]
+    parsed: list[dict[str, Any]] = []
+    for row_index, row in enumerate(data_rows, start=2):
+        if len(row) < 3:
+            continue
+        clause_no = row[0]
+        clause_name = row[1]
+        content = " ".join(cell for cell in row[2:] if cell).strip()
+        if not clause_no and not clause_name and not content:
+            continue
+        parsed.append(
+            {
+                "id": f"BIDDER-INST-{len(parsed) + 1:04d}",
+                "clauseNo": clause_no,
+                "clauseName": clause_name,
+                "content": content,
+                "sourceFile": str(document.get("name") or ""),
+                "sourceDocumentId": str(document.get("id") or ""),
+                "section": section,
+                "evidence": "；".join(
+                    f"{header[index]}：{cell}" if index < len(header) and header[index] else cell
+                    for index, cell in enumerate(row)
+                    if cell
+                ),
+                "evidenceLocation": f"B{block_index}/R{row_index}",
+                "confidence": 0.9,
+            }
+        )
+    return parsed
+
+
+def _extract_bidder_instruction_rows(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows_out: list[dict[str, Any]] = []
+    for document in documents:
+        source_path = Path(str(document.get("sourcePath") or ""))
+        if not _is_docx_source(source_path):
+            continue
+        blocks = _iter_docx_blocks(source_path)
+        current_section = ""
+        for block_index, block in enumerate(blocks, start=1):
+            if block.get("type") == "paragraph":
+                text = _clean(block.get("text"))
+                if text:
+                    current_section = text
+                continue
+            if block.get("type") != "table":
+                continue
+            rows = block.get("rows") or []
+            if _looks_like_bidder_instruction_table(current_section, rows):
+                rows_out.extend(
+                    _parse_bidder_instruction_rows(
+                        rows,
+                        document=document,
+                        section=current_section,
+                        block_index=block_index,
+                    )
+                )
+                break
+    return rows_out
+
+
+def _build_qualification_requirements(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    keywords = ("投标人资格要求", "资格要求", "资格能力要求", "投标人资质条件", "合格投标人", "资格审查")
+    matched: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        text = " ".join(str(item.get(key) or "") for key in ("title", "keyEntity", "value", "evidence", "section"))
+        if not any(keyword in text for keyword in keywords):
+            continue
+        content = str(item.get("value") or item.get("evidence") or "").strip()
+        if not content or content in seen:
+            continue
+        seen.add(content)
+        matched.append(
+            {
+                "id": f"QUAL-{len(matched) + 1:04d}",
+                "title": str(item.get("title") or "投标人资格要求"),
+                "content": content,
+                **_copy_meta_fields(item),
+                "confidence": float(item.get("confidence") or 0.78),
+            }
+        )
+    return matched[:12]
+
+
+def _extract_commercial_rejection_clauses(
+    documents: list[dict[str, Any]],
+    texts_by_id: dict[str, str],
+) -> list[dict[str, Any]]:
+    clauses: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for document in documents:
+        document_id = str(document.get("id") or "")
+        source_file = str(document.get("name") or document_id or "招标文件")
+        current_section = ""
+        for line_number, raw_line in enumerate(str(texts_by_id.get(document_id) or "").splitlines(), start=1):
+            line = _clean(raw_line)
+            if not line:
+                continue
+            if _looks_like_section_heading(line):
+                current_section = line
+            if not any(keyword in line for keyword in COMMERCIAL_REJECTION_KEYWORDS):
+                continue
+            if line in seen:
+                continue
+            seen.add(line)
+            matched_keywords = [keyword for keyword in COMMERCIAL_REJECTION_KEYWORDS if keyword in line]
+            clauses.append(
+                {
+                    "id": f"REJECT-{len(clauses) + 1:04d}",
+                    "title": current_section or "商务废标项",
+                    "content": line,
+                    "matchedKeywords": matched_keywords,
+                    "riskLevel": "high"
+                    if any(keyword in matched_keywords for keyword in ("否决", "废标", "无效投标", "不予受理"))
+                    else "medium",
+                    "sourceFile": source_file,
+                    "sourceDocumentId": document_id,
+                    "section": current_section,
+                    "evidence": line,
+                    "evidenceLocation": f"L{line_number}",
+                    "confidence": 0.82,
+                }
+            )
+    return clauses
 
 
 def _line_has_explicit_commitment_obligation(text: str) -> bool:
@@ -1091,13 +1451,18 @@ def build_business_result(manifest: dict[str, Any], *, mode: str = "opencode-ski
     base_items = copy.deepcopy(base_result.get("items") if isinstance(base_result.get("items"), list) else [])
     structured = copy.deepcopy(base_result.get("structured") if isinstance(base_result.get("structured"), dict) else {})
     hint_items = _scan_business_hint_items(documents, texts_by_id)
-    merged_items = [*copy.deepcopy(base_items), *hint_items]
+    docx_candidate_items = _extract_docx_core_candidate_items(documents)
+    merged_items = [*copy.deepcopy(base_items), *docx_candidate_items, *hint_items]
 
     scoring = _merge_business_scoring(structured.get("scoringCriteria") or {}, _extract_markdown_scoring(documents, texts_by_id))
+    project_dates = structured.get("projectDates") if isinstance(structured.get("projectDates"), dict) else {}
     field_groups = {
-        "projectBasics": _build_business_project_basics(merged_items),
+        "projectBasics": _build_business_project_basics(merged_items, project_dates),
         "businessResponse": _build_business_response_fields(merged_items),
         "qualificationSupport": _build_qualification_support_fields(merged_items),
+        "qualificationRequirements": _build_qualification_requirements(merged_items),
+        "bidderInstructions": _extract_bidder_instruction_rows(documents),
+        "commercialRejectionClauses": _extract_commercial_rejection_clauses(documents, texts_by_id),
         "commitmentRequirements": _build_commitment_requirement_fields(merged_items),
     }
     presence = _build_business_requirement_presence(merged_items)
@@ -1108,7 +1473,6 @@ def build_business_result(manifest: dict[str, Any], *, mode: str = "opencode-ski
         tenderer_name=_business_tenderer_name_from_fields(field_groups),
     )
     commitment_clues = _build_business_commitment_clues(merged_items)
-    project_dates = structured.get("projectDates") if isinstance(structured.get("projectDates"), dict) else {}
     project_fact_fields = _build_business_project_fact_fields(field_groups, project_dates)
 
     return {
