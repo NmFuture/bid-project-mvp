@@ -9,9 +9,12 @@ from pathlib import Path
 
 
 class S1ParseRouterScriptTests(unittest.TestCase):
-    def test_router_executes_technical_manifest(self) -> None:
+    def router_path(self) -> Path:
         backend_root = Path(__file__).resolve().parents[1]
-        router_path = backend_root / "opencode" / "skill" / "s1parse_router.py"
+        return backend_root / "opencode" / "skill" / "s1parse_router.py"
+
+    def test_router_executes_technical_manifest(self) -> None:
+        router_path = self.router_path()
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -66,8 +69,7 @@ class S1ParseRouterScriptTests(unittest.TestCase):
             self.assertEqual(payload["structured"]["targetSkill"], "bid-tech-tender-structured-parser")
 
     def test_router_executes_business_manifest(self) -> None:
-        backend_root = Path(__file__).resolve().parents[1]
-        router_path = backend_root / "opencode" / "skill" / "s1parse_router.py"
+        router_path = self.router_path()
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -146,3 +148,50 @@ class S1ParseRouterScriptTests(unittest.TestCase):
             self.assertEqual(structured["commitmentLetters"][1]["title"], "保密承诺书")
             self.assertEqual(structured["commitmentLetters"][2]["title"], "投标人不存在下列情形之一承诺函")
             self.assertEqual(len(structured.get("commitmentClues") or []), 0)
+
+    def test_business_s1parse_router_still_targets_structured_parser_when_template_extraction_path_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_dir = Path(temp)
+            combined_path = temp_dir / "combined.txt"
+            structured_path = temp_dir / "structured.json"
+            extraction_path = temp_dir / "business_template_extraction.json"
+            manifest_path = temp_dir / "s1_parse_manifest.json"
+            combined_path.write_text("第六章 投标文件格式\n商务评分 企业业绩 5分", encoding="utf-8")
+            structured_path.write_text(json.dumps({"structured": {"appendices": []}}, ensure_ascii=False), encoding="utf-8")
+            extraction_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-template-extractor-v1",
+                        "appendices": [],
+                        "summary": {"templateCount": 0},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "proj-1",
+                        "parseProfile": "business",
+                        "combinedTextPath": str(combined_path),
+                        "structuredResultPath": str(structured_path),
+                        "businessTemplateExtractionPath": str(extraction_path),
+                        "documents": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [sys.executable, str(self.router_path()), str(manifest_path)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            payload = json.loads(structured_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["structured"]["targetSkill"], "bid-business-tender-structured-parser")
+            self.assertEqual(payload["structured"]["schemaVersion"], "bid-business-tender-structured-v1")
