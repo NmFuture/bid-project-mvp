@@ -65,6 +65,7 @@ V1 只做目录结构判断，最终只输出一个 `outline.json`。
 - 顶层 `sections` 原则上保持历史商务标目录结构，不为匹配当前招标文件不稳定目录块而重排。
 - `review_items` 只记录完成目录判断后仍影响目录项存在、归属或状态的人工审核问题。
 - `required_status` 只表达该目录项在当前目录中的提交状态，只能为“必要”“可选”“待确认”。
+- `required_status` 必须由证据 scope、证据强度、节点层级、父子关系和通用商务标语义类别共同判断，不能用固定标题清单或本次样本标题写死“必要”。
 - `number` 是后续 Word 标题排版使用的编号前缀，优先从历史商务标投标文件学习并复用；历史中没有编号的标题必须保持 `number: null`，不要强行编号。
 
 ### number 学习规则
@@ -379,6 +380,14 @@ python scripts/resolve_source_text_candidates.py tender_map_inputs.json outline.
 
 发现上述问题时，不得通过删除历史目录项来让检查通过；应优先改用当前招标文件中的父项上下文、表格行/单元格、填写说明或后附材料说明作为 `source_text`。仍无法确定时，保留目录项并标为“待确认”。
 
+开发验收和回归测试必须运行质量门禁：
+
+```bash
+python scripts/outline_quality_gate.py --outline outline.json --tender-map tender_map_inputs.json --output-report outline_quality_report.json
+```
+
+质量门禁用于离线验收 `source_text` 可追溯性、目录页误用、历史 fallback reason、`required_status` 分布和性能，不是线上无限重试策略。门禁失败时应修复结构索引、证据召回或状态判定根因，不得通过降低阈值、删除目录节点或写死样本标题来掩盖问题。
+
 不要输出：
 
 - 解释文字
@@ -413,5 +422,7 @@ python scripts/resolve_source_text_candidates.py tender_map_inputs.json outline.
 19. `source_text` 是否优先来自当前招标文件？
 20. 使用历史投标文件 `source_text` 的项是否已说明原因？
 21. `required_status` 是否只使用“必要”“可选”“待确认”？
-22. 是否已通过 `scripts/validate_outline.py`？
-23. 如果已有 `tender_map_inputs.json`，是否已用 `scripts/check_source_text.py` 检查当前招标文件来源的 `source_text` 可追溯？
+22. `required_status` 是否由证据强度和通用语义类别判断，而不是固定标题清单？
+23. 是否已通过 `scripts/validate_outline.py`？
+24. 如果已有 `tender_map_inputs.json`，是否已用 `scripts/check_source_text.py` 检查当前招标文件来源的 `source_text` 可追溯？
+25. 是否已运行 `scripts/outline_quality_gate.py`，并确认质量门禁通过？

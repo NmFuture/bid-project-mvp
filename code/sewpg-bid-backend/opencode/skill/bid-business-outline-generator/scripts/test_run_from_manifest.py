@@ -1,4 +1,10 @@
+import sys
 import unittest
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 import run_from_manifest as runner
 
@@ -64,6 +70,42 @@ class BusinessOutlineRunnerMatchingTest(unittest.TestCase):
         self.assertEqual(fourth_level["number"], "7.1.1.1")
         self.assertEqual(fourth_level["level"], 4)
         self.assertEqual(fourth_level["title"], "EW10.0-220 设计认证证书")
+
+    def test_evidence_pipeline_uses_current_tender_evidence_without_changing_history_structure(self):
+        template_outline = [
+            {"number": "9", "title": "其他内容", "level": 1, "rawText": "9 其他内容"},
+            {"number": "9.1", "title": "保密承诺书", "level": 2, "rawText": "9.1 保密承诺书"},
+            {"number": "9.2", "title": "历史保留但当前无依据", "level": 2, "rawText": "9.2 历史保留但当前无依据"},
+        ]
+        tender_map_inputs = {
+            "document_name": "招标文件.docx",
+            "source_path": "C:/work/招标文件.docx",
+            "blocks": [
+                {"block_id": "b-001", "type": "paragraph", "text": "目录", "heading_path": ["目录"]},
+                {"block_id": "b-002", "type": "paragraph", "text": "保密承诺书 ........ 88", "heading_path": ["目录"]},
+                {"block_id": "b-003", "type": "paragraph", "text": "第六章 投标文件格式", "heading_path": ["第六章 投标文件格式"], "heading_level": 1},
+                {"block_id": "b-004", "type": "paragraph", "text": "附件9 保密承诺书", "heading_path": ["第六章 投标文件格式"], "heading_level": 2},
+            ],
+            "tables": [],
+            "zones": [],
+        }
+        sections = runner.outline_sections_from_template(template_outline, [])
+
+        summary = runner.enrich_outline_with_current_evidence(sections, tender_map_inputs)
+
+        self.assertEqual(summary["outline_section_count"], 3)
+        self.assertEqual(len(sections[0]["children"]), 2)
+        current = sections[0]["children"][0]
+        fallback = sections[0]["children"][1]
+        self.assertEqual(current["source_text"], "附件9 保密承诺书")
+        self.assertEqual(current["required_status"], "必要")
+        self.assertEqual(current["evidence_scope"], "format_area")
+        self.assertEqual(current["source_refs"][0]["type"], "tender")
+        self.assertEqual(current["source_refs"][0]["source_ref"]["block_id"], "b-004")
+        self.assertEqual(fallback["source_text"], "9.2 历史保留但当前无依据")
+        self.assertEqual(fallback["required_status"], "待确认")
+        self.assertEqual(fallback["evidence_scope"], "history_fallback")
+        self.assertIn("未在当前招标文件找到强证据", fallback["reason"])
 
 
 if __name__ == "__main__":

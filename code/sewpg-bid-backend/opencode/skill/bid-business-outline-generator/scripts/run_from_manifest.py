@@ -20,6 +20,9 @@ from prepare_tender_map_inputs import (
     build_zones,
     parse_checklist,
 )
+from document_structure_index import build_document_structure_index
+from resolve_source_text_candidates import make_output as build_source_text_candidates
+from status_decision import decide_required_status
 
 
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -70,6 +73,8 @@ def run_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any
     history_inputs_file = work_dir / "history_bid_outline_inputs.json"
     tender_map_inputs_file = work_dir / "tender_map_inputs.json"
     outline_file = work_dir / "outline.json"
+    document_structure_index_file = work_dir / "document_structure_index.json"
+    source_text_candidates_file = work_dir / "source_text_candidates.json"
 
     template_file = existing_path(manifest.get("templateFile"), "templateFile")
     tender_files = tender_inputs(manifest)
@@ -89,6 +94,18 @@ def run_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any
         template_outline=template_outline,
         tender_candidates=candidates,
     )
+    document_index = build_document_structure_index(tender_map_inputs)
+    document_structure_index_file.write_text(json.dumps(document_index, ensure_ascii=False, indent=2), encoding="utf-8")
+    source_candidates = enrich_outline_with_current_evidence(outline_payload.get("sections", []) or [], tender_map_inputs)
+    source_text_candidates_file.write_text(
+        json.dumps(source_candidates.get("source_text_candidates", {}), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    outline_payload["context"]["evidence_pipeline"] = {
+        "summary": "目录骨架继承历史商务标；节点 source_text 优先采用当前招标文件结构化证据，无法命中时显式 history_fallback。",
+        "document_structure_index": str(document_structure_index_file),
+        "source_text_candidates": str(source_text_candidates_file),
+    }
     outline_file.write_text(json.dumps(outline_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     summary = {
@@ -100,8 +117,11 @@ def run_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any
         "summary": {
             "history_outline_candidate_count": len(template_outline),
             "tender_candidate_count": len(candidates),
-            "outline_section_count": len(outline_payload.get("sections") or []),
+            "outline_section_count": source_candidates.get("outline_section_count", len(outline_payload.get("sections") or [])),
             "tender_file_count": len(tender_files),
+            "source_text_candidate_count": source_candidates.get("candidate_count", 0),
+            "history_fallback_count": source_candidates.get("history_fallback_count", 0),
+            "resolve_elapsed_seconds": source_candidates.get("elapsed_seconds", 0),
         },
     }
     return {"summary": summary, "review": summary}
@@ -115,9 +135,11 @@ def build_fallback_outline(
     tender_candidates: list[dict[str, Any]],
 ) -> dict[str, Any]:
     sections = outline_sections_from_template(template_outline, tender_candidates)
+    fallback_only = False
     if not sections:
         sections = outline_sections_from_tender_candidates(tender_candidates)
     if not sections:
+        fallback_only = True
         sections = [
             {
                 "id": "BIZ-FALLBACK-001",
@@ -131,6 +153,18 @@ def build_fallback_outline(
                 "children": [],
             }
         ]
+    review_items = []
+    if fallback_only:
+        review_items.append(
+            {
+                "id": "REVIEW-FALLBACK-001",
+                "message": "本目录为本地兜底结果，需要人工审核后再进入后续阶段。",
+                "source_text": "本目录由 bid-business-outline-generator 本地兜底生成，请人工确认商务标目录结构。",
+                "suggested_section_id": "BIZ-FALLBACK-001",
+                "required_status": "待确认",
+                "severity": "warning",
+            }
+        )
     return {
         "schema_version": "business_bid_outline.v1",
         "document_name": str(manifest.get("projectName") or history_inputs.get("document_name") or "商务标目录"),
@@ -149,16 +183,7 @@ def build_fallback_outline(
             }
         },
         "sections": sections,
-        "review_items": [
-            {
-                "id": "REVIEW-FALLBACK-001",
-                "message": "本目录为本地兜底结果，需要人工审核后再进入后续阶段。",
-                "source_text": "futurecode 不可用或超时时触发本地兜底目录。",
-                "suggested_section_id": None,
-                "required_status": "待确认",
-                "severity": "warning",
-            }
-        ],
+        "review_items": review_items,
     }
 
 
@@ -194,6 +219,62 @@ def outline_sections_from_template(
             roots.append(section)
         stack.append(section)
     return roots
+
+
+def iter_outline_sections(sections: list[dict[str, Any]]) -> Any:
+    for section in sections or []:
+        yield section
+        yield from iter_outline_sections(section.get("children", []) or [])
+
+
+def tender_source_ref(candidate: dict[str, Any]) -> dict[str, Any]:
+    ref = candidate.get("source_ref") if isinstance(candidate.get("source_ref"), dict) else {}
+    raw_text = str(candidate.get("source_text") or "")
+    return {
+        "type": "tender",
+        "role": "basis",
+        "fileId": "",
+        "fileName": str(ref.get("source_file") or ""),
+        "paragraphIndex": ref.get("paragraph_index"),
+        "blockId": ref.get("block_id"),
+        "tableId": ref.get("table_id"),
+        "rowIndex": ref.get("row_index"),
+        "colIndex": ref.get("col_index"),
+        "searchText": raw_text,
+        "rawText": raw_text,
+        "basisText": raw_text,
+        "reason": f"当前招标文件证据：scope={candidate.get('scope')} strength={candidate.get('evidence_strength')}",
+        "source_ref": ref,
+    }
+
+
+def enrich_outline_with_current_evidence(
+    sections: list[dict[str, Any]],
+    tender_map_inputs: dict[str, Any],
+) -> dict[str, Any]:
+    outline = {"sections": sections}
+    candidate_payload = build_source_text_candidates(tender_map_inputs, outline)
+    candidates_by_id = {str(item.get("id")): item.get("candidates", []) or [] for item in candidate_payload.get("items", []) or []}
+    for section in iter_outline_sections(sections):
+        candidates = candidates_by_id.get(str(section.get("id"))) or []
+        first = candidates[0] if candidates else {}
+        decision = decide_required_status(section, candidates)
+        section.update(decision)
+        if first and first.get("scope") != "history_fallback":
+            section["source_text"] = str(first.get("source_text") or section.get("source_text") or section.get("title") or "")
+            section["source_refs"] = [tender_source_ref(first)]
+        else:
+            section["source_text"] = str(section.get("source_text") or section.get("title") or "")
+            section["source_refs"] = []
+            section["evidence_scope"] = "history_fallback"
+            section["evidence_strength"] = "fallback"
+            section["reason"] = "仅命中历史目录，未在当前招标文件找到强证据，需要人工确认。"
+            section["required_status"] = "待确认"
+
+    summary = dict(candidate_payload.get("summary") or {})
+    summary["outline_section_count"] = sum(1 for _section in iter_outline_sections(sections))
+    summary["source_text_candidates"] = candidate_payload
+    return summary
 
 
 def outline_sections_from_tender_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -95,6 +95,43 @@ class ResolveSourceTextCandidatesTest(unittest.TestCase):
         self.assertNotIn("商务部分摘要表 ........ 12", texts)
         self.assertFalse(any(candidate.get("source_type") == "zone" for candidate in candidates))
         self.assertTrue(any(text == "附件7A 商务部分摘要表" for text in texts))
+        self.assertNotEqual(candidates[0]["source_text"], "商务部分摘要表 ........ 12")
+        self.assertIn(candidates[0]["scope"], {"format_area", "parent_context"})
+
+    def test_layered_retrieval_reports_current_source_refs_and_history_fallback(self):
+        tender = {
+            "document_name": "招标文件.docx",
+            "source_path": "C:/work/招标文件.docx",
+            "blocks": [
+                block("b-001", "目录", heading_path=["目录"]),
+                block("b-002", "保密承诺书 ........ 88", heading_path=["目录"]),
+                block("b-003", "第二章 投标人须知", heading_path=["第二章 投标人须知"], heading_level=1),
+                block("b-004", "投标文件包括保密承诺书，详见第六章附件9。", heading_path=["第二章 投标人须知", "投标文件组成"]),
+                block("b-005", "第六章 投标文件格式", heading_path=["第六章 投标文件格式"], heading_level=1),
+                block("b-006", "附件9 保密承诺书", heading_path=["第六章 投标文件格式"], heading_level=2),
+                block("b-007", "投标人承诺对招标文件及项目资料承担保密义务。", heading_path=["第六章 投标文件格式", "附件9 保密承诺书"]),
+            ],
+            "tables": [],
+            "zones": [],
+        }
+        outline = {"sections": [
+            {"id": "sec-1", "title": "保密承诺书", "source_text": "9.2 保密承诺书", "children": []},
+            {"id": "sec-2", "title": "历史保留但当前无依据", "source_text": "9.99 历史保留但当前无依据", "children": []},
+        ]}
+        result = self.run_resolver(tender, outline)
+        by_id = self.by_id(result)
+
+        first = by_id["sec-1"]["candidates"][0]
+        self.assertEqual(first["source_text"], "附件9 保密承诺书")
+        self.assertEqual(first["scope"], "format_area")
+        self.assertIn("source_ref", first)
+        self.assertEqual(first["source_ref"]["source_file"], "招标文件.docx")
+        self.assertEqual(first["source_ref"]["block_id"], "b-006")
+        self.assertEqual(first["source_kind"], "paragraph")
+        fallback = by_id["sec-2"]["candidates"][0]
+        self.assertEqual(fallback["scope"], "history_fallback")
+        self.assertEqual(fallback["source_text"], "9.99 历史保留但当前无依据")
+        self.assertEqual(fallback["confidence"], "low")
 
     def test_scoring_appendix_is_high_value_not_format_area(self):
         tender = {
