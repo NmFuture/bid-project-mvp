@@ -11,6 +11,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from document_structure_index import high_value_category
+from evidence_retrieval import retrieve_evidence_for_outline
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -729,18 +730,7 @@ def collect_quality_issues(sections):
 def make_output(tender, outline):
     start = time.perf_counter()
     source_set = make_sources(tender)
-    parent_anchors = {}
-    items = []
-    for section in iter_sections(outline.get("sections", [])):
-        candidates, anchors = find_candidates(section, source_set, parent_anchors)
-        parent_anchors[section.get("id")] = anchors
-        items.append({
-            "id": section.get("id"),
-            "title": section.get("title"),
-            "source_text": section.get("source_text"),
-            "parent_id": section.get("parent", {}).get("id") if section.get("parent") else None,
-            "candidates": candidates,
-        })
+    items = retrieve_evidence_for_outline(outline.get("sections", []), source_set, iter_sections)
     history_fallback_count = sum(
         1
         for item in items
