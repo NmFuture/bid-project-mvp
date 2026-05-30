@@ -17,12 +17,13 @@ def build_raw_files_payload(
     material_tier: str = "",
     clean_status: str = "",
     business_material_kind: str = "",
-    tag: str = "",
+    tag: Any = "",
+    title: str = "",
     keyword: str = "",
     page: int = 1,
     page_size: int = 20,
 ) -> dict[str, Any]:
-    filtered = [
+    tag_scoped = [
         item
         for item in items
         if raw_file_matches_scope(
@@ -33,8 +34,26 @@ def build_raw_files_payload(
             material_tier=material_tier,
             clean_status=clean_status,
             business_material_kind=business_material_kind,
-            tag=tag,
+            tag="",
+            title=title,
             keyword=keyword,
+        )
+    ]
+    tag_options = _collect_tag_options(tag_scoped)
+    filtered = [
+        item
+        for item in tag_scoped
+        if raw_file_matches_scope(
+            item,
+            project_id=project_id,
+            customer_name=customer_name,
+            bid_type=bid_type,
+            material_tier=material_tier,
+            clean_status=clean_status,
+            business_material_kind=business_material_kind,
+            tag=tag,
+            title="",
+            keyword="",
         )
     ]
     current_page = max(1, int(page or 1))
@@ -46,6 +65,7 @@ def build_raw_files_payload(
         "total": len(filtered),
         "page": current_page,
         "pageSize": current_page_size,
+        "tagOptions": tag_options,
     }
 
 
@@ -58,7 +78,8 @@ def raw_file_matches_scope(
     material_tier: str = "",
     clean_status: str = "",
     business_material_kind: str = "",
-    tag: str = "",
+    tag: Any = "",
+    title: str = "",
     keyword: str = "",
 ) -> bool:
     ext = getattr(item, "ext_fields", None) or {}
@@ -89,8 +110,12 @@ def raw_file_matches_scope(
         return False
 
     tags = normalize_material_tags(ext.get("tags"))
-    requested_tag = str(tag or "").strip()
-    if requested_tag and not any(requested_tag in item for item in tags):
+    requested_tags = normalize_material_tags(tag)
+    if requested_tags and not all(any(requested_tag in item for item in tags) for requested_tag in requested_tags):
+        return False
+
+    requested_title = str(title or "").strip().casefold()
+    if requested_title and requested_title not in str(getattr(item, "name", "") or "").casefold():
         return False
 
     requested_keyword = str(keyword or "").strip().casefold()
@@ -116,6 +141,20 @@ def raw_file_matches_scope(
             return False
 
     return True
+
+
+def _collect_tag_options(items: list[Any]) -> list[str]:
+    seen = set()
+    options: list[str] = []
+    for item in items:
+        ext = getattr(item, "ext_fields", None) or {}
+        for tag in normalize_material_tags(ext.get("tags")):
+            key = tag.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            options.append(tag)
+    return options
 
 
 def raw_file_matches_bid_type(item: Any, bid_type: str) -> bool:

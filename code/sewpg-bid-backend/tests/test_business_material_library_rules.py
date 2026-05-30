@@ -658,6 +658,53 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
         self.assertEqual(payload["page"], 2)
         self.assertEqual(payload["pageSize"], 1)
 
+    def test_raw_file_filter_supports_title_and_tag_options(self) -> None:
+        items = [
+            SimpleNamespace(
+                name="质量专题更新20240729.docx",
+                ext_fields={"bidType": "商务标", "materialTier": "standard", "tags": ["资质", "质量"]},
+                folder=SimpleNamespace(tier="standard"),
+                to_dict=lambda: {"id": "RAW-QUALITY"},
+            ),
+            SimpleNamespace(
+                name="财务审计报告.docx",
+                ext_fields={"bidType": "商务标", "materialTier": "standard", "tags": ["财务"]},
+                folder=SimpleNamespace(tier="standard"),
+                to_dict=lambda: {"id": "RAW-FINANCE"},
+            ),
+            SimpleNamespace(
+                name="质量体系证书.docx",
+                ext_fields={"bidType": "商务标", "materialTier": "standard", "tags": ["资质"]},
+                folder=SimpleNamespace(tier="standard"),
+                to_dict=lambda: {"id": "RAW-CERT"},
+            ),
+        ]
+
+        payload = build_raw_files_payload(
+            items,
+            bid_type="商务标",
+            title="质量",
+            tag=["资质"],
+            page=1,
+            page_size=20,
+        )
+
+        self.assertEqual(payload["items"], [{"id": "RAW-QUALITY"}, {"id": "RAW-CERT"}])
+        self.assertEqual(payload["tagOptions"], ["资质", "质量"])
+        self.assertEqual(payload["total"], 2)
+
+        multi_tag_payload = build_raw_files_payload(
+            items,
+            bid_type="商务标",
+            title="质量",
+            tag=["资质", "质量"],
+            page=1,
+            page_size=20,
+        )
+
+        self.assertEqual(multi_tag_payload["items"], [{"id": "RAW-QUALITY"}])
+        self.assertEqual(multi_tag_payload["total"], 1)
+
     def test_raw_file_filter_applies_project_customer_tier_and_clean_status(self) -> None:
         item = SimpleNamespace(
             ext_fields={

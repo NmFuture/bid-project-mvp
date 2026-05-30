@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { businessMaterialsAPI } from '../../../api'
 import MaterialsViewSwitch from '../components/BusinessMaterialsViewSwitch'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
-import OnlyOfficeWorkspace from '../../../components/shared/OnlyOfficeWorkspace'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import { workspaceRoute } from '../../../utils/workspace'
 
@@ -35,12 +34,6 @@ const BUSINESS_MATERIAL_KIND_OPTIONS = [
     value: 'other',
     label: '其他',
   },
-]
-const CLEAN_STATUS_OPTIONS = [
-  { value: '', label: '全部状态' },
-  { value: 'cleaned', label: '已清洗' },
-  { value: 'original_only', label: '仅保留原件' },
-  { value: 'failed', label: '清洗失败' },
 ]
 const BUSINESS_BID_TYPE = '商务标'
 const BUSINESS_WORKSPACE = 'business'
@@ -117,6 +110,23 @@ const normalizeTagList = (value) => {
   return tags.slice(0, 20)
 }
 
+const normalizeTagOptions = (value) => {
+  const source = Array.isArray(value)
+    ? value
+    : String(value || '').split(/[,，;；\n\r\t]+/)
+  const seen = new Set()
+  const tags = []
+  source.forEach((item) => {
+    const tag = String(item || '').replace(/\s+/g, ' ').trim().slice(0, 40)
+    if (!tag) return
+    const key = tag.toLocaleLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    tags.push(tag)
+  })
+  return tags.slice(0, 100)
+}
+
 const tagInputPreview = (committedTags, draftValue) => normalizeTagList([
   ...normalizeTagList(committedTags),
   ...normalizeTagList(draftValue),
@@ -125,11 +135,11 @@ const tagInputPreview = (committedTags, draftValue) => normalizeTagList([
 const canPreviewCleaned = (item) => item?.cleanStatus === 'cleaned' && Boolean(item?.hasCleanedWord)
 
 const cleanedPreviewBlockedMessage = (item) => {
-  if (!item) return '点击左侧已清洗文件，可在这里预览清洗稿。'
-  if (item.cleanStatus === 'original_only') return '该文件为原件素材，系统保留原文件，不生成清洗稿。'
-  if (item.cleanStatus === 'failed') return '该文件清洗失败，暂不开放清洗稿预览。'
-  if (item.cleanStatus === 'cleaning') return '该文件仍在清洗中，完成后才可预览。'
-  return '该文件尚未生成清洗后 Word，暂不开放预览。'
+  if (!item) return '选择已清洗文件后预览。'
+  if (item.cleanStatus === 'original_only') return '该素材仅保留原件。'
+  if (item.cleanStatus === 'failed') return '清洗失败，暂无预览。'
+  if (item.cleanStatus === 'cleaning') return '清洗中，完成后可预览。'
+  return '暂无清洗稿。'
 }
 
 const displayFolderName = (name, path) => {
@@ -559,6 +569,105 @@ function TagInput({
   )
 }
 
+function TagFilterDropdown({
+  options,
+  selectedTags,
+  searchValue,
+  onSearchChange,
+  onToggleTag,
+  onClear,
+}) {
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef(null)
+  const selected = normalizeTagList(selectedTags)
+  const selectedSet = useMemo(() => new Set(selected.map((tag) => tag.toLocaleLowerCase())), [selected])
+  const visibleOptions = useMemo(() => {
+    const keyword = String(searchValue || '').trim().toLocaleLowerCase()
+    if (!keyword) return options
+    return options.filter((tag) => tag.toLocaleLowerCase().includes(keyword))
+  }, [options, searchValue])
+  const buttonLabel = selected.length
+    ? `标签/tag ${selected.length}`
+    : '标签/tag'
+  const selectedTitle = selected.length ? selected.join('，') : '标签/tag'
+
+  useEffect(() => {
+    if (!open) return undefined
+    const handlePointerDown = (event) => {
+      if (!containerRef.current?.contains(event.target)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [open])
+
+  return (
+    <div ref={containerRef} className="relative min-w-0">
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title={selectedTitle}
+        onClick={() => setOpen((value) => !value)}
+        className="flex h-9 w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-transparent bg-surface-container-highest px-3 text-left text-xs text-on-surface-variant hover:bg-surface-container-high"
+      >
+        <span className="min-w-0 truncate">
+          {selected.length ? selected.join('，') : buttonLabel}
+        </span>
+        <span className="material-symbols-outlined shrink-0 text-[18px]">
+          {open ? 'expand_less' : 'expand_more'}
+        </span>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-[calc(100%+0.35rem)] z-40 w-full min-w-[18rem] rounded-lg border border-outline-variant/45 bg-surface-container-lowest p-2 shadow-[0_12px_28px_-16px_rgba(0,62,111,0.32)]">
+          <input
+            value={searchValue}
+            onChange={(event) => onSearchChange(event.target.value)}
+            placeholder="检索标签/tag"
+            className="h-8 w-full rounded-lg border border-transparent bg-surface-container-highest px-3 text-xs text-on-surface"
+          />
+          <div className="mt-2 max-h-56 overflow-y-auto pr-1" role="listbox" aria-label="标签/tag 多选">
+            {visibleOptions.length ? (
+              visibleOptions.map((tag) => {
+                const checked = selectedSet.has(tag.toLocaleLowerCase())
+                return (
+                  <label
+                    key={tag}
+                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-on-surface-variant hover:bg-surface-container-low"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => onToggleTag(tag)}
+                      className="h-3.5 w-3.5 accent-primary"
+                    />
+                    <span className="min-w-0 flex-1 truncate" title={tag}>{tag}</span>
+                  </label>
+                )
+              })
+            ) : (
+              <div className="px-2 py-5 text-center text-xs text-outline">无匹配标签</div>
+            )}
+          </div>
+          <div className="mt-2 flex items-center justify-between border-t border-surface-container-high pt-2">
+            <span className="text-[11px] text-outline">已选 {selected.length}</span>
+            <button
+              type="button"
+              onClick={onClear}
+              disabled={!selected.length}
+              className="rounded-lg px-2 py-1 text-xs font-semibold text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              清空标签
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function TreeNode({
   node,
   selectedPath,
@@ -721,7 +830,7 @@ function TreeNode({
                   paddingLeft: `${fileIndent}px`,
                   fontSize: `${Math.max(11, Math.min(14, 12.5 * (scale / 100)))}px`,
                 }}
-                className={`group flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left transition-colors ${
+                className={`group flex w-full items-center gap-2 rounded-lg py-1.5 pr-2 text-left transition-colors ${
                   fileSelected
                     ? 'bg-secondary-container text-on-secondary-container'
                     : 'text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface'
@@ -861,11 +970,10 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
   const [parseStatus, setParseStatus] = useState(null)
   const [selectedFolderPath, setSelectedFolderPath] = useState('')
   const [filters, setFilters] = useState({
-    keyword: '',
-    tag: '',
-    businessMaterialKind: '',
-    cleanStatus: '',
+    title: '',
+    tags: [],
   })
+  const [tagFilterSearch, setTagFilterSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -893,6 +1001,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
   const [onlyofficePreviewError, setOnlyofficePreviewError] = useState('')
+  const [previewFullscreen, setPreviewFullscreen] = useState(false)
   const [tagEditorItem, setTagEditorItem] = useState(null)
   const [tagEditorTags, setTagEditorTags] = useState([])
   const [tagEditorValue, setTagEditorValue] = useState('')
@@ -926,18 +1035,17 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
           : '未选择'
   const selectedUploadCustomer = customerOptions.find((option) => option.customerId === uploadCustomerId)
   const selectedUploadProject = projectOptions.find((option) => option.id === uploadProjectId)
+  const selectedFilterTags = useMemo(() => normalizeTagList(filters.tags || []), [filters.tags])
   const activeFilterCount = [
-    filters.keyword,
-    filters.tag,
-    filters.businessMaterialKind,
-    filters.cleanStatus,
+    filters.title,
+    ...selectedFilterTags,
   ].filter((value) => String(value || '').trim()).length
+  const tagOptions = useMemo(() => normalizeTagOptions(filesPayload?.tagOptions || []), [filesPayload?.tagOptions])
   const hasActiveFilters = activeFilterCount > 0
   const displayTree = useMemo(
     () => (hasActiveFilters ? filterTreeByMatchedFiles(tree, filesByFolderPath) : tree),
     [filesByFolderPath, hasActiveFilters, tree],
   )
-
   const loadLibrary = useCallback(async (options = {}) => {
     const silent = Boolean(options.silent || libraryLoadedRef.current)
     if (!silent) setLoading(true)
@@ -971,11 +1079,9 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
       const payload = await businessMaterialsAPI.raw.files({
         folderPath: '',
         recursive: true,
-        keyword: filters.keyword.trim(),
+        title: filters.title.trim(),
         bidType: activeBidType,
-        tag: filters.tag.trim(),
-        businessMaterialKind: filters.businessMaterialKind,
-        cleanStatus: filters.cleanStatus,
+        tag: selectedFilterTags,
         page: 1,
         pageSize: filePageSize,
       })
@@ -987,7 +1093,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
       libraryLoadedRef.current = true
       if (!silent) setLoading(false)
     }
-  }, [activeBidType, filters, selectedFolderPath])
+  }, [activeBidType, filters.title, selectedFilterTags, selectedFolderPath])
 
   const loadUploadIdentityOptions = useCallback(async () => {
     setLoadingIdentityOptions(true)
@@ -1034,6 +1140,25 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
     }, 0)
     return () => clearTimeout(timer)
   }, [customerOptions, showUploadModal, uploadCustomerId, uploadCustomerName])
+
+  useEffect(() => {
+    if (!previewFullscreen) return undefined
+
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setPreviewFullscreen(false)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [previewFullscreen])
 
   const setCollapseForAll = (collapsed) => {
     const paths = collectCollapsiblePaths(tree)
@@ -1594,14 +1719,108 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
     }))
   }
 
-  const clearFilters = () => {
-    setFilters({
-      keyword: '',
-      tag: '',
-      businessMaterialKind: '',
-      cleanStatus: '',
+  const toggleFilterTag = (tag) => {
+    setFilters((prev) => {
+      const currentTags = normalizeTagList(prev.tags || [])
+      const key = tag.toLocaleLowerCase()
+      const exists = currentTags.some((item) => item.toLocaleLowerCase() === key)
+      return {
+        ...prev,
+        tags: exists ? currentTags.filter((item) => item.toLocaleLowerCase() !== key) : [...currentTags, tag],
+      }
     })
   }
+
+  const clearFilterTags = () => {
+    setFilters((prev) => ({ ...prev, tags: [] }))
+  }
+
+  const materialToolbar = (
+    <div className="rounded-lg border border-outline-variant/45 bg-surface-container-lowest px-3 py-3">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="grid min-w-0 w-full grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] md:w-1/2 md:max-w-[36rem] xl:flex-none">
+          <label>
+            <span className="sr-only">文件标题</span>
+            <input
+              value={filters.title}
+              onChange={(e) => updateFilter('title', e.target.value)}
+              placeholder="文件标题"
+              className="h-9 w-full rounded-lg border border-transparent bg-surface-container-highest px-3 text-xs"
+            />
+          </label>
+          <TagFilterDropdown
+            options={tagOptions}
+            selectedTags={selectedFilterTags}
+            searchValue={tagFilterSearch}
+            onSearchChange={setTagFilterSearch}
+            onToggleTag={toggleFilterTag}
+            onClear={clearFilterTags}
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center justify-start gap-1.5 xl:justify-end" role="toolbar" aria-label="素材目录工具栏">
+          <button type="button" onClick={() => setCollapseForAll(false)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim">
+            展开
+          </button>
+          <button type="button" onClick={() => setCollapseForAll(true)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim">
+            收起
+          </button>
+          <button type="button" onClick={handleCreateFolder} disabled={!canCreateFolder} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-45">
+            新建文件夹
+          </button>
+          <button
+            type="button"
+            title={selectedFolderPath && isProtectedDeleteFolderPath(selectedFolderPath) ? '基础素材目录不可删除' : '删除文件夹'}
+            onClick={handleDeleteFolder}
+            disabled={!canDeleteFolder}
+            className="rounded-lg bg-error-container/45 px-3 py-2 text-xs font-semibold text-error hover:bg-error-container disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            删除文件夹
+          </button>
+          <button
+            type="button"
+            onClick={() => openUploadModal({ mode: 'path', targetPath: selectedFolderPath })}
+            disabled={!canManageCurrentFolder || !selectedFolderPath}
+            className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            上传
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+
+  const previewContent = (
+    <>
+      {onlyofficePreviewError && (
+        <div className="mb-3 rounded-lg border border-error/25 bg-error-container/20 px-3 py-2 text-xs text-error">
+          {onlyofficePreviewError}
+        </div>
+      )}
+      {previewLoading ? (
+        <div className="flex min-h-[520px] flex-1 items-center justify-center rounded-lg border border-surface-container-high bg-surface-container-lowest px-6 text-center">
+          <div>
+            <span className="material-symbols-outlined text-3xl text-primary">hourglass_empty</span>
+            <p className="mt-2 text-sm text-on-surface-variant">正在加载...</p>
+          </div>
+        </div>
+      ) : hasPreviewSession ? (
+        <OnlyOfficeEmbed
+          session={previewSession?.onlyoffice}
+          mode="view"
+          className="h-full min-h-[520px] w-full flex-1 rounded-lg border border-surface-container-high bg-white"
+          onReady={() => setOnlyofficePreviewError('')}
+          onError={(message) => setOnlyofficePreviewError(message || 'OnlyOffice 清洗稿加载失败')}
+        />
+      ) : (
+        <div className="flex min-h-[520px] flex-1 items-center justify-center rounded-lg border border-dashed border-surface-container-high bg-surface-container-lowest/45 px-6 text-center">
+          <p className="max-w-xs text-sm text-on-surface-variant">
+            {onlyofficePreviewError || previewError || cleanedPreviewBlockedMessage(previewItem)}
+          </p>
+        </div>
+      )}
+    </>
+  )
 
   if (loading) {
     return (
@@ -1646,194 +1865,101 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
         </div>
       )}
 
-      <OnlyOfficeWorkspace
-        heightClass="min-h-[780px] xl:min-h-[calc(100vh-7rem)]"
-        gridClassName="xl:grid-cols-[minmax(30rem,40rem)_minmax(0,1fr)]"
-        documentTitle="清洗稿预览"
-        documentSubtitle={`当前文件：${previewTitle}`}
-        documentMeta={(
-          <span className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${hasPreviewSession ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
-            {previewModeLabel}
-          </span>
-        )}
-        headerClassName="h-[72px] min-h-[72px]"
-        documentAreaClassName="flex flex-col"
-        sidebar={(
-          <section className="flex h-full min-h-0 flex-col">
-            <div className="flex min-h-[56px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
-              <div className="min-w-0">
-                <h3 className="text-base font-semibold text-on-surface">素材目录</h3>
-              </div>
-              <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant">
-                {hasActiveFilters ? '已筛选' : '已加载'} {fileItems.length}
+      {materialToolbar}
+
+      <div className="grid min-h-[680px] grid-cols-1 gap-3 xl:min-h-[calc(100vh-12rem)] xl:grid-cols-[minmax(30rem,40rem)_minmax(0,1fr)]">
+        <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest">
+          <div className="flex min-h-[52px] items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <h3 className="truncate text-sm font-semibold text-on-surface">素材目录</h3>
+              <span className="rounded-lg bg-surface-container-high px-2 py-1 text-xs font-semibold text-on-surface-variant">
+                {hasActiveFilters ? '筛选' : '已加载'} {fileItems.length}
               </span>
             </div>
-
-            <div className="flex min-h-0 flex-1 flex-col">
-              <div className="border-b border-surface-container-high bg-surface-container-lowest px-3 py-2.5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-on-surface">目录与文件</div>
-                  </div>
-                  <div className="flex flex-wrap items-center justify-end gap-1" role="toolbar" aria-label="素材目录工具栏">
-                    <button type="button" onClick={() => setCollapseForAll(false)} className="rounded-md bg-surface-container-high px-2.5 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim">
-                      展开全部
-                    </button>
-                    <button type="button" onClick={() => setCollapseForAll(true)} className="rounded-md bg-surface-container-high px-2.5 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim">
-                      收起全部
-                    </button>
-                    <span className="mx-1 h-4 w-px bg-surface-container-high" aria-hidden="true" />
-                    <button type="button" onClick={handleCreateFolder} disabled={!canCreateFolder} className="rounded-md bg-surface-container-high px-2.5 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-45">
-                      新建文件夹
-                    </button>
-                    <button
-                      type="button"
-                      title={selectedFolderPath && isProtectedDeleteFolderPath(selectedFolderPath) ? '基础素材目录不可删除' : '删除文件夹'}
-                      onClick={handleDeleteFolder}
-                      disabled={!canDeleteFolder}
-                      className="rounded-md bg-error-container/45 px-2.5 py-1.5 text-xs font-semibold text-error hover:bg-error-container disabled:cursor-not-allowed disabled:opacity-45"
-                    >
-                      删除文件夹
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => openUploadModal({ mode: 'path', targetPath: selectedFolderPath })}
-                      disabled={!canManageCurrentFolder || !selectedFolderPath}
-                      className="rounded-md bg-primary px-2.5 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-45"
-                    >
-                      上传
-                    </button>
-                  </div>
-                </div>
-
-                <div className="mt-2 rounded-md border border-surface-container-high bg-surface-container-low px-3 py-2">
-                  <div className="mb-1.5 flex items-center justify-between gap-2">
-                    <span className="text-xs font-semibold text-on-surface">筛选</span>
-                    {activeFilterCount > 0 && (
-                      <button
-                        type="button"
-                        onClick={clearFilters}
-                        className="text-xs font-medium text-primary hover:text-on-primary-container"
-                      >
-                        清除 {activeFilterCount}
-                      </button>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_8rem_8rem]">
-                    <label>
-                      <span className="sr-only">关键词</span>
-                      <input
-                        value={filters.keyword}
-                        onChange={(e) => updateFilter('keyword', e.target.value)}
-                        placeholder="关键词：文件名/标签/类型/状态"
-                        className="h-8 w-full rounded-md border-none bg-surface-container-highest px-3 text-xs"
-                      />
-                    </label>
-                    <input
-                      aria-label="按标签筛选"
-                      value={filters.tag}
-                      onChange={(e) => updateFilter('tag', e.target.value)}
-                      placeholder="标签"
-                      className="h-8 rounded-md border-none bg-surface-container-highest px-3 text-xs"
-                    />
-                    <select
-                      aria-label="素材类型"
-                      value={filters.businessMaterialKind}
-                      onChange={(e) => updateFilter('businessMaterialKind', e.target.value)}
-                      className="h-8 rounded-md border-none bg-surface-container-highest px-3 text-xs"
-                    >
-                      <option value="">全部类型</option>
-                      {BUSINESS_MATERIAL_KIND_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
-                    <select
-                      aria-label="清洗状态"
-                      value={filters.cleanStatus}
-                      onChange={(e) => updateFilter('cleanStatus', e.target.value)}
-                      className="h-8 rounded-md border-none bg-surface-container-highest px-3 text-xs"
-                    >
-                      {CLEAN_STATUS_OPTIONS.map((option) => (
-                        <option key={option.value || 'all'} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
-                <div className="min-h-full rounded-md border border-surface-container-high bg-surface-container-lowest p-2">
-                  {displayTree.length > 0 ? (
-                    displayTree.map((node) => (
-                      <TreeNode
-                        key={node.id}
-                        node={node}
-                        selectedPath={selectedFolderPath}
-                        selectedFileId={previewItem?.id}
-                        onSelect={(path) => setSelectedFolderPath(path)}
-                        onFileSelect={(item) => {
-                          setSelectedFolderPath(item.folderPath || selectedFolderPath)
-                          handlePreviewCleaned(item)
-                        }}
-                        onRenameFile={handleRenameFile}
-                        onDeleteFile={handleDeleteFile}
-                        onUpdateBusinessMaterialKind={updateBusinessMaterialKind}
-                        onEditTags={openTagEditor}
-                        onSplitFile={openBusinessSplitModal}
-                        onDeleteFolder={handleDeleteFolder}
-                        onMoveDrop={handleMoveDrop}
-                        dragTargetPath={dragTargetPath}
-                        setDragTargetPath={setDragTargetPath}
-                        collapsedMap={collapsedMap}
-                        onToggle={toggleNode}
-                        scale={100}
-                        filesByFolderPath={filesByFolderPath}
-                        forceExpanded={hasActiveFilters}
-                      />
-                    ))
-                  ) : (
-                    <div className="flex min-h-[10rem] items-center justify-center rounded-md text-sm text-outline">
-                      {hasActiveFilters ? '未找到匹配素材' : '暂无素材目录'}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </section>
-        )}
-      >
-        {onlyofficePreviewError && (
-          <div className="mb-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-xs text-error">
-            {onlyofficePreviewError}
           </div>
-        )}
-        {previewLoading ? (
-          <div className="flex min-h-[560px] flex-1 items-center justify-center rounded-md border border-surface-container-high bg-surface-container-lowest px-6 text-center">
-            <div>
-              <span className="material-symbols-outlined text-4xl text-primary">hourglass_empty</span>
-              <p className="mt-3 text-sm text-on-surface-variant">正在加载清洗稿预览...</p>
+          <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            <div className="min-h-full rounded-lg bg-white p-2">
+              {displayTree.length > 0 ? (
+                displayTree.map((node) => (
+                  <TreeNode
+                    key={node.id}
+                    node={node}
+                    selectedPath={selectedFolderPath}
+                    selectedFileId={previewItem?.id}
+                    onSelect={(path) => setSelectedFolderPath(path)}
+                    onFileSelect={(item) => {
+                      setSelectedFolderPath(item.folderPath || selectedFolderPath)
+                      handlePreviewCleaned(item)
+                    }}
+                    onRenameFile={handleRenameFile}
+                    onDeleteFile={handleDeleteFile}
+                    onUpdateBusinessMaterialKind={updateBusinessMaterialKind}
+                    onEditTags={openTagEditor}
+                    onSplitFile={openBusinessSplitModal}
+                    onDeleteFolder={handleDeleteFolder}
+                    onMoveDrop={handleMoveDrop}
+                    dragTargetPath={dragTargetPath}
+                    setDragTargetPath={setDragTargetPath}
+                    collapsedMap={collapsedMap}
+                    onToggle={toggleNode}
+                    scale={100}
+                    filesByFolderPath={filesByFolderPath}
+                    forceExpanded={hasActiveFilters}
+                  />
+                ))
+              ) : (
+                <div className="flex min-h-[10rem] items-center justify-center rounded-lg text-sm text-outline">
+                  {hasActiveFilters ? '未找到匹配素材' : '暂无素材目录'}
+                </div>
+              )}
             </div>
           </div>
-        ) : hasPreviewSession ? (
-          <OnlyOfficeEmbed
-            session={previewSession?.onlyoffice}
-            mode="view"
-            className="h-full min-h-[560px] w-full rounded-md border border-surface-container-high bg-white"
-            onReady={() => setOnlyofficePreviewError('')}
-            onError={(message) => setOnlyofficePreviewError(message || 'OnlyOffice 清洗稿加载失败')}
-          />
-        ) : (
-          <div className="flex min-h-[560px] flex-1 items-center justify-center rounded-md border border-dashed border-surface-container-high px-6 text-center">
-            <p className="max-w-md text-sm text-on-surface-variant">
-              {onlyofficePreviewError || previewError || cleanedPreviewBlockedMessage(previewItem)}
-            </p>
+        </section>
+
+        <section className={[
+          previewFullscreen
+            ? 'fixed inset-0 z-[160] flex min-h-0 flex-col bg-white p-3'
+            : 'flex min-h-0 flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest',
+        ].join(' ')}>
+          <div className="flex min-h-[52px] items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <h3 className="truncate text-sm font-semibold text-on-surface">清洗稿预览</h3>
+              {previewItem && (
+                <span
+                  title={previewTitle}
+                  className="hidden max-w-[18rem] truncate rounded-lg bg-surface-container-high px-2.5 py-1 text-xs font-medium text-on-surface-variant sm:inline-block"
+                >
+                  {previewTitle}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold ${hasPreviewSession ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
+                {previewModeLabel}
+              </span>
+              <button
+                type="button"
+                aria-label={previewFullscreen ? '退出全屏' : '全屏查看'}
+                aria-pressed={previewFullscreen}
+                title={previewFullscreen ? '退出全屏' : '全屏查看'}
+                onClick={() => setPreviewFullscreen((value) => !value)}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-surface-container-high text-on-surface-variant transition-colors hover:bg-surface-dim hover:text-on-surface"
+              >
+                <span className="material-symbols-outlined text-[20px]">
+                  {previewFullscreen ? 'close_fullscreen' : 'open_in_full'}
+                </span>
+              </button>
+            </div>
           </div>
-        )}
-      </OnlyOfficeWorkspace>
+          <div className="flex min-h-0 flex-1 flex-col p-3">
+            {previewContent}
+          </div>
+        </section>
+      </div>
 
       {showUploadModal && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">
-          <div className="w-full max-w-2xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] max-h-[calc(100vh-1.5rem)] sm:max-h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-2xl flex flex-col overflow-hidden">
+          <div className="w-full max-w-2xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] max-h-[calc(100vh-1.5rem)] sm:max-h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-[0_12px_28px_-16px_rgba(0,62,111,0.2)] flex flex-col overflow-hidden">
             <div className="px-5 sm:px-6 py-4 border-b border-surface-container-high flex items-center justify-between shrink-0">
               <h2 className="text-lg font-headline font-bold text-on-surface">上传{activeBidType}原始素材</h2>
               <button onClick={closeUploadModal} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
@@ -1856,7 +1982,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                           type="button"
                           onClick={() => setUploadMode(value)}
                           aria-pressed={active}
-                          className={`rounded-md text-sm font-semibold transition-colors ${active ? 'bg-white text-primary shadow-[0_1px_2px_rgba(17,34,51,0.08)]' : 'text-on-surface-variant hover:bg-surface-container-high'}`}
+                          className={`rounded-lg text-sm font-semibold transition-colors ${active ? 'bg-white text-primary shadow-[0_1px_2px_rgba(17,34,51,0.08)]' : 'text-on-surface-variant hover:bg-surface-container-high'}`}
                         >
                           {label}
                         </button>
@@ -1993,7 +2119,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                             setUploadError('')
                           }}
                           aria-pressed={active}
-                          className={`rounded-md text-sm font-semibold transition-colors ${active ? 'bg-white text-primary shadow-[0_1px_2px_rgba(17,34,51,0.08)]' : 'text-on-surface-variant hover:bg-surface-container-high'}`}
+                          className={`rounded-lg text-sm font-semibold transition-colors ${active ? 'bg-white text-primary shadow-[0_1px_2px_rgba(17,34,51,0.08)]' : 'text-on-surface-variant hover:bg-surface-container-high'}`}
                         >
                           {label}
                         </button>
@@ -2115,7 +2241,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
 
       {conflictContext && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-2xl">
+          <div className="w-full max-w-md bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-[0_12px_28px_-16px_rgba(0,62,111,0.2)]">
             <div className="px-6 py-4 border-b border-surface-container-high">
               <h3 className="text-base font-semibold text-on-surface">发现命名冲突</h3>
             </div>
@@ -2151,7 +2277,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
 
       {tagEditorItem && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-          <div className="w-full max-w-lg bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-2xl">
+          <div className="w-full max-w-lg bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-[0_12px_28px_-16px_rgba(0,62,111,0.2)]">
             <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between">
               <div className="min-w-0">
                 <h3 className="text-base font-semibold text-on-surface">编辑素材标签</h3>
@@ -2216,7 +2342,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
 
       {splitModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">
-          <div className="w-full max-w-5xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-2xl flex flex-col overflow-hidden">
+          <div className="w-full max-w-5xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-[0_12px_28px_-16px_rgba(0,62,111,0.2)] flex flex-col overflow-hidden">
             <div className="px-5 sm:px-6 py-4 border-b border-surface-container-high flex items-center justify-between shrink-0">
               <div className="min-w-0">
                 <h2 className="text-lg font-headline font-bold text-on-surface">商务素材切分审核</h2>
@@ -2292,7 +2418,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                               <input
                                 value={fragment.fileName || ''}
                                 onChange={(event) => updateSplitFragment(fragment.id, { fileName: event.target.value })}
-                                className="mt-1 h-9 w-full rounded-md border border-surface-container-high bg-white px-3 text-sm text-on-surface"
+                                className="mt-1 h-9 w-full rounded-lg border border-surface-container-high bg-white px-3 text-sm text-on-surface"
                               />
                             </label>
                             <label className="text-xs text-on-surface-variant">
@@ -2300,12 +2426,12 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                               <input
                                 value={fragment.targetPath || ''}
                                 onChange={(event) => updateSplitFragment(fragment.id, { targetPath: event.target.value })}
-                                className="mt-1 h-9 w-full rounded-md border border-surface-container-high bg-white px-3 text-sm text-on-surface"
+                                className="mt-1 h-9 w-full rounded-lg border border-surface-container-high bg-white px-3 text-sm text-on-surface"
                               />
                             </label>
                           </div>
 
-                          <div className="mt-3 rounded-md bg-surface-container-low px-3 py-2">
+                          <div className="mt-3 rounded-lg bg-surface-container-low px-3 py-2">
                             <div className="text-[11px] font-semibold text-on-surface-variant">片段预览</div>
                             <pre className="mt-1 max-h-28 overflow-y-auto whitespace-pre-wrap text-xs leading-5 text-on-surface-variant">
                               {fragment.contentPreview || '暂无预览文本'}
@@ -2313,7 +2439,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                           </div>
 
                           {!!(fragment.riskTips || []).length && (
-                            <div className="mt-3 rounded-md bg-warning/10 px-3 py-2 text-xs leading-5 text-on-surface">
+                            <div className="mt-3 rounded-lg bg-warning/10 px-3 py-2 text-xs leading-5 text-on-surface">
                               {(fragment.riskTips || []).map((tip) => (
                                 <div key={tip}>风险提示：{tip}</div>
                               ))}

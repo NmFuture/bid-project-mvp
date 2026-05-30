@@ -19,7 +19,8 @@ async def raw_files_operation(
     material_tier: str = "",
     clean_status: str = "",
     business_material_kind: str = "",
-    tag: str = "",
+    tag: Any = "",
+    title: str = "",
     keyword: str = "",
     recursive: bool = True,
     page: int = 1,
@@ -38,6 +39,9 @@ async def raw_files_operation(
                 )
             else:
                 stmt = stmt.join(RawFolder).where(RawFolder.path == normalized_folder_path)
+        normalized_title = str(title or "").strip()
+        if normalized_title:
+            stmt = stmt.where(RawFile.name.ilike(f"%{normalized_title}%"))
         stmt = stmt.order_by(desc(RawFile.updated_at))
         result = await session.execute(stmt)
         items = result.scalars().all()
@@ -51,6 +55,7 @@ async def raw_files_operation(
             clean_status=clean_status,
             business_material_kind=business_material_kind,
             tag=tag,
+            title=title,
             keyword=keyword,
             page=page,
             page_size=page_size,

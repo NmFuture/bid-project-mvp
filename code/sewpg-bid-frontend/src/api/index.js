@@ -11,6 +11,22 @@ const cleanQuery = (params = {}) =>
     Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== ''),
   )
 
+const appendCleanQuery = (query, params = {}) => {
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (item !== undefined && item !== null && item !== '') {
+          query.append(key, item)
+        }
+      })
+      return
+    }
+    query.append(key, value)
+  })
+  return query
+}
+
 const joinUrl = (base, path) => {
   if (base.startsWith('http://') || base.startsWith('https://')) {
     return `${base.replace(/\/+$/, '')}${path}`
@@ -644,6 +660,21 @@ export const businessMaterialsAPI = {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
       return request(`/business/materials/performance${qs ? `?${qs}` : ''}`)
     },
+    categories: (params = {}) => {
+      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      return request(`/business/materials/performance/categories${qs ? `?${qs}` : ''}`)
+    },
+    previewCategory: (data) =>
+      request('/business/materials/performance/categories/preview', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    importCategory: (data) =>
+      request('/business/materials/performance/categories/import', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    category: (id) => request(`/business/materials/performance/categories/${id}`),
+    deleteCategory: (id, data = {}) => request(`/business/materials/performance/categories/${id}`, { method: 'DELETE', body: data }),
+    updateCategoryStatus: (id, data) => request(`/business/materials/performance/categories/${id}/status`, { method: 'PATCH', body: data }),
+    uploadCategoryAttachment: (id, data) =>
+      request(`/business/materials/performance/categories/${id}/attachments`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    categoryAttachmentUrl: (categoryId, attachmentId) =>
+      joinUrl(ENV.API_BASE_URL, `/business/materials/performance/categories/${categoryId}/attachments/${attachmentId}`),
     create: (data) => request('/business/materials/performance', { method: 'POST', body: data }),
     update: (id, data) => request(`/business/materials/performance/${id}`, { method: 'PUT', body: data }),
     delete: (id) => request(`/business/materials/performance/${id}`, { method: 'DELETE' }),
@@ -654,7 +685,7 @@ export const businessMaterialsAPI = {
   raw: {
     tree: () => request('/business/materials/raw/tree'),
     files: (params = {}) => {
-      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      const qs = appendCleanQuery(new URLSearchParams(), params).toString()
       return request(`/business/materials/raw/files${qs ? `?${qs}` : ''}`)
     },
     upload: (data) =>

@@ -191,6 +191,87 @@ class MaterialRuntimeTables:
                 """
             )
         )
+        await session.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS performance_categories (
+                    id BIGSERIAL PRIMARY KEY,
+                    name VARCHAR(300) NOT NULL,
+                    scene VARCHAR(80),
+                    power_rating VARCHAR(80),
+                    summary TEXT,
+                    field_schema JSONB DEFAULT '[]'::jsonb,
+                    tags JSONB DEFAULT '[]'::jsonb,
+                    scope VARCHAR(40) DEFAULT 'standard',
+                    status VARCHAR(40) DEFAULT 'enabled',
+                    review_status VARCHAR(40) DEFAULT 'draft',
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            )
+        )
+        await session.execute(text("ALTER TABLE performance_categories ADD COLUMN IF NOT EXISTS status VARCHAR(40) DEFAULT 'enabled'"))
+        await session.execute(
+            text(
+                """
+                UPDATE performance_categories
+                SET status = 'disabled'
+                WHERE review_status = 'disabled' AND COALESCE(status, 'enabled') <> 'disabled'
+                """
+            )
+        )
+        await session.execute(
+            text(
+                """
+                UPDATE performance_categories
+                SET status = 'enabled'
+                WHERE COALESCE(status, '') = ''
+                """
+            )
+        )
+        await session.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS performance_items (
+                    id BIGSERIAL PRIMARY KEY,
+                    category_id BIGINT NOT NULL REFERENCES performance_categories(id) ON DELETE CASCADE,
+                    row_index INT NOT NULL,
+                    project_name TEXT,
+                    customer_name VARCHAR(300),
+                    turbine_model VARCHAR(120),
+                    contract_quantity VARCHAR(80),
+                    trial_operation_quantity VARCHAR(80),
+                    commissioned_capacity_mw VARCHAR(80),
+                    delivery_or_operation_time VARCHAR(120),
+                    contact_info VARCHAR(200),
+                    row_values JSONB DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            )
+        )
+        await session.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS performance_attachments (
+                    id BIGSERIAL PRIMARY KEY,
+                    category_id BIGINT NOT NULL REFERENCES performance_categories(id) ON DELETE CASCADE,
+                    attachment_type VARCHAR(60) NOT NULL,
+                    file_name VARCHAR(255) NOT NULL,
+                    minio_key VARCHAR(500) NOT NULL,
+                    minio_bucket VARCHAR(100) DEFAULT 'bid-materials',
+                    mime_type VARCHAR(120),
+                    size_bytes BIGINT DEFAULT 0,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    created_by VARCHAR(100)
+                )
+                """
+            )
+        )
+        await session.execute(text("CREATE INDEX IF NOT EXISTS idx_performance_items_category_id ON performance_items(category_id)"))
+        await session.execute(text("CREATE INDEX IF NOT EXISTS idx_performance_attachments_category_id ON performance_attachments(category_id)"))
         await session.execute(text("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS meta JSONB"))
         await session.execute(text("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS ip_address VARCHAR(80)"))
         await session.execute(text("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS user_agent TEXT"))

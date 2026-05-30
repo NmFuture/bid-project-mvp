@@ -4,32 +4,33 @@ import MaterialsViewSwitch from '../components/BusinessMaterialsViewSwitch'
 import { workspaceRoute } from '../../../utils/workspace'
 
 const BUSINESS_WORKSPACE = 'business'
-const BID_TYPE_OPTIONS = ['商务标', '技术标']
-const SCOPE_OPTIONS = [
-  { value: 'standard', label: '通用' },
-  { value: 'customer', label: '客户' },
-  { value: 'project', label: '项目' },
-]
-const STATUS_OPTIONS = [
-  { value: 'draft', label: '草稿' },
-  { value: 'reviewed', label: '已审核' },
+const CATEGORY_STATUS_OPTIONS = [
+  { value: 'enabled', label: '启用' },
   { value: 'disabled', label: '停用' },
+  { value: 'all', label: '全部' },
 ]
-const EMPTY_FORM = {
-  name: '',
-  customerName: '',
-  projectType: '',
-  scale: '',
-  location: '',
-  startedAt: '',
-  completedAt: '',
-  amount: '',
-  turbineModel: '',
-  tags: '',
-  applicableBidTypes: ['商务标'],
-  scope: 'standard',
-  reviewStatus: 'draft',
+const CATEGORY_STATUS_LABELS = {
+  enabled: '启用',
+  disabled: '停用',
 }
+const SCOPE_LABELS = {
+  standard: '通用',
+  customer: '客户',
+  project: '项目',
+}
+const ATTACHMENT_LABELS = {
+  summary_table: '汇总表',
+  contract_bundle: '合同附件',
+  other: '其他附件',
+}
+const SORTABLE_COLUMNS = [
+  { key: 'name', label: '业绩类别' },
+  { key: 'powerRating', label: '功率/场景' },
+  { key: 'itemCount', label: '明细' },
+  { key: 'fieldCount', label: '字段' },
+  { key: 'attachmentCount', label: '附件' },
+  { key: 'status', label: '状态' },
+]
 
 const normalizeTags = (value) => {
   const source = Array.isArray(value) ? value : String(value || '').split(/[,，;；\n\r\t]+/)
@@ -47,19 +48,7 @@ const normalizeTags = (value) => {
 }
 
 const tagsText = (value) => normalizeTags(value).join('，')
-
-const scopeLabel = (value) => SCOPE_OPTIONS.find((item) => item.value === value)?.label || '通用'
-const reviewStatusLabel = (value) => STATUS_OPTIONS.find((item) => item.value === value)?.label || '草稿'
-
-const compactParts = (...parts) =>
-  parts.map((part) => String(part || '').trim()).filter(Boolean).join(' · ')
-
-const dateRangeLabel = (startedAt, completedAt) => {
-  const start = String(startedAt || '').trim()
-  const end = String(completedAt || '').trim()
-  if (start && end) return `${start} 至 ${end}`
-  return start || end || ''
-}
+const compactParts = (...parts) => parts.map((part) => String(part || '').trim()).filter(Boolean).join(' · ')
 
 const sizeLabel = (bytes) => {
   const value = Number(bytes || 0)
@@ -69,28 +58,62 @@ const sizeLabel = (bytes) => {
   return `${(value / 1024 / 1024).toFixed(2)} MB`
 }
 
+const formatDateTime = (value) => {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+const previewRows = (rows = [], limit = 5) => rows.slice(0, limit)
+
+function SortHeader({ columnKey, label, sortBy, sortOrder, onSort, align = 'left' }) {
+  const active = sortBy === columnKey
+  const icon = active ? (sortOrder === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(columnKey)}
+      className={`inline-flex w-full items-center gap-1 text-xs font-semibold hover:text-primary ${align === 'right' ? 'justify-end' : 'justify-start'} ${active ? 'text-primary' : ''}`}
+      title={`${label}排序`}
+    >
+      <span>{label}</span>
+      <span className="material-symbols-outlined text-sm leading-none">{icon}</span>
+    </button>
+  )
+}
+
 export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
-  const fileInputRef = useRef(null)
+  const summaryInputRef = useRef(null)
+  const attachmentInputRef = useRef(null)
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [uploadingId, setUploadingId] = useState('')
-  const [showForm, setShowForm] = useState(false)
-  const [editingItem, setEditingItem] = useState(null)
-  const [form, setForm] = useState(EMPTY_FORM)
-  const [filters, setFilters] = useState({ keyword: '', customerName: '', bidType: '', tag: '' })
+  const [previewing, setPreviewing] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [uploadingCategoryId, setUploadingCategoryId] = useState('')
+  const [uploadingAttachment, setUploadingAttachment] = useState(false)
+  const [previewFile, setPreviewFile] = useState(null)
+  const [preview, setPreview] = useState(null)
+  const [importForm, setImportForm] = useState({ categoryName: '', scene: '', powerRating: '', tags: '' })
+  const [detail, setDetail] = useState(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [filters, setFilters] = useState({ keyword: '', scene: '', powerRating: '', tag: '', status: 'enabled' })
+  const [sort, setSort] = useState({ sortBy: 'updatedAt', sortOrder: 'desc' })
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const [deleteConfirmName, setDeleteConfirmName] = useState('')
+  const [deleting, setDeleting] = useState(false)
   const pageSize = 20
   const materialsBasePath = workspaceRoute(BUSINESS_WORKSPACE, '/materials')
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
-  const query = useMemo(() => ({ ...filters, page, pageSize }), [filters, page])
+  const query = useMemo(() => ({ ...filters, ...sort, page, pageSize }), [filters, sort, page])
 
-  const loadRecords = useCallback(async () => {
+  const loadCategories = useCallback(async () => {
     setLoading(true)
     try {
-      const payload = await businessMaterialsAPI.performance.list(query)
+      const payload = await businessMaterialsAPI.performance.categories(query)
       setItems(payload?.items || [])
       setTotal(Number(payload?.total || 0))
     } catch (error) {
@@ -102,146 +125,220 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      loadRecords()
+      loadCategories()
     }, 0)
     return () => clearTimeout(timer)
-  }, [loadRecords])
-
-  const openCreate = () => {
-    setEditingItem(null)
-    setForm(EMPTY_FORM)
-    setShowForm(true)
-  }
-
-  const openEdit = (item) => {
-    setEditingItem(item)
-    setShowForm(true)
-    setForm({
-      name: item.name || '',
-      customerName: item.customerName || '',
-      projectType: item.projectType || '',
-      scale: item.scale || '',
-      location: item.location || '',
-      startedAt: item.startedAt || '',
-      completedAt: item.completedAt || '',
-      amount: item.amount || '',
-      turbineModel: item.turbineModel || '',
-      tags: tagsText(item.tags),
-      applicableBidTypes: item.applicableBidTypes?.length ? item.applicableBidTypes : ['商务标'],
-      scope: item.scope || 'standard',
-      reviewStatus: item.reviewStatus || 'draft',
-    })
-  }
-
-  const closeForm = () => {
-    setShowForm(false)
-    setEditingItem(null)
-    setForm(EMPTY_FORM)
-  }
-
-  const updateField = (key, value) => {
-    setForm((prev) => ({ ...prev, [key]: value }))
-  }
-
-  const toggleBidType = (bidType) => {
-    setForm((prev) => {
-      const current = new Set(prev.applicableBidTypes || [])
-      if (current.has(bidType)) current.delete(bidType)
-      else current.add(bidType)
-      return { ...prev, applicableBidTypes: Array.from(current) }
-    })
-  }
-
-  const saveRecord = async () => {
-    if (!form.name.trim()) {
-      showToast('请填写业绩名称', 'error')
-      return
-    }
-    setSaving(true)
-    const payload = {
-      ...form,
-      tags: normalizeTags(form.tags),
-      applicableBidTypes: form.applicableBidTypes?.length ? form.applicableBidTypes : ['商务标'],
-    }
-    try {
-      const result = editingItem?.id
-        ? await businessMaterialsAPI.performance.update(editingItem.id, payload)
-        : await businessMaterialsAPI.performance.create(payload)
-      showToast(result?.message || '业绩记录已保存')
-      closeForm()
-      await loadRecords()
-    } catch (error) {
-      showToast(error?.message || '业绩记录保存失败', 'error')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const disableRecord = async (item) => {
-    if (!window.confirm(`确认停用业绩：${item.name || item.id}？`)) return
-    try {
-      const result = await businessMaterialsAPI.performance.delete(item.id)
-      showToast(result?.message || '业绩记录已停用')
-      await loadRecords()
-    } catch (error) {
-      showToast(error?.message || '业绩记录停用失败', 'error')
-    }
-  }
-
-  const chooseWordFile = (item) => {
-    setUploadingId(item.id)
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ''
-      fileInputRef.current.click()
-    }
-  }
-
-  const uploadWord = async (event) => {
-    const file = event.target.files?.[0]
-    if (!file || !uploadingId) return
-    const data = new FormData()
-    data.append('file', file, file.name)
-    try {
-      const result = await businessMaterialsAPI.performance.uploadWord(uploadingId, data)
-      showToast(result?.message || '业绩 Word 已上传')
-      await loadRecords()
-    } catch (error) {
-      showToast(error?.message || '业绩 Word 上传失败', 'error')
-    } finally {
-      setUploadingId('')
-      event.target.value = ''
-    }
-  }
+  }, [loadCategories])
 
   const updateFilter = (key, value) => {
     setFilters((prev) => ({ ...prev, [key]: value }))
     setPage(1)
   }
 
+  const updateSort = (key) => {
+    setSort((prev) => ({
+      sortBy: key,
+      sortOrder: prev.sortBy === key && prev.sortOrder === 'asc' ? 'desc' : 'asc',
+    }))
+    setPage(1)
+  }
+
+  const openSummaryChooser = () => {
+    if (!summaryInputRef.current) return
+    summaryInputRef.current.value = ''
+    summaryInputRef.current.click()
+  }
+
+  const previewSummary = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    const data = new FormData()
+    data.append('file', file, file.name)
+    setPreviewing(true)
+    try {
+      const result = await businessMaterialsAPI.performance.previewCategory(data)
+      const nextPreview = result?.preview || null
+      setPreviewFile(file)
+      setPreview(nextPreview)
+      setImportForm({
+        categoryName: nextPreview?.categoryName || file.name.replace(/\.docx?$/i, ''),
+        scene: nextPreview?.scene || '',
+        powerRating: nextPreview?.powerRating || '',
+        tags: tagsText([nextPreview?.scene, nextPreview?.powerRating, '业绩'].filter(Boolean)),
+      })
+    } catch (error) {
+      showToast(error?.message || '业绩汇总表解析失败', 'error')
+    } finally {
+      setPreviewing(false)
+    }
+  }
+
+  const closePreview = () => {
+    setPreviewFile(null)
+    setPreview(null)
+    setImportForm({ categoryName: '', scene: '', powerRating: '', tags: '' })
+  }
+
+  const updateImportForm = (key, value) => {
+    setImportForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const confirmImport = async () => {
+    if (!previewFile) return
+    if (!importForm.categoryName.trim()) {
+      showToast('请填写业绩类别名称', 'error')
+      return
+    }
+    const data = new FormData()
+    data.append('file', previewFile, previewFile.name)
+    data.append('categoryName', importForm.categoryName.trim())
+    data.append('scene', importForm.scene.trim())
+    data.append('powerRating', importForm.powerRating.trim())
+    data.append('tags', importForm.tags)
+    data.append('scope', 'standard')
+    data.append('reviewStatus', 'draft')
+    setImporting(true)
+    try {
+      const result = await businessMaterialsAPI.performance.importCategory(data)
+      showToast(result?.message || '业绩包已导入')
+      closePreview()
+      await loadCategories()
+    } catch (error) {
+      showToast(error?.message || '业绩包导入失败', 'error')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const openDetail = async (item) => {
+    setDetailLoading(true)
+    try {
+      const payload = await businessMaterialsAPI.performance.category(item.id)
+      setDetail(payload || null)
+    } catch (error) {
+      showToast(error?.message || '业绩明细加载失败', 'error')
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  const chooseAttachmentFile = (item) => {
+    setUploadingCategoryId(item.id)
+    if (!attachmentInputRef.current) return
+    attachmentInputRef.current.value = ''
+    attachmentInputRef.current.click()
+  }
+
+  const uploadAttachment = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file || !uploadingCategoryId) return
+    const data = new FormData()
+    data.append('file', file, file.name)
+    data.append('attachmentType', 'contract_bundle')
+    setUploadingAttachment(true)
+    try {
+      const result = await businessMaterialsAPI.performance.uploadCategoryAttachment(uploadingCategoryId, data)
+      showToast(result?.message || '合同附件已上传')
+      await loadCategories()
+      if (detail?.item?.id === uploadingCategoryId) {
+        const payload = await businessMaterialsAPI.performance.category(uploadingCategoryId)
+        setDetail(payload || null)
+      }
+    } catch (error) {
+      showToast(error?.message || '合同附件上传失败', 'error')
+    } finally {
+      setUploadingAttachment(false)
+      setUploadingCategoryId('')
+    }
+  }
+
+  const toggleCategoryStatus = async (item) => {
+    const nextStatus = item.status === 'disabled' ? 'enabled' : 'disabled'
+    const nextLabel = CATEGORY_STATUS_LABELS[nextStatus]
+    if (!window.confirm(`确认${nextLabel}业绩类别：${item.name || item.id}？`)) return
+    try {
+      const result = await businessMaterialsAPI.performance.updateCategoryStatus(item.id, { status: nextStatus })
+      showToast(result?.message || `业绩类别已${nextLabel}`)
+      await loadCategories()
+      if (detail?.item?.id === item.id) {
+        const payload = await businessMaterialsAPI.performance.category(item.id)
+        setDetail(payload || null)
+      }
+    } catch (error) {
+      showToast(error?.message || `业绩类别${nextLabel}失败`, 'error')
+    }
+  }
+
+  const openDeleteDialog = (item) => {
+    setDeleteTarget(item)
+    setDeleteConfirmName('')
+  }
+
+  const closeDeleteDialog = () => {
+    if (deleting) return
+    setDeleteTarget(null)
+    setDeleteConfirmName('')
+  }
+
+  const deleteCategory = async () => {
+    if (!deleteTarget) return
+    const expectedName = deleteTarget.name || deleteTarget.id
+    if (deleteConfirmName.trim() !== expectedName) {
+      showToast('请输入完整业绩类别名称后再删除', 'error')
+      return
+    }
+    setDeleting(true)
+    try {
+      const result = await businessMaterialsAPI.performance.deleteCategory(deleteTarget.id, { confirmName: deleteConfirmName.trim() })
+      showToast(result?.message || '业绩类别已删除')
+      await loadCategories()
+      if (detail?.item?.id === deleteTarget.id) setDetail(null)
+      closeDeleteDialog()
+    } catch (error) {
+      showToast(error?.message || '业绩类别删除失败', 'error')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  const currentDetailItem = detail?.item
+  const currentFields = currentDetailItem?.fieldSchema || []
+  const visibleFields = currentFields.length ? currentFields : (preview?.fieldSchema || [])
+
   return (
     <main className="h-full min-h-0 overflow-hidden bg-surface text-on-surface">
-      <input ref={fileInputRef} type="file" accept=".doc,.docx" onChange={uploadWord} className="hidden" />
+      <input ref={summaryInputRef} type="file" accept=".docx" onChange={previewSummary} className="hidden" />
+      <input ref={attachmentInputRef} type="file" accept=".doc,.docx" onChange={uploadAttachment} className="hidden" />
       <div className="flex h-full min-h-0 flex-col gap-3 px-4 py-4 sm:px-5 lg:px-6">
         <MaterialsViewSwitch
           active="performance"
           title="商务标共用业绩库"
-          subtitle="沉淀可复用业绩字段和 Word 证明文件"
+          subtitle="按功率维护业绩包，汇总表字段用于筛选和后续任务填写"
           basePath={materialsBasePath}
           actions={
-            <button onClick={openCreate} className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-on-primary hover:bg-primary-container">
-              新增业绩
+            <button
+              onClick={openSummaryChooser}
+              disabled={previewing}
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-on-primary hover:bg-primary-container disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-base">upload_file</span>
+              {previewing ? '解析中...' : '导入业绩包'}
             </button>
           }
         />
 
         <section className="rounded-lg border border-surface-container-high bg-surface-container-lowest p-3">
-          <div className="grid gap-2 md:grid-cols-4">
-            <input value={filters.keyword} onChange={(e) => updateFilter('keyword', e.target.value)} placeholder="搜索业绩/客户/机型/规模" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
-            <input value={filters.customerName} onChange={(e) => updateFilter('customerName', e.target.value)} placeholder="客户名称" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
-            <input value={filters.tag} onChange={(e) => updateFilter('tag', e.target.value)} placeholder="标签" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
-            <select value={filters.bidType} onChange={(e) => updateFilter('bidType', e.target.value)} className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm">
-              <option value="">全部标类</option>
-              {BID_TYPE_OPTIONS.map((item) => <option key={item} value={item}>{item}</option>)}
+          <div className="grid gap-2 md:grid-cols-5">
+            <input value={filters.keyword} onChange={(event) => updateFilter('keyword', event.target.value)} placeholder="搜索类别/项目/买方/机型" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
+            <input value={filters.scene} onChange={(event) => updateFilter('scene', event.target.value)} placeholder="陆上/海上" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
+            <input value={filters.powerRating} onChange={(event) => updateFilter('powerRating', event.target.value)} placeholder="功率，如 11MW" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
+            <input value={filters.tag} onChange={(event) => updateFilter('tag', event.target.value)} placeholder="标签" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
+            <select value={filters.status} onChange={(event) => updateFilter('status', event.target.value)} className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm">
+              {CATEGORY_STATUS_OPTIONS.map((option) => (
+                <option key={option.label} value={option.value}>{option.label}</option>
+              ))}
             </select>
           </div>
         </section>
@@ -250,67 +347,72 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
           {loading ? (
             <div className="p-6 text-sm text-on-surface-variant">加载中...</div>
           ) : !items.length ? (
-            <div className="p-6 text-sm text-on-surface-variant">暂无业绩记录</div>
+            <div className="p-6 text-sm text-on-surface-variant">暂无业绩类别</div>
           ) : (
-            <table className="w-full min-w-[1080px] text-left text-sm">
+            <table className="w-full min-w-[1220px] text-left text-[12px] leading-5">
               <thead className="sticky top-0 bg-surface-container-low text-xs text-on-surface-variant">
                 <tr>
-                  <th className="px-3 py-2">业绩</th>
-                  <th className="px-3 py-2">客户/范围</th>
-                  <th className="px-3 py-2">机型</th>
-                  <th className="px-3 py-2">规模/地点/时间</th>
-                  <th className="px-3 py-2">标签</th>
-                  <th className="px-3 py-2">证明文件</th>
-                  <th className="px-3 py-2 text-right">操作</th>
+                  {SORTABLE_COLUMNS.map((column) => (
+                    <th key={column.key} className="px-3 py-2">
+                      <SortHeader columnKey={column.key} label={column.label} sortBy={sort.sortBy} sortOrder={sort.sortOrder} onSort={updateSort} />
+                    </th>
+                  ))}
+                  <th className="w-[230px] px-3 py-2 text-right">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((item) => {
                   const itemTags = normalizeTags(item.tags)
-                  const bidTypes = item.applicableBidTypes || []
-                  const detailLine = compactParts(item.projectType, item.amount)
-                  const rangeLine = compactParts(scopeLabel(item.scope), reviewStatusLabel(item.reviewStatus), bidTypes.join('、'))
-                  const deliveryLine = compactParts(item.scale, item.location, dateRangeLabel(item.startedAt, item.completedAt))
+                  const fieldLabels = (item.fieldSchema || []).map((field) => field.label || field.sourceHeader || field.key).filter(Boolean)
                   return (
                     <tr key={item.id} className="border-t border-surface-container-high align-top">
-                      <td className="px-3 py-3">
-                        <div className="max-w-[15rem] font-semibold text-on-surface">{item.name || '-'}</div>
-                        <div className="mt-1 text-xs text-outline">{detailLine || item.id}</div>
-                      </td>
-                      <td className="px-3 py-3">
-                        <div>{item.customerName || '-'}</div>
-                        <div className="mt-1 text-xs text-outline">{rangeLine || '-'}</div>
-                      </td>
-                      <td className="px-3 py-3">
-                        <span className="inline-flex rounded-full bg-secondary-container px-2 py-0.5 text-xs font-semibold text-on-secondary-container">
-                          {item.turbineModel || '未填写机型'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="max-w-[18rem] text-on-surface-variant">{deliveryLine || '-'}</div>
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="flex max-w-[220px] flex-wrap gap-1">
-                          {itemTags.length ? itemTags.map((tag) => (
-                            <span key={tag} className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">{tag}</span>
-                          )) : <span className="text-outline">-</span>}
+                      <td className="px-3 py-2.5">
+                        <button onClick={() => openDetail(item)} className="max-w-[18rem] text-left text-[12.5px] font-semibold leading-5 text-primary hover:underline">
+                          {item.name || item.id}
+                        </button>
+                        <div className="mt-1.5 flex max-w-[220px] flex-wrap gap-1">
+                          <span className="rounded-full bg-surface-container-high px-1.5 py-0.5 text-[11px] leading-4 text-on-surface-variant">{SCOPE_LABELS[item.scope] || '通用'}</span>
+                          {itemTags.map((tag) => (
+                            <span key={tag} className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[11px] leading-4 text-primary">{tag}</span>
+                          ))}
                         </div>
                       </td>
-                      <td className="px-3 py-3">
-                        {item.wordObjectKey ? (
-                          <a className="inline-flex max-w-[15rem] flex-col text-primary hover:underline" href={businessMaterialsAPI.performance.wordUrl(item.id)} target="_blank" rel="noreferrer">
-                            <span className="truncate">{item.wordFileName || '下载 Word'}</span>
-                            <span className="text-xs text-outline">{sizeLabel(item.wordSizeBytes) || 'Word 证明'}</span>
-                          </a>
-                        ) : (
-                          <span className="text-outline">未上传</span>
-                        )}
+                      <td className="px-3 py-2.5">
+                        <div className="font-medium">{compactParts(item.scene, item.powerRating) || '-'}</div>
+                        <div className="mt-0.5 text-[11px] leading-4 text-outline">更新 {formatDateTime(item.updatedAt) || '-'}</div>
                       </td>
-                      <td className="px-3 py-3">
-                        <div className="flex justify-end gap-2">
-                          <button onClick={() => openEdit(item)} className="rounded-md bg-surface-container-high px-2.5 py-1.5 text-xs hover:bg-surface-dim">编辑</button>
-                          <button onClick={() => chooseWordFile(item)} className="rounded-md bg-primary/10 px-2.5 py-1.5 text-xs text-primary hover:bg-primary/15">上传 Word</button>
-                          <button onClick={() => disableRecord(item)} className="rounded-md bg-error-container/40 px-2.5 py-1.5 text-xs text-error hover:bg-error-container">停用</button>
+                      <td className="px-3 py-2.5">
+                        <span className="inline-flex rounded-full bg-secondary-container px-1.5 py-0.5 text-[11px] font-semibold leading-4 text-on-secondary-container">
+                          {Number(item.itemCount || 0)} 条
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div className="max-w-[19rem] text-on-surface-variant">{fieldLabels.slice(0, 5).join('、') || '-'}</div>
+                        {fieldLabels.length > 5 ? <div className="mt-0.5 text-[11px] leading-4 text-outline">另 {fieldLabels.length - 5} 个字段</div> : null}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div>{item.summaryFileName || '未保存汇总表'}</div>
+                        <div className="mt-0.5 text-[11px] leading-4 text-outline">
+                          {item.contractAttachmentCount ? `合同附件：${item.contractFileName || `${item.contractAttachmentCount} 个`}` : '未上传合同附件'}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div>
+                          <span className={`rounded-full px-1.5 py-0.5 text-[11px] leading-4 ${item.status === 'disabled' ? 'bg-error-container/40 text-error' : 'bg-secondary-container text-on-secondary-container'}`}>
+                            {CATEGORY_STATUS_LABELS[item.status] || '启用'}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex justify-end gap-1.5 whitespace-nowrap">
+                          <button onClick={() => openDetail(item)} className="rounded-md bg-surface-container-high px-2 py-1 text-[11px] leading-4 hover:bg-surface-dim">明细</button>
+                          <button disabled={uploadingAttachment && uploadingCategoryId === item.id} onClick={() => chooseAttachmentFile(item)} className="rounded-md bg-primary/10 px-2 py-1 text-[11px] leading-4 text-primary hover:bg-primary/15 disabled:opacity-50">
+                            {uploadingAttachment && uploadingCategoryId === item.id ? '上传中...' : '上传合同'}
+                          </button>
+                          <button onClick={() => toggleCategoryStatus(item)} className={`rounded-md px-2 py-1 text-[11px] leading-4 ${item.status === 'disabled' ? 'bg-secondary-container text-on-secondary-container hover:bg-secondary-container/80' : 'bg-error-container/40 text-error hover:bg-error-container'}`}>
+                            {item.status === 'disabled' ? '启用' : '停用'}
+                          </button>
+                          <button onClick={() => openDeleteDialog(item)} className="rounded-md bg-error-container/40 px-2 py-1 text-[11px] leading-4 text-error hover:bg-error-container">删除</button>
                         </div>
                       </td>
                     </tr>
@@ -322,7 +424,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
         </section>
 
         <div className="flex items-center justify-between text-sm text-on-surface-variant">
-          <span>共 {total} 条</span>
+          <span>共 {total} 个业绩类别</span>
           <div className="flex items-center gap-2">
             <button disabled={page <= 1} onClick={() => setPage((prev) => Math.max(1, prev - 1))} className="rounded-md bg-surface-container-high px-3 py-1.5 disabled:opacity-50">上一页</button>
             <span>{page} / {totalPages}</span>
@@ -331,42 +433,154 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
         </div>
       </div>
 
-      {showForm && (
+      {preview && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-xl border border-surface-container-high bg-surface-container-lowest shadow-2xl">
+          <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest shadow-2xl">
             <div className="flex items-center justify-between border-b border-surface-container-high px-5 py-4">
-              <h2 className="text-base font-semibold">{editingItem?.id ? '编辑业绩' : '新增业绩'}</h2>
-              <button onClick={closeForm} className="close-plain text-on-surface-variant hover:text-primary" aria-label="关闭">x</button>
+              <div>
+                <h2 className="text-base font-semibold">导入预览</h2>
+                <p className="mt-1 text-xs text-on-surface-variant">{preview.sourceFileName} · {preview.rowCount} 条明细</p>
+              </div>
+              <button onClick={closePreview} className="close-plain text-on-surface-variant hover:text-primary" aria-label="关闭">x</button>
             </div>
-            <div className="grid gap-3 p-5 md:grid-cols-2">
-              <label className="text-sm text-on-surface-variant md:col-span-2">业绩名称<input value={form.name} onChange={(e) => updateField('name', e.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm" /></label>
-              <label className="text-sm text-on-surface-variant">客户<input value={form.customerName} onChange={(e) => updateField('customerName', e.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm" /></label>
-              <label className="text-sm text-on-surface-variant">项目类型<input value={form.projectType} onChange={(e) => updateField('projectType', e.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm" /></label>
-              <label className="text-sm text-on-surface-variant">规模<input value={form.scale} onChange={(e) => updateField('scale', e.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm" /></label>
-              <label className="text-sm text-on-surface-variant">地点<input value={form.location} onChange={(e) => updateField('location', e.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm" /></label>
-              <label className="text-sm text-on-surface-variant">开始时间<input value={form.startedAt} onChange={(e) => updateField('startedAt', e.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm" /></label>
-              <label className="text-sm text-on-surface-variant">完成时间<input value={form.completedAt} onChange={(e) => updateField('completedAt', e.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm" /></label>
-              <label className="text-sm text-on-surface-variant">金额<input value={form.amount} onChange={(e) => updateField('amount', e.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm" /></label>
-              <label className="text-sm text-on-surface-variant">机型<input value={form.turbineModel} onChange={(e) => updateField('turbineModel', e.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm" /></label>
-              <label className="text-sm text-on-surface-variant md:col-span-2">标签<input value={form.tags} onChange={(e) => updateField('tags', e.target.value)} placeholder="业绩，资格，评分响应" className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm" /></label>
-              <label className="text-sm text-on-surface-variant">范围<select value={form.scope} onChange={(e) => updateField('scope', e.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm">{SCOPE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
-              <label className="text-sm text-on-surface-variant">审核状态<select value={form.reviewStatus} onChange={(e) => updateField('reviewStatus', e.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm">{STATUS_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
-              <div className="text-sm text-on-surface-variant md:col-span-2">
-                <span className="block mb-2">适用标类</span>
-                <div className="flex gap-3">
-                  {BID_TYPE_OPTIONS.map((item) => (
-                    <label key={item} className="inline-flex items-center gap-2">
-                      <input type="checkbox" checked={form.applicableBidTypes.includes(item)} onChange={() => toggleBidType(item)} />
-                      {item}
-                    </label>
-                  ))}
-                </div>
+            <div className="min-h-0 overflow-auto p-5">
+              <div className="grid gap-3 md:grid-cols-4">
+                <label className="text-sm text-on-surface-variant md:col-span-2">类别名称<input value={importForm.categoryName} onChange={(event) => updateImportForm('categoryName', event.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm text-on-surface" /></label>
+                <label className="text-sm text-on-surface-variant">场景<input value={importForm.scene} onChange={(event) => updateImportForm('scene', event.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm text-on-surface" /></label>
+                <label className="text-sm text-on-surface-variant">功率<input value={importForm.powerRating} onChange={(event) => updateImportForm('powerRating', event.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm text-on-surface" /></label>
+                <label className="text-sm text-on-surface-variant md:col-span-4">标签<input value={importForm.tags} onChange={(event) => updateImportForm('tags', event.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm text-on-surface" /></label>
+              </div>
+
+              {preview.summary ? (
+                <div className="mt-4 rounded-lg bg-surface-container-low px-3 py-2 text-sm text-on-surface-variant">{preview.summary}</div>
+              ) : null}
+
+              <div className="mt-4 overflow-auto rounded-lg border border-surface-container-high bg-white">
+                <table className="w-full min-w-[980px] text-left text-xs">
+                  <thead className="bg-surface-container-low text-on-surface-variant">
+                    <tr>
+                      {(preview.fieldSchema || []).map((field) => (
+                        <th key={field.key || field.label} className="px-3 py-2">{field.label || field.sourceHeader || field.key}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {previewRows(preview.rows).map((row) => (
+                      <tr key={row.rowIndex} className="border-t border-surface-container-high">
+                        {(preview.fieldSchema || []).map((field) => (
+                          <td key={field.key || field.label} className="max-w-[16rem] truncate px-3 py-2">{row.values?.[field.sourceHeader || field.label] || '-'}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
             <div className="flex justify-end gap-2 border-t border-surface-container-high bg-surface-container-low px-5 py-4">
-              <button onClick={closeForm} className="rounded-lg px-4 py-2 text-sm text-on-surface-variant hover:bg-surface-container-high">取消</button>
-              <button onClick={saveRecord} disabled={saving} className="rounded-lg bg-primary px-4 py-2 text-sm text-on-primary disabled:opacity-50">{saving ? '保存中...' : '保存'}</button>
+              <button onClick={closePreview} className="rounded-lg px-4 py-2 text-sm text-on-surface-variant hover:bg-surface-container-high">取消</button>
+              <button onClick={confirmImport} disabled={importing} className="rounded-lg bg-primary px-4 py-2 text-sm text-on-primary disabled:opacity-50">{importing ? '导入中...' : '确认导入'}</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-lg overflow-hidden rounded-xl border border-error/30 bg-surface-container-lowest shadow-2xl">
+            <div className="border-b border-surface-container-high px-5 py-4">
+              <h2 className="text-base font-semibold text-error">删除业绩类别</h2>
+              <p className="mt-1 text-sm text-on-surface-variant">{deleteTarget.name || deleteTarget.id}</p>
+            </div>
+            <div className="p-5">
+              <div className="rounded-lg bg-error-container/30 px-3 py-2 text-sm text-error">
+                删除后会移除该类别、明细和已绑定附件，不能从停用列表恢复。
+              </div>
+              <label className="mt-4 block text-sm text-on-surface-variant">
+                输入类别名称确认
+                <input
+                  value={deleteConfirmName}
+                  onChange={(event) => setDeleteConfirmName(event.target.value)}
+                  className="mt-1 h-10 w-full rounded-lg border border-surface-container-high bg-surface-container-lowest px-3 text-sm text-on-surface"
+                  autoFocus
+                />
+              </label>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-surface-container-high bg-surface-container-low px-5 py-4">
+              <button onClick={closeDeleteDialog} disabled={deleting} className="rounded-lg px-4 py-2 text-sm text-on-surface-variant hover:bg-surface-container-high disabled:opacity-50">取消</button>
+              <button
+                onClick={deleteCategory}
+                disabled={deleting || deleteConfirmName.trim() !== (deleteTarget.name || deleteTarget.id)}
+                className="rounded-lg bg-error px-4 py-2 text-sm text-on-error disabled:opacity-50"
+              >
+                {deleting ? '删除中...' : '确认删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {detail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest shadow-2xl">
+            <div className="flex items-center justify-between border-b border-surface-container-high px-5 py-4">
+              <div>
+                <h2 className="text-base font-semibold">{currentDetailItem?.name || '业绩明细'}</h2>
+                <p className="mt-1 text-xs text-on-surface-variant">{compactParts(currentDetailItem?.scene, currentDetailItem?.powerRating, `${currentDetailItem?.itemCount || 0} 条明细`)}</p>
+              </div>
+              <button onClick={() => setDetail(null)} className="close-plain text-on-surface-variant hover:text-primary" aria-label="关闭">x</button>
+            </div>
+            {detailLoading ? (
+              <div className="p-6 text-sm text-on-surface-variant">加载中...</div>
+            ) : (
+              <div className="min-h-0 overflow-auto p-5">
+                {currentDetailItem?.summary ? (
+                  <div className="rounded-lg bg-surface-container-low px-3 py-2 text-sm text-on-surface-variant">{currentDetailItem.summary}</div>
+                ) : null}
+
+                <div className="mt-4">
+                  <div className="mb-2 flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">附件</h3>
+                    <button onClick={() => chooseAttachmentFile(currentDetailItem)} className="rounded-md bg-primary/10 px-2.5 py-1.5 text-xs text-primary hover:bg-primary/15">上传合同</button>
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {(detail.attachments || []).length ? detail.attachments.map((attachment) => (
+                      <a
+                        key={attachment.id}
+                        href={businessMaterialsAPI.performance.categoryAttachmentUrl(attachment.categoryId, attachment.id)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-lg border border-surface-container-high bg-white px-3 py-2 text-sm hover:border-primary"
+                      >
+                        <span className="block font-medium text-primary">{attachment.fileName}</span>
+                        <span className="mt-1 block text-xs text-outline">{ATTACHMENT_LABELS[attachment.attachmentType] || attachment.attachmentType} · {sizeLabel(attachment.sizeBytes) || '-'}</span>
+                      </a>
+                    )) : <div className="text-sm text-on-surface-variant">暂无附件</div>}
+                  </div>
+                </div>
+
+                <div className="mt-4 overflow-auto rounded-lg border border-surface-container-high bg-white">
+                  <table className="w-full min-w-[1080px] text-left text-xs">
+                    <thead className="sticky top-0 bg-surface-container-low text-on-surface-variant">
+                      <tr>
+                        {visibleFields.map((field) => (
+                          <th key={field.key || field.label} className="px-3 py-2">{field.label || field.sourceHeader || field.key}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(detail.rows || []).map((row) => (
+                        <tr key={row.id} className="border-t border-surface-container-high">
+                          {visibleFields.map((field) => {
+                            const label = field.sourceHeader || field.label
+                            return <td key={field.key || field.label} className="max-w-[18rem] px-3 py-2 align-top">{row.values?.[label] || '-'}</td>
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
