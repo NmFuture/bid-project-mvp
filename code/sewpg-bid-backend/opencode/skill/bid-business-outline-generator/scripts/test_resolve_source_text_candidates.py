@@ -6,6 +6,11 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("resolve_source_text_candidates.py")
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import resolve_source_text_candidates as resolver
 
 
 def block(block_id, text, **extra):
@@ -385,6 +390,37 @@ class ResolveSourceTextCandidatesTest(unittest.TestCase):
 
         self.assertTrue(any("child 的 source_text 与父项 source_text 完全相同" in message for message in messages))
         self.assertTrue(any("多个 sibling child 复用同一个父项 source_text" in message for message in messages))
+
+    def test_large_source_set_uses_bounded_candidate_pool(self):
+        sources = []
+        for index in range(2500):
+            text = f"无关条款 {index} 投标文件完整性说明"
+            sources.append(
+                {
+                    "source_type": "block",
+                    "source_text": text,
+                    "source_compact": resolver.compact(text),
+                    "scope_hint": "full_text",
+                    "index": index,
+                }
+            )
+        target = "附件9 保密承诺书"
+        sources.append(
+            {
+                "source_type": "block",
+                "source_text": target,
+                "source_compact": resolver.compact(target),
+                "scope_hint": "format_area",
+                "index": 2501,
+            }
+        )
+        source_set = resolver.SourceSet(sources)
+        features = resolver.section_features({"title": "保密承诺书", "source_text": "9.2 保密承诺书"})
+
+        selected = source_set.candidate_sources(features, source_set.sources)
+
+        self.assertLessEqual(len(selected), 220)
+        self.assertTrue(any(source["source_text"] == target for source in selected))
 
 
 if __name__ == "__main__":
