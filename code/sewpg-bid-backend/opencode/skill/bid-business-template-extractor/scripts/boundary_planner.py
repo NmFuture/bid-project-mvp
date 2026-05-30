@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from scripts.header_cluster_detector import detect_header_clusters
-from scripts.text_rules import clean_text
+from scripts.header_cluster_detector import detect_header_clusters, heading_code
+from scripts.text_rules import clean_text, compact_text, looks_like_body_sentence, looks_like_list_item_or_field
 
 
 MIN_STANDALONE_TEXT_LENGTH = 20
+CATALOG_LOOKBACK_BLOCKS = 16
 
 
 def _last_content_block_before(
@@ -36,6 +37,85 @@ def _has_table_between(blocks_by_id: dict[int, dict], start_block_id: int, end_b
         for block_id in range(start_block_id, end_block_id + 1)
         if block_id in blocks_by_id
     )
+
+
+def _content_blocks_between(blocks_by_id: dict[int, dict], start_block_id: int, end_block_id: int) -> list[dict]:
+    return [
+        blocks_by_id[block_id]
+        for block_id in range(start_block_id, end_block_id + 1)
+        if block_id in blocks_by_id
+        and (
+            blocks_by_id[block_id].get("type") == "table"
+            or clean_text(blocks_by_id[block_id].get("text"))
+        )
+    ]
+
+
+def _has_catalog_heading_before(
+    blocks_by_id: dict[int, dict],
+    *,
+    start_block_id: int,
+    region_start_block_id: int,
+) -> bool:
+    scanned = 0
+    for block_id in range(start_block_id - 1, max(region_start_block_id, start_block_id - CATALOG_LOOKBACK_BLOCKS) - 1, -1):
+        block = blocks_by_id.get(block_id)
+        if not block:
+            continue
+        if block.get("type") == "table":
+            return False
+        text = clean_text(block.get("text"))
+        if not text:
+            continue
+        scanned += 1
+        if compact_text(text) in {"目录", "目次"}:
+            return True
+        if scanned >= CATALOG_LOOKBACK_BLOCKS:
+            break
+    return False
+
+
+def _looks_like_catalog_listing_block(block: dict) -> bool:
+    if block.get("type") == "table":
+        return False
+    text = clean_text(block.get("text"))
+    if not text:
+        return True
+    code = heading_code(text)
+    if not code.get("appendix"):
+        return False
+    if looks_like_body_sentence(text) or looks_like_list_item_or_field(text):
+        return False
+    return not bool(
+        block.get("isPageFirstNonEmpty")
+        or block.get("hasPageBreakBefore")
+        or block.get("hasPageBreakAfter")
+    )
+
+
+def _should_skip_catalog_listing_cluster(
+    blocks_by_id: dict[int, dict],
+    cluster: dict,
+    next_cluster: dict | None,
+    *,
+    region_start_block_id: int,
+    start_block_id: int,
+    end_block_id: int,
+) -> bool:
+    if next_cluster is None:
+        return False
+    if "appendix_prefix" not in set(cluster.get("signals") or []):
+        return False
+    if _has_table_between(blocks_by_id, start_block_id, end_block_id):
+        return False
+    if not _has_catalog_heading_before(
+        blocks_by_id,
+        start_block_id=start_block_id,
+        region_start_block_id=region_start_block_id,
+    ):
+        return False
+    content_blocks = _content_blocks_between(blocks_by_id, start_block_id, end_block_id)
+    return bool(content_blocks) and all(_looks_like_catalog_listing_block(block) for block in content_blocks)
 
 
 def _should_skip_container_cluster(
@@ -86,6 +166,15 @@ def plan_boundaries(blocks: list[dict], regions: list[dict], anchors: list[dict]
             if end_block_id <= start_block_id:
                 continue
             content_text = _content_text_between(blocks_by_id, start_block_id, end_block_id)
+            if _should_skip_catalog_listing_cluster(
+                blocks_by_id,
+                cluster,
+                next_cluster,
+                region_start_block_id=int(region["startBlockId"]),
+                start_block_id=start_block_id,
+                end_block_id=end_block_id,
+            ):
+                continue
             if _should_skip_container_cluster(
                 blocks_by_id,
                 cluster,

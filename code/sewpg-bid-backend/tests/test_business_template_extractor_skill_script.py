@@ -72,6 +72,41 @@ def build_boundary_regression_docx(path: Path) -> None:
     doc.save(path)
 
 
+def build_catalog_listing_regression_docx(path: Path) -> None:
+    doc = Document()
+    doc.add_paragraph("第六章 投标文件格式")
+    doc.add_paragraph("目    录")
+    doc.add_paragraph("附件1 投标函、法定代表人（单位负责人）身份证明、法定代表人授权书")
+    doc.add_paragraph("附件2 投标价格表")
+    paragraph = doc.add_paragraph("附件3 货物规格一览表")
+    paragraph.style = "Heading 2"
+    doc.add_paragraph("附件4 商务条款偏差表")
+    doc.add_paragraph("附件5 投标保证金")
+    doc.add_paragraph("附件6 履约保证函")
+    doc.add_paragraph("附件7 资格证明文件")
+    paragraph = doc.add_paragraph("附件8 开标价格表及报价承诺函")
+    paragraph.style = "Heading 2"
+    doc.add_paragraph("附件9 投标人需要说明的其他内容")
+    doc.add_page_break()
+    doc.add_paragraph("附件1 投标函、法定代表人（单位负责人）身份证明、法定代表人授权书格式")
+    doc.add_paragraph("投标函的格式(1A)")
+    doc.add_paragraph("致：招标人")
+    doc.add_paragraph("投标人(盖公章)：")
+    doc.add_paragraph("法定代表人或其委托代理人(签字)：")
+    doc.add_paragraph("日期：       年    月   日")
+    doc.add_page_break()
+    doc.add_paragraph("附件3 货物规格一览表")
+    paragraph = doc.add_paragraph("表3 A")
+    paragraph.style = "Heading 2"
+    doc.add_table(rows=1, cols=2).cell(0, 0).text = "货物名称"
+    doc.add_page_break()
+    doc.add_paragraph("附件8 开标价格表及报价承诺函")
+    paragraph = doc.add_paragraph("开标价格表")
+    paragraph.style = "Heading 2"
+    doc.add_table(rows=1, cols=2).cell(0, 0).text = "开标价"
+    doc.save(path)
+
+
 def docx_text(path: Path) -> str:
     doc = Document(str(path))
     return "\n".join(paragraph.text for paragraph in doc.paragraphs if paragraph.text.strip())
@@ -182,6 +217,64 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
         self.assertNotIn("附件7E", item_text("7D-4"))
         self.assertNotIn("特殊附件1", item_text("开标价格表"))
         self.assertTrue(item_text("保密承诺书").startswith("特殊附件1\n保密承诺书"))
+
+
+    def test_runner_ignores_catalog_listing_before_real_templates(self) -> None:
+        source = self.temp_dir / "catalog-listing.docx"
+        output_dir = self.temp_dir / "catalog-listing-output"
+        manifest = self.temp_dir / "catalog-listing-manifest.json"
+        build_catalog_listing_regression_docx(source)
+        manifest.write_text(
+            json.dumps(
+                {
+                    "projectId": "proj-catalog-listing",
+                    "outputDir": str(output_dir),
+                    "documents": [
+                        {
+                            "id": "DOC-1",
+                            "name": "catalog-listing.docx",
+                            "sourcePath": str(source),
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        completed = subprocess.run(
+            [sys.executable, str(RUNNER), str(manifest)],
+            cwd=str(ROOT),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        payload = json.loads((output_dir / "business_template_extraction.json").read_text(encoding="utf-8"))
+        document_output = output_dir / "DOC-1"
+        boundaries = json.loads((document_output / "boundaries.json").read_text(encoding="utf-8"))
+        blocks = json.loads((document_output / "blocks.json").read_text(encoding="utf-8"))
+        catalog_heading_id = next(int(block["blockId"]) for block in blocks if block.get("text") == "目    录")
+        catalog_end_id = next(
+            int(block["blockId"])
+            for block in blocks
+            if int(block["blockId"]) > catalog_heading_id and block.get("hasPageBreakAfter")
+        )
+        catalog_listing_ids = {
+            int(block["blockId"])
+            for block in blocks
+            if catalog_heading_id < int(block["blockId"]) < catalog_end_id and str(block.get("text") or "").startswith("附件")
+        }
+        self.assertFalse(
+            any(int(item["startBlockId"]) in catalog_listing_ids for item in boundaries["templates"]),
+            boundaries["templates"],
+        )
+
+        titles = [item["title"] for item in payload["appendices"]]
+        self.assertTrue(any("表3 A" in title for title in titles))
+        self.assertTrue(any("开标价格表" in title for title in titles))
 
 
 class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
