@@ -167,6 +167,117 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             self.assertEqual(fact_by_key["tenderer"]["value"], "华能集团")
             self.assertGreaterEqual(len(payload["items"]), 10)
 
+    def test_qualification_requirements_are_section_based_and_filtered(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "资格要求样本.docx"
+            doc = Document()
+            doc.add_paragraph("目录")
+            doc.add_paragraph("3.5 资格审查资料\t23")
+            doc.add_paragraph("第一章 招标公告")
+            doc.add_paragraph("3. 投标人资格要求")
+            doc.add_paragraph("3.1 通用资格条件")
+            doc.add_paragraph("3.1.1 投标人为中华人民共和国境内合法注册的独立法人或其他组织，具有独立承担民事责任能力，具有独立订立合同的权利。")
+            doc.add_paragraph("3.1.2 投标人没有处于行政主管部门或中国华能集团有限公司系统内单位确认的禁止投标范围和处罚期内。")
+            doc.add_paragraph("3.2 专用资格条件")
+            doc.add_paragraph("3.2.1 业绩要求：")
+            doc.add_paragraph("标段一至标段四（需同时满足）：")
+            doc.add_paragraph("（1）投标人须提供近3年有6.25兆瓦或以上容量风电机组通过试运行业绩。")
+            doc.add_paragraph("（2）投标人须提供近3年超过100台6.25兆瓦或以上容量等级风电机组合同业绩。")
+            doc.add_paragraph("标段五（需同时满足）：")
+            doc.add_paragraph("（1）投标人须提供近3年单机容量8兆瓦或以上容量等级海上风电机组通过试运行业绩。")
+            doc.add_paragraph("3.2.2 资格能力要求：")
+            doc.add_paragraph("标段一至标段四（需同时满足）：")
+            doc.add_paragraph("（1）投标人需提供任意6.25兆瓦级别风力发电机组完整型式认证一项。")
+            doc.add_paragraph("（2）投标机型已取得对应各项目安全等级要求的设计认证。")
+            doc.add_paragraph("标段五（需同时满足）：")
+            doc.add_paragraph("（1）投标人需提供任意10兆瓦或以上级别海上风力发电机组完整型式认证一项。")
+            doc.add_paragraph("3.2.3 本项目不允许联合体投标。")
+            doc.add_paragraph("第二章 投标人须知")
+            doc.add_paragraph("1.4 投标人资格要求")
+            doc.add_paragraph("1.4.1 投标人应具备承担本招标项目资质条件、能力和信誉：见投标人须知前附表。")
+            doc.add_paragraph("3.5 资格审查资料")
+            doc.add_paragraph("除投标人须知前附表另有规定外，投标人应按下列规定提供资格审查资料，以证明其满足本章第 1.4 款规定的资质、财务、业绩、信誉等要求。")
+            doc.add_paragraph("3.5.1 投标人基本情况表应附营业执照复印件。")
+            doc.add_paragraph("第三章 评标办法")
+            doc.add_paragraph("附表3：商务评分标准表")
+            score_table = doc.add_table(rows=2, cols=4)
+            for col, text in enumerate(["序号", "评审因素", "分值", "评审标准"]):
+                score_table.cell(0, col).text = text
+            for col, text in enumerate(["1", "类似合同业绩", "20", "满足最低资格要求的合同业绩数量者得基础分12分，每增加100台加1分。"]):
+                score_table.cell(1, col).text = text
+            doc.add_paragraph("投标文件应当对招标文件的实质性要求作出响应，否则投标将被否决。")
+            doc.save(source_path)
+
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-QUAL-SECTION",
+                        "bidType": "商务标",
+                        "parseProfile": "business",
+                        "structuredResultPath": str(output_path),
+                        "documents": [
+                            {
+                                "id": "DOC-QUAL",
+                                "name": source_path.name,
+                                "sourcePath": str(source_path),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [sys.executable, str(script_path), str(manifest_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(json.loads(completed.stdout)["schemaVersion"], "bid-business-tender-structured-v1")
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            rows = payload["structured"]["fieldGroups"]["qualificationRequirements"]
+            contents = [row["content"] for row in rows]
+
+            self.assertGreaterEqual(len(rows), 8)
+            self.assertTrue(any("合法注册的独立法人" in text for text in contents))
+            self.assertTrue(any("6.25兆瓦或以上容量风电机组通过试运行业绩" in text for text in contents))
+            self.assertTrue(any("超过100台6.25兆瓦" in text for text in contents))
+            self.assertTrue(any("8兆瓦或以上容量等级海上风电机组" in text for text in contents))
+            self.assertTrue(any("完整型式认证" in text for text in contents))
+            self.assertTrue(any("设计认证" in text for text in contents))
+            self.assertTrue(any("不允许联合体投标" in text for text in contents))
+
+            joined = "\n".join(contents)
+            self.assertNotIn("满足最低资格要求的合同业绩数量者得基础分", joined)
+            self.assertNotIn("资格审查资料\t23", joined)
+            self.assertNotIn("营业执照复印件", joined)
+            self.assertNotIn("投标将被否决", joined)
+            self.assertNotIn("见投标人须知前附表", joined)
+
+            scoped = [row for row in rows if "6.25兆瓦" in row["content"]]
+            self.assertTrue(scoped)
+            self.assertTrue(all(row["applicableScope"] == "标段一至标段四" for row in scoped))
+            offshore = [row for row in rows if "8兆瓦或以上容量等级海上风电机组" in row["content"]]
+            self.assertTrue(offshore)
+            self.assertEqual(offshore[0]["applicableScope"], "标段五")
+
+            for row in rows:
+                self.assertIn("sourceText", row)
+                self.assertNotRegex(row["sourceText"], r"^L\d+$")
+                self.assertNotRegex(row["sourceText"], r"B\d+/R\d+")
+                self.assertTrue(row["sourceText"].startswith("资格要求样本.docx："))
+                self.assertIn("sourceFile", row)
+                self.assertIn("section", row)
+                self.assertIn("evidence", row)
+                self.assertIn("evidenceLocation", row)
+
     def test_business_parser_preserves_template_extractor_appendices(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = Path(temp)

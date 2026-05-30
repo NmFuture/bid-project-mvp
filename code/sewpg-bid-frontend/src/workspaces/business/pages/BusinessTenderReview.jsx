@@ -116,6 +116,12 @@ const sourceValue = (row = {}) => displayValue(
   [row.sourceFile, row.section, row.evidenceLocation].filter(Boolean),
 )
 
+const qualificationSourceValue = (row = {}) => {
+  const readable = displayValue(row.sourceText || row.sourceLabel || row.source)
+  if (readable !== '-') return readable
+  return displayValue([row.sourceFile, row.section].filter(Boolean))
+}
+
 const riskLevelLabel = (value = '') => {
   if (value === 'high') return '高风险'
   if (value === 'medium') return '中风险'
@@ -232,16 +238,18 @@ function QualificationRequirementsTable({ title, rows = [] }) {
         <span className="text-xs text-outline">{rows.length} 条</span>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full table-fixed text-sm min-w-[760px]">
+        <table className="w-full table-fixed text-sm min-w-[920px]">
           <colgroup>
             <col className="w-20" />
             <col className="w-[34rem]" />
-            <col className="w-64" />
+            <col className="w-40" />
+            <col className="w-72" />
           </colgroup>
           <thead>
             <tr className="border-b border-surface-container-high">
               <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">序号</th>
               <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">要求内容</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">适用范围</th>
               <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">来源</th>
             </tr>
           </thead>
@@ -252,11 +260,16 @@ function QualificationRequirementsTable({ title, rows = [] }) {
                 <td className="business-core-text-cell px-4 py-2 text-on-surface">
                   {displayValue(row.content || row.value || row.evidence)}
                 </td>
-                <td className="business-core-text-cell px-4 py-2 text-on-surface-variant">{sourceValue(row)}</td>
+                <td className="business-core-text-cell px-4 py-2 text-center text-on-surface-variant">
+                  {displayValue(row.applicableScope, '全部标段')}
+                </td>
+                <td className="business-core-text-cell px-4 py-2 text-on-surface-variant">
+                  {qualificationSourceValue(row)}
+                </td>
               </tr>
             )) : (
               <tr>
-                <td className="px-4 py-3 text-outline" colSpan={3}>未识别到投标人资格要求。</td>
+                <td className="px-4 py-3 text-outline" colSpan={4}>未识别到投标人资格要求。</td>
               </tr>
             )}
           </tbody>

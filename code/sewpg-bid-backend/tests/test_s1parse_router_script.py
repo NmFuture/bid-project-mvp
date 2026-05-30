@@ -149,6 +149,74 @@ class S1ParseRouterScriptTests(unittest.TestCase):
             self.assertEqual(structured["commitmentLetters"][2]["title"], "投标人不存在下列情形之一承诺函")
             self.assertEqual(len(structured.get("commitmentClues") or []), 0)
 
+    def test_business_router_outputs_readable_qualification_requirements(self) -> None:
+        router_path = self.router_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "商务资格要求.md"
+            source_path.write_text(
+                "\n".join(
+                    [
+                        "# 商务招标文件",
+                        "第一章 招标公告",
+                        "3. 投标人资格要求",
+                        "3.1 通用资格条件",
+                        "3.1.1 投标人为中华人民共和国境内合法注册的独立法人或其他组织。",
+                        "3.2 专用资格条件",
+                        "3.2.1 业绩要求：",
+                        "标段一（需同时满足）：",
+                        "（1）投标人须提供近3年同类项目合同业绩。",
+                        "3.2.2 本项目不接受联合体投标。",
+                        "第三章 评标办法",
+                        "满足最低资格要求的合同业绩数量者得基础分12分。",
+                        "3.5 资格审查资料\t23",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-BUSINESS-QUAL-ROUTER",
+                        "bidType": "商务标",
+                        "parseProfile": "business",
+                        "structuredResultPath": str(output_path),
+                        "documents": [
+                            {
+                                "id": "DOC-1",
+                                "name": source_path.name,
+                                "sourcePath": str(source_path),
+                                "textPath": str(source_path),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [sys.executable, str(router_path), str(manifest_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(json.loads(completed.stdout)["schemaVersion"], "bid-business-tender-structured-v1")
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            rows = payload["structured"]["fieldGroups"]["qualificationRequirements"]
+            contents = "\n".join(row["content"] for row in rows)
+            self.assertIn("中华人民共和国境内合法注册", contents)
+            self.assertIn("近3年同类项目合同业绩", contents)
+            self.assertIn("不接受联合体投标", contents)
+            self.assertNotIn("基础分12分", contents)
+            self.assertNotIn("资格审查资料\t23", contents)
+            self.assertTrue(any(row["applicableScope"] == "标段一" for row in rows))
+            self.assertTrue(all("sourceText" in row and "L" not in row["sourceText"] for row in rows))
+
     def test_business_s1parse_router_still_targets_structured_parser_when_template_extraction_path_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = Path(temp)

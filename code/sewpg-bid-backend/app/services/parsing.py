@@ -207,6 +207,81 @@ COMMITMENT_REQUIREMENT_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("commitmentGenerationBasis", "承诺文件生成依据", ("承诺函", "承诺书", "不得存在下列情形")),
 )
 
+QUALIFICATION_SECTION_ANCHORS = (
+    "投标人资格要求",
+    "投标人资格条件",
+    "资格能力要求",
+    "专用资格条件",
+    "通用资格条件",
+    "合格投标人资格",
+    "供应商资格要求",
+    "资质条件、能力和信誉",
+)
+
+QUALIFICATION_STOP_ANCHORS = (
+    "投标文件的组成",
+    "投标报价",
+    "投标保证金",
+    "投标人须知",
+    "资格审查资料",
+    "评标办法",
+    "符合性审查",
+    "商务评分",
+    "技术评分",
+    "投标文件格式",
+    "合同条款",
+)
+
+QUALIFICATION_EXCLUDE_KEYWORDS = (
+    "资格审查资料",
+    "证明材料",
+    "复印件",
+    "扫描件",
+    "附件",
+    "评分",
+    "得分",
+    "分值",
+    "满分",
+    "基础分",
+    "加分",
+    "否决",
+    "废标",
+    "不予受理",
+    "目录",
+    "页码",
+    "见投标人须知前附表",
+    "见评标办法前附表",
+    "同招标公告",
+)
+
+QUALIFICATION_REQUIRED_CUES = (
+    "投标人",
+    "投标机型",
+    "供应商",
+    "联合体",
+    "须",
+    "应",
+    "需",
+    "具有",
+    "具备",
+    "不得",
+    "不允许",
+    "不接受",
+    "没有处于",
+    "未被",
+)
+
+SCOPE_PATTERN = re.compile(
+    r"^(?:"
+    r"标段[一二三四五六七八九十\d]+(?:[、至和及,\-]+标段?[一二三四五六七八九十\d]+)*"
+    r"|第[一二三四五六七八九十\d]+标段"
+    r"|所有标段"
+    r"|全部标段"
+    r"|本项目"
+    r")(?:（[^）]*）)?[:：]?$"
+)
+CLAUSE_PATTERN = re.compile(r"^(?:\d+(?:\.\d+){1,4}|[（(][一二三四五六七八九十\d]+[）)]|[一二三四五六七八九十\d]+[、.．])\s*")
+
 BUSINESS_CORE_PROJECT_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("projectName", "项目名称", ("项目名称", "招标项目名称")),
     FieldSpec("tenderNo", "招标编号", ("招标编号", "项目编号", "招标文件编号")),
@@ -571,6 +646,14 @@ def _copy_meta_fields(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _qualification_source_text(*, source_file: str, section: str, clause_no: str = "") -> str:
+    parts = [part.strip(" ：:") for part in (section, clause_no) if str(part or "").strip()]
+    readable = " > ".join(dict.fromkeys(parts))
+    if readable:
+        return f"{source_file}：{readable}"
+    return source_file
+
+
 def _business_field_from_item(spec: FieldSpec, item: dict[str, Any], *, value_override: str | None = None) -> dict[str, Any]:
     field = {
         "key": spec.key,
@@ -799,6 +882,165 @@ def _is_docx_source(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() == ".docx"
 
 
+def _document_text_lines(document: dict[str, Any], texts_by_id: dict[str, str]) -> list[dict[str, Any]]:
+    document_id = str(document.get("id") or "")
+    source_file = str(document.get("name") or document_id or "招标文件")
+    text = str(texts_by_id.get(document_id) or "")
+    lines: list[dict[str, Any]] = []
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = _clean(raw_line)
+        if not line:
+            continue
+        lines.append(
+            {
+                "text": line,
+                "sourceFile": source_file,
+                "sourceDocumentId": document_id,
+                "evidenceLocation": f"L{line_number}",
+            }
+        )
+    return lines
+
+
+def _qualification_heading_level(text: str) -> int:
+    stripped = str(text or "").strip()
+    match = re.match(r"^(\d+(?:\.\d+){0,4})\s+", stripped)
+    if not match:
+        return 99
+    return match.group(1).count(".") + 1
+
+
+def _is_qualification_anchor(text: str) -> bool:
+    return any(anchor in text for anchor in QUALIFICATION_SECTION_ANCHORS)
+
+
+def _is_qualification_stop(text: str, active_root_level: int) -> bool:
+    if not text:
+        return False
+    if any(anchor in text for anchor in QUALIFICATION_STOP_ANCHORS):
+        return True
+    level = _qualification_heading_level(text)
+    return level <= active_root_level and not _is_qualification_anchor(text)
+
+
+def _normalize_qualification_content(text: str) -> str:
+    value = _clean(text)
+    value = re.sub(r"^\d+(?:\.\d+){1,4}\s*", "", value)
+    value = re.sub(r"^[（(][一二三四五六七八九十\d]+[）)]\s*", "", value)
+    value = re.sub(r"^[一二三四五六七八九十\d]+[、.．]\s*", "", value)
+    value = value.strip(" ：:；;。")
+    return value
+
+
+def _looks_like_scope_heading(text: str) -> bool:
+    return bool(SCOPE_PATTERN.match(str(text or "").strip()))
+
+
+def _normalize_qualification_scope(text: str) -> str:
+    value = str(text or "").strip()
+    value = re.split(r"[（(]", value, maxsplit=1)[0]
+    return value.strip(" ：:")
+
+
+def _looks_like_qualification_requirement(text: str) -> bool:
+    value = _normalize_qualification_content(text)
+    if len(value) < 8:
+        return False
+    if _looks_like_scope_heading(value):
+        return False
+    compact = re.sub(r"\s+", "", value)
+    if re.search(r"\t\d+$|\.{3,}\d+$", value):
+        return False
+    if any(keyword in value for keyword in QUALIFICATION_EXCLUDE_KEYWORDS):
+        return False
+    if compact in {"见评标办法前附表", "见投标人须知前附表", "同招标公告"}:
+        return False
+    return any(cue in value for cue in QUALIFICATION_REQUIRED_CUES)
+
+
+def _extract_qualification_requirements_from_documents(
+    documents: list[dict[str, Any]],
+    texts_by_id: dict[str, str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for document in documents:
+        source_file = str(document.get("name") or document.get("id") or "招标文件")
+        document_id = str(document.get("id") or "")
+        active = False
+        active_root_level = 99
+        section_path: list[tuple[int, str]] = []
+        applicable_scope = "全部标段"
+
+        for line in _document_text_lines(document, texts_by_id):
+            text = str(line["text"])
+            level = _qualification_heading_level(text)
+
+            if _is_qualification_anchor(text):
+                was_active = active
+                active = True
+                if level < 99 and (not was_active or active_root_level == 99):
+                    active_root_level = level
+                if level < 99:
+                    section_path = [(old_level, title) for old_level, title in section_path if old_level < level]
+                    section_path.append((level, text))
+                elif not section_path:
+                    section_path = [(1, text)]
+                continue
+
+            if not active:
+                continue
+
+            if _is_qualification_stop(text, active_root_level):
+                active = False
+                section_path = []
+                applicable_scope = "全部标段"
+                continue
+
+            if level < 99:
+                section_path = [(old_level, title) for old_level, title in section_path if old_level < level]
+                section_path.append((level, text))
+                applicable_scope = "全部标段"
+
+            if _looks_like_scope_heading(text):
+                applicable_scope = _normalize_qualification_scope(text)
+                continue
+
+            if not _looks_like_qualification_requirement(text):
+                continue
+
+            content = _normalize_qualification_content(text)
+            section = " > ".join(title for _, title in section_path) or "投标人资格要求"
+            clause_no_match = re.match(r"^(\d+(?:\.\d+){1,4}|[（(][一二三四五六七八九十\d]+[）)])", text)
+            clause_no = clause_no_match.group(1) if clause_no_match else ""
+            dedupe_key = (content, applicable_scope, section)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            rows.append(
+                {
+                    "id": f"QUAL-{len(rows) + 1:04d}",
+                    "order": len(rows) + 1,
+                    "content": content,
+                    "applicableScope": applicable_scope or "全部标段",
+                    "sourceText": _qualification_source_text(
+                        source_file=source_file,
+                        section=section,
+                        clause_no=clause_no,
+                    ),
+                    "sourceFile": source_file,
+                    "sourceDocumentId": document_id,
+                    "section": section,
+                    "evidence": text,
+                    "evidenceLocation": str(line.get("evidenceLocation") or ""),
+                    "confidence": 0.9,
+                }
+            )
+
+    return rows
+
+
 def _extract_docx_core_candidate_items(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for document in documents:
@@ -911,23 +1153,40 @@ def _extract_bidder_instruction_rows(documents: list[dict[str, Any]]) -> list[di
     return rows_out
 
 
-def _build_qualification_requirements(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    keywords = ("投标人资格要求", "资格要求", "资格能力要求", "投标人资质条件", "合格投标人", "资格审查")
+def _build_qualification_requirements(
+    items: list[dict[str, Any]],
+    *,
+    documents: list[dict[str, Any]] | None = None,
+    texts_by_id: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    if documents is not None and texts_by_id is not None:
+        rows = _extract_qualification_requirements_from_documents(documents, texts_by_id)
+        if rows:
+            return rows
+
+    keywords = ("投标人资格要求", "资格要求", "资格能力要求", "投标人资质条件", "合格投标人")
     matched: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in items:
         text = " ".join(str(item.get(key) or "") for key in ("title", "keyEntity", "value", "evidence", "section"))
         if not any(keyword in text for keyword in keywords):
             continue
-        content = str(item.get("value") or item.get("evidence") or "").strip()
+        content = str(item.get("evidence") or item.get("value") or "").strip()
+        if not _looks_like_qualification_requirement(content):
+            continue
+        content = _normalize_qualification_content(content)
         if not content or content in seen:
             continue
         seen.add(content)
+        source_file = str(item.get("sourceFile") or "招标文件")
+        section = str(item.get("section") or item.get("title") or "投标人资格要求")
         matched.append(
             {
                 "id": f"QUAL-{len(matched) + 1:04d}",
-                "title": str(item.get("title") or "投标人资格要求"),
+                "order": len(matched) + 1,
                 "content": content,
+                "applicableScope": "全部标段",
+                "sourceText": _qualification_source_text(source_file=source_file, section=section),
                 **_copy_meta_fields(item),
                 "confidence": float(item.get("confidence") or 0.78),
             }
@@ -2234,7 +2493,11 @@ def _transform_to_business_contract(
         "projectBasics": _build_business_project_basics(merged_items, project_dates),
         "businessResponse": _build_business_response_fields(merged_items),
         "qualificationSupport": _build_qualification_support_fields(merged_items),
-        "qualificationRequirements": _build_qualification_requirements(merged_items),
+        "qualificationRequirements": _build_qualification_requirements(
+            merged_items,
+            documents=documents,
+            texts_by_id=texts_by_id,
+        ),
         "bidderInstructions": _extract_bidder_instruction_rows(documents),
         "commercialRejectionClauses": _extract_commercial_rejection_clauses(documents, texts_by_id),
         "commitmentRequirements": _build_commitment_requirement_fields(
