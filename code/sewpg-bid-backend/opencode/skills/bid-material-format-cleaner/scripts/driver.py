@@ -27,6 +27,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
@@ -35,7 +36,7 @@ if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 
-WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/a343d185-ccd0-4ff4-8c63-50242908fe4a"
+WEBHOOK = os.getenv("FORMAT_CLEANER_FEISHU_WEBHOOK", "").strip()
 RUNTIME_DEPENDENCIES = {
     "fitz": "pymupdf",
     "docx": "python-docx",
@@ -43,7 +44,7 @@ RUNTIME_DEPENDENCIES = {
     "openpyxl": "openpyxl",
     "lxml": "lxml",
 }
-SUPPORTED_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm", ".docx", ".doc"}
+SUPPORTED_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm", ".docx"}
 HEADING_STYLE_RE = re.compile(r"^(?:heading(?:\s*[1-9]\d*)?|标题(?:\s*[一二三四五六七八九十\d]+)?|[1-9]\d*)$", re.I)
 BODY_HEADING_RE = re.compile(
     r"^(?:第[一二三四五六七八九十百零\d]+[章节部分编]|[一二三四五六七八九十百零]+、|\d+(?:\.\d+){0,4}[、.．)]?)"
@@ -626,57 +627,6 @@ def _process_word_docx(source_path: Path, output_path: Path) -> FileRecord:
     return FileRecord(kind="word", source=source_path, output=output_path, status=status, detail=detail)
 
 
-def _find_soffice() -> str | None:
-    for name in ("soffice", "libreoffice"):
-        path = shutil.which(name)
-        if path:
-            return path
-    return None
-
-
-def _convert_doc_to_temp_docx(source_path: Path) -> tuple[Path, str]:
-    soffice = _find_soffice()
-    if not soffice:
-        raise RuntimeError("未找到 LibreOffice/soffice，无法转换 .doc 文件")
-
-    temp_dir = tempfile.mkdtemp(prefix="fcv3_doc_")
-    proc = subprocess.run(
-        [soffice, "--headless", "--convert-to", "docx", "--outdir", temp_dir, str(source_path)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=_subprocess_env(),
-    )
-    if proc.returncode != 0:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "LibreOffice 转换失败")
-
-    candidates = sorted(Path(temp_dir).glob("*.docx"))
-    if not candidates:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise RuntimeError(".doc 转 .docx 后未找到输出文件")
-
-    return candidates[0], temp_dir
-
-
-def _process_doc_word(source_path: Path, output_path: Path) -> FileRecord:
-    temp_docx = None
-    temp_dir = None
-    try:
-        temp_docx, temp_dir = _convert_doc_to_temp_docx(source_path)
-        record = _process_word_docx(temp_docx, output_path)
-        if record.status != "FAIL":
-            record.source = source_path
-            record.detail = f"源文件为 .doc；{record.detail}"
-        return record
-    except Exception as exc:
-        return FileRecord(kind="word", source=source_path, output=None, status="FAIL", detail=str(exc))
-    finally:
-        if temp_dir is not None:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
-
 def _process_pdf(source_path: Path, output_path: Path) -> FileRecord:
     from pdf_to_word import process_pdf
 
@@ -724,7 +674,7 @@ def _scan_sources(source_dir: Path, output_dir: Path) -> list[Path]:
 
 def _output_path_for(source_path: Path, source_dir: Path, output_dir: Path) -> Path:
     relative_parent = source_path.relative_to(source_dir).parent
-    if source_path.suffix.lower() in {".pdf", ".xlsx", ".xls", ".xlsm", ".doc"}:
+    if source_path.suffix.lower() in {".pdf", ".xlsx", ".xls", ".xlsm"}:
         return output_dir / relative_parent / f"{source_path.stem}.docx"
     return output_dir / relative_parent / source_path.name
 
@@ -823,6 +773,10 @@ def _write_json_report(source_dir: Path, output_dir: Path, records: list[FileRec
 
 
 def _send_feishu_summary(source_dir: Path, output_dir: Path, records: list[FileRecord]) -> None:
+    if not WEBHOOK:
+        print("未配置 FORMAT_CLEANER_FEISHU_WEBHOOK，跳过飞书通知。")
+        return
+
     pdf_records = [r for r in records if r.kind == "pdf"]
     excel_records = [r for r in records if r.kind == "excel"]
     word_records = [r for r in records if r.kind == "word"]
@@ -872,10 +826,8 @@ def run(source_dir: Path, output_dir: Path, *, notify: bool, report_file: Path |
             record = _process_pdf(path, output_path)
         elif suffix in {".xlsx", ".xls", ".xlsm"}:
             record = _process_excel(path, output_path)
-        elif suffix == ".docx":
-            record = _process_word_docx(path, output_path)
         else:
-            record = _process_doc_word(path, output_path)
+            record = _process_word_docx(path, output_path)
 
         records.append(record)
         print(f"  -> {record.status}: {record.detail}")

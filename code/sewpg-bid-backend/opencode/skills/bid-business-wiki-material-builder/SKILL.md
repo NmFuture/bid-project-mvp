@@ -18,6 +18,45 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
 
 将 Wiki 视为面向 AI 的检索与合规索引，而非散文式知识库。
 
+## 工作方式：脚本产骨架 + LLM 精修
+
+这是一个「确定性脚本 + AI 精修」的 skill，两层各司其职：
+
+1. **脚本产骨架（确定性、不可省略）**
+   调用 `scripts/run_from_manifest.py`，由 `business_wiki_blueprint.py` 从 `materialInventory.items` 生成**稳定的 Wiki 骨架**：固定五个一级节点、13 个模板模块映射、每条素材一张证据卡片，以及从路径/标题/标签/OCR 文本里用规则抽取的初始字段（业务分类、usage_mode、有效期猜测、风险提示等）。
+   这一步保证：节点结构稳定、素材不遗漏不重复、绝不编造金额/承诺/证书编号。
+
+2. **LLM 精修（你来做，在骨架之上）**
+   读脚本产出的 `wiki_blueprint.json`，在**不破坏结构、不编造事实**的前提下做语义层面的增强：
+   - 修正脚本规则误判的 `business_category` / `evidence_topic` / `usage_mode`
+   - 补全脚本留空或标 `待识别`/`待映射` 的语义字段（关键词、适用章节、摘要）
+   - 复核脚本标记 `needs_human_confirm=yes`、`validity_status=pending_verify` 的项，必要时改写 `risk_notes` 让人工复核更聚焦
+   - 当映射表 `candidate_card_ids` 为空但你判断有合适素材时，按 `fallback_scope` 给出更精准的候选建议
+
+**铁律**：精修只能改"判断/描述"，不能改"事实"。脚本从未在 inventory 里出现过的价格、日期、证书编号、授权人、业绩数据，LLM 一律不得新增——找不到就保持 `pending` 并写进待确认清单。
+
+### 调用脚本
+
+```bash
+python scripts/run_from_manifest.py <manifest.json>
+```
+
+manifest 至少包含 `materialInventory`（含 `items`）、可选 `rootTitle` / `workDir` / `outputFile`。脚本把完整骨架写入 `outputFile`（默认 `<workDir>/wiki_blueprint.json`），并在 stdout 返回一个精简回执：
+
+```json
+{
+  "schema_version": "bid-wiki-blueprint-v1",
+  "skill": "bid-business-wiki-material-builder",
+  "outputFile": "...",
+  "summary": "...",
+  "rootTitle": "商务标Wiki（自动生成）",
+  "materialCount": 0,
+  "nodeTitles": ["01-素材总表", "02-模板模块映射表", "03-证据卡片", "04-待填写与待确认清单", "05-使用规则"]
+}
+```
+
+精修后，把结果写回同一个 blueprint JSON（schema 见下）。
+
 ## 使用场景
 
 用于商务标 Wiki 的创建，或在原始素材变更后进行重建。
@@ -31,9 +70,21 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
 
 不适用于纯技术标素材、技术方案撰写，或编造不存在的商务事实。
 
+## 输入契约（materialInventory.items）
+
+每条素材是一个对象，关键字段：
+
+- `id`（**必填、全局唯一**）：证据卡片的 `card_id` 以此为种子（`biz-card-<id>`）。缺失时脚本会退回用文件名 stem，**不同目录下的同名文件会撞 card_id**，导致映射歧义。后端构建 inventory 时必须为每条注入唯一 id。
+- `path` / `folderPath` + `name`：原始素材库相对路径，决定身份层级（通用/客户/项目）与分组。
+- `tags`：原始标签，**必须保留**——下游素材匹配靠标签缩小检索范围。
+- `identityScope` / `materialTier`：身份范围（general/customer/project）。
+- 清洗元数据：`cleanStatus`、`cleanResultStatus`、`cleanMessage`、`cleanedFileName`、`sourceMinioKey`、`cleanedMinioKey`、`cleanRelativeSourcePath`、`cleanRelativeOutputPath`、`cleanNeedsHumanReview`、`cleanUsableForRetrieval`。
+- AI 身份字段：`customerId`/`customerName`、`projectId`/`projectCode`，用于区分通用/客户/项目素材。
+- 可选内容字段：`headings`、`paragraphs`、`tables`、`keywords`、`businessWikiOcr`（OCR 文本与字段）。
+
 ## 输出契约
 
-仅输出 JSON。不要用 Markdown 代码块包裹。使用以下 schema：
+最终 Wiki 是一个 JSON（不要用 Markdown 代码块包裹），schema：
 
 ```json
 {
@@ -61,6 +112,8 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
 
 仅允许在这五个节点下嵌套额外的子节点。
 
+如果没有商务素材，仍然输出同样的五个节点，作为待补料框架。
+
 ## 核心模式
 
 从 `materialInventory.items` 生成。
@@ -75,26 +128,13 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
 - 保留 AI 身份字段，以便后续 Agent 能正确区分通用素材、客户素材和项目素材
 - 为其指定推荐的商务类别和模块使用方式
 
-如果没有商务素材，仍然输出同样的五个节点，作为待补料框架。
-
 ## 各节点职责
 
 ### 01-素材总表
 
 创建一张紧凑的表格供快速浏览。
 
-必须包含：
-
-- 文件名
-- 来源层级
-- 身份范围
-- 商务类别
-- 推荐模块
-- 原始标签
-- 清洗状态
-- 清洗策略
-- 证据类型
-- 原始路径
+必须包含：文件名、来源层级、身份范围、商务类别、推荐模块、原始标签、清洗状态、清洗策略、证据类型、原始路径。
 
 ### 02-模板模块映射表
 
@@ -104,19 +144,23 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
 - 哪些证据卡片是当前最佳候选
 - 素材是用于整件附加、字段提取、图片提取、表格填写还是仅供参考
 
-使用已确认的商务模块，例如：
+**模板模块固定为以下 13 个**（与脚本 `MODULE_CONFIGS` 一一对应，编号即节点序号）：
 
-- 投标函与授权
-- 投标价格表
-- 货物规格一览表
-- 商务偏差表
-- 投标保证金
-- 履约保证承诺
-- 附件7资格证明
-- 附件7I业绩情况表
-- 开标价格表
-- 附件9其他说明与承诺
-- 否决项与符合性响应
+| module_code | module_name | 默认 usage_mode |
+| --- | --- | --- |
+| BM-01 | 01-商务评分索引表 | reference_only |
+| BM-02 | 02-投标函与授权模块 | extract_fields |
+| BM-03 | 03-投标价格表模块 | fill_table |
+| BM-04 | 04-货物规格一览表模块 | fill_table |
+| BM-05 | 05-商务偏差表模块 | fill_table |
+| BM-06 | 06-投标保证金模块 | attach_whole |
+| BM-07 | 07-履约保证承诺模块 | attach_whole |
+| BM-08 | 08-资格证明文件模块（附件7） | attach_whole |
+| BM-09 | 09-业绩情况表模块（附件7I） | fill_table |
+| BM-10 | 10-开标价格表模块 | fill_table |
+| BM-11 | 11-其他说明与承诺模块（附件9） | attach_whole |
+| BM-12 | 12-否决项与符合性响应模块 | extract_fields |
+| BM-13 | 13-供应链协同模块 | reference_only |
 
 每行应包含以下等效字段：
 
@@ -187,6 +231,16 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
 - 对于图片/扫描件，保留原件并在需要时要求人工验证
 - 如果映射遗漏了已有素材，回退到当前可读身份范围内的限定搜索
 - 绝不编造价格、日期、承诺、证书编号或业绩事实
+
+## 字段可信度说明（精修时务必牢记）
+
+脚本里的以下字段是**正则启发式猜测**，命中率随证书/文档版式波动，属于"提示性"而非"权威"信息——真值依赖人工审核环节（需求中的"素材和填写审核"）：
+
+- `issue_date` / `expiry_date` / `validity_status`（来自 `DATE_RE` 等正则）
+- `document_number`（来自 `DOC_NO_RE`）
+- `issuer`（来自 `ISSUER_RE`）
+
+脚本对这些字段已做保守兜底：识别不确定时置 `validity_status=pending_verify`，并把 `needs_human_confirm` 设为 `yes`、写入 `risk_notes`。**LLM 精修时不要把"提示值"当成"已核实事实"对外承诺**，也不要因为想让卡片"看起来完整"而填入未经核实的日期或编号。
 
 ## 质量规则
 

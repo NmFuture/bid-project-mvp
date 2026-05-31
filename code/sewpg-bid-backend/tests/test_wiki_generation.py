@@ -23,7 +23,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         settings.parsed_dir = self.original_parsed_dir
         self.temp_dir.cleanup()
 
-    async def test_generate_platform_wiki_uses_local_skill_blueprint(self) -> None:
+    async def test_generate_platform_wiki_uses_llm_refine_blueprint(self) -> None:
         skill_payload = {
             "summary": "Wiki 已由 skill 生成。",
             "rootTitle": "技术标Wiki（自动生成）",
@@ -52,7 +52,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"total": 1, "docxTotal": 1, "parsedDocxTotal": 1, "groups": {}, "items": []},
             ),
             patch(
-                "app.services.wiki_generation._run_local_wiki_skill",
+                "app.services.wiki_generation._run_llm_wiki_skill",
                 return_value=skill_payload,
             ) as generate,
             patch(
@@ -69,7 +69,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         import_blueprint.assert_awaited_once()
         self.assertEqual(import_blueprint.call_args.kwargs["root_title"], "技术标Wiki（自动生成）")
         self.assertEqual(import_blueprint.call_args.kwargs["nodes"][0]["title"], "00-Wiki使用说明")
-        self.assertEqual(result["generation"]["generator"], "local_skill")
+        self.assertEqual(result["generation"]["generator"], "llm_refine")
         self.assertEqual(result["generation"]["bidType"], "技术标")
         self.assertEqual(result["generation"]["skill"], "bid-tech-wiki-material-builder")
         self.assertFalse(result["generation"]["fallbackUsed"])
@@ -122,7 +122,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"total": 2, "docxTotal": 2, "parsedDocxTotal": 2, "groups": {}, "items": []},
             ),
             patch(
-                "app.services.wiki_generation._run_local_wiki_skill",
+                "app.services.wiki_generation._run_llm_wiki_skill",
                 return_value=skill_payload,
             ) as generate,
             patch(
@@ -186,7 +186,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"total": 1, "docxTotal": 1, "parsedDocxTotal": 1, "groups": {}, "items": []},
             ),
             patch(
-                "app.services.wiki_generation._run_local_wiki_skill",
+                "app.services.wiki_generation._run_llm_wiki_skill",
                 return_value=opencode_payload,
             ),
             patch(
@@ -210,6 +210,10 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"total": 0, "docxTotal": 0, "parsedDocxTotal": 0, "groups": {}, "items": []},
             ),
             patch(
+                "app.services.wiki_generation._run_llm_wiki_skill",
+                side_effect=RuntimeError("opencode 不可用"),
+            ),
+            patch(
                 "app.services.wiki_generation._run_local_wiki_skill",
                 side_effect=RuntimeError("skill 不可用"),
             ),
@@ -230,6 +234,10 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 "app.services.wiki_generation._summarize_material_inventory",
                 new_callable=AsyncMock,
                 return_value={"total": 0, "docxTotal": 0, "parsedDocxTotal": 0, "groups": {}, "items": []},
+            ),
+            patch(
+                "app.services.wiki_generation._run_llm_wiki_skill",
+                side_effect=RuntimeError("opencode 不可用"),
             ),
             patch(
                 "app.services.wiki_generation._run_local_wiki_skill",
@@ -258,6 +266,10 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 "app.services.wiki_generation._summarize_material_inventory",
                 new_callable=AsyncMock,
                 return_value={"total": 0, "docxTotal": 0, "parsedDocxTotal": 0, "groups": {}, "items": []},
+            ),
+            patch(
+                "app.services.wiki_generation._run_llm_wiki_skill",
+                side_effect=RuntimeError("opencode 不可用"),
             ),
             patch(
                 "app.services.wiki_generation._run_local_wiki_skill",
@@ -327,6 +339,10 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 "app.services.wiki_generation._summarize_material_inventory",
                 new_callable=AsyncMock,
                 return_value=inventory,
+            ),
+            patch(
+                "app.services.wiki_generation._run_llm_wiki_skill",
+                side_effect=RuntimeError("opencode 不可用"),
             ),
             patch(
                 "app.services.wiki_generation._run_local_wiki_skill",

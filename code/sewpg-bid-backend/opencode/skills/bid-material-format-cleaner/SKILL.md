@@ -18,9 +18,30 @@ allowed-tools:
 
 批量清洗素材文件（PDF/Excel/Word），统一转换为标准 Word (.docx) 文件，剥离无用前序内容。
 
+## 给调用方 Agent 的工作方式
+
+这是一个「AI 编排 + 确定性脚本」的 skill：
+
+- **你（Agent）负责编排判断**：确认素材目录、决定调用时机、读懂 driver 的报告与 `cleaning_manifest.json`，并据此决定后续动作（标 REVIEW 的要不要人工复核、FAIL 的为什么失败）。
+- **`scripts/driver.py` 负责确定性转换**：所有 PDF/Excel/Word 的探针、切割、规范化、验证都在脚本里完成，保证输出稳定可复现。**不要**自己用 python-docx 手搓清洗逻辑去绕过 driver，那样会丢掉事务安全与镜像目录保证。
+
+简言之：**判断交给你，确定性转换交给脚本。**
+
 这是素材清洗通用工具：保留 driver 总控、Word 单临时副本事务与预检快路径，并补充两项能力：
 - Word 标题在规范化阶段会去掉前置数字编号，并保留或补齐对应 Heading
 - PDF 转 Word 时插入的标题默认带 `Heading 1`
+
+## 处理范围
+
+| 类型 | 是否清洗 | 说明 |
+| --- | --- | --- |
+| `.pdf` | ✅ 转 Word | 图片子文件夹 + Word 落到输出目录 |
+| `.xlsx` / `.xls` / `.xlsm` | ✅ 转 Word | 每个 sheet 生成 Heading 2 + 表格 |
+| `.docx` | ✅ 规范化 | 单临时副本事务 + 预检快路径 |
+| 图片（png/jpg/jpeg/bmp/gif/webp/tif/tiff） | ❌ 不处理 | **图片证据不在本 skill 清洗范围**，由 wiki 侧（`bid-business-wiki-material-builder`）按原件直接挂载，不触发清洗稿引用 |
+| `.doc` | ❌ 不支持 | 素材库统一以 `.docx` 收口，不再向 `.doc` 兼容 |
+
+> 边界说明：driver 只扫描并处理上表中标记为 ✅ 的后缀，其余文件（含图片、`.doc`）会被直接跳过、不计入清洗统计。
 
 ## 配置
 
@@ -100,7 +121,7 @@ driver 负责完成以下全部编排动作：
 1. 校验当前解释器确实来自 venv
 2. 在当前 venv 中检测并补齐运行依赖
 3. 递归扫描 `SOURCE_DIR` 下所有素材文件
-4. 按后缀路由到 PDF / Excel / Word / `.doc` 分支
+4. 按后缀路由到 PDF / Excel / Word 分支
 5. 维护 `OUTPUT_DIR` 的镜像目录结构
 6. 汇总统计并输出统一报告
 7. 写入结构化清洗清单 `cleaning_manifest.json`，供后端保存清洗状态、来源路径和复核信息
@@ -110,7 +131,6 @@ driver 负责完成以下全部编排动作：
 - `.pdf`
 - `.xlsx` / `.xls` / `.xlsm`
 - `.docx`
-- `.doc`
 
 ## Step 3 — 各分支处理规则
 
@@ -175,15 +195,6 @@ Word 文件采用 **“单临时副本事务 + 预检快路径”**：
 
 到此为止，禁止进入旧版那种反复“看一眼再删一段”的循环微操。
 
-### 3.4 `.doc` 分支
-
-`.doc` 不再假定仓库里一定有额外转换脚本。
-
-V4 规则：
-- driver 先检查 LibreOffice / `soffice` 是否可用
-- 可用：先转为临时 `.docx`，再走 Word 事务流程
-- 不可用：直接记录为确定性 **FAIL**，而不是执行到中途才报错
-
 ## Step 4 — 输出状态定义
 
 driver 会把每个文件固定归类为以下状态之一：
@@ -191,7 +202,7 @@ driver 会把每个文件固定归类为以下状态之一：
 - `OK`：已完成转换 / 已切割并规范化
 - `SKIP`：无需切割，仅规范化
 - `REVIEW`：已完成事务内处理，但结果仍需人工复核
-- `FAIL`：依赖缺失、文件损坏、`.doc` 转换器不可用等硬失败
+- `FAIL`：依赖缺失、文件损坏等硬失败
 
 ## Step 5 — 报告通知
 
@@ -257,8 +268,18 @@ JSON 结构固定包含：
   [SKIP] subdir/file2.docx → subdir/file2.docx (无需切割；已规范化)
   [OK] subdir/file3.docx → subdir/file3.docx (锚点: 1 项目概况；已规范化)
   [REVIEW] subdir/file4.docx → subdir/file4.docx (已规范化；需人工复核)
-  [FAIL] subdir/file5.doc → - (未找到 LibreOffice/soffice，无法转换 .doc 文件)
+  [FAIL] subdir/file5.xlsx → - (文件损坏，无法解析)
 ═══════════════════════════════════════
+```
+
+### 飞书通知（可选）
+
+driver 可在处理完成后向飞书群推送一条文字汇总，默认开启，可用 `--no-feishu` 关闭（后端集成调用时固定带 `--no-feishu`）。
+
+webhook 地址通过环境变量 `FORMAT_CLEANER_FEISHU_WEBHOOK` 提供，**不再硬编码在脚本中**。未配置该变量时直接跳过通知，不影响清洗主流程。
+
+```bash
+export FORMAT_CLEANER_FEISHU_WEBHOOK="https://open.feishu.cn/open-apis/bot/v2/hook/xxxx"
 ```
 
 

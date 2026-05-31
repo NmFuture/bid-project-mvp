@@ -25,7 +25,7 @@ from app.services.peripheral import PeripheralError
 logger = logging.getLogger(__name__)
 
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-CLEANABLE_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm", ".docx", ".doc"}
+CLEANABLE_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm", ".docx"}
 _sync_cleaning_loop: asyncio.AbstractEventLoop | None = None
 
 
@@ -130,6 +130,22 @@ def _compact_cleaning_manifest(manifest: dict[str, Any], record: dict[str, Any])
     }
 
 
+def _resolve_cleaned_output(output_dir: Path, manifest_record: dict[str, Any]) -> Path | None:
+    """优先按 manifest 的 relativeOutputPath 精确定位清洗产物，避免按 mtime 取错文件。"""
+    relative_output = str(manifest_record.get("relativeOutputPath") or "").strip() if manifest_record else ""
+    if relative_output:
+        candidate = output_dir / PurePosixPath(relative_output.replace("\\", "/"))
+        if candidate.exists():
+            return candidate
+    # 回退：manifest 缺失或路径对不上时，取输出目录中最新生成的 docx。
+    fallback = sorted(
+        output_dir.rglob("*.docx"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return fallback[0] if fallback else None
+
+
 async def set_material_clean_status(
     file_id: str,
     status: str,
@@ -222,7 +238,6 @@ async def clean_material_file(file_id: str, data: dict[str, Any] | None = None) 
             timeout=int((data or {}).get("timeoutSec") or 30 * 60),
         )
 
-        candidates = sorted(output_dir.rglob("*.docx"), key=lambda path: path.stat().st_mtime, reverse=True)
         report_tail = _tail_output(proc.stdout, proc.stderr)
         manifest = _read_cleaning_manifest(output_dir)
         manifest_record = _cleaning_manifest_record(manifest, source_name)
@@ -231,7 +246,9 @@ async def clean_material_file(file_id: str, data: dict[str, Any] | None = None) 
             driver_status = str(manifest_record.get("status") or driver_status)
             driver_detail = str(manifest_record.get("detail") or driver_detail)
 
-        if not candidates:
+        cleaned_path = _resolve_cleaned_output(output_dir, manifest_record)
+
+        if cleaned_path is None:
             message = "清洗失败，未生成 Word 文件。"
             if driver_detail:
                 message = f"清洗失败：{driver_detail}"
@@ -251,7 +268,6 @@ async def clean_material_file(file_id: str, data: dict[str, Any] | None = None) 
                 },
             )
 
-        cleaned_path = candidates[0]
         key = cleaned_object_key(numeric_id, source_name)
         bucket = settings.minio_buckets["materials"]
         minio_client.upload_file(bucket, key, cleaned_path, WORD_MEDIA_TYPE)
