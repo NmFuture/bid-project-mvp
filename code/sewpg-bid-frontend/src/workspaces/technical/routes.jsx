@@ -63,6 +63,10 @@ export function renderTechnicalRoutes({ user, showToast }) {
         element={withAccess(user, <TechnicalMaterialWiki showToast={showToast} />)}
       />
       <Route
+        path="/workspace/tech/materials/performance"
+        element={<Navigate to="/workspace/shared/materials/performance" replace />}
+      />
+      <Route
         path="/workspace/tech/logs"
         element={withAccess(user, <TechnicalAuditLog showToast={showToast} />)}
       />

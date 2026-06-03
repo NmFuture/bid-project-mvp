@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { businessMaterialsAPI } from '../../../api'
 import MaterialsViewSwitch from '../components/BusinessMaterialsViewSwitch'
+import { availableWorkspacesFor, defaultWorkspaceFor } from '../../../utils/permissions'
 import { workspaceRoute } from '../../../utils/workspace'
 
-const BUSINESS_WORKSPACE = 'business'
+const WORKSPACE_STORAGE_KEY = 'sewpg.workspace'
 const CATEGORY_STATUS_OPTIONS = [
   { value: 'enabled', label: '启用' },
   { value: 'disabled', label: '停用' },
@@ -27,7 +28,8 @@ const SORTABLE_COLUMNS = [
   { key: 'name', label: '业绩类别' },
   { key: 'powerRating', label: '功率/场景' },
   { key: 'itemCount', label: '明细' },
-  { key: 'fieldCount', label: '字段' },
+  { key: 'models', label: '型号' },
+  { key: 'time', label: '时间' },
   { key: 'attachmentCount', label: '附件' },
   { key: 'status', label: '状态' },
 ]
@@ -49,6 +51,25 @@ const normalizeTags = (value) => {
 
 const tagsText = (value) => normalizeTags(value).join('，')
 const compactParts = (...parts) => parts.map((part) => String(part || '').trim()).filter(Boolean).join(' · ')
+const compactList = (value, limit = 4) => {
+  const list = Array.isArray(value) ? value.map((item) => String(item || '').trim()).filter(Boolean) : []
+  if (!list.length) return '-'
+  const visible = list.slice(0, limit).join('、')
+  return list.length > limit ? `${visible} 等${list.length}项` : visible
+}
+const compactYears = (...groups) => {
+  const values = []
+  const seen = new Set()
+  groups.flat().forEach((item) => {
+    if (item === null || item === undefined || item === '') return
+    const value = Number(item)
+    if (!Number.isFinite(value) || seen.has(value)) return
+    seen.add(value)
+    values.push(value)
+  })
+  values.sort((a, b) => a - b)
+  return values.length ? values.join('、') : '-'
+}
 
 const sizeLabel = (bytes) => {
   const value = Number(bytes || 0)
@@ -67,6 +88,15 @@ const formatDateTime = (value) => {
 
 const previewRows = (rows = [], limit = 5) => rows.slice(0, limit)
 
+const sourceWorkspaceFor = (user) => {
+  const allowed = availableWorkspacesFor(user)
+  if (typeof window !== 'undefined') {
+    const stored = window.sessionStorage.getItem(WORKSPACE_STORAGE_KEY)
+    if (allowed.includes(stored)) return stored
+  }
+  return defaultWorkspaceFor(user) || 'business'
+}
+
 function SortHeader({ columnKey, label, sortBy, sortOrder, onSort, align = 'left' }) {
   const active = sortBy === columnKey
   const icon = active ? (sortOrder === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'
@@ -83,7 +113,7 @@ function SortHeader({ columnKey, label, sortBy, sortOrder, onSort, align = 'left
   )
 }
 
-export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
+export default function BusinessPerformanceLibrary({ showToast = () => {}, currentUser = null }) {
   const summaryInputRef = useRef(null)
   const attachmentInputRef = useRef(null)
   const [items, setItems] = useState([])
@@ -99,14 +129,29 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
   const [importForm, setImportForm] = useState({ categoryName: '', scene: '', powerRating: '', tags: '' })
   const [detail, setDetail] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
-  const [filters, setFilters] = useState({ keyword: '', scene: '', powerRating: '', tag: '', status: 'enabled' })
+  const [filters, setFilters] = useState({
+    keyword: '',
+    scene: '',
+    powerRating: '',
+    turbineModel: '',
+    timeKeyword: '',
+    operationYear: '',
+    tag: '',
+    status: 'enabled',
+  })
   const [sort, setSort] = useState({ sortBy: 'updatedAt', sortOrder: 'desc' })
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleteConfirmName, setDeleteConfirmName] = useState('')
   const [deleting, setDeleting] = useState(false)
   const pageSize = 20
-  const materialsBasePath = workspaceRoute(BUSINESS_WORKSPACE, '/materials')
+  const sourceWorkspace = sourceWorkspaceFor(currentUser)
+  const sourceMaterialsBasePath = workspaceRoute(sourceWorkspace, '/materials')
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const sharedPerformanceItems = useMemo(() => [
+    { key: 'raw', label: '原始素材', absolutePath: `${sourceMaterialsBasePath}/raw` },
+    { key: 'wiki', label: 'Wiki', absolutePath: `${sourceMaterialsBasePath}/wiki` },
+    { key: 'performance', label: '业绩库', absolutePath: '/workspace/shared/materials/performance' },
+  ], [sourceMaterialsBasePath])
 
   const query = useMemo(() => ({ ...filters, ...sort, page, pageSize }), [filters, sort, page])
 
@@ -311,35 +356,38 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
     <main className="h-full min-h-0 overflow-hidden bg-surface text-on-surface">
       <input ref={summaryInputRef} type="file" accept=".docx" onChange={previewSummary} className="hidden" />
       <input ref={attachmentInputRef} type="file" accept=".doc,.docx" onChange={uploadAttachment} className="hidden" />
-      <div className="flex h-full min-h-0 flex-col gap-3 px-4 py-4 sm:px-5 lg:px-6">
+      <div className="flex h-full min-h-0 flex-col gap-3">
         <MaterialsViewSwitch
           active="performance"
-          title="商务标共用业绩库"
-          subtitle="按功率维护业绩包，汇总表字段用于筛选和后续任务填写"
-          basePath={materialsBasePath}
-          actions={
-            <button
-              onClick={openSummaryChooser}
-              disabled={previewing}
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-on-primary hover:bg-primary-container disabled:opacity-50"
-            >
-              <span className="material-symbols-outlined text-base">upload_file</span>
-              {previewing ? '解析中...' : '导入业绩包'}
-            </button>
-          }
+          title="平台共用业绩库"
+          basePath={sourceMaterialsBasePath}
+          workspaceLabel="共用"
+          workspaceIcon="database"
+          items={sharedPerformanceItems}
         />
 
         <section className="rounded-lg border border-surface-container-high bg-surface-container-lowest p-3">
-          <div className="grid gap-2 md:grid-cols-5">
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,0.7fr)_minmax(0,0.7fr)_minmax(0,0.82fr)_minmax(0,0.9fr)_minmax(0,0.7fr)_minmax(0,0.65fr)_7.5rem_auto]">
             <input value={filters.keyword} onChange={(event) => updateFilter('keyword', event.target.value)} placeholder="搜索类别/项目/买方/机型" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
             <input value={filters.scene} onChange={(event) => updateFilter('scene', event.target.value)} placeholder="陆上/海上" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
             <input value={filters.powerRating} onChange={(event) => updateFilter('powerRating', event.target.value)} placeholder="功率，如 11MW" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
+            <input value={filters.turbineModel} onChange={(event) => updateFilter('turbineModel', event.target.value)} placeholder="型号，如 EW8.5-230" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
+            <input value={filters.timeKeyword} onChange={(event) => updateFilter('timeKeyword', event.target.value)} placeholder="交货/投运时间" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
+            <input value={filters.operationYear} onChange={(event) => updateFilter('operationYear', event.target.value)} placeholder="投运年" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
             <input value={filters.tag} onChange={(event) => updateFilter('tag', event.target.value)} placeholder="标签" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
             <select value={filters.status} onChange={(event) => updateFilter('status', event.target.value)} className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm">
               {CATEGORY_STATUS_OPTIONS.map((option) => (
                 <option key={option.label} value={option.value}>{option.label}</option>
               ))}
             </select>
+            <button
+              onClick={openSummaryChooser}
+              disabled={previewing}
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-sm font-semibold text-on-primary hover:bg-primary-container disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-base">upload_file</span>
+              {previewing ? '解析中...' : '导入'}
+            </button>
           </div>
         </section>
 
@@ -349,7 +397,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
           ) : !items.length ? (
             <div className="p-6 text-sm text-on-surface-variant">暂无业绩类别</div>
           ) : (
-            <table className="w-full min-w-[1220px] text-left text-[12px] leading-5">
+            <table className="w-full min-w-[1380px] text-left text-[12px] leading-5">
               <thead className="sticky top-0 bg-surface-container-low text-xs text-on-surface-variant">
                 <tr>
                   {SORTABLE_COLUMNS.map((column) => (
@@ -363,7 +411,8 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
               <tbody>
                 {items.map((item) => {
                   const itemTags = normalizeTags(item.tags)
-                  const fieldLabels = (item.fieldSchema || []).map((field) => field.label || field.sourceHeader || field.key).filter(Boolean)
+                  const modelLabel = compactList(item.turbineModels)
+                  const timeLabel = compactYears(item.contractYears, item.deliveryYears, item.operationYears)
                   return (
                     <tr key={item.id} className="border-t border-surface-container-high align-top">
                       <td className="px-3 py-2.5">
@@ -387,13 +436,18 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
                         </span>
                       </td>
                       <td className="px-3 py-2.5">
-                        <div className="max-w-[19rem] text-on-surface-variant">{fieldLabels.slice(0, 5).join('、') || '-'}</div>
-                        {fieldLabels.length > 5 ? <div className="mt-0.5 text-[11px] leading-4 text-outline">另 {fieldLabels.length - 5} 个字段</div> : null}
+                        <div className="max-w-[16rem] text-on-surface-variant">{modelLabel}</div>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div className="max-w-[16rem] text-on-surface-variant">{timeLabel}</div>
+                        <div className="mt-0.5 text-[11px] leading-4 text-outline">
+                          合同/交货/投运
+                        </div>
                       </td>
                       <td className="px-3 py-2.5">
                         <div>{item.summaryFileName || '未保存汇总表'}</div>
                         <div className="mt-0.5 text-[11px] leading-4 text-outline">
-                          {item.contractAttachmentCount ? `合同附件：${item.contractFileName || `${item.contractAttachmentCount} 个`}` : '未上传合同附件'}
+                          {item.itemContractAttachmentCount ? `项目合同：${item.itemContractAttachmentCount} 个` : item.contractAttachmentCount ? '合同包待拆分' : '未上传合同附件'}
                         </div>
                       </td>
                       <td className="px-3 py-2.5">
@@ -456,9 +510,12 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
               ) : null}
 
               <div className="mt-4 overflow-auto rounded-lg border border-surface-container-high bg-white">
-                <table className="w-full min-w-[980px] text-left text-xs">
+                <table className="w-full min-w-[1220px] text-left text-xs">
                   <thead className="bg-surface-container-low text-on-surface-variant">
                     <tr>
+                      <th className="px-3 py-2">系统提取型号</th>
+                      <th className="px-3 py-2">合同年</th>
+                      <th className="px-3 py-2">交货/投运年</th>
                       {(preview.fieldSchema || []).map((field) => (
                         <th key={field.key || field.label} className="px-3 py-2">{field.label || field.sourceHeader || field.key}</th>
                       ))}
@@ -467,6 +524,9 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
                   <tbody>
                     {previewRows(preview.rows).map((row) => (
                       <tr key={row.rowIndex} className="border-t border-surface-container-high">
+                        <td className="max-w-[16rem] px-3 py-2">{compactList(row.turbineModels)}</td>
+                        <td className="px-3 py-2">{row.contractYear || '-'}</td>
+                        <td className="px-3 py-2">{compactYears([row.deliveryYear], [row.operationYear])}</td>
                         {(preview.fieldSchema || []).map((field) => (
                           <td key={field.key || field.label} className="max-w-[16rem] truncate px-3 py-2">{row.values?.[field.sourceHeader || field.label] || '-'}</td>
                         ))}
@@ -539,7 +599,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
 
                 <div className="mt-4">
                   <div className="mb-2 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold">附件</h3>
+                    <h3 className="text-sm font-semibold">原始附件</h3>
                     <button onClick={() => chooseAttachmentFile(currentDetailItem)} className="rounded-md bg-primary/10 px-2.5 py-1.5 text-xs text-primary hover:bg-primary/15">上传合同</button>
                   </div>
                   <div className="grid gap-2 md:grid-cols-2">
@@ -554,14 +614,18 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
                         <span className="block font-medium text-primary">{attachment.fileName}</span>
                         <span className="mt-1 block text-xs text-outline">{ATTACHMENT_LABELS[attachment.attachmentType] || attachment.attachmentType} · {sizeLabel(attachment.sizeBytes) || '-'}</span>
                       </a>
-                    )) : <div className="text-sm text-on-surface-variant">暂无附件</div>}
+                    )) : <div className="text-sm text-on-surface-variant">暂无原始附件</div>}
                   </div>
                 </div>
 
                 <div className="mt-4 overflow-auto rounded-lg border border-surface-container-high bg-white">
-                  <table className="w-full min-w-[1080px] text-left text-xs">
+                  <table className="w-full min-w-[1480px] text-left text-xs">
                     <thead className="sticky top-0 bg-surface-container-low text-on-surface-variant">
                       <tr>
+                        <th className="px-3 py-2">系统提取型号</th>
+                        <th className="px-3 py-2">合同年</th>
+                        <th className="px-3 py-2">交货/投运年</th>
+                        <th className="px-3 py-2">项目合同</th>
                         {visibleFields.map((field) => (
                           <th key={field.key || field.label} className="px-3 py-2">{field.label || field.sourceHeader || field.key}</th>
                         ))}
@@ -570,6 +634,32 @@ export default function BusinessPerformanceLibrary({ showToast = () => {} }) {
                     <tbody>
                       {(detail.rows || []).map((row) => (
                         <tr key={row.id} className="border-t border-surface-container-high">
+                          <td className="max-w-[16rem] px-3 py-2 align-top">{compactList(row.turbineModels)}</td>
+                          <td className="px-3 py-2 align-top">{row.contractYear || '-'}</td>
+                          <td className="px-3 py-2 align-top">{compactYears([row.deliveryYear], [row.operationYear])}</td>
+                          <td className="min-w-[180px] max-w-[240px] px-3 py-2 align-top">
+                            {(row.attachments || []).length ? (
+                              <div className="space-y-1">
+                                {row.attachments.map((attachment) => (
+                                  <a
+                                    key={attachment.id}
+                                    href={businessMaterialsAPI.performance.itemAttachmentUrl(row.categoryId, row.id, attachment.id)}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    title={attachment.sourceTitle || attachment.fileName}
+                                    className="block rounded-md bg-primary/10 px-2 py-1 text-[11px] leading-4 text-primary hover:bg-primary/15"
+                                  >
+                                    <span className="block truncate">{attachment.fileName}</span>
+                                    <span className="block truncate text-[10px] text-outline">
+                                      {attachment.matchMethod === 'row_order' ? '按行匹配' : '项目名匹配'} · {attachment.matchConfidence || 0}%
+                                    </span>
+                                  </a>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-outline">未拆分</span>
+                            )}
+                          </td>
                           {visibleFields.map((field) => {
                             const label = field.sourceHeader || field.label
                             return <td key={field.key || field.label} className="max-w-[18rem] px-3 py-2 align-top">{row.values?.[label] || '-'}</td>

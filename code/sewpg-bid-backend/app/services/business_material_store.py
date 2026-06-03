@@ -271,16 +271,16 @@ class BusinessMaterialStore:
         self,
         file_id: str,
         *,
-        plan_id: str,
-        target_path: str,
-        items: list[dict[str, Any]],
+        fragments: list[dict[str, Any]],
+        target_path: str = "",
+        on_conflict: str = "",
     ) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)
         return await confirm_business_material_split(
             file_id=file_id,
-            plan_id=plan_id,
-            target_path=self.ensure_path(target_path, "目标目录"),
-            items=items,
+            fragments=fragments,
+            default_target_path=self.ensure_path(target_path, "目标目录"),
+            on_conflict=on_conflict,
         )
 
     async def wiki_list(self, node_id: str = "") -> dict[str, Any]:

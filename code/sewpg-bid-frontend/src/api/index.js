@@ -662,19 +662,21 @@ export const businessMaterialsAPI = {
     },
     categories: (params = {}) => {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/business/materials/performance/categories${qs ? `?${qs}` : ''}`)
+      return request(`/materials/performance/categories${qs ? `?${qs}` : ''}`)
     },
     previewCategory: (data) =>
-      request('/business/materials/performance/categories/preview', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+      request('/materials/performance/categories/preview', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     importCategory: (data) =>
-      request('/business/materials/performance/categories/import', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
-    category: (id) => request(`/business/materials/performance/categories/${id}`),
-    deleteCategory: (id, data = {}) => request(`/business/materials/performance/categories/${id}`, { method: 'DELETE', body: data }),
-    updateCategoryStatus: (id, data) => request(`/business/materials/performance/categories/${id}/status`, { method: 'PATCH', body: data }),
+      request('/materials/performance/categories/import', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    category: (id) => request(`/materials/performance/categories/${id}`),
+    deleteCategory: (id, data = {}) => request(`/materials/performance/categories/${id}`, { method: 'DELETE', body: data }),
+    updateCategoryStatus: (id, data) => request(`/materials/performance/categories/${id}/status`, { method: 'PATCH', body: data }),
     uploadCategoryAttachment: (id, data) =>
-      request(`/business/materials/performance/categories/${id}/attachments`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+      request(`/materials/performance/categories/${id}/attachments`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     categoryAttachmentUrl: (categoryId, attachmentId) =>
-      joinUrl(ENV.API_BASE_URL, `/business/materials/performance/categories/${categoryId}/attachments/${attachmentId}`),
+      joinUrl(ENV.API_BASE_URL, `/materials/performance/categories/${categoryId}/attachments/${attachmentId}`),
+    itemAttachmentUrl: (categoryId, itemId, attachmentId) =>
+      joinUrl(ENV.API_BASE_URL, `/materials/performance/categories/${categoryId}/items/${itemId}/attachments/${attachmentId}`),
     create: (data) => request('/business/materials/performance', { method: 'POST', body: data }),
     update: (id, data) => request(`/business/materials/performance/${id}`, { method: 'PUT', body: data }),
     delete: (id) => request(`/business/materials/performance/${id}`, { method: 'DELETE' }),

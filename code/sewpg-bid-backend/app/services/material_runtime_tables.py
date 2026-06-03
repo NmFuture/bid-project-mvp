@@ -240,10 +240,15 @@ class MaterialRuntimeTables:
                     project_name TEXT,
                     customer_name VARCHAR(300),
                     turbine_model VARCHAR(120),
+                    turbine_models JSONB DEFAULT '[]'::jsonb,
                     contract_quantity VARCHAR(80),
                     trial_operation_quantity VARCHAR(80),
                     commissioned_capacity_mw VARCHAR(80),
                     delivery_or_operation_time VARCHAR(120),
+                    contract_year INT,
+                    delivery_year INT,
+                    operation_year INT,
+                    time_facts JSONB DEFAULT '{}'::jsonb,
                     contact_info VARCHAR(200),
                     row_values JSONB DEFAULT '{}'::jsonb,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -252,6 +257,11 @@ class MaterialRuntimeTables:
                 """
             )
         )
+        await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS turbine_models JSONB DEFAULT '[]'::jsonb"))
+        await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS contract_year INT"))
+        await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS delivery_year INT"))
+        await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS operation_year INT"))
+        await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS time_facts JSONB DEFAULT '{}'::jsonb"))
         await session.execute(
             text(
                 """
@@ -270,8 +280,42 @@ class MaterialRuntimeTables:
                 """
             )
         )
+        await session.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS performance_item_attachments (
+                    id BIGSERIAL PRIMARY KEY,
+                    category_id BIGINT NOT NULL REFERENCES performance_categories(id) ON DELETE CASCADE,
+                    item_id BIGINT NOT NULL REFERENCES performance_items(id) ON DELETE CASCADE,
+                    source_attachment_id BIGINT REFERENCES performance_attachments(id) ON DELETE CASCADE,
+                    attachment_type VARCHAR(60) NOT NULL DEFAULT 'contract_item',
+                    file_name VARCHAR(255) NOT NULL,
+                    minio_key VARCHAR(500) NOT NULL,
+                    minio_bucket VARCHAR(100) DEFAULT 'bid-materials',
+                    mime_type VARCHAR(120),
+                    size_bytes BIGINT DEFAULT 0,
+                    format_version INT DEFAULT 1,
+                    match_confidence INT DEFAULT 0,
+                    match_method VARCHAR(80),
+                    source_title TEXT,
+                    source_block_start INT,
+                    source_block_end INT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    created_by VARCHAR(100)
+                )
+                """
+            )
+        )
+        await session.execute(text("ALTER TABLE performance_item_attachments ADD COLUMN IF NOT EXISTS format_version INT DEFAULT 1"))
         await session.execute(text("CREATE INDEX IF NOT EXISTS idx_performance_items_category_id ON performance_items(category_id)"))
+        await session.execute(text("CREATE INDEX IF NOT EXISTS idx_performance_items_turbine_model ON performance_items(turbine_model)"))
+        await session.execute(text("CREATE INDEX IF NOT EXISTS idx_performance_items_contract_year ON performance_items(contract_year)"))
+        await session.execute(text("CREATE INDEX IF NOT EXISTS idx_performance_items_delivery_year ON performance_items(delivery_year)"))
+        await session.execute(text("CREATE INDEX IF NOT EXISTS idx_performance_items_operation_year ON performance_items(operation_year)"))
         await session.execute(text("CREATE INDEX IF NOT EXISTS idx_performance_attachments_category_id ON performance_attachments(category_id)"))
+        await session.execute(text("CREATE INDEX IF NOT EXISTS idx_performance_item_attachments_category_id ON performance_item_attachments(category_id)"))
+        await session.execute(text("CREATE INDEX IF NOT EXISTS idx_performance_item_attachments_item_id ON performance_item_attachments(item_id)"))
+        await session.execute(text("CREATE INDEX IF NOT EXISTS idx_performance_item_attachments_source_id ON performance_item_attachments(source_attachment_id)"))
         await session.execute(text("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS meta JSONB"))
         await session.execute(text("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS ip_address VARCHAR(80)"))
         await session.execute(text("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS user_agent TEXT"))

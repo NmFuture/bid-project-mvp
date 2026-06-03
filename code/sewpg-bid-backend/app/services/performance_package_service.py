@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
+from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from zipfile import ZIP_DEFLATED, ZipFile
+from xml.etree import ElementTree as ET
 
 from docx import Document
+from docx.shared import Pt
 from sqlalchemy import text
 
 from app.core.config import settings
@@ -23,6 +28,16 @@ PERFORMANCE_CATEGORY_REVIEW_STATUSES = {"draft", "reviewed", "disabled"}
 PERFORMANCE_CATEGORY_STATUSES = {"enabled", "disabled"}
 SUMMARY_ATTACHMENT_TYPE = "summary_table"
 CONTRACT_ATTACHMENT_TYPE = "contract_bundle"
+ITEM_CONTRACT_ATTACHMENT_TYPE = "contract_item"
+DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+ITEM_CONTRACT_FORMAT_VERSION = 3
+CONTRACT_OUTPUT_EAST_ASIA_FONT = "Songti SC"
+CONTRACT_OUTPUT_WESTERN_FONT = "Times New Roman"
+CONTRACT_OUTPUT_SYMBOL_FONT = "Symbol"
+RELATIONSHIP_NAMESPACE = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+A_NAMESPACE = "http://schemas.openxmlformats.org/drawingml/2006/main"
+THEME_EAST_ASIA_SCRIPTS = {"Hans", "Hant", "Jpan", "Hang"}
 logger = logging.getLogger(__name__)
 
 
@@ -33,6 +48,11 @@ class PerformancePackageService:
         keyword: str = "",
         scene: str = "",
         power_rating: str = "",
+        turbine_model: str = "",
+        time_keyword: str = "",
+        contract_year: str = "",
+        delivery_year: str = "",
+        operation_year: str = "",
         tag: str = "",
         status: str = "enabled",
         sort_by: str = "updatedAt",
@@ -47,6 +67,11 @@ class PerformancePackageService:
             keyword=keyword,
             scene=scene,
             power_rating=power_rating,
+            turbine_model=turbine_model,
+            time_keyword=time_keyword,
+            contract_year=contract_year,
+            delivery_year=delivery_year,
+            operation_year=operation_year,
             tag=tag,
             status=status,
         )
@@ -54,6 +79,7 @@ class PerformancePackageService:
         order_sql = _category_order_sql(sort_by, sort_order)
         async with async_session() as session:
             await ensure_material_runtime_tables(session)
+            await self._backfill_derived_item_fields(session)
             total_result = await session.execute(
                 text(f"SELECT COUNT(*) FROM performance_categories c {where_sql}"),
                 params,
@@ -65,12 +91,38 @@ class PerformancePackageService:
                     SELECT
                         c.*,
                         (SELECT COUNT(*) FROM performance_items i WHERE i.category_id = c.id) AS item_count,
+                        (
+                            SELECT COALESCE(jsonb_agg(DISTINCT model_value ORDER BY model_value), '[]'::jsonb)
+                            FROM performance_items i
+                            CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(i.turbine_models, '[]'::jsonb)) AS model_value
+                            WHERE i.category_id = c.id AND model_value <> ''
+                        ) AS turbine_models,
+                        (
+                            SELECT COALESCE(jsonb_agg(DISTINCT i.contract_year ORDER BY i.contract_year), '[]'::jsonb)
+                            FROM performance_items i
+                            WHERE i.category_id = c.id AND i.contract_year IS NOT NULL
+                        ) AS contract_years,
+                        (
+                            SELECT COALESCE(jsonb_agg(DISTINCT i.delivery_year ORDER BY i.delivery_year), '[]'::jsonb)
+                            FROM performance_items i
+                            WHERE i.category_id = c.id AND i.delivery_year IS NOT NULL
+                        ) AS delivery_years,
+                        (
+                            SELECT COALESCE(jsonb_agg(DISTINCT i.operation_year ORDER BY i.operation_year), '[]'::jsonb)
+                            FROM performance_items i
+                            WHERE i.category_id = c.id AND i.operation_year IS NOT NULL
+                        ) AS operation_years,
                         (SELECT COUNT(*) FROM performance_attachments a WHERE a.category_id = c.id) AS attachment_count,
                         (
                             SELECT COUNT(*)
                             FROM performance_attachments a
                             WHERE a.category_id = c.id AND a.attachment_type = :contract_attachment_type
                         ) AS contract_attachment_count,
+                        (
+                            SELECT COUNT(*)
+                            FROM performance_item_attachments ia
+                            WHERE ia.category_id = c.id AND ia.attachment_type = :item_contract_attachment_type
+                        ) AS item_contract_attachment_count,
                         (
                             SELECT a.file_name
                             FROM performance_attachments a
@@ -97,6 +149,7 @@ class PerformancePackageService:
                     "offset": offset,
                     "summary_attachment_type": SUMMARY_ATTACHMENT_TYPE,
                     "contract_attachment_type": CONTRACT_ATTACHMENT_TYPE,
+                    "item_contract_attachment_type": ITEM_CONTRACT_ATTACHMENT_TYPE,
                 },
             )
         return {
@@ -110,18 +163,46 @@ class PerformancePackageService:
         numeric_id = self._numeric_category_id(category_id)
         async with async_session() as session:
             await ensure_material_runtime_tables(session)
+            await self._backfill_derived_item_fields(session, category_id=numeric_id)
+            await self._ensure_contract_item_attachments(session, category_id=numeric_id)
             category_result = await session.execute(
                 text(
-                    """
+                        """
                     SELECT
                         c.*,
                         (SELECT COUNT(*) FROM performance_items i WHERE i.category_id = c.id) AS item_count,
+                        (
+                            SELECT COALESCE(jsonb_agg(DISTINCT model_value ORDER BY model_value), '[]'::jsonb)
+                            FROM performance_items i
+                            CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(i.turbine_models, '[]'::jsonb)) AS model_value
+                            WHERE i.category_id = c.id AND model_value <> ''
+                        ) AS turbine_models,
+                        (
+                            SELECT COALESCE(jsonb_agg(DISTINCT i.contract_year ORDER BY i.contract_year), '[]'::jsonb)
+                            FROM performance_items i
+                            WHERE i.category_id = c.id AND i.contract_year IS NOT NULL
+                        ) AS contract_years,
+                        (
+                            SELECT COALESCE(jsonb_agg(DISTINCT i.delivery_year ORDER BY i.delivery_year), '[]'::jsonb)
+                            FROM performance_items i
+                            WHERE i.category_id = c.id AND i.delivery_year IS NOT NULL
+                        ) AS delivery_years,
+                        (
+                            SELECT COALESCE(jsonb_agg(DISTINCT i.operation_year ORDER BY i.operation_year), '[]'::jsonb)
+                            FROM performance_items i
+                            WHERE i.category_id = c.id AND i.operation_year IS NOT NULL
+                        ) AS operation_years,
                         (SELECT COUNT(*) FROM performance_attachments a WHERE a.category_id = c.id) AS attachment_count,
                         (
                             SELECT COUNT(*)
                             FROM performance_attachments a
                             WHERE a.category_id = c.id AND a.attachment_type = :contract_attachment_type
                         ) AS contract_attachment_count,
+                        (
+                            SELECT COUNT(*)
+                            FROM performance_item_attachments ia
+                            WHERE ia.category_id = c.id AND ia.attachment_type = :item_contract_attachment_type
+                        ) AS item_contract_attachment_count,
                         (
                             SELECT a.file_name
                             FROM performance_attachments a
@@ -144,6 +225,7 @@ class PerformancePackageService:
                     "id": numeric_id,
                     "summary_attachment_type": SUMMARY_ATTACHMENT_TYPE,
                     "contract_attachment_type": CONTRACT_ATTACHMENT_TYPE,
+                    "item_contract_attachment_type": ITEM_CONTRACT_ATTACHMENT_TYPE,
                 },
             )
             category_row = category_result.first()
@@ -171,9 +253,28 @@ class PerformancePackageService:
                 ),
                 {"id": numeric_id},
             )
+            item_attachment_rows = await session.execute(
+                text(
+                    """
+                    SELECT *
+                    FROM performance_item_attachments
+                    WHERE category_id = :id
+                    ORDER BY item_id ASC, created_at DESC, id DESC
+                    """
+                ),
+                {"id": numeric_id},
+            )
+            item_attachments: dict[int, list[dict[str, Any]]] = {}
+            for row in item_attachment_rows:
+                item_attachments.setdefault(int(row._mapping.get("item_id") or 0), []).append(self._item_attachment_row_to_dict(row._mapping))
+            item_payload = []
+            for row in item_rows:
+                row_dict = self._item_row_to_dict(row._mapping)
+                row_dict["attachments"] = item_attachments.get(int(row._mapping.get("id") or 0), [])
+                item_payload.append(row_dict)
         return {
             "item": self._category_row_to_dict(category_row._mapping),
-            "rows": [self._item_row_to_dict(row._mapping) for row in item_rows],
+            "rows": item_payload,
             "attachments": [self._attachment_row_to_dict(row._mapping) for row in attachment_rows],
         }
 
@@ -240,13 +341,17 @@ class PerformancePackageService:
                         """
                         INSERT INTO performance_items (
                             category_id, row_index, project_name, customer_name, turbine_model,
+                            turbine_models,
                             contract_quantity, trial_operation_quantity, commissioned_capacity_mw,
-                            delivery_or_operation_time, contact_info, row_values
+                            delivery_or_operation_time, contract_year, delivery_year, operation_year,
+                            time_facts, contact_info, row_values
                         )
                         VALUES (
                             :category_id, :row_index, :project_name, :customer_name, :turbine_model,
+                            CAST(:turbine_models AS JSONB),
                             :contract_quantity, :trial_operation_quantity, :commissioned_capacity_mw,
-                            :delivery_or_operation_time, :contact_info, CAST(:row_values AS JSONB)
+                            :delivery_or_operation_time, :contract_year, :delivery_year, :operation_year,
+                            CAST(:time_facts AS JSONB), :contact_info, CAST(:row_values AS JSONB)
                         )
                         """
                     ),
@@ -257,10 +362,15 @@ class PerformancePackageService:
                             "project_name": row.get("projectName") or "",
                             "customer_name": row.get("customerName") or "",
                             "turbine_model": row.get("turbineModel") or "",
+                            "turbine_models": _json(row.get("turbineModels") or []),
                             "contract_quantity": row.get("contractQuantity") or "",
                             "trial_operation_quantity": row.get("trialOperationQuantity") or "",
                             "commissioned_capacity_mw": row.get("commissionedCapacityMw") or "",
                             "delivery_or_operation_time": row.get("deliveryOrOperationTime") or "",
+                            "contract_year": row.get("contractYear"),
+                            "delivery_year": row.get("deliveryYear"),
+                            "operation_year": row.get("operationYear"),
+                            "time_facts": _json(row.get("timeFacts") or {}),
                             "contact_info": row.get("contactInfo") or "",
                             "row_values": _json(row.get("values") or {}),
                         }
@@ -329,6 +439,7 @@ class PerformancePackageService:
             )
             if category_result.first() is None:
                 raise PeripheralError(404, "业绩类别不存在。", "PERFORMANCE_CATEGORY_NOT_FOUND")
+            uploaded_child_objects: list[tuple[str, str]] = []
             try:
                 minio_client.put_object(
                     settings.minio_buckets["materials"],
@@ -336,7 +447,7 @@ class PerformancePackageService:
                     content,
                     content_type=mime_type,
                 )
-                await session.execute(
+                attachment_result = await session.execute(
                     text(
                         """
                         INSERT INTO performance_attachments (
@@ -347,6 +458,7 @@ class PerformancePackageService:
                             :category_id, :attachment_type, :file_name, :minio_key, :minio_bucket,
                             :mime_type, :size_bytes
                         )
+                        RETURNING *
                         """
                     ),
                     {
@@ -359,6 +471,17 @@ class PerformancePackageService:
                         "size_bytes": len(content),
                     },
                 )
+                attachment_row = attachment_result.first()
+                if attachment_row is None:
+                    raise PeripheralError(500, "业绩附件保存失败。", "PERFORMANCE_ATTACHMENT_CREATE_FAILED")
+                if normalized_type == CONTRACT_ATTACHMENT_TYPE and file_name.lower().endswith(".docx"):
+                    uploaded_child_objects = await self._replace_contract_item_attachments_for_source(
+                        session,
+                        category_id=numeric_id,
+                        source_attachment_id=int(attachment_row._mapping["id"]),
+                        content=content,
+                        source_file_name=file_name,
+                    )
                 await session.execute(
                     text("UPDATE performance_categories SET updated_at = NOW() WHERE id = :id"),
                     {"id": numeric_id},
@@ -366,6 +489,11 @@ class PerformancePackageService:
                 await session.commit()
             except Exception:
                 minio_client.remove_object(settings.minio_buckets["materials"], object_key)
+                for bucket, key in uploaded_child_objects:
+                    try:
+                        minio_client.remove_object(bucket, key)
+                    except Exception as exc:  # pragma: no cover - cleanup should not mask original error
+                        logger.warning("Failed to remove split performance contract object %s/%s: %s", bucket, key, exc)
                 raise
         return {"message": "业绩附件已上传", "item": await self.get_category(category_id)}
 
@@ -388,6 +516,39 @@ class PerformancePackageService:
         if row is None:
             raise PeripheralError(404, "业绩附件不存在。", "PERFORMANCE_ATTACHMENT_NOT_FOUND")
         item = self._attachment_row_to_dict(row._mapping)
+        return {
+            "bucket": item.get("minioBucket") or settings.minio_buckets["materials"],
+            "key": item.get("minioKey") or "",
+            "fileName": item.get("fileName") or f"{item['id']}.docx",
+            "mimeType": item.get("mimeType") or "application/octet-stream",
+        }
+
+    async def download_item_attachment(self, category_id: str, item_id: str, attachment_id: str) -> dict[str, Any]:
+        numeric_category_id = self._numeric_category_id(category_id)
+        numeric_item_id = self._numeric_item_id(item_id)
+        numeric_attachment_id = self._numeric_item_attachment_id(attachment_id)
+        async with async_session() as session:
+            await ensure_material_runtime_tables(session)
+            result = await session.execute(
+                text(
+                    """
+                    SELECT *
+                    FROM performance_item_attachments
+                    WHERE id = :attachment_id
+                      AND item_id = :item_id
+                      AND category_id = :category_id
+                    """
+                ),
+                {
+                    "attachment_id": numeric_attachment_id,
+                    "item_id": numeric_item_id,
+                    "category_id": numeric_category_id,
+                },
+            )
+            row = result.first()
+        if row is None:
+            raise PeripheralError(404, "项目合同附件不存在。", "PERFORMANCE_ITEM_ATTACHMENT_NOT_FOUND")
+        item = self._item_attachment_row_to_dict(row._mapping)
         return {
             "bucket": item.get("minioBucket") or settings.minio_buckets["materials"],
             "key": item.get("minioKey") or "",
@@ -459,6 +620,17 @@ class PerformancePackageService:
                 {"id": numeric_id},
             )
             attachments = [dict(row._mapping) for row in attachment_result]
+            item_attachment_result = await session.execute(
+                text(
+                    """
+                    SELECT minio_bucket, minio_key
+                    FROM performance_item_attachments
+                    WHERE category_id = :id
+                    """
+                ),
+                {"id": numeric_id},
+            )
+            attachments.extend(dict(row._mapping) for row in item_attachment_result)
             result = await session.execute(
                 text(
                     """
@@ -490,6 +662,11 @@ class PerformancePackageService:
         keyword: str,
         scene: str,
         power_rating: str,
+        turbine_model: str,
+        time_keyword: str,
+        contract_year: str,
+        delivery_year: str,
+        operation_year: str,
         tag: str,
         status: str,
     ) -> tuple[list[str], dict[str, Any]]:
@@ -520,11 +697,304 @@ class PerformancePackageService:
         if selected_power:
             filters.append("c.power_rating ILIKE :power_rating")
             params["power_rating"] = f"%{selected_power}%"
+        selected_model = str(turbine_model or "").strip()
+        if selected_model:
+            filters.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM performance_items i
+                    WHERE i.category_id = c.id
+                      AND (
+                        i.turbine_model ILIKE :turbine_model OR
+                        i.turbine_models::text ILIKE :turbine_model OR
+                        i.row_values::text ILIKE :turbine_model
+                      )
+                )
+                """
+            )
+            params["turbine_model"] = f"%{selected_model}%"
+        selected_time = str(time_keyword or "").strip()
+        if selected_time:
+            filters.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM performance_items i
+                    WHERE i.category_id = c.id
+                      AND (
+                        i.delivery_or_operation_time ILIKE :time_keyword OR
+                        i.time_facts::text ILIKE :time_keyword OR
+                        i.row_values::text ILIKE :time_keyword
+                      )
+                )
+                """
+            )
+            params["time_keyword"] = f"%{selected_time}%"
+        contract_year_value = _parse_year_filter(contract_year)
+        if contract_year_value is not None:
+            filters.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM performance_items i
+                    WHERE i.category_id = c.id AND i.contract_year = :contract_year
+                )
+                """
+            )
+            params["contract_year"] = contract_year_value
+        delivery_year_value = _parse_year_filter(delivery_year)
+        if delivery_year_value is not None:
+            filters.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM performance_items i
+                    WHERE i.category_id = c.id AND i.delivery_year = :delivery_year
+                )
+                """
+            )
+            params["delivery_year"] = delivery_year_value
+        operation_year_value = _parse_year_filter(operation_year)
+        if operation_year_value is not None:
+            filters.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM performance_items i
+                    WHERE i.category_id = c.id AND i.operation_year = :operation_year
+                )
+                """
+            )
+            params["operation_year"] = operation_year_value
         selected_tag = str(tag or "").strip()
         if selected_tag:
             filters.append("c.tags @> CAST(:tag_json AS JSONB)")
             params["tag_json"] = _json([selected_tag])
         return filters, params
+
+    async def _backfill_derived_item_fields(self, session: Any, *, category_id: int | None = None) -> None:
+        filters = [
+            "("
+            "COALESCE(jsonb_array_length(COALESCE(turbine_models, '[]'::jsonb)), 0) = 0 OR "
+            "COALESCE(time_facts, '{}'::jsonb) = '{}'::jsonb"
+            ")"
+        ]
+        params: dict[str, Any] = {}
+        if category_id is not None:
+            filters.append("category_id = :category_id")
+            params["category_id"] = category_id
+        rows = await session.execute(
+            text(
+                f"""
+                SELECT id, row_values, turbine_model, delivery_or_operation_time
+                FROM performance_items
+                WHERE {' AND '.join(filters)}
+                LIMIT 2000
+                """
+            ),
+            params,
+        )
+        updates: list[dict[str, Any]] = []
+        for row in rows:
+            row_dict = dict(row._mapping)
+            row_values = dict(row_dict.get("row_values") or {})
+            if not row_values:
+                turbine_model = str(row_dict.get("turbine_model") or "").strip()
+                delivery_or_operation_time = str(row_dict.get("delivery_or_operation_time") or "").strip()
+                if turbine_model:
+                    row_values["型号"] = turbine_model
+                if delivery_or_operation_time:
+                    row_values["交货期/投运时间"] = delivery_or_operation_time
+            core = _core_values(row_values)
+            updates.append(
+                {
+                    "id": row_dict["id"],
+                    "turbine_models": _json(core.get("turbineModels") or []),
+                    "contract_year": core.get("contractYear"),
+                    "delivery_year": core.get("deliveryYear"),
+                    "operation_year": core.get("operationYear"),
+                    "time_facts": _json(core.get("timeFacts") or {}),
+                }
+            )
+        if not updates:
+            return
+        await session.execute(
+            text(
+                """
+                UPDATE performance_items
+                SET turbine_models = CAST(:turbine_models AS JSONB),
+                    contract_year = :contract_year,
+                    delivery_year = :delivery_year,
+                    operation_year = :operation_year,
+                    time_facts = CAST(:time_facts AS JSONB),
+                    updated_at = NOW()
+                WHERE id = :id
+                """
+            ),
+            updates,
+        )
+        await session.commit()
+
+    async def _ensure_contract_item_attachments(self, session: Any, *, category_id: int) -> None:
+        source_rows = await session.execute(
+            text(
+                """
+                SELECT *
+                FROM performance_attachments
+                WHERE category_id = :category_id
+                  AND attachment_type = :attachment_type
+                  AND LOWER(file_name) LIKE '%.docx'
+                ORDER BY id ASC
+                LIMIT 20
+                """
+            ),
+            {"category_id": category_id, "attachment_type": CONTRACT_ATTACHMENT_TYPE},
+        )
+        for row in source_rows:
+            source = dict(row._mapping)
+            existing_result = await session.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM performance_item_attachments
+                    WHERE source_attachment_id = :source_attachment_id
+                      AND COALESCE(format_version, 1) >= :format_version
+                    """
+                ),
+                {
+                    "source_attachment_id": int(source.get("id") or 0),
+                    "format_version": ITEM_CONTRACT_FORMAT_VERSION,
+                },
+            )
+            if int(existing_result.scalar_one() or 0) > 0:
+                continue
+            try:
+                content = minio_client.get_object(
+                    source.get("minio_bucket") or settings.minio_buckets["materials"],
+                    source.get("minio_key") or "",
+                )
+                await self._replace_contract_item_attachments_for_source(
+                    session,
+                    category_id=category_id,
+                    source_attachment_id=int(source["id"]),
+                    content=content,
+                    source_file_name=str(source.get("file_name") or "合同附件.docx"),
+                )
+                await session.commit()
+            except Exception as exc:  # pragma: no cover - lazy split should not break detail loading
+                logger.warning("Failed to lazily split performance contract attachment %s: %s", source.get("id"), exc)
+                await session.rollback()
+                await ensure_material_runtime_tables(session)
+
+    async def _replace_contract_item_attachments_for_source(
+        self,
+        session: Any,
+        *,
+        category_id: int,
+        source_attachment_id: int,
+        content: bytes,
+        source_file_name: str,
+    ) -> list[tuple[str, str]]:
+        old_rows = await session.execute(
+            text(
+                """
+                DELETE FROM performance_item_attachments
+                WHERE source_attachment_id = :source_attachment_id
+                RETURNING minio_bucket, minio_key
+                """
+            ),
+            {"source_attachment_id": source_attachment_id},
+        )
+        for row in old_rows:
+            bucket = row._mapping.get("minio_bucket") or settings.minio_buckets["materials"]
+            key = row._mapping.get("minio_key") or ""
+            if not key:
+                continue
+            try:
+                minio_client.remove_object(bucket, key)
+            except Exception as exc:  # pragma: no cover - cleanup should not block a replacement split
+                logger.warning("Failed to remove old split performance contract object %s/%s: %s", bucket, key, exc)
+
+        chunks = split_performance_contract_docx(content, file_name=source_file_name)
+        if not chunks:
+            return []
+        item_rows = await session.execute(
+            text(
+                """
+                SELECT id, row_index, project_name, customer_name, turbine_model, turbine_models, row_values
+                FROM performance_items
+                WHERE category_id = :category_id
+                ORDER BY row_index ASC, id ASC
+                """
+            ),
+            {"category_id": category_id},
+        )
+        items = [self._item_row_to_dict(row._mapping) for row in item_rows]
+        matches = match_contract_chunks_to_items(chunks, items)
+        uploaded_objects: list[tuple[str, str]] = []
+        inserts: list[dict[str, Any]] = []
+        bucket = settings.minio_buckets["materials"]
+        for match in matches:
+            item = match.get("item") or {}
+            chunk = match.get("chunk") or {}
+            item_numeric_id = self._numeric_item_id(str(item.get("id") or ""))
+            if not item_numeric_id:
+                continue
+            chunk_content = render_contract_item_docx(
+                chunk,
+                output_title=str(item.get("projectName") or chunk.get("title") or ""),
+            )
+            file_name = _contract_item_file_name(
+                item.get("rowIndex") or 0,
+                item.get("projectName") or chunk.get("title") or Path(source_file_name).stem,
+                chunk.get("index") or 0,
+            )
+            object_key = (
+                f"performance-categories/PERCAT-{category_id:04d}/"
+                f"item-contracts/PERITEM-{item_numeric_id:04d}/"
+                f"SRC-{source_attachment_id:04d}-{_safe_file_name(file_name)}"
+            )
+            minio_client.put_object(bucket, object_key, chunk_content, content_type=DOCX_MIME_TYPE)
+            uploaded_objects.append((bucket, object_key))
+            inserts.append(
+                {
+                    "category_id": category_id,
+                    "item_id": item_numeric_id,
+                    "source_attachment_id": source_attachment_id,
+                    "attachment_type": ITEM_CONTRACT_ATTACHMENT_TYPE,
+                    "file_name": file_name,
+                    "minio_key": object_key,
+                    "minio_bucket": bucket,
+                    "mime_type": DOCX_MIME_TYPE,
+                    "size_bytes": len(chunk_content),
+                    "format_version": ITEM_CONTRACT_FORMAT_VERSION,
+                    "match_confidence": int(match.get("confidence") or 0),
+                    "match_method": str(match.get("method") or ""),
+                    "source_title": str(chunk.get("title") or ""),
+                    "source_block_start": chunk.get("blockStart"),
+                    "source_block_end": chunk.get("blockEnd"),
+                }
+            )
+        if inserts:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO performance_item_attachments (
+                        category_id, item_id, source_attachment_id, attachment_type, file_name,
+                        minio_key, minio_bucket, mime_type, size_bytes, format_version, match_confidence,
+                        match_method, source_title, source_block_start, source_block_end
+                    )
+                    VALUES (
+                        :category_id, :item_id, :source_attachment_id, :attachment_type, :file_name,
+                        :minio_key, :minio_bucket, :mime_type, :size_bytes, :format_version, :match_confidence,
+                        :match_method, :source_title, :source_block_start, :source_block_end
+                    )
+                    """
+                ),
+                inserts,
+            )
+        return uploaded_objects
 
     def _category_row_to_dict(self, row: Any) -> dict[str, Any]:
         row_dict = dict(row)
@@ -536,6 +1006,10 @@ class PerformancePackageService:
             "powerRating": row_dict.get("power_rating") or "",
             "summary": row_dict.get("summary") or "",
             "fieldSchema": list(row_dict.get("field_schema") or []),
+            "turbineModels": list(row_dict.get("turbine_models") or []),
+            "contractYears": list(row_dict.get("contract_years") or []),
+            "deliveryYears": list(row_dict.get("delivery_years") or []),
+            "operationYears": list(row_dict.get("operation_years") or []),
             "tags": list(row_dict.get("tags") or []),
             "scope": row_dict.get("scope") or "standard",
             "status": row_dict.get("status") or ("disabled" if row_dict.get("review_status") == "disabled" else "enabled"),
@@ -543,6 +1017,7 @@ class PerformancePackageService:
             "itemCount": int(row_dict.get("item_count") or 0),
             "attachmentCount": int(row_dict.get("attachment_count") or 0),
             "contractAttachmentCount": int(row_dict.get("contract_attachment_count") or 0),
+            "itemContractAttachmentCount": int(row_dict.get("item_contract_attachment_count") or 0),
             "summaryFileName": row_dict.get("summary_file_name") or "",
             "contractFileName": row_dict.get("contract_file_name") or "",
             "createdAt": row_dict.get("created_at").isoformat() if row_dict.get("created_at") else "",
@@ -559,10 +1034,15 @@ class PerformancePackageService:
             "projectName": row_dict.get("project_name") or "",
             "customerName": row_dict.get("customer_name") or "",
             "turbineModel": row_dict.get("turbine_model") or "",
+            "turbineModels": list(row_dict.get("turbine_models") or []),
             "contractQuantity": row_dict.get("contract_quantity") or "",
             "trialOperationQuantity": row_dict.get("trial_operation_quantity") or "",
             "commissionedCapacityMw": row_dict.get("commissioned_capacity_mw") or "",
             "deliveryOrOperationTime": row_dict.get("delivery_or_operation_time") or "",
+            "contractYear": row_dict.get("contract_year"),
+            "deliveryYear": row_dict.get("delivery_year"),
+            "operationYear": row_dict.get("operation_year"),
+            "timeFacts": dict(row_dict.get("time_facts") or {}),
             "contactInfo": row_dict.get("contact_info") or "",
             "values": dict(row_dict.get("row_values") or {}),
         }
@@ -582,17 +1062,51 @@ class PerformancePackageService:
             "createdAt": row_dict.get("created_at").isoformat() if row_dict.get("created_at") else "",
         }
 
+    def _item_attachment_row_to_dict(self, row: Any) -> dict[str, Any]:
+        row_dict = dict(row)
+        numeric_id = int(row_dict.get("id") or 0)
+        return {
+            "id": f"PERITEMATT-{numeric_id:04d}",
+            "categoryId": f"PERCAT-{int(row_dict.get('category_id') or 0):04d}",
+            "itemId": f"PERITEM-{int(row_dict.get('item_id') or 0):04d}",
+            "sourceAttachmentId": f"PERATT-{int(row_dict.get('source_attachment_id') or 0):04d}" if row_dict.get("source_attachment_id") else "",
+            "attachmentType": row_dict.get("attachment_type") or "",
+            "fileName": row_dict.get("file_name") or "",
+            "minioKey": row_dict.get("minio_key") or "",
+            "minioBucket": row_dict.get("minio_bucket") or settings.minio_buckets["materials"],
+            "mimeType": row_dict.get("mime_type") or "",
+            "sizeBytes": int(row_dict.get("size_bytes") or 0),
+            "matchConfidence": int(row_dict.get("match_confidence") or 0),
+            "matchMethod": row_dict.get("match_method") or "",
+            "sourceTitle": row_dict.get("source_title") or "",
+            "sourceBlockStart": row_dict.get("source_block_start"),
+            "sourceBlockEnd": row_dict.get("source_block_end"),
+            "createdAt": row_dict.get("created_at").isoformat() if row_dict.get("created_at") else "",
+        }
+
     def _numeric_category_id(self, category_id: str) -> int:
         try:
             return int(str(category_id or "").replace("PERCAT-", ""))
         except ValueError as exc:
             raise PeripheralError(400, "业绩类别 ID 无效。", "PERFORMANCE_CATEGORY_ID_INVALID") from exc
 
+    def _numeric_item_id(self, item_id: str) -> int:
+        try:
+            return int(str(item_id or "").replace("PERITEM-", ""))
+        except ValueError as exc:
+            raise PeripheralError(400, "业绩明细 ID 无效。", "PERFORMANCE_ITEM_ID_INVALID") from exc
+
     def _numeric_attachment_id(self, attachment_id: str) -> int:
         try:
             return int(str(attachment_id or "").replace("PERATT-", ""))
         except ValueError as exc:
             raise PeripheralError(400, "业绩附件 ID 无效。", "PERFORMANCE_ATTACHMENT_ID_INVALID") from exc
+
+    def _numeric_item_attachment_id(self, attachment_id: str) -> int:
+        try:
+            return int(str(attachment_id or "").replace("PERITEMATT-", ""))
+        except ValueError as exc:
+            raise PeripheralError(400, "项目合同附件 ID 无效。", "PERFORMANCE_ITEM_ATTACHMENT_ID_INVALID") from exc
 
 
 def parse_performance_summary_docx(content: bytes, *, file_name: str = "performance.docx") -> dict[str, Any]:
@@ -649,6 +1163,454 @@ def parse_performance_summary_docx(content: bytes, *, file_name: str = "performa
         "rowCount": len(detail_rows),
         "sourceFileName": file_name,
     }
+
+
+def split_performance_contract_docx(content: bytes, *, file_name: str = "contract.docx") -> list[dict[str, Any]]:
+    if not file_name.lower().endswith(".docx"):
+        return []
+    try:
+        source_doc = Document(BytesIO(content))
+    except Exception as exc:
+        raise PeripheralError(400, "合同附件无法读取，请确认文件格式。", "PERFORMANCE_CONTRACT_DOCX_INVALID") from exc
+
+    body_children = list(source_doc.element.body.iterchildren())
+    title_indexes = [
+        index
+        for index, child in enumerate(body_children)
+        if _is_contract_title_block(child)
+    ]
+    if not title_indexes:
+        title_indexes = _contract_title_indexes_from_page_breaks(body_children)
+    if not title_indexes:
+        title_indexes = [0] if body_children else []
+
+    chunks: list[dict[str, Any]] = []
+    for chunk_index, start in enumerate(title_indexes):
+        end = title_indexes[chunk_index + 1] if chunk_index + 1 < len(title_indexes) else len(body_children)
+        selected_blocks = [
+            child
+            for child in body_children[start:end]
+            if _block_kind(child) != "sectPr" and not _is_empty_page_break_paragraph(child)
+        ]
+        if not selected_blocks:
+            continue
+        title = _first_meaningful_block_text(selected_blocks) or f"{Path(file_name).stem}-{chunk_index + 1}"
+        chunks.append(
+            {
+                "index": chunk_index + 1,
+                "title": _dedupe_repeated_title(title)[:300],
+                "blocks": selected_blocks,
+                "sourceDoc": source_doc,
+                "blockStart": int(start),
+                "blockEnd": int(max(start, end - 1)),
+            }
+        )
+    for chunk in chunks:
+        content_bytes = render_contract_item_docx(chunk)
+        chunk["content"] = content_bytes
+        chunk["sizeBytes"] = len(content_bytes)
+    return chunks
+
+
+def match_contract_chunks_to_items(chunks: list[dict[str, Any]], items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not chunks or not items:
+        return []
+    matches: list[dict[str, Any]] = []
+    used_chunk_indexes: set[int] = set()
+    for item_index, item in enumerate(items):
+        best_chunk: dict[str, Any] | None = None
+        best_score = 0
+        for chunk_index, chunk in enumerate(chunks):
+            if chunk_index in used_chunk_indexes:
+                continue
+            score = _contract_match_score(item, chunk)
+            if score > best_score:
+                best_score = score
+                best_chunk = {**chunk, "_chunkIndex": chunk_index}
+        if best_chunk is not None and best_score >= 58:
+            used_chunk_indexes.add(int(best_chunk["_chunkIndex"]))
+            matches.append({"item": item, "chunk": _without_private_keys(best_chunk), "confidence": best_score, "method": "project_name"})
+            continue
+        if item_index < len(chunks) and item_index not in used_chunk_indexes:
+            used_chunk_indexes.add(item_index)
+            matches.append({"item": item, "chunk": chunks[item_index], "confidence": 45, "method": "row_order"})
+    return matches
+
+
+def render_contract_item_docx(chunk: dict[str, Any], *, output_title: str = "") -> bytes:
+    source_doc = chunk.get("sourceDoc")
+    blocks = list(chunk.get("blocks") or [])
+    if source_doc is None:
+        content = chunk.get("content")
+        if isinstance(content, bytes):
+            return content
+        return b""
+    title = _clean_contract_output_title(output_title or str(chunk.get("title") or "项目合同"))
+    content_blocks = _contract_content_blocks(blocks)
+    return _docx_blocks_to_bytes(source_doc, content_blocks, title=title)
+
+
+def _docx_blocks_to_bytes(source_doc: Any, blocks: list[Any], *, title: str = "") -> bytes:
+    target_doc = Document()
+    target_body = target_doc.element.body
+    for child in list(target_body):
+        target_body.remove(child)
+    if title:
+        title_paragraph = target_doc.add_paragraph()
+        title_run = title_paragraph.add_run(title)
+        title_run.bold = True
+        title_run.font.size = Pt(12)
+        title_format = title_paragraph.paragraph_format
+        title_format.space_before = Pt(0)
+        title_format.space_after = Pt(6)
+        title_format.line_spacing = 1.5
+        target_body.remove(title_paragraph._p)
+        target_body.append(title_paragraph._p)
+    for block in blocks:
+        cloned = deepcopy(block)
+        _copy_related_parts(source_doc.part, target_doc.part, cloned)
+        _normalize_contract_block_format(cloned)
+        target_body.append(cloned)
+    source_sect = source_doc.element.body.sectPr
+    if source_sect is not None:
+        target_body.append(deepcopy(source_sect))
+    output = BytesIO()
+    target_doc.save(output)
+    return _sanitize_contract_docx_fonts(output.getvalue())
+
+
+def _contract_content_blocks(blocks: list[Any]) -> list[Any]:
+    result: list[Any] = []
+    skipped_title = False
+    for block in blocks:
+        if not skipped_title and _is_contract_title_block(block):
+            skipped_title = True
+            continue
+        if _block_kind(block) == "p" and not _block_text(block) and not _has_drawings(block):
+            continue
+        result.append(block)
+    return result
+
+
+def _normalize_contract_block_format(block: Any) -> None:
+    paragraph_nodes = [block] if _block_kind(block) == "p" else list(block.xpath('.//*[local-name()="p"]'))
+    for paragraph in paragraph_nodes:
+        ppr = paragraph.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pPr")
+        if ppr is None:
+            ppr = _insert_ooxml_child(paragraph, "pPr", 0)
+        spacing = ppr.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}spacing")
+        if spacing is None:
+            spacing = _append_ooxml_child(ppr, "spacing")
+        spacing.set("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}before", "0")
+        spacing.set("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}after", "0")
+        spacing.set("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}line", "360")
+        spacing.set("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}lineRule", "auto")
+        rpr = ppr.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rPr")
+        if rpr is None:
+            rpr = _append_ooxml_child(ppr, "rPr")
+        _set_ooxml_rfonts(rpr)
+    for run_properties in block.xpath('.//*[local-name()="rPr"]'):
+        _set_ooxml_rfonts(run_properties)
+
+
+def _set_ooxml_rfonts(run_properties: Any) -> None:
+    rfonts = run_properties.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rFonts")
+    if rfonts is None:
+        rfonts = _insert_ooxml_child(run_properties, "rFonts", 0)
+    rfonts.set(f"{{{WORD_NAMESPACE}}}ascii", CONTRACT_OUTPUT_WESTERN_FONT)
+    rfonts.set(f"{{{WORD_NAMESPACE}}}hAnsi", CONTRACT_OUTPUT_WESTERN_FONT)
+    rfonts.set(f"{{{WORD_NAMESPACE}}}eastAsia", CONTRACT_OUTPUT_EAST_ASIA_FONT)
+    rfonts.set(f"{{{WORD_NAMESPACE}}}cs", CONTRACT_OUTPUT_WESTERN_FONT)
+    for attr_name in ("asciiTheme", "hAnsiTheme", "eastAsiaTheme", "cstheme", "hint"):
+        rfonts.attrib.pop(f"{{{WORD_NAMESPACE}}}{attr_name}", None)
+
+
+def _sanitize_contract_docx_fonts(content: bytes) -> bytes:
+    source = BytesIO(content)
+    target = BytesIO()
+    with ZipFile(source, "r") as src_zip, ZipFile(target, "w", compression=ZIP_DEFLATED) as dst_zip:
+        for info in src_zip.infolist():
+            data = src_zip.read(info.filename)
+            if info.filename == "word/fontTable.xml":
+                data = _contract_font_table_xml()
+            elif info.filename == "word/theme/theme1.xml":
+                data = _sanitize_theme_fonts_xml(data)
+            elif info.filename.startswith("word/") and info.filename.endswith(".xml"):
+                data = _sanitize_word_fonts_xml(data)
+            dst_zip.writestr(info, data)
+    return target.getvalue()
+
+
+def _sanitize_word_fonts_xml(data: bytes) -> bytes:
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError:
+        return data
+    changed = False
+    for element in root.iter():
+        local_name = element.tag.rsplit("}", 1)[-1]
+        if local_name == "rFonts":
+            element.attrib[f"{{{WORD_NAMESPACE}}}ascii"] = CONTRACT_OUTPUT_WESTERN_FONT
+            element.attrib[f"{{{WORD_NAMESPACE}}}hAnsi"] = CONTRACT_OUTPUT_WESTERN_FONT
+            element.attrib[f"{{{WORD_NAMESPACE}}}eastAsia"] = CONTRACT_OUTPUT_EAST_ASIA_FONT
+            element.attrib[f"{{{WORD_NAMESPACE}}}cs"] = CONTRACT_OUTPUT_WESTERN_FONT
+            for attr_name in ("asciiTheme", "hAnsiTheme", "eastAsiaTheme", "cstheme", "hint"):
+                element.attrib.pop(f"{{{WORD_NAMESPACE}}}{attr_name}", None)
+            changed = True
+    if not changed:
+        return data
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _sanitize_theme_fonts_xml(data: bytes) -> bytes:
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError:
+        return data
+    for tag_name in ("latin", "ea", "cs"):
+        for element in root.iter(f"{{{A_NAMESPACE}}}{tag_name}"):
+            element.set("typeface", CONTRACT_OUTPUT_EAST_ASIA_FONT if tag_name == "ea" else CONTRACT_OUTPUT_WESTERN_FONT)
+    for element in root.iter(f"{{{A_NAMESPACE}}}font"):
+        script = str(element.get("script") or "")
+        element.set(
+            "typeface",
+            CONTRACT_OUTPUT_EAST_ASIA_FONT if script in THEME_EAST_ASIA_SCRIPTS else CONTRACT_OUTPUT_WESTERN_FONT,
+        )
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _contract_font_table_xml() -> bytes:
+    return f"""<?xml version='1.0' encoding='UTF-8' standalone='yes'?>
+<w:fonts xmlns:w="{WORD_NAMESPACE}">
+  <w:font w:name="{CONTRACT_OUTPUT_EAST_ASIA_FONT}">
+    <w:charset w:val="86"/>
+    <w:family w:val="roman"/>
+    <w:pitch w:val="variable"/>
+  </w:font>
+  <w:font w:name="{CONTRACT_OUTPUT_WESTERN_FONT}">
+    <w:charset w:val="00"/>
+    <w:family w:val="roman"/>
+    <w:pitch w:val="variable"/>
+  </w:font>
+  <w:font w:name="{CONTRACT_OUTPUT_SYMBOL_FONT}">
+    <w:charset w:val="02"/>
+    <w:family w:val="auto"/>
+    <w:pitch w:val="variable"/>
+  </w:font>
+</w:fonts>
+""".encode("utf-8")
+
+
+def _append_ooxml_child(parent: Any, local_name: str) -> Any:
+    child = parent.makeelement(f"{{http://schemas.openxmlformats.org/wordprocessingml/2006/main}}{local_name}")
+    parent.append(child)
+    return child
+
+
+def _insert_ooxml_child(parent: Any, local_name: str, index: int) -> Any:
+    child = parent.makeelement(f"{{http://schemas.openxmlformats.org/wordprocessingml/2006/main}}{local_name}")
+    parent.insert(index, child)
+    return child
+
+
+def _copy_related_parts(source_part: Any, target_part: Any, element: Any) -> None:
+    for node in element.iter():
+        for attr_name, attr_value in list(node.attrib.items()):
+            if not attr_name.startswith(RELATIONSHIP_NAMESPACE):
+                continue
+            relation = source_part.rels.get(attr_value)
+            if relation is None:
+                continue
+            if relation.is_external:
+                new_rid = target_part.relate_to(relation.target_ref, relation.reltype, is_external=True)
+            else:
+                new_rid = target_part.relate_to(relation.target_part, relation.reltype)
+            node.attrib[attr_name] = new_rid
+
+
+def _clean_contract_output_title(value: str) -> str:
+    text_value = _dedupe_repeated_title(_clean_text(value))
+    text_value = re.sub(r"(采购)?合同$", "", text_value).strip(" ，,。；;:-_")
+    if len(text_value) > 80:
+        text_value = text_value[:80].rstrip(" ，,。；;:-_")
+    return text_value or "项目合同"
+
+
+def _is_contract_title_block(block: Any) -> bool:
+    if _block_kind(block) != "p":
+        return False
+    text_value = _dedupe_repeated_title(_block_text(block))
+    if len(text_value) < 8:
+        return False
+    if _has_drawings(block):
+        return False
+    if _is_empty_page_break_paragraph(block):
+        return False
+    if re.fullmatch(r"标段[一二三四五六七八九十\d]+[:：]?", text_value):
+        return False
+    if not any(keyword in text_value for keyword in ("合同", "项目", "工程", "风电", "设备", "采购", "供货", "EPC")):
+        return False
+    if any(keyword in text_value for keyword in ("合同首页", "签字盖章页", "技术数据页", "预验收证明", "运行证明", "并网证明")):
+        return False
+    return True
+
+
+def _contract_title_indexes_from_page_breaks(blocks: list[Any]) -> list[int]:
+    indexes: list[int] = []
+    next_meaningful_starts_chunk = True
+    for index, block in enumerate(blocks):
+        if _block_kind(block) == "sectPr":
+            continue
+        text_value = _dedupe_repeated_title(_block_text(block))
+        meaningful = bool(text_value) or _block_kind(block) == "tbl" or _has_drawings(block)
+        if next_meaningful_starts_chunk and meaningful:
+            indexes.append(index)
+            next_meaningful_starts_chunk = False
+        if _block_has_page_break(block):
+            next_meaningful_starts_chunk = True
+    return indexes
+
+
+def _first_meaningful_block_text(blocks: list[Any]) -> str:
+    for block in blocks:
+        text_value = _dedupe_repeated_title(_block_text(block))
+        if text_value:
+            return text_value
+    return ""
+
+
+def _block_kind(block: Any) -> str:
+    return str(getattr(block, "tag", "")).rsplit("}", 1)[-1]
+
+
+def _block_text(block: Any) -> str:
+    return _clean_text("".join(block.itertext()))
+
+
+def _block_has_page_break(block: Any) -> bool:
+    return bool(block.xpath('.//*[local-name()="br" and @*[local-name()="type"]="page"]'))
+
+
+def _has_drawings(block: Any) -> bool:
+    return bool(block.xpath('.//*[local-name()="drawing" or local-name()="pict"]'))
+
+
+def _is_empty_page_break_paragraph(block: Any) -> bool:
+    return _block_kind(block) == "p" and not _block_text(block) and _block_has_page_break(block)
+
+
+def _dedupe_repeated_title(value: str) -> str:
+    text_value = _clean_text(value)
+    if len(text_value) < 8:
+        return text_value
+    for unit_length in range(4, max(5, len(text_value) // 2 + 1)):
+        if len(text_value) % unit_length:
+            continue
+        unit = text_value[:unit_length]
+        repeats = len(text_value) // unit_length
+        if repeats >= 2 and unit * repeats == text_value:
+            return unit
+    half = len(text_value) // 2
+    if half >= 8 and text_value[:half] == text_value[half:]:
+        return text_value[:half]
+    for end in range(8, min(len(text_value), 180)):
+        unit = text_value[:end]
+        if text_value.startswith(unit + unit):
+            return unit
+    return text_value
+
+
+def _contract_match_score(item: dict[str, Any], chunk: dict[str, Any]) -> int:
+    project_name = str(item.get("projectName") or "")
+    chunk_title = str(chunk.get("title") or "")
+    if not project_name or not chunk_title:
+        return 0
+    project_norm = _match_text(project_name)
+    chunk_norm = _match_text(chunk_title)
+    if not project_norm or not chunk_norm:
+        return 0
+    if project_norm in chunk_norm or chunk_norm in project_norm:
+        return 96
+    project_tokens = _match_tokens(project_name)
+    chunk_tokens = _match_tokens(chunk_title)
+    if not project_tokens:
+        return 0
+    overlap = project_tokens & chunk_tokens
+    score = int(len(overlap) / max(1, len(project_tokens)) * 100)
+    longest = _longest_common_substring_length(project_norm, chunk_norm)
+    score = max(score, int(longest / max(1, len(project_norm)) * 100))
+    ordered = _ordered_character_coverage(project_norm, chunk_norm)
+    score = max(score, int(ordered * 100))
+    model_values = item.get("turbineModels") or []
+    if isinstance(model_values, list) and any(_match_text(model) and _match_text(model) in chunk_norm for model in model_values):
+        score += 8
+    customer = _match_text(item.get("customerName") or "")
+    if customer and customer in chunk_norm:
+        score += 8
+    return max(0, min(100, score))
+
+
+def _match_text(value: Any) -> str:
+    text_value = unicodedata.normalize("NFKC", str(value or "")).lower()
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", text_value)
+
+
+def _match_tokens(value: Any) -> set[str]:
+    normalized = _match_text(value)
+    if not normalized:
+        return set()
+    tokens = {match.group(0) for match in re.finditer(r"[a-z]+\d*(?:\.\d+)?|\d+(?:\.\d+)?mw|\d+(?:\.\d+)?万千瓦|\d+(?:\.\d+)?千瓦|\d+x\d+|\d+×\d+", normalized)}
+    for width in (2, 3, 4):
+        for start in range(0, max(0, len(normalized) - width + 1)):
+            token = normalized[start : start + width]
+            if len(token) == width:
+                tokens.add(token)
+    return tokens
+
+
+def _ordered_character_coverage(left: str, right: str) -> float:
+    if not left or not right:
+        return 0.0
+    right_index = 0
+    matched = 0
+    for char in left:
+        found_at = right.find(char, right_index)
+        if found_at < 0:
+            continue
+        matched += 1
+        right_index = found_at + 1
+    return matched / max(1, len(left))
+
+
+def _longest_common_substring_length(left: str, right: str) -> int:
+    if not left or not right:
+        return 0
+    previous = [0] * (len(right) + 1)
+    best = 0
+    for left_char in left:
+        current = [0] * (len(right) + 1)
+        for index, right_char in enumerate(right, start=1):
+            if left_char == right_char:
+                current[index] = previous[index - 1] + 1
+                best = max(best, current[index])
+        previous = current
+    return best
+
+
+def _without_private_keys(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if not str(key).startswith("_")}
+
+
+def _contract_item_file_name(row_index: Any, project_name: str, chunk_index: Any = 0) -> str:
+    safe_project = _safe_file_name(_clean_text(project_name))[:96].strip(" .-")
+    if not safe_project:
+        safe_project = f"项目{int(chunk_index or 0) or 1}"
+    try:
+        row_number = int(row_index or 0)
+    except (TypeError, ValueError):
+        row_number = 0
+    prefix = f"{row_number:03d}-" if row_number > 0 else ""
+    return f"{prefix}{safe_project}_合同.docx"
 
 
 def _select_summary_table(tables: Any) -> Any | None:
@@ -754,14 +1716,21 @@ def _field_key(header: str) -> str:
 
 
 def _core_values(row_values: dict[str, str]) -> dict[str, str]:
+    turbine_model = _first_value(row_values, ("型号和规格", "型号", "机型", "风机型号"))
+    time_facts = _time_facts(row_values)
     return {
         "projectName": _first_value(row_values, ("项目名称", "合同名称", "工程名称")),
         "customerName": _first_value(row_values, ("买方名称", "业主", "客户", "采购方")),
-        "turbineModel": _first_value(row_values, ("型号", "机型", "风机型号")),
+        "turbineModel": turbine_model,
+        "turbineModels": _split_turbine_models(turbine_model),
         "contractQuantity": _first_value(row_values, ("合同台数", "台数", "数量")),
         "trialOperationQuantity": _first_value(row_values, ("试运行台数", "240", "试运")),
         "commissionedCapacityMw": _first_value(row_values, ("投运容量", "容量")),
-        "deliveryOrOperationTime": _first_value(row_values, ("交货期", "投运时间", "交付")),
+        "deliveryOrOperationTime": time_facts["deliveryOrOperationTimeRaw"],
+        "contractYear": time_facts.get("contractYear"),
+        "deliveryYear": time_facts.get("deliveryYear"),
+        "operationYear": time_facts.get("operationYear"),
+        "timeFacts": time_facts,
         "contactInfo": _first_value(row_values, ("联系人", "电话", "联系方式")),
     }
 
@@ -771,6 +1740,96 @@ def _first_value(row_values: dict[str, str], keywords: tuple[str, ...]) -> str:
         if any(keyword in key for keyword in keywords):
             return value
     return ""
+
+
+def _split_turbine_models(value: str) -> list[str]:
+    text_value = _normalize_empty(value)
+    if not text_value:
+        return []
+    normalized = re.sub(r"[，,、/；;]+", " ", text_value)
+    parts = re.split(r"\s+", normalized)
+    result: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        candidate = part.strip("()（）[]【】")
+        if not candidate:
+            continue
+        if not re.search(r"\d", candidate):
+            continue
+        if not re.search(r"[A-Za-z]|MW|mw|-", candidate):
+            continue
+        key = candidate.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(candidate)
+    return result
+
+
+def _time_facts(row_values: dict[str, str]) -> dict[str, Any]:
+    contract_raw = _value_by_header(row_values, ("合同时间", "合同日期", "签约时间", "签订时间", "签订日期"))
+    operation_raw = _value_by_header(row_values, ("投运时间", "投运日期", "并网时间", "运行时间"))
+    delivery_raw = _value_by_header(row_values, ("交货期", "交付时间", "交货时间", "交付日期"))
+    delivery_or_operation_raw = _value_by_header(row_values, ("交货期/投运时间", "交货/投运", "交付/投运"))
+    combined_raw = delivery_or_operation_raw or operation_raw or delivery_raw
+    contract_year = _extract_year(contract_raw)
+    delivery_year = _extract_year(delivery_raw)
+    operation_year = _extract_year(operation_raw)
+    combined_year = _extract_year(combined_raw)
+    if delivery_or_operation_raw:
+        if delivery_year is None:
+            delivery_year = combined_year
+        if operation_year is None:
+            operation_year = combined_year
+    elif not operation_raw and delivery_raw and operation_year is None:
+        operation_year = None
+    return {
+        "contractTimeRaw": contract_raw,
+        "deliveryTimeRaw": delivery_raw,
+        "operationTimeRaw": operation_raw,
+        "deliveryOrOperationTimeRaw": combined_raw,
+        "contractYear": contract_year,
+        "deliveryYear": delivery_year,
+        "operationYear": operation_year,
+        "years": _unique_ints([contract_year, delivery_year, operation_year, combined_year]),
+    }
+
+
+def _value_by_header(row_values: dict[str, str], keywords: tuple[str, ...]) -> str:
+    for key, value in row_values.items():
+        normalized_key = re.sub(r"\s+", "", str(key or ""))
+        if any(keyword in normalized_key for keyword in keywords):
+            return value
+    return ""
+
+
+def _extract_year(value: str) -> int | None:
+    text_value = _normalize_empty(value)
+    if not text_value:
+        return None
+    match = re.search(r"(19\d{2}|20\d{2})", text_value)
+    if not match:
+        return None
+    year = int(match.group(1))
+    if 1990 <= year <= 2100:
+        return year
+    return None
+
+
+def _unique_ints(values: list[int | None]) -> list[int]:
+    result: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        if value is None or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _parse_year_filter(value: Any) -> int | None:
+    year = _extract_year(str(value or ""))
+    return year
 
 
 def _is_data_row(values: list[str]) -> bool:

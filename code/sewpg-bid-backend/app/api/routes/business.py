@@ -471,6 +471,11 @@ async def list_business_performance_categories(
     keyword: str = "",
     scene: str = "",
     powerRating: str = "",
+    turbineModel: str = "",
+    timeKeyword: str = "",
+    contractYear: str = "",
+    deliveryYear: str = "",
+    operationYear: str = "",
     tag: str = "",
     status: str = "enabled",
     sortBy: str = "updatedAt",
@@ -482,6 +487,11 @@ async def list_business_performance_categories(
         keyword=keyword,
         scene=scene,
         power_rating=powerRating,
+        turbine_model=turbineModel,
+        time_keyword=timeKeyword,
+        contract_year=contractYear,
+        delivery_year=deliveryYear,
+        operation_year=operationYear,
         tag=tag,
         status=status,
         sort_by=sortBy,
@@ -557,6 +567,12 @@ async def upload_business_performance_category_attachment(
 @router.get("/api/business/materials/performance/categories/{category_id}/attachments/{attachment_id}")
 async def download_business_performance_category_attachment(category_id: str, attachment_id: str) -> StreamingResponse:
     payload = await performance_package_service.download_attachment(category_id, attachment_id)
+    return minio_streaming_response(payload)
+
+
+@router.get("/api/business/materials/performance/categories/{category_id}/items/{item_id}/attachments/{attachment_id}")
+async def download_business_performance_item_attachment(category_id: str, item_id: str, attachment_id: str) -> StreamingResponse:
+    payload = await performance_package_service.download_item_attachment(category_id, item_id, attachment_id)
     return minio_streaming_response(payload)
 
 
@@ -752,11 +768,12 @@ async def business_raw_preview_split(file_id: str, data: dict[str, Any] = Body(d
 
 @router.post("/api/business/materials/raw/{file_id}/business-split/confirm")
 async def business_raw_confirm_split(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    fragments = data.get("fragments") if "fragments" in data else data.get("items")
     return await business_material_store.confirm_business_split(
         file_id=file_id,
-        plan_id=str(data.get("planId") or ""),
+        fragments=list(fragments or []),
         target_path=str(data.get("targetPath") or ""),
-        items=list(data.get("items") or []),
+        on_conflict=str(data.get("onConflict") or ""),
     )
 
 

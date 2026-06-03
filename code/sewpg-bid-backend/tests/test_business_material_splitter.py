@@ -8,7 +8,9 @@ from unittest.mock import AsyncMock, patch
 from docx import Document
 from docx.shared import Inches
 
+from app.api.routes import business as business_routes
 from app.models.materials import RawFile
+from app.services.business_material_store import business_material_store
 from app.services.business_material_splitter import confirm_business_material_split, preview_business_material_split, _send_openai_compatible_prompt
 
 
@@ -447,6 +449,63 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
             media_files = [name for name in zf.namelist() if name.startswith("word/media/")]
         self.assertGreaterEqual(len(output_doc.part._package.image_parts), 1)
         self.assertGreaterEqual(len(media_files), 1)
+
+    async def test_business_split_confirm_route_accepts_frontend_fragments_payload(self) -> None:
+        fragment = {
+            "id": "frag-001",
+            "selected": True,
+            "title": "投标函",
+            "targetPath": "商务标/通用素材/06-通用模板底稿库",
+        }
+
+        with patch.object(
+            business_routes.business_material_store,
+            "confirm_business_split",
+            new=AsyncMock(return_value={"ok": True}),
+        ) as confirm_business_split:
+            result = await business_routes.business_raw_confirm_split(
+                "RAW-0001",
+                {
+                    "fragments": [fragment],
+                    "targetPath": "商务标/通用素材/06-通用模板底稿库",
+                    "onConflict": "rename",
+                },
+            )
+
+        self.assertEqual(result, {"ok": True})
+        confirm_business_split.assert_awaited_once()
+        self.assertEqual(confirm_business_split.call_args.kwargs["fragments"], [fragment])
+        self.assertEqual(confirm_business_split.call_args.kwargs["target_path"], "商务标/通用素材/06-通用模板底稿库")
+        self.assertEqual(confirm_business_split.call_args.kwargs["on_conflict"], "rename")
+
+    async def test_business_material_store_forwards_split_contract_to_service(self) -> None:
+        fragment = {
+            "id": "frag-001",
+            "selected": True,
+            "title": "投标函",
+            "targetPath": "商务标/通用素材/06-通用模板底稿库",
+        }
+
+        with patch.object(business_material_store, "ensure_raw_file", new=AsyncMock()) as ensure_raw_file, patch(
+            "app.services.business_material_store.confirm_business_material_split",
+            new=AsyncMock(return_value={"ok": True}),
+        ) as confirm_material_split:
+            result = await business_material_store.confirm_business_split(
+                "RAW-0001",
+                fragments=[fragment],
+                target_path="商务标/通用素材/06-通用模板底稿库",
+                on_conflict="rename",
+            )
+
+        self.assertEqual(result, {"ok": True})
+        ensure_raw_file.assert_awaited_once_with("RAW-0001")
+        confirm_material_split.assert_awaited_once()
+        self.assertEqual(confirm_material_split.call_args.kwargs["fragments"], [fragment])
+        self.assertEqual(
+            confirm_material_split.call_args.kwargs["default_target_path"],
+            "商务标/通用素材/06-通用模板底稿库",
+        )
+        self.assertEqual(confirm_material_split.call_args.kwargs["on_conflict"], "rename")
 
     def test_openai_compatible_prompt_clamps_extreme_max_tokens(self) -> None:
         captured = {}
