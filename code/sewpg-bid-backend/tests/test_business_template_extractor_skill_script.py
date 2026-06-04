@@ -302,12 +302,34 @@ def docx_edge_summary(path: Path) -> dict[str, object]:
     def has_page_break_before(element: object) -> bool:
         return bool(element.xpath("./w:pPr/w:pageBreakBefore", namespaces=namespaces))
 
+    def has_paragraph_sect_pr(element: object) -> bool:
+        return bool(element.xpath("./w:pPr/w:sectPr", namespaces=namespaces))
+
+    def trailing_blank_count() -> int:
+        count = 0
+        for child in reversed(children):
+            if not is_blank_paragraph(child):
+                break
+            count += 1
+        return count
+
+    content_children = [child for child in children if text_of(child)]
+
     return {
         "texts": [text_of(child) for child in children if text_of(child)],
         "leadingBlank": bool(children and is_blank_paragraph(children[0])),
         "trailingBlank": bool(children and is_blank_paragraph(children[-1])),
+        "trailingBlankCount": trailing_blank_count(),
+        "blankParagraphCount": sum(1 for child in children if is_blank_paragraph(child)),
         "firstPageBreakBefore": bool(children and has_page_break_before(children[0])),
         "edgePageBreak": bool(children and (has_page_break(children[0]) or has_page_break(children[-1]))),
+        "lastContentHasSectionBreak": bool(content_children and has_paragraph_sect_pr(content_children[-1])),
+        "bodySectionBreakCount": len(body.findall(f"{word_ns}sectPr")) if body is not None else 0,
+        "bodyPageWidth": (
+            body.xpath("./w:sectPr/w:pgSz/@w:w", namespaces=namespaces)[0]
+            if body is not None and body.xpath("./w:sectPr/w:pgSz/@w:w", namespaces=namespaces)
+            else ""
+        ),
     }
 
 
@@ -1326,6 +1348,102 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
         self.assertFalse(summary["trailingBlank"])
         self.assertFalse(summary["firstPageBreakBefore"])
         self.assertFalse(summary["edgePageBreak"])
+
+    def test_slicer_moves_last_content_section_break_to_body_section(self) -> None:
+        from docx.oxml import OxmlElement  # noqa: PLC0415
+        from docx.oxml.ns import qn  # noqa: PLC0415
+        from scripts.docx_slicer import slice_docx_by_boundaries  # noqa: PLC0415
+
+        source = self.temp_dir / "last-content-section-break.docx"
+        output_dir = self.temp_dir / "last-content-section-break-output"
+        doc = Document()
+        doc.add_paragraph("Template title")
+        final_paragraph = doc.add_paragraph("Seal and signature")
+        p_pr = final_paragraph._p.get_or_add_pPr()
+        sect_pr = OxmlElement("w:sectPr")
+        section_type = OxmlElement("w:type")
+        section_type.set(qn("w:val"), "nextPage")
+        sect_pr.append(section_type)
+        page_size = OxmlElement("w:pgSz")
+        page_size.set(qn("w:w"), "16838")
+        page_size.set(qn("w:h"), "11906")
+        sect_pr.append(page_size)
+        p_pr.append(sect_pr)
+        doc.save(source)
+
+        result = slice_docx_by_boundaries(
+            source,
+            [
+                {"blockId": 1, "bodyIndex": 0},
+                {"blockId": 2, "bodyIndex": 1},
+            ],
+            {
+                "templates": [
+                    {
+                        "id": "TPL-0001",
+                        "title": "Template title",
+                        "startBlockId": 1,
+                        "endBlockId": 2,
+                    }
+                ]
+            },
+            output_dir,
+        )
+
+        target = output_dir / result["templates"][0]["outputPath"]
+        summary = docx_edge_summary(target)
+        self.assertEqual(summary["texts"], ["Template title", "Seal and signature"])
+        self.assertFalse(summary["lastContentHasSectionBreak"])
+        self.assertEqual(summary["bodySectionBreakCount"], 1)
+        self.assertEqual(summary["bodyPageWidth"], "16838")
+
+    def test_slicer_removes_only_trailing_plain_blank_paragraphs(self) -> None:
+        from scripts.docx_slicer import slice_docx_by_boundaries  # noqa: PLC0415
+
+        source = self.temp_dir / "trailing-plain-blank-paragraphs.docx"
+        output_dir = self.temp_dir / "trailing-plain-blank-paragraphs-output"
+        doc = Document()
+        doc.add_paragraph("Template title")
+        doc.add_paragraph("Intro text")
+        doc.add_paragraph("")
+        doc.add_paragraph("Commitment text")
+        doc.add_paragraph("Date line")
+        doc.add_paragraph("")
+        doc.add_paragraph("")
+        doc.add_paragraph("")
+        doc.save(source)
+
+        result = slice_docx_by_boundaries(
+            source,
+            [
+                {"blockId": 1, "bodyIndex": 0},
+                {"blockId": 2, "bodyIndex": 1},
+                {"blockId": 3, "bodyIndex": 2},
+                {"blockId": 4, "bodyIndex": 3},
+                {"blockId": 5, "bodyIndex": 4},
+                {"blockId": 6, "bodyIndex": 5},
+                {"blockId": 7, "bodyIndex": 6},
+                {"blockId": 8, "bodyIndex": 7},
+            ],
+            {
+                "templates": [
+                    {
+                        "id": "TPL-0001",
+                        "title": "Template title",
+                        "startBlockId": 1,
+                        "endBlockId": 8,
+                    }
+                ]
+            },
+            output_dir,
+        )
+
+        target = output_dir / result["templates"][0]["outputPath"]
+        summary = docx_edge_summary(target)
+        self.assertEqual(summary["texts"], ["Template title", "Intro text", "Commitment text", "Date line"])
+        self.assertFalse(summary["trailingBlank"])
+        self.assertEqual(summary["trailingBlankCount"], 0)
+        self.assertEqual(summary["blankParagraphCount"], 1)
 
     def test_runner_writes_appendices_and_preserves_bid_letter_tail(self) -> None:
         source = self.temp_dir / "招标文件.docx"

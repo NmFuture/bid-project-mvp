@@ -42,7 +42,7 @@ TASK_MODULE_KEYS = {
 TASK_INSTRUCTIONS = {
     "qualification_review": ("qualification", "只判断真正影响投标人资格的条件；材料说明、评分项、目录、引用句、废标项都应拒绝。"),
     "rejection_clause_review": ("rejection", "只保留影响投标有效性的商务废标、否决、无效投标、不予受理条款。"),
-    "scoring_table_review": ("scoringTableReview", "只判断疑难评分行块是否属于商务评分细则；只有看到具体分值时才能接受，权重、分值构成、推荐原则、报价评审条件不是商务评分细则。"),
+    "scoring_table_review": ("scoringTableReview", "只判断疑难评分行块是否属于商务评分细则；表头不固定时也要能从行块中识别评分/审查项、分值、评分标准，且只有看到具体分值时才能接受；权重、分值构成、推荐原则、报价评审条件不是商务评分细则。"),
 }
 DECISION_BUCKETS = ("accepted", "rejected", "needsReview")
 REQUIRED_DECISION_ITEM_FIELDS = (
@@ -793,7 +793,88 @@ def _table_has_exact_business_scoring_anchor(table: dict[str, Any]) -> bool:
 
 
 def _is_business_scoring_table(table: dict[str, Any]) -> bool:
-    return _table_has_scoring_columns(table) and _table_has_exact_business_scoring_anchor(table)
+    return _table_has_exact_business_scoring_anchor(table)
+
+
+def _extract_score_from_text(text: str) -> str:
+    normalized = _clean(text)
+    if not normalized:
+        return ""
+    match = re.search(r"(\d+(?:\.\d+)?\s*(?:[-~－—至]\s*\d+(?:\.\d+)?)?\s*分)", normalized)
+    if match:
+        return _clean(match.group(1))
+    match = re.search(r"(?:满分|得|加|扣)\s*(\d+(?:\.\d+)?)", normalized)
+    if match:
+        return f"{match.group(1)}分"
+    return ""
+
+
+def _strip_score_from_item(text: str) -> str:
+    normalized = _clean(text)
+    normalized = re.sub(r"[（(]\s*\d+(?:\.\d+)?\s*(?:[-~－—至]\s*\d+(?:\.\d+)?)?\s*分\s*[）)]", "", normalized)
+    return _clean(normalized)
+
+
+def _find_header_col(headers: list[str], aliases: tuple[str, ...]) -> int:
+    return next((index for index, header in enumerate(headers) if any(alias in _clean(header) for alias in aliases)), -1)
+
+
+def _score_row_cells_by_headers(headers: list[str], cells: list[str]) -> dict[str, str]:
+    order_index = _find_header_col(headers, ("序号", "条款号", "编号"))
+    item_index = _find_header_col(headers, SCORING_ITEM_HEADERS)
+    score_index = _find_header_col(headers, SCORING_POINT_VALUE_HEADERS)
+    standard_index = _find_header_col(headers, SCORING_STANDARD_HEADERS)
+    proof_index = _find_header_col(headers, ("证明材料要求", "证明材料", "证明文件", "材料要求", "资料要求"))
+    if item_index < 0:
+        item_index = 1 if order_index == 0 and len(cells) > 1 else 0
+    score = cells[score_index] if 0 <= score_index < len(cells) else ""
+    score_point = cells[standard_index] if 0 <= standard_index < len(cells) else ""
+    scoring_item = cells[item_index] if 0 <= item_index < len(cells) else ""
+    if not score:
+        score = _extract_score_from_text(scoring_item) or _extract_score_from_text(score_point)
+    return {
+        "scoringItem": scoring_item,
+        "score": score,
+        "scorePoint": score_point or "；".join(cell for cell in cells if cell),
+        "proofRequirement": cells[proof_index] if 0 <= proof_index < len(cells) else "",
+    }
+
+
+def _score_row_cells_by_exact_anchor(table: dict[str, Any], cells: list[str]) -> dict[str, str]:
+    anchor_index = next((index for index, cell in enumerate(cells) if BUSINESS_SCORING_EXACT_KEYWORD in _clean(cell)), -1)
+    headers = [str(header) for header in table.get("headers") or []]
+    standard_index = _find_header_col(headers, SCORING_STANDARD_HEADERS)
+    score_point = cells[standard_index] if 0 <= standard_index < len(cells) else ""
+    item_index = -1
+    for index in range(anchor_index + 1 if anchor_index >= 0 else 0, len(cells)):
+        if index == standard_index:
+            continue
+        cell = _clean(cells[index])
+        if not cell or BUSINESS_SCORING_EXACT_KEYWORD in cell:
+            continue
+        if "评分标准" in cell or "评审标准" in cell:
+            continue
+        item_index = index
+        break
+    if item_index < 0:
+        item_index = _find_header_col(headers, SCORING_ITEM_HEADERS)
+    scoring_item = cells[item_index] if 0 <= item_index < len(cells) else ""
+    if not score_point:
+        score_point = next(
+            (
+                cell
+                for index, cell in enumerate(cells)
+                if index != item_index and index != anchor_index and _text_has_concrete_score(cell)
+            ),
+            "；".join(cell for cell in cells if cell),
+        )
+    score = _extract_score_from_text(scoring_item) or _extract_score_from_text(score_point)
+    return {
+        "scoringItem": _strip_score_from_item(scoring_item),
+        "score": score,
+        "scorePoint": score_point,
+        "proofRequirement": "",
+    }
 
 
 def _row_has_concrete_score(table: dict[str, Any], row: dict[str, Any]) -> bool:
@@ -810,24 +891,25 @@ def _row_has_concrete_score(table: dict[str, Any], row: dict[str, Any]) -> bool:
 
 
 def _score_row_from_table(table: dict[str, Any], row: dict[str, Any], order: int) -> dict[str, Any]:
-    cells = [str(cell) for cell in row.get("cells") or []]
+    cells = [_clean(str(cell)) for cell in row.get("cells") or []]
     headers = [str(item) for item in table.get("headers") or []]
     evidence = "；".join(
         f"{headers[index]}：{cell}" if index < len(headers) and headers[index] else cell
         for index, cell in enumerate(cells)
         if str(cell).strip()
     )
-    scoring_item = cells[1] if len(cells) > 1 else cells[0] if cells else ""
-    score = cells[2] if len(cells) > 2 else ""
-    score_point = cells[3] if len(cells) > 3 else "；".join(cells)
+    if _table_has_scoring_columns(table):
+        parsed = _score_row_cells_by_headers(headers, cells)
+    else:
+        parsed = _score_row_cells_by_exact_anchor(table, cells)
     evidence_id = str(row.get("evidenceId") or "")
     return {
         "id": f"BUS-SCORE-{order:04d}",
         "order": order,
-        "scoringItem": scoring_item,
-        "score": score,
-        "scorePoint": score_point,
-        "proofRequirement": cells[4] if len(cells) > 4 else "",
+        "scoringItem": parsed["scoringItem"],
+        "score": parsed["score"],
+        "scorePoint": parsed["scorePoint"],
+        "proofRequirement": parsed["proofRequirement"],
         "status": "found",
         "sourceFile": str(table.get("sourceFile") or ""),
         "sourceDocumentId": str(table.get("sourceDocumentId") or ""),
@@ -937,11 +1019,15 @@ def _apply_table_deterministic_scoring(deterministic: dict[str, list[dict[str, A
             continue
         if _is_non_target_scoring_title(str(table.get("section") or "")):
             continue
-        if not _table_has_scoring_columns(table):
+        has_scoring_columns = _table_has_scoring_columns(table)
+        has_exact_anchor = _table_has_exact_business_scoring_anchor(table)
+        if not has_scoring_columns and not has_exact_anchor:
             continue
         table_type = str(table.get("tableType") or "")
+        if has_exact_anchor and not has_scoring_columns:
+            table_type = "business"
         current_group = "business" if table_type == "business" else ""
-        if table_type == "business":
+        if table_type == "business" and has_scoring_columns:
             for row in table.get("rows") or []:
                 if not isinstance(row, dict):
                     continue

@@ -71,7 +71,7 @@ def _clean_body_edges(body: etree._Element) -> int:
 
     children = _content_children(body)
     trailing_blanks = _trailing_blank_paragraphs(children)
-    if trailing_blanks and _has_page_carrier(trailing_blanks):
+    if trailing_blanks and len(trailing_blanks) < len(children):
         for paragraph in trailing_blanks:
             sect_pr = paragraph.find(f".//{WORD_NS}sectPr")
             if sect_pr is not None:
@@ -84,6 +84,9 @@ def _clean_body_edges(body: etree._Element) -> int:
         if existing_sect_pr is not None:
             body.remove(existing_sect_pr)
         body.append(trailing_sect_pr)
+        changes += 1
+
+    if _move_last_content_paragraph_section_to_body(body):
         changes += 1
 
     return changes
@@ -147,6 +150,39 @@ def _has_page_break_before(element: etree._Element) -> bool:
         return False
     p_pr = element.find(f"{WORD_NS}pPr")
     return p_pr is not None and p_pr.find(f"{WORD_NS}pageBreakBefore") is not None
+
+
+def _move_last_content_paragraph_section_to_body(body: etree._Element) -> bool:
+    children = _content_children(body)
+    last_content = next((child for child in reversed(children) if not _is_blank_paragraph(child)), None)
+    if last_content is None or last_content.tag != f"{WORD_NS}p":
+        return False
+    p_pr = last_content.find(f"{WORD_NS}pPr")
+    if p_pr is None:
+        return False
+    sect_pr = p_pr.find(f"{WORD_NS}sectPr")
+    if sect_pr is None:
+        return False
+
+    _merge_section_properties_into_body(body, sect_pr)
+    p_pr.remove(sect_pr)
+    if len(p_pr) == 0 and not p_pr.attrib:
+        last_content.remove(p_pr)
+    return True
+
+
+def _merge_section_properties_into_body(body: etree._Element, source_sect_pr: etree._Element) -> None:
+    body_sect_pr = body.find(f"{WORD_NS}sectPr")
+    if body_sect_pr is None:
+        body_sect_pr = etree.Element(source_sect_pr.tag, attrib=dict(source_sect_pr.attrib), nsmap=source_sect_pr.nsmap)
+        body.append(body_sect_pr)
+
+    for child in source_sect_pr:
+        if child.tag == f"{WORD_NS}type":
+            continue
+        for existing in list(body_sect_pr.findall(child.tag)):
+            body_sect_pr.remove(existing)
+        body_sect_pr.append(deepcopy(child))
 
 
 def _xml_attr(element: etree._Element, name: str) -> str:

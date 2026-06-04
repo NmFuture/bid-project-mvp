@@ -964,6 +964,89 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             self.assertFalse(any(task["task"] == "scoring_table_review" for task in review_plan["tasks"]))
             self.assertIn("scoring_table_review", review_plan["skippedAiModules"])
 
+    def test_exact_business_scoring_embedded_table_without_score_header_goes_to_ai_row_block(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "embedded-business-scoring-no-score-header.docx"
+            doc = Document()
+            doc.add_paragraph("第三章 评标办法")
+            doc.add_paragraph("评标办法前附表")
+            table = doc.add_table(rows=5, cols=4)
+            for col, text in enumerate(["条款号", "条款号", "评分因素", "评分标准"]):
+                table.cell(0, col).text = text
+            rows = [
+                ("2.2.4（1）", "商务评分标准（10分）", "交货期保证（2分）", "满分2分，交货期满足招标文件要求得2分。"),
+                ("2.2.4（1）", "商务评分标准（10分）", "企业财务状况（3分）", "满分3分，根据近三年财务状况得0至3分。"),
+                ("2.2.4（1）", "商务评分标准（10分）", "供货业绩（5分）", "满分5分，每提供一项有效业绩得1分。"),
+                ("2.2.4（2）", "技术评分标准（30分）", "技术支持（4分）", "满分4分，技术支持方案完整得4分。"),
+            ]
+            for row_index, values in enumerate(rows, start=1):
+                for col, text in enumerate(values):
+                    table.cell(row_index, col).text = text
+            doc.save(source_path)
+
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-EMBEDDED-BUSINESS-SCORING-NO-SCORE-HEADER",
+                        "bidType": "商务标",
+                        "parseProfile": "business",
+                        "structuredResultPath": str(output_path),
+                        "documents": [
+                            {
+                                "id": "DOC-1",
+                                "name": source_path.name,
+                                "sourcePath": str(source_path),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+
+            candidate_package = json.loads((tmp_path / "candidate_package.json").read_text(encoding="utf-8"))
+            self.assertEqual(candidate_package["deterministicExtracts"]["scoringTables"]["business"], [])
+            row_block_candidates = candidate_package["candidates"]["scoringTableReview"]
+            self.assertEqual(len(row_block_candidates), 1)
+            self.assertEqual(row_block_candidates[0]["candidateType"], "business_scoring_row_block_review")
+            self.assertEqual(len(row_block_candidates[0]["evidenceIds"]), 3)
+            self.assertTrue(all("/R" in evidence_id for evidence_id in row_block_candidates[0]["evidenceIds"]))
+            self.assertIn("交货期保证（2分）", row_block_candidates[0]["content"])
+            self.assertNotIn("技术支持", row_block_candidates[0]["content"])
+
+            review_plan = json.loads((tmp_path / "review_plan.json").read_text(encoding="utf-8"))
+            scoring_ref = next(task for task in review_plan["tasks"] if task["task"] == "scoring_table_review")
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(script_path),
+                    "decision-all",
+                    str(manifest_path),
+                    scoring_ref["taskId"],
+                    "accepted",
+                    "business",
+                    "unit test accepts exact-anchor embedded business scoring rows",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run([sys.executable, str(script_path), "finalize", str(manifest_path)], check=True, capture_output=True, text=True)
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            business_rows = payload["structured"]["scoringCriteria"]["business"]
+            self.assertEqual([row["scoringItem"] for row in business_rows], ["交货期保证", "企业财务状况", "供货业绩"])
+            self.assertEqual([row["score"] for row in business_rows], ["2分", "3分", "5分"])
+            self.assertTrue(all("商务评分标准" not in row["scoringItem"] for row in business_rows))
+            self.assertFalse(any("技术评分标准" in row["evidence"] for row in business_rows))
+
     def test_preface_scoring_noise_is_not_appended_without_concrete_scores(self) -> None:
         script_path = self.runner_path()
 
