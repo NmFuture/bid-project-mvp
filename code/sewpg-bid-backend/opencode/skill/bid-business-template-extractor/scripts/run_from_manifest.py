@@ -18,7 +18,7 @@ SKILL_NAME = "bid-business-template-extractor"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -42,13 +42,39 @@ def _build_empty_result(project_id: str, output_dir: Path) -> dict[str, Any]:
             "templateCount": 0,
             "warningCount": 0,
         },
+        "formatRegions": [],
+        "excludedRegions": [],
         "documents": [],
         "appendices": [],
         "warnings": [],
+        "rejectedCandidates": [],
+        "quality": {
+            "formatRegionCount": 0,
+            "excludedRegionCount": 0,
+            "candidateAnchorCount": 0,
+            "candidateTemplateCount": 0,
+            "draftTemplateCount": 0,
+            "validatedTemplateCount": 0,
+            "catalogRejectedCount": 0,
+            "outsideFormatRegionRejectedCount": 0,
+            "lowConfidenceCount": 0,
+            "needsReviewCount": 0,
+            "agentDecisionCount": 0,
+            "agentRejectedCount": 0,
+            "headingDecisionCount": 0,
+            "acceptedTemplateCount": 0,
+            "boundaryReferenceCount": 0,
+            "sectionContainerCount": 0,
+            "boundaryOnlyCount": 0,
+            "rejectedCount": 0,
+            "scriptFallbackUsed": False,
+        },
     }
 
 
 def _cluster_title(raw: dict[str, Any], blocks_by_id: dict[int, dict[str, Any]]) -> str:
+    if str(raw.get("decisionSource") or "") == "executing_agent":
+        return str(raw.get("title") or raw.get("templateTitle") or raw.get("evidence") or "").strip()
     header_ids = raw.get("headerBlockIds") if isinstance(raw.get("headerBlockIds"), list) else []
     titles: list[str] = []
     for block_id in header_ids:
@@ -102,12 +128,36 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
     project_id = str(manifest.get("projectId") or "")
     output_dir = Path(str(manifest.get("outputDir") or manifest_path.parent / "business_template_extraction")).resolve()
     documents = manifest.get("documents") if isinstance(manifest.get("documents"), list) else []
+    stage = str(manifest.get("stage") or "finalize")
+    fallback_mode = str(manifest.get("fallbackMode") or "")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     result = _build_empty_result(project_id, output_dir)
     result["summary"]["documentCount"] = len(documents)
+    result["stage"] = stage
 
     appendices: list[dict[str, Any]] = []
+    quality = {
+        "formatRegionCount": 0,
+        "excludedRegionCount": 0,
+        "candidateAnchorCount": 0,
+        "candidateTemplateCount": 0,
+        "draftTemplateCount": 0,
+        "validatedTemplateCount": 0,
+        "catalogRejectedCount": 0,
+        "outsideFormatRegionRejectedCount": 0,
+        "lowConfidenceCount": 0,
+        "needsReviewCount": 0,
+        "agentDecisionCount": 0,
+        "agentRejectedCount": 0,
+        "headingDecisionCount": 0,
+        "acceptedTemplateCount": 0,
+        "boundaryReferenceCount": 0,
+        "sectionContainerCount": 0,
+        "boundaryOnlyCount": 0,
+        "rejectedCount": 0,
+        "scriptFallbackUsed": False,
+    }
     for document in documents:
         if not isinstance(document, dict):
             continue
@@ -119,7 +169,25 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
             f"document-{len(result['documents']) + 1}",
         )
         try:
-            pipeline_result = run_pipeline(source, document_output)
+            pipeline_result = run_pipeline(source, document_output, stage=stage, fallback_mode=fallback_mode)
+            for region in pipeline_result.get("formatRegions") or []:
+                if isinstance(region, dict):
+                    result["formatRegions"].append({**region, "sourceDocumentId": str(document.get("id") or "")})
+            for region in pipeline_result.get("excludedRegions") or []:
+                if isinstance(region, dict):
+                    result["excludedRegions"].append({**region, "sourceDocumentId": str(document.get("id") or "")})
+            for warning in pipeline_result.get("warnings") or []:
+                if isinstance(warning, dict):
+                    result["warnings"].append({**warning, "documentId": str(document.get("id") or "")})
+            for rejected in pipeline_result.get("rejectedCandidates") or []:
+                if isinstance(rejected, dict):
+                    result["rejectedCandidates"].append({**rejected, "sourceDocumentId": str(document.get("id") or "")})
+            pipeline_quality = pipeline_result.get("quality") if isinstance(pipeline_result.get("quality"), dict) else {}
+            for key in quality:
+                if isinstance(quality[key], bool):
+                    quality[key] = bool(quality[key] or pipeline_quality.get(key))
+                else:
+                    quality[key] += int(pipeline_quality.get(key) or 0)
             boundaries_path = document_output / "boundaries.json"
             blocks_path = document_output / "blocks.json"
             boundaries = json.loads(boundaries_path.read_text(encoding="utf-8")) if boundaries_path.is_file() else {"templates": []}
@@ -159,6 +227,7 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
             )
 
     result["appendices"] = appendices
+    result["quality"] = quality
     result["summary"]["templateCount"] = len(appendices)
     result["summary"]["warningCount"] = len(result["warnings"])
     _write_json(output_dir / "business_template_extraction.json", result)

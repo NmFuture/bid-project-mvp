@@ -6,6 +6,7 @@ import asyncio
 import mimetypes
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import zipfile
@@ -234,7 +235,6 @@ QUALIFICATION_STOP_ANCHORS = (
 
 QUALIFICATION_EXCLUDE_KEYWORDS = (
     "资格审查资料",
-    "证明材料",
     "复印件",
     "扫描件",
     "附件",
@@ -936,6 +936,14 @@ def _looks_like_scope_heading(text: str) -> bool:
     return bool(SCOPE_PATTERN.match(str(text or "").strip()))
 
 
+def _looks_like_qualification_intro_line(text: str) -> bool:
+    value = _normalize_qualification_content(text)
+    return bool(
+        re.search(r"(?:下列|如下|以下)(?:条件|要求|规定)$", value)
+        or re.search(r"(?:应|需)(?:具备|满足|符合).*(?:下列|如下|以下)(?:条件|要求|规定)$", value)
+    )
+
+
 def _normalize_qualification_scope(text: str) -> str:
     value = str(text or "").strip()
     value = re.split(r"[（(]", value, maxsplit=1)[0]
@@ -947,6 +955,8 @@ def _looks_like_qualification_requirement(text: str) -> bool:
     if len(value) < 8:
         return False
     if _looks_like_scope_heading(value):
+        return False
+    if _looks_like_qualification_intro_line(value):
         return False
     compact = re.sub(r"\s+", "", value)
     if re.search(r"\t\d+$|\.{3,}\d+$", value):
@@ -4658,21 +4668,71 @@ def _build_tender_parse_prompt(skill_manifest_path: Path, profile: ParseProfile)
         return f"""
 Use the {profile.skill_name} skill.
 
-你现在在做 S1 商务招标文件结构化解析。请调用解析 Skill 读取 manifest 中的多份招标文件文本，输出可直接给后端使用的结构化 JSON。
+你现在在做 S1 商务招标文件结构化解析。请按“脚本准备候选 -> 你作为 opencode agent 做 AI 语义审查 -> 脚本验真合成”的三步工作流执行。
 
 manifest：{skill_manifest_path}
 
-请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 600000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径。命令会把完整结构化 JSON 写入 manifest.structuredResultPath，并只在 stdout 打印小型摘要 JSON：
+第一步：调用 Bash 工具执行，timeout 必须设置为 600000 毫秒或更高：
 
 s1parse {skill_manifest_path}
 
-只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
+该命令只生成 candidate_package.json、review_plan.json 和 ai_tasks/<module>/part-NNN.json，并写入 prepared 阶段摘要。
+
+第二步：禁止使用 opencode 的 read 工具读取 review_plan.json、candidate_package.json 或任何大 JSON。禁止使用 opencode 的 Task/subagent/子代理/任务委派工具；不得调用 Task 工具、subagent 或把任一 task 委派给其他 agent。必须由当前 opencode agent 自己只用 Bash 小输出命令编排任务：
+
+s1parse tasks {skill_manifest_path}
+
+按 stdout 中 tasks[] 的顺序逐个处理 required=true 的 task。每个 task 用下面命令读取 bounded payload：
+
+s1parse task {skill_manifest_path} <taskId>
+
+Decision files MUST be written with short helper commands. Do not use shell heredoc, `cat >`, `tee`, inline Python, inline Node, or handwritten large JSON in Bash.
+If every candidate in the task has the same decision, run:
+s1parse decision-all {skill_manifest_path} <taskId> <accepted|rejected|needsReview> <fieldType> <reason>
+If selected candidateIds have different decisions, run:
+s1parse decision-set {skill_manifest_path} <taskId> <acceptedIdsCsv> <rejectedIdsCsv> <needsReviewIdsCsv> <defaultDecision> <fieldType> <reason>
+The helpers write the required decisionPath JSON with adapter `opencode-agent`, copy content/sourceText/evidenceIds from the task payload, and validate the decision. If the helper returns status=failed, fix the candidateId lists or decision bucket and rerun it.
+
+Exception for qualification_review: do not use decision-all or decision-set. For 投标人资格要求, the AI must split the section itself and write each raw item with:
+s1parse qualification-item {skill_manifest_path} <taskId> <content> <applicableScope> <evidenceIdsCsv> <sourceText> <reason>
+Qualification splitting rules: subtitles and parent headings such as “通用资格条件”“专用资格条件”“业绩要求”“资格能力要求” are not clauses; scope hints such as “标段一和标段二（需同时满足）” are not clauses and should only become applicableScope; parent lead-in sentences such as “投标人财务、信誉等方面应具备下列条件” are not clauses; repeated substantive requirements under different scopes must be output separately; project-level clauses such as 3.2.3/3.2.4/3.2.5 must not inherit a previous segment scope.
+
+只能基于该 task 的 candidates、candidateId、evidenceIds、sourceText 和上下文做语义裁判，并把 JSON 决策文件写入同一条记录指定的 decisionPath。禁止编造候选包外内容，禁止新增候选包外 candidateId/evidenceIds，禁止直接写最终 structured、fieldGroups、scoringCriteria、items 或 finalResult。
+
+每个 ai_decisions/<module>/part-NNN.json 必须包含：
+- schemaVersion: "bid-business-ai-decision-v1"
+- task
+- taskId
+- adapter: "opencode-agent"
+- accepted[]
+- rejected[]
+- needsReview[]
+- reason
+- evidenceIds[]
+
+accepted、rejected、needsReview 中每个元素必须包含 candidateId、decision、fieldType、content、applicableScope、sourceText、reason、evidenceIds。decision 只能是 accepted、rejected 或 needsReview。对不确定内容输出 needsReview，不要强行塞进最终字段。
+
+写完每个 decisionPath 后，必须立即调用：
+
+s1parse validate-decision {skill_manifest_path} <taskId>
+
+如果校验失败，修复同一个 task 的 decisionPath；若仍失败，必须在最终回复和 workflow trace 中明确报告 taskId 和失败原因，不得静默跳过。处理完一批或全部任务后调用：
+
+s1parse status {skill_manifest_path}
+
+只有 status.stdout 显示 missingDecisionTasks=[] 且所有 required decisionPath 都存在后，才进入第三步。不要停在读取阶段。
+
+第三步：调用 Bash 工具执行：
+
+s1parse finalize {skill_manifest_path}
+
+最终结构化 JSON 必须由该 finalize 命令写入 manifest.structuredResultPath。你最后只返回 finalize 命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
 返回格式必须是：
 {{
   "schemaVersion": "{profile.schema_version}",
   "targetSkill": "{profile.skill_name}",
   "outputFile": "manifest 中的 structuredResultPath",
-  "summary": {{"itemCount": 0, "categoryCounts": {{}}, "scoringCounts": {{"business": 0, "price": 0, "compliance": 0}}, "projectDates": {{"startDate": "", "endDate": ""}}}}
+  "summary": {{"itemCount": 0, "categoryCounts": {{}}, "scoringCounts": {{"business": 0, "price": 0, "compliance": 0, "lcoe": 0}}, "workflowStage": "finalized", "projectDates": {{"startDate": "", "endDate": ""}}}}
 }}
 
 解析目标必须覆盖：
@@ -4750,9 +4810,40 @@ def _resolve_skill_structured_result(
                     structured[key] = local_structured[key]
         structured["targetSkill"] = profile.skill_name
         structured["mode"] = "opencode-skill"
-        structured["opencodeOutput"] = result.get("opencodeOutput") or {}
+        if isinstance(result.get("opencodeOutput"), dict):
+            structured["opencodeOutput"] = copy.deepcopy(result.get("opencodeOutput") or {})
+        elif isinstance(local_structured, dict) and isinstance(local_structured.get("opencodeOutput"), dict):
+            structured["opencodeOutput"] = copy.deepcopy(local_structured.get("opencodeOutput") or {})
+        _apply_opencode_trace_to_workflow(structured)
         structured["schemaVersion"] = str(structured.get("schemaVersion") or profile.schema_version)
     return resolved
+
+
+def _apply_opencode_trace_to_workflow(structured: dict[str, Any]) -> None:
+    trace = structured.get("opencodeOutput") if isinstance(structured.get("opencodeOutput"), dict) else {}
+    if not isinstance(trace, dict) or not trace:
+        return
+    workflow = structured.get("workflow") if isinstance(structured.get("workflow"), dict) else {}
+    workflow = copy.deepcopy(workflow)
+    session_id = str(trace.get("sessionId") or "").strip()
+    if session_id:
+        workflow["opencodeSessionId"] = session_id
+    agent_status = str(trace.get("agentStatus") or trace.get("status") or "").strip()
+    if agent_status:
+        workflow["opencodeAgentStatus"] = agent_status
+    last_tool = str(trace.get("lastTool") or "").strip()
+    if last_tool:
+        workflow["opencodeLastTool"] = last_tool
+    last_tool_status = str(trace.get("lastToolStatus") or "").strip()
+    if last_tool_status:
+        workflow["opencodeLastToolStatus"] = last_tool_status
+    failure_reason = str(trace.get("failureReason") or "").strip()
+    if failure_reason:
+        workflow["opencodeFailureReason"] = failure_reason
+    elif "opencodeFailureReason" not in workflow:
+        workflow["opencodeFailureReason"] = ""
+    if workflow:
+        structured["workflow"] = workflow
 
 
 def _run_parse_skill(
@@ -4780,7 +4871,211 @@ def _run_parse_skill(
         if isinstance(structured, dict):
             structured["mode"] = "local-structured-parser"
             structured["opencodeError"] = str(exc)
+            trace = getattr(exc, "opencode_trace", None)
+            if isinstance(trace, dict):
+                structured["opencodeOutput"] = copy.deepcopy(trace)
+                if progress_callback:
+                    progress_callback("opencode_delta", copy.deepcopy(trace))
+                if not trace.get("failureReason"):
+                    structured["opencodeOutput"]["failureReason"] = str(exc)
+                _apply_opencode_trace_to_workflow(structured)
         return fallback, f"S1 解析 Skill 调用失败，已使用本地结构化解析兜底：{exc}"
+
+
+def _business_s1_runner_path() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "opencode"
+        / "skill"
+        / BUSINESS_PARSE_PROFILE.skill_name
+        / "scripts"
+        / "run_from_manifest.py"
+    )
+
+
+def _workflow_from_result(structured_result: dict[str, Any]) -> dict[str, Any]:
+    structured = structured_result.get("structured") if isinstance(structured_result, dict) else {}
+    workflow = structured.get("workflow") if isinstance(structured, dict) else {}
+    return workflow if isinstance(workflow, dict) else {}
+
+
+def _business_review_plan_path(skill_manifest_path: Path, workflow: dict[str, Any]) -> Path:
+    workflow_path = str(workflow.get("reviewPlanPath") or "").strip()
+    if workflow_path:
+        return Path(workflow_path)
+    return skill_manifest_path.with_name("review_plan.json")
+
+
+def _business_validation_report_path(skill_manifest_path: Path, workflow: dict[str, Any]) -> Path:
+    workflow_path = str(workflow.get("validationReportPath") or "").strip()
+    if workflow_path:
+        return Path(workflow_path)
+    return skill_manifest_path.with_name("validation_report.json")
+
+
+def _business_review_plan_exists(skill_manifest_path: Path, workflow: dict[str, Any]) -> bool:
+    default_path = skill_manifest_path.with_name("review_plan.json")
+    workflow_path = _business_review_plan_path(skill_manifest_path, workflow)
+    return default_path.is_file() or workflow_path.is_file()
+
+
+def _needs_business_s1_finalize_guard(
+    *,
+    profile: ParseProfile,
+    structured_result: dict[str, Any],
+    skill_manifest_path: Path,
+) -> bool:
+    if profile.key != "business":
+        return False
+    workflow = _workflow_from_result(structured_result)
+    if not _business_review_plan_exists(skill_manifest_path, workflow):
+        return False
+    workflow_stage = str(workflow.get("stage") or "").strip()
+    if workflow_stage != "finalized":
+        return True
+    return not _business_validation_report_path(skill_manifest_path, workflow).is_file()
+
+
+def _is_business_skill_workflow_payload(
+    *,
+    profile: ParseProfile,
+    structured_payload: dict[str, Any] | None,
+    skill_manifest_path: Path,
+) -> bool:
+    if profile.key != "business" or not isinstance(structured_payload, dict):
+        return False
+    if str(structured_payload.get("targetSkill") or "").strip() == BUSINESS_PARSE_PROFILE.skill_name:
+        return True
+    workflow = structured_payload.get("workflow") if isinstance(structured_payload.get("workflow"), dict) else {}
+    artifact_keys = ("candidatePackagePath", "reviewPlanPath", "validationReportPath")
+    if any(str(workflow.get(key) or "").strip() for key in artifact_keys):
+        return True
+    return _business_review_plan_exists(skill_manifest_path, workflow)
+
+
+def _mark_business_skill_workflow_guard(structured_payload: dict[str, Any]) -> None:
+    workflow = structured_payload.get("workflow") if isinstance(structured_payload.get("workflow"), dict) else {}
+    workflow = copy.deepcopy(workflow)
+    workflow["backendFinalizeGuardApplied"] = True
+    structured_payload["workflow"] = workflow
+
+
+def _review_plan_decision_counts(review_plan_path: Path, ai_decisions_dir: Path) -> tuple[int, int, list[str]]:
+    try:
+        review_plan = json.loads(review_plan_path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0, 0, []
+    required_tasks = [
+        item
+        for item in review_plan.get("tasks") or []
+        if isinstance(item, dict) and item.get("required", True)
+    ]
+    missing: list[str] = []
+    present = 0
+    for task in required_tasks:
+        task_id = str(task.get("taskId") or task.get("task") or "").strip()
+        decision_path_value = str(task.get("decisionPath") or "").strip()
+        if decision_path_value:
+            decision_path = review_plan_path.parent / decision_path_value
+        else:
+            decision_path = ai_decisions_dir / f"{task_id}.json"
+        if decision_path.is_file():
+            present += 1
+        elif task_id:
+            missing.append(task_id)
+    return len(required_tasks), present, sorted(missing)
+
+
+def _business_finalize_error_result(
+    skill_manifest_path: Path,
+    structured_result: dict[str, Any],
+    error: str,
+) -> dict[str, Any]:
+    fallback = copy.deepcopy(structured_result if isinstance(structured_result, dict) else {})
+    structured = fallback.setdefault("structured", {})
+    if not isinstance(structured, dict):
+        fallback["structured"] = structured = {}
+
+    existing_workflow = structured.get("workflow") if isinstance(structured.get("workflow"), dict) else {}
+    workflow = copy.deepcopy(existing_workflow)
+    review_plan_path = _business_review_plan_path(skill_manifest_path, workflow)
+    ai_tasks_dir = Path(str(workflow.get("aiTasksDir") or skill_manifest_path.with_name("ai_tasks")))
+    ai_decisions_dir = Path(str(workflow.get("aiDecisionsDir") or skill_manifest_path.with_name("ai_decisions")))
+    validation_report_path = _business_validation_report_path(skill_manifest_path, workflow)
+    required_count, present_count, missing_tasks = _review_plan_decision_counts(review_plan_path, ai_decisions_dir)
+    workflow.update(
+        {
+            "stage": "failed",
+            "semanticReviewMode": str(workflow.get("semanticReviewMode") or "opencode-agent"),
+            "aiReviewTrusted": False,
+            "reviewPlanPath": str(review_plan_path),
+            "aiTasksDir": str(ai_tasks_dir),
+            "aiDecisionsDir": str(ai_decisions_dir),
+            "validationReportPath": str(validation_report_path),
+            "requiredDecisionTaskCount": int(workflow.get("requiredDecisionTaskCount") or required_count),
+            "presentDecisionTaskCount": int(workflow.get("presentDecisionTaskCount") or present_count),
+            "missingDecisionTasks": list(workflow.get("missingDecisionTasks") or missing_tasks),
+            "backendFinalizeGuardApplied": True,
+            "backendFinalizeError": error,
+        }
+    )
+    structured["workflow"] = workflow
+    structured["mode"] = str(structured.get("mode") or "opencode-skill")
+    return fallback
+
+
+def _finalize_business_s1_result(
+    skill_manifest_path: Path,
+    structured_result: dict[str, Any],
+    profile: ParseProfile,
+) -> tuple[dict[str, Any], str]:
+    runner_path = _business_s1_runner_path()
+    try:
+        if not runner_path.is_file():
+            raise RuntimeError(f"商务 S1 finalize runner 不存在: {runner_path}")
+        completed = subprocess.run(
+            [sys.executable, str(runner_path), "finalize", str(skill_manifest_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=600,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise RuntimeError(f"s1parse finalize failed with exit {completed.returncode}: {detail}")
+        manifest = json.loads(skill_manifest_path.read_text(encoding="utf-8"))
+        output_path = Path(str(manifest.get("structuredResultPath") or skill_manifest_path.with_name("s1_structured_result.json")))
+        if not output_path.is_file():
+            raise RuntimeError(f"s1parse finalize 未写入结果文件: {output_path}")
+        resolved = _resolve_skill_structured_result(
+            {
+                "outputFile": str(output_path),
+            },
+            local_result=structured_result,
+            profile=profile,
+        )
+        structured = resolved.setdefault("structured", {})
+        if isinstance(structured, dict):
+            local_structured = structured_result.get("structured") if isinstance(structured_result, dict) else {}
+            if isinstance(local_structured, dict) and isinstance(local_structured.get("opencodeOutput"), dict):
+                structured["opencodeOutput"] = copy.deepcopy(local_structured.get("opencodeOutput") or {})
+            structured["backendFinalizeOutput"] = {
+                "backendFinalizeGuardApplied": True,
+                "stdout": completed.stdout.strip(),
+            }
+            _apply_opencode_trace_to_workflow(structured)
+            workflow = structured.get("workflow") if isinstance(structured.get("workflow"), dict) else {}
+            workflow = copy.deepcopy(workflow)
+            workflow["backendFinalizeGuardApplied"] = True
+            structured["workflow"] = workflow
+        return resolved, ""
+    except Exception as exc:
+        message = str(exc)
+        return (
+            _business_finalize_error_result(skill_manifest_path, structured_result, message),
+            f"S1 商务 finalize 收口失败，已保留错误 workflow：{message}",
+        )
 
 
 def parse_tender_documents(
@@ -4977,15 +5272,50 @@ def parse_tender_documents(
         profile=profile,
         progress_callback=progress_callback,
     )
+    if _needs_business_s1_finalize_guard(
+        profile=profile,
+        structured_result=structured_result,
+        skill_manifest_path=skill_manifest_path,
+    ):
+        structured_result, finalize_warning = _finalize_business_s1_result(
+            skill_manifest_path,
+            structured_result,
+            profile,
+        )
+        if finalize_warning:
+            skill_warning = f"{skill_warning}；{finalize_warning}" if skill_warning else finalize_warning
+    structured_payload = structured_result.get("structured")
+    workflow_payload = (
+        structured_payload.get("workflow")
+        if isinstance(structured_payload, dict) and isinstance(structured_payload.get("workflow"), dict)
+        else {}
+    )
+    skill_mode = str(structured_payload.get("mode") or "").strip() if isinstance(structured_payload, dict) else ""
+    workflow_stage = str(workflow_payload.get("stage") or "").strip()
+    skill_finalized_business_workflow = (
+        profile.key == "business"
+        and skill_mode == "opencode-skill"
+        and workflow_stage == "finalized"
+    )
+    skill_business_workflow_payload = _is_business_skill_workflow_payload(
+        profile=profile,
+        structured_payload=structured_payload if isinstance(structured_payload, dict) else None,
+        skill_manifest_path=skill_manifest_path,
+    )
     should_finalize_business_semantics = (
         profile.key == "business"
-        and isinstance(structured_result.get("structured"), dict)
+        and isinstance(structured_payload, dict)
+        and not skill_finalized_business_workflow
+        and not skill_business_workflow_payload
         and (
-            str(structured_result["structured"].get("mode") or "").strip() == "opencode-skill"
+            skill_mode == "opencode-skill"
             or (settings.s1_parse_opencode_enabled and bool(skill_warning))
         )
     )
+    if skill_business_workflow_payload and isinstance(structured_payload, dict):
+        _mark_business_skill_workflow_guard(structured_payload)
     if should_finalize_business_semantics:
+        fallback_workflow_payload = copy.deepcopy(workflow_payload) if isinstance(workflow_payload, dict) else {}
         structured_result = _transform_to_business_contract(
             project_id,
             structured_result,
@@ -5000,6 +5330,9 @@ def parse_tender_documents(
                 resolved_appendices,
                 run_semantic_review=True,
             )
+        if fallback_workflow_payload:
+            fallback_workflow_payload["backendFallbackTransformApplied"] = True
+            structured_result.setdefault("structured", {})["workflow"] = fallback_workflow_payload
     resolved_structured = structured_result.setdefault("structured", {})
     extractor_appendices_are_authoritative = (
         profile.key == "business"

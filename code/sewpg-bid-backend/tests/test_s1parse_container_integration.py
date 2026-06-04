@@ -42,9 +42,9 @@ root = Path("/tmp/s1parse-business-test")
 root.mkdir(parents=True, exist_ok=True)
 source_path = root / "商务招标文件.md"
 text = """# 商务招标文件
-项目名称：华能甘肃100MW风电项目
-招标编号：HN-BUS-2026-001
-招标人：华能集团
+项目名称：脱敏风电设备采购项目
+招标编号：BUS-GEN-2026-001
+招标人：示例招标单位
 附表3：商务评分标准表
 | 序号 | 评分项 | 分值 | 得分点 | 证明材料要求 |
 | --- | --- | --- | --- | --- |
@@ -126,7 +126,7 @@ print(json.dumps({
         self.assertIn("qualificationRequirements", payload["fieldGroupKeys"])
         self.assertIn("bidderInstructions", payload["fieldGroupKeys"])
         self.assertIn("commercialRejectionClauses", payload["fieldGroupKeys"])
-        self.assertEqual(set(payload["scoringCounts"].keys()), {"business", "price", "compliance"})
+        self.assertEqual(set(payload["scoringCounts"].keys()), {"business", "price", "compliance", "lcoe"})
         self.assertGreaterEqual(payload["scoringCounts"]["business"], 1)
         self.assertEqual(payload["commitmentLetterCount"], 1)
         self.assertIn("projectName", payload["projectFactFieldKeys"])

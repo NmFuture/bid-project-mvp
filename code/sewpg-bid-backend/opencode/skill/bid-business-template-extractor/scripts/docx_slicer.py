@@ -8,6 +8,8 @@ from typing import Any
 
 from lxml import etree
 
+from scripts.blank_page_cleaner import clean_blank_edge_pages
+
 
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
@@ -55,6 +57,7 @@ def slice_docx_by_boundaries(
         filename = f"{template['id']}-{safe_name(template['title'], '商务模板')}.docx"
         target = templates_dir / filename
         _write_slice(state, start_body, end_body, target)
+        clean_blank_edge_pages(target)
         item = dict(template)
         item["outputPath"] = str(Path("templates") / filename).replace("\\", "/")
         rendered.append(item)

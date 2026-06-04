@@ -559,6 +559,12 @@ def merge_auto_toc_with_deep_body_headings(auto_candidates, heading_candidates):
     return result
 
 
+def renumber_candidate_ids(candidates):
+    for index, candidate in enumerate(candidates or [], start=1):
+        candidate["candidate_id"] = f"hist-cand-{index:03d}"
+    return candidates
+
+
 def make_outline_source(document_name, source_type, source_blocks, candidates):
     source_text = "\n".join(block.get("text", "") for block in source_blocks) if source_blocks else ""
     if source_type in {"history_bid_auto_toc", "history_bid_toc"}:
@@ -599,6 +605,7 @@ def build_output(docx_path):
             else:
                 source_type = "history_bid_unknown"
                 source_blocks = []
+    candidates = renumber_candidate_ids(candidates)
     return {
         "document_name": docx_path.name,
         "blocks": blocks,

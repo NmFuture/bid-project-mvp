@@ -9,6 +9,13 @@ import PageHeader from '../../../components/shared/PageHeader'
 import BusinessProjectWizardModal from './BusinessProjectWizardModal'
 import Button from '../../../components/ui/Button'
 import { normalizeBidType, projectRoute } from '../../../utils/workspace'
+import {
+  isParseProgressCompleted,
+  isParseProgressFailed,
+  isUploadAndRunTimeout,
+  recoverUploadAndRunTimeout,
+  shouldPollParseProgress,
+} from '../businessParseUploadRecovery'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -155,8 +162,6 @@ const BUSINESS_REVIEW_CONFIG = {
   appendixEmptyHint: '未识别到可保存的商务附件模板。',
   scoringGroups: [
     ['business', '商务评分标准'],
-    ['price', '投标报价评分标准'],
-    ['compliance', '符合性审查标准'],
   ],
   fallbackScoringTitle: '商务评分细则',
   coreReviewSections: CORE_REVIEW_SECTIONS,
@@ -611,6 +616,19 @@ export default function BusinessTenderReview({ showToast }) {
     return data
   }, [parseClient, selectedProjectId])
 
+  const syncParsedProject = useCallback(async (targetProjectId) => {
+    const latestProgress = await parseClient.progress(targetProjectId).catch(() => null)
+    if (latestProgress) setParseProgress(latestProgress)
+    const latestProject = await projectsClient.get(targetProjectId)
+    setSelectedProjectId(targetProjectId)
+    setProject(latestProject)
+    setProjects((prev) => {
+      const next = prev.map((item) => (item.id === latestProject.id ? { ...item, ...latestProject } : item))
+      return next.some((item) => item.id === latestProject.id) ? next : [latestProject, ...prev]
+    })
+    return latestProject
+  }, [parseClient, projectsClient])
+
   const loadProjects = useCallback(async () => {
     setLoadingProjects(true)
     setError('')
@@ -710,12 +728,21 @@ export default function BusinessTenderReview({ showToast }) {
   }, [loadCurrentProject])
 
   useEffect(() => {
-    if (!uploading || !selectedProjectId) return undefined
+    if (!selectedProjectId || !shouldPollParseProgress({ uploading, progress: parseProgress })) return undefined
     let stopped = false
     const loadProgress = async () => {
       try {
         const progress = await parseClient.progress(selectedProjectId)
-        if (!stopped) setParseProgress(progress)
+        if (stopped) return
+        setParseProgress(progress)
+        if (isParseProgressCompleted(progress)) {
+          const result = await parseClient.results(selectedProjectId).catch(() => null)
+          if (!stopped && result) setParseData(result)
+          return
+        }
+        if (isParseProgressFailed(progress)) {
+          setUploadError(progress?.summary || '上传并解析失败')
+        }
       } catch {
         // Keep the previous progress snapshot while the upload request owns the main path.
       }
@@ -726,7 +753,7 @@ export default function BusinessTenderReview({ showToast }) {
       stopped = true
       clearInterval(timer)
     }
-  }, [parseClient, selectedProjectId, uploading])
+  }, [parseClient, parseProgress?.status, selectedProjectId, uploading])
 
   const sourceFiles = Array.isArray(parseData?.sourceFiles) && parseData.sourceFiles.length
     ? parseData.sourceFiles
@@ -957,8 +984,8 @@ export default function BusinessTenderReview({ showToast }) {
       events: [{ step: 'upload', level: 'info', message: `正在上传${BUSINESS_FILE_LABEL}招标文件。` }],
       opencodeOutput: { parts: [] },
     })
+    let targetProjectId = selectedProjectId
     try {
-      let targetProjectId = selectedProjectId
       if (!targetProjectId) {
         const created = await createReviewProject({ silent: true })
         targetProjectId = created?.id || ''
@@ -970,18 +997,35 @@ export default function BusinessTenderReview({ showToast }) {
       tenderFiles.forEach((file) => formData.append('tenderFiles', file))
       const response = await parseClient.uploadAndRun(targetProjectId, { formData })
       setParseData(response)
-      const latestProgress = await parseClient.progress(targetProjectId).catch(() => null)
-      if (latestProgress) setParseProgress(latestProgress)
-      const latestProject = await projectsClient.get(targetProjectId)
-      setSelectedProjectId(targetProjectId)
-      setProject(latestProject)
-      setProjects((prev) => {
-        const next = prev.map((item) => (item.id === latestProject.id ? { ...item, ...latestProject } : item))
-        return next.some((item) => item.id === latestProject.id) ? next : [latestProject, ...prev]
-      })
+      await syncParsedProject(targetProjectId)
       setTenderFiles([])
       showToast?.(response?.message || `${BUSINESS_BID_TYPE}招标文件解析完成。`)
     } catch (e) {
+      if (isUploadAndRunTimeout(e) && targetProjectId) {
+        setUploadError('')
+        showToast?.('解析仍在后台继续，正在同步最新进度。')
+        const recovered = await recoverUploadAndRunTimeout({
+          projectId: targetProjectId,
+          parseClient,
+          onProgress: (progress) => setParseProgress(progress),
+        })
+        if (recovered.completed) {
+          setParseData(recovered.result)
+          await syncParsedProject(targetProjectId)
+          setTenderFiles([])
+          showToast?.(`${BUSINESS_BID_TYPE}招标文件解析完成。`)
+          return
+        }
+        if (recovered.failed) {
+          const message = recovered.progress?.summary || '上传并解析失败'
+          setUploadError(message)
+          showToast?.(message, 'error')
+          return
+        }
+        setUploadError('')
+        showToast?.('解析仍在后台运行，可继续查看进度或稍后刷新结果。')
+        return
+      }
       const message = e?.message || '上传并解析失败'
       setUploadError(message)
       showToast?.(message, 'error')

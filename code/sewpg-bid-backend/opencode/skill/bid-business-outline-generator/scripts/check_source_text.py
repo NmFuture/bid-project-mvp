@@ -42,9 +42,6 @@ def load_json(path):
 
 
 def iter_source_texts(outline):
-    source = outline.get("outline_source", {})
-    yield "outline_source.source_text", source.get("source_text")
-
     def walk_sections(sections, prefix):
         for index, section in enumerate(sections or []):
             path = f"{prefix}[{index}].source_text"

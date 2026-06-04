@@ -3,7 +3,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from scripts.text_rules import clean_text, has_business_topic, looks_like_body_sentence, looks_like_list_item_or_field, title_strength
+from scripts.text_rules import (
+    clean_text,
+    has_business_topic,
+    has_table_template_topic,
+    looks_like_body_sentence,
+    looks_like_list_item_or_field,
+    title_strength,
+)
 
 
 MAX_PREFIX_LOOKBACK_BLOCKS = 4
@@ -32,11 +39,15 @@ def detect_header_clusters(blocks: list[dict], regions: list[dict], anchors: lis
             for block_id in cluster["headerBlockIds"]
             if int(block_id) != int(cluster["anchorBlockId"])
         }
-        clusters = [
-            cluster
-            for cluster in raw_clusters
-            if int(cluster["anchorBlockId"]) not in prefix_block_ids
-        ]
+        clusters: list[dict] = []
+        occupied_header_ids: set[int] = set()
+        for cluster in raw_clusters:
+            anchor_block_id = int(cluster["anchorBlockId"])
+            header_ids = {int(block_id) for block_id in cluster["headerBlockIds"]}
+            if anchor_block_id in prefix_block_ids or header_ids & occupied_header_ids:
+                continue
+            clusters.append(cluster)
+            occupied_header_ids.update(header_ids)
         clusters.sort(key=lambda item: (int(item["startBlockId"]), int(item["anchorBlockId"])))
         clusters_by_region[region_id] = clusters
 
@@ -136,6 +147,12 @@ def _is_synthetic_anchor(block: dict, blocks: list[dict], region: dict) -> bool:
         return _has_standalone_container_shape(blocks, region, int(block["blockId"]), code)
     if "numberedGroup" in code:
         return bool(block.get("isLikelyHeading") or block.get("isCentered"))
+    if has_table_template_topic(text):
+        next_id = _next_content_block_id(blocks, region, int(block["blockId"]))
+        if next_id is None:
+            return False
+        next_block = {int(item["blockId"]): item for item in blocks}.get(next_id)
+        return bool(next_block and next_block.get("type") == "table")
     return False
 
 
@@ -213,6 +230,8 @@ def _is_compatible_prefix(block: dict, anchor_code: dict[str, str]) -> bool:
 
 
 def _codes_are_compatible(prefix_code: dict[str, str], anchor_code: dict[str, str]) -> bool:
+    if prefix_code.get("appendix") and anchor_code.get("appendix"):
+        return _prefix_code_matches(prefix_code["appendix"], anchor_code["appendix"])
     if prefix_code.get("letterPrefix") and anchor_code.get("tableSuffix"):
         return _prefix_code_matches(prefix_code["letterPrefix"], anchor_code["tableSuffix"])
     if prefix_code.get("letterPrefix") and anchor_code.get("letterPrefix"):
@@ -235,7 +254,10 @@ def _codes_are_compatible(prefix_code: dict[str, str], anchor_code: dict[str, st
 def _prefix_code_matches(parent_code: str, child_code: str) -> bool:
     parent = parent_code.upper()
     child = child_code.upper()
-    return child == parent or child.startswith(f"{parent}-")
+    if child == parent or child.startswith(f"{parent}-"):
+        return True
+    suffix = child[len(parent):]
+    return child.startswith(parent) and bool(suffix) and suffix[0].isalpha()
 
 
 def _is_structural_separator(block: dict) -> bool:

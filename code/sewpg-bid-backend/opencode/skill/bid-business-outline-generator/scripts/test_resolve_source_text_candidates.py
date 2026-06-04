@@ -422,6 +422,46 @@ class ResolveSourceTextCandidatesTest(unittest.TestCase):
         self.assertLessEqual(len(selected), 220)
         self.assertTrue(any(source["source_text"] == target for source in selected))
 
+    def test_high_value_business_parent_items_recall_current_tender_text(self):
+        tender = {
+            "blocks": [
+                block("b-001", "附件5 投标保证金格式", heading_path=["第六章 投标文件格式"], heading_level=2),
+                block("b-002", "附件7 资格证明文件", heading_path=["第六章 投标文件格式"], heading_level=2),
+                block("b-003", "7A表 商务部分摘要表", heading_path=["附件7 资格证明文件"], heading_level=3),
+                block("b-004", "7B表 股权结构表", heading_path=["附件7 资格证明文件"], heading_level=3),
+                block("b-005", "7D-1表 近年财务状况表", heading_path=["附件7 资格证明文件"], heading_level=3),
+                block("b-006", "附件7I 业绩情况表", heading_path=["附件7 资格证明文件"], heading_level=3),
+                block("b-007", "投标文件组成包括投标函、法定代表人身份证明、投标保证金、资格证明文件。", heading_path=["投标人须知前附表"]),
+            ],
+            "tables": [],
+            "zones": [],
+        }
+        outline = {"sections": [
+            {"id": "sec-bond", "title": "投标保证金", "source_text": "投标保证金", "children": []},
+            {"id": "sec-qual", "title": "资格证明文件", "source_text": "资格证明文件", "children": [
+                {"id": "sec-summary", "title": "商务部分摘要表", "source_text": "商务部分摘要表", "children": []},
+                {"id": "sec-equity", "title": "股权结构", "source_text": "股权结构", "children": []},
+                {"id": "sec-finance", "title": "财务报表", "source_text": "财务报表", "children": []},
+                {"id": "sec-performance", "title": "业绩情况表", "source_text": "业绩情况表", "children": []},
+            ]},
+        ]}
+
+        result = self.run_resolver(tender, outline)
+        by_id = self.by_id(result)
+
+        expected = {
+            "sec-bond": "附件5 投标保证金格式",
+            "sec-qual": "附件7 资格证明文件",
+            "sec-summary": "7A表 商务部分摘要表",
+            "sec-equity": "7B表 股权结构表",
+            "sec-finance": "7D-1表 近年财务状况表",
+            "sec-performance": "附件7I 业绩情况表",
+        }
+        for section_id, source_text in expected.items():
+            candidate = by_id[section_id]["candidates"][0]
+            self.assertEqual(candidate["source_text"], source_text, section_id)
+            self.assertNotEqual(candidate["scope"], "history_fallback", section_id)
+
 
 if __name__ == "__main__":
     unittest.main()

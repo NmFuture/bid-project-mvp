@@ -100,4 +100,18 @@ scan_hints:
 
 关注：`source_text` 是否能在当前招标文件正文、表格行、表格单元格或格式附件中逐字找到；是否误用目录页、目次页或带页码文本作为强证据；child / grandchild 是否优先来自父范围、相关格式附件或相邻表格单元格。
 
-目录影响：`required_status` 的 reason 应说明证据 scope 和强弱；只有历史 fallback 时必须明确提示“未在当前招标文件找到强证据，需要人工确认”；不得用固定标题清单直接判定“必要”。
+目录影响：`required_status` 的最终判断必须由 opencode 根据当前招标文件原文、证据 scope、证据强弱和历史目录语义综合完成；脚本中的 `suggested_required_status`、`suggested_reason` 只是建议，不得直接当成最终状态。只有历史 fallback 时必须明确提示“未在当前招标文件找到强证据，需要人工确认”；不得用固定标题清单直接判定“必要”。
+
+## 准备产物边界
+
+scan_hints:
+- history_bid_outline_inputs.json
+- tender_map_inputs.json
+- document_structure_index.json
+- source_text_candidates.json
+- status suggestion
+- outline.json
+
+关注：`business-outline <manifest>` 只准备历史目录输入、招标文件结构化输入、文档结构索引和 source_text 候选。`source_text_candidates.json` 是候选集，不是最终目录；状态建议字段是建议，不是最终 `required_status`。
+
+目录影响：最终 `outline.json` 只能由 opencode 消费上述候选材料并按 `SKILL.md` 判断后写入。质量门禁只验收最终 `outline.json`，不得前置成生成逻辑，也不得把准备阶段产物伪装成 `business_bid_outline.v1`。

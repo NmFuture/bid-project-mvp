@@ -10,7 +10,7 @@ import status_decision as status
 
 
 class StatusDecisionTest(unittest.TestCase):
-    def test_strong_current_format_or_high_value_evidence_is_necessary(self):
+    def test_strong_current_format_or_high_value_evidence_suggests_necessary(self):
         section = {"id": "sec-1", "title": "投标保证金承诺函", "level": 2}
         candidate = {
             "scope": "high_value_area",
@@ -22,13 +22,14 @@ class StatusDecisionTest(unittest.TestCase):
 
         decision = status.decide_required_status(section, [candidate])
 
-        self.assertEqual(decision["required_status"], "必要")
+        self.assertNotIn("required_status", decision)
+        self.assertEqual(decision["suggested_required_status"], "必要")
         self.assertEqual(decision["evidence_scope"], "high_value_area")
         self.assertEqual(decision["evidence_strength"], "strong")
-        self.assertIn("high_value_area", decision["reason"])
-        self.assertIn("bid_bond", decision["reason"])
+        self.assertIn("high_value_area", decision["suggested_reason"])
+        self.assertIn("bid_bond", decision["suggested_reason"])
 
-    def test_weak_reference_and_history_fallback_are_pending_with_reason(self):
+    def test_weak_reference_and_history_fallback_suggest_pending_with_reason(self):
         weak = status.decide_required_status(
             {"id": "sec-1", "title": "授权委托书", "level": 2},
             [{"scope": "broad_clause", "evidence_strength": "weak", "match_reason": "纯引用句"}],
@@ -38,12 +39,14 @@ class StatusDecisionTest(unittest.TestCase):
             [{"scope": "history_fallback", "evidence_strength": "fallback"}],
         )
 
-        self.assertEqual(weak["required_status"], "待确认")
-        self.assertEqual(fallback["required_status"], "待确认")
-        self.assertIn("弱证据", weak["reason"])
-        self.assertIn("历史目录", fallback["reason"])
+        self.assertNotIn("required_status", weak)
+        self.assertNotIn("required_status", fallback)
+        self.assertEqual(weak["suggested_required_status"], "待确认")
+        self.assertEqual(fallback["suggested_required_status"], "待确认")
+        self.assertIn("弱证据", weak["suggested_reason"])
+        self.assertIn("历史目录", fallback["suggested_reason"])
 
-    def test_child_can_inherit_parent_format_scope_as_medium_evidence(self):
+    def test_child_can_inherit_parent_format_scope_as_medium_suggestion(self):
         decision = status.decide_required_status(
             {"id": "sec-child", "title": "企业规模", "level": 3},
             [],
@@ -54,10 +57,11 @@ class StatusDecisionTest(unittest.TestCase):
             },
         )
 
-        self.assertEqual(decision["required_status"], "待确认")
+        self.assertNotIn("required_status", decision)
+        self.assertEqual(decision["suggested_required_status"], "待确认")
         self.assertEqual(decision["evidence_scope"], "parent_context")
         self.assertEqual(decision["evidence_strength"], "medium")
-        self.assertIn("继承父项", decision["reason"])
+        self.assertIn("继承父项", decision["suggested_reason"])
 
 
 if __name__ == "__main__":

@@ -60,6 +60,15 @@ BROAD_TERMS = ["其他材料", "完整性", "应当提交", "认为应当提交"
 MATERIAL_TERMS = ["表", "函", "书", "证明", "材料", "证书", "执照", "许可", "承诺", "声明", "授权", "业绩", "财务", "报告", "清单", "报价", "摘要", "复印件", "扫描件", "截图", "合同"]
 MATERIAL_TERM_KEYS = [re.sub(r"\s+", "", term).lower() for term in MATERIAL_TERMS]
 ATTACHED_TERMS = ["后附", "另附", "应附", "须附", "随附", "提供", "提交", "包括", "包含", "复印件", "扫描件", "证明材料"]
+BUSINESS_ALIAS_TERMS = {
+    "财务报表": ["财务状况", "近年财务状况", "资产负债表", "损益表", "现金流量表"],
+    "股权结构": ["股权结构表", "股权结构说明"],
+    "商务摘要": ["商务部分摘要表", "商务摘要表"],
+    "商务部分摘要": ["商务部分摘要表", "商务摘要表"],
+    "业绩情况": ["业绩情况表", "合同业绩表", "近年完成"],
+    "投标保证金": ["投标保证金格式", "投标保证金银行保函", "投标保证金承诺"],
+    "资格证明": ["资格证明文件", "合格投标人", "资格履行合同"],
+}
 
 FORMAT_BODY_TERMS = ["投标文件格式", "响应文件格式", "商务文件格式", "格式及附件", "格式文件"]
 NON_FORMAT_CONTEXT_TERMS = ["投标人须知", "前附表", "评标办法", "评分标准", "商务评分", "商务评审", "技术评分"]
@@ -193,12 +202,35 @@ def source_terms(source):
 def section_features(section):
     features = []
     for text in [section.get("title", ""), section.get("source_text", "")]:
+        terms = [term for term in key_terms(text) if len(term) >= 2]
+        aliases = alias_terms_for(text)
+        for alias in aliases:
+            if alias not in terms:
+                terms.append(alias)
         features.append({
             "raw": compact(text),
             "core": compact(strip_numbering(text)),
-            "terms": [term for term in key_terms(text) if len(term) >= 2],
+            "terms": terms,
         })
+        for alias in aliases:
+            features.append({
+                "raw": alias,
+                "core": alias,
+                "terms": [alias],
+            })
     return features
+
+
+def alias_terms_for(text):
+    compact_text = compact(text)
+    terms = []
+    for key, aliases in BUSINESS_ALIAS_TERMS.items():
+        if compact(key) in compact_text:
+            for alias in aliases:
+                alias_key = compact(alias)
+                if alias_key and alias_key not in terms:
+                    terms.append(alias_key)
+    return terms
 
 
 def has_any(text, terms):

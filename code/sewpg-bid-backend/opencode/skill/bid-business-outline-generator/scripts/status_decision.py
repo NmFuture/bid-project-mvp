@@ -3,6 +3,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
+"""Status suggestion helpers for candidate evidence.
+
+This module intentionally returns suggested_* fields only. The opencode skill
+must make the final required_status decision when it writes outline.json.
+"""
+
 
 STRONG_SCOPES = {"parent_context", "format_area", "high_value_area"}
 FALLBACK_SCOPES = {"history_fallback"}
@@ -78,11 +84,11 @@ def decide_required_status(
     candidate = choose_candidate(candidates)
     if candidate is None and parent_decision and parent_decision.get("evidence_scope") == "format_area":
         return {
-            "required_status": "待确认",
+            "suggested_required_status": "待确认",
             "evidence_scope": "parent_context",
             "evidence_strength": "medium",
             "evidence_category": str(parent_decision.get("evidence_category") or "format_appendix"),
-            "reason": "继承父项 format_area 强证据，但本子项未找到直接当前原文，需人工确认是否单独编排。",
+            "suggested_reason": "继承父项 format_area 强证据，但本子项未找到直接当前原文，需人工确认是否单独编排。",
         }
 
     scope = str((candidate or {}).get("scope") or "history_fallback")
@@ -90,27 +96,27 @@ def decide_required_status(
     category = infer_category(section, candidate)
     level = int(section.get("level") or 1)
     if strength == "strong" and scope in STRONG_SCOPES:
-        required_status = "必要"
+        suggested_required_status = "必要"
     elif strength == "medium" and scope in {"parent_context", "format_area"} and level <= 2:
-        required_status = "必要"
+        suggested_required_status = "必要"
     else:
-        required_status = "待确认"
+        suggested_required_status = "待确认"
 
     if scope == "history_fallback" or strength == "fallback":
         reason = f"仅命中历史目录，未在当前招标文件找到强证据，需要人工确认；scope={scope} strength={strength} category={category}。"
-        required_status = "待确认"
+        suggested_required_status = "待确认"
     elif strength == "weak":
         reason = f"仅找到弱证据，需人工确认是否作为独立目录项；scope={scope} strength={strength} category={category}。"
-        required_status = "待确认"
+        suggested_required_status = "待确认"
     else:
         reason = f"根据当前招标文件证据判定；scope={scope} strength={strength} category={category}。"
 
     return {
-        "required_status": required_status,
+        "suggested_required_status": suggested_required_status,
         "evidence_scope": scope,
         "evidence_strength": strength,
         "evidence_category": category,
-        "reason": reason,
+        "suggested_reason": reason,
     }
 
 

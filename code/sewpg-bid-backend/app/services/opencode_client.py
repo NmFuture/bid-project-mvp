@@ -376,6 +376,7 @@ class OpencodeClient:
             session_id,
             prompt_text,
             stream_callback=stream_callback,
+            early_tool_command="s1parse-finalize",
         )
         parsed = self._extract_tender_parse_json(response)
         return {
@@ -404,6 +405,23 @@ class OpencodeClient:
         session_id = str(session.get("id") or "")
         response = self._send_prompt_with_session_polling(session_id, prompt_text)
         parsed = self._extract_business_template_review_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
+    def decide_business_template_boundaries_with_trace(
+        self,
+        prompt_text: str,
+    ) -> dict[str, Any]:
+        session = self.create_session("商务标模板边界裁决")
+        session_id = str(session.get("id") or "")
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            early_tool_command="btplbound-finalize",
+        )
+        parsed = self._extract_business_template_boundary_json(response)
         return {
             **parsed,
             "opencodeOutput": self._build_output_trace(session_id, response),
@@ -505,6 +523,12 @@ class OpencodeClient:
             and not isinstance(parsed.get("outputFile"), str)
         ):
             raise RuntimeError("futurecode 返回的招标解析 JSON 结构不正确。")
+        summary = parsed.get("summary") if isinstance(parsed.get("summary"), dict) else {}
+        structured = parsed.get("structured") if isinstance(parsed.get("structured"), dict) else {}
+        workflow = structured.get("workflow") if isinstance(structured.get("workflow"), dict) else {}
+        workflow_stage = str(summary.get("workflowStage") or workflow.get("stage") or "").strip().lower()
+        if workflow_stage in {"prepared", "prepare"}:
+            raise RuntimeError("futurecode S1 只完成了 prepare/prepared 阶段，尚未执行 s1parse finalize。")
         return parsed
 
     def _extract_commitment_review_json(self, response: dict[str, Any]) -> dict[str, Any]:
@@ -525,6 +549,20 @@ class OpencodeClient:
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("decisions"), list):
             raise RuntimeError("futurecode 返回的附件模板校验 JSON 结构不正确。")
+        return parsed
+
+    def _extract_business_template_boundary_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = self._extract_json_response(
+            response,
+            empty_message="futurecode 未返回商务模板边界裁决结果。",
+            repair_kind="business_template_boundary",
+        )
+        if not isinstance(parsed, dict) or (
+            not isinstance(parsed.get("decisionFiles"), list)
+            and not isinstance(parsed.get("summary"), dict)
+            and not isinstance(parsed.get("decisions"), list)
+        ):
+            raise RuntimeError("futurecode 返回的商务模板边界裁决 JSON 结构不正确。")
         return parsed
 
     def _extract_table_fill_json(self, response: dict[str, Any]) -> dict[str, Any]:
@@ -625,6 +663,8 @@ class OpencodeClient:
             if last_signature != previous_signature:
                 last_activity = time.monotonic()
             elif time.monotonic() - last_activity > idle_timeout:
+                if early_tool_command == "s1parse-finalize":
+                    self._raise_s1_opencode_stalled(session_id, self.list_session_messages(session_id), idle_timeout)
                 raise RuntimeError(
                     f"futurecode idle timeout after {int(idle_timeout)} seconds without new output; "
                     f"check session {session_id} tool calls."
@@ -662,8 +702,114 @@ class OpencodeClient:
                                 "earlyCompletion": True,
                                 "completionSource": early_tool_command,
                             }
-                        )
+                    )
                     return early_response
+
+        if early_tool_command == "s1parse-finalize":
+            messages = self.list_session_messages(session_id)
+            tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
+            if tool_output:
+                snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+                trace_parts = list(snapshot.get("parts") or [])
+                trace_parts.append(
+                    {
+                        "type": "text",
+                        "text": "s1parse finalize 已完成，后端使用 finalize stdout 作为 S1 Skill 结果。",
+                    }
+                )
+                early_response = self._tool_output_response(
+                    session_id=session_id,
+                    output=tool_output,
+                    trace_parts=trace_parts,
+                )
+                early_response["_completionSource"] = early_tool_command
+                if stream_callback is not None:
+                    stream_callback(
+                        {
+                            "status": "received",
+                            "sessionId": session_id,
+                            "providerId": self.provider_id,
+                            "modelId": self.model_id,
+                            "receivedAt": early_response["_traceReceivedAt"],
+                            "parts": self._normalize_output_parts(trace_parts),
+                            "earlyCompletion": True,
+                            "completionSource": early_tool_command,
+                        }
+                    )
+                return early_response
+            if self._last_tool_is_running(self._last_tool_trace(messages)):
+                stalled_until = time.monotonic() + idle_timeout
+                last_signature = self._get_session_output_snapshot_from_messages(session_id, messages).get("signature")
+                while time.monotonic() < stalled_until:
+                    time.sleep(0.5)
+                    messages = self.list_session_messages(session_id)
+                    tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
+                    if tool_output:
+                        snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+                        trace_parts = list(snapshot.get("parts") or [])
+                        trace_parts.append(
+                            {
+                                "type": "text",
+                                "text": "s1parse finalize 已完成，后端使用 finalize stdout 作为 S1 Skill 结果。",
+                            }
+                        )
+                        early_response = self._tool_output_response(
+                            session_id=session_id,
+                            output=tool_output,
+                            trace_parts=trace_parts,
+                        )
+                        early_response["_completionSource"] = early_tool_command
+                        if stream_callback is not None:
+                            stream_callback(
+                                {
+                                    "status": "received",
+                                    "sessionId": session_id,
+                                    "providerId": self.provider_id,
+                                    "modelId": self.model_id,
+                                    "receivedAt": early_response["_traceReceivedAt"],
+                                    "parts": self._normalize_output_parts(trace_parts),
+                                    "earlyCompletion": True,
+                                    "completionSource": early_tool_command,
+                                }
+                            )
+                        return early_response
+                    snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+                    signature = snapshot.get("signature")
+                    if signature != last_signature:
+                        stalled_until = time.monotonic() + idle_timeout
+                        last_signature = signature
+                        if stream_callback is not None:
+                            stream_callback(
+                                {
+                                    "status": snapshot["status"],
+                                    "sessionId": session_id,
+                                    "providerId": self.provider_id,
+                                    "modelId": self.model_id,
+                                    "receivedAt": snapshot["receivedAt"],
+                                    "parts": snapshot["parts"],
+                                }
+                            )
+                    if not self._last_tool_is_running(self._last_tool_trace(messages)):
+                        break
+                if self._last_tool_is_running(self._last_tool_trace(messages)):
+                    self._raise_s1_opencode_stalled(session_id, messages, idle_timeout)
+
+            pending_response = self._wait_for_s1_finalize_after_prompt_return(
+                session_id=session_id,
+                idle_timeout=idle_timeout,
+                stream_callback=stream_callback,
+            )
+            if pending_response:
+                return pending_response
+
+        if early_tool_command == "btplbound-finalize":
+            pending_response = self._wait_for_btplbound_finalize_after_prompt_return(
+                session_id=session_id,
+                idle_timeout=idle_timeout,
+                stream_callback=stream_callback,
+            )
+            if pending_response:
+                return pending_response
 
         if stream_callback is not None:
             last_signature = self._emit_session_output_delta(
@@ -675,6 +821,139 @@ class OpencodeClient:
         if error_holder.get("error"):
             raise error_holder["error"]
         return response_holder["response"]
+
+    def _wait_for_s1_finalize_after_prompt_return(
+        self,
+        *,
+        session_id: str,
+        idle_timeout: float,
+        stream_callback: Callable[[dict[str, Any]], None] | None,
+    ) -> dict[str, Any] | None:
+        messages: list[dict[str, Any]] = []
+        last_signature: tuple[str, tuple[tuple[str, str], ...]] | None = None
+        deadline = time.monotonic() + idle_timeout
+
+        while time.monotonic() < deadline:
+            messages = self.list_session_messages(session_id)
+            tool_output = self._find_completed_bash_tool_output(messages, "s1parse-finalize")
+            if tool_output:
+                snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+                trace_parts = list(snapshot.get("parts") or [])
+                trace_parts.append(
+                    {
+                        "type": "text",
+                        "text": "s1parse finalize completed; backend uses finalize stdout as the S1 Skill result.",
+                    }
+                )
+                early_response = self._tool_output_response(
+                    session_id=session_id,
+                    output=tool_output,
+                    trace_parts=trace_parts,
+                )
+                early_response["_completionSource"] = "s1parse-finalize"
+                if stream_callback is not None:
+                    stream_callback(
+                        {
+                            "status": "received",
+                            "sessionId": session_id,
+                            "providerId": self.provider_id,
+                            "modelId": self.model_id,
+                            "receivedAt": early_response["_traceReceivedAt"],
+                            "parts": self._normalize_output_parts(trace_parts),
+                            "earlyCompletion": True,
+                            "completionSource": "s1parse-finalize",
+                        }
+                    )
+                return early_response
+
+            snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+            signature = snapshot.get("signature")
+            if signature != last_signature:
+                last_signature = signature
+                deadline = time.monotonic() + idle_timeout
+                if stream_callback is not None:
+                    stream_callback(
+                        {
+                            "status": snapshot["status"],
+                            "sessionId": session_id,
+                            "providerId": self.provider_id,
+                            "modelId": self.model_id,
+                            "receivedAt": snapshot["receivedAt"],
+                            "parts": snapshot["parts"],
+                        }
+                    )
+            time.sleep(0.5)
+
+        self._raise_s1_opencode_stalled(session_id, messages, idle_timeout)
+        return None
+
+    def _wait_for_btplbound_finalize_after_prompt_return(
+        self,
+        *,
+        session_id: str,
+        idle_timeout: float,
+        stream_callback: Callable[[dict[str, Any]], None] | None,
+    ) -> dict[str, Any] | None:
+        messages: list[dict[str, Any]] = []
+        last_signature: tuple[str, tuple[tuple[str, str], ...]] | None = None
+        deadline = time.monotonic() + idle_timeout
+
+        while time.monotonic() < deadline:
+            messages = self.list_session_messages(session_id)
+            tool_output = self._find_completed_bash_tool_output(messages, "btplbound-finalize")
+            if tool_output:
+                snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+                trace_parts = list(snapshot.get("parts") or [])
+                trace_parts.append(
+                    {
+                        "type": "text",
+                        "text": "btplbound finalize 已完成，后端使用 finalize stdout 作为模板边界裁决结果。",
+                    }
+                )
+                early_response = self._tool_output_response(
+                    session_id=session_id,
+                    output=tool_output,
+                    trace_parts=trace_parts,
+                )
+                early_response["_completionSource"] = "btplbound-finalize"
+                if stream_callback is not None:
+                    stream_callback(
+                        {
+                            "status": "received",
+                            "sessionId": session_id,
+                            "providerId": self.provider_id,
+                            "modelId": self.model_id,
+                            "receivedAt": early_response["_traceReceivedAt"],
+                            "parts": self._normalize_output_parts(trace_parts),
+                            "earlyCompletion": True,
+                            "completionSource": "btplbound-finalize",
+                        }
+                    )
+                return early_response
+
+            snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+            signature = snapshot.get("signature")
+            if signature != last_signature:
+                last_signature = signature
+                deadline = time.monotonic() + idle_timeout
+                if stream_callback is not None:
+                    stream_callback(
+                        {
+                            "status": snapshot["status"],
+                            "sessionId": session_id,
+                            "providerId": self.provider_id,
+                            "modelId": self.model_id,
+                            "receivedAt": snapshot["receivedAt"],
+                            "parts": snapshot["parts"],
+                        }
+                    )
+            time.sleep(0.5)
+
+        raise RuntimeError(
+            "opencode incomplete/stalled: "
+            f"session {session_id} did not complete btplbound finalize within {int(idle_timeout)} seconds."
+        )
+        return None
 
     def _emit_session_output_delta(
         self,
@@ -750,12 +1029,50 @@ class OpencodeClient:
         }
 
     @staticmethod
+    def _matches_completed_command(command: str, expected: str) -> bool:
+        words = command.split()
+        if not words:
+            return False
+        first_word = Path(words[0]).name
+        if expected == "s1parse-finalize":
+            return first_word in {"s1parse", "s1parse_router.py"} and len(words) >= 3 and words[1] == "finalize"
+        if expected == "btplbound-finalize":
+            return first_word in {"btplbound", "btplbound_workflow.py"} and len(words) >= 3 and words[1] == "finalize"
+        return first_word == expected
+
+    @staticmethod
+    def _s1_finalize_output_is_terminal(output: str) -> bool:
+        if not OpencodeClient._looks_like_json_object(output):
+            return False
+        try:
+            parsed = OpencodeClient._parse_json_payload(output)
+        except RuntimeError:
+            return False
+        summary = parsed.get("summary") if isinstance(parsed.get("summary"), dict) else {}
+        stage = str(summary.get("workflowStage") or "").strip().lower()
+        return stage not in {"prepare", "prepared"}
+
+    @staticmethod
+    def _btplbound_finalize_output_is_terminal(output: str) -> bool:
+        if not OpencodeClient._looks_like_json_object(output):
+            return False
+        try:
+            parsed = OpencodeClient._parse_json_payload(output)
+        except RuntimeError:
+            return False
+        if parsed.get("schemaVersion") != "bid-business-template-extractor-boundary-decisions-v1":
+            return False
+        return isinstance(parsed.get("decisionFiles"), list) and isinstance(parsed.get("summary"), dict)
+
+    @staticmethod
     def _find_completed_bash_tool_output(
         messages: list[dict[str, Any]],
         command_name: str,
     ) -> str:
         expected = str(command_name or "").strip()
         if not expected:
+            return ""
+        if expected == "business-outline":
             return ""
         for message in reversed(messages):
             for part in reversed(message.get("parts") or []):
@@ -768,19 +1085,90 @@ class OpencodeClient:
                     continue
                 raw_input = state.get("input") if isinstance(state.get("input"), dict) else {}
                 command = str(raw_input.get("command") or "").strip()
-                first_word = command.split(maxsplit=1)[0] if command else ""
-                if first_word != expected:
+                if not OpencodeClient._matches_completed_command(command, expected):
                     continue
                 exit_code = state.get("exit")
                 if exit_code not in (None, 0):
                     continue
                 output = str(state.get("output") or "").strip()
+                if expected == "s1parse-finalize":
+                    if OpencodeClient._s1_finalize_output_is_terminal(output):
+                        return output
+                    continue
+                if expected == "btplbound-finalize":
+                    if OpencodeClient._btplbound_finalize_output_is_terminal(output):
+                        return output
+                    continue
                 if output and OpencodeClient._looks_like_json_object(output):
                     return output
                 synthesized = OpencodeClient._synthesize_tool_response_from_manifest(command, expected)
                 if synthesized:
                     return synthesized
         return ""
+
+    @staticmethod
+    def _last_tool_trace(messages: list[dict[str, Any]]) -> dict[str, Any]:
+        for message in reversed(messages):
+            message_info = message.get("info") if isinstance(message.get("info"), dict) else {}
+            for part in reversed(message.get("parts") or []):
+                if not isinstance(part, dict) or str(part.get("type") or "") != "tool":
+                    continue
+                state = part.get("state") if isinstance(part.get("state"), dict) else {}
+                raw_input = state.get("input") if isinstance(state.get("input"), dict) else {}
+                return {
+                    "lastTool": str(part.get("tool") or ""),
+                    "lastToolStatus": str(state.get("status") or ""),
+                    "lastToolInput": raw_input,
+                    "lastMessageId": str(message_info.get("id") or part.get("id") or ""),
+                }
+        return {}
+
+    @staticmethod
+    def _last_tool_is_running(trace: dict[str, Any]) -> bool:
+        if not trace:
+            return False
+        return str(trace.get("lastToolStatus") or "").lower() in {"running", "pending", "started"}
+
+    def _build_s1_stalled_trace(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        idle_timeout: float,
+    ) -> dict[str, Any]:
+        snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+        last_tool = self._last_tool_trace(messages)
+        failure_reason = (
+            f"opencode incomplete/stalled: session {session_id} did not complete s1parse finalize "
+            f"within {int(idle_timeout)} seconds."
+        )
+        return {
+            "status": "stalled",
+            "sessionId": session_id,
+            "providerId": self.provider_id,
+            "modelId": self.model_id,
+            "receivedAt": snapshot.get("receivedAt") or self._coerce_timestamp(None),
+            "parts": snapshot.get("parts") or [],
+            "agentStatus": "stalled",
+            "failureReason": failure_reason,
+            **last_tool,
+        }
+
+    def _raise_s1_opencode_stalled(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        idle_timeout: float,
+    ) -> None:
+        trace = self._build_s1_stalled_trace(session_id, messages, idle_timeout)
+        last_tool = str(trace.get("lastTool") or "unknown")
+        last_status = str(trace.get("lastToolStatus") or "unknown")
+        last_input = self._shorten_text(json.dumps(trace.get("lastToolInput") or {}, ensure_ascii=False), limit=260)
+        error = RuntimeError(
+            "opencode incomplete/stalled: "
+            f"sessionId={session_id}, lastTool={last_tool}, lastStatus={last_status}, lastInput={last_input}"
+        )
+        setattr(error, "opencode_trace", trace)
+        raise error
 
     @staticmethod
     def _synthesize_tool_response_from_manifest(command: str, command_name: str) -> str:
@@ -798,19 +1186,7 @@ class OpencodeClient:
         output_file = Path(str(manifest.get("outputFile") or work_dir / "toc.json")).expanduser()
         evidence_file = Path(str(manifest.get("evidenceFile") or work_dir / "toc_evidence.json")).expanduser()
         if command_name == "business-outline":
-            business_outline_file = work_dir / "outline.json"
-            if not business_outline_file.exists():
-                return ""
-            return json.dumps(
-                {
-                    "schema_version": "business_bid_outline.v1",
-                    "businessOutlineFile": str(business_outline_file),
-                    "outputFile": str(output_file),
-                    "evidenceFile": str(evidence_file),
-                    "summary": {"total_sections": 0},
-                },
-                ensure_ascii=False,
-            )
+            return ""
         if not output_file.exists():
             return ""
         summary: dict[str, Any] = {"total_items": 0}
@@ -1054,6 +1430,12 @@ class OpencodeClient:
                 '{"decisions":[{"id":"APPX-0001","action":"accept|review|reject",'
                 '"templateType":"bid_letter","quality":"complete|probably_incomplete|title_only",'
                 '"reason":"一句简短原因"}]}'
+            )
+        elif repair_kind == "business_template_boundary":
+            schema_hint = (
+                '{"schemaVersion":"bid-business-template-extractor-boundary-decisions-v1",'
+                '"decisionFiles":["/data/parsed/PRJ-0001/business_template_extraction/DOC-1/llm_boundary_decisions.json"],'
+                '"summary":{"documentCount":1,"decisionCount":1,"rejectedCount":0}}'
             )
         elif repair_kind == "table_fill":
             schema_hint = (

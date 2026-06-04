@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 from scripts.header_cluster_detector import detect_header_clusters, heading_code
-from scripts.text_rules import clean_text, compact_text, looks_like_body_sentence, looks_like_list_item_or_field
+from scripts.text_rules import (
+    clean_text,
+    compact_text,
+    is_catalog_heading,
+    looks_like_body_sentence,
+    looks_like_catalog_item,
+    looks_like_list_item_or_field,
+)
 
 
 MIN_STANDALONE_TEXT_LENGTH = 20
@@ -68,7 +75,7 @@ def _has_catalog_heading_before(
         if not text:
             continue
         scanned += 1
-        if compact_text(text) in {"目录", "目次"}:
+        if is_catalog_heading(text):
             return True
         if scanned >= CATALOG_LOOKBACK_BLOCKS:
             break
@@ -81,8 +88,7 @@ def _looks_like_catalog_listing_block(block: dict) -> bool:
     text = clean_text(block.get("text"))
     if not text:
         return True
-    code = heading_code(text)
-    if not code.get("appendix"):
+    if not looks_like_catalog_item(text):
         return False
     if looks_like_body_sentence(text) or looks_like_list_item_or_field(text):
         return False
@@ -90,6 +96,29 @@ def _looks_like_catalog_listing_block(block: dict) -> bool:
         block.get("isPageFirstNonEmpty")
         or block.get("hasPageBreakBefore")
         or block.get("hasPageBreakAfter")
+    )
+
+
+def _should_skip_catalog_trailing_block(
+    blocks_by_id: dict[int, dict],
+    *,
+    start_block_id: int,
+    region_start_block_id: int,
+    end_block_id: int,
+) -> bool:
+    if not _has_catalog_heading_before(
+        blocks_by_id,
+        start_block_id=start_block_id,
+        region_start_block_id=region_start_block_id,
+    ):
+        return False
+    content_blocks = _content_blocks_between(blocks_by_id, start_block_id, end_block_id)
+    if not content_blocks:
+        return False
+    return all(
+        _looks_like_catalog_listing_block(block)
+        or is_catalog_heading(clean_text(block.get("text")))
+        for block in content_blocks
     )
 
 
@@ -172,6 +201,13 @@ def plan_boundaries(blocks: list[dict], regions: list[dict], anchors: list[dict]
                 next_cluster,
                 region_start_block_id=int(region["startBlockId"]),
                 start_block_id=start_block_id,
+                end_block_id=end_block_id,
+            ):
+                continue
+            if _should_skip_catalog_trailing_block(
+                blocks_by_id,
+                start_block_id=start_block_id,
+                region_start_block_id=int(region["startBlockId"]),
                 end_block_id=end_block_id,
             ):
                 continue
