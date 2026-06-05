@@ -89,6 +89,26 @@ const formatDateTime = (value) => {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
+const formatBidDeadline = (value, emptyText = '-') => {
+  const text = String(value ?? '').trim()
+  if (!text) return emptyText
+
+  const normalized = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::\d{2})?)?$/)
+  if (normalized) {
+    const [, year, month, day, hour, minute] = normalized
+    return hour ? `${year}-${month}-${day} ${hour}:${minute}` : `${year}-${month}-${day}`
+  }
+
+  const chinese = text.match(/(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?(?:\s*(\d{1,2})\s*(?:时|:)\s*(\d{1,2})?\s*分?)?/)
+  if (chinese) {
+    const [, year, month, day, hour, minute] = chinese
+    const datePart = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`
+    return hour ? `${datePart} ${hour.padStart(2, '0')}:${String(minute || '0').padStart(2, '0')}` : datePart
+  }
+
+  return text
+}
+
 const validatePickedFiles = (picked = []) => {
   if (picked.length > MAX_BATCH_FILES) return `单次最多上传 ${MAX_BATCH_FILES} 个文件。`
 
@@ -217,7 +237,9 @@ function ProjectBasicsTable({ title, fields = [] }) {
           <tbody>
             {PROJECT_BASIC_FIELDS.map(([key, label]) => {
               const field = fieldsByKey.get(key) || {}
-              const value = displayValue(field.value, '未识别')
+              const value = key === 'bidDeadline'
+                ? formatBidDeadline(field.value, '未识别')
+                : displayValue(field.value, '未识别')
               return (
                 <tr key={key} className="border-b border-surface-container-high last:border-b-0">
                   <td className="px-4 py-2 text-on-surface font-medium whitespace-nowrap">{label}</td>
@@ -285,6 +307,15 @@ function QualificationRequirementsTable({ title, rows = [] }) {
 }
 
 function BidderInstructionsTable({ title, rows = [] }) {
+  const fallbackHeaders = ['条款号', '条款名称', '编列内容']
+  const headers = rows.find((row) => Array.isArray(row.headers) && row.headers.length)?.headers || fallbackHeaders
+  const normalizedHeaders = headers.map((header, index) => displayValue(header, `列${index + 1}`))
+  const columnCount = Math.max(normalizedHeaders.length, 1)
+  const cellsForRow = (row = {}) => {
+    if (Array.isArray(row.cells) && row.cells.length) return row.cells
+    return [row.clauseNo, row.clauseName, row.content]
+  }
+
   return (
     <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
       <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
@@ -292,29 +323,40 @@ function BidderInstructionsTable({ title, rows = [] }) {
         <span className="text-xs text-outline">{rows.length} 行</span>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full table-fixed text-sm min-w-[900px]">
-          <colgroup>
-            <col className="w-28" />
-            <col className="w-56" />
-            <col className="w-[40rem]" />
-          </colgroup>
+        <table className="w-full text-sm min-w-[900px]">
           <thead>
             <tr className="border-b border-surface-container-high">
-              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">条款号</th>
-              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">条款名称</th>
-              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">编列内容</th>
+              {normalizedHeaders.map((header, index) => (
+                <th
+                  key={`${header}-${index}`}
+                  className="min-w-36 px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap"
+                >
+                  {header}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
             {rows.length ? rows.map((row, index) => (
               <tr key={row.id || `${row.clauseNo || 'instruction'}-${index}`} className="border-b border-surface-container-high last:border-b-0">
-                <td className="px-4 py-2 text-center text-on-surface-variant whitespace-nowrap">{displayValue(row.clauseNo)}</td>
-                <td className="business-core-text-cell px-4 py-2 text-on-surface font-medium">{displayValue(row.clauseName)}</td>
-                <td className="business-core-text-cell px-4 py-2 text-on-surface-variant">{displayValue(row.content)}</td>
+                {Array.from({ length: columnCount }, (_, cellIndex) => (
+                  <td
+                    key={`${row.id || index}-${cellIndex}`}
+                    className={[
+                      'px-4 py-2',
+                      cellIndex === 0
+                        ? 'text-center text-on-surface-variant whitespace-nowrap'
+                        : 'business-core-text-cell text-on-surface-variant',
+                      cellIndex === 1 ? 'font-medium text-on-surface' : '',
+                    ].filter(Boolean).join(' ')}
+                  >
+                    {displayValue(cellsForRow(row)[cellIndex])}
+                  </td>
+                ))}
               </tr>
             )) : (
               <tr>
-                <td className="px-4 py-3 text-outline" colSpan={3}>未识别到投标人须知前附表。</td>
+                <td className="px-4 py-3 text-outline" colSpan={columnCount}>未识别到投标人须知前附表。</td>
               </tr>
             )}
           </tbody>
@@ -728,7 +770,8 @@ export default function BusinessTenderReview({ showToast }) {
   }, [loadCurrentProject])
 
   useEffect(() => {
-    if (!selectedProjectId || !shouldPollParseProgress({ uploading, progress: parseProgress })) return undefined
+    const progressStatus = parseProgress?.status
+    if (!selectedProjectId || !shouldPollParseProgress({ uploading, progress: { status: progressStatus } })) return undefined
     let stopped = false
     const loadProgress = async () => {
       try {
@@ -1520,7 +1563,7 @@ export default function BusinessTenderReview({ showToast }) {
             </div>
             <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
               <p className="font-medium text-on-surface mb-1">投标截止日期</p>
-              <p>{parsedDates?.endDate || '-'}</p>
+              <p>{formatBidDeadline(parsedDates?.endDate)}</p>
             </div>
           </div>
         </DataCard>

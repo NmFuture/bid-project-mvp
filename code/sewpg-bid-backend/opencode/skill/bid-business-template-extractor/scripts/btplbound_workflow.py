@@ -530,8 +530,8 @@ def normalize_boundary_decisions(
         candidate = item["candidate"]
         start = coerce_int(raw.get("startBlockId"), "startBlockId")
         end = coerce_int(raw.get("endBlockId"), "endBlockId")
-        if end <= start:
-            raise ValueError(f"{candidate_id} endBlockId must be greater than startBlockId")
+        if end < start:
+            raise ValueError(f"{candidate_id} endBlockId must not be before startBlockId")
         if start not in artifact["blocksById"] or end not in artifact["blocksById"]:
             raise ValueError(f"{candidate_id} startBlockId/endBlockId must exist in blocks.json")
         min_start, max_end = boundary_limits(item, all_references)

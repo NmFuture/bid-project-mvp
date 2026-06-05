@@ -30,13 +30,17 @@ PROJECT_BASIC_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("tenderNo", "招标编号", ("招标编号", "项目编号", "招标文件编号")),
     FieldSpec("tenderer", "招标人", ("招标人", "业主", "建设单位", "项目单位")),
     FieldSpec("tenderAgency", "招标代理机构", ("招标代理机构", "代理机构")),
-    FieldSpec("bidDeadline", "递交截止时间", ("递交截止时间", "投标截止时间", "投标文件递交截止时间", "开标时间")),
+    FieldSpec("bidDeadline", "递交截止时间", ("递交截止时间", "投标截止时间", "投标文件递交截止时间", "提交截止时间")),
 )
 
-DATE_PATTERN = re.compile(r"(?P<year>20\d{2})\s*(?:年|[-/.])\s*(?P<month>\d{1,2})\s*(?:月|[-/.])\s*(?P<day>\d{1,2})\s*日?")
+DATE_PATTERN = re.compile(
+    r"(?P<year>20\d{2})\s*(?:年|[-/.])\s*(?P<month>\d{1,2})\s*(?:月|[-/.])\s*(?P<day>\d{1,2})\s*日?"
+    r"(?:\s*(?P<hour>\d{1,2})\s*(?:时|:)\s*(?P<minute>\d{1,2})?\s*分?)?"
+)
 LABEL_VALUE_PATTERN = re.compile(r"^\s*(?P<label>[^:：]{2,80})\s*[:：]\s*(?P<value>.+?)\s*$")
 LEADING_NUMBER_PATTERN = re.compile(r"^\s*(?:第?[一二三四五六七八九十百千0-9]+[章节条]?|[（(]?\d+[）)]?)\s*[、.．\s]+")
-BID_DEADLINE_CONTEXT = ("投标截止", "投标文件递交截止", "递交截止", "提交截止", "开标时间", "开标日期")
+BID_DEADLINE_CONTEXT = ("投标截止", "投标文件递交截止", "递交截止", "提交截止")
+OPENING_TIME_CONTEXT = ("开标时间", "开标日期", "开标时间和地点", "开标地点")
 
 
 def normalize_text(raw_text: str) -> str:
@@ -92,9 +96,32 @@ def _normalize_date(value: str) -> str:
     if not match:
         return _clean(value)
     try:
-        return date(int(match.group("year")), int(match.group("month")), int(match.group("day"))).isoformat()
+        parsed = date(int(match.group("year")), int(match.group("month")), int(match.group("day")))
     except ValueError:
         return _clean(value)
+    hour = match.group("hour")
+    if hour is None:
+        return parsed.isoformat()
+    minute = match.group("minute") or "0"
+    try:
+        hour_int = int(hour)
+        minute_int = int(minute)
+    except ValueError:
+        return parsed.isoformat()
+    if not (0 <= hour_int <= 23 and 0 <= minute_int <= 59):
+        return parsed.isoformat()
+    return f"{parsed.isoformat()} {hour_int:02d}:{minute_int:02d}"
+
+
+def _is_normalized_deadline_datetime(value: str) -> bool:
+    return bool(re.fullmatch(r"20\d{2}-\d{2}-\d{2}(?: \d{2}:\d{2})?", str(value or "").strip()))
+
+
+def _is_opening_time_context(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not any(token in compact for token in OPENING_TIME_CONTEXT):
+        return False
+    return not any(token in compact for token in ("递交截止时间", "投标文件递交截止时间", "提交截止时间"))
 
 
 def _docx_paragraph_text(element: Any) -> str:
@@ -203,6 +230,8 @@ def _extract_line_items(
         if spec is None:
             continue
         label, value = _split_label_value(line, spec.label)
+        if spec.key == "bidDeadline" and _is_opening_time_context(line):
+            continue
         if spec.key == "bidDeadline" and not any(keyword in line for keyword in BID_DEADLINE_CONTEXT):
             continue
         if value == line:
@@ -223,7 +252,7 @@ def _extract_line_items(
             section=current_section,
             field_key=spec.key,
         )
-        if spec.key == "bidDeadline":
+        if spec.key == "bidDeadline" and _is_normalized_deadline_datetime(item["value"]):
             project_dates["endDate"] = item["value"]
 
 
@@ -247,6 +276,8 @@ def _extract_table_field_items(
             if not value:
                 continue
             evidence = " | ".join(cell for cell in cells if cell)
+            if spec.key == "bidDeadline" and _is_opening_time_context(evidence):
+                continue
             dedupe_key = (str(document.get("id") or ""), spec.key, value, evidence)
             if dedupe_key in seen:
                 continue
@@ -262,7 +293,7 @@ def _extract_table_field_items(
                 field_key=spec.key,
                 confidence=0.9 if "投标人须知前附表" in section or block_index <= 30 else 0.82,
             )
-            if spec.key == "bidDeadline":
+            if spec.key == "bidDeadline" and _is_normalized_deadline_datetime(item["value"]):
                 project_dates["endDate"] = item["value"]
 
 
@@ -515,6 +546,10 @@ def _field_score(item: dict[str, Any], spec: FieldSpec) -> int:
         score += 40
     if spec.key == "bidDeadline" and any(keyword in evidence for keyword in BID_DEADLINE_CONTEXT):
         score += 90
+        if _is_normalized_deadline_datetime(value):
+            score += 120
+        if _is_opening_time_context(evidence):
+            score -= 240
     if not value:
         score -= 300
     return score

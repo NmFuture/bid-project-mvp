@@ -25,6 +25,7 @@ SCORING_ITEM_HEADERS = ("评分项", "评审因素", "评审项目", "项目", "
 SCORING_SCORE_HEADERS = ("分值", "满分", "权重", "标准分")
 SCORING_POINT_VALUE_HEADERS = ("分值", "满分", "标准分")
 SCORING_STANDARD_HEADERS = ("得分点", "评分标准", "评分办法", "评审标准", "标准")
+BIDDER_INSTRUCTION_TABLE_TITLE = "投标人须知前附表"
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,7 @@ PROJECT_BASIC_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("tenderNo", "招标编号", ("招标编号", "项目编号", "招标文件编号")),
     FieldSpec("tenderer", "招标人", ("招标人", "业主", "建设单位", "项目单位")),
     FieldSpec("tenderAgency", "招标代理机构", ("招标代理机构", "代理机构")),
-    FieldSpec("bidDeadline", "递交截止时间", ("递交截止时间", "投标截止时间", "投标文件递交截止时间", "开标时间")),
+    FieldSpec("bidDeadline", "递交截止时间", ("递交截止时间", "投标截止时间", "投标文件递交截止时间", "提交截止时间")),
 )
 
 QUALIFICATION_SECTION_ANCHORS = (
@@ -248,13 +249,39 @@ def _is_reference_only_value(value: str) -> bool:
 
 
 def _normalize_bid_deadline(value: str) -> str:
-    match = re.search(r"(20\d{2})\s*(?:年|[-/.])\s*(\d{1,2})\s*(?:月|[-/.])\s*(\d{1,2})\s*日?", str(value or ""))
+    match = re.search(
+        r"(20\d{2})\s*(?:年|[-/.])\s*(\d{1,2})\s*(?:月|[-/.])\s*(\d{1,2})\s*日?"
+        r"(?:\s*(\d{1,2})\s*(?:时|:)\s*(\d{1,2})?\s*分?)?",
+        str(value or ""),
+    )
     if not match:
         return str(value or "").strip()
     try:
-        return date(int(match.group(1)), int(match.group(2)), int(match.group(3))).isoformat()
+        parsed = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
     except ValueError:
         return str(value or "").strip()
+    if match.group(4) is None:
+        return parsed.isoformat()
+    minute = match.group(5) or "0"
+    try:
+        hour_int = int(match.group(4))
+        minute_int = int(minute)
+    except ValueError:
+        return parsed.isoformat()
+    if not (0 <= hour_int <= 23 and 0 <= minute_int <= 59):
+        return parsed.isoformat()
+    return f"{parsed.isoformat()} {hour_int:02d}:{minute_int:02d}"
+
+
+def _is_normalized_bid_deadline(value: str) -> bool:
+    return bool(re.fullmatch(r"20\d{2}-\d{2}-\d{2}(?: \d{2}:\d{2})?", str(value or "").strip()))
+
+
+def _is_opening_time_context(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not any(token in compact for token in ("开标时间", "开标日期", "开标时间和地点", "开标地点")):
+        return False
+    return not any(token in compact for token in ("递交截止时间", "投标文件递交截止时间", "提交截止时间"))
 
 
 def _strip_core_party_contact_tail(value: str) -> str:
@@ -299,8 +326,12 @@ def _business_core_field_score(item: dict[str, Any], spec: FieldSpec) -> int:
         score += 50
     if _is_reference_only_value(value):
         score -= 220
-    if spec.key == "bidDeadline" and any(token in evidence for token in ("递交截止时间", "投标文件递交截止时间", "投标截止时间", "开标时间")):
+    if spec.key == "bidDeadline" and any(token in evidence for token in ("递交截止时间", "投标文件递交截止时间", "投标截止时间", "提交截止时间")):
         score += 120
+        if _is_normalized_bid_deadline(value):
+            score += 140
+        if _is_opening_time_context(evidence):
+            score -= 260
     if spec.key == "projectName" and "项目" in value and len(value) <= 120:
         score += 45
     if spec.key == "tenderNo" and re.search(r"[A-Z]{2,}.*\d", value):
@@ -353,9 +384,6 @@ def _bidder_instruction_for_project_field(rows: list[dict[str, Any]], spec: Fiel
                 return row
         return None
     if spec.key == "bidDeadline":
-        for row in rows:
-            if _is_strong_bid_deadline_row(row):
-                return row
         return None
     for row in rows:
         clause_name = str(row.get("clauseName") or "")
@@ -458,17 +486,22 @@ def _document_text_lines(document: dict[str, Any], texts_by_id: dict[str, str]) 
 def _instruction_row_from_cells(
     *,
     cells: list[str],
+    headers: list[str],
     document_id: str,
     source_file: str,
     section: str,
     evidence_location: str,
     row_id: int,
+    table_title: str = BIDDER_INSTRUCTION_TABLE_TITLE,
+    table_location: str = "",
 ) -> dict[str, Any] | None:
     if len(cells) < 2:
         return None
-    clause_no = _clean(cells[0])
-    clause_name = _clean(cells[1]) if len(cells) > 1 else ""
-    content = "；".join(_clean(cell) for cell in cells[2:] if _clean(cell)) if len(cells) > 2 else ""
+    cleaned_cells = [_clean(cell) for cell in cells]
+    cleaned_headers = [_clean(header) for header in headers]
+    clause_no = cleaned_cells[0]
+    clause_name = cleaned_cells[1] if len(cleaned_cells) > 1 else ""
+    content = "；".join(cell for cell in cleaned_cells[2:] if cell) if len(cleaned_cells) > 2 else ""
     if not clause_no and not clause_name and not content:
         return None
     return {
@@ -476,105 +509,183 @@ def _instruction_row_from_cells(
         "clauseNo": clause_no,
         "clauseName": clause_name,
         "content": content or clause_name,
+        "headers": cleaned_headers,
+        "cells": cleaned_cells,
+        "tableTitle": table_title or BIDDER_INSTRUCTION_TABLE_TITLE,
+        "tableLocation": table_location,
         "status": "found",
         "sourceFile": source_file,
         "sourceDocumentId": document_id,
-        "section": section or "投标人须知前附表",
-        "evidence": " | ".join(cell for cell in cells if cell),
+        "section": section or BIDDER_INSTRUCTION_TABLE_TITLE,
+        "evidence": " | ".join(cell for cell in cleaned_cells if cell),
         "evidenceLocation": evidence_location,
         "evidenceIds": [_evidence_id(document_id, evidence_location)],
     }
 
 
-def _extract_markdown_bidder_instruction_rows(documents: list[dict[str, Any]], texts_by_id: dict[str, str]) -> list[dict[str, Any]]:
-    rows_out: list[dict[str, Any]] = []
-    for document in documents:
-        document_id = str(document.get("id") or "")
-        text = str(texts_by_id.get(document_id) or "")
-        if "|" not in text or "投标人须知前附表" not in text:
+def _strip_bidder_instruction_title_prefix(text: str) -> str:
+    cleaned = _clean(text).strip("# ").strip(" ：:。；;")
+    cleaned = re.sub(r"^\s*第?[一二三四五六七八九十百千0-9]+[章节条]?\s*[、.．\s]+", "", cleaned)
+    return re.sub(r"\s+", "", cleaned)
+
+
+def _is_bidder_instruction_title_anchor(text: str) -> bool:
+    compact = _strip_bidder_instruction_title_prefix(text)
+    if not compact.startswith(BIDDER_INSTRUCTION_TABLE_TITLE):
+        return False
+    suffix = compact.removeprefix(BIDDER_INSTRUCTION_TABLE_TITLE)
+    return bool(re.fullmatch(r"(?:[0-9一二三四五六七八九十百千页（）()、.．:-]*)", suffix))
+
+
+def _markdown_table_after_anchor(
+    lines: list[str],
+    anchor_index: int,
+    *,
+    max_text_gap: int,
+) -> tuple[int, list[tuple[int, list[str]]]] | None:
+    gap = 0
+    index = anchor_index + 1
+    while index < len(lines):
+        line = _clean(lines[index])
+        if not line:
+            index += 1
             continue
-        source_file = str(document.get("name") or document_id or "招标文件")
-        lines = text.splitlines()
-        current_section = ""
-        index = 0
-        while index < len(lines):
-            line = _clean(lines[index])
-            if not line:
-                index += 1
-                continue
-            if line.startswith("#"):
-                current_section = line.strip("# ").strip()
-                index += 1
-                continue
-            if _looks_like_section_heading(line):
-                current_section = line
-                index += 1
-                continue
-            if not MARKDOWN_TABLE_LINE_PATTERN.match(line):
-                index += 1
-                continue
-            table_rows, next_index = _collect_markdown_table(lines, index)
+        if MARKDOWN_TABLE_LINE_PATTERN.match(line):
+            if gap > max_text_gap:
+                return None
+            table_rows, _ = _collect_markdown_table(lines, index)
             parsed_rows = [(line_no, _parse_markdown_table_row(row)) for line_no, row in table_rows]
             filtered_rows = [(line_no, cells) for line_no, cells in parsed_rows if cells and not _is_markdown_separator_row(cells)]
-            if len(filtered_rows) <= 1:
-                index = next_index
-                continue
-            header = " ".join(filtered_rows[0][1])
-            is_instruction_table = "投标人须知前附表" in current_section or ("条款" in header and "编列" in header)
-            if is_instruction_table:
-                for line_no, cells in filtered_rows[1:]:
-                    row = _instruction_row_from_cells(
-                        cells=cells,
-                        document_id=document_id,
-                        source_file=source_file,
-                        section=current_section or "投标人须知前附表",
-                        evidence_location=f"L{line_no}",
-                        row_id=len(rows_out) + 1,
-                    )
-                    if row:
-                        rows_out.append(row)
-            index = next_index
+            return (index, filtered_rows) if len(filtered_rows) > 1 else None
+        gap += 1
+        if gap > max_text_gap:
+            return None
+        index += 1
+    return None
+
+
+def _parse_bidder_instruction_table_rows(
+    *,
+    table_rows: list[tuple[int | str, list[str]]],
+    document_id: str,
+    source_file: str,
+    section: str,
+    row_id_start: int = 1,
+    table_title: str = BIDDER_INSTRUCTION_TABLE_TITLE,
+    table_location: str = "",
+    location_prefix: str = "L",
+) -> list[dict[str, Any]]:
+    if len(table_rows) <= 1:
+        return []
+    headers = [_clean(cell) for cell in table_rows[0][1]]
+    rows_out: list[dict[str, Any]] = []
+    for row_number, cells in table_rows[1:]:
+        evidence_location = f"{location_prefix}{row_number}" if location_prefix else str(row_number)
+        row = _instruction_row_from_cells(
+            cells=cells,
+            headers=headers,
+            document_id=document_id,
+            source_file=source_file,
+            section=section or BIDDER_INSTRUCTION_TABLE_TITLE,
+            evidence_location=evidence_location,
+            row_id=row_id_start + len(rows_out),
+            table_title=table_title,
+            table_location=table_location,
+        )
+        if row:
+            rows_out.append(row)
     return rows_out
+
+
+def _extract_markdown_bidder_instruction_rows_for_document(document: dict[str, Any], text: str) -> list[dict[str, Any]]:
+    if "|" not in text or BIDDER_INSTRUCTION_TABLE_TITLE not in text:
+        return []
+    document_id = str(document.get("id") or "")
+    source_file = str(document.get("name") or document_id or "招标文件")
+    lines = text.splitlines()
+    anchors = [(index, _clean(line).strip("# ").strip()) for index, line in enumerate(lines) if _is_bidder_instruction_title_anchor(line)]
+    for max_text_gap in (0, 3):
+        for anchor_index, anchor_title in anchors:
+            match = _markdown_table_after_anchor(lines, anchor_index, max_text_gap=max_text_gap)
+            if not match:
+                continue
+            table_start, table_rows = match
+            return _parse_bidder_instruction_table_rows(
+                table_rows=table_rows,
+                document_id=document_id,
+                source_file=source_file,
+                section=anchor_title or BIDDER_INSTRUCTION_TABLE_TITLE,
+                table_title=anchor_title or BIDDER_INSTRUCTION_TABLE_TITLE,
+                table_location=f"L{table_start + 1}",
+                location_prefix="L",
+            )
+    return []
+
+
+def _docx_table_after_anchor(
+    blocks: list[dict[str, Any]],
+    anchor_index: int,
+    *,
+    max_text_gap: int,
+) -> tuple[int, list[list[str]]] | None:
+    gap = 0
+    index = anchor_index + 1
+    while index < len(blocks):
+        block = blocks[index]
+        if block.get("type") == "table":
+            rows = [[_clean(cell) for cell in row] for row in block.get("rows") or [] if any(_clean(cell) for cell in row)]
+            return (index, rows) if gap <= max_text_gap and len(rows) > 1 else None
+        text = _clean(block.get("text")) if block.get("type") == "paragraph" else ""
+        if text:
+            gap += 1
+            if gap > max_text_gap:
+                return None
+        index += 1
+    return None
+
+
+def _extract_docx_bidder_instruction_rows_for_document(document: dict[str, Any]) -> list[dict[str, Any]]:
+    source_path = Path(str(document.get("sourcePath") or ""))
+    if not _is_docx_source(source_path):
+        return []
+    document_id = str(document.get("id") or "")
+    source_file = str(document.get("name") or document_id or "招标文件")
+    blocks = _iter_docx_blocks(source_path)
+    anchors = [
+        (index, _clean(block.get("text")))
+        for index, block in enumerate(blocks)
+        if block.get("type") == "paragraph" and _is_bidder_instruction_title_anchor(str(block.get("text") or ""))
+    ]
+    for max_text_gap in (0, 3):
+        for anchor_index, anchor_title in anchors:
+            match = _docx_table_after_anchor(blocks, anchor_index, max_text_gap=max_text_gap)
+            if not match:
+                continue
+            table_index, table_rows = match
+            numbered_rows = [(f"B{table_index + 1}/R{row_index}", row) for row_index, row in enumerate(table_rows, start=1)]
+            return _parse_bidder_instruction_table_rows(
+                table_rows=numbered_rows,
+                document_id=document_id,
+                source_file=source_file,
+                section=anchor_title or BIDDER_INSTRUCTION_TABLE_TITLE,
+                table_title=anchor_title or BIDDER_INSTRUCTION_TABLE_TITLE,
+                table_location=f"B{table_index + 1}",
+                location_prefix="",
+            )
+    return []
 
 
 def _extract_bidder_instruction_rows(documents: list[dict[str, Any]], texts_by_id: dict[str, str]) -> list[dict[str, Any]]:
-    rows_out: list[dict[str, Any]] = []
-    rows_out.extend(_extract_markdown_bidder_instruction_rows(documents, texts_by_id))
     for document in documents:
-        source_path = Path(str(document.get("sourcePath") or ""))
-        if not _is_docx_source(source_path):
-            continue
+        rows = _extract_docx_bidder_instruction_rows_for_document(document)
+        if rows:
+            return rows
+    for document in documents:
         document_id = str(document.get("id") or "")
-        source_file = str(document.get("name") or document_id or "招标文件")
-        current_section = ""
-        for block_index, block in enumerate(_iter_docx_blocks(source_path), start=1):
-            if block.get("type") == "paragraph":
-                text = _clean(block.get("text"))
-                if text:
-                    current_section = text
-                continue
-            if block.get("type") != "table":
-                continue
-            table_rows = [[_clean(cell) for cell in row] for row in block.get("rows") or [] if any(_clean(cell) for cell in row)]
-            if not table_rows:
-                continue
-            header = " ".join(table_rows[0])
-            is_instruction_table = "投标人须知前附表" in current_section or ("条款" in header and "编列" in header)
-            if not is_instruction_table:
-                continue
-            for row_index, cells in enumerate(table_rows[1:], start=2):
-                evidence_location = f"B{block_index}/R{row_index}"
-                row = _instruction_row_from_cells(
-                    cells=cells,
-                    document_id=document_id,
-                    source_file=source_file,
-                    section=current_section or "投标人须知前附表",
-                    evidence_location=evidence_location,
-                    row_id=len(rows_out) + 1,
-                )
-                if row:
-                    rows_out.append(row)
-    return rows_out
+        rows = _extract_markdown_bidder_instruction_rows_for_document(document, str(texts_by_id.get(document_id) or ""))
+        if rows:
+            return rows
+    return []
 
 
 def _extract_qualification_requirements(
@@ -1045,6 +1156,28 @@ def _build_business_project_fact_fields(field_groups: dict[str, Any], project_da
     return fact_fields
 
 
+def _load_business_template_extraction(manifest: dict[str, Any]) -> dict[str, Any]:
+    extraction_path = Path(str(manifest.get("businessTemplateExtractionPath") or "")).expanduser()
+    if not extraction_path.is_file():
+        return {}
+    try:
+        payload = json.loads(extraction_path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _template_extraction_list(payload: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    values = payload.get(key)
+    if not isinstance(values, list):
+        return []
+    return [copy.deepcopy(item) for item in values if isinstance(item, dict)]
+
+
+def _business_template_appendices_from_manifest(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    return _template_extraction_list(_load_business_template_extraction(manifest), "appendices")
+
+
 def build_business_result(manifest: dict[str, Any], *, mode: str = "opencode-skill") -> dict[str, Any]:
     base_result = parse_base_manifest(manifest, mode=f"{mode}-business-base")
     documents = [item for item in manifest.get("documents") or [] if isinstance(item, dict)]
@@ -1074,6 +1207,7 @@ def build_business_result(manifest: dict[str, Any], *, mode: str = "opencode-ski
         "commercialRejectionClauses": _extract_commercial_rejection_clauses(documents, texts_by_id),
     }
     project_fact_fields = _build_business_project_fact_fields(field_groups, project_dates)
+    appendices = _business_template_appendices_from_manifest(manifest)
 
     return {
         "items": merged_items,
@@ -1083,8 +1217,13 @@ def build_business_result(manifest: dict[str, Any], *, mode: str = "opencode-ski
             "sourceDocuments": copy.deepcopy(structured.get("sourceDocuments") or []),
             "scoringCriteria": scoring,
             "fieldGroups": field_groups,
+            "requirementPresence": {},
             "coverage": _build_business_coverage(field_groups, scoring),
             "projectDates": {"endDate": str(project_dates.get("endDate") or "")},
+            "appendices": appendices,
+            "commitmentLetters": [],
+            "commitmentClues": [],
             "projectFactFields": project_fact_fields,
+            "categoryCounts": {},
         },
     }

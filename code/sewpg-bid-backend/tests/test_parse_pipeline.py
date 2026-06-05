@@ -449,6 +449,185 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertIn("最终结构化 JSON 必须由该 finalize 命令写入", prompt)
         self.assertNotIn("请直接调用一次 Bash 工具", prompt)
 
+    def test_business_template_skill_runs_before_structured_parser_and_passes_manifest(self) -> None:
+        project_id = self.create_business_project()
+        calls: list[str] = []
+        seen_manifest: dict[str, object] = {}
+
+        def fake_template_extractor(*, project_id: str, documents: list[dict], project_dir: Path):
+            calls.append("template")
+            output_dir = project_dir / "business_template_extraction"
+            template_dir = output_dir / "templates"
+            template_dir.mkdir(parents=True, exist_ok=True)
+            template_docx = template_dir / "TPL-0001.docx"
+            Document().save(str(template_docx))
+            payload = {
+                "schemaVersion": "bid-business-template-extractor-v1",
+                "skillName": "bid-business-template-extractor",
+                "summary": {"templateCount": 1},
+                "appendices": [
+                    {
+                        "id": "APPX-0001",
+                        "title": "Bid Letter",
+                        "artifactType": "business_attachment_template",
+                        "templateType": "bid_letter",
+                        "status": "generated",
+                        "docxPath": str(template_docx),
+                        "sourceDocumentId": documents[0]["id"],
+                        "sourceDocumentName": documents[0]["name"],
+                        "extractionMode": "business_template_extractor_skill",
+                    }
+                ],
+            }
+            extraction_path = output_dir / "business_template_extraction.json"
+            extraction_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            return payload["appendices"], payload, ""
+
+        def fake_structured_parser(skill_manifest_path: Path, **kwargs):
+            calls.append("structured")
+            manifest = json.loads(skill_manifest_path.read_text(encoding="utf-8"))
+            seen_manifest.update(manifest)
+            extraction_path = Path(str(manifest.get("businessTemplateExtractionPath") or ""))
+            appendices = []
+            if extraction_path.is_file():
+                extraction_payload = json.loads(extraction_path.read_text(encoding="utf-8"))
+                appendices = extraction_payload.get("appendices") or []
+            return {
+                "items": [],
+                "structured": {
+                    "schemaVersion": "bid-business-tender-structured-v1",
+                    "targetSkill": "bid-business-tender-structured-parser",
+                    "mode": "opencode-skill",
+                    "sourceDocuments": [],
+                    "scoringCriteria": {"business": []},
+                    "fieldGroups": {},
+                    "requirementPresence": {},
+                    "coverage": [],
+                    "projectDates": {"endDate": ""},
+                    "appendices": appendices,
+                    "commitmentLetters": [],
+                    "commitmentClues": [],
+                    "projectFactFields": [],
+                    "categoryCounts": {},
+                },
+            }, ""
+
+        with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+            "app.services.parsing.run_business_template_extractor",
+            side_effect=fake_template_extractor,
+            create=True,
+        ), patch(
+            "app.services.parsing._run_parse_skill",
+            side_effect=fake_structured_parser,
+        ), patch(
+            "app.services.parsing._needs_business_s1_finalize_guard",
+            return_value=False,
+        ):
+            response = self.client.post(
+                self.parse_results_url(project_id, "/upload-and-run"),
+                files=[
+                    (
+                        "tenderFiles",
+                        (
+                            "business-tender.docx",
+                            build_business_attachment_templates_docx_bytes(),
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        ),
+                    )
+                ],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(calls, ["template", "structured"])
+        extraction_path = Path(str(seen_manifest.get("businessTemplateExtractionPath") or ""))
+        self.assertTrue(extraction_path.is_file())
+        self.assertEqual(seen_manifest.get("businessTemplateExtractionSummary"), {"templateCount": 1})
+        appendices = response.json()["structured"]["appendices"]
+        self.assertEqual(len(appendices), 1)
+        self.assertEqual(appendices[0]["extractionMode"], "business_template_extractor_skill")
+
+    def test_business_template_extractor_appendices_are_kept_when_structured_parser_returns_empty(self) -> None:
+        project_id = self.create_business_project()
+        template_docx = settings.parsed_dir / project_id / "business_template_extraction" / "templates" / "TPL-0001.docx"
+
+        def fake_template_extractor(*, project_id: str, documents: list[dict], project_dir: Path):
+            template_docx.parent.mkdir(parents=True, exist_ok=True)
+            Document().save(str(template_docx))
+            payload = {
+                "schemaVersion": "bid-business-template-extractor-v1",
+                "skillName": "bid-business-template-extractor",
+                "summary": {"templateCount": 1},
+                "appendices": [
+                    {
+                        "id": "APPX-0001",
+                        "title": "Single Block Placeholder",
+                        "artifactType": "business_attachment_template",
+                        "templateType": "attachment_placeholder",
+                        "status": "generated",
+                        "docxPath": str(template_docx),
+                        "sourceDocumentId": documents[0]["id"],
+                        "sourceDocumentName": documents[0]["name"],
+                        "extractionMode": "business_template_extractor_skill",
+                    }
+                ],
+            }
+            output_path = project_dir / "business_template_extraction" / "business_template_extraction.json"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            return payload["appendices"], payload, ""
+
+        def fake_structured_parser(skill_manifest_path: Path, **kwargs):
+            return {
+                "items": [],
+                "structured": {
+                    "schemaVersion": "bid-business-tender-structured-v1",
+                    "targetSkill": "bid-business-tender-structured-parser",
+                    "mode": "opencode-skill",
+                    "sourceDocuments": [],
+                    "scoringCriteria": {"business": []},
+                    "fieldGroups": {},
+                    "requirementPresence": {},
+                    "coverage": [],
+                    "projectDates": {"endDate": ""},
+                    "appendices": [],
+                    "commitmentLetters": [],
+                    "commitmentClues": [],
+                    "projectFactFields": [],
+                    "categoryCounts": {},
+                },
+            }, ""
+
+        with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+            "app.services.parsing.run_business_template_extractor",
+            side_effect=fake_template_extractor,
+            create=True,
+        ), patch(
+            "app.services.parsing._run_parse_skill",
+            side_effect=fake_structured_parser,
+        ), patch(
+            "app.services.parsing._needs_business_s1_finalize_guard",
+            return_value=False,
+        ):
+            response = self.client.post(
+                self.parse_results_url(project_id, "/upload-and-run"),
+                files=[
+                    (
+                        "tenderFiles",
+                        (
+                            "business-tender.docx",
+                            build_business_attachment_templates_docx_bytes(),
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        ),
+                    )
+                ],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        self.assertEqual(len(appendices), 1)
+        self.assertEqual(appendices[0]["title"], "Single Block Placeholder")
+        self.assertEqual(appendices[0]["extractionMode"], "business_template_extractor_skill")
+
     def test_business_finalized_skill_workflow_is_not_rewritten_by_local_transform(self) -> None:
         project_id = self.create_business_project()
         tender = "\n".join(
@@ -578,7 +757,83 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertNotIn("aiReviewTimeoutSec", captured_manifest)
         self.assertNotIn("aiReviewMaxTokens", captured_manifest)
 
-    def test_business_fallback_skill_workflow_survives_local_transform_fallback(self) -> None:
+    def test_business_skill_result_is_authoritative_without_local_semantic_backfill(self) -> None:
+        project_id = self.create_business_project()
+        tender = "\n".join(
+            [
+                "# Business tender",
+                "Project name: backend must not backfill this",
+                "Bid deadline: 2026-03-18 09:30",
+                "Qualification: bidder must be an independent legal person.",
+            ]
+        ).encode("utf-8")
+        skill_payload = {
+            "items": [],
+            "structured": {
+                "schemaVersion": "bid-business-tender-structured-v1",
+                "targetSkill": "bid-business-tender-structured-parser",
+                "mode": "opencode-skill",
+                "workflow": {
+                    "stage": "finalized",
+                    "aiReviewTrusted": True,
+                    "semanticReviewMode": "unit-test-ai",
+                },
+                "sourceDocuments": [],
+                "scoringCriteria": {},
+                "fieldGroups": {},
+                "coverage": [],
+                "projectDates": {},
+                "projectFactFields": [],
+            },
+        }
+
+        with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+            "app.services.parsing._run_parse_skill",
+            return_value=(skill_payload, ""),
+        ), patch(
+            "app.services.parsing._transform_to_business_contract",
+            wraps=parsing_service._transform_to_business_contract,
+        ) as local_transform:
+            response = self.client.post(
+                self.parse_results_url(project_id, "/upload-and-run"),
+                files=[("tenderFiles", ("business-tender.md", tender, "text/markdown"))],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(local_transform.call_count, 0)
+        structured = response.json()["structured"]
+        self.assertEqual(structured["fieldGroups"], {})
+        self.assertEqual(structured["projectDates"], {})
+
+    def test_business_skill_failure_fails_parse_without_local_fallback_result(self) -> None:
+        project_id = self.create_business_project()
+        tender = "\n".join(
+            [
+                "# Business tender",
+                "Project name: local fallback must not become completed result",
+                "Bid deadline: 2026-03-18 09:30",
+            ]
+        ).encode("utf-8")
+
+        with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+            "app.services.parsing._run_parse_skill",
+            side_effect=RuntimeError("unit-test skill failure"),
+        ):
+            client = TestClient(app, base_url="http://127.0.0.1:8000", raise_server_exceptions=False)
+            try:
+                response = client.post(
+                    self.parse_results_url(project_id, "/upload-and-run"),
+                    files=[("tenderFiles", ("business-tender.md", tender, "text/markdown"))],
+                )
+            finally:
+                client.close()
+
+        self.assertGreaterEqual(response.status_code, 500)
+        progress = self.client.get(self.parse_results_url(project_id, "/progress")).json()
+        self.assertEqual(progress["status"], "failed")
+        self.assertIn("unit-test skill failure", progress["summary"])
+
+    def test_business_fallback_skill_workflow_survives_without_backend_transform(self) -> None:
         project_id = self.create_business_project()
         tender = "\n".join(
             [
@@ -633,7 +888,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(workflow["semanticReviewMode"], "offline-fallback")
         self.assertFalse(workflow["aiReviewTrusted"])
         self.assertTrue(workflow["offlineAdapterUsed"])
-        self.assertTrue(workflow["backendFinalizeGuardApplied"])
+        self.assertNotIn("backendFinalizeGuardApplied", workflow)
         self.assertNotIn("backendFallbackTransformApplied", workflow)
 
     def test_business_failed_skill_workflow_with_review_artifacts_is_not_locally_recomputed(self) -> None:
@@ -688,7 +943,7 @@ class ParsePipelineTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(local_transform.call_count, 1)
+        self.assertEqual(local_transform.call_count, 0)
         structured = response.json()["structured"]
         workflow = structured["workflow"]
         qualification_text = "\n".join(
@@ -697,10 +952,10 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertIn("资格要求样例", qualification_text)
         self.assertEqual(workflow["stage"], "fallback")
         self.assertEqual(workflow["validationStatus"], "failed")
-        self.assertTrue(workflow["backendFinalizeGuardApplied"])
+        self.assertNotIn("backendFinalizeGuardApplied", workflow)
         self.assertNotIn("backendFallbackTransformApplied", workflow)
 
-    def test_business_prepared_skill_workflow_survives_backend_fallback(self) -> None:
+    def test_business_prepared_skill_workflow_survives_without_backend_transform(self) -> None:
         project_id = self.create_business_project()
         tender = "\n".join(
             [
@@ -761,7 +1016,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertFalse(workflow["aiReviewTrusted"])
         self.assertEqual(workflow["requiredDecisionTaskCount"], 12)
         self.assertEqual(workflow["presentDecisionTaskCount"], 0)
-        self.assertTrue(workflow["backendFinalizeGuardApplied"])
+        self.assertNotIn("backendFinalizeGuardApplied", workflow)
         self.assertNotIn("backendFallbackTransformApplied", workflow)
 
     def test_business_review_plan_on_disk_triggers_backend_finalize_guard(self) -> None:
@@ -1022,7 +1277,6 @@ class ParsePipelineTests(unittest.TestCase):
                 encoding="utf-8",
             )
             finalized["structured"]["workflow"]["validationReportPath"] = str(validation_report_path)
-            finalized["structured"]["workflow"]["backendFinalizeGuardApplied"] = True
             return finalized, ""
 
         with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
@@ -1038,10 +1292,10 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(finalize_guard.call_count, 1)
         workflow = response.json()["structured"]["workflow"]
         self.assertEqual(workflow["stage"], "finalized")
-        self.assertTrue(workflow["backendFinalizeGuardApplied"])
+        self.assertNotIn("backendFinalizeGuardApplied", workflow)
         self.assertTrue(Path(workflow["validationReportPath"]).is_file())
 
-    def test_business_finalize_guard_fallback_survives_backend_transform(self) -> None:
+    def test_business_finalize_guard_fallback_survives_without_backend_transform(self) -> None:
         project_id = self.create_business_project()
         tender = "\n".join(
             [
@@ -1107,7 +1361,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(workflow["stage"], "fallback")
         self.assertEqual(workflow["validationReportPath"], str(settings.parsed_dir / project_id / "validation_report.json"))
         self.assertEqual(workflow["missingDecisionTasks"], ["qualification_review/part-001"])
-        self.assertTrue(workflow["backendFinalizeGuardApplied"])
+        self.assertNotIn("backendFinalizeGuardApplied", workflow)
         self.assertNotIn("backendFallbackTransformApplied", workflow)
 
     def test_upload_and_parse_image_uses_visual_recognition_without_manual_ocr_flow(self) -> None:
@@ -1927,6 +2181,76 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(approved_letter["assetReviewStatus"], "approved")
         self.assertEqual(approved_letter["assetMaterialFolder"], "02-商务响应文件")
 
+    def test_business_bid_deadline_preserves_minutes_and_ignores_opening_time(self) -> None:
+        project_id = self.create_business_project()
+        tender = "\n".join(
+            [
+                "# 商务招标文件",
+                "项目名称：京能风电设备采购项目",
+                "招标编号：ZBA272600801",
+                "招标人：山西漳山发电有限责任公司",
+                "投标文件的递交",
+                "投标截止时间",
+                "递交截止时间：2026年03月18日 09时30分",
+                "开标时间及地点",
+                "开标时间：2026年03月18日 10时30分",
+                "交货周期：2026年10月1日至2027年3月31日。",
+            ]
+        ).encode("utf-8")
+
+        response = self.client.post(
+            self.parse_results_url(project_id, "/upload-and-run"),
+            files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        project_basics = payload["structured"]["fieldGroups"]["projectBasics"]
+        bid_deadline = field_by_key(project_basics, "bidDeadline")
+        self.assertEqual(bid_deadline["value"], "2026-03-18 09:30")
+        self.assertIn("递交截止时间", bid_deadline["evidence"])
+        self.assertNotIn("开标时间", bid_deadline["evidence"])
+        self.assertEqual(payload["structured"]["projectDates"]["endDate"], "2026-03-18 09:30")
+        fact_by_key = {field["fieldKey"]: field for field in payload["structured"]["projectFactFields"]}
+        self.assertEqual(fact_by_key["bidDeadline"]["value"], "2026-03-18 09:30")
+
+        project = store._require(project_id)
+        self.assertEqual(project["endDate"], "2026-03-18 09:30")
+        self.assertEqual(project["deadline"], "2026-03-18 09:30")
+
+    def test_business_bid_deadline_normalizer_prefers_datetime_candidate(self) -> None:
+        self.assertEqual(
+            parsing_service._normalize_bid_deadline(
+                "2026-03-18 4.2.1 | 投标截止时间 | 2026年03月18日 09时30分"
+            ),
+            "2026-03-18 09:30",
+        )
+
+    def test_business_bid_deadline_requires_real_date_candidate(self) -> None:
+        project_id = self.create_business_project()
+        tender = "\n".join(
+            [
+                "# 商务招标文件",
+                "项目名称：华能风电项目",
+                "招标编号：HNZB2025-12-1-382",
+                "投标保证金到账截止时间为投标截止时间；请投标人确保投标截止时间前到账。",
+                "5.1 递交截止时间：2026年1月26日15时00分",
+                "开标时间：2026年1月26日16时00分",
+            ]
+        ).encode("utf-8")
+
+        response = self.client.post(
+            self.parse_results_url(project_id, "/upload-and-run"),
+            files=[("tenderFiles", ("商务招标文件.md", tender, "text/markdown"))],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        project_basics = response.json()["structured"]["fieldGroups"]["projectBasics"]
+        bid_deadline = field_by_key(project_basics, "bidDeadline")
+        self.assertEqual(bid_deadline["value"], "2026-01-26 15:00")
+        self.assertIn("递交截止时间", bid_deadline["evidence"])
+        self.assertNotIn("投标保证金到账截止时间", bid_deadline["evidence"])
+
     def test_business_bid_participating_promotes_parse_json_to_business_workspace(self) -> None:
         project_id = self.create_business_project()
         tender = "\n".join(
@@ -2175,9 +2499,21 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertTrue(all(item["extractionMode"] == "source_docx_slice" for item in appendices))
         self.assertTrue(any("A投标价格总表" in item["title"] for item in appendices))
 
-    def test_business_template_extractor_can_fallback_to_legacy_when_disabled(self) -> None:
+    def test_business_template_extractor_empty_result_does_not_fallback_to_legacy(self) -> None:
         project_id = self.create_business_project()
-        with patch("app.services.parsing.settings.business_template_extractor_enabled", False):
+        with patch(
+            "app.services.parsing.run_business_template_extractor",
+            return_value=([], {"summary": {"templateCount": 0}, "appendices": []}, "template skill empty"),
+        ), patch(
+            "app.services.parsing._extract_docx_appendices",
+            wraps=parsing_service._extract_docx_appendices,
+        ) as docx_appendix_extractor, patch(
+            "app.services.parsing._extract_markdown_appendices",
+            wraps=parsing_service._extract_markdown_appendices,
+        ) as markdown_appendix_extractor, patch(
+            "app.services.parsing._extract_text_business_appendices",
+            wraps=parsing_service._extract_text_business_appendices,
+        ) as text_appendix_extractor:
             response = self.client.post(
                 self.parse_results_url(project_id, "/upload-and-run"),
                 files=[
@@ -2193,8 +2529,10 @@ class ParsePipelineTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         appendices = response.json()["structured"]["appendices"]
-        self.assertTrue(appendices)
-        self.assertFalse(all(item.get("extractionMode") == "business_template_extractor_skill" for item in appendices))
+        self.assertEqual(appendices, [])
+        self.assertEqual(docx_appendix_extractor.call_count, 0)
+        self.assertEqual(markdown_appendix_extractor.call_count, 0)
+        self.assertEqual(text_appendix_extractor.call_count, 0)
 
     def test_business_bid_docx_attachment_templates_ignore_toc_and_keep_following_table(self) -> None:
         project_id = self.create_business_project()

@@ -177,6 +177,25 @@ def build_inline_table_titles_docx(path: Path) -> None:
     doc.save(path)
 
 
+def build_single_block_template_docx(path: Path) -> None:
+    doc = Document()
+    doc.add_paragraph("第一章 招标公告")
+    doc.add_paragraph("这里不是模板。")
+    heading = doc.add_paragraph("第六章 投标文件格式")
+    heading.style = "Heading 1"
+
+    title_only = doc.add_paragraph("投标人基本情况的其他文件")
+    title_only.style = "Heading 1"
+    title_only.paragraph_format.page_break_before = True
+
+    next_template = doc.add_paragraph("近年财务状况")
+    next_template.style = "Heading 1"
+    next_template.paragraph_format.page_break_before = True
+    doc.add_table(rows=1, cols=2).rows[0].cells[0].text = "年度"
+    doc.add_paragraph("注：投标人应在本表后附相关证明材料。")
+    doc.save(path)
+
+
 def build_appendix_table_title_docx(path: Path) -> None:
     doc = Document()
     doc.add_paragraph("第六章 投标文件格式")
@@ -804,6 +823,91 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
         self.assertEqual(len(rejected), status["candidate"]["total"] - 1)
         self.assertEqual(accepted[0]["templateTitle"], "Agent Bid Letter")
         self.assertGreaterEqual(accepted[0]["endBlockId"], accepted[0]["startBlockId"])
+
+    def test_btplbound_accepts_single_block_title_only_template(self) -> None:
+        source = self.temp_dir / "single-block-template.docx"
+        output_dir = self.temp_dir / "single-block-template-output"
+        manifest = self.temp_dir / "single-block-template-manifest.json"
+        build_single_block_template_docx(source)
+        write_manifest(manifest, output_dir=output_dir, source=source, stage="prepare")
+        self.assertEqual(run_manifest(manifest).returncode, 0)
+
+        document_output = output_dir / "DOC-1"
+        candidates = json.loads((document_output / "candidate_templates.json").read_text(encoding="utf-8"))
+        title_only = next(item for item in candidates if "投标人基本情况的其他文件" in item["text"])
+        financial = next(item for item in candidates if "近年财务状况" in item["text"])
+
+        while True:
+            status = stdout_json(run_btplbound("status", manifest))
+            if status["candidate"]["decided"] == status["candidate"]["total"]:
+                break
+            batch = stdout_json(run_btplbound("candidate-batch", manifest, "next"))
+            decision_path = self.temp_dir / f"single-block-candidate-{batch['batchNo']}.json"
+            decisions = []
+            for item in batch["candidates"]:
+                is_title_only = item["candidateId"] == title_only["candidateId"]
+                is_financial = item["candidateId"] == financial["candidateId"]
+                decisions.append(
+                    {
+                        "candidateId": item["candidateId"],
+                        "isTemplateStart": is_title_only or is_financial,
+                        "headingRole": "template_start" if (is_title_only or is_financial) else "reject",
+                        "rejectReason": "" if (is_title_only or is_financial) else "非模板标题",
+                        "templateTitle": item["text"],
+                        "templateType": "attachment_placeholder" if is_title_only else "financial_status_table" if is_financial else "",
+                        "confidence": 0.95,
+                        "reason": "单块标题模板可作为附件占位模板" if is_title_only else "后接财务表格" if is_financial else "非测试关注标题",
+                        "needsReview": False,
+                    }
+                )
+            decision_path.write_text(json.dumps({"decisions": decisions}, ensure_ascii=False), encoding="utf-8")
+            self.assertEqual(run_btplbound("candidate-decision", manifest, batch["batchNo"], decision_path).returncode, 0)
+
+        boundary_batch = stdout_json(run_btplbound("boundary-batch", manifest, "next"))
+        title_template = next(item for item in boundary_batch["templates"] if item["candidateId"] == title_only["candidateId"])
+        self.assertEqual(title_template["suggestedStartBlockId"], title_template["maxEndBlockId"])
+
+        boundary_path = self.temp_dir / "single-block-boundary.json"
+        boundary_path.write_text(
+            json.dumps(
+                {
+                    "decisions": [
+                        {
+                            "candidateId": template["candidateId"],
+                            "startBlockId": template["suggestedStartBlockId"],
+                            "endBlockId": template["maxEndBlockId"],
+                            "confidence": 0.95,
+                            "reason": "使用 btplbound 给出的最大合法边界，单块标题模板允许 start=end",
+                            "needsReview": False,
+                        }
+                        for template in boundary_batch["templates"]
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        saved_boundary = stdout_json(run_btplbound("boundary-decision", manifest, boundary_batch["batchNo"], boundary_path))
+        self.assertGreaterEqual(saved_boundary["acceptedCount"], 1)
+        final = stdout_json(run_btplbound("finalize", manifest))
+        decision_file = Path(final["decisionFiles"][0])
+        self.assertTrue(decision_file.is_file())
+        decisions = json.loads(decision_file.read_text(encoding="utf-8"))["decisions"]
+        single_decision = next(item for item in decisions if item["candidateId"] == title_only["candidateId"])
+        self.assertEqual(single_decision["startBlockId"], single_decision["endBlockId"])
+
+        finalize_manifest = self.temp_dir / "single-block-finalize.json"
+        write_manifest(finalize_manifest, output_dir=output_dir, source=source, stage="finalize")
+        completed = run_manifest(finalize_manifest)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        payload = json.loads((output_dir / "business_template_extraction.json").read_text(encoding="utf-8"))
+        titles = [item["title"] for item in payload["appendices"]]
+        self.assertIn("投标人基本情况的其他文件", titles)
+        boundaries = json.loads((document_output / "boundaries.json").read_text(encoding="utf-8"))
+        single_template = next(item for item in boundaries["templates"] if item["title"] == "投标人基本情况的其他文件")
+        self.assertEqual(single_template["blockCount"], 1)
+        self.assertTrue((document_output / single_template["outputPath"]).is_file())
 
     def test_btplbound_candidate_decision_preserves_heading_roles(self) -> None:
         source = self.temp_dir / "heading-roles.docx"
@@ -1808,7 +1912,7 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
                     "title": "无效边界",
                     "regionId": "REG-0001",
                     "startBlockId": 5,
-                    "endBlockId": 5,
+                    "endBlockId": 4,
                     "confidence": 0.9,
                 },
                 {
@@ -1983,6 +2087,40 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
         self.assertIn("不要直接读取完整 blocks.json", prompt)
         self.assertIn("btplbound candidate-batch", prompt)
         self.assertIn("btplbound boundary-batch", prompt)
+
+    def test_boundary_decision_prompt_keeps_template_role_rules_brief_but_specific(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            output_dir = temp_dir / "prompt-output"
+            document_output = output_dir / "DOC-1"
+            document_output.mkdir(parents=True)
+            (document_output / "candidate_templates.json").write_text("[]", encoding="utf-8")
+            (document_output / "candidate_windows.json").write_text("[]", encoding="utf-8")
+            (document_output / "blocks.json").write_text("[]", encoding="utf-8")
+            (document_output / "regions.json").write_text("[]", encoding="utf-8")
+            prepare_payload = {
+                "documents": [
+                    {
+                        "id": "DOC-1",
+                        "outputDir": str(document_output),
+                        "summary": {"candidateCount": 0},
+                    }
+                ]
+            }
+
+            prompt = build_business_template_boundary_decision_prompt(
+                project_id="proj",
+                manifest_path=temp_dir / "manifest.json",
+                output_dir=output_dir,
+                prepare_payload=prepare_payload,
+            )
+
+        self.assertIn("sub_table_code + near_following_table", prompt)
+        self.assertIn("只有编号或编号+标段", prompt)
+        self.assertIn("归入最近的父级业务标题", prompt)
+        self.assertIn("含清晰业务名称", prompt)
+        self.assertIn("承诺书/声明函/保密承诺书/保证函格式", prompt)
+        self.assertIn("父级容器不能让整组子模板消失", prompt)
 
     def test_run_extractor_uses_agent_decisions_before_finalize_without_script_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

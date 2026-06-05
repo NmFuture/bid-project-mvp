@@ -65,8 +65,8 @@ def validate_boundaries(
         if start not in blocks_by_id or end not in blocks_by_id:
             reject(template, "missing_block", f"模板 {template.get('id')} 的边界 block 不存在。")
             continue
-        if end <= start:
-            reject(template, "invalid_boundary", f"模板 {template.get('id')} 的结束位置必须晚于起点。")
+        if end < start:
+            reject(template, "invalid_boundary", f"模板 {template.get('id')} 的结束位置不得早于起点。")
             continue
         if start <= previous_end:
             reject(template, "overlap", f"模板 {template.get('id')} 与前一个模板边界重叠。")
@@ -109,7 +109,7 @@ def validate_boundaries(
             if block.get("type") == "table" or clean_text(block.get("text"))
         ]
         has_table = any(block.get("type") == "table" for block in content_blocks)
-        if len(content_text.replace("\n", "")) < 20 and not (has_table or body_blocks):
+        if end > start and len(content_text.replace("\n", "")) < 20 and not (has_table or body_blocks):
             rejected.append(_rejected_template(template, "empty_template", "标题后缺少正文、表格、填写字段或签章栏。"))
             continue
         if _has_catalog_contamination(content_blocks):

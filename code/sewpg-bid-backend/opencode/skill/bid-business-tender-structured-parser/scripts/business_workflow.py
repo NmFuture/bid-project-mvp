@@ -18,6 +18,7 @@ from business_contract import (
     _is_rejection_parent_heading,
     _is_same_or_higher_clause,
     _iter_docx_blocks,
+    _business_template_appendices_from_manifest,
     _load_texts_by_id,
     _looks_like_qualification_requirement,
     _looks_like_section_heading,
@@ -79,9 +80,14 @@ ALLOWED_STRUCTURED_KEYS = (
     "sourceDocuments",
     "scoringCriteria",
     "fieldGroups",
+    "requirementPresence",
     "coverage",
     "projectDates",
+    "appendices",
+    "commitmentLetters",
+    "commitmentClues",
     "projectFactFields",
+    "categoryCounts",
 )
 ALLOWED_SCORING_KEYS = ("business",)
 ALLOWED_PROJECT_DATE_KEYS = ("endDate",)
@@ -2304,6 +2310,7 @@ def finalize_business_result(
     base_structured = base_result.get("structured") if isinstance(base_result.get("structured"), dict) else {}
     field_groups, scoring, project_fact_fields = _rebuild_field_groups(base_result, manifest, candidate_package, decisions)
     coverage = _build_business_coverage(field_groups, scoring)
+    appendices = _business_template_appendices_from_manifest(manifest)
     provenance = review_provenance or {}
     semantic_review_mode = str(provenance.get("semanticReviewMode") or "offline-fallback")
     offline_adapter_used = bool(provenance.get("offlineAdapterUsed"))
@@ -2337,9 +2344,14 @@ def finalize_business_result(
         "sourceDocuments": copy.deepcopy(base_structured.get("sourceDocuments") or []),
         "scoringCriteria": scoring,
         "fieldGroups": field_groups,
+        "requirementPresence": {},
         "coverage": coverage,
         "projectDates": {"endDate": str((base_structured.get("projectDates") or {}).get("endDate") or "")},
+        "appendices": appendices,
+        "commitmentLetters": [],
+        "commitmentClues": [],
         "projectFactFields": project_fact_fields,
+        "categoryCounts": {},
     }
     result = {"items": copy.deepcopy(base_result.get("items") or []), "structured": structured}
     validation_report = validate_final_result(result, candidate_package, decision_validation)
@@ -2383,6 +2395,9 @@ def _prepared_business_result(base_result: dict[str, Any], candidate_package: di
             },
         },
         "sourceDocuments": copy.deepcopy(base_structured.get("sourceDocuments") or []),
+        "appendices": copy.deepcopy(base_structured.get("appendices") or []),
+        "commitmentLetters": copy.deepcopy(base_structured.get("commitmentLetters") or []),
+        "commitmentClues": copy.deepcopy(base_structured.get("commitmentClues") or []),
     }
     return {"items": copy.deepcopy(base_result.get("items") or []), "structured": structured}
 

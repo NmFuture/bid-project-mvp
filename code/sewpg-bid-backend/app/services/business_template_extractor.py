@@ -213,11 +213,16 @@ headingRole 必须取以下四类之一：
 裁决规则：
 1. candidate_templates.json 是高召回疑似标题，不是脚本确认模板；你必须通过 candidate-batch 对每个标题定角色。
 2. 目录项、目录列表、封面字段不得作为正式模板，应标记为 reject。
-3. 边界阶段只能为 template_start 生成起终点。
-4. section_container 和 boundary_only 不输出模板，但必须作为边界参考，阻断前一个 template_start。
-5. 当前模板必须在下一个边界参考标题前结束，不能跨越 nextBoundaryReference。
-6. startBlockId/endBlockId 必须留在投标/响应文件格式章节内，不得跨入合同附件、合同价格组成、履约保证金格式等排除章节。
-7. confidence < 0.75 或 needsReview=true 的候选只能进入 review.md，不得成为正式切片。
+3. `sub_table_code + near_following_table` 需要看标题语义；只有编号或编号+标段的子表（如“表2 E”“表3 A”“表1 A-1 标段一”）应归入最近的父级业务标题，不单独输出。
+4. 子表标题含清晰业务名称（如“7D-1表 近年财务状况表”）时，可以判为 `template_start`；父标题后只接无业务名子表时，父标题应判为 `template_start` 并包含这些子表。
+5. `承诺书/声明函/保密承诺书/保证函格式` 后接正文、填写字段或签章栏时，应判为 `template_start`；父级容器不能让整组子模板消失。
+6. 边界阶段只能为 template_start 生成起终点。
+7. section_container 和 boundary_only 不输出模板，但必须作为边界参考，阻断前一个 template_start。
+8. 当前模板必须在下一个边界参考标题前结束，不能跨越 nextBoundaryReference。
+9. startBlockId/endBlockId 必须留在投标/响应文件格式章节内，不得跨入合同附件、合同价格组成、履约保证金格式等排除章节。
+10. 部分附件/占位类模板可以只有标题块；当 boundary-batch 返回 suggestedStartBlockId == maxEndBlockId 时，应提交相同的 startBlockId/endBlockId，不得为了形成多块范围跨越 nextBoundaryReference。
+11. 标题后没有正文、表格、填写字段或签章栏时，只有附件/占位类模板可以作为正式模板；目录项、封面字段、正文噪声或无效标题仍必须 reject。
+12. confidence < 0.75 或 needsReview=true 的候选只能进入 review.md，不得成为正式切片。
 
 后端只提供摘要与文件路径，未内联候选证据正文。你必须通过 btplbound 读取证据并生成 llm_boundary_decisions.json。摘要如下：
 {json.dumps(payload, ensure_ascii=False, indent=2)}
@@ -321,16 +326,16 @@ def run_business_template_extractor(
     )
     _write_manifest(manifest_path, manifest)
     if not manifest["documents"]:
-        return [], None, "未找到可用于商务模板提取的 DOCX 招标文件。"
+        return [], None, "未找到可用于商务模板提取 skill 的 DOCX 招标文件。"
 
     try:
         _run_skill_manifest(manifest_path)
     except RuntimeError as exc:
-        return [], None, f"商务模板提取 prepare 阶段失败，已回退旧逻辑：{exc}"
+        return [], None, f"商务模板提取 skill prepare 阶段失败：{exc}"
 
     prepare_payload = _load_extraction_payload(output_dir)
     if prepare_payload is None:
-        return [], None, "商务模板提取 prepare 阶段未生成 business_template_extraction.json，已回退旧逻辑。"
+        return [], None, "商务模板提取 skill prepare 阶段未生成 business_template_extraction.json。"
 
     opencode_trace: dict[str, Any] | None = None
     fallback_reason = ""
@@ -360,13 +365,13 @@ def run_business_template_extractor(
     try:
         _run_skill_manifest(manifest_path)
     except RuntimeError as exc:
-        return [], prepare_payload, f"商务模板提取 finalize 阶段失败，已回退旧逻辑：{exc}"
+        return [], prepare_payload, f"商务模板提取 skill finalize 阶段失败：{exc}"
 
     payload = _load_extraction_payload(output_dir)
     if payload is None:
-        return [], None, "商务模板提取 skill 未生成 business_template_extraction.json，已回退旧逻辑。"
+        return [], None, "商务模板提取 skill 未生成 business_template_extraction.json。"
     _save_extraction_trace(payload, trace=opencode_trace, fallback_reason=fallback_reason)
     appendices = convert_extractor_appendices(payload)
     if not appendices:
-        return [], payload, "商务模板提取 skill 未识别到模板，已回退旧逻辑。"
+        return [], payload, "商务模板提取 skill 未识别到模板。"
     return appendices, payload, ""

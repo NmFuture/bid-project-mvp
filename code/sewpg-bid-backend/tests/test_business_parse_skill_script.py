@@ -282,7 +282,7 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             self.assertEqual(field_by_key(project_basics, "tenderNo")["value"], "BUS-GEN-2026-001")
             self.assertEqual(field_by_key(project_basics, "tenderer")["value"], "示例招标单位")
             self.assertEqual(field_by_key(project_basics, "tenderAgency")["value"], "示例代理机构")
-            self.assertEqual(field_by_key(project_basics, "bidDeadline")["value"], "2026-01-26")
+            self.assertEqual(field_by_key(project_basics, "bidDeadline")["value"], "2026-01-26 09:00")
             self.assertEqual(field_groups["qualificationRequirements"], [])
             self.assertEqual(field_groups["bidderInstructions"][0]["clauseNo"], "1.1.2")
             self.assertEqual(field_groups["bidderInstructions"][1]["clauseName"], "招标代理机构")
@@ -297,8 +297,9 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             self.assertIn("否决", denied_row["matchedKeywords"])
             self.assertEqual(rejected_upload_row["riskLevel"], "high")
             self.assertIn("不予受理", rejected_upload_row["matchedKeywords"])
-            self.assertNotIn("commitmentLetters", structured)
-            self.assertNotIn("commitmentClues", structured)
+            self.assertEqual(structured["appendices"], [])
+            self.assertEqual(structured["commitmentLetters"], [])
+            self.assertEqual(structured["commitmentClues"], [])
             fact_by_key = {field["fieldKey"]: field for field in structured["projectFactFields"]}
             self.assertEqual(fact_by_key["projectName"]["value"], "脱敏风电设备采购项目")
             self.assertEqual(fact_by_key["tenderNo"]["value"], "BUS-GEN-2026-001")
@@ -476,6 +477,80 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
                 set(result["structured"]["fieldGroups"].keys()),
                 {"projectBasics", "qualificationRequirements", "bidderInstructions", "commercialRejectionClauses"},
             )
+
+    def test_business_parser_imports_template_extractor_appendices_from_manifest_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_dir = Path(temp)
+            template_docx = temp_dir / "TPL-0001.docx"
+            Document().save(str(template_docx))
+            extraction_path = temp_dir / "business_template_extraction.json"
+            extraction_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-template-extractor-v1",
+                        "skillName": "bid-business-template-extractor",
+                        "summary": {"templateCount": 1},
+                        "appendices": [
+                            {
+                                "id": "APPX-0009",
+                                "title": "Bid Letter",
+                                "artifactType": "business_attachment_template",
+                                "templateType": "bid_letter",
+                                "status": "generated",
+                                "docxPath": str(template_docx),
+                                "sourceDocumentId": "DOC-1",
+                                "sourceDocumentName": "business_tender.md",
+                                "extractionMode": "business_template_extractor_skill",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            source_path = temp_dir / "business_tender.md"
+            source_path.write_text(
+                "项目名称：模板 skill 传递测试\n递交截止时间：2026年1月26日15时00分\n",
+                encoding="utf-8",
+            )
+            structured_path = temp_dir / "s1_structured_result.json"
+            manifest_path = temp_dir / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-TEMPLATE-SKILL",
+                        "parseProfile": "business",
+                        "combinedTextPath": str(source_path),
+                        "structuredResultPath": str(structured_path),
+                        "businessTemplateExtractionPath": str(extraction_path),
+                        "documents": [
+                            {
+                                "id": "DOC-1",
+                                "name": source_path.name,
+                                "sourcePath": str(source_path),
+                                "textPath": str(source_path),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [sys.executable, str(self.runner_path()), "offline-fallback", str(manifest_path)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(structured_path.read_text(encoding="utf-8"))
+            appendices = result["structured"]["appendices"]
+            self.assertEqual(len(appendices), 1)
+            self.assertEqual(appendices[0]["id"], "APPX-0009")
+            self.assertEqual(appendices[0]["extractionMode"], "business_template_extractor_skill")
+            self.assertEqual(appendices[0]["docxPath"], str(template_docx))
 
     def test_business_parser_without_real_ai_marks_offline_review_as_untrusted_fallback(self) -> None:
         script_path = self.runner_path()
@@ -886,7 +961,7 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             self.assertEqual(field_by_key(deterministic["projectBasics"], "tenderNo")["value"], "DET-2026-001")
             self.assertEqual(field_by_key(deterministic["projectBasics"], "tenderer")["value"], "示例招标单位")
             self.assertEqual(field_by_key(deterministic["projectBasics"], "tenderAgency")["value"], "示例代理机构")
-            self.assertEqual(field_by_key(deterministic["projectBasics"], "bidDeadline")["value"], "2026-04-01")
+            self.assertEqual(field_by_key(deterministic["projectBasics"], "bidDeadline")["value"], "2026-04-01 10:00")
             self.assertEqual(len(deterministic["bidderInstructions"]), 4)
             self.assertEqual([row["scoringItem"] for row in deterministic["scoringTables"]["business"]], ["商务评分标准（20分）"])
             self.assertNotIn("price", deterministic["scoringTables"])
@@ -896,6 +971,148 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
 
             review_plan = json.loads((tmp_path / "review_plan.json").read_text(encoding="utf-8"))
             self.assertFalse(any(task["task"] == "scoring_table_review" for task in review_plan["tasks"]))
+
+    def test_bidder_instruction_locator_stops_at_first_target_table(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "prj0012-like.docx"
+            doc = Document()
+            doc.add_paragraph("目录")
+            doc.add_paragraph("投标人须知前附表 11")
+            doc.add_paragraph("评标办法前附表 33")
+            doc.add_paragraph("第二章 投标人须知")
+            doc.add_paragraph("投标人须知前附表")
+            instruction_table = doc.add_table(rows=4, cols=3)
+            for col, text in enumerate(["条款号", "条款名称", "编列内容"]):
+                instruction_table.cell(0, col).text = text
+            instruction_rows = [
+                ("1.1.2", "招标人", "示例招标人"),
+                ("1.1.3", "招标代理机构", "示例代理机构"),
+                ("4.2.1", "投标截止时间", "2026年4月1日09时00分"),
+            ]
+            for row_index, values in enumerate(instruction_rows, start=1):
+                for col, text in enumerate(values):
+                    instruction_table.cell(row_index, col).text = text
+            doc.add_paragraph("11. 需要补充的其他内容")
+            doc.add_paragraph("见投标人须知前附表。")
+            doc.add_paragraph("第三章 评标办法(综合评估法)")
+            doc.add_paragraph("评标办法前附表")
+            eval_table = doc.add_table(rows=3, cols=3)
+            for col, text in enumerate(["条款号", "条款内容", "编列内容"]):
+                eval_table.cell(0, col).text = text
+            eval_rows = [
+                ("1.2", "中标候选人推荐原则", "采用综合评估法。"),
+                ("2.2.1", "分值构成", "商务部分10分。"),
+            ]
+            for row_index, values in enumerate(eval_rows, start=1):
+                for col, text in enumerate(values):
+                    eval_table.cell(row_index, col).text = text
+            doc.save(source_path)
+
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-BIDDER-INSTRUCTION-ONLY",
+                        "bidType": "商务标",
+                        "parseProfile": "business",
+                        "structuredResultPath": str(output_path),
+                        "documents": [
+                            {
+                                "id": "DOC-1",
+                                "name": source_path.name,
+                                "sourcePath": str(source_path),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            subprocess.run([sys.executable, str(script_path), "offline-fallback", str(manifest_path)], check=True, capture_output=True, text=True)
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            rows = payload["structured"]["fieldGroups"]["bidderInstructions"]
+            self.assertEqual(len(rows), 3)
+            self.assertEqual({row["section"] for row in rows}, {"投标人须知前附表"})
+            self.assertNotIn("中标候选人推荐原则", "\n".join(row["content"] for row in rows))
+            self.assertEqual(rows[0]["headers"], ["条款号", "条款名称", "编列内容"])
+            self.assertEqual(rows[0]["cells"], ["1.1.2", "招标人", "示例招标人"])
+
+            candidate_package = json.loads((tmp_path / "candidate_package.json").read_text(encoding="utf-8"))
+            deterministic_rows = candidate_package["deterministicExtracts"]["bidderInstructions"]
+            self.assertEqual(len(deterministic_rows), 3)
+            self.assertTrue(all(row["tableTitle"] == "投标人须知前附表" for row in deterministic_rows))
+
+    def test_bidder_instruction_fallback_uses_nearby_title_and_dynamic_headers(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "dynamic-bidder-instructions.md"
+            source_path.write_text(
+                "\n".join(
+                    [
+                        "# 目录",
+                        "投标人须知前附表 12",
+                        "",
+                        "# 第二章 投标人须知",
+                        "投标人须知前附表",
+                        "说明：下表为本项目专用条款。",
+                        "单位：人民币",
+                        "| 序号 | 事项 | 要求 | 备注 |",
+                        "| --- | --- | --- | --- |",
+                        "| 1 | 招标人 | 示例招标人 | 以公告为准 |",
+                        "| 2 | 递交截止时间 | 2026年4月1日09时00分 | 电子平台递交 |",
+                        "",
+                        "# 第三章 评标办法",
+                        "评标办法前附表",
+                        "| 条款号 | 条款内容 | 编列内容 |",
+                        "| --- | --- | --- |",
+                        "| 1.2 | 中标候选人推荐原则 | 采用综合评估法 |",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-DYNAMIC-BIDDER-INSTRUCTION-HEADER",
+                        "bidType": "商务标",
+                        "parseProfile": "business",
+                        "structuredResultPath": str(output_path),
+                        "documents": [
+                            {
+                                "id": "DOC-1",
+                                "name": source_path.name,
+                                "sourcePath": str(source_path),
+                                "textPath": str(source_path),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            subprocess.run([sys.executable, str(script_path), "offline-fallback", str(manifest_path)], check=True, capture_output=True, text=True)
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            rows = payload["structured"]["fieldGroups"]["bidderInstructions"]
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["headers"], ["序号", "事项", "要求", "备注"])
+            self.assertEqual(rows[0]["cells"], ["1", "招标人", "示例招标人", "以公告为准"])
+            self.assertEqual(rows[0]["clauseNo"], "1")
+            self.assertEqual(rows[0]["clauseName"], "招标人")
+            self.assertEqual(rows[0]["content"], "示例招标人；以公告为准")
+            self.assertNotIn("中标候选人推荐原则", "\n".join(row["content"] for row in rows))
 
     def test_exact_business_scoring_table_is_deterministic_and_skips_scoring_ai(self) -> None:
         script_path = self.runner_path()
@@ -1513,17 +1730,88 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             self.assertEqual(field_by_key(project_basics, "tenderNo")["value"], "TABLE-2026-001")
             self.assertEqual(field_by_key(project_basics, "tenderer")["value"], "前附表招标单位")
             self.assertEqual(field_by_key(project_basics, "tenderAgency")["value"], "前附表代理机构")
-            self.assertEqual(field_by_key(project_basics, "bidDeadline")["value"], "2026-04-20")
+            self.assertEqual(field_by_key(project_basics, "bidDeadline")["value"], "2026-04-20 09:30")
             self.assertIn("投标文件递交截止时间", field_by_key(project_basics, "bidDeadline")["evidence"])
 
             fact_by_key = {field["fieldKey"]: field for field in payload["structured"]["projectFactFields"]}
             self.assertEqual(fact_by_key["tenderer"]["value"], "前附表招标单位")
-            self.assertEqual(fact_by_key["bidDeadline"]["value"], "2026-04-20")
+            self.assertEqual(fact_by_key["bidDeadline"]["value"], "2026-04-20 09:30")
             self.assertTrue(field_by_key(project_basics, "bidDeadline").get("evidenceIds"))
 
             candidate_package = json.loads((tmp_path / "candidate_package.json").read_text(encoding="utf-8"))
             self.assertEqual(field_by_key(candidate_package["deterministicExtracts"]["projectBasics"], "tenderer")["value"], "前附表招标单位")
             self.assertEqual(len(candidate_package["deterministicExtracts"]["bidderInstructions"]), 4)
+
+    def test_bid_deadline_ignores_preface_reference_and_opening_time_preserves_minutes(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "bid-deadline-reference-and-opening-time.docx"
+            doc = Document()
+            doc.add_paragraph("第一章 招标公告")
+            doc.add_paragraph("5.1 递交截止时间：2026年1月26日15时00分")
+            doc.add_paragraph("开标时间：2026年1月26日16时00分")
+            doc.add_paragraph("第二章 投标人须知")
+            doc.add_paragraph("投标人须知前附表")
+            table = doc.add_table(rows=6, cols=3)
+            for col, text in enumerate(["条款号", "条款名称", "编列内容"]):
+                table.cell(0, col).text = text
+            rows = [
+                ("1.1.2", "招标人", "名称：前附表招标单位 地址：示例地址"),
+                ("1.1.3", "招标代理机构", "名称：前附表代理机构 地址：代理地址"),
+                ("1.1.4", "招标项目名称", "前附表结构化项目"),
+                ("4.2.1", "投标截止时间", "详见招标公告"),
+                ("5.1", "开标时间和地点", "开标时间：同投标截止时间 开标地点：同递交投标文件地点"),
+            ]
+            for row_index, values in enumerate(rows, start=1):
+                for col, text in enumerate(values):
+                    table.cell(row_index, col).text = text
+            doc.save(source_path)
+
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-BID-DEADLINE-REFERENCE-OPENING",
+                        "bidType": "商务标",
+                        "parseProfile": "business",
+                        "structuredResultPath": str(output_path),
+                        "documents": [
+                            {
+                                "id": "DOC-1",
+                                "name": source_path.name,
+                                "sourcePath": str(source_path),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            subprocess.run(
+                [sys.executable, str(script_path), "offline-fallback", str(manifest_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            project_basics = payload["structured"]["fieldGroups"]["projectBasics"]
+            bid_deadline = field_by_key(project_basics, "bidDeadline")
+            self.assertEqual(bid_deadline["value"], "2026-01-26 15:00")
+            self.assertIn("递交截止时间", bid_deadline["evidence"])
+            self.assertNotIn("开标时间", bid_deadline["evidence"])
+            self.assertEqual(payload["structured"]["projectDates"]["endDate"], "2026-01-26 15:00")
+
+            self.assertEqual(field_by_key(project_basics, "projectName")["value"], "前附表结构化项目")
+            self.assertEqual(field_by_key(project_basics, "tenderer")["value"], "前附表招标单位")
+            self.assertEqual(field_by_key(project_basics, "tenderAgency")["value"], "前附表代理机构")
+
+            fact_by_key = {field["fieldKey"]: field for field in payload["structured"]["projectFactFields"]}
+            self.assertEqual(fact_by_key["bidDeadline"]["value"], "2026-01-26 15:00")
 
     def test_project_basics_prefer_exact_preface_clauses_and_exclude_relative_deadlines(self) -> None:
         script_path = self.runner_path()
@@ -1583,7 +1871,7 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             bid_deadline = field_by_key(project_basics, "bidDeadline")
             self.assertEqual(tenderer["value"], "山西漳山发电有限责任公司")
             self.assertIn("1.1.2", tenderer["evidence"])
-            self.assertEqual(bid_deadline["value"], "2026-07-01")
+            self.assertEqual(bid_deadline["value"], "2026-07-01 09:30")
             self.assertIn("投标文件递交截止时间", bid_deadline["evidence"])
             self.assertTrue(bid_deadline.get("sourceFile"))
             self.assertTrue(bid_deadline.get("section"))
