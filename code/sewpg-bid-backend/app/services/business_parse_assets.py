@@ -30,7 +30,7 @@ from app.services.workspace_artifacts import workspace_parse_dir
 
 
 BUSINESS_APPENDIX_MATERIAL_FOLDER = "资格审查与商务响应成册"
-BUSINESS_SCORING_MATERIAL_FOLDER = "项目模板与过程稿"
+BUSINESS_SCORING_MATERIAL_FOLDER = "项目过程稿与澄清文件"
 BUSINESS_COMMITMENT_MATERIAL_FOLDER = "资格审查与商务响应成册"
 BUSINESS_PARSE_ASSET_SCHEMA_VERSION = "business-parse-assets-v1"
 

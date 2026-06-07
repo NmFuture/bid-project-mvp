@@ -57,27 +57,33 @@ BUSINESS_STANDARD_SUBFOLDERS = (
         "material_category": "qualification_evidence",
     },
     {
-        "name": "制造商与供应链材料",
+        "name": "财务信用与合规声明",
         "tier": "standard",
         "sort_order": 20,
+        "material_category": "financial_credit_compliance",
+    },
+    {
+        "name": "制造商与供应链材料",
+        "tier": "standard",
+        "sort_order": 30,
         "material_category": "manufacturer_supply_chain",
     },
     {
         "name": "机型认证与测试报告",
         "tier": "standard",
-        "sort_order": 30,
+        "sort_order": 40,
         "material_category": "product_grid_certificate",
     },
     {
-        "name": "企业能力与综合实力",
+        "name": "企业能力与供货业绩",
         "tier": "standard",
-        "sort_order": 40,
+        "sort_order": 50,
         "material_category": "enterprise_capability",
     },
     {
-        "name": "通用表单与模板",
+        "name": "表单模板与过程稿",
         "tier": "standard",
-        "sort_order": 50,
+        "sort_order": 60,
         "material_category": "template_draft",
     },
 )
@@ -95,7 +101,7 @@ BUSINESS_CUSTOMIZED_SUBFOLDERS = (
         "material_category": "customer_response",
     },
     {
-        "name": "客户模板与过程稿",
+        "name": "客户模板与历史文件",
         "tier": "customer",
         "sort_order": 30,
         "material_category": "customer_template_process",
@@ -116,7 +122,7 @@ BUSINESS_PROJECT_SUBFOLDERS = (
         "material_category": "project_response",
     },
     {
-        "name": "项目模板与过程稿",
+        "name": "项目过程稿与澄清文件",
         "tier": "project",
         "sort_order": 30,
         "material_category": "project_template_process",
@@ -125,6 +131,7 @@ BUSINESS_PROJECT_SUBFOLDERS = (
 
 BUSINESS_MATERIAL_CATEGORY_VALUES = {
     "qualification_evidence",
+    "financial_credit_compliance",
     "manufacturer_supply_chain",
     "product_grid_certificate",
     "enterprise_capability",
@@ -138,23 +145,25 @@ BUSINESS_MATERIAL_CATEGORY_VALUES = {
 }
 BUSINESS_MATERIAL_CATEGORY_LABELS = {
     "qualification_evidence": "资格审查与基础证明",
+    "financial_credit_compliance": "财务信用与合规声明",
     "manufacturer_supply_chain": "制造商与供应链材料",
     "product_grid_certificate": "机型认证与测试报告",
-    "enterprise_capability": "企业能力与综合实力",
-    "template_draft": "通用表单与模板",
+    "enterprise_capability": "企业能力与供货业绩",
+    "template_draft": "表单模板与过程稿",
     "customer_relationship_proof": "客户准入与专项证明",
     "customer_response": "客户专用响应口径",
-    "customer_template_process": "客户模板与过程稿",
+    "customer_template_process": "客户模板与历史文件",
     "project_requirement_proof": "招标要求与专项证明",
     "project_response": "资格审查与商务响应成册",
-    "project_template_process": "项目模板与过程稿",
+    "project_template_process": "项目过程稿与澄清文件",
 }
 BUSINESS_MATERIAL_CATEGORY_SORT_ORDERS = {
     "qualification_evidence": 10,
-    "manufacturer_supply_chain": 20,
-    "product_grid_certificate": 30,
-    "enterprise_capability": 40,
-    "template_draft": 50,
+    "financial_credit_compliance": 20,
+    "manufacturer_supply_chain": 30,
+    "product_grid_certificate": 40,
+    "enterprise_capability": 50,
+    "template_draft": 60,
     "customer_relationship_proof": 10,
     "customer_response": 20,
     "customer_template_process": 30,
@@ -172,11 +181,11 @@ BUSINESS_OLD_CATEGORY_SEGMENT_ALIASES = {
     "质量管理体系": "qualification_evidence",
     "环境管理体系": "qualification_evidence",
     "职业健康安全管理体系": "qualification_evidence",
-    "信用与失信查询截图": "qualification_evidence",
-    "国家企业信用信息公示系统": "qualification_evidence",
-    "信用中国": "qualification_evidence",
-    "资格审查表与承诺": "qualification_evidence",
-    "资格审查表": "qualification_evidence",
+    "信用与失信查询截图": "financial_credit_compliance",
+    "国家企业信用信息公示系统": "financial_credit_compliance",
+    "信用中国": "financial_credit_compliance",
+    "资格审查表与承诺": "template_draft",
+    "资格审查表": "template_draft",
     "制造商与供应链材料": "manufacturer_supply_chain",
     "重点部件制造商主体资料": "manufacturer_supply_chain",
     "生产许可与鉴定材料": "manufacturer_supply_chain",
@@ -186,9 +195,10 @@ BUSINESS_OLD_CATEGORY_SEGMENT_ALIASES = {
     "02-企业能力库": "enterprise_capability",
     "企业能力库": "enterprise_capability",
     "企业能力与综合实力": "enterprise_capability",
-    "04-财务资料库": "qualification_evidence",
-    "财务资料库": "qualification_evidence",
-    "财务信用与合规声明": "qualification_evidence",
+    "企业能力与供货业绩": "enterprise_capability",
+    "04-财务资料库": "financial_credit_compliance",
+    "财务资料库": "financial_credit_compliance",
+    "财务信用与合规声明": "financial_credit_compliance",
     "05-专题证书库": "product_grid_certificate",
     "专题证书库": "product_grid_certificate",
     "01-机型认证证书": "product_grid_certificate",
@@ -198,6 +208,7 @@ BUSINESS_OLD_CATEGORY_SEGMENT_ALIASES = {
     "06-通用模板底稿库": "template_draft",
     "通用模板底稿库": "template_draft",
     "通用表单与模板": "template_draft",
+    "表单模板与过程稿": "template_draft",
     "01-客户关系与专项证明": "customer_relationship_proof",
     "客户关系与专项证明": "customer_relationship_proof",
     "客户准入与专项证明": "customer_relationship_proof",
@@ -209,12 +220,14 @@ BUSINESS_OLD_CATEGORY_SEGMENT_ALIASES = {
     "模板底稿与过程文件": "customer_template_process",
     "客户模板底稿与过程文件": "customer_template_process",
     "客户模板与过程稿": "customer_template_process",
+    "客户模板与历史文件": "customer_template_process",
     "项目专项证明与客户要求": "project_requirement_proof",
     "招标要求与专项证明": "project_requirement_proof",
     "项目商务响应文件": "project_response",
     "资格审查与商务响应成册": "project_response",
     "项目模板底稿与过程文件": "project_template_process",
     "项目模板与过程稿": "project_template_process",
+    "项目过程稿与澄清文件": "project_template_process",
 }
 
 BUSINESS_MATERIAL_SUBCATEGORY_ALIASES = {
@@ -305,6 +318,7 @@ BUSINESS_LEGACY_STANDARD_PROTECTED_FOLDER_PATHS = {
         "资格审查文件/资格审查表与承诺",
         "主体资质与基础证照",
         "财务信用与合规声明",
+        "企业能力与综合实力",
         "专题证书库",
         "专题证书库/机型认证证书",
         "专题证书库/大部件型式认证证书",
@@ -315,11 +329,13 @@ BUSINESS_LEGACY_CUSTOMER_PROTECTED_FOLDER_NAMES = {
     "客户关系与专项证明",
     "客户专用商务响应文件",
     "客户模板底稿与过程文件",
+    "客户模板与过程稿",
 }
 BUSINESS_LEGACY_PROJECT_PROTECTED_FOLDER_NAMES = {
     "项目专项证明与客户要求",
     "项目商务响应文件",
     "项目模板底稿与过程文件",
+    "项目模板与过程稿",
 }
 
 
@@ -517,7 +533,9 @@ def infer_business_material_category(folder_path: str = "", file_name: str = "",
         return "product_grid_certificate"
     if any(token in text for token in ("公司介绍", "制造", "基地", "服务能力", "质量", "专利", "奖项", "装机", "产能")):
         return "enterprise_capability"
-    if any(token in text for token in ("营业执照", "生产许可证", "安全生产", "资质", "体系认证", "ISO9001", "ISO14001", "ISO45001", "开户", "财务", "审计", "报表", "银行", "纳税", "信用", "无违法", "无行贿", "无重大", "信用中国", "国家企业信用信息公示系统", "严重违法失信", "失信被执行", "黑名单", "网站截图", "查询截图", "资格声明", "投标人资格", "股东")):
+    if any(token in text for token in ("财务", "审计", "报表", "银行", "纳税", "信用", "无违法", "无行贿", "无重大", "信用中国", "国家企业信用信息公示系统", "严重违法失信", "失信被执行", "黑名单", "网站截图", "查询截图")):
+        return "financial_credit_compliance"
+    if any(token in text for token in ("营业执照", "生产许可证", "安全生产", "资质", "体系认证", "ISO9001", "ISO14001", "ISO45001", "开户", "资格声明", "投标人资格", "股东")):
         return "qualification_evidence"
     return ""
 

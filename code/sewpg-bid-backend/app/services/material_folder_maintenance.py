@@ -30,6 +30,29 @@ EnsureCanonicalFolder = Callable[[Any, str], Awaitable[RawFolder]]
 ClearDefaultFolderDeletion = Callable[[Any, str], Awaitable[None]]
 
 
+BUSINESS_EMPTY_LEGACY_DEFAULT_FOLDER_PATHS = {
+    f"{BUSINESS_BID_TYPE}/通用素材/主体资质与基础证照",
+    f"{BUSINESS_BID_TYPE}/通用素材/企业能力与综合实力",
+    f"{BUSINESS_BID_TYPE}/通用素材/专题证书库",
+    f"{BUSINESS_BID_TYPE}/通用素材/专题证书库/机型认证证书",
+    f"{BUSINESS_BID_TYPE}/通用素材/专题证书库/大部件型式认证证书",
+    f"{BUSINESS_BID_TYPE}/通用素材/通用模板底稿库",
+    f"{BUSINESS_BID_TYPE}/通用素材/通用表单与模板",
+}
+BUSINESS_EMPTY_LEGACY_CUSTOMER_SUBFOLDER_NAMES = {
+    "客户关系与专项证明",
+    "客户专用商务响应文件",
+    "客户模板底稿与过程文件",
+    "客户模板与过程稿",
+}
+BUSINESS_EMPTY_LEGACY_PROJECT_SUBFOLDER_NAMES = {
+    "项目专项证明与客户要求",
+    "项目商务响应文件",
+    "项目模板底稿与过程文件",
+    "项目模板与过程稿",
+}
+
+
 def safe_folder_segment(value: Any, fallback: str) -> str:
     text = str(value or "").strip().replace("\\", "/")
     text = "/".join(part.strip() for part in text.split("/") if part.strip())
@@ -223,6 +246,35 @@ async def ensure_business_standard_subfolders(
             customer_name=spec.get("customerName"),
         )
         await ensure_children(folder, spec.get("children") or ())
+
+
+async def prune_empty_legacy_business_default_folders(session: Any) -> None:
+    all_business_folders = (
+        await session.execute(select(RawFolder).where(RawFolder.path.like(f"{BUSINESS_BID_TYPE}/%")))
+    ).scalars().all()
+    candidate_paths = set(BUSINESS_EMPTY_LEGACY_DEFAULT_FOLDER_PATHS)
+    for folder in all_business_folders:
+        parts = [part for part in str(folder.path or "").split("/") if part]
+        if len(parts) != 4 or parts[0] != BUSINESS_BID_TYPE:
+            continue
+        if parts[1] == "客户素材" and parts[3] in BUSINESS_EMPTY_LEGACY_CUSTOMER_SUBFOLDER_NAMES:
+            candidate_paths.add(str(folder.path or ""))
+        if parts[1] == "项目素材" and parts[3] in BUSINESS_EMPTY_LEGACY_PROJECT_SUBFOLDER_NAMES:
+            candidate_paths.add(str(folder.path or ""))
+
+    by_path = {str(folder.path or ""): folder for folder in all_business_folders if str(folder.path or "") in candidate_paths}
+    for path in sorted(candidate_paths, key=lambda value: len(value.split("/")), reverse=True):
+        folder = by_path.get(path)
+        if folder is None:
+            continue
+        has_files = bool((await session.execute(select(RawFile.id).where(RawFile.folder_id == folder.id))).first())
+        if has_files:
+            continue
+        children = (await session.execute(select(RawFolder).where(RawFolder.parent_id == folder.id))).scalars().all()
+        if any(str(child.path or "") not in BUSINESS_EMPTY_LEGACY_DEFAULT_FOLDER_PATHS for child in children):
+            continue
+        await session.delete(folder)
+        await session.flush()
 
 
 async def ensure_business_customized_subfolders(

@@ -414,7 +414,7 @@ def default_material_target_path(project_id: str, task: dict[str, Any]) -> str:
         return f"{root}/资格审查与商务响应成册"
     if module_key == "performance_cooperation_support":
         return f"{root}/招标要求与专项证明"
-    return f"{root}/项目模板与过程稿"
+    return f"{root}/项目过程稿与澄清文件"
 
 
 def decode_upload_content(content: str, *, fallback_mime: str = "") -> tuple[bytes, str]:

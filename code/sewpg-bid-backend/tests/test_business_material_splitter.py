@@ -164,7 +164,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0002",
                     "name": "订单汇总.docx",
-                    "folderPath": "商务标/通用素材/企业能力与综合实力",
+                    "folderPath": "商务标/通用素材/企业能力与供货业绩",
                     "materialTier": "standard",
                     "content": _order_summary_docx_bytes(),
                 }
@@ -187,7 +187,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0003",
                     "name": "历史订单资料.docx",
-                    "folderPath": "商务标/通用素材/企业能力与综合实力",
+                    "folderPath": "商务标/通用素材/企业能力与供货业绩",
                     "materialTier": "standard",
                     "content": _plain_order_docx_bytes(),
                 }
@@ -221,7 +221,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0004",
                     "name": "普通文本资料.docx",
-                    "folderPath": "商务标/通用素材/企业能力与综合实力",
+                    "folderPath": "商务标/通用素材/企业能力与供货业绩",
                     "materialTier": "standard",
                     "content": _plain_order_docx_bytes(),
                 }
@@ -266,7 +266,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0005",
                     "name": "订单汇总资料.docx",
-                    "folderPath": "商务标/通用素材/企业能力与综合实力",
+                    "folderPath": "商务标/通用素材/企业能力与供货业绩",
                     "materialTier": "standard",
                     "content": _single_paragraph_many_orders_docx_bytes(),
                 }
@@ -297,7 +297,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0007",
                     "name": "历史订单台账.docx",
-                    "folderPath": "商务标/通用素材/企业能力与综合实力",
+                    "folderPath": "商务标/通用素材/企业能力与供货业绩",
                     "materialTier": "standard",
                     "content": _long_single_paragraph_many_orders_docx_bytes(count=24),
                 }
@@ -334,7 +334,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0006",
                     "name": "订单汇总资料.docx",
-                    "folderPath": "商务标/通用素材/企业能力与综合实力",
+                    "folderPath": "商务标/通用素材/企业能力与供货业绩",
                     "materialTier": "standard",
                     "content": _single_paragraph_many_orders_docx_bytes(),
                 }

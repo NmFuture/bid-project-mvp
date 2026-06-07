@@ -168,7 +168,7 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
             [
                 "客户准入与专项证明",
                 "客户专用响应口径",
-                "客户模板与过程稿",
+                "客户模板与历史文件",
             ],
         )
 
@@ -501,7 +501,7 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
         self.assertEqual(standard_specs[0]["materialCategory"], "qualification_evidence")
         self.assertEqual(
             [item["name"] for item in standard_specs],
-            ["资格审查与基础证明", "制造商与供应链材料", "机型认证与测试报告", "企业能力与综合实力", "通用表单与模板"],
+            ["资格审查与基础证明", "财务信用与合规声明", "制造商与供应链材料", "机型认证与测试报告", "企业能力与供货业绩", "表单模板与过程稿"],
         )
 
         customized_specs = business_customized_subfolder_specs(
@@ -789,10 +789,11 @@ class RawMaterialProtectedFolderTests(unittest.IsolatedAsyncioTestCase):
             "商务标/客户素材",
             "商务标/项目素材",
             "商务标/通用素材/资格审查与基础证明",
+            "商务标/通用素材/财务信用与合规声明",
             "商务标/通用素材/制造商与供应链材料",
             "商务标/通用素材/机型认证与测试报告",
-            "商务标/通用素材/企业能力与综合实力",
-            "商务标/通用素材/通用表单与模板",
+            "商务标/通用素材/企业能力与供货业绩",
+            "商务标/通用素材/表单模板与过程稿",
         }
         self.assertTrue(expected_static_paths.issubset(RAW_MATERIAL_PROTECTED_FOLDER_PATHS))
         self.assertTrue(is_raw_material_protected_folder_path("商务标/通用素材/专题证书库/机型认证证书"))
@@ -802,11 +803,11 @@ class RawMaterialProtectedFolderTests(unittest.IsolatedAsyncioTestCase):
             "商务标/客户素材/华能集团",
             "商务标/客户素材/华能集团/客户准入与专项证明",
             "商务标/客户素材/华能集团/客户专用响应口径",
-            "商务标/客户素材/华能集团/客户模板与过程稿",
+            "商务标/客户素材/华能集团/客户模板与历史文件",
             "商务标/项目素材/MAT-BIZ-HN-001",
             "商务标/项目素材/MAT-BIZ-HN-001/招标要求与专项证明",
             "商务标/项目素材/MAT-BIZ-HN-001/资格审查与商务响应成册",
-            "商务标/项目素材/MAT-BIZ-HN-001/项目模板与过程稿",
+            "商务标/项目素材/MAT-BIZ-HN-001/项目过程稿与澄清文件",
         }
         for folder_path in expected_static_paths | dynamic_paths:
             self.assertTrue(is_raw_material_protected_folder_path(folder_path))

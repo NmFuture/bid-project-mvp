@@ -369,8 +369,8 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(imported_nodes[1]["children"][0]["title"], "01-商务评分索引表")
         self.assertEqual(imported_nodes[2]["children"][0]["title"], "通用素材")
-        self.assertEqual(imported_nodes[2]["children"][0]["children"][0]["title"], "专题证书库")
-        self.assertEqual(imported_nodes[2]["children"][0]["children"][0]["children"][0]["title"], "大部件型式认证证书")
+        self.assertEqual(imported_nodes[2]["children"][0]["children"][0]["title"], "机型认证与测试报告")
+        self.assertEqual(imported_nodes[2]["children"][0]["children"][0]["children"][0]["title"], "叶片型式认证")
         self.assertEqual(imported_nodes[3]["children"][0]["title"], "01-项目基础变量")
         self.assertEqual(imported_nodes[4]["children"][0]["title"], "01-身份过滤规则")
         card_markdowns: list[str] = []

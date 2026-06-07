@@ -1045,10 +1045,10 @@ def _suggest_target_path(source: dict[str, Any], material_type: str, title: str,
         return ""
     if material_type in {"承诺书模板", "商务附件模板"}:
         if "/项目素材/" in folder_path:
-            return f"{tier_path}/项目模板与过程稿"
+            return f"{tier_path}/项目过程稿与澄清文件"
         if "/客户素材/" in folder_path:
-            return f"{tier_path}/客户模板与过程稿"
-        return f"{BUSINESS_BID_TYPE}/通用素材/通用表单与模板"
+            return f"{tier_path}/客户模板与历史文件"
+        return f"{BUSINESS_BID_TYPE}/通用素材/表单模板与过程稿"
     return folder_path or tier_path
 
 

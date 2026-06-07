@@ -14,6 +14,7 @@ from app.services.material_folder_maintenance import (
     bootstrap_project_material_folder,
     ensure_business_standard_subfolders,
     migrate_legacy_technical_folders,
+    prune_empty_legacy_business_default_folders,
 )
 from app.services.material_folder_scope import (
     canonical_raw_folder_metadata,
@@ -104,6 +105,7 @@ class RawFolderOperations:
                     session,
                     ensure_folder_path=self.ensure_folder_path,
                 )
+                await prune_empty_legacy_business_default_folders(session)
         await migrate_legacy_technical_folders(
             session,
             find_folder=self.find_folder,

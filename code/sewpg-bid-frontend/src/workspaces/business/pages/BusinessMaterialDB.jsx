@@ -54,20 +54,21 @@ const PROTECTED_DELETE_FOLDER_PATHS = new Set([
 ])
 const BUSINESS_STANDARD_PROTECTED_FOLDER_PATHS = new Set([
   '商务标/通用素材/资格审查与基础证明',
+  '商务标/通用素材/财务信用与合规声明',
   '商务标/通用素材/制造商与供应链材料',
   '商务标/通用素材/机型认证与测试报告',
-  '商务标/通用素材/企业能力与综合实力',
-  '商务标/通用素材/通用表单与模板',
+  '商务标/通用素材/企业能力与供货业绩',
+  '商务标/通用素材/表单模板与过程稿',
 ])
 const BUSINESS_CUSTOMER_PROTECTED_FOLDER_NAMES = new Set([
   '客户准入与专项证明',
   '客户专用响应口径',
-  '客户模板与过程稿',
+  '客户模板与历史文件',
 ])
 const BUSINESS_PROJECT_PROTECTED_FOLDER_NAMES = new Set([
   '招标要求与专项证明',
   '资格审查与商务响应成册',
-  '项目模板与过程稿',
+  '项目过程稿与澄清文件',
 ])
 
 const MATERIAL_ROOT_LABELS = {
@@ -709,6 +710,7 @@ function TreeNode({
   const directFileCount = Number(node.directFileCount || 0)
   const canExpand = hasChildren || directFileCount > 0
   const collapsed = canExpand && !forceExpanded ? Boolean(collapsedMap[node.path]) : false
+  const expanded = canExpand && !collapsed
   const selected = selectedPath === node.path
   const indent = 12 + level * 16
   const fileIndent = 34 + (level + 1) * 16
@@ -718,13 +720,64 @@ function TreeNode({
   const canDragFolder = !isProtectedDeleteFolderPath(normalizedNodePath)
   const canDeleteThisFolder = Boolean(normalizedNodePath) && !isProtectedDeleteFolderPath(normalizedNodePath)
   const isDropTarget = dragTargetPath === normalizedNodePath
+  const hasBranchContent = directFiles.length > 0 || hasChildren
+  const dragExpandTimerRef = useRef(null)
+  const rowTitle = !canExpand
+    ? '点击选择目录'
+    : forceExpanded
+      ? '筛选模式下目录保持展开，点击选择目录'
+      : collapsed
+        ? '点击展开并选择目录'
+        : selected
+          ? '点击收起目录'
+          : '点击选择目录'
+  const toggleLabel = forceExpanded
+    ? `筛选模式下保持展开，选择目录 ${node.name}`
+    : expanded
+      ? `收起目录 ${node.name}`
+      : `展开目录 ${node.name}`
+
+  useEffect(() => () => {
+    if (dragExpandTimerRef.current) {
+      window.clearTimeout(dragExpandTimerRef.current)
+    }
+  }, [])
+
+  const clearDragExpandTimer = () => {
+    if (!dragExpandTimerRef.current) return
+    window.clearTimeout(dragExpandTimerRef.current)
+    dragExpandTimerRef.current = null
+  }
+
+  const toggleFolder = (nextValue) => {
+    if (!canExpand || forceExpanded) return
+    onToggle(node.path, nextValue)
+  }
+
+  const handleFolderActivate = () => {
+    onSelect(node.path)
+    if (!canExpand || forceExpanded) return
+    if (collapsed) {
+      onToggle(node.path, false)
+      return
+    }
+    if (selected) {
+      onToggle(node.path, true)
+    }
+  }
+
   return (
     <div>
       <div
         role="button"
         tabIndex={0}
+        data-folder-path={normalizedNodePath}
+        aria-expanded={canExpand ? expanded : undefined}
+        aria-selected={selected}
+        title={rowTitle}
         draggable={canDragFolder}
         onDragStart={(event) => {
+          clearDragExpandTimer()
           if (!canDragFolder) {
             event.preventDefault()
             return
@@ -737,65 +790,85 @@ function TreeNode({
           event.preventDefault()
           event.dataTransfer.dropEffect = 'move'
           setDragTargetPath(normalizedNodePath)
-          if (canExpand) onToggle(node.path, false)
+          if (canExpand && collapsed && !forceExpanded && !dragExpandTimerRef.current) {
+            dragExpandTimerRef.current = window.setTimeout(() => {
+              onToggle(node.path, false)
+              dragExpandTimerRef.current = null
+            }, 420)
+          }
         }}
-        onDragLeave={() => setDragTargetPath((current) => (current === normalizedNodePath ? '' : current))}
+        onDragLeave={() => {
+          clearDragExpandTimer()
+          setDragTargetPath((current) => (current === normalizedNodePath ? '' : current))
+        }}
         onDrop={(event) => {
           event.preventDefault()
+          clearDragExpandTimer()
           setDragTargetPath('')
           onMoveDrop(event, normalizedNodePath)
         }}
-        onClick={() => {
-          onSelect(node.path)
-          if (canExpand) onToggle(node.path, false)
-        }}
+        onClick={handleFolderActivate}
         onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            handleFolderActivate()
+            return
+          }
           if (event.key === 'ArrowRight' && canExpand) {
             event.preventDefault()
             onSelect(node.path)
-            onToggle(node.path, false)
+            toggleFolder(false)
           }
           if (event.key === 'ArrowLeft' && canExpand) {
             event.preventDefault()
             onSelect(node.path)
-            onToggle(node.path, true)
+            toggleFolder(true)
           }
         }}
         style={{ paddingLeft: `${indent}px` }}
-        className={`group w-full text-left rounded-lg py-2 pr-2 text-sm transition-colors flex items-center justify-between gap-2 ${
+        className={`group w-full cursor-pointer text-left rounded-lg py-2 pr-2 text-sm transition-[background-color,color,box-shadow] duration-150 ease-out flex items-center justify-between gap-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/35 ${
           isDropTarget
             ? 'bg-primary/15 text-primary ring-1 ring-primary/40'
             :
           selected
-            ? 'bg-primary/10 text-primary font-semibold'
+            ? 'bg-primary/10 text-primary font-semibold shadow-[inset_3px_0_0_rgba(0,113,206,0.72)]'
             : 'text-on-surface-variant hover:bg-surface-container-low'
         }`}
       >
-        <span className="min-w-0 flex items-center gap-1.5">
+        <span className="grid min-w-0 flex-1 grid-cols-[1.25rem_1.25rem_minmax(0,1fr)] items-center gap-1.5">
           {canExpand ? (
-            <span
-              role="presentation"
+            <button
+              type="button"
+              title={toggleLabel}
+              aria-label={toggleLabel}
+              aria-expanded={expanded}
               onClick={(event) => {
                 event.stopPropagation()
                 onSelect(node.path)
-                onToggle(node.path)
+                toggleFolder()
               }}
-              aria-hidden="true"
-              className="material-symbols-outlined text-sm text-outline group-hover:text-primary"
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-outline transition-[background-color,color] duration-150 hover:bg-primary/10 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/40"
             >
-              {collapsed ? 'chevron_right' : 'expand_more'}
-            </span>
+              <span
+                aria-hidden="true"
+                className={`material-symbols-outlined text-[18px] transition-transform duration-200 ease-out ${expanded ? 'rotate-90' : 'rotate-0'}`}
+              >
+                chevron_right
+              </span>
+            </button>
           ) : (
-            <span className="w-4" />
+            <span className="h-5 w-5" />
           )}
-          <span className="material-symbols-outlined text-sm text-primary">
-            folder
+          <span className="flex h-5 w-5 items-center justify-center text-primary">
+            <span aria-hidden="true" className="material-symbols-outlined text-[17px] leading-none">
+              {expanded ? 'folder_open' : 'folder'}
+            </span>
           </span>
           <span className="truncate">{node.name}</span>
         </span>
-        <span className="flex min-w-[4.25rem] shrink-0 items-center justify-end gap-1">
+        <span className="relative flex w-[4.25rem] shrink-0 items-center justify-end">
           <span
-            className="text-xs text-outline"
+            className={`text-xs text-outline transition-opacity duration-150 ${canDeleteThisFolder ? 'group-hover:opacity-0 group-focus-within:opacity-0' : ''}`}
             title={displayFileCount ? `当前显示 ${displayFileCount} 个，目录总计 ${node.fileCount || 0} 个` : '空目录'}
           >
             {displayFileCount ? `${displayFileCount}/${node.fileCount || displayFileCount}` : '-'}
@@ -809,164 +882,180 @@ function TreeNode({
                 event.stopPropagation()
                 onDeleteFolder(normalizedNodePath)
               }}
-              className="flex h-6 w-6 items-center justify-center rounded text-outline opacity-0 transition-opacity hover:bg-error-container/40 hover:text-error group-hover:opacity-100 focus:opacity-100"
+              className="absolute right-0 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-outline opacity-0 transition-opacity hover:bg-error-container/40 hover:text-error group-hover:opacity-100 focus:opacity-100"
             >
               <span aria-hidden="true" className="material-symbols-outlined text-[16px]">delete</span>
             </button>
           )}
         </span>
       </div>
-      {!collapsed && directFiles.length > 0 && (
-        <div className="mt-0.5 space-y-0.5">
-          {directFiles.map((item) => {
-            const fileSelected = selectedFileId === item.id
-            const previewable = canPreviewCleaned(item)
-            const meta = cleanStatusMeta(item.cleanStatus)
-            const kindMeta = businessMaterialKindMeta(item.businessMaterialKind)
-            const canSplit = item.bidType === '商务标' && extOf(item.name) === 'docx'
-            const itemTags = normalizeTagList(item.tags)
-            return (
-              <div
-                key={item.id}
-                role="button"
-                tabIndex={0}
-                draggable
-                onDragStart={(event) => {
-                  event.dataTransfer.effectAllowed = 'move'
-                  event.dataTransfer.setData('application/x-raw-file', JSON.stringify({ id: item.id, folderPath: item.folderPath || '' }))
-                  event.dataTransfer.setData('text/plain', item.id)
-                }}
-                onClick={() => onFileSelect(item)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    onFileSelect(item)
-                  }
-                }}
-                title={previewable ? item.name || '' : cleanedPreviewBlockedMessage(item)}
-                style={{
-                  paddingLeft: `${fileIndent}px`,
-                }}
-                className={`group flex w-full items-center gap-2 rounded-lg py-1.5 pr-2 text-left text-sm transition-colors ${
-                  fileSelected
-                    ? 'bg-secondary-container text-on-secondary-container'
-                    : 'text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface'
-                }`}
-              >
-                <span className={`material-symbols-outlined shrink-0 text-[17px] ${previewable ? 'text-secondary' : 'text-outline'}`}>
-                  {previewable ? 'description' : 'draft'}
-                </span>
-                <span className="min-w-0 flex-1 basis-32 truncate">{item.name || '-'}</span>
-                <span className={`hidden shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex ${meta.className}`}>
-                  {meta.label}
-                </span>
-                {item.bidType === '商务标' && (
-                  <span className={`hidden shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex ${businessMaterialKindClassName(item.businessMaterialKind)}`}>
-                    {item.businessMaterialKindLabel || kindMeta.label}
-                  </span>
-                )}
-                {!!itemTags.length && (
-                  <span
-                    className="hidden min-w-0 max-w-[10rem] shrink items-center gap-1 overflow-hidden sm:inline-flex"
-                    title={itemTags.join('，')}
-                  >
-                    {itemTags.slice(0, 3).map((tag) => (
-                      <span key={tag} className="max-w-[4.5rem] truncate rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                        {tag}
-                      </span>
-                    ))}
-                    {itemTags.length > 3 && (
-                      <span className="rounded-full bg-surface-container-high px-1.5 py-0.5 text-[10px] font-medium text-on-surface-variant">
-                        +{itemTags.length - 3}
-                      </span>
-                    )}
-                  </span>
-                )}
-                <span className="flex min-w-[6rem] shrink-0 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                  <button
-                    type="button"
-                    title="重命名文件"
-                    aria-label={`重命名文件 ${item.name || item.id}`}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onRenameFile?.(item)
-                    }}
-                    className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-surface-container-high hover:text-primary"
-                  >
-                    <span aria-hidden="true" className="material-symbols-outlined text-[15px]">drive_file_rename_outline</span>
-                  </button>
-                  {item.bidType === '商务标' && (
-                    <button
-                      type="button"
-                      title="编辑标签"
-                      aria-label={`编辑标签 ${item.name || item.id}`}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        onEditTags?.(item)
+      {hasBranchContent && (
+        <div
+          data-tree-branch={normalizedNodePath}
+          aria-hidden={!expanded}
+          inert={!expanded ? true : undefined}
+          style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
+          className={`grid transition-[grid-template-rows,opacity,transform] duration-200 ease-out ${
+            expanded ? 'translate-y-0 opacity-100' : 'pointer-events-none -translate-y-1 opacity-0'
+          }`}
+        >
+          <div className="min-h-0 overflow-hidden">
+            {directFiles.length > 0 && (
+              <div className="mt-0.5 space-y-0.5">
+                {directFiles.map((item) => {
+                  const fileSelected = selectedFileId === item.id
+                  const previewable = canPreviewCleaned(item)
+                  const meta = cleanStatusMeta(item.cleanStatus)
+                  const kindMeta = businessMaterialKindMeta(item.businessMaterialKind)
+                  const canSplit = item.bidType === '商务标' && extOf(item.name) === 'docx'
+                  const itemTags = normalizeTagList(item.tags)
+                  return (
+                    <div
+                      key={item.id}
+                      role="button"
+                      tabIndex={0}
+                      data-file-id={item.id}
+                      data-file-folder-path={normalizePath(item.folderPath || '')}
+                      draggable
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = 'move'
+                        event.dataTransfer.setData('application/x-raw-file', JSON.stringify({ id: item.id, folderPath: item.folderPath || '' }))
+                        event.dataTransfer.setData('text/plain', item.id)
                       }}
-                      className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-primary/10 hover:text-primary"
-                    >
-                      <span aria-hidden="true" className="material-symbols-outlined text-[15px]">label</span>
-                    </button>
-                  )}
-                  {canSplit && (
-                    <button
-                      type="button"
-                      title="切分商务素材"
-                      aria-label={`切分商务素材 ${item.name || item.id}`}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        onSplitFile?.(item)
+                      onClick={() => onFileSelect(item)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          onFileSelect(item)
+                        }
                       }}
-                      className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-primary/10 hover:text-primary"
+                      title={previewable ? item.name || '' : cleanedPreviewBlockedMessage(item)}
+                      style={{
+                        paddingLeft: `${fileIndent}px`,
+                      }}
+                      className={`group flex w-full items-center gap-2 rounded-lg py-1.5 pr-2 text-left text-sm transition-[background-color,color] duration-150 ease-out ${
+                        fileSelected
+                          ? 'bg-secondary-container text-on-secondary-container'
+                          : 'text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface'
+                      }`}
                     >
-                      <span className="material-symbols-outlined text-[15px]">call_split</span>
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    title="删除文件"
-                    aria-label={`删除文件 ${item.name || item.id}`}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onDeleteFile?.(item)
-                    }}
-                    className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-error-container/40 hover:text-error"
-                  >
-                    <span aria-hidden="true" className="material-symbols-outlined text-[15px]">delete</span>
-                  </button>
-                </span>
+                      <span className={`material-symbols-outlined shrink-0 text-[17px] ${previewable ? 'text-secondary' : 'text-outline'}`}>
+                        {previewable ? 'description' : 'draft'}
+                      </span>
+                      <span className="min-w-0 flex-1 basis-32 truncate">{item.name || '-'}</span>
+                      <span className={`hidden shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex ${meta.className}`}>
+                        {meta.label}
+                      </span>
+                      {item.bidType === '商务标' && (
+                        <span className={`hidden shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex ${businessMaterialKindClassName(item.businessMaterialKind)}`}>
+                          {item.businessMaterialKindLabel || kindMeta.label}
+                        </span>
+                      )}
+                      {!!itemTags.length && (
+                        <span
+                          className="hidden min-w-0 max-w-[10rem] shrink items-center gap-1 overflow-hidden sm:inline-flex"
+                          title={itemTags.join('，')}
+                        >
+                          {itemTags.slice(0, 3).map((tag) => (
+                            <span key={tag} className="max-w-[4.5rem] truncate rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                              {tag}
+                            </span>
+                          ))}
+                          {itemTags.length > 3 && (
+                            <span className="rounded-full bg-surface-container-high px-1.5 py-0.5 text-[10px] font-medium text-on-surface-variant">
+                              +{itemTags.length - 3}
+                            </span>
+                          )}
+                        </span>
+                      )}
+                      <span className="flex min-w-[6rem] shrink-0 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                        <button
+                          type="button"
+                          title="重命名文件"
+                          aria-label={`重命名文件 ${item.name || item.id}`}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            onRenameFile?.(item)
+                          }}
+                          className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-surface-container-high hover:text-primary"
+                        >
+                          <span aria-hidden="true" className="material-symbols-outlined text-[15px]">drive_file_rename_outline</span>
+                        </button>
+                        {item.bidType === '商务标' && (
+                          <button
+                            type="button"
+                            title="编辑标签"
+                            aria-label={`编辑标签 ${item.name || item.id}`}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              onEditTags?.(item)
+                            }}
+                            className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-primary/10 hover:text-primary"
+                          >
+                            <span aria-hidden="true" className="material-symbols-outlined text-[15px]">label</span>
+                          </button>
+                        )}
+                        {canSplit && (
+                          <button
+                            type="button"
+                            title="切分商务素材"
+                            aria-label={`切分商务素材 ${item.name || item.id}`}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              onSplitFile?.(item)
+                            }}
+                            className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-primary/10 hover:text-primary"
+                          >
+                            <span className="material-symbols-outlined text-[15px]">call_split</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          title="删除文件"
+                          aria-label={`删除文件 ${item.name || item.id}`}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            onDeleteFile?.(item)
+                          }}
+                          className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-error-container/40 hover:text-error"
+                        >
+                          <span aria-hidden="true" className="material-symbols-outlined text-[15px]">delete</span>
+                        </button>
+                      </span>
+                    </div>
+                  )
+                })}
               </div>
-            )
-          })}
-        </div>
-      )}
-      {hasChildren && !collapsed && (
-        <div className="mt-0.5">
-          {node.children.map((child) => (
-            <TreeNode
-              key={child.id}
-              node={child}
-              selectedPath={selectedPath}
-              selectedFileId={selectedFileId}
-              onSelect={onSelect}
-              onFileSelect={onFileSelect}
-              onRenameFile={onRenameFile}
-              onDeleteFile={onDeleteFile}
-              onUpdateBusinessMaterialKind={onUpdateBusinessMaterialKind}
-              onEditTags={onEditTags}
-              onSplitFile={onSplitFile}
-              onDeleteFolder={onDeleteFolder}
-              onMoveDrop={onMoveDrop}
-              dragTargetPath={dragTargetPath}
-              setDragTargetPath={setDragTargetPath}
-              level={level + 1}
-              collapsedMap={collapsedMap}
-              onToggle={onToggle}
-              filesByFolderPath={filesByFolderPath}
-              forceExpanded={forceExpanded}
-            />
-          ))}
+            )}
+            {hasChildren && (
+              <div className="mt-0.5">
+                {node.children.map((child) => (
+                  <TreeNode
+                    key={child.id}
+                    node={child}
+                    selectedPath={selectedPath}
+                    selectedFileId={selectedFileId}
+                    onSelect={onSelect}
+                    onFileSelect={onFileSelect}
+                    onRenameFile={onRenameFile}
+                    onDeleteFile={onDeleteFile}
+                    onUpdateBusinessMaterialKind={onUpdateBusinessMaterialKind}
+                    onEditTags={onEditTags}
+                    onSplitFile={onSplitFile}
+                    onDeleteFolder={onDeleteFolder}
+                    onMoveDrop={onMoveDrop}
+                    dragTargetPath={dragTargetPath}
+                    setDragTargetPath={setDragTargetPath}
+                    level={level + 1}
+                    collapsedMap={collapsedMap}
+                    onToggle={onToggle}
+                    filesByFolderPath={filesByFolderPath}
+                    forceExpanded={forceExpanded}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

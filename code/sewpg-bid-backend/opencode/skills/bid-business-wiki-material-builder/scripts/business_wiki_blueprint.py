@@ -17,59 +17,67 @@ BUSINESS_ROOT_TITLES = [
     "05-使用规则",
 ]
 COMMON_GROUPS = [
-    "资格审查文件",
-    "主体资质与基础证照",
+    "资格审查与基础证明",
     "财务信用与合规声明",
-    "企业能力与综合实力",
-    "专题证书库",
-    "通用模板底稿库",
+    "制造商与供应链材料",
+    "机型认证与测试报告",
+    "企业能力与供货业绩",
+    "表单模板与过程稿",
 ]
-SPECIAL_COMMON_SUBGROUPS = {
-    "资格审查文件": ["主体资质与基础证照", "体系认证证书", "信用与失信查询截图", "资格审查表与承诺"],
-    "专题证书库": ["机型认证证书", "大部件型式认证证书"],
-}
+SPECIAL_COMMON_SUBGROUPS = {}
 CUSTOM_GROUPS = [
-    "客户关系与专项证明",
-    "客户专用商务响应文件",
-    "客户模板底稿与过程文件",
+    "客户准入与专项证明",
+    "客户专用响应口径",
+    "客户模板与历史文件",
 ]
 PROJECT_GROUPS = [
-    "项目专项证明与客户要求",
-    "项目商务响应文件",
-    "项目模板底稿与过程文件",
+    "招标要求与专项证明",
+    "资格审查与商务响应成册",
+    "项目过程稿与澄清文件",
 ]
 OLD_GROUP_ALIASES = {
-    "01-资质合规库": "主体资质与基础证照",
-    "资质合规库": "主体资质与基础证照",
-    "资格审查文件": "资格审查文件",
-    "02-企业能力库": "企业能力与综合实力",
-    "企业能力库": "企业能力与综合实力",
+    "01-资质合规库": "资格审查与基础证明",
+    "资质合规库": "资格审查与基础证明",
+    "资格审查与基础证明": "资格审查与基础证明",
+    "02-企业能力库": "企业能力与供货业绩",
+    "企业能力库": "企业能力与供货业绩",
     "04-财务资料库": "财务信用与合规声明",
     "财务资料库": "财务信用与合规声明",
-    "05-专题证书库": "专题证书库",
-    "01-机型认证证书": "机型认证证书",
-    "02-大部件型式认证证书": "大部件型式认证证书",
-    "06-通用模板底稿库": "通用模板底稿库",
-    "01-客户关系与专项证明": "客户关系与专项证明",
-    "02-商务响应文件": "客户专用商务响应文件",
-    "03-模板底稿与过程文件": "客户模板底稿与过程文件",
+    "企业能力与综合实力": "企业能力与供货业绩",
+    "05-机型认证与测试报告": "机型认证与测试报告",
+    "专题证书库": "机型认证与测试报告",
+    "01-机型认证与测试报告": "机型认证与测试报告",
+    "机型认证证书": "机型认证与测试报告",
+    "02-机型认证与测试报告": "机型认证与测试报告",
+    "大部件型式认证证书": "机型认证与测试报告",
+    "06-表单模板与过程稿": "表单模板与过程稿",
+    "通用模板底稿库": "表单模板与过程稿",
+    "通用表单与模板": "表单模板与过程稿",
+    "01-客户准入与专项证明": "客户准入与专项证明",
+    "客户关系与专项证明": "客户准入与专项证明",
+    "02-商务响应文件": "客户专用响应口径",
+    "客户专用商务响应文件": "客户专用响应口径",
+    "03-过程稿与历史文件": "客户模板与历史文件",
+    "客户模板底稿与过程文件": "客户模板与历史文件",
+    "客户模板与过程稿": "客户模板与历史文件",
+    "项目专项证明与客户要求": "招标要求与专项证明",
+    "项目商务响应文件": "资格审查与商务响应成册",
+    "项目模板底稿与过程文件": "项目过程稿与澄清文件",
+    "项目模板与过程稿": "项目过程稿与澄清文件",
 }
 MATERIAL_CATEGORY_LABELS = {
-    "qualification_review": "资格审查文件",
-    "subject_qualification": "主体资质与基础证照",
-    "management_system_certification": "体系认证证书",
-    "credit_query_screenshot": "信用与失信查询截图",
-    "qualification_form_commitment": "资格审查表与承诺",
+    "qualification_evidence": "资格审查与基础证明",
     "financial_credit_compliance": "财务信用与合规声明",
-    "enterprise_capability": "企业能力与综合实力",
-    "special_certificate": "专题证书库",
-    "template_draft": "通用模板底稿库",
-    "customer_relationship_proof": "客户关系与专项证明",
-    "customer_response": "客户专用商务响应文件",
-    "customer_template_process": "客户模板底稿与过程文件",
-    "project_requirement_proof": "项目专项证明与客户要求",
-    "project_response": "项目商务响应文件",
-    "project_template_process": "项目模板底稿与过程文件",
+    "manufacturer_supply_chain": "制造商与供应链材料",
+    "product_grid_certificate": "机型认证与测试报告",
+    "enterprise_capability": "企业能力与供货业绩",
+    "template_draft": "表单模板与过程稿",
+    "customer_relationship_proof": "客户准入与专项证明",
+    "customer_response": "客户专用响应口径",
+    "customer_template_process": "客户模板与历史文件",
+    "project_requirement_proof": "招标要求与专项证明",
+    "project_response": "资格审查与商务响应成册",
+    "project_template_process": "项目过程稿与澄清文件",
 }
 MODULE_CONFIGS = [
     {
@@ -77,8 +85,8 @@ MODULE_CONFIGS = [
         "module_name": "01-商务评分索引表",
         "usage_mode": "reference_only",
         "path_prefixes": [],
-        "material_categories": ["qualification_review", "subject_qualification", "management_system_certification", "credit_query_screenshot", "enterprise_capability", "customer_relationship_proof", "project_requirement_proof"],
-        "categories": ["资格审查文件", "主体资质与基础证照", "体系认证证书", "信用与失信查询截图", "企业能力与综合实力", "客户关系与专项证明", "项目专项证明与客户要求"],
+        "material_categories": ["qualification_evidence", "financial_credit_compliance", "manufacturer_supply_chain", "product_grid_certificate", "enterprise_capability", "customer_relationship_proof", "project_requirement_proof"],
+        "categories": ["资格审查与基础证明", "财务信用与合规声明", "制造商与供应链材料", "机型认证与测试报告", "企业能力与供货业绩", "客户准入与专项证明", "招标要求与专项证明"],
         "keywords": ["评分", "评价", "资质", "证书", "业绩", "示范应用", "优秀供应商", "框架协议"],
         "fallback_scope": "当前身份可读范围下的资质、能力、客户关系材料；业绩评分点引用业绩库。",
         "missing_hint": "补充与评分点直接对应的资质、业绩或客户关系证明材料。",
@@ -88,23 +96,23 @@ MODULE_CONFIGS = [
         "module_name": "02-投标函与授权模块",
         "usage_mode": "extract_fields",
         "path_prefixes": [
-            "通用素材/通用模板底稿库",
-            "客户素材/*/客户专用商务响应文件",
-            "项目素材/*/项目商务响应文件",
+            "通用素材/表单模板与过程稿",
+            "客户素材/*/客户专用响应口径",
+            "项目素材/*/资格审查与商务响应成册",
         ],
         "material_categories": ["template_draft", "customer_response", "project_response"],
-        "categories": ["法定代表人/授权", "客户专用商务响应文件", "项目商务响应文件", "通用模板底稿库"],
+        "categories": ["法定代表人/授权", "客户专用响应口径", "资格审查与商务响应成册", "表单模板与过程稿"],
         "keywords": ["投标函", "授权", "委托", "法定代表人", "签字", "盖章", "授权书"],
-        "fallback_scope": "当前项目/客户的商务响应文件与通用模板底稿",
+        "fallback_scope": "当前项目/客户的商务响应文件与表单模板过程稿",
         "missing_hint": "补充本项目投标函、授权委托书或对应空白模板。",
     },
     {
         "module_code": "BM-03",
         "module_name": "03-投标价格表模块",
         "usage_mode": "fill_table",
-        "path_prefixes": ["客户素材/*/客户专用商务响应文件", "项目素材/*/项目商务响应文件"],
+        "path_prefixes": ["客户素材/*/客户专用响应口径", "项目素材/*/资格审查与商务响应成册"],
         "material_categories": ["customer_response", "project_response"],
-        "categories": ["报价与分项表", "客户专用商务响应文件", "项目商务响应文件"],
+        "categories": ["报价与分项表", "客户专用响应口径", "资格审查与商务响应成册"],
         "keywords": ["投标价格", "报价", "分项报价", "总价", "价格表", "报价表"],
         "fallback_scope": "当前项目的商务响应文件与整理底稿",
         "missing_hint": "补充本项目投标价格表或报价数据源。",
@@ -113,9 +121,9 @@ MODULE_CONFIGS = [
         "module_code": "BM-04",
         "module_name": "04-货物规格一览表模块",
         "usage_mode": "fill_table",
-        "path_prefixes": ["客户素材/*/客户专用商务响应文件", "项目素材/*/项目商务响应文件"],
+        "path_prefixes": ["客户素材/*/客户专用响应口径", "项目素材/*/资格审查与商务响应成册"],
         "material_categories": ["customer_response", "project_response"],
-        "categories": ["报价与分项表", "客户专用商务响应文件", "项目商务响应文件"],
+        "categories": ["报价与分项表", "客户专用响应口径", "资格审查与商务响应成册"],
         "keywords": ["规格", "货物规格", "一览表", "供货范围", "参数表", "配置表"],
         "fallback_scope": "当前项目的商务响应文件与过程底稿",
         "missing_hint": "补充货物规格一览表或可回填该表的数据底稿。",
@@ -124,9 +132,9 @@ MODULE_CONFIGS = [
         "module_code": "BM-05",
         "module_name": "05-商务偏差表模块",
         "usage_mode": "fill_table",
-        "path_prefixes": ["客户素材/*/客户专用商务响应文件", "项目素材/*/项目商务响应文件"],
+        "path_prefixes": ["客户素材/*/客户专用响应口径", "项目素材/*/资格审查与商务响应成册"],
         "material_categories": ["customer_response", "project_response"],
-        "categories": ["商务偏差", "客户专用商务响应文件", "项目商务响应文件"],
+        "categories": ["商务偏差", "客户专用响应口径", "资格审查与商务响应成册"],
         "keywords": ["商务偏差", "偏差表", "偏离", "响应表"],
         "fallback_scope": "当前项目的商务响应文件",
         "missing_hint": "补充商务偏差表或合同条款响应底稿。",
@@ -136,14 +144,14 @@ MODULE_CONFIGS = [
         "module_name": "06-投标保证金模块",
         "usage_mode": "attach_whole",
         "path_prefixes": [
-            "客户素材/*/客户专用商务响应文件",
-            "项目素材/*/项目商务响应文件",
+            "客户素材/*/客户专用响应口径",
+            "项目素材/*/资格审查与商务响应成册",
             "通用素材/财务信用与合规声明",
         ],
         "material_categories": ["financial_credit_compliance", "customer_response", "project_response"],
-        "categories": ["投标保证金", "财务信用与合规声明", "客户专用商务响应文件", "项目商务响应文件"],
+        "categories": ["投标保证金", "财务信用与合规声明", "客户专用响应口径", "资格审查与商务响应成册"],
         "keywords": ["保证金", "回单", "保函", "电汇", "担保", "银行"],
-        "fallback_scope": "当前项目商务响应文件与财务资料库",
+        "fallback_scope": "当前资格审查与商务响应成册与财务资料库",
         "missing_hint": "补充投标保证金回单、保函或对应支付凭证。",
     },
     {
@@ -151,14 +159,14 @@ MODULE_CONFIGS = [
         "module_name": "07-履约保证承诺模块",
         "usage_mode": "attach_whole",
         "path_prefixes": [
-            "通用素材/通用模板底稿库",
-            "客户素材/*/客户专用商务响应文件",
-            "项目素材/*/项目商务响应文件",
+            "通用素材/表单模板与过程稿",
+            "客户素材/*/客户专用响应口径",
+            "项目素材/*/资格审查与商务响应成册",
         ],
         "material_categories": ["template_draft", "customer_response", "project_response"],
-        "categories": ["承诺函件", "客户专用商务响应文件", "项目商务响应文件", "通用模板底稿库"],
+        "categories": ["承诺函件", "客户专用响应口径", "资格审查与商务响应成册", "表单模板与过程稿"],
         "keywords": ["履约", "保证函", "承诺书", "履约保证", "承诺"],
-        "fallback_scope": "当前项目商务响应文件与通用模板底稿",
+        "fallback_scope": "当前资格审查与商务响应成册与表单模板过程稿",
         "missing_hint": "补充履约保证函格式承诺书或项目定制承诺件。",
     },
     {
@@ -166,28 +174,28 @@ MODULE_CONFIGS = [
         "module_name": "08-资格证明文件模块（附件7）",
         "usage_mode": "attach_whole",
         "path_prefixes": [
-            "通用素材/资格审查文件",
-            "通用素材/主体资质与基础证照",
+            "通用素材/资格审查与基础证明",
+            "通用素材/资格审查与基础证明",
             "通用素材/财务信用与合规声明",
-            "通用素材/专题证书库",
+            "通用素材/机型认证与测试报告",
         ],
-        "material_categories": ["qualification_review", "subject_qualification", "management_system_certification", "credit_query_screenshot", "qualification_form_commitment", "financial_credit_compliance", "special_certificate"],
-        "categories": ["资格审查文件", "主体资质与基础证照", "体系认证证书", "信用与失信查询截图", "资格审查表与承诺", "财务信用与合规声明", "专题证书库"],
+        "material_categories": ["qualification_evidence", "financial_credit_compliance", "manufacturer_supply_chain", "product_grid_certificate", "template_draft"],
+        "categories": ["资格审查与基础证明", "财务信用与合规声明", "制造商与供应链材料", "机型认证与测试报告", "表单模板与过程稿"],
         "keywords": ["资格审查", "营业执照", "资质", "体系认证", "质量管理体系", "环境管理体系", "职业健康安全", "信用中国", "严重违法失信", "失信被执行", "资信", "纳税", "开户", "证书"],
-        "fallback_scope": "通用素材的资格审查文件、资质、体系认证、信用查询、财务信用与专题证书范围",
-        "missing_hint": "补充资格审查文件所需的营业执照、体系认证、信用/失信查询截图、资信或专题证书。",
+        "fallback_scope": "通用素材的资格审查、财务信用、制造商供应链、机型认证和表单模板范围",
+        "missing_hint": "补充资格审查所需的营业执照、体系认证、信用/失信查询截图、资信、制造商证明或机型认证报告。",
     },
     {
         "module_code": "BM-09",
         "module_name": "09-业绩情况表模块（附件7I）",
         "usage_mode": "fill_table",
         "path_prefixes": [
-            "客户素材/*/客户关系与专项证明",
-            "项目素材/*/项目专项证明与客户要求",
+            "客户素材/*/客户准入与专项证明",
+            "项目素材/*/招标要求与专项证明",
         ],
         "source_types": ["performance"],
         "material_categories": ["customer_relationship_proof", "project_requirement_proof"],
-        "categories": ["业绩库引用", "客户关系与专项证明", "项目专项证明与客户要求"],
+        "categories": ["业绩库引用", "客户准入与专项证明", "招标要求与专项证明"],
         "keywords": ["业绩", "合同", "中标通知书", "验收", "运行", "240h", "示范应用"],
         "fallback_scope": "业绩库 performance_items 与客户/项目专项证明材料",
         "missing_hint": "通过业绩库补充可筛选的合同、通知书、运行证明或示范应用证明。",
@@ -196,11 +204,11 @@ MODULE_CONFIGS = [
         "module_code": "BM-10",
         "module_name": "10-开标价格表模块",
         "usage_mode": "fill_table",
-        "path_prefixes": ["客户素材/*/客户专用商务响应文件", "项目素材/*/项目商务响应文件"],
+        "path_prefixes": ["客户素材/*/客户专用响应口径", "项目素材/*/资格审查与商务响应成册"],
         "material_categories": ["customer_response", "project_response"],
-        "categories": ["报价与分项表", "客户专用商务响应文件", "项目商务响应文件"],
+        "categories": ["报价与分项表", "客户专用响应口径", "资格审查与商务响应成册"],
         "keywords": ["开标", "开标价格表", "唱标", "报价"],
-        "fallback_scope": "当前项目商务响应文件",
+        "fallback_scope": "当前资格审查与商务响应成册",
         "missing_hint": "补充开标价格表或与其一一对应的报价底稿。",
     },
     {
@@ -208,15 +216,15 @@ MODULE_CONFIGS = [
         "module_name": "11-其他说明与承诺模块（附件9）",
         "usage_mode": "attach_whole",
         "path_prefixes": [
-            "客户素材/*/客户专用商务响应文件",
-            "项目素材/*/项目商务响应文件",
-            "客户素材/*/客户模板底稿与过程文件",
-            "项目素材/*/项目模板底稿与过程文件",
+            "客户素材/*/客户专用响应口径",
+            "项目素材/*/资格审查与商务响应成册",
+            "客户素材/*/客户模板与历史文件",
+            "项目素材/*/项目过程稿与澄清文件",
         ],
         "material_categories": ["customer_response", "project_response", "customer_template_process", "project_template_process"],
-        "categories": ["承诺函件", "客户专用商务响应文件", "项目商务响应文件", "模板底稿与过程文件"],
+        "categories": ["承诺函件", "客户专用响应口径", "资格审查与商务响应成册", "过程稿与历史文件"],
         "keywords": ["附件9", "其他说明", "补充说明", "承诺", "声明", "效力说明", "廉洁"],
-        "fallback_scope": "当前项目商务响应文件与过程底稿",
+        "fallback_scope": "当前资格审查与商务响应成册与过程底稿",
         "missing_hint": "补充附件9、专项声明、效力说明或其他承诺文件。",
     },
     {
@@ -224,15 +232,15 @@ MODULE_CONFIGS = [
         "module_name": "12-否决项与符合性响应模块",
         "usage_mode": "extract_fields",
         "path_prefixes": [
-            "客户素材/*/客户专用商务响应文件",
-            "项目素材/*/项目商务响应文件",
-            "通用素材/资格审查文件",
-            "通用素材/主体资质与基础证照",
+            "客户素材/*/客户专用响应口径",
+            "项目素材/*/资格审查与商务响应成册",
+            "通用素材/资格审查与基础证明",
+            "通用素材/资格审查与基础证明",
         ],
-        "material_categories": ["customer_response", "project_response", "qualification_review", "subject_qualification", "management_system_certification", "credit_query_screenshot", "qualification_form_commitment"],
-        "categories": ["客户专用商务响应文件", "项目商务响应文件", "资格审查文件", "主体资质与基础证照", "体系认证证书", "信用与失信查询截图", "资格审查表与承诺", "承诺函件"],
+        "material_categories": ["customer_response", "project_response", "qualification_evidence", "financial_credit_compliance", "template_draft"],
+        "categories": ["客户专用响应口径", "资格审查与商务响应成册", "资格审查与基础证明", "财务信用与合规声明", "表单模板与过程稿", "承诺函件"],
         "keywords": ["否决", "符合性", "响应", "必须", "不得", "承诺", "资格", "信用中国", "严重违法失信", "失信被执行"],
-        "fallback_scope": "当前项目商务响应文件与资格审查文件",
+        "fallback_scope": "当前资格审查与商务响应成册与资格审查与基础证明",
         "missing_hint": "补充否决项响应表、符合性声明、信用查询截图或直接支撑的资格材料。",
     },
     {
@@ -240,12 +248,12 @@ MODULE_CONFIGS = [
         "module_name": "13-供应链协同模块",
         "usage_mode": "reference_only",
         "path_prefixes": [
-            "通用素材/企业能力与综合实力",
-            "客户素材/*/客户关系与专项证明",
-            "项目素材/*/项目专项证明与客户要求",
+            "通用素材/企业能力与供货业绩",
+            "客户素材/*/客户准入与专项证明",
+            "项目素材/*/招标要求与专项证明",
         ],
         "material_categories": ["enterprise_capability", "customer_relationship_proof", "project_requirement_proof"],
-        "categories": ["企业能力与综合实力", "客户关系与专项证明", "项目专项证明与客户要求"],
+        "categories": ["企业能力与供货业绩", "客户准入与专项证明", "招标要求与专项证明"],
         "keywords": ["供应链", "协同", "战略协议", "框架协议", "产能", "服务能力", "合作"],
         "fallback_scope": "企业能力与客户关系专项证明材料",
         "missing_hint": "补充供应链协同、战略合作或服务协同证明。",
@@ -339,12 +347,14 @@ def infer_material_category_from_text(path: str, title: str, tier: str, group_na
         if any(token in text for token in ("模板", "底稿", "过程")):
             return "project_template_process"
         return "project_response"
-    if any(token in text for token in ("机型认证", "型式认证", "证书", "部件", "认证证书")):
-        return "special_certificate"
+    if any(token in text for token in ("制造商", "重点部件", "供应商", "供货协议", "合作意向", "供应承诺", "质量保证体系")):
+        return "manufacturer_supply_chain"
+    if any(token in text for token in ("机型认证", "设计认证", "型式认证", "大部件", "电能质量", "低电压穿越", "高电压穿越", "穿越测试", "240小时", "试运行")):
+        return "product_grid_certificate"
     if any(token in text for token in ("财务", "审计", "报表", "银行", "纳税", "信用", "无违法", "无行贿", "无重大")):
         return "financial_credit_compliance"
     if any(token in text for token in ("营业执照", "生产许可证", "安全生产", "资质", "体系认证", "开户")):
-        return "subject_qualification"
+        return "qualification_evidence"
     if any(token in text for token in ("公司介绍", "制造", "基地", "服务能力", "质量", "专利", "奖项", "装机", "产能")):
         return "enterprise_capability"
     if any(token in text for token in ("模板", "底稿", "空白", "投标函", "授权书", "报价表", "偏差表", "承诺函", "资格审查表")):
@@ -391,7 +401,7 @@ def second_group(item: dict[str, Any], tier: str, segments: list[str]) -> str:
         return infer_common_group(source_path(item), material_title(item))
     if len(segments) > 2:
         return normalize_group_name(segments[2])
-    return "项目商务响应文件" if tier == "项目素材" else "客户专用商务响应文件"
+    return "资格审查与商务响应成册" if tier == "项目素材" else "客户专用响应口径"
 
 
 def third_group(item: dict[str, Any], tier: str, group_name: str, segments: list[str]) -> str:
@@ -403,27 +413,29 @@ def third_group(item: dict[str, Any], tier: str, group_name: str, segments: list
 
 
 def infer_special_common_subgroup(path: str, title: str, group_name: str) -> str:
-    if normalize_group_name(group_name) != "专题证书库":
+    if normalize_group_name(group_name) != "机型认证与测试报告":
         return ""
     text = f"{path}/{title}"
     if any(token in text for token in ("叶片", "齿轮箱", "主轴", "发电机", "机舱", "轮毂", "大部件", "型式认证")):
-        return "大部件型式认证证书"
-    return "机型认证证书"
+        return "机型认证与测试报告"
+    return "机型认证与测试报告"
 
 
 def infer_common_group(path: str, title: str) -> str:
     text = f"{path}/{title}"
-    if any(token in text for token in ("机型认证", "型式认证", "证书", "部件")):
-        return "专题证书库"
+    if any(token in text for token in ("制造商", "重点部件", "供应商", "供货协议", "合作意向", "供应承诺", "质量保证体系")):
+        return "制造商与供应链材料"
+    if any(token in text for token in ("机型认证", "设计认证", "型式认证", "大部件", "电能质量", "低电压穿越", "高电压穿越", "穿越测试", "240小时", "试运行")):
+        return "机型认证与测试报告"
     if any(token in text for token in ("财务", "审计", "报表", "银行", "纳税", "信用", "无违法", "无行贿", "无重大")):
         return "财务信用与合规声明"
     if any(token in text for token in ("营业执照", "资质", "认证", "开户", "生产许可证", "安全生产")):
-        return "主体资质与基础证照"
+        return "资格审查与基础证明"
     if any(token in text for token in ("组织架构", "能力", "工厂", "产能", "服务", "专利", "奖项", "质量管理")):
-        return "企业能力与综合实力"
+        return "企业能力与供货业绩"
     if any(token in text for token in ("业绩", "合同", "中标通知书", "运行", "240h", "验收")):
-        return "企业能力与综合实力"
-    return "通用模板底稿库"
+        return "企业能力与供货业绩"
+    return "表单模板与过程稿"
 
 
 def infer_business_category(item: dict[str, Any], tier: str, group_name: str) -> str:
@@ -433,20 +445,21 @@ def infer_business_category(item: dict[str, Any], tier: str, group_name: str) ->
     text = f"{source_path(item)}/{material_title(item)}"
     normalized_group = normalize_group_name(group_name)
     if normalized_group in {
-        "主体资质与基础证照",
+        "资格审查与基础证明",
         "财务信用与合规声明",
-        "企业能力与综合实力",
-        "专题证书库",
-        "通用模板底稿库",
-        "客户专用商务响应文件",
-        "项目商务响应文件",
-        "客户模板底稿与过程文件",
-        "项目模板底稿与过程文件",
-        "项目专项证明与客户要求",
+        "制造商与供应链材料",
+        "企业能力与供货业绩",
+        "机型认证与测试报告",
+        "表单模板与过程稿",
+        "客户专用响应口径",
+        "资格审查与商务响应成册",
+        "客户模板与历史文件",
+        "项目过程稿与澄清文件",
+        "招标要求与专项证明",
     }:
         return normalized_group
-    if normalized_group == "客户关系与专项证明":
-        return "客户关系与专项证明"
+    if normalized_group == "客户准入与专项证明":
+        return "客户准入与专项证明"
     if "报价" in text or "价格" in text or "开标" in text or "规格" in text:
         return "报价与分项表"
     if "偏差" in text:
@@ -457,7 +470,7 @@ def infer_business_category(item: dict[str, Any], tier: str, group_name: str) ->
         return "投标保证金"
     if "承诺" in text or "函" in text or "说明" in text:
         return "承诺函件"
-    return "项目商务响应文件" if tier == "项目素材" else "客户专用商务响应文件" if tier == "客户素材" else "通用模板底稿库"
+    return "资格审查与商务响应成册" if tier == "项目素材" else "客户专用响应口径" if tier == "客户素材" else "表单模板与过程稿"
 
 
 def infer_evidence_topic(path: str, title: str, category: str, document_type: str) -> str:
@@ -472,7 +485,7 @@ def infer_evidence_topic(path: str, title: str, category: str, document_type: st
         ("企业能力与供货保障", ("公司简介", "工厂", "生产能力", "服务能力", "质量管理", "供应链", "供货")),
         ("财务与诚信", ("财务", "审计", "报表", "纳税", "资信证明", "信用中国", "失信")),
         ("承诺声明与其他说明", ("承诺", "声明", "说明", "附件9", "其他内容")),
-        ("客户关系与专项证明", ("战略协议", "框架协议", "评价信", "优秀供应商", "示范应用")),
+        ("客户准入与专项证明", ("战略协议", "框架协议", "评价信", "优秀供应商", "示范应用")),
     ]
     for topic, keywords in topic_rules:
         if any(keyword in text for keyword in keywords):
@@ -494,7 +507,7 @@ def infer_applicable_chapters(profile: dict[str, Any]) -> list[str]:
         ("投标保证金/保函", ("保证金", "保函", "回单")),
         ("履约保证承诺", ("履约",)),
         ("资格证明文件", ("营业执照", "资质", "体系认证", "信用", "资信", "纳税", "开户")),
-        ("机型认证证书/大部件型式认证证书", ("机型认证", "整机认证", "大部件", "型式认证", "叶片", "齿轮箱", "发电机")),
+        ("机型认证与测试报告/机型认证与测试报告", ("机型认证", "整机认证", "大部件", "型式认证", "叶片", "齿轮箱", "发电机")),
         ("业绩情况表及支撑材料", ("业绩", "合同", "中标", "240h", "验收")),
         ("投标人需要说明的其他内容", ("承诺", "声明", "说明", "附件9", "其他内容")),
     ]
