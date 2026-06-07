@@ -107,6 +107,41 @@ def _contract_bundle_docx_bytes() -> bytes:
     return output.getvalue()
 
 
+def _contract_with_table_layout_docx_bytes() -> bytes:
+    doc = Document()
+    doc.add_paragraph("山东华电枣庄山亭19万千瓦风电项目风力发电机组合同")
+    table = doc.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "合同首页"
+    table.cell(0, 1).text = "主要商务条款页"
+    doc.add_paragraph()
+    doc.add_paragraph()
+    doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+    doc.add_paragraph()
+    table = doc.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "技术参数表第一页"
+    table.cell(0, 1).text = "技术参数表第二页"
+    output = BytesIO()
+    doc.save(output)
+    return output.getvalue()
+
+
+def _contract_with_paired_page_table_docx_bytes() -> bytes:
+    doc = Document()
+    doc.add_paragraph("山东华电枣庄山亭19万千瓦风电项目风力发电机组合同")
+    table = doc.add_table(rows=4, cols=2)
+    table.cell(0, 0).text = "合同首页"
+    table.cell(0, 1).text = "签字盖章页"
+    table.cell(1, 0).paragraphs[0].add_run().add_picture(BytesIO(_tiny_png_bytes()), width=Inches(0.2))
+    table.cell(1, 1).paragraphs[0].add_run().add_picture(BytesIO(_tiny_png_bytes()), width=Inches(0.2))
+    table.cell(2, 0).text = "主要技术参数页"
+    table.cell(2, 1).text = "主要技术参数页"
+    table.cell(3, 0).paragraphs[0].add_run().add_picture(BytesIO(_tiny_png_bytes()), width=Inches(0.2))
+    table.cell(3, 1).paragraphs[0].add_run().add_picture(BytesIO(_tiny_png_bytes()), width=Inches(0.2))
+    output = BytesIO()
+    doc.save(output)
+    return output.getvalue()
+
+
 def _docx_declared_fonts(content: bytes) -> set[str]:
     fonts: set[str] = set()
     font_attrs = {
@@ -162,6 +197,49 @@ def _docx_rfont_non_name_refs(content: bytes) -> set[str]:
                 if element.tag.rsplit("}", 1)[-1] == "rFonts":
                     refs.update(value for attr, value in element.attrib.items() if attr in ref_attrs and value)
     return refs
+
+
+def _docx_body_layout(content: bytes) -> list[dict[str, object]]:
+    with ZipFile(BytesIO(content)) as zf:
+        root = ET.fromstring(zf.read("word/document.xml"))
+    body = root.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}body")
+    assert body is not None
+    layout = []
+    for child in list(body):
+        local_name = child.tag.rsplit("}", 1)[-1]
+        layout.append(
+            {
+                "kind": local_name,
+                "text": "".join(child.itertext()).strip(),
+                "pageBreak": any(
+                    node.tag.rsplit("}", 1)[-1] == "br"
+                    and node.attrib.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}type") == "page"
+                    for node in child.iter()
+                ),
+            }
+        )
+    return layout
+
+
+def _docx_table_row_pagination(content: bytes) -> list[dict[str, object]]:
+    with ZipFile(BytesIO(content)) as zf:
+        root = ET.fromstring(zf.read("word/document.xml"))
+    namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    rows = []
+    for row in root.iter(f"{namespace}tr"):
+        trpr = row.find(f"{namespace}trPr")
+        rows.append(
+            {
+                "text": "".join(row.itertext()).strip(),
+                "cantSplit": trpr is not None and trpr.find(f"{namespace}cantSplit") is not None,
+                "keepNext": any(
+                    (ppr := paragraph.find(f"{namespace}pPr")) is not None
+                    and ppr.find(f"{namespace}keepNext") is not None
+                    for paragraph in row.iter(f"{namespace}p")
+                ),
+            }
+        )
+    return rows
 
 
 def test_parse_performance_summary_docx_extracts_category_and_rows() -> None:
@@ -233,6 +311,39 @@ def test_split_performance_contract_docx_preserves_item_documents_and_images() -
     assert len(second_doc.tables) == 1
     assert first_doc.element.xpath('.//*[local-name()="drawing" or local-name()="pict"]')
     assert second_doc.element.xpath('.//*[local-name()="drawing" or local-name()="pict"]')
+
+
+def test_split_performance_contract_docx_preserves_internal_table_layout_breaks() -> None:
+    chunks = split_performance_contract_docx(_contract_with_table_layout_docx_bytes(), file_name="枣庄山亭19万千瓦业绩_合同.docx")
+
+    assert len(chunks) == 1
+    content = render_contract_item_docx(chunks[0], output_title="山东华电枣庄山亭19万千瓦风电项目")
+    rendered = Document(BytesIO(content))
+    assert len(rendered.tables) == 2
+
+    layout = _docx_body_layout(content)
+    first_table_index = next(index for index, item in enumerate(layout) if item["kind"] == "tbl")
+    second_table_index = next(index for index, item in enumerate(layout[first_table_index + 1 :], start=first_table_index + 1) if item["kind"] == "tbl")
+    between_tables = layout[first_table_index + 1 : second_table_index]
+
+    assert sum(1 for item in between_tables if item["kind"] == "p" and not item["text"]) >= 3
+    assert any(item["pageBreak"] for item in between_tables)
+
+
+def test_render_contract_item_docx_keeps_table_caption_rows_with_image_rows() -> None:
+    chunks = split_performance_contract_docx(_contract_with_paired_page_table_docx_bytes(), file_name="枣庄山亭19万千瓦业绩_合同.docx")
+
+    content = render_contract_item_docx(chunks[0], output_title="山东华电枣庄山亭19万千瓦风电项目")
+    rows = _docx_table_row_pagination(content)
+
+    assert rows[0]["text"] == "合同首页签字盖章页"
+    assert rows[0]["keepNext"] is True
+    assert rows[0]["cantSplit"] is True
+    assert rows[1]["cantSplit"] is True
+    assert rows[2]["text"] == "主要技术参数页主要技术参数页"
+    assert rows[2]["keepNext"] is True
+    assert rows[2]["cantSplit"] is True
+    assert rows[3]["cantSplit"] is True
 
 
 def test_render_contract_item_docx_uses_short_title_and_table_spacing() -> None:

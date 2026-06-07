@@ -30,7 +30,7 @@ SUMMARY_ATTACHMENT_TYPE = "summary_table"
 CONTRACT_ATTACHMENT_TYPE = "contract_bundle"
 ITEM_CONTRACT_ATTACHMENT_TYPE = "contract_item"
 DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-ITEM_CONTRACT_FORMAT_VERSION = 3
+ITEM_CONTRACT_FORMAT_VERSION = 5
 CONTRACT_OUTPUT_EAST_ASIA_FONT = "Songti SC"
 CONTRACT_OUTPUT_WESTERN_FONT = "Times New Roman"
 CONTRACT_OUTPUT_SYMBOL_FONT = "Symbol"
@@ -1190,7 +1190,7 @@ def split_performance_contract_docx(content: bytes, *, file_name: str = "contrac
         selected_blocks = [
             child
             for child in body_children[start:end]
-            if _block_kind(child) != "sectPr" and not _is_empty_page_break_paragraph(child)
+            if _block_kind(child) != "sectPr"
         ]
         if not selected_blocks:
             continue
@@ -1270,6 +1270,7 @@ def _docx_blocks_to_bytes(source_doc: Any, blocks: list[Any], *, title: str = ""
         cloned = deepcopy(block)
         _copy_related_parts(source_doc.part, target_doc.part, cloned)
         _normalize_contract_block_format(cloned)
+        _stabilize_contract_table_pagination(cloned)
         target_body.append(cloned)
     source_sect = source_doc.element.body.sectPr
     if source_sect is not None:
@@ -1282,19 +1283,39 @@ def _docx_blocks_to_bytes(source_doc: Any, blocks: list[Any], *, title: str = ""
 def _contract_content_blocks(blocks: list[Any]) -> list[Any]:
     result: list[Any] = []
     skipped_title = False
+    had_title = False
     for block in blocks:
         if not skipped_title and _is_contract_title_block(block):
             skipped_title = True
-            continue
-        if _block_kind(block) == "p" and not _block_text(block) and not _has_drawings(block):
+            had_title = True
             continue
         result.append(block)
-    return result
+    if not had_title:
+        result = _trim_leading_layout_blocks(result)
+    return _trim_trailing_layout_blocks(result)
+
+
+def _trim_leading_layout_blocks(blocks: list[Any]) -> list[Any]:
+    start = 0
+    while start < len(blocks) and _is_layout_only_paragraph(blocks[start]):
+        start += 1
+    return blocks[start:]
+
+
+def _trim_trailing_layout_blocks(blocks: list[Any]) -> list[Any]:
+    end = len(blocks)
+    while end > 0 and _is_layout_only_paragraph(blocks[end - 1]):
+        end -= 1
+    return blocks[:end]
 
 
 def _normalize_contract_block_format(block: Any) -> None:
     paragraph_nodes = [block] if _block_kind(block) == "p" else list(block.xpath('.//*[local-name()="p"]'))
     for paragraph in paragraph_nodes:
+        if _is_layout_only_paragraph(paragraph):
+            if _has_ooxml_ancestor(paragraph, "tc"):
+                _normalize_layout_paragraph_spacing(paragraph)
+            continue
         ppr = paragraph.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pPr")
         if ppr is None:
             ppr = _insert_ooxml_child(paragraph, "pPr", 0)
@@ -1311,6 +1332,70 @@ def _normalize_contract_block_format(block: Any) -> None:
         _set_ooxml_rfonts(rpr)
     for run_properties in block.xpath('.//*[local-name()="rPr"]'):
         _set_ooxml_rfonts(run_properties)
+
+
+def _stabilize_contract_table_pagination(block: Any) -> None:
+    if _block_kind(block) != "tbl":
+        return
+    rows = [child for child in block.iterchildren() if _block_kind(child) == "tr"]
+    for index, row in enumerate(rows[:-1]):
+        next_row = rows[index + 1]
+        if not _is_contract_table_caption_row(row):
+            continue
+        if not _has_drawings(next_row):
+            continue
+        _set_row_cant_split(row)
+        _set_row_cant_split(next_row)
+        _set_row_keep_next(row)
+
+
+def _is_contract_table_caption_row(row: Any) -> bool:
+    text_value = _dedupe_repeated_title(_block_text(row))
+    if not text_value or len(text_value) > 120:
+        return False
+    if _has_drawings(row):
+        return False
+    return any(keyword in text_value for keyword in ("页", "合同", "参数", "机型", "盖章", "首页"))
+
+
+def _set_row_cant_split(row: Any) -> None:
+    trpr = row.find(f"{{{WORD_NAMESPACE}}}trPr")
+    if trpr is None:
+        trpr = _insert_ooxml_child(row, "trPr", 0)
+    if trpr.find(f"{{{WORD_NAMESPACE}}}cantSplit") is None:
+        trpr.insert(0, trpr.makeelement(f"{{{WORD_NAMESPACE}}}cantSplit"))
+
+
+def _set_row_keep_next(row: Any) -> None:
+    for paragraph in row.xpath('.//*[local-name()="p"]'):
+        ppr = paragraph.find(f"{{{WORD_NAMESPACE}}}pPr")
+        if ppr is None:
+            ppr = _insert_ooxml_child(paragraph, "pPr", 0)
+        if ppr.find(f"{{{WORD_NAMESPACE}}}keepNext") is not None:
+            continue
+        keep_next = ppr.makeelement(f"{{{WORD_NAMESPACE}}}keepNext")
+        insert_at = 0
+        pstyle = ppr.find(f"{{{WORD_NAMESPACE}}}pStyle")
+        if pstyle is not None:
+            insert_at = list(ppr).index(pstyle) + 1
+        ppr.insert(insert_at, keep_next)
+
+
+def _normalize_layout_paragraph_spacing(paragraph: Any) -> None:
+    ppr = paragraph.find(f"{{{WORD_NAMESPACE}}}pPr")
+    if ppr is None:
+        ppr = _insert_ooxml_child(paragraph, "pPr", 0)
+    spacing = ppr.find(f"{{{WORD_NAMESPACE}}}spacing")
+    if spacing is None:
+        spacing = _append_ooxml_child(ppr, "spacing")
+    spacing.set(f"{{{WORD_NAMESPACE}}}before", "0")
+    spacing.set(f"{{{WORD_NAMESPACE}}}after", "0")
+    spacing.set(f"{{{WORD_NAMESPACE}}}line", "360")
+    spacing.set(f"{{{WORD_NAMESPACE}}}lineRule", "auto")
+
+
+def _has_ooxml_ancestor(node: Any, local_name: str) -> bool:
+    return any(_block_kind(ancestor) == local_name for ancestor in node.iterancestors())
 
 
 def _set_ooxml_rfonts(run_properties: Any) -> None:
@@ -1497,6 +1582,10 @@ def _has_drawings(block: Any) -> bool:
 
 def _is_empty_page_break_paragraph(block: Any) -> bool:
     return _block_kind(block) == "p" and not _block_text(block) and _block_has_page_break(block)
+
+
+def _is_layout_only_paragraph(block: Any) -> bool:
+    return _block_kind(block) == "p" and not _block_text(block) and not _has_drawings(block)
 
 
 def _dedupe_repeated_title(value: str) -> str:
