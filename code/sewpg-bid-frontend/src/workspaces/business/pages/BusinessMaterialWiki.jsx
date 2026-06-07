@@ -148,7 +148,7 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
         <div key={node.id}>
           <div
             style={{ paddingLeft: `${12 + level * 18}px` }}
-            className={`group flex items-center gap-2 pr-2 py-2 rounded-lg text-sm cursor-pointer transition-all border ${
+            className={`group flex items-center gap-2 pr-2 py-2 rounded-lg text-[13px] leading-[1.6] cursor-pointer transition-colors border ${
               selected
                 ? 'bg-primary/10 border-primary/20 text-primary'
                 : 'border-transparent hover:bg-surface-container-low text-on-surface-variant'
@@ -161,16 +161,16 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
                   event.stopPropagation()
                   toggleExpand(node)
                 }}
-                className="w-5 h-5 rounded hover:bg-surface-container-high flex items-center justify-center"
+                className="w-5 h-5 rounded flex items-center justify-center hover:text-on-surface"
               >
-                <span className="material-symbols-outlined text-sm text-outline">
+                <span className="material-symbols-outlined text-[16px] text-outline">
                   {expanded ? 'expand_more' : 'chevron_right'}
                 </span>
               </button>
             ) : (
               <span className="w-5 h-5" />
             )}
-            <span className={`material-symbols-outlined text-sm ${folder ? 'text-primary' : 'text-outline'}`}>
+            <span className={`material-symbols-outlined text-[16px] ${folder ? 'text-primary' : 'text-outline'}`}>
               {folder ? 'folder' : 'article'}
             </span>
             <span className={`truncate ${selected ? 'font-semibold text-primary' : ''}`}>
@@ -217,14 +217,14 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
             <button
               onClick={handleRefreshWiki}
               disabled={refreshingWiki || rebuildingWiki}
-              className="h-9 whitespace-nowrap rounded-lg bg-secondary-container px-3 text-sm font-medium text-on-secondary-container transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-9 whitespace-nowrap rounded-lg bg-primary px-3 text-[13px] leading-[1.6] font-medium text-on-primary transition-colors hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-50"
             >
               {refreshingWiki ? '刷新中...' : '刷新Wiki'}
             </button>
             <button
               onClick={handleRebuildWiki}
               disabled={refreshingWiki || rebuildingWiki}
-              className="h-9 whitespace-nowrap rounded-lg bg-surface-container-high px-3 text-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-9 whitespace-nowrap rounded-lg bg-surface-container-high px-3 text-[13px] leading-[1.6] font-medium text-on-surface-variant transition-colors hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
             >
               {rebuildingWiki ? '重建中...' : '重建Wiki'}
             </button>
@@ -232,29 +232,37 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
         )}
         basePath={materialsBasePath}
       />
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-        <div className="xl:col-span-3 bg-surface-container-lowest rounded-xl border border-surface-container-high flex flex-col min-h-[720px] max-h-[720px] overflow-hidden">
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-12 xl:items-stretch">
+        <div className="xl:col-span-3 bg-surface-container-lowest rounded-lg border border-outline-variant/45 flex flex-col max-h-[420px] xl:min-h-[720px] xl:max-h-[720px] overflow-hidden">
           <div className="px-4 py-4 border-b border-surface-container-high">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-on-surface">目录树</h3>
+                <h3 className="text-[14px] leading-[1.6] font-semibold text-on-surface">目录树</h3>
               </div>
             </div>
             {refreshing && (
-              <p className="text-xs text-outline rounded-lg bg-surface-container-high px-3 py-2">
-                正在同步最新树结构...
+              <p className="mt-3 flex items-center gap-2 rounded-lg bg-surface-container-high px-3 py-2 text-[13px] leading-[1.6] text-on-surface">
+                <span className="h-3.5 w-3.5 rounded-full border-2 border-outline-variant border-t-primary animate-spin" />
+                <span>正在同步最新树结构...</span>
               </p>
             )}
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-1">{renderTree(tree)}</div>
         </div>
 
-        <div className="xl:col-span-9 flex flex-col min-w-0">
-          <div className="bg-surface-container-lowest rounded-xl border border-surface-container-high overflow-hidden">
-            <div className="min-h-[520px]">
-              <div className="p-6 overflow-y-auto bg-white min-w-0">
-                <MarkdownLite content={selectedNode?.markdownContent || ''} />
-              </div>
+        <div className="xl:col-span-9 flex min-w-0 flex-col">
+          <div className="flex min-h-[520px] max-h-[720px] flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest">
+            <div className="min-h-0 flex-1 overflow-y-auto bg-white p-6">
+              {selectedNode?.markdownContent ? (
+                <MarkdownLite content={selectedNode.markdownContent} compact />
+              ) : (
+                <div className="flex min-h-[440px] items-center justify-center text-center">
+                  <div>
+                    <span className="material-symbols-outlined text-4xl text-outline/60">description</span>
+                    <p className="mt-2 text-sm text-on-surface-variant">暂无内容</p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

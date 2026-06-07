@@ -32,6 +32,13 @@ def _safe_segment(value: str, fallback: str) -> str:
     return text or fallback
 
 
+def _can_skip_default_folder(child_path: str, deleted_default_paths: set[str]) -> bool:
+    normalized = str(child_path or "").replace("\\", "/").strip("/")
+    if normalized.startswith(f"{BUSINESS_BID_TYPE}/"):
+        return False
+    return normalized in deleted_default_paths
+
+
 class RawFolderOperations:
     def __init__(self, *, ensure_runtime_tables: EnsureRuntimeTables) -> None:
         self._ensure_runtime_tables = ensure_runtime_tables
@@ -73,7 +80,7 @@ class RawFolderOperations:
             bid_type = str(spec["name"])
             for child in raw_material_tier_folder_specs(bid_type):
                 child_path = f"{bid_type}/{child['name']}"
-                if child_path in deleted_default_paths:
+                if _can_skip_default_folder(child_path, deleted_default_paths):
                     continue
                 await self.ensure_folder_path(
                     session,

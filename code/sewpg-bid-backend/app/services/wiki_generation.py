@@ -26,6 +26,7 @@ from app.services.identity import canonical_customer, classify_material_path, ma
 from app.services.business_material_store import business_material_store
 from app.services.business_wiki_blueprint import build_business_wiki_blueprint
 from app.services.material_tags import normalize_material_tags
+from app.services.material_taxonomy import infer_business_material_category, infer_business_material_subcategory
 from app.services.minio_client import minio_client
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.opencode_client import OpencodeClient
@@ -707,8 +708,19 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
     elif material_tier in {"customer", "project"}:
         scope = "定制"
     if bid_type == BUSINESS_BID_TYPE:
+        material_category = str(ext_fields.get("materialCategory") or "") or infer_business_material_category(
+            folder_path,
+            file_name,
+            material_tier,
+        )
+        material_subcategory = str(ext_fields.get("materialSubcategory") or "") or infer_business_material_subcategory(
+            folder_path,
+            file_name,
+        )
         group = "项目商务数据" if scope == "定制" else _classify_business_group(folder_path, file_name)
     else:
+        material_category = ""
+        material_subcategory = ""
         group = "项目数据" if scope == "定制" else _classify_material_group(folder_path, file_name)
     path = f"{folder_path}/{file_name}".strip("/")
     identity = material_identity(
@@ -747,6 +759,9 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
         "tags": tags,
         "businessMaterialKind": str(ext_fields.get("businessMaterialKind") or ""),
         "businessMaterialKindLabel": str(ext_fields.get("businessMaterialKindLabel") or ""),
+        "materialCategory": material_category,
+        "materialCategoryLabel": str(ext_fields.get("materialCategoryLabel") or ""),
+        "materialSubcategory": material_subcategory,
         "hasCleanedWord": has_cleaned_word,
         "cleanStatus": str(ext_fields.get("cleanStatus") or ""),
         "cleanMessage": str(ext_fields.get("cleanMessage") or ""),

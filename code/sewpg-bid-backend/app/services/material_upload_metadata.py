@@ -7,8 +7,12 @@ from app.services.bid_type import BUSINESS_BID_TYPE, GENERAL_BID_TYPE
 from app.services.identity import classify_material_path, material_identity
 from app.services.material_taxonomy import (
     BUSINESS_MATERIAL_KIND_LABELS,
+    BUSINESS_MATERIAL_CATEGORY_LABELS,
+    BUSINESS_MATERIAL_CATEGORY_SORT_ORDERS,
     MATERIAL_TIER_LABELS,
     clean_status_for_new_file,
+    infer_business_material_category,
+    infer_business_material_subcategory,
     normalize_business_material_kind,
     normalize_material_tier,
 )
@@ -97,10 +101,16 @@ def build_raw_upload_ext_fields(
     }
     if bid_type == BUSINESS_BID_TYPE:
         business_kind = normalize_business_material_kind(business_material_kind) or "other"
+        material_category = infer_business_material_category(folder_path, file_name, material_tier)
+        material_subcategory = infer_business_material_subcategory(folder_path, file_name)
         ext_fields.update(
             {
                 "businessMaterialKind": business_kind,
                 "businessMaterialKindLabel": BUSINESS_MATERIAL_KIND_LABELS.get(business_kind, ""),
+                "materialCategory": material_category,
+                "materialCategoryLabel": BUSINESS_MATERIAL_CATEGORY_LABELS.get(material_category, ""),
+                "materialSubcategory": material_subcategory,
+                "sortOrder": BUSINESS_MATERIAL_CATEGORY_SORT_ORDERS.get(material_category, 999),
             }
         )
     if turbine_hint:

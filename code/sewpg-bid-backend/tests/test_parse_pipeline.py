@@ -1206,7 +1206,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(approved.status_code, 200)
         approved_letter = approved.json()["letter"]
         self.assertEqual(approved_letter["assetReviewStatus"], "approved")
-        self.assertEqual(approved_letter["assetMaterialFolder"], "02-商务响应文件")
+        self.assertEqual(approved_letter["assetMaterialFolder"], "资格审查与商务响应成册")
 
     def test_business_bid_participating_promotes_parse_json_to_business_workspace(self) -> None:
         project_id = self.create_business_project()

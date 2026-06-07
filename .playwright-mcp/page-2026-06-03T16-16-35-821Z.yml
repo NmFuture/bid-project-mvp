@@ -1,0 +1,89 @@
+- generic [ref=e7]:
+  - generic [ref=e8]:
+    - generic [ref=e9]:
+      - img "上海电气" [ref=e11]
+      - generic [ref=e12]:
+        - generic [ref=e13]: 投标智能体平台
+        - generic [ref=e14]: 上海电气风电集团股份有限公司
+    - generic [ref=e15]:
+      - generic [ref=e16]:
+        - generic [ref=e17]: Bid Intelligence Platform
+        - heading "让标书工作 回归专业判断" [level=1] [ref=e18]:
+          - text: 让标书工作
+          - text: 回归专业判断
+        - paragraph [ref=e19]: 以 AI 替代重复性事务，把投标团队的精力集中在评分点应答、技术方案与商务谈判上。统一管理素材库与 Wiki，技术标与商务标双线协同，全过程审计可溯。
+      - generic [ref=e20]:
+        - generic [ref=e21]:
+          - generic [ref=e22]: document_scanner
+          - text: 招标文件结构化解析
+        - generic [ref=e23]:
+          - generic [ref=e24]: workspaces
+          - text: 技术标 · 商务标双线协同
+        - generic [ref=e25]:
+          - generic [ref=e26]: fact_check
+          - text: 评分点全量覆盖审计
+        - generic [ref=e27]:
+          - generic [ref=e28]: group
+          - text: 在线共创与版本溯源
+    - generic [ref=e29]:
+      - generic [ref=e30]: © 上海电气风电集团股份有限公司
+      - generic [ref=e31]: v 1.0
+  - generic [ref=e33]:
+    - generic [ref=e34]:
+      - generic [ref=e35]:
+        - heading "账号登录" [level=2] [ref=e36]
+        - paragraph [ref=e37]: 请使用您的统一身份账号
+      - generic [ref=e38]:
+        - generic [ref=e39]:
+          - generic [ref=e40]: 邮箱
+          - generic [ref=e41]:
+            - generic: mail
+            - textbox "请输入邮箱" [ref=e42]
+        - generic [ref=e43]:
+          - generic [ref=e44]: 密码
+          - generic [ref=e45]:
+            - generic: lock
+            - textbox "请输入密码" [ref=e46]
+        - generic [ref=e47]:
+          - generic [ref=e48] [cursor=pointer]:
+            - checkbox "保持登录" [checked] [ref=e49]
+            - text: 保持登录
+          - link "忘记密码？" [ref=e50] [cursor=pointer]:
+            - /url: "#"
+        - button "登录" [disabled] [ref=e51]
+      - generic [ref=e54]: 选择身份登录
+      - generic [ref=e56]:
+        - button "安 安博 T-1024 engineering T 风电技术高级工程师 · 技术中心 / 风电技术部 chevron_right" [ref=e57]:
+          - generic [ref=e58]: 安
+          - generic [ref=e59]:
+            - generic [ref=e60]:
+              - generic: 安博
+              - generic [ref=e61]: T-1024
+              - generic [ref=e62]:
+                - generic [ref=e63]: engineering
+                - text: T
+            - generic [ref=e64]: 风电技术高级工程师 · 技术中心 / 风电技术部
+          - generic [ref=e65]: chevron_right
+        - button "马 马哥 B-2308 request_quote B 商务标主管 · 商务中心 / 投标商务部 chevron_right" [ref=e66]:
+          - generic [ref=e67]: 马
+          - generic [ref=e68]:
+            - generic [ref=e69]:
+              - generic: 马哥
+              - generic [ref=e70]: B-2308
+              - generic [ref=e71]:
+                - generic [ref=e72]: request_quote
+                - text: B
+            - generic [ref=e73]: 商务标主管 · 商务中心 / 投标商务部
+          - generic [ref=e74]: chevron_right
+        - button "肖 肖哥 P-0517 workspaces TB 投标项目经理 · 投标管理中心 chevron_right" [ref=e75]:
+          - generic [ref=e76]: 肖
+          - generic [ref=e77]:
+            - generic [ref=e78]:
+              - generic: 肖哥
+              - generic [ref=e79]: P-0517
+              - generic [ref=e80]:
+                - generic [ref=e81]: workspaces
+                - text: TB
+            - generic [ref=e82]: 投标项目经理 · 投标管理中心
+          - generic [ref=e83]: chevron_right
+    - paragraph [ref=e84]: 安全声明 · 系统使用情况将留存审计日志

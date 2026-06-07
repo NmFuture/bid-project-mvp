@@ -144,7 +144,7 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
             "project",
         )
         self.assertEqual(
-            business_customized_tier_from_path("商务标/客户素材/华能集团/01-客户关系与专项证明"),
+            business_customized_tier_from_path("商务标/客户素材/华能集团/客户关系与专项证明"),
             "",
         )
 
@@ -166,9 +166,9 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
         self.assertEqual(
             [item["name"] for item in BUSINESS_CUSTOMIZED_SUBFOLDERS],
             [
-                "01-客户关系与专项证明",
-                "02-商务响应文件",
-                "03-模板底稿与过程文件",
+                "客户准入与专项证明",
+                "客户专用响应口径",
+                "客户模板与过程稿",
             ],
         )
 
@@ -202,7 +202,7 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
     def test_business_upload_metadata_sets_business_kind_and_identity(self) -> None:
         ext, clean_status = build_raw_upload_ext_fields(
             file_name="授权委托书.docx",
-            folder_path="商务标/客户素材/华能集团/02-商务响应文件",
+            folder_path="商务标/客户素材/华能集团/客户专用商务响应文件",
             folder_tier="customer",
             requested_bid_type="商务标",
             business_material_kind="fixed",
@@ -217,6 +217,8 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
         self.assertEqual(ext["bidType"], "商务标")
         self.assertEqual(ext["materialTier"], "customer")
         self.assertEqual(ext["businessMaterialKind"], "fixed")
+        self.assertEqual(ext["materialCategory"], "customer_response")
+        self.assertEqual(ext["materialCategoryLabel"], "客户专用响应口径")
         self.assertEqual(ext["customerId"], "CUST-HN")
         self.assertEqual(ext["customerName"], "华能集团")
         self.assertEqual(ext["cleanUpdatedAt"], "2026-05-24T00:00:00Z")
@@ -302,14 +304,14 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
 
     def test_raw_upload_target_plan_infers_business_customer_subfolder(self) -> None:
         plan = build_raw_upload_target_plan(
-            target_path="商务标/客户素材/华能集团/01-客户关系与专项证明",
+            target_path="商务标/客户素材/华能集团/客户关系与专项证明",
             bid_type="商务标",
         )
 
         self.assertEqual(plan["mode"], "scoped-path")
         self.assertEqual(plan["materialTier"], "customer")
         self.assertEqual(plan["customerName"], "华能集团")
-        self.assertEqual(plan["requestedPath"], "商务标/客户素材/华能集团/01-客户关系与专项证明")
+        self.assertEqual(plan["requestedPath"], "商务标/客户素材/华能集团/客户关系与专项证明")
 
     def test_raw_upload_target_plan_keeps_legacy_customer_aliases_canonicalizable(self) -> None:
         plan = build_raw_upload_target_plan(
@@ -324,10 +326,10 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
     def test_raw_upload_canonical_target_resolution(self) -> None:
         self.assertEqual(
             resolve_raw_upload_canonical_target(
-                "商务标/项目素材/BIZ-001/02-商务响应文件",
+                "商务标/项目素材/BIZ-001/项目商务响应文件",
                 "商务标/项目素材/BIZ-001",
             ),
-            {"mode": "nested", "relativeDir": "02-商务响应文件"},
+            {"mode": "nested", "relativeDir": "项目商务响应文件"},
         )
         self.assertEqual(
             resolve_raw_upload_canonical_target("客户素材/华能集团", "商务标/客户素材/华能集团")["mode"],
@@ -493,11 +495,14 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
 
     def test_business_folder_scope_rules_describe_standard_and_customized_children(self) -> None:
         standard_specs = business_standard_subfolder_specs("平台标准")
-        self.assertEqual(standard_specs[0]["name"], "01-资质合规库")
+        self.assertEqual(standard_specs[0]["name"], "资格审查与基础证明")
         self.assertEqual(standard_specs[0]["bidType"], "商务标")
         self.assertEqual(standard_specs[0]["customerName"], "平台标准")
-        certificate_specs = [item for item in standard_specs if item["name"] == "05-专题证书库"][0]
-        self.assertEqual([child["name"] for child in certificate_specs["children"]], ["01-机型认证证书", "02-大部件型式认证证书"])
+        self.assertEqual(standard_specs[0]["materialCategory"], "qualification_evidence")
+        self.assertEqual(
+            [item["name"] for item in standard_specs],
+            ["资格审查与基础证明", "制造商与供应链材料", "机型认证与测试报告", "企业能力与综合实力", "通用表单与模板"],
+        )
 
         customized_specs = business_customized_subfolder_specs(
             tier="project",
@@ -566,7 +571,14 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
     def test_raw_folder_move_scope_rules_protect_roots_and_descendants(self) -> None:
         self.assertTrue(is_raw_folder_move_protected_path("技术标"))
         self.assertTrue(is_raw_folder_move_protected_path("商务标"))
-        self.assertFalse(is_raw_folder_move_protected_path("商务标/客户素材/华能集团"))
+        self.assertTrue(is_raw_folder_move_protected_path("商务标/通用素材"))
+        self.assertTrue(is_raw_folder_move_protected_path("商务标/客户素材"))
+        self.assertTrue(is_raw_folder_move_protected_path("商务标/项目素材"))
+        self.assertTrue(is_raw_folder_move_protected_path("商务标/客户素材/华能集团"))
+        self.assertTrue(is_raw_folder_move_protected_path("商务标/项目素材/BIZ-001"))
+        self.assertTrue(is_raw_folder_move_protected_path("商务标/客户素材/华能集团/客户专用响应口径"))
+        self.assertTrue(is_raw_folder_move_protected_path("商务标/客户素材/华能集团/客户专用商务响应文件"))
+        self.assertFalse(is_raw_folder_move_protected_path("商务标/客户素材/华能集团/临时目录"))
         self.assertTrue(
             is_raw_folder_move_descendant_target(
                 "商务标/客户素材/华能集团",
@@ -756,44 +768,45 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
 
 
 class RawMaterialProtectedFolderTests(unittest.IsolatedAsyncioTestCase):
-    async def test_bid_material_tier_roots_can_be_deleted(self) -> None:
+    async def test_technical_tier_roots_can_be_deleted_but_business_tier_roots_are_protected(self) -> None:
         expected_deletable = {
             "技术标/通用素材",
             "技术标/客户素材",
             "技术标/项目素材",
-            "商务标/通用素材",
-            "商务标/客户素材",
-            "商务标/项目素材",
         }
 
         for folder_path in expected_deletable:
             self.assertNotIn(folder_path, RAW_MATERIAL_PROTECTED_FOLDER_PATHS)
             self.assertFalse(is_raw_material_protected_folder_path(folder_path))
 
-        for folder_path in {"技术标", "商务标"}:
+        for folder_path in {"技术标", "商务标", "商务标/通用素材", "商务标/客户素材", "商务标/项目素材"}:
             self.assertIn(folder_path, RAW_MATERIAL_PROTECTED_FOLDER_PATHS)
             self.assertTrue(is_raw_material_protected_folder_path(folder_path))
 
     async def test_auto_bootstrapped_business_folders_cannot_be_deleted(self) -> None:
         expected_static_paths = {
-            "商务标/通用素材/01-资质合规库",
-            "商务标/通用素材/02-企业能力库",
-            "商务标/通用素材/03-业绩资产池",
-            "商务标/通用素材/04-财务资料库",
-            "商务标/通用素材/05-专题证书库",
-            "商务标/通用素材/05-专题证书库/01-机型认证证书",
-            "商务标/通用素材/05-专题证书库/02-大部件型式认证证书",
-            "商务标/通用素材/06-通用模板底稿库",
+            "商务标/通用素材",
+            "商务标/客户素材",
+            "商务标/项目素材",
+            "商务标/通用素材/资格审查与基础证明",
+            "商务标/通用素材/制造商与供应链材料",
+            "商务标/通用素材/机型认证与测试报告",
+            "商务标/通用素材/企业能力与综合实力",
+            "商务标/通用素材/通用表单与模板",
         }
         self.assertTrue(expected_static_paths.issubset(RAW_MATERIAL_PROTECTED_FOLDER_PATHS))
+        self.assertTrue(is_raw_material_protected_folder_path("商务标/通用素材/专题证书库/机型认证证书"))
+        self.assertTrue(is_raw_material_protected_folder_path("商务标/通用素材/通用模板底稿库"))
 
         dynamic_paths = {
-            "商务标/客户素材/华能集团/01-客户关系与专项证明",
-            "商务标/客户素材/华能集团/02-商务响应文件",
-            "商务标/客户素材/华能集团/03-模板底稿与过程文件",
-            "商务标/项目素材/MAT-BIZ-HN-001/01-客户关系与专项证明",
-            "商务标/项目素材/MAT-BIZ-HN-001/02-商务响应文件",
-            "商务标/项目素材/MAT-BIZ-HN-001/03-模板底稿与过程文件",
+            "商务标/客户素材/华能集团",
+            "商务标/客户素材/华能集团/客户准入与专项证明",
+            "商务标/客户素材/华能集团/客户专用响应口径",
+            "商务标/客户素材/华能集团/客户模板与过程稿",
+            "商务标/项目素材/MAT-BIZ-HN-001",
+            "商务标/项目素材/MAT-BIZ-HN-001/招标要求与专项证明",
+            "商务标/项目素材/MAT-BIZ-HN-001/资格审查与商务响应成册",
+            "商务标/项目素材/MAT-BIZ-HN-001/项目模板与过程稿",
         }
         for folder_path in expected_static_paths | dynamic_paths:
             self.assertTrue(is_raw_material_protected_folder_path(folder_path))
@@ -802,6 +815,8 @@ class RawMaterialProtectedFolderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(context.exception.code, "RAW_FOLDER_DELETE_PROTECTED")
 
         self.assertFalse(is_raw_material_protected_folder_path("商务标/客户素材/华能集团/临时目录"))
+        self.assertFalse(is_raw_material_protected_folder_path("商务标/客户素材/华能集团/资格审查与商务响应成册"))
+        self.assertFalse(is_raw_material_protected_folder_path("商务标/项目素材/MAT-BIZ-HN-001/客户专用响应口径"))
 
 
 class BusinessPerformanceLibraryTests(unittest.IsolatedAsyncioTestCase):
@@ -1000,7 +1015,7 @@ class BusinessPerformanceLibraryTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "id": "RAW-0001",
                         "name": "授权书.docx",
-                        "folderPath": "商务标/通用素材/01-资质合规库",
+                        "folderPath": "商务标/通用素材/主体资质与基础证照",
                         "materialTier": "standard",
                         "tags": ["授权"],
                     }

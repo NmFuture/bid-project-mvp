@@ -156,6 +156,13 @@ async def confirm_business_material_split(
             continue
         if item.get("selected") is False:
             continue
+        material_type = str(item.get("materialType") or planned.get("materialType") or "商务素材片段")
+        if material_type == "业绩订单":
+            raise PeripheralError(
+                400,
+                "业绩订单类片段请走业绩库导入，不再写入商务标通用素材目录。",
+                "BUSINESS_SPLIT_PERFORMANCE_REQUIRES_LIBRARY",
+            )
         selected.append(
             {
                 **planned,
@@ -165,7 +172,7 @@ async def confirm_business_material_split(
                     planned["suggestedFileName"],
                 ),
                 "suggestedPath": str(item.get("targetPath") or item.get("suggestedPath") or planned.get("suggestedPath") or default_target_path or source["folderPath"]).strip().strip("/"),
-                "materialType": str(item.get("materialType") or planned.get("materialType") or "商务素材片段"),
+                "materialType": material_type,
             }
         )
 
@@ -292,7 +299,7 @@ def _build_split_plan(source: dict[str, Any], *, target_path: str = "") -> list[
                 "contentPreview": content_preview,
                 "confidence": _confidence(title, content_preview, risks),
                 "riskTips": risks,
-                "selected": len(content_preview) >= 20 or material_type in {"证书", "承诺书模板", "商务附件模板"},
+                "selected": material_type != "业绩订单" and (len(content_preview) >= 20 or material_type in {"证书", "承诺书模板", "商务附件模板"}),
             }
         )
     fragments.extend(_build_order_table_fragments(source, blocks, target_path=target_path, start_ordinal=len(fragments) + 1))
@@ -1033,17 +1040,15 @@ def _suggest_target_path(source: dict[str, Any], material_type: str, title: str,
     folder_path = str(source.get("folderPath") or "").strip().strip("/")
     tier_path = _tier_root_path(source) or f"{BUSINESS_BID_TYPE}/通用素材"
     if material_type == "证书":
-        if "部件" in title or "大部件" in title:
-            return f"{BUSINESS_BID_TYPE}/通用素材/05-专题证书库/02-大部件型式认证证书"
-        return f"{BUSINESS_BID_TYPE}/通用素材/05-专题证书库/01-机型认证证书"
+        return f"{BUSINESS_BID_TYPE}/通用素材/机型认证与测试报告"
     if material_type == "业绩订单":
-        return f"{BUSINESS_BID_TYPE}/通用素材/03-业绩资产池"
+        return ""
     if material_type in {"承诺书模板", "商务附件模板"}:
         if "/项目素材/" in folder_path:
-            return f"{tier_path}/03-模板底稿与过程文件"
+            return f"{tier_path}/项目模板与过程稿"
         if "/客户素材/" in folder_path:
-            return f"{tier_path}/03-模板底稿与过程文件"
-        return f"{BUSINESS_BID_TYPE}/通用素材/06-通用模板底稿库"
+            return f"{tier_path}/客户模板与过程稿"
+        return f"{BUSINESS_BID_TYPE}/通用素材/通用表单与模板"
     return folder_path or tier_path
 
 
@@ -1085,6 +1090,7 @@ def _risk_tips(title: str, preview: str, material_type: str) -> list[str]:
     if material_type == "证书" and not re.search(r"20[0-9]{2}[-./年]", preview):
         tips.append("未识别到明显有效期，证书有效期需人工复核。")
     if material_type == "业绩订单":
+        tips.append("业绩订单类片段不再写入通用素材目录；请走业绩库导入或合同包上传链路。")
         if not any(keyword in preview for keyword in ("合同", "订单", "中标", "项目")):
             tips.append("未识别到明显项目/合同/订单字段，需人工确认是否为独立业绩素材。")
         if not re.search(r"20[0-9]{2}", preview):
@@ -1348,7 +1354,7 @@ def _build_order_table_fragments(
                     "contentPreview": preview[:420],
                     "confidence": _confidence(title, preview, risks),
                     "riskTips": risks,
-                    "selected": True,
+                    "selected": False,
                 }
             )
             ordinal += 1

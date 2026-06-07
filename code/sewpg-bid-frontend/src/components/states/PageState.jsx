@@ -1,6 +1,10 @@
-export function PageLoading({ title = '加载中...', description = '正在获取最新数据。' }) {
+export function PageLoading({
+  title = '加载中...',
+  description = '正在获取最新数据。',
+  containerClassName = 'min-h-[40vh]',
+}) {
   return (
-    <div className="min-h-[40vh] flex items-center justify-center">
+    <div className={`flex items-center justify-center ${containerClassName}`.trim()}>
       <div className="w-full max-w-xl rounded-xl bg-surface-container-lowest border border-surface-container-high p-8 text-center">
         <div className="mx-auto h-10 w-10 rounded-full border-2 border-outline-variant border-t-primary animate-spin" />
         <h3 className="mt-4 text-lg font-semibold text-on-surface">{title}</h3>

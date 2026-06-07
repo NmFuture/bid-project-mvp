@@ -29,9 +29,9 @@ from app.services.workspace_project_access import (
 from app.services.workspace_artifacts import workspace_parse_dir
 
 
-BUSINESS_APPENDIX_MATERIAL_FOLDER = "02-商务响应文件"
-BUSINESS_SCORING_MATERIAL_FOLDER = "03-模板底稿与过程文件"
-BUSINESS_COMMITMENT_MATERIAL_FOLDER = "02-商务响应文件"
+BUSINESS_APPENDIX_MATERIAL_FOLDER = "资格审查与商务响应成册"
+BUSINESS_SCORING_MATERIAL_FOLDER = "项目模板与过程稿"
+BUSINESS_COMMITMENT_MATERIAL_FOLDER = "资格审查与商务响应成册"
 BUSINESS_PARSE_ASSET_SCHEMA_VERSION = "business-parse-assets-v1"
 
 

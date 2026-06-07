@@ -17,36 +17,70 @@ BUSINESS_ROOT_TITLES = [
     "05-使用规则",
 ]
 COMMON_GROUPS = [
-    "01-资质合规库",
-    "02-企业能力库",
-    "03-业绩资产池",
-    "04-财务资料库",
-    "05-专题证书库",
-    "06-通用模板底稿库",
+    "资格审查文件",
+    "主体资质与基础证照",
+    "财务信用与合规声明",
+    "企业能力与综合实力",
+    "专题证书库",
+    "通用模板底稿库",
 ]
 SPECIAL_COMMON_SUBGROUPS = {
-    "05-专题证书库": ["01-机型认证证书", "02-大部件型式认证证书"],
+    "资格审查文件": ["主体资质与基础证照", "体系认证证书", "信用与失信查询截图", "资格审查表与承诺"],
+    "专题证书库": ["机型认证证书", "大部件型式认证证书"],
 }
 CUSTOM_GROUPS = [
-    "01-客户关系与专项证明",
-    "02-商务响应文件",
-    "03-模板底稿与过程文件",
+    "客户关系与专项证明",
+    "客户专用商务响应文件",
+    "客户模板底稿与过程文件",
 ]
+PROJECT_GROUPS = [
+    "项目专项证明与客户要求",
+    "项目商务响应文件",
+    "项目模板底稿与过程文件",
+]
+OLD_GROUP_ALIASES = {
+    "01-资质合规库": "主体资质与基础证照",
+    "资质合规库": "主体资质与基础证照",
+    "资格审查文件": "资格审查文件",
+    "02-企业能力库": "企业能力与综合实力",
+    "企业能力库": "企业能力与综合实力",
+    "04-财务资料库": "财务信用与合规声明",
+    "财务资料库": "财务信用与合规声明",
+    "05-专题证书库": "专题证书库",
+    "01-机型认证证书": "机型认证证书",
+    "02-大部件型式认证证书": "大部件型式认证证书",
+    "06-通用模板底稿库": "通用模板底稿库",
+    "01-客户关系与专项证明": "客户关系与专项证明",
+    "02-商务响应文件": "客户专用商务响应文件",
+    "03-模板底稿与过程文件": "客户模板底稿与过程文件",
+}
+MATERIAL_CATEGORY_LABELS = {
+    "qualification_review": "资格审查文件",
+    "subject_qualification": "主体资质与基础证照",
+    "management_system_certification": "体系认证证书",
+    "credit_query_screenshot": "信用与失信查询截图",
+    "qualification_form_commitment": "资格审查表与承诺",
+    "financial_credit_compliance": "财务信用与合规声明",
+    "enterprise_capability": "企业能力与综合实力",
+    "special_certificate": "专题证书库",
+    "template_draft": "通用模板底稿库",
+    "customer_relationship_proof": "客户关系与专项证明",
+    "customer_response": "客户专用商务响应文件",
+    "customer_template_process": "客户模板底稿与过程文件",
+    "project_requirement_proof": "项目专项证明与客户要求",
+    "project_response": "项目商务响应文件",
+    "project_template_process": "项目模板底稿与过程文件",
+}
 MODULE_CONFIGS = [
     {
         "module_code": "BM-01",
         "module_name": "01-商务评分索引表",
         "usage_mode": "reference_only",
-        "path_prefixes": [
-            "通用素材/01-资质合规库",
-            "通用素材/02-企业能力库",
-            "通用素材/03-业绩资产池",
-            "客户素材/*/01-客户关系与专项证明",
-            "项目素材/*/01-客户关系与专项证明",
-        ],
-        "categories": ["资格资质", "企业能力", "业绩证明", "客户关系与专项证明"],
+        "path_prefixes": [],
+        "material_categories": ["qualification_review", "subject_qualification", "management_system_certification", "credit_query_screenshot", "enterprise_capability", "customer_relationship_proof", "project_requirement_proof"],
+        "categories": ["资格审查文件", "主体资质与基础证照", "体系认证证书", "信用与失信查询截图", "企业能力与综合实力", "客户关系与专项证明", "项目专项证明与客户要求"],
         "keywords": ["评分", "评价", "资质", "证书", "业绩", "示范应用", "优秀供应商", "框架协议"],
-        "fallback_scope": "当前身份可读范围下的资质、能力、业绩、客户关系材料",
+        "fallback_scope": "当前身份可读范围下的资质、能力、客户关系材料；业绩评分点引用业绩库。",
         "missing_hint": "补充与评分点直接对应的资质、业绩或客户关系证明材料。",
     },
     {
@@ -54,11 +88,12 @@ MODULE_CONFIGS = [
         "module_name": "02-投标函与授权模块",
         "usage_mode": "extract_fields",
         "path_prefixes": [
-            "通用素材/06-通用模板底稿库",
-            "客户素材/*/02-商务响应文件",
-            "项目素材/*/02-商务响应文件",
+            "通用素材/通用模板底稿库",
+            "客户素材/*/客户专用商务响应文件",
+            "项目素材/*/项目商务响应文件",
         ],
-        "categories": ["法定代表人/授权", "商务响应文件", "模板底稿"],
+        "material_categories": ["template_draft", "customer_response", "project_response"],
+        "categories": ["法定代表人/授权", "客户专用商务响应文件", "项目商务响应文件", "通用模板底稿库"],
         "keywords": ["投标函", "授权", "委托", "法定代表人", "签字", "盖章", "授权书"],
         "fallback_scope": "当前项目/客户的商务响应文件与通用模板底稿",
         "missing_hint": "补充本项目投标函、授权委托书或对应空白模板。",
@@ -67,8 +102,9 @@ MODULE_CONFIGS = [
         "module_code": "BM-03",
         "module_name": "03-投标价格表模块",
         "usage_mode": "fill_table",
-        "path_prefixes": ["客户素材/*/02-商务响应文件", "项目素材/*/02-商务响应文件"],
-        "categories": ["报价与分项表", "商务响应文件"],
+        "path_prefixes": ["客户素材/*/客户专用商务响应文件", "项目素材/*/项目商务响应文件"],
+        "material_categories": ["customer_response", "project_response"],
+        "categories": ["报价与分项表", "客户专用商务响应文件", "项目商务响应文件"],
         "keywords": ["投标价格", "报价", "分项报价", "总价", "价格表", "报价表"],
         "fallback_scope": "当前项目的商务响应文件与整理底稿",
         "missing_hint": "补充本项目投标价格表或报价数据源。",
@@ -77,8 +113,9 @@ MODULE_CONFIGS = [
         "module_code": "BM-04",
         "module_name": "04-货物规格一览表模块",
         "usage_mode": "fill_table",
-        "path_prefixes": ["客户素材/*/02-商务响应文件", "项目素材/*/02-商务响应文件"],
-        "categories": ["报价与分项表", "商务响应文件"],
+        "path_prefixes": ["客户素材/*/客户专用商务响应文件", "项目素材/*/项目商务响应文件"],
+        "material_categories": ["customer_response", "project_response"],
+        "categories": ["报价与分项表", "客户专用商务响应文件", "项目商务响应文件"],
         "keywords": ["规格", "货物规格", "一览表", "供货范围", "参数表", "配置表"],
         "fallback_scope": "当前项目的商务响应文件与过程底稿",
         "missing_hint": "补充货物规格一览表或可回填该表的数据底稿。",
@@ -87,8 +124,9 @@ MODULE_CONFIGS = [
         "module_code": "BM-05",
         "module_name": "05-商务偏差表模块",
         "usage_mode": "fill_table",
-        "path_prefixes": ["客户素材/*/02-商务响应文件", "项目素材/*/02-商务响应文件"],
-        "categories": ["商务偏差", "商务响应文件"],
+        "path_prefixes": ["客户素材/*/客户专用商务响应文件", "项目素材/*/项目商务响应文件"],
+        "material_categories": ["customer_response", "project_response"],
+        "categories": ["商务偏差", "客户专用商务响应文件", "项目商务响应文件"],
         "keywords": ["商务偏差", "偏差表", "偏离", "响应表"],
         "fallback_scope": "当前项目的商务响应文件",
         "missing_hint": "补充商务偏差表或合同条款响应底稿。",
@@ -98,11 +136,12 @@ MODULE_CONFIGS = [
         "module_name": "06-投标保证金模块",
         "usage_mode": "attach_whole",
         "path_prefixes": [
-            "客户素材/*/02-商务响应文件",
-            "项目素材/*/02-商务响应文件",
-            "通用素材/04-财务资料库",
+            "客户素材/*/客户专用商务响应文件",
+            "项目素材/*/项目商务响应文件",
+            "通用素材/财务信用与合规声明",
         ],
-        "categories": ["投标保证金", "财务与信用", "商务响应文件"],
+        "material_categories": ["financial_credit_compliance", "customer_response", "project_response"],
+        "categories": ["投标保证金", "财务信用与合规声明", "客户专用商务响应文件", "项目商务响应文件"],
         "keywords": ["保证金", "回单", "保函", "电汇", "担保", "银行"],
         "fallback_scope": "当前项目商务响应文件与财务资料库",
         "missing_hint": "补充投标保证金回单、保函或对应支付凭证。",
@@ -112,11 +151,12 @@ MODULE_CONFIGS = [
         "module_name": "07-履约保证承诺模块",
         "usage_mode": "attach_whole",
         "path_prefixes": [
-            "通用素材/06-通用模板底稿库",
-            "客户素材/*/02-商务响应文件",
-            "项目素材/*/02-商务响应文件",
+            "通用素材/通用模板底稿库",
+            "客户素材/*/客户专用商务响应文件",
+            "项目素材/*/项目商务响应文件",
         ],
-        "categories": ["承诺函件", "商务响应文件", "模板底稿"],
+        "material_categories": ["template_draft", "customer_response", "project_response"],
+        "categories": ["承诺函件", "客户专用商务响应文件", "项目商务响应文件", "通用模板底稿库"],
         "keywords": ["履约", "保证函", "承诺书", "履约保证", "承诺"],
         "fallback_scope": "当前项目商务响应文件与通用模板底稿",
         "missing_hint": "补充履约保证函格式承诺书或项目定制承诺件。",
@@ -126,35 +166,39 @@ MODULE_CONFIGS = [
         "module_name": "08-资格证明文件模块（附件7）",
         "usage_mode": "attach_whole",
         "path_prefixes": [
-            "通用素材/01-资质合规库",
-            "通用素材/04-财务资料库",
-            "通用素材/05-专题证书库",
+            "通用素材/资格审查文件",
+            "通用素材/主体资质与基础证照",
+            "通用素材/财务信用与合规声明",
+            "通用素材/专题证书库",
         ],
-        "categories": ["资格资质", "财务与信用", "专题证书"],
-        "keywords": ["营业执照", "资质", "认证", "信用", "资信", "纳税", "开户", "证书"],
-        "fallback_scope": "通用素材的资质、财务、专题证书范围",
-        "missing_hint": "补充资格证明文件所需的营业执照、资质、认证、资信或信用截图。",
+        "material_categories": ["qualification_review", "subject_qualification", "management_system_certification", "credit_query_screenshot", "qualification_form_commitment", "financial_credit_compliance", "special_certificate"],
+        "categories": ["资格审查文件", "主体资质与基础证照", "体系认证证书", "信用与失信查询截图", "资格审查表与承诺", "财务信用与合规声明", "专题证书库"],
+        "keywords": ["资格审查", "营业执照", "资质", "体系认证", "质量管理体系", "环境管理体系", "职业健康安全", "信用中国", "严重违法失信", "失信被执行", "资信", "纳税", "开户", "证书"],
+        "fallback_scope": "通用素材的资格审查文件、资质、体系认证、信用查询、财务信用与专题证书范围",
+        "missing_hint": "补充资格审查文件所需的营业执照、体系认证、信用/失信查询截图、资信或专题证书。",
     },
     {
         "module_code": "BM-09",
         "module_name": "09-业绩情况表模块（附件7I）",
         "usage_mode": "fill_table",
         "path_prefixes": [
-            "通用素材/03-业绩资产池",
-            "客户素材/*/01-客户关系与专项证明",
-            "项目素材/*/01-客户关系与专项证明",
+            "客户素材/*/客户关系与专项证明",
+            "项目素材/*/项目专项证明与客户要求",
         ],
-        "categories": ["业绩证明", "客户关系与专项证明"],
+        "source_types": ["performance"],
+        "material_categories": ["customer_relationship_proof", "project_requirement_proof"],
+        "categories": ["业绩库引用", "客户关系与专项证明", "项目专项证明与客户要求"],
         "keywords": ["业绩", "合同", "中标通知书", "验收", "运行", "240h", "示范应用"],
-        "fallback_scope": "业绩资产池与客户专项证明材料",
-        "missing_hint": "补充可筛选的合同、通知书、运行证明或示范应用证明。",
+        "fallback_scope": "业绩库 performance_items 与客户/项目专项证明材料",
+        "missing_hint": "通过业绩库补充可筛选的合同、通知书、运行证明或示范应用证明。",
     },
     {
         "module_code": "BM-10",
         "module_name": "10-开标价格表模块",
         "usage_mode": "fill_table",
-        "path_prefixes": ["客户素材/*/02-商务响应文件", "项目素材/*/02-商务响应文件"],
-        "categories": ["报价与分项表", "商务响应文件"],
+        "path_prefixes": ["客户素材/*/客户专用商务响应文件", "项目素材/*/项目商务响应文件"],
+        "material_categories": ["customer_response", "project_response"],
+        "categories": ["报价与分项表", "客户专用商务响应文件", "项目商务响应文件"],
         "keywords": ["开标", "开标价格表", "唱标", "报价"],
         "fallback_scope": "当前项目商务响应文件",
         "missing_hint": "补充开标价格表或与其一一对应的报价底稿。",
@@ -164,12 +208,13 @@ MODULE_CONFIGS = [
         "module_name": "11-其他说明与承诺模块（附件9）",
         "usage_mode": "attach_whole",
         "path_prefixes": [
-            "客户素材/*/02-商务响应文件",
-            "项目素材/*/02-商务响应文件",
-            "客户素材/*/03-模板底稿与过程文件",
-            "项目素材/*/03-模板底稿与过程文件",
+            "客户素材/*/客户专用商务响应文件",
+            "项目素材/*/项目商务响应文件",
+            "客户素材/*/客户模板底稿与过程文件",
+            "项目素材/*/项目模板底稿与过程文件",
         ],
-        "categories": ["承诺函件", "商务响应文件", "模板底稿与过程文件"],
+        "material_categories": ["customer_response", "project_response", "customer_template_process", "project_template_process"],
+        "categories": ["承诺函件", "客户专用商务响应文件", "项目商务响应文件", "模板底稿与过程文件"],
         "keywords": ["附件9", "其他说明", "补充说明", "承诺", "声明", "效力说明", "廉洁"],
         "fallback_scope": "当前项目商务响应文件与过程底稿",
         "missing_hint": "补充附件9、专项声明、效力说明或其他承诺文件。",
@@ -179,25 +224,28 @@ MODULE_CONFIGS = [
         "module_name": "12-否决项与符合性响应模块",
         "usage_mode": "extract_fields",
         "path_prefixes": [
-            "客户素材/*/02-商务响应文件",
-            "项目素材/*/02-商务响应文件",
-            "通用素材/01-资质合规库",
+            "客户素材/*/客户专用商务响应文件",
+            "项目素材/*/项目商务响应文件",
+            "通用素材/资格审查文件",
+            "通用素材/主体资质与基础证照",
         ],
-        "categories": ["商务响应文件", "资格资质", "承诺函件"],
-        "keywords": ["否决", "符合性", "响应", "必须", "不得", "承诺", "资格"],
-        "fallback_scope": "当前项目商务响应文件与必要资质证明",
-        "missing_hint": "补充否决项响应表、符合性声明或直接支撑的资格材料。",
+        "material_categories": ["customer_response", "project_response", "qualification_review", "subject_qualification", "management_system_certification", "credit_query_screenshot", "qualification_form_commitment"],
+        "categories": ["客户专用商务响应文件", "项目商务响应文件", "资格审查文件", "主体资质与基础证照", "体系认证证书", "信用与失信查询截图", "资格审查表与承诺", "承诺函件"],
+        "keywords": ["否决", "符合性", "响应", "必须", "不得", "承诺", "资格", "信用中国", "严重违法失信", "失信被执行"],
+        "fallback_scope": "当前项目商务响应文件与资格审查文件",
+        "missing_hint": "补充否决项响应表、符合性声明、信用查询截图或直接支撑的资格材料。",
     },
     {
         "module_code": "BM-13",
         "module_name": "13-供应链协同模块",
         "usage_mode": "reference_only",
         "path_prefixes": [
-            "通用素材/02-企业能力库",
-            "客户素材/*/01-客户关系与专项证明",
-            "项目素材/*/01-客户关系与专项证明",
+            "通用素材/企业能力与综合实力",
+            "客户素材/*/客户关系与专项证明",
+            "项目素材/*/项目专项证明与客户要求",
         ],
-        "categories": ["企业能力", "客户关系与专项证明"],
+        "material_categories": ["enterprise_capability", "customer_relationship_proof", "project_requirement_proof"],
+        "categories": ["企业能力与综合实力", "客户关系与专项证明", "项目专项证明与客户要求"],
         "keywords": ["供应链", "协同", "战略协议", "框架协议", "产能", "服务能力", "合作"],
         "fallback_scope": "企业能力与客户关系专项证明材料",
         "missing_hint": "补充供应链协同、战略合作或服务协同证明。",
@@ -249,7 +297,59 @@ def source_path(item: dict[str, Any]) -> str:
 
 
 def source_segments(item: dict[str, Any]) -> list[str]:
-    return [segment for segment in source_path(item).split("/") if segment]
+    return [normalize_group_name(segment) for segment in source_path(item).split("/") if segment]
+
+
+def normalize_group_name(value: Any) -> str:
+    text = str(value or "").strip()
+    return OLD_GROUP_ALIASES.get(text, text)
+
+
+def normalize_material_category(value: Any) -> str:
+    text = str(value or "").strip()
+    if text in MATERIAL_CATEGORY_LABELS:
+        return text
+    label_to_category = {label: category for category, label in MATERIAL_CATEGORY_LABELS.items()}
+    if text in label_to_category:
+        return label_to_category[text]
+    normalized_group = normalize_group_name(text)
+    return label_to_category.get(normalized_group, "")
+
+
+def infer_material_category_from_text(path: str, title: str, tier: str, group_name: str) -> str:
+    category = normalize_material_category(group_name)
+    if category:
+        if tier == "项目素材" and category == "customer_relationship_proof":
+            return "project_requirement_proof"
+        if tier == "项目素材" and category == "customer_response":
+            return "project_response"
+        if tier == "项目素材" and category == "customer_template_process":
+            return "project_template_process"
+        return category
+    text = f"{path}/{title}"
+    if tier == "客户素材":
+        if any(token in text for token in ("关系", "专项证明", "授权", "评价", "框架协议", "战略协议")):
+            return "customer_relationship_proof"
+        if any(token in text for token in ("模板", "底稿", "过程")):
+            return "customer_template_process"
+        return "customer_response"
+    if tier == "项目素材":
+        if any(token in text for token in ("客户要求", "专项证明", "补充说明", "关系", "授权")):
+            return "project_requirement_proof"
+        if any(token in text for token in ("模板", "底稿", "过程")):
+            return "project_template_process"
+        return "project_response"
+    if any(token in text for token in ("机型认证", "型式认证", "证书", "部件", "认证证书")):
+        return "special_certificate"
+    if any(token in text for token in ("财务", "审计", "报表", "银行", "纳税", "信用", "无违法", "无行贿", "无重大")):
+        return "financial_credit_compliance"
+    if any(token in text for token in ("营业执照", "生产许可证", "安全生产", "资质", "体系认证", "开户")):
+        return "subject_qualification"
+    if any(token in text for token in ("公司介绍", "制造", "基地", "服务能力", "质量", "专利", "奖项", "装机", "产能")):
+        return "enterprise_capability"
+    if any(token in text for token in ("模板", "底稿", "空白", "投标函", "授权书", "报价表", "偏差表", "承诺函", "资格审查表")):
+        return "template_draft"
+    return ""
 
 
 def identity_scope(item: dict[str, Any]) -> str:
@@ -287,11 +387,11 @@ def bucket_name(item: dict[str, Any], tier: str, segments: list[str]) -> str:
 def second_group(item: dict[str, Any], tier: str, segments: list[str]) -> str:
     if tier == "通用素材":
         if len(segments) > 1:
-            return segments[1]
+            return normalize_group_name(segments[1])
         return infer_common_group(source_path(item), material_title(item))
     if len(segments) > 2:
-        return segments[2]
-    return "02-商务响应文件"
+        return normalize_group_name(segments[2])
+    return "项目商务响应文件" if tier == "项目素材" else "客户专用商务响应文件"
 
 
 def third_group(item: dict[str, Any], tier: str, group_name: str, segments: list[str]) -> str:
@@ -303,27 +403,27 @@ def third_group(item: dict[str, Any], tier: str, group_name: str, segments: list
 
 
 def infer_special_common_subgroup(path: str, title: str, group_name: str) -> str:
-    if group_name != "05-专题证书库":
+    if normalize_group_name(group_name) != "专题证书库":
         return ""
     text = f"{path}/{title}"
     if any(token in text for token in ("叶片", "齿轮箱", "主轴", "发电机", "机舱", "轮毂", "大部件", "型式认证")):
-        return "02-大部件型式认证证书"
-    return "01-机型认证证书"
+        return "大部件型式认证证书"
+    return "机型认证证书"
 
 
 def infer_common_group(path: str, title: str) -> str:
     text = f"{path}/{title}"
     if any(token in text for token in ("机型认证", "型式认证", "证书", "部件")):
-        return "05-专题证书库"
-    if any(token in text for token in ("营业执照", "资质", "认证", "信用", "资信", "纳税", "开户")):
-        return "01-资质合规库"
+        return "专题证书库"
+    if any(token in text for token in ("财务", "审计", "报表", "银行", "纳税", "信用", "无违法", "无行贿", "无重大")):
+        return "财务信用与合规声明"
+    if any(token in text for token in ("营业执照", "资质", "认证", "开户", "生产许可证", "安全生产")):
+        return "主体资质与基础证照"
     if any(token in text for token in ("组织架构", "能力", "工厂", "产能", "服务", "专利", "奖项", "质量管理")):
-        return "02-企业能力库"
+        return "企业能力与综合实力"
     if any(token in text for token in ("业绩", "合同", "中标通知书", "运行", "240h", "验收")):
-        return "03-业绩资产池"
-    if any(token in text for token in ("财务", "审计", "报表")):
-        return "04-财务资料库"
-    return "06-通用模板底稿库"
+        return "企业能力与综合实力"
+    return "通用模板底稿库"
 
 
 def infer_business_category(item: dict[str, Any], tier: str, group_name: str) -> str:
@@ -331,19 +431,21 @@ def infer_business_category(item: dict[str, Any], tier: str, group_name: str) ->
     if group:
         return group
     text = f"{source_path(item)}/{material_title(item)}"
-    if group_name == "01-资质合规库":
-        return "资格资质"
-    if group_name == "02-企业能力库":
-        return "企业能力"
-    if group_name == "03-业绩资产池":
-        return "业绩证明"
-    if group_name == "04-财务资料库":
-        return "财务与信用"
-    if group_name == "05-专题证书库":
-        return "专题证书"
-    if group_name == "06-通用模板底稿库":
-        return "模板底稿"
-    if group_name == "01-客户关系与专项证明":
+    normalized_group = normalize_group_name(group_name)
+    if normalized_group in {
+        "主体资质与基础证照",
+        "财务信用与合规声明",
+        "企业能力与综合实力",
+        "专题证书库",
+        "通用模板底稿库",
+        "客户专用商务响应文件",
+        "项目商务响应文件",
+        "客户模板底稿与过程文件",
+        "项目模板底稿与过程文件",
+        "项目专项证明与客户要求",
+    }:
+        return normalized_group
+    if normalized_group == "客户关系与专项证明":
         return "客户关系与专项证明"
     if "报价" in text or "价格" in text or "开标" in text or "规格" in text:
         return "报价与分项表"
@@ -355,7 +457,7 @@ def infer_business_category(item: dict[str, Any], tier: str, group_name: str) ->
         return "投标保证金"
     if "承诺" in text or "函" in text or "说明" in text:
         return "承诺函件"
-    return "商务响应文件"
+    return "项目商务响应文件" if tier == "项目素材" else "客户专用商务响应文件" if tier == "客户素材" else "通用模板底稿库"
 
 
 def infer_evidence_topic(path: str, title: str, category: str, document_type: str) -> str:
@@ -811,6 +913,7 @@ def profile_material(item: dict[str, Any]) -> dict[str, Any]:
     segments = source_segments(item)
     tier = material_tier(item)
     group_name = second_group(item, tier, segments)
+    material_category = normalize_material_category(item.get("materialCategory")) or infer_material_category_from_text(path, title, tier, group_name)
     category = infer_business_category(item, tier, group_name)
     ext = str(item.get("ext") or item.get("sourceExt") or Path(path).suffix.lstrip(".") or "").lower()
     source_ext = str(item.get("sourceExt") or ext).lower()
@@ -842,12 +945,15 @@ def profile_material(item: dict[str, Any]) -> dict[str, Any]:
         "material_id": str(item.get("id") or ""),
         "title": title,
         "path": path,
+        "source_type": str(item.get("sourceType") or ("performance" if str(item.get("businessMaterialKind") or "") == "performance" else "raw_file")),
         "raw_tags": tags,
         "segments": segments,
         "material_tier": tier,
         "group_name": group_name,
         "subgroup_name": third_group(item, tier, group_name, segments),
         "bucket_name": bucket_name(item, tier, segments),
+        "material_category": material_category,
+        "material_category_label": str(item.get("materialCategoryLabel") or MATERIAL_CATEGORY_LABELS.get(material_category, "")),
         "business_category": category,
         "business_material_kind": str(item.get("businessMaterialKind") or ""),
         "business_material_kind_label": str(item.get("businessMaterialKindLabel") or ""),
@@ -928,7 +1034,13 @@ def match_module(profile: dict[str, Any], config: dict[str, Any]) -> tuple[int, 
     signals: list[str] = []
     path = profile["path"]
     search_text = profile["search_text"]
-    category_text = f"{profile['business_category']}/{profile['group_name']}/{profile['document_type']}"
+    category_text = f"{profile['business_category']}/{profile['group_name']}/{profile['document_type']}/{profile.get('material_category')}/{profile.get('material_category_label')}"
+
+    allowed_source_types = set(config.get("source_types") or [])
+    if allowed_source_types and profile.get("source_type") in allowed_source_types:
+        score += 8
+        signals.append("source_type")
+        reasons.append(f"来源类型命中 `{profile.get('source_type')}`")
 
     matched_prefix = next((prefix for prefix in config["path_prefixes"] if wildcard_match(path, prefix)), "")
     if matched_prefix:
@@ -947,6 +1059,16 @@ def match_module(profile: dict[str, Any], config: dict[str, Any]) -> tuple[int, 
         score += 3
         signals.append("category")
         reasons.append(f"业务分类命中 {category_hits[:3]}")
+
+    material_category_hits = [
+        category
+        for category in config.get("material_categories", [])
+        if category and category == profile.get("material_category")
+    ]
+    if material_category_hits:
+        score += 5
+        signals.append("material_category")
+        reasons.append(f"素材分类命中 {material_category_hits[:3]}")
 
     if profile["material_tier"] == "项目素材":
         score += 1
@@ -1006,17 +1128,25 @@ def analyze_modules(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "module_name": config["module_name"],
                 "module_code": config["module_code"],
+                "bid_section": config["module_name"],
+                "template_material_id": "",
                 "source_path_prefix": "；".join(config["path_prefixes"]),
                 "business_category": "、".join(config["categories"]),
+                "material_categories": list(config.get("material_categories") or []),
                 "candidate_card_ids": [entry["card_id"] for entry in top_candidates],
                 "candidate_cards": top_candidates,
+                "fill_strategy": "reference" if "performance" in set(config.get("source_types") or []) else "ai_fill" if config["usage_mode"] == "fill_table" else "fixed",
                 "usage_mode": config["usage_mode"],
+                "required_facts": "待按招标目录和项目事实表确认",
+                "output_type": "表格" if config["usage_mode"] == "fill_table" else "附件" if config["usage_mode"] == "attach_whole" else "正文/字段",
+                "source_priority": "project > customer > standard > performance reference",
                 "mapping_source": mapping_source,
                 "confidence": confidence,
                 "needs_human_confirm": "yes" if needs_human_confirm else "no",
                 "mapping_reason": mapping_reason,
                 "fallback_scope": config["fallback_scope"],
                 "missing_hint": config["missing_hint"],
+                "manual_override": "",
             }
         )
 
@@ -1027,6 +1157,7 @@ def analyze_modules(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         profile["module_matches"] = matches[:5]
         profile["applicable_modules"] = [entry["module_name"] for entry in matches[:5]]
+        profile["applicable_module_codes"] = [entry["module_code"] for entry in matches[:5]]
         profile["applicable_chapters"] = infer_applicable_chapters(profile)
         profile["chapter_keywords"] = infer_chapter_keywords(profile)
         if profile["ext"] not in IMAGE_EXTS and matches:
@@ -1049,23 +1180,26 @@ def build_inventory_node(profiles: list[dict[str, Any]], inventory: dict[str, An
         f"- 当前纳入商务标 Wiki 的素材数：{len(profiles)}",
         f"- 已解析 Word：{inventory.get('parsedDocxTotal', 0)}",
         "",
-        "| 素材 | 层级 | AI身份 | 标签 | 业务分类 | 推荐模块 | 清洗状态 | 清洗策略 | 证据类型 | 原始路径 |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| material_id | source_type | display_name | tier | material_category | document_type | material_kind | usage_mode | tags | review_status | source_ref | linked_evidence_card | 原始路径 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     if not profiles:
-        lines.append("| 待补料 | - | - | - | 当前未检出商务标真实素材 | - | - | - | - | - |")
+        lines.append("| - | - | 待补料 | - | - | - | - | - | - | open | - | - | - |")
     for profile in profiles:
         lines.append(
-            "| {title} | {tier} | {identity} | {tags} | {category} | {modules} | {clean_status} | {strategy} | {evidence} | `{path}` |".format(
+            "| {material_id} | {source_type} | {title} | {tier} | {material_category} | {document_type} | {material_kind} | {usage_mode} | {tags} | {review_status} | {source_ref} | {card_id} | `{path}` |".format(
+                material_id=md_escape(profile["material_id"]),
+                source_type=md_escape(profile["source_type"]),
                 title=md_escape(profile["title"]),
                 tier=md_escape(profile["material_tier"]),
-                identity=md_escape(profile["identity_scope"]),
+                material_category=md_escape(profile.get("material_category") or ""),
+                document_type=md_escape(profile["document_type"]),
+                material_kind=md_escape(profile.get("business_material_kind") or ""),
+                usage_mode=md_escape(profile["usage_mode"]),
                 tags=md_escape("、".join(profile.get("raw_tags") or []) or "-"),
-                category=md_escape(profile["business_category"]),
-                modules=md_escape("、".join(profile["applicable_modules"][:3]) or "待映射"),
-                clean_status=md_escape(profile.get("clean_result_status") or profile.get("clean_status") or "未清洗"),
-                strategy=md_escape(profile["cleaning_strategy"]),
-                evidence=md_escape(profile["evidence_type"]),
+                review_status=md_escape("draft" if profile["needs_human_confirm"] else "reviewed"),
+                source_ref=md_escape(profile.get("source_minio_key") or profile.get("cleaned_minio_key") or profile["path"]),
+                card_id=md_escape(profile["card_id"]),
                 path=md_escape(profile["path"]),
             )
         )
@@ -1081,16 +1215,24 @@ def build_mapping_detail_node(row: dict[str, Any]) -> dict[str, Any]:
         "|---|---|",
         f"| module_name | {md_escape(row['module_name'])} |",
         f"| module_code | {md_escape(row['module_code'])} |",
+        f"| bid_section | {md_escape(row['bid_section'])} |",
+        f"| template_material_id | {md_escape(row['template_material_id'])} |",
         f"| source_path_prefix | {md_escape(row['source_path_prefix'])} |",
         f"| business_category | {md_escape(row['business_category'])} |",
+        f"| material_categories | {md_escape('、'.join(row['material_categories']) or '[]')} |",
         f"| candidate_card_ids | {md_escape('、'.join(row['candidate_card_ids']) or '[]')} |",
+        f"| fill_strategy | {md_escape(row['fill_strategy'])} |",
         f"| usage_mode | {md_escape(row['usage_mode'])} |",
+        f"| required_facts | {md_escape(row['required_facts'])} |",
+        f"| output_type | {md_escape(row['output_type'])} |",
+        f"| source_priority | {md_escape(row['source_priority'])} |",
         f"| mapping_source | {md_escape(row['mapping_source'])} |",
         f"| confidence | {md_escape(row['confidence'])} |",
         f"| needs_human_confirm | {md_escape(row['needs_human_confirm'])} |",
         f"| mapping_reason | {md_escape(row['mapping_reason'])} |",
         f"| fallback_scope | {md_escape(row['fallback_scope'])} |",
         f"| missing_hint | {md_escape(row['missing_hint'])} |",
+        f"| manual_override | {md_escape(row['manual_override'])} |",
     ]
     lines.extend(["", "## 候选证据卡片", "", "| card_id | title | usage_mode | confidence | path |", "|---|---|---|---|---|"])
     if not candidates:
@@ -1109,24 +1251,31 @@ def build_mapping_node(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "本表回答的是：某个商务模板模块，优先去哪些素材路径、找哪些证据卡片、以什么方式使用。",
         "映射优先由路径规则约束，再结合标题/Heading/关键词辅助判断；若映射未命中，后续 Agent 必须按 fallback_scope 在当前身份可读范围内继续搜索。",
         "",
-        "| module_name | module_code | source_path_prefix | business_category | candidate_card_ids | usage_mode | mapping_source | confidence | needs_human_confirm | mapping_reason | fallback_scope | missing_hint |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| module_code | module_name | bid_section | template_material_id | candidate_card_ids | fill_strategy | usage_mode | required_facts | output_type | source_priority | needs_human_confirm | missing_hint | manual_override | source_path_prefix | business_category | mapping_source | confidence | mapping_reason | fallback_scope |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for row in rows:
         lines.append(
-            "| {module_name} | {module_code} | {source_path_prefix} | {business_category} | {candidate_card_ids} | {usage_mode} | {mapping_source} | {confidence} | {needs_human_confirm} | {mapping_reason} | {fallback_scope} | {missing_hint} |".format(
+            "| {module_code} | {module_name} | {bid_section} | {template_material_id} | {candidate_card_ids} | {fill_strategy} | {usage_mode} | {required_facts} | {output_type} | {source_priority} | {needs_human_confirm} | {missing_hint} | {manual_override} | {source_path_prefix} | {business_category} | {mapping_source} | {confidence} | {mapping_reason} | {fallback_scope} |".format(
                 module_name=md_escape(row["module_name"]),
                 module_code=md_escape(row["module_code"]),
+                bid_section=md_escape(row["bid_section"]),
+                template_material_id=md_escape(row["template_material_id"]),
                 source_path_prefix=md_escape(row["source_path_prefix"]),
                 business_category=md_escape(row["business_category"]),
                 candidate_card_ids=md_escape("、".join(row["candidate_card_ids"]) or "[]"),
+                fill_strategy=md_escape(row["fill_strategy"]),
                 usage_mode=md_escape(row["usage_mode"]),
+                required_facts=md_escape(row["required_facts"]),
+                output_type=md_escape(row["output_type"]),
+                source_priority=md_escape(row["source_priority"]),
                 mapping_source=md_escape(row["mapping_source"]),
                 confidence=md_escape(row["confidence"]),
                 needs_human_confirm=md_escape(row["needs_human_confirm"]),
                 mapping_reason=md_escape(row["mapping_reason"]),
                 fallback_scope=md_escape(row["fallback_scope"]),
                 missing_hint=md_escape(row["missing_hint"]),
+                manual_override=md_escape(row["manual_override"]),
             )
         )
     return node(
@@ -1144,6 +1293,7 @@ def build_card_markdown(profile: dict[str, Any]) -> str:
         "## 基础字段",
         f"- card_id: {profile['card_id']}",
         f"- material_id: {profile['material_id']}",
+        f"- source_type: {profile['source_type']}",
         f"- title: {profile['title']}",
         f"- path: {profile['path']}",
         f"- raw_tags: {'、'.join(profile.get('raw_tags') or []) or '无'}",
@@ -1151,6 +1301,8 @@ def build_card_markdown(profile: dict[str, Any]) -> str:
         f"- business_material_kind_label: {profile.get('business_material_kind_label') or '未标记'}",
         f"- cleaned_file_name: {profile['cleaned_file_name']}",
         f"- material_tier: {profile['material_tier']}",
+        f"- material_category: {profile.get('material_category') or '待识别'}",
+        f"- material_category_label: {profile.get('material_category_label') or '待识别'}",
         f"- business_category: {profile['business_category']}",
         f"- evidence_type: {profile['evidence_type']}",
         "",
@@ -1169,6 +1321,7 @@ def build_card_markdown(profile: dict[str, Any]) -> str:
         f"- usage_mode: {profile['usage_mode']}",
         f"- priority_score: {profile['priority_score']}",
         f"- needs_human_confirm: {'yes' if profile['needs_human_confirm'] else 'no'}",
+        f"- review_status: {'draft' if profile['needs_human_confirm'] else 'reviewed'}",
         f"- retrieval_source: {profile['retrieval_source']}",
         "",
         "## 内容字段",
@@ -1178,6 +1331,7 @@ def build_card_markdown(profile: dict[str, Any]) -> str:
         f"- summary: {profile['summary']}",
         "",
         "## 来源字段",
+        f"- source_ref: {profile.get('source_minio_key') or profile.get('cleaned_minio_key') or profile['path']}",
         f"- source_bucket: {profile.get('source_bucket') or '待识别'}",
         f"- source_minio_key: {profile.get('source_minio_key') or '待识别'}",
         f"- cleaned_bucket: {profile.get('cleaned_bucket') or '未生成'}",
@@ -1310,7 +1464,7 @@ def build_card_framework_node() -> dict[str, Any]:
             )
         )
     customer_children = [node(name, build_tree_container_markdown(name, 0, f"客户素材/待补客户/{name}"), ["商务标", "证据卡片", "客户素材"]) for name in CUSTOM_GROUPS]
-    project_children = [node(name, build_tree_container_markdown(name, 0, f"项目素材/待补项目/{name}"), ["商务标", "证据卡片", "项目素材"]) for name in CUSTOM_GROUPS]
+    project_children = [node(name, build_tree_container_markdown(name, 0, f"项目素材/待补项目/{name}"), ["商务标", "证据卡片", "项目素材"]) for name in PROJECT_GROUPS]
     return node(
         "03-证据卡片",
         "# 03-证据卡片\n\n当前没有真实商务标素材，先保留原始素材库镜像结构，等待上传后自动生成证据卡片。\n",

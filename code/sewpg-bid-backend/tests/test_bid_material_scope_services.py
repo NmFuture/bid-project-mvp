@@ -72,6 +72,7 @@ from app.services.technical_gap_review import (
 )
 from app.services.technical_gap_service import technical_gap_service
 from app.services.technical_gap_state import ensure_technical_review_document_state
+from app.services.peripheral import PeripheralError
 from app.services.technical_material_store import technical_material_store
 
 
@@ -884,10 +885,10 @@ def test_project_delete_uses_workspace_material_store_facades() -> None:
         return {"message": "technical deleted", "folderPath": path}
 
     with patch(
-        "app.services.business_material_store.business_material_store.raw_delete_folder",
+        "app.services.business_material_store.business_material_store.raw_cleanup_project_folder",
         side_effect=fake_business_delete,
     ), patch(
-        "app.services.technical_material_store.technical_material_store.raw_delete_folder",
+        "app.services.technical_material_store.technical_material_store.raw_cleanup_project_folder",
         side_effect=fake_technical_delete,
     ):
         store.delete_project(business_project_id)
@@ -895,6 +896,48 @@ def test_project_delete_uses_workspace_material_store_facades() -> None:
 
     assert business_deleted == [f"商务标/项目素材/{business_project_id}"]
     assert technical_deleted == [f"技术标/项目素材/{technical_project_id}"]
+
+
+def test_project_material_cleanup_facades_only_accept_project_roots() -> None:
+    from app.services.business_material_store import business_material_store
+    from app.services.technical_material_store import technical_material_store
+
+    business_calls: list[dict[str, str]] = []
+    technical_calls: list[dict[str, str]] = []
+
+    async def fake_business_cleanup(path: str, *, bid_type: str) -> dict[str, object]:
+        business_calls.append({"path": path, "bidType": bid_type})
+        return {"message": "business cleanup", "folderPath": path}
+
+    async def fake_technical_cleanup(path: str, *, bid_type: str) -> dict[str, object]:
+        technical_calls.append({"path": path, "bidType": bid_type})
+        return {"message": "technical cleanup", "folderPath": path}
+
+    with patch("app.services.business_material_store.material_store.raw_cleanup_project_folder", side_effect=fake_business_cleanup):
+        payload = asyncio.run(business_material_store.raw_cleanup_project_folder("商务标/项目素材/BIZ-001"))
+    assert payload["folderPath"] == "商务标/项目素材/BIZ-001"
+    assert business_calls == [{"path": "商务标/项目素材/BIZ-001", "bidType": "商务标"}]
+
+    with patch("app.services.technical_material_store.material_store.raw_cleanup_project_folder", side_effect=fake_technical_cleanup):
+        payload = asyncio.run(technical_material_store.raw_cleanup_project_folder("技术标/项目素材/TECH-001"))
+    assert payload["folderPath"] == "技术标/项目素材/TECH-001"
+    assert technical_calls == [{"path": "技术标/项目素材/TECH-001", "bidType": "技术标"}]
+
+    for invalid_path in ("商务标/通用素材", "商务标/项目素材", "商务标/项目素材/BIZ-001/项目商务响应文件"):
+        try:
+            asyncio.run(business_material_store.raw_cleanup_project_folder(invalid_path))
+        except PeripheralError as exc:
+            assert exc.code == "PROJECT_MATERIAL_PATH_REQUIRED"
+        else:
+            raise AssertionError(f"expected PeripheralError for {invalid_path}")
+
+    for invalid_path in ("技术标/通用素材", "技术标/项目素材", "技术标/项目素材/TECH-001/子目录"):
+        try:
+            asyncio.run(technical_material_store.raw_cleanup_project_folder(invalid_path))
+        except PeripheralError as exc:
+            assert exc.code == "PROJECT_MATERIAL_PATH_REQUIRED"
+        else:
+            raise AssertionError(f"expected PeripheralError for {invalid_path}")
 
 
 def test_bid_project_state_rules_are_outside_store() -> None:
@@ -1531,8 +1574,8 @@ def test_store_does_not_bypass_workspace_material_facades() -> None:
     assert not re.search(r"(?<![A-Za-z_])material_store\.", source)
     assert "business_material_store.raw_delete_folder" not in source
     assert "technical_material_store.raw_delete_folder" not in source
-    assert "business_material_store.raw_delete_folder" in project_state_source
-    assert "technical_material_store.raw_delete_folder" in project_state_source
+    assert "business_material_store.raw_cleanup_project_folder" in project_state_source
+    assert "technical_material_store.raw_cleanup_project_folder" in project_state_source
 
 
 def test_business_parse_assets_upload_uses_business_material_store() -> None:
@@ -1566,14 +1609,14 @@ def test_business_parse_assets_upload_uses_business_material_store() -> None:
         payload = asyncio.run(
             business_parse_assets_module._upload_business_material_files(
                 project,
-                target_folder="02-商务响应文件",
+                target_folder="项目商务响应文件",
                 files=[{"name": "商务评分标准.docx", "data": b"docx", "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}],
             )
         )
 
     assert payload["items"][0]["bidType"] == "商务标"
     assert len(calls) == 1
-    assert calls[0]["target_path"] == "商务标/项目素材/PRJ-BIZ-PARSE-ASSET/02-商务响应文件"
+    assert calls[0]["target_path"] == "商务标/项目素材/PRJ-BIZ-PARSE-ASSET/项目商务响应文件"
     assert calls[0]["project_id"] == "PRJ-BIZ-PARSE-ASSET"
     assert calls[0]["project_code"] == "BIZ-2026-001"
     assert calls[0]["project_name"] == "商务解析资产同步测试"

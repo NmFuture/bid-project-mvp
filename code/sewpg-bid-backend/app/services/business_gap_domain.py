@@ -409,12 +409,12 @@ def default_material_target_path(project_id: str, task: dict[str, Any]) -> str:
     if module_key == "qualification_compliance_certificates" and (
         sub_module == "special_certificates" or task_type == "certificate" or "认证" in title or "证书" in title
     ):
-        return f"{root}/02-商务响应文件/专题证书"
+        return f"{root}/资格审查与商务响应成册"
     if module_key in {"base_documents_guarantees", "structured_response_tables", "commitments_and_notes"}:
-        return f"{root}/02-商务响应文件"
+        return f"{root}/资格审查与商务响应成册"
     if module_key == "performance_cooperation_support":
-        return f"{root}/01-客户关系与专项证明"
-    return f"{root}/03-模板底稿与过程文件"
+        return f"{root}/招标要求与专项证明"
+    return f"{root}/项目模板与过程稿"
 
 
 def decode_upload_content(content: str, *, fallback_mime: str = "") -> tuple[bytes, str]:

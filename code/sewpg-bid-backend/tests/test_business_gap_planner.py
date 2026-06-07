@@ -109,7 +109,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
 
     def test_businessgap_runner_generates_toc_based_plan_and_parser_artifacts(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             toc_path = root / "toc.json"
@@ -170,7 +170,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
                             {
                                 "id": "RAW-0001",
                                 "name": "EW6.25机型认证证书.pdf",
-                                "folderPath": "商务标/通用素材/05-专题证书库/机型认证证书",
+                                "folderPath": "商务标/通用素材/专题证书库/机型认证证书",
                                 "materialTier": "standard",
                                 "turbineModelLabel": "EW6.25",
                             }
@@ -208,7 +208,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
 
     def test_businessgap_runner_uses_business_wiki_index_for_candidates_and_risks(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             toc_path = root / "toc.json"
@@ -253,7 +253,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
                                     "card_id": "biz-card-RAW-0007",
                                     "material_id": "RAW-0007",
                                     "title": "EW6.25机型认证证书",
-                                    "path": "商务标/通用素材/05-专题证书库/01-机型认证证书/EW6.25机型认证证书.pdf",
+                                    "path": "商务标/通用素材/专题证书库/机型认证证书/EW6.25机型认证证书.pdf",
                                     "material_tier": "通用素材",
                                     "business_category": "专题证书",
                                     "usage_mode": "attach_whole",
@@ -275,7 +275,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
                                     "business_category": "专题证书",
                                     "document_type": "证书/资质文件",
                                     "usage_mode": "attach_whole",
-                                    "path": "商务标/通用素材/05-专题证书库/01-机型认证证书/EW6.25机型认证证书.pdf",
+                                    "path": "商务标/通用素材/专题证书库/机型认证证书/EW6.25机型认证证书.pdf",
                                     "source_pages": "第 1-2 页",
                                     "summary": "EW6.25 机型认证证书，需核验证书有效期。",
                                     "keywords": ["EW6.25", "机型认证", "证书"],
@@ -292,7 +292,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
                             {
                                 "id": "RAW-0007",
                                 "name": "证书扫描件.pdf",
-                                "folderPath": "商务标/通用素材/05-专题证书库/01-机型认证证书",
+                                "folderPath": "商务标/通用素材/专题证书库/机型认证证书",
                                 "materialTier": "standard",
                                 "turbineModelLabel": "",
                             }
@@ -329,7 +329,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
 
     def test_businessgap_runner_prioritizes_manual_material_feedback(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             toc_path = root / "toc.json"
@@ -365,7 +365,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
                             {
                                 "id": "RAW-FB-001",
                                 "name": "人工纠偏过的EW6.25机型认证证书.pdf",
-                                "folderPath": "商务标/通用素材/05-专题证书库/01-机型认证证书",
+                                "folderPath": "商务标/通用素材/专题证书库/机型认证证书",
                                 "materialTier": "standard",
                             }
                         ],
@@ -381,7 +381,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
                                     "materialUsage": "embed_scan",
                                     "materialId": "RAW-FB-001",
                                     "materialName": "人工纠偏过的EW6.25机型认证证书.pdf",
-                                    "folderPath": "商务标/通用素材/05-专题证书库/01-机型认证证书",
+                                    "folderPath": "商务标/通用素材/专题证书库/机型认证证书",
                                     "evidenceSegmentId": "SEG-FB-001",
                                     "evidenceSegmentTitle": "EW6.25机型认证证书页",
                                     "evidenceSummary": "人工在商务 S3 中确认该材料支撑机型认证证书任务。",
@@ -413,7 +413,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
 
     def test_businessgap_runner_attaches_scoring_asset_to_scoring_index_task(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             toc_path = root / "toc.json"
@@ -485,7 +485,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
 
     def test_businessgap_runner_negative_rules_avoid_performance_material_for_bid_letter(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             toc_path = root / "toc.json"
@@ -520,8 +520,11 @@ class BusinessGapPlannerTests(unittest.TestCase):
                             {
                                 "id": "RAW-PERF-001",
                                 "name": "投标项目业绩合同扫描件.pdf",
-                                "folderPath": "商务标/通用素材/03-业绩资产池/合同扫描件",
+                                "folderPath": "商务标/共用业绩库/合同扫描件",
                                 "materialTier": "standard",
+                                "sourceType": "performance_library",
+                                "businessMaterialKind": "performance",
+                                "businessMaterialKindLabel": "共用业绩",
                             }
                         ],
                         "selectedBusinessTurbineModel": {},
@@ -545,7 +548,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
 
     def test_businessgap_runner_uses_shared_performance_library_for_performance_task(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             toc_path = root / "toc.json"
@@ -625,7 +628,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
 
     def test_businessgap_runner_emits_template_candidates_from_template_index(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             toc_path = root / "toc.json"
@@ -886,7 +889,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
             {
                 "materialId": "RAW-TPL-001",
                 "materialName": "投标函格式模板.docx",
-                "folderPath": "商务标/通用素材/06-通用模板底稿库/投标函空白模板",
+                "folderPath": "商务标/通用素材/通用模板底稿库/投标函空白模板",
                 "wikiUsageMode": "fill_template",
                 "score": 0.86,
             }
@@ -966,7 +969,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertFalse((technical_workspace_dir(project_id) / "s4_gap_workdir" / "manual_upload").exists())
         self.assertEqual(uploaded["materialSyncStatus"], "not_synced")
         self.assertEqual(uploaded["materialSyncPolicy"], "manual_project_only")
-        self.assertIn(f"商务标/项目素材/{project_id}/02-商务响应文件", uploaded["materialTargetPath"])
+        self.assertIn(f"商务标/项目素材/{project_id}/项目商务响应文件", uploaded["materialTargetPath"])
 
         multipart_upload_response = self.client.post(
             f"/api/business/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/upload-files",
@@ -1011,7 +1014,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         async def fake_raw_upload(**kwargs):
             self.assertNotIn("bid_type", kwargs)
             self.assertEqual(kwargs["material_tier"], "project")
-            self.assertIn(f"商务标/项目素材/{project_id}/02-商务响应文件", kwargs["target_path"])
+            self.assertIn(f"商务标/项目素材/{project_id}/项目商务响应文件", kwargs["target_path"])
             return {
                 "message": "mock upload",
                 "items": [
@@ -1038,7 +1041,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         synced = sync_response.json()["artifact"]
         self.assertEqual(synced["materialSyncStatus"], "synced_to_project_material")
         self.assertEqual(synced["wikiSyncStatus"], "wiki_rebuild_required")
-        self.assertIn(f"商务标/项目素材/{project_id}/02-商务响应文件", synced["materialTargetPath"])
+        self.assertIn(f"商务标/项目素材/{project_id}/项目商务响应文件", synced["materialTargetPath"])
         self.assertTrue(sync_response.json()["wikiRebuildRequired"])
         synced_material = sync_response.json()["material"]
         self.assertEqual(synced_material["bidType"], "商务标")
@@ -1069,7 +1072,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
                     {
                         "id": "RAW-9001",
                         "name": "商务素材证书.pdf",
-                        "folderPath": "商务标/通用素材/05-专题证书库",
+                        "folderPath": "商务标/通用素材/专题证书库",
                         "materialTier": "standard",
                         "cleanStatus": "",
                         "hasCleanedWord": False,
@@ -1110,7 +1113,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
                         {
                             "materialId": "RAW-9001",
                             "materialName": "商务素材证书.pdf",
-                            "folderPath": "商务标/通用素材/05-专题证书库",
+                            "folderPath": "商务标/通用素材/专题证书库",
                             "materialTier": "standard",
                             "businessMaterialKind": "fixed",
                             "businessMaterialKindLabel": "固定素材",
@@ -1370,7 +1373,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
 
     def test_business_table_fill_runner_fallback_docx_has_no_internal_explanation(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-table-fill" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-table-fill" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             target_path = root / "纯文本目标.txt"

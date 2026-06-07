@@ -140,6 +140,20 @@ class MaterialStore:
             raw_tree=lambda: self.raw_tree(bid_type=bid_type),
         )
 
+    async def raw_cleanup_project_folder(self, path: str, *, bid_type: str) -> dict[str, Any]:
+        return await delete_raw_folder(
+            path=path,
+            bid_type=bid_type,
+            ensure_runtime_tables=ensure_material_runtime_tables,
+            purge_raw_file_objects=partial(
+                purge_raw_file_objects,
+                ensure_runtime_tables=ensure_material_runtime_tables,
+            ),
+            mark_default_folder_deleted=self._raw_folders.mark_default_folder_deleted,
+            raw_tree=lambda: self.raw_tree(bid_type=bid_type),
+            allow_protected=True,
+        )
+
     async def raw_upload(
         self,
         *,

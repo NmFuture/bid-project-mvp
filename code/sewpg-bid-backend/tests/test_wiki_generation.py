@@ -301,7 +301,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                     "id": "biz-001",
                     "name": "投标函.docx",
                     "title": "投标函",
-                    "path": "项目素材/PRJ-001/02-商务响应文件/投标函.docx",
+                    "path": "项目素材/PRJ-001/项目商务响应文件/投标函.docx",
                     "ext": "docx",
                     "cleanedFileName": "投标函-cleaned.docx",
                     "hasCleanedWord": True,
@@ -321,7 +321,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                     "id": "biz-002",
                     "name": "叶片型式认证.png",
                     "title": "叶片型式认证",
-                    "path": "通用素材/05-专题证书库/02-大部件型式认证证书/叶片型式认证.png",
+                    "path": "通用素材/专题证书库/大部件型式认证证书/叶片型式认证.png",
                     "ext": "png",
                     "identityScope": "general",
                     "materialTier": "standard",
@@ -369,8 +369,8 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(imported_nodes[1]["children"][0]["title"], "01-商务评分索引表")
         self.assertEqual(imported_nodes[2]["children"][0]["title"], "通用素材")
-        self.assertEqual(imported_nodes[2]["children"][0]["children"][0]["title"], "05-专题证书库")
-        self.assertEqual(imported_nodes[2]["children"][0]["children"][0]["children"][0]["title"], "02-大部件型式认证证书")
+        self.assertEqual(imported_nodes[2]["children"][0]["children"][0]["title"], "专题证书库")
+        self.assertEqual(imported_nodes[2]["children"][0]["children"][0]["children"][0]["title"], "大部件型式认证证书")
         self.assertEqual(imported_nodes[3]["children"][0]["title"], "01-项目基础变量")
         self.assertEqual(imported_nodes[4]["children"][0]["title"], "01-身份过滤规则")
         card_markdowns: list[str] = []

@@ -37,22 +37,16 @@ BUSINESS_GAP_PLAN_SCHEMA_VERSION = "bid-business-gap-plan-v1"
 BUSINESS_GAP_PLANNER_SKILL_NAME = "bid-business-gap-planner"
 BUSINESS_TABLE_FILL_SCHEMA_VERSION = "bid-business-table-fill-v1"
 BUSINESS_TABLE_FILL_SKILL_NAME = "bid-business-table-fill"
-BUSINESS_GAP_PLANNER_RUNNER = (
-    BASE_DIR
-    / "opencode"
-    / "skill"
-    / BUSINESS_GAP_PLANNER_SKILL_NAME
-    / "scripts"
-    / "run_from_manifest.py"
-)
-BUSINESS_TABLE_FILL_RUNNER = (
-    BASE_DIR
-    / "opencode"
-    / "skill"
-    / BUSINESS_TABLE_FILL_SKILL_NAME
-    / "scripts"
-    / "run_from_manifest.py"
-)
+
+
+def _business_skill_runner(skill_name: str) -> Path:
+    preferred = BASE_DIR / "opencode" / "skills" / skill_name / "scripts" / "run_from_manifest.py"
+    legacy = BASE_DIR / "opencode" / "skill" / skill_name / "scripts" / "run_from_manifest.py"
+    return preferred if preferred.exists() or not legacy.exists() else legacy
+
+
+BUSINESS_GAP_PLANNER_RUNNER = _business_skill_runner(BUSINESS_GAP_PLANNER_SKILL_NAME)
+BUSINESS_TABLE_FILL_RUNNER = _business_skill_runner(BUSINESS_TABLE_FILL_SKILL_NAME)
 
 
 def build_business_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
@@ -386,12 +380,20 @@ def _build_business_wiki_index(wiki_dir: Path | None) -> dict[str, Any]:
         content = str(node.get("markdownContent") or "")
         if not content:
             continue
-        if title.startswith("02-模板模块映射表") or "/02-模板模块映射表/" in str(node.get("path") or ""):
+        if (
+            title.startswith(("02-模板模块映射表", "02-章节映射表"))
+            or "/02-模板模块映射表/" in str(node.get("path") or "")
+            or "/02-章节映射表/" in str(node.get("path") or "")
+        ):
             mapping_rows.extend(_parse_business_wiki_table(content))
             detail = _parse_business_wiki_field_list(content)
             if detail.get("module_code"):
                 mapping_rows.append(detail)
-        elif title.startswith("03-证据卡片") or "/03-证据卡片/" in str(node.get("path") or ""):
+        elif (
+            title.startswith(("03-证据卡片", "03-素材卡片"))
+            or "/03-证据卡片/" in str(node.get("path") or "")
+            or "/03-素材卡片/" in str(node.get("path") or "")
+        ):
             card = _parse_business_wiki_evidence_card(title, content)
             if card:
                 evidence_cards.append(card)

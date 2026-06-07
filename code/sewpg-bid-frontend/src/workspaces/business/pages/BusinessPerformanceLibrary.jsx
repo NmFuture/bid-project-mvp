@@ -120,6 +120,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [previewing, setPreviewing] = useState(false)
   const [importing, setImporting] = useState(false)
   const [uploadingCategoryId, setUploadingCategoryId] = useState('')
@@ -128,6 +129,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
   const [preview, setPreview] = useState(null)
   const [importForm, setImportForm] = useState({ categoryName: '', scene: '', powerRating: '', tags: '' })
   const [detail, setDetail] = useState(null)
+  const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [filters, setFilters] = useState({
     keyword: '',
@@ -147,6 +149,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
   const sourceWorkspace = sourceWorkspaceFor(currentUser)
   const sourceMaterialsBasePath = workspaceRoute(sourceWorkspace, '/materials')
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const hasLoadedCategoriesRef = useRef(false)
   const sharedPerformanceItems = useMemo(() => [
     { key: 'raw', label: '原始素材', absolutePath: `${sourceMaterialsBasePath}/raw` },
     { key: 'wiki', label: 'Wiki', absolutePath: `${sourceMaterialsBasePath}/wiki` },
@@ -156,7 +159,12 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
   const query = useMemo(() => ({ ...filters, ...sort, page, pageSize }), [filters, sort, page])
 
   const loadCategories = useCallback(async () => {
-    setLoading(true)
+    const initialLoad = !hasLoadedCategoriesRef.current
+    if (initialLoad) {
+      setLoading(true)
+    } else {
+      setRefreshing(true)
+    }
     try {
       const payload = await businessMaterialsAPI.performance.categories(query)
       setItems(payload?.items || [])
@@ -164,14 +172,16 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
     } catch (error) {
       showToast(error?.message || '业绩库加载失败', 'error')
     } finally {
+      hasLoadedCategoriesRef.current = true
       setLoading(false)
+      setRefreshing(false)
     }
   }, [query, showToast])
 
   useEffect(() => {
     const timer = setTimeout(() => {
       loadCategories()
-    }, 0)
+    }, hasLoadedCategoriesRef.current ? 300 : 0)
     return () => clearTimeout(timer)
   }, [loadCategories])
 
@@ -257,15 +267,24 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
   }
 
   const openDetail = async (item) => {
+    setDetailOpen(true)
+    setDetail(null)
     setDetailLoading(true)
     try {
       const payload = await businessMaterialsAPI.performance.category(item.id)
-      setDetail(payload || null)
+      setDetail(payload || { item, attachments: [], rows: [] })
     } catch (error) {
       showToast(error?.message || '业绩明细加载失败', 'error')
+      setDetailOpen(false)
     } finally {
       setDetailLoading(false)
     }
+  }
+
+  const closeDetail = () => {
+    setDetailOpen(false)
+    setDetail(null)
+    setDetailLoading(false)
   }
 
   const chooseAttachmentFile = (item) => {
@@ -339,7 +358,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
       const result = await businessMaterialsAPI.performance.deleteCategory(deleteTarget.id, { confirmName: deleteConfirmName.trim() })
       showToast(result?.message || '业绩类别已删除')
       await loadCategories()
-      if (detail?.item?.id === deleteTarget.id) setDetail(null)
+      if (detail?.item?.id === deleteTarget.id) closeDetail()
       closeDeleteDialog()
     } catch (error) {
       showToast(error?.message || '业绩类别删除失败', 'error')
@@ -383,7 +402,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
             <button
               onClick={openSummaryChooser}
               disabled={previewing}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-sm font-semibold text-on-primary hover:bg-primary-container disabled:opacity-50"
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-sm font-semibold text-on-primary hover:brightness-95 disabled:opacity-50"
             >
               <span className="material-symbols-outlined text-base">upload_file</span>
               {previewing ? '解析中...' : '导入'}
@@ -391,13 +410,13 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
           </div>
         </section>
 
-        <section className="min-h-0 flex-1 overflow-auto rounded-lg border border-surface-container-high bg-white">
-          {loading ? (
+        <section className="relative min-h-0 flex-1 overflow-auto rounded-lg border border-surface-container-high bg-white">
+          {loading && !items.length ? (
             <div className="p-6 text-sm text-on-surface-variant">加载中...</div>
           ) : !items.length ? (
             <div className="p-6 text-sm text-on-surface-variant">暂无业绩类别</div>
           ) : (
-            <table className="w-full min-w-[1380px] text-left text-[12px] leading-5">
+            <table className={`w-full min-w-[1120px] text-left text-[12px] leading-5 transition-opacity ${refreshing ? 'opacity-60' : ''}`}>
               <thead className="sticky top-0 bg-surface-container-low text-xs text-on-surface-variant">
                 <tr>
                   {SORTABLE_COLUMNS.map((column) => (
@@ -405,7 +424,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
                       <SortHeader columnKey={column.key} label={column.label} sortBy={sort.sortBy} sortOrder={sort.sortOrder} onSort={updateSort} />
                     </th>
                   ))}
-                  <th className="w-[230px] px-3 py-2 text-right">操作</th>
+                  <th className="sticky right-0 z-20 w-[216px] bg-surface-container-low px-3 py-2 text-right">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -413,17 +432,26 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
                   const itemTags = normalizeTags(item.tags)
                   const modelLabel = compactList(item.turbineModels)
                   const timeLabel = compactYears(item.contractYears, item.deliveryYears, item.operationYears)
+                  const visibleTags = itemTags.slice(0, 3)
+                  const hiddenTagCount = Math.max(0, itemTags.length - visibleTags.length)
                   return (
-                    <tr key={item.id} className="border-t border-surface-container-high align-top">
+                    <tr key={item.id} className="group border-t border-surface-container-high align-top">
                       <td className="px-3 py-2.5">
-                        <button onClick={() => openDetail(item)} className="max-w-[18rem] text-left text-[12.5px] font-semibold leading-5 text-primary hover:underline">
+                        <button
+                          onClick={() => openDetail(item)}
+                          title={item.name || item.id}
+                          className="block max-w-[18rem] truncate text-left text-[12.5px] font-semibold leading-5 text-primary hover:underline"
+                        >
                           {item.name || item.id}
                         </button>
-                        <div className="mt-1.5 flex max-w-[220px] flex-wrap gap-1">
+                        <div className="mt-1.5 flex max-w-[220px] gap-1 overflow-hidden" title={itemTags.length ? itemTags.join('，') : undefined}>
                           <span className="rounded-full bg-surface-container-high px-1.5 py-0.5 text-[11px] leading-4 text-on-surface-variant">{SCOPE_LABELS[item.scope] || '通用'}</span>
-                          {itemTags.map((tag) => (
-                            <span key={tag} className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[11px] leading-4 text-primary">{tag}</span>
+                          {visibleTags.map((tag) => (
+                            <span key={tag} className="max-w-[4.75rem] truncate rounded-full bg-primary/10 px-1.5 py-0.5 text-[11px] leading-4 text-primary">{tag}</span>
                           ))}
+                          {hiddenTagCount > 0 && (
+                            <span className="rounded-full bg-surface-container-high px-1.5 py-0.5 text-[11px] leading-4 text-on-surface-variant">+{hiddenTagCount}</span>
+                          )}
                         </div>
                       </td>
                       <td className="px-3 py-2.5">
@@ -436,37 +464,37 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
                         </span>
                       </td>
                       <td className="px-3 py-2.5">
-                        <div className="max-w-[16rem] text-on-surface-variant">{modelLabel}</div>
+                        <div className="max-w-[13rem] truncate text-on-surface-variant" title={modelLabel}>{modelLabel}</div>
                       </td>
                       <td className="px-3 py-2.5">
-                        <div className="max-w-[16rem] text-on-surface-variant">{timeLabel}</div>
+                        <div className="max-w-[11rem] truncate text-on-surface-variant" title={timeLabel}>{timeLabel}</div>
                         <div className="mt-0.5 text-[11px] leading-4 text-outline">
                           合同/交货/投运
                         </div>
                       </td>
                       <td className="px-3 py-2.5">
-                        <div>{item.summaryFileName || '未保存汇总表'}</div>
+                        <div className="max-w-[10rem] truncate" title={item.summaryFileName || '未保存汇总表'}>{item.summaryFileName || '未保存汇总表'}</div>
                         <div className="mt-0.5 text-[11px] leading-4 text-outline">
                           {item.itemContractAttachmentCount ? `项目合同：${item.itemContractAttachmentCount} 个` : item.contractAttachmentCount ? '合同包待拆分' : '未上传合同附件'}
                         </div>
                       </td>
                       <td className="px-3 py-2.5">
                         <div>
-                          <span className={`rounded-full px-1.5 py-0.5 text-[11px] leading-4 ${item.status === 'disabled' ? 'bg-error-container/40 text-error' : 'bg-secondary-container text-on-secondary-container'}`}>
+                          <span className={`rounded-full px-1.5 py-0.5 text-[11px] leading-4 ${item.status === 'disabled' ? 'bg-error-container/70 text-error ring-1 ring-error/25' : 'bg-secondary-container text-on-secondary-container'}`}>
                             {CATEGORY_STATUS_LABELS[item.status] || '启用'}
                           </span>
                         </div>
                       </td>
-                      <td className="px-3 py-2.5">
+                      <td className="sticky right-0 z-10 bg-white px-3 py-2.5 group-hover:bg-surface-container-low">
                         <div className="flex justify-end gap-1.5 whitespace-nowrap">
-                          <button onClick={() => openDetail(item)} className="rounded-md bg-surface-container-high px-2 py-1 text-[11px] leading-4 hover:bg-surface-dim">明细</button>
+                          <button onClick={() => openDetail(item)} className="rounded-md bg-surface-container-high px-2 py-1 text-[11px] leading-4 hover:bg-surface-container-highest hover:text-primary">明细</button>
                           <button disabled={uploadingAttachment && uploadingCategoryId === item.id} onClick={() => chooseAttachmentFile(item)} className="rounded-md bg-primary/10 px-2 py-1 text-[11px] leading-4 text-primary hover:bg-primary/15 disabled:opacity-50">
                             {uploadingAttachment && uploadingCategoryId === item.id ? '上传中...' : '上传合同'}
                           </button>
-                          <button onClick={() => toggleCategoryStatus(item)} className={`rounded-md px-2 py-1 text-[11px] leading-4 ${item.status === 'disabled' ? 'bg-secondary-container text-on-secondary-container hover:bg-secondary-container/80' : 'bg-error-container/40 text-error hover:bg-error-container'}`}>
+                          <button onClick={() => toggleCategoryStatus(item)} className={`rounded-md px-2 py-1 text-[11px] leading-4 ${item.status === 'disabled' ? 'bg-secondary-container text-on-secondary-container hover:bg-secondary-container/80' : 'bg-error-container/70 text-error ring-1 ring-error/25 hover:bg-error-container'}`}>
                             {item.status === 'disabled' ? '启用' : '停用'}
                           </button>
-                          <button onClick={() => openDeleteDialog(item)} className="rounded-md bg-error-container/40 px-2 py-1 text-[11px] leading-4 text-error hover:bg-error-container">删除</button>
+                          <button onClick={() => openDeleteDialog(item)} className="rounded-md bg-error-container/70 px-2 py-1 text-[11px] leading-4 text-error ring-1 ring-error/25 hover:bg-error-container">删除</button>
                         </div>
                       </td>
                     </tr>
@@ -475,6 +503,11 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
               </tbody>
             </table>
           )}
+          {refreshing && items.length ? (
+            <div className="pointer-events-none absolute inset-0 flex items-start justify-center bg-white/25 pt-4">
+              <span className="rounded-full border border-outline-variant/60 bg-white px-3 py-1 text-xs font-medium text-on-surface-variant">正在刷新...</span>
+            </div>
+          ) : null}
         </section>
 
         <div className="flex items-center justify-between text-sm text-on-surface-variant">
@@ -488,14 +521,16 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
       </div>
 
       {preview && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest shadow-2xl">
+        <div className="dialog-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 transition-opacity">
+          <div className="wizard-modal-surface flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest animate-float-in">
             <div className="flex items-center justify-between border-b border-surface-container-high px-5 py-4">
               <div>
                 <h2 className="text-base font-semibold">导入预览</h2>
                 <p className="mt-1 text-xs text-on-surface-variant">{preview.sourceFileName} · {preview.rowCount} 条明细</p>
               </div>
-              <button onClick={closePreview} className="close-plain text-on-surface-variant hover:text-primary" aria-label="关闭">x</button>
+              <button onClick={closePreview} className="close-plain flex h-8 w-8 items-center justify-center rounded-md text-on-surface-variant hover:text-primary" aria-label="关闭">
+                <span className="material-symbols-outlined text-base">close</span>
+              </button>
             </div>
             <div className="min-h-0 overflow-auto p-5">
               <div className="grid gap-3 md:grid-cols-4">
@@ -524,7 +559,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
                   <tbody>
                     {previewRows(preview.rows).map((row) => (
                       <tr key={row.rowIndex} className="border-t border-surface-container-high">
-                        <td className="max-w-[16rem] px-3 py-2">{compactList(row.turbineModels)}</td>
+                        <td className="max-w-[16rem] truncate px-3 py-2" title={compactList(row.turbineModels)}>{compactList(row.turbineModels)}</td>
                         <td className="px-3 py-2">{row.contractYear || '-'}</td>
                         <td className="px-3 py-2">{compactYears([row.deliveryYear], [row.operationYear])}</td>
                         {(preview.fieldSchema || []).map((field) => (
@@ -545,8 +580,8 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
       )}
 
       {deleteTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-lg overflow-hidden rounded-xl border border-error/30 bg-surface-container-lowest shadow-2xl">
+        <div className="dialog-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 transition-opacity">
+          <div className="wizard-modal-surface w-full max-w-lg overflow-hidden rounded-xl border border-error/30 bg-surface-container-lowest animate-float-in">
             <div className="border-b border-surface-container-high px-5 py-4">
               <h2 className="text-base font-semibold text-error">删除业绩类别</h2>
               <p className="mt-1 text-sm text-on-surface-variant">{deleteTarget.name || deleteTarget.id}</p>
@@ -579,18 +614,25 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
         </div>
       )}
 
-      {detail && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest shadow-2xl">
+      {detailOpen && (
+        <div className="dialog-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 transition-opacity">
+          <div className="wizard-modal-surface flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest animate-float-in">
             <div className="flex items-center justify-between border-b border-surface-container-high px-5 py-4">
               <div>
                 <h2 className="text-base font-semibold">{currentDetailItem?.name || '业绩明细'}</h2>
                 <p className="mt-1 text-xs text-on-surface-variant">{compactParts(currentDetailItem?.scene, currentDetailItem?.powerRating, `${currentDetailItem?.itemCount || 0} 条明细`)}</p>
               </div>
-              <button onClick={() => setDetail(null)} className="close-plain text-on-surface-variant hover:text-primary" aria-label="关闭">x</button>
+              <button onClick={closeDetail} className="close-plain flex h-8 w-8 items-center justify-center rounded-md text-on-surface-variant hover:text-primary" aria-label="关闭">
+                <span className="material-symbols-outlined text-base">close</span>
+              </button>
             </div>
             {detailLoading ? (
-              <div className="p-6 text-sm text-on-surface-variant">加载中...</div>
+              <div className="flex min-h-[360px] items-center justify-center p-6 text-sm text-on-surface-variant">
+                <div className="text-center">
+                  <span className="material-symbols-outlined text-2xl text-primary">hourglass_empty</span>
+                  <p className="mt-2">正在加载明细...</p>
+                </div>
+              </div>
             ) : (
               <div className="min-h-0 overflow-auto p-5">
                 {currentDetailItem?.summary ? (
@@ -634,7 +676,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
                     <tbody>
                       {(detail.rows || []).map((row) => (
                         <tr key={row.id} className="border-t border-surface-container-high">
-                          <td className="max-w-[16rem] px-3 py-2 align-top">{compactList(row.turbineModels)}</td>
+                          <td className="max-w-[16rem] truncate px-3 py-2 align-top" title={compactList(row.turbineModels)}>{compactList(row.turbineModels)}</td>
                           <td className="px-3 py-2 align-top">{row.contractYear || '-'}</td>
                           <td className="px-3 py-2 align-top">{compactYears([row.deliveryYear], [row.operationYear])}</td>
                           <td className="min-w-[180px] max-w-[240px] px-3 py-2 align-top">
@@ -662,7 +704,8 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
                           </td>
                           {visibleFields.map((field) => {
                             const label = field.sourceHeader || field.label
-                            return <td key={field.key || field.label} className="max-w-[18rem] px-3 py-2 align-top">{row.values?.[label] || '-'}</td>
+                            const value = row.values?.[label] || '-'
+                            return <td key={field.key || field.label} className="max-w-[18rem] truncate px-3 py-2 align-top" title={value}>{value}</td>
                           })}
                         </tr>
                       ))}

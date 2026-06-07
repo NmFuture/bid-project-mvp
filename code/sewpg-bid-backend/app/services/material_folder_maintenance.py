@@ -197,6 +197,20 @@ async def ensure_business_standard_subfolders(
     *,
     ensure_folder_path: EnsureFolderPath,
 ) -> None:
+    async def ensure_children(parent: RawFolder, children: Any) -> None:
+        for child in children or ():
+            child_folder = await ensure_folder_path(
+                session,
+                str(child["name"]),
+                parent.id,
+                str(child["tier"]),
+                str(child["bidType"]),
+                child.get("projectId"),
+                int(child["sortOrder"]),
+                customer_name=child.get("customerName"),
+            )
+            await ensure_children(child_folder, child.get("children") or ())
+
     for spec in business_standard_subfolder_specs(standard_root.customer_name):
         folder = await ensure_folder_path(
             session,
@@ -208,17 +222,7 @@ async def ensure_business_standard_subfolders(
             int(spec["sortOrder"]),
             customer_name=spec.get("customerName"),
         )
-        for child in spec.get("children") or ():
-            await ensure_folder_path(
-                session,
-                str(child["name"]),
-                folder.id,
-                str(child["tier"]),
-                str(child["bidType"]),
-                child.get("projectId"),
-                int(child["sortOrder"]),
-                customer_name=child.get("customerName"),
-            )
+        await ensure_children(folder, spec.get("children") or ())
 
 
 async def ensure_business_customized_subfolders(

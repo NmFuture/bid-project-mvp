@@ -31,6 +31,10 @@ const BUSINESS_MATERIAL_KIND_OPTIONS = [
     label: '固定素材',
   },
   {
+    value: 'ai_fill',
+    label: 'AI填写',
+  },
+  {
     value: 'other',
     label: '其他',
   },
@@ -42,26 +46,28 @@ const ALLOWED_EXTENSIONS = new Set([
   'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff', 'ds_store',
 ])
 const MATERIAL_ROOT_PATHS = ['商务标']
-const PROTECTED_MOVE_FOLDER_PATHS = new Set([
-  '商务标',
-])
 const PROTECTED_DELETE_FOLDER_PATHS = new Set([
   '商务标',
+  '商务标/通用素材',
+  '商务标/客户素材',
+  '商务标/项目素材',
 ])
 const BUSINESS_STANDARD_PROTECTED_FOLDER_PATHS = new Set([
-  '商务标/通用素材/01-资质合规库',
-  '商务标/通用素材/02-企业能力库',
-  '商务标/通用素材/03-业绩资产池',
-  '商务标/通用素材/04-财务资料库',
-  '商务标/通用素材/05-专题证书库',
-  '商务标/通用素材/05-专题证书库/01-机型认证证书',
-  '商务标/通用素材/05-专题证书库/02-大部件型式认证证书',
-  '商务标/通用素材/06-通用模板底稿库',
+  '商务标/通用素材/资格审查与基础证明',
+  '商务标/通用素材/制造商与供应链材料',
+  '商务标/通用素材/机型认证与测试报告',
+  '商务标/通用素材/企业能力与综合实力',
+  '商务标/通用素材/通用表单与模板',
 ])
-const BUSINESS_CUSTOMIZED_PROTECTED_FOLDER_NAMES = new Set([
-  '01-客户关系与专项证明',
-  '02-商务响应文件',
-  '03-模板底稿与过程文件',
+const BUSINESS_CUSTOMER_PROTECTED_FOLDER_NAMES = new Set([
+  '客户准入与专项证明',
+  '客户专用响应口径',
+  '客户模板与过程稿',
+])
+const BUSINESS_PROJECT_PROTECTED_FOLDER_NAMES = new Set([
+  '招标要求与专项证明',
+  '资格审查与商务响应成册',
+  '项目模板与过程稿',
 ])
 
 const MATERIAL_ROOT_LABELS = {
@@ -91,7 +97,13 @@ const cleanStatusMeta = (status) => {
 }
 
 const businessMaterialKindMeta = (value) =>
-  BUSINESS_MATERIAL_KIND_OPTIONS.find((item) => item.value === value) || BUSINESS_MATERIAL_KIND_OPTIONS[1]
+  BUSINESS_MATERIAL_KIND_OPTIONS.find((item) => item.value === value) || BUSINESS_MATERIAL_KIND_OPTIONS[2]
+
+const businessMaterialKindClassName = (value) => {
+  if (value === 'fixed') return 'bg-secondary-container text-on-secondary-container'
+  if (value === 'ai_fill') return 'bg-tertiary-container text-on-tertiary-container'
+  return 'bg-surface-container-high text-on-surface-variant'
+}
 
 const normalizeTagList = (value) => {
   const source = Array.isArray(value)
@@ -286,12 +298,13 @@ const isProtectedDeleteFolderPath = (path) => {
     return true
   }
   const parts = normalized.split('/').filter(Boolean)
-  return (
-    parts.length === 4
-    && parts[0] === '商务标'
-    && (parts[1] === '客户素材' || parts[1] === '项目素材')
-    && BUSINESS_CUSTOMIZED_PROTECTED_FOLDER_NAMES.has(parts[3])
-  )
+  if (parts.length === 3 && parts[0] === '商务标' && (parts[1] === '客户素材' || parts[1] === '项目素材')) {
+    return true
+  }
+  if (parts.length !== 4 || parts[0] !== '商务标') return false
+  if (parts[1] === '客户素材') return BUSINESS_CUSTOMER_PROTECTED_FOLDER_NAMES.has(parts[3])
+  if (parts[1] === '项目素材') return BUSINESS_PROJECT_PROTECTED_FOLDER_NAMES.has(parts[3])
+  return false
 }
 
 const parentPath = (path) => {
@@ -621,7 +634,10 @@ function TagFilterDropdown({
       </button>
 
       {open && (
-        <div className="absolute left-0 top-[calc(100%+0.35rem)] z-40 w-full min-w-[18rem] rounded-lg border border-outline-variant/45 bg-surface-container-lowest p-2 shadow-[0_12px_28px_-16px_rgba(0,62,111,0.32)]">
+        <div
+          className="absolute left-0 top-[calc(100%+0.35rem)] z-40 w-full min-w-[18rem] rounded-lg border border-outline-variant bg-surface-container-low p-2"
+          style={{ boxShadow: '0 12px 28px -16px rgba(0,62,111,0.32)' }}
+        >
           <input
             value={searchValue}
             onChange={(event) => onSearchChange(event.target.value)}
@@ -686,7 +702,6 @@ function TreeNode({
   level = 0,
   collapsedMap,
   onToggle,
-  scale = 100,
   filesByFolderPath,
   forceExpanded = false,
 }) {
@@ -695,12 +710,12 @@ function TreeNode({
   const canExpand = hasChildren || directFileCount > 0
   const collapsed = canExpand && !forceExpanded ? Boolean(collapsedMap[node.path]) : false
   const selected = selectedPath === node.path
-  const indent = (12 + level * 16) * (scale / 100)
-  const fileIndent = (34 + (level + 1) * 16) * (scale / 100)
+  const indent = 12 + level * 16
+  const fileIndent = 34 + (level + 1) * 16
   const directFiles = filesByFolderPath?.get(normalizePath(node.path)) || []
   const displayFileCount = directFiles.length || directFileCount
   const normalizedNodePath = normalizePath(node.path)
-  const canDragFolder = !PROTECTED_MOVE_FOLDER_PATHS.has(normalizedNodePath)
+  const canDragFolder = !isProtectedDeleteFolderPath(normalizedNodePath)
   const canDeleteThisFolder = Boolean(normalizedNodePath) && !isProtectedDeleteFolderPath(normalizedNodePath)
   const isDropTarget = dragTargetPath === normalizedNodePath
   return (
@@ -746,8 +761,8 @@ function TreeNode({
             onToggle(node.path, true)
           }
         }}
-        style={{ paddingLeft: `${indent}px`, fontSize: `${Math.max(11, Math.min(14, 13 * (scale / 100)))}px` }}
-        className={`group w-full text-left rounded-lg py-2 pr-2 transition-colors flex items-center justify-between gap-2 ${
+        style={{ paddingLeft: `${indent}px` }}
+        className={`group w-full text-left rounded-lg py-2 pr-2 text-sm transition-colors flex items-center justify-between gap-2 ${
           isDropTarget
             ? 'bg-primary/15 text-primary ring-1 ring-primary/40'
             :
@@ -778,9 +793,12 @@ function TreeNode({
           </span>
           <span className="truncate">{node.name}</span>
         </span>
-        <span className="flex shrink-0 items-center gap-1">
-          <span className="text-xs text-outline">
-            {displayFileCount ? `${displayFileCount}/${node.fileCount}` : node.fileCount}
+        <span className="flex min-w-[4.25rem] shrink-0 items-center justify-end gap-1">
+          <span
+            className="text-xs text-outline"
+            title={displayFileCount ? `当前显示 ${displayFileCount} 个，目录总计 ${node.fileCount || 0} 个` : '空目录'}
+          >
+            {displayFileCount ? `${displayFileCount}/${node.fileCount || displayFileCount}` : '-'}
           </span>
           {canDeleteThisFolder && (
             <button
@@ -791,7 +809,7 @@ function TreeNode({
                 event.stopPropagation()
                 onDeleteFolder(normalizedNodePath)
               }}
-              className="hidden h-6 w-6 items-center justify-center rounded text-outline hover:bg-error-container/40 hover:text-error group-hover:inline-flex"
+              className="flex h-6 w-6 items-center justify-center rounded text-outline opacity-0 transition-opacity hover:bg-error-container/40 hover:text-error group-hover:opacity-100 focus:opacity-100"
             >
               <span aria-hidden="true" className="material-symbols-outlined text-[16px]">delete</span>
             </button>
@@ -828,9 +846,8 @@ function TreeNode({
                 title={previewable ? item.name || '' : cleanedPreviewBlockedMessage(item)}
                 style={{
                   paddingLeft: `${fileIndent}px`,
-                  fontSize: `${Math.max(11, Math.min(14, 12.5 * (scale / 100)))}px`,
                 }}
-                className={`group flex w-full items-center gap-2 rounded-lg py-1.5 pr-2 text-left transition-colors ${
+                className={`group flex w-full items-center gap-2 rounded-lg py-1.5 pr-2 text-left text-sm transition-colors ${
                   fileSelected
                     ? 'bg-secondary-container text-on-secondary-container'
                     : 'text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface'
@@ -839,18 +856,18 @@ function TreeNode({
                 <span className={`material-symbols-outlined shrink-0 text-[17px] ${previewable ? 'text-secondary' : 'text-outline'}`}>
                   {previewable ? 'description' : 'draft'}
                 </span>
-                <span className="min-w-0 flex-1 truncate">{item.name || '-'}</span>
+                <span className="min-w-0 flex-1 basis-32 truncate">{item.name || '-'}</span>
                 <span className={`hidden shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex ${meta.className}`}>
                   {meta.label}
                 </span>
                 {item.bidType === '商务标' && (
-                  <span className={`hidden shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex ${item.businessMaterialKind === 'fixed' ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
+                  <span className={`hidden shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex ${businessMaterialKindClassName(item.businessMaterialKind)}`}>
                     {item.businessMaterialKindLabel || kindMeta.label}
                   </span>
                 )}
                 {!!itemTags.length && (
                   <span
-                    className="hidden max-w-[14rem] shrink-0 items-center gap-1 overflow-hidden sm:inline-flex"
+                    className="hidden min-w-0 max-w-[10rem] shrink items-center gap-1 overflow-hidden sm:inline-flex"
                     title={itemTags.join('，')}
                   >
                     {itemTags.slice(0, 3).map((tag) => (
@@ -865,7 +882,7 @@ function TreeNode({
                     )}
                   </span>
                 )}
-                <span className="hidden shrink-0 items-center gap-1 group-hover:inline-flex">
+                <span className="flex min-w-[6rem] shrink-0 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                   <button
                     type="button"
                     title="重命名文件"
@@ -946,7 +963,6 @@ function TreeNode({
               level={level + 1}
               collapsedMap={collapsedMap}
               onToggle={onToggle}
-              scale={scale}
               filesByFolderPath={filesByFolderPath}
               forceExpanded={forceExpanded}
             />
@@ -1420,8 +1436,10 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
 
   const updateBusinessMaterialKind = async (item) => {
     if (!item?.id || item.bidType !== '商务标') return
-    const current = item.businessMaterialKind === 'fixed' ? 'fixed' : 'other'
-    const nextKind = current === 'fixed' ? 'other' : 'fixed'
+    const current = BUSINESS_MATERIAL_KIND_OPTIONS.some((option) => option.value === item.businessMaterialKind)
+      ? item.businessMaterialKind
+      : 'other'
+    const nextKind = current === 'other' ? 'fixed' : current === 'fixed' ? 'ai_fill' : 'other'
     try {
       const result = await businessMaterialsAPI.raw.updateFile(item.id, {
         businessMaterialKind: nextKind,
@@ -1639,8 +1657,12 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
 
   const handleMoveDrop = async (event, targetPath) => {
     const normalizedTarget = normalizePath(targetPath)
-    if (!normalizedTarget || normalizedTarget.startsWith('商务标')) {
-      showToast('商务标素材库当前不可移动。', 'error')
+    if (!normalizedTarget) {
+      showToast('请选择目标目录。', 'error')
+      return
+    }
+    if (normalizedTarget !== activeBidType && !normalizedTarget.startsWith(`${activeBidType}/`)) {
+      showToast('只能在当前素材库内移动。', 'error')
       return
     }
 
@@ -1672,7 +1694,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
     const folderPayload = parseDragPayload(event, 'application/x-raw-folder')
     const sourcePath = normalizePath(folderPayload?.path)
     if (!sourcePath || sourcePath === normalizedTarget) return
-    if (PROTECTED_MOVE_FOLDER_PATHS.has(sourcePath)) {
+    if (isProtectedDeleteFolderPath(sourcePath)) {
       showToast('基础目录不允许移动。', 'error')
       return
     }
@@ -1759,13 +1781,13 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
         </div>
 
         <div className="flex flex-wrap items-center justify-start gap-1.5 xl:justify-end" role="toolbar" aria-label="素材目录工具栏">
-          <button type="button" onClick={() => setCollapseForAll(false)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim">
+          <button type="button" onClick={() => setCollapseForAll(false)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim">
             展开
           </button>
-          <button type="button" onClick={() => setCollapseForAll(true)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim">
+          <button type="button" onClick={() => setCollapseForAll(true)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim">
             收起
           </button>
-          <button type="button" onClick={handleCreateFolder} disabled={!canCreateFolder} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-45">
+          <button type="button" onClick={handleCreateFolder} disabled={!canCreateFolder} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-45">
             新建文件夹
           </button>
           <button
@@ -1822,15 +1844,6 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
     </>
   )
 
-  if (loading) {
-    return (
-      <PageLoading
-        title="正在加载原始材料库..."
-        description="正在同步目录树、权限和文件列表。"
-      />
-    )
-  }
-
   if (error) {
     return (
       <PageError
@@ -1842,7 +1855,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
   }
 
   return (
-    <div className="flex flex-col gap-3 animate-fade-in">
+    <div className="flex flex-col gap-3">
       <MaterialsViewSwitch
         active="raw"
         title="商务标素材库"
@@ -1868,6 +1881,16 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
       {materialToolbar}
 
       <div className="grid min-h-[680px] grid-cols-1 gap-3 xl:min-h-[calc(100vh-12rem)] xl:grid-cols-[minmax(30rem,40rem)_minmax(0,1fr)]">
+        {loading ? (
+          <div className="col-span-full flex min-h-[680px] items-center justify-center rounded-lg border border-outline-variant/45 bg-surface-container-lowest xl:min-h-[calc(100vh-12rem)]">
+            <PageLoading
+              title="正在加载原始材料库..."
+              description="正在同步目录树、权限和文件列表。"
+              containerClassName="min-h-0"
+            />
+          </div>
+        ) : (
+          <>
         <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest">
           <div className="flex min-h-[52px] items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
             <div className="flex min-w-0 items-center gap-2">
@@ -1902,7 +1925,6 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                     setDragTargetPath={setDragTargetPath}
                     collapsedMap={collapsedMap}
                     onToggle={toggleNode}
-                    scale={100}
                     filesByFolderPath={filesByFolderPath}
                     forceExpanded={hasActiveFilters}
                   />
@@ -1934,7 +1956,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
               )}
             </div>
             <div className="flex items-center gap-2">
-              <span className={`whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold ${hasPreviewSession ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
+              <span className={`whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold ${onlyofficePreviewError ? 'bg-error-container text-on-error-container' : hasPreviewSession ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
                 {previewModeLabel}
               </span>
               <button
@@ -1955,11 +1977,13 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
             {previewContent}
           </div>
         </section>
+          </>
+        )}
       </div>
 
       {showUploadModal && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">
-          <div className="w-full max-w-2xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] max-h-[calc(100vh-1.5rem)] sm:max-h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-[0_12px_28px_-16px_rgba(0,62,111,0.2)] flex flex-col overflow-hidden">
+        <div className="dialog-overlay fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">
+          <div className="wizard-modal-surface w-full max-w-2xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] max-h-[calc(100vh-1.5rem)] sm:max-h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high flex flex-col overflow-hidden animate-float-in">
             <div className="px-5 sm:px-6 py-4 border-b border-surface-container-high flex items-center justify-between shrink-0">
               <h2 className="text-lg font-headline font-bold text-on-surface">上传{activeBidType}原始素材</h2>
               <button onClick={closeUploadModal} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
@@ -2134,6 +2158,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                         type="checkbox"
                         checked={uploadAfterSplit}
                         onChange={(event) => setUploadAfterSplit(event.target.checked)}
+                        className="h-4 w-4 accent-primary"
                       />
                       上传后打开切分审核
                     </span>
@@ -2205,9 +2230,9 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
               {!!uploadFiles.length && (
                 <div className="rounded-lg bg-surface-container-low p-3 text-xs text-on-surface-variant max-h-48 overflow-y-auto overscroll-contain">
                   {uploadFiles.map((item) => (
-                    <div key={`${item.webkitRelativePath || item.name}-${item.size}-${item.lastModified}`} className="flex items-center justify-between py-1">
-                      <span className="truncate mr-2">{item.webkitRelativePath || item.name}</span>
-                      <span>{toSizeLabel(item.size)}</span>
+                    <div key={`${item.webkitRelativePath || item.name}-${item.size}-${item.lastModified}`} className="flex items-center justify-between gap-2 py-1">
+                      <span className="min-w-0 flex-1 truncate" title={item.webkitRelativePath || item.name}>{item.webkitRelativePath || item.name}</span>
+                      <span className="shrink-0">{toSizeLabel(item.size)}</span>
                     </div>
                   ))}
                 </div>
@@ -2240,10 +2265,10 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
       )}
 
       {conflictContext && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-[0_12px_28px_-16px_rgba(0,62,111,0.2)]">
+        <div className="dialog-overlay fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="wizard-modal-surface w-full max-w-md bg-surface-container-lowest rounded-xl border border-surface-container-high animate-float-in">
             <div className="px-6 py-4 border-b border-surface-container-high">
-              <h3 className="text-base font-semibold text-on-surface">发现命名冲突</h3>
+              <h3 className="text-lg font-semibold text-on-surface">发现命名冲突</h3>
             </div>
             <div className="p-6 text-sm text-on-surface-variant space-y-2">
               <p>目标路径存在同名文件，请选择处理方式：</p>
@@ -2276,11 +2301,11 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
       )}
 
       {tagEditorItem && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-          <div className="w-full max-w-lg bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-[0_12px_28px_-16px_rgba(0,62,111,0.2)]">
+        <div className="dialog-overlay fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="wizard-modal-surface w-full max-w-lg bg-surface-container-lowest rounded-xl border border-surface-container-high animate-float-in">
             <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between">
               <div className="min-w-0">
-                <h3 className="text-base font-semibold text-on-surface">编辑素材标签</h3>
+                <h3 className="text-lg font-semibold text-on-surface">编辑素材标签</h3>
                 <p className="mt-1 truncate text-xs text-outline">{tagEditorItem.name || tagEditorItem.id}</p>
               </div>
               <button
@@ -2341,8 +2366,8 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
       )}
 
       {splitModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">
-          <div className="w-full max-w-5xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high shadow-[0_12px_28px_-16px_rgba(0,62,111,0.2)] flex flex-col overflow-hidden">
+        <div className="dialog-overlay fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">
+          <div className="wizard-modal-surface w-full max-w-5xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high flex flex-col overflow-hidden animate-float-in">
             <div className="px-5 sm:px-6 py-4 border-b border-surface-container-high flex items-center justify-between shrink-0">
               <div className="min-w-0">
                 <h2 className="text-lg font-headline font-bold text-on-surface">商务素材切分审核</h2>
@@ -2398,7 +2423,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                                 type="checkbox"
                                 checked={Boolean(fragment.selected)}
                                 onChange={(event) => updateSplitFragment(fragment.id, { selected: event.target.checked })}
-                                className="mt-1"
+                                className="mt-1 h-4 w-4 accent-primary"
                               />
                               <span className="min-w-0">
                                 <span className="block text-sm font-semibold text-on-surface">{fragment.title || `片段 ${index + 1}`}</span>
@@ -2407,7 +2432,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                                 </span>
                               </span>
                             </label>
-                            <span className="rounded-full bg-surface-container-high px-2 py-1 text-[11px] font-semibold text-on-surface-variant">
+                            <span className="max-w-[8rem] shrink-0 truncate rounded-full bg-surface-container-high px-2 py-1 text-[11px] font-semibold text-on-surface-variant" title={fragment.id}>
                               {fragment.id}
                             </span>
                           </div>
@@ -2439,7 +2464,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                           </div>
 
                           {!!(fragment.riskTips || []).length && (
-                            <div className="mt-3 rounded-lg bg-warning/10 px-3 py-2 text-xs leading-5 text-on-surface">
+                            <div className="mt-3 rounded-lg border border-tertiary/30 bg-tertiary-container/60 px-3 py-2 text-xs leading-5 text-on-tertiary-container">
                               {(fragment.riskTips || []).map((tip) => (
                                 <div key={tip}>风险提示：{tip}</div>
                               ))}
