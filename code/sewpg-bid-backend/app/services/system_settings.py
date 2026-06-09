@@ -41,6 +41,24 @@ DEFAULT_LLM_MODEL_OPTIONS = [
 ]
 
 OPENCODE_RUNTIME_CONFIG_PATH = settings.documents_dir / "_runtime" / "opencode" / "opencode.runtime.json"
+OPENCODE_HEADLESS_EXTERNAL_DIRECTORY_PERMISSIONS = {
+    "/data/parsed/**": "allow",
+    "/data/documents/**": "allow",
+    "/data/uploads/**": "allow",
+}
+
+
+def opencode_headless_permissions() -> dict[str, Any]:
+    return {
+        "skill": {
+            "*": "allow",
+        },
+        "bash": "allow",
+        "external_directory": dict(OPENCODE_HEADLESS_EXTERNAL_DIRECTORY_PERMISSIONS),
+        "task": "deny",
+        "read": "deny",
+        "edit": "deny",
+    }
 
 
 def mask_secret(value: str) -> str:
@@ -186,13 +204,7 @@ class SystemSettingsService:
                     },
                 }
             },
-            "permission": {
-                "skill": {
-                    "*": "allow",
-                },
-                "bash": "allow",
-                "edit": "deny",
-            },
+            "permission": opencode_headless_permissions(),
         }
         if api_key:
             runtime["provider"][provider_id]["options"]["apiKey"] = api_key

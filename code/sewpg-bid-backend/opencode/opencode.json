@@ -8,6 +8,13 @@
       "*": "allow"
     },
     "bash": "allow",
+    "external_directory": {
+      "/data/parsed/**": "allow",
+      "/data/documents/**": "allow",
+      "/data/uploads/**": "allow"
+    },
+    "task": "deny",
+    "read": "deny",
     "edit": "deny"
   }
 }

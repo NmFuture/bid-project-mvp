@@ -6,6 +6,11 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("resolve_source_text_candidates.py")
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import resolve_source_text_candidates as resolver
 
 
 def block(block_id, text, **extra):
@@ -95,6 +100,43 @@ class ResolveSourceTextCandidatesTest(unittest.TestCase):
         self.assertNotIn("商务部分摘要表 ........ 12", texts)
         self.assertFalse(any(candidate.get("source_type") == "zone" for candidate in candidates))
         self.assertTrue(any(text == "附件7A 商务部分摘要表" for text in texts))
+        self.assertNotEqual(candidates[0]["source_text"], "商务部分摘要表 ........ 12")
+        self.assertIn(candidates[0]["scope"], {"format_area", "parent_context"})
+
+    def test_layered_retrieval_reports_current_source_refs_and_history_fallback(self):
+        tender = {
+            "document_name": "招标文件.docx",
+            "source_path": "C:/work/招标文件.docx",
+            "blocks": [
+                block("b-001", "目录", heading_path=["目录"]),
+                block("b-002", "保密承诺书 ........ 88", heading_path=["目录"]),
+                block("b-003", "第二章 投标人须知", heading_path=["第二章 投标人须知"], heading_level=1),
+                block("b-004", "投标文件包括保密承诺书，详见第六章附件9。", heading_path=["第二章 投标人须知", "投标文件组成"]),
+                block("b-005", "第六章 投标文件格式", heading_path=["第六章 投标文件格式"], heading_level=1),
+                block("b-006", "附件9 保密承诺书", heading_path=["第六章 投标文件格式"], heading_level=2),
+                block("b-007", "投标人承诺对招标文件及项目资料承担保密义务。", heading_path=["第六章 投标文件格式", "附件9 保密承诺书"]),
+            ],
+            "tables": [],
+            "zones": [],
+        }
+        outline = {"sections": [
+            {"id": "sec-1", "title": "保密承诺书", "source_text": "9.2 保密承诺书", "children": []},
+            {"id": "sec-2", "title": "历史保留但当前无依据", "source_text": "9.99 历史保留但当前无依据", "children": []},
+        ]}
+        result = self.run_resolver(tender, outline)
+        by_id = self.by_id(result)
+
+        first = by_id["sec-1"]["candidates"][0]
+        self.assertEqual(first["source_text"], "附件9 保密承诺书")
+        self.assertEqual(first["scope"], "format_area")
+        self.assertIn("source_ref", first)
+        self.assertEqual(first["source_ref"]["source_file"], "招标文件.docx")
+        self.assertEqual(first["source_ref"]["block_id"], "b-006")
+        self.assertEqual(first["source_kind"], "paragraph")
+        fallback = by_id["sec-2"]["candidates"][0]
+        self.assertEqual(fallback["scope"], "history_fallback")
+        self.assertEqual(fallback["source_text"], "9.99 历史保留但当前无依据")
+        self.assertEqual(fallback["confidence"], "low")
 
     def test_scoring_appendix_is_high_value_not_format_area(self):
         tender = {
@@ -348,6 +390,77 @@ class ResolveSourceTextCandidatesTest(unittest.TestCase):
 
         self.assertTrue(any("child 的 source_text 与父项 source_text 完全相同" in message for message in messages))
         self.assertTrue(any("多个 sibling child 复用同一个父项 source_text" in message for message in messages))
+
+    def test_large_source_set_uses_bounded_candidate_pool(self):
+        sources = []
+        for index in range(2500):
+            text = f"无关条款 {index} 投标文件完整性说明"
+            sources.append(
+                {
+                    "source_type": "block",
+                    "source_text": text,
+                    "source_compact": resolver.compact(text),
+                    "scope_hint": "full_text",
+                    "index": index,
+                }
+            )
+        target = "附件9 保密承诺书"
+        sources.append(
+            {
+                "source_type": "block",
+                "source_text": target,
+                "source_compact": resolver.compact(target),
+                "scope_hint": "format_area",
+                "index": 2501,
+            }
+        )
+        source_set = resolver.SourceSet(sources)
+        features = resolver.section_features({"title": "保密承诺书", "source_text": "9.2 保密承诺书"})
+
+        selected = source_set.candidate_sources(features, source_set.sources)
+
+        self.assertLessEqual(len(selected), 220)
+        self.assertTrue(any(source["source_text"] == target for source in selected))
+
+    def test_high_value_business_parent_items_recall_current_tender_text(self):
+        tender = {
+            "blocks": [
+                block("b-001", "附件5 投标保证金格式", heading_path=["第六章 投标文件格式"], heading_level=2),
+                block("b-002", "附件7 资格证明文件", heading_path=["第六章 投标文件格式"], heading_level=2),
+                block("b-003", "7A表 商务部分摘要表", heading_path=["附件7 资格证明文件"], heading_level=3),
+                block("b-004", "7B表 股权结构表", heading_path=["附件7 资格证明文件"], heading_level=3),
+                block("b-005", "7D-1表 近年财务状况表", heading_path=["附件7 资格证明文件"], heading_level=3),
+                block("b-006", "附件7I 业绩情况表", heading_path=["附件7 资格证明文件"], heading_level=3),
+                block("b-007", "投标文件组成包括投标函、法定代表人身份证明、投标保证金、资格证明文件。", heading_path=["投标人须知前附表"]),
+            ],
+            "tables": [],
+            "zones": [],
+        }
+        outline = {"sections": [
+            {"id": "sec-bond", "title": "投标保证金", "source_text": "投标保证金", "children": []},
+            {"id": "sec-qual", "title": "资格证明文件", "source_text": "资格证明文件", "children": [
+                {"id": "sec-summary", "title": "商务部分摘要表", "source_text": "商务部分摘要表", "children": []},
+                {"id": "sec-equity", "title": "股权结构", "source_text": "股权结构", "children": []},
+                {"id": "sec-finance", "title": "财务报表", "source_text": "财务报表", "children": []},
+                {"id": "sec-performance", "title": "业绩情况表", "source_text": "业绩情况表", "children": []},
+            ]},
+        ]}
+
+        result = self.run_resolver(tender, outline)
+        by_id = self.by_id(result)
+
+        expected = {
+            "sec-bond": "附件5 投标保证金格式",
+            "sec-qual": "附件7 资格证明文件",
+            "sec-summary": "7A表 商务部分摘要表",
+            "sec-equity": "7B表 股权结构表",
+            "sec-finance": "7D-1表 近年财务状况表",
+            "sec-performance": "附件7I 业绩情况表",
+        }
+        for section_id, source_text in expected.items():
+            candidate = by_id[section_id]["candidates"][0]
+            self.assertEqual(candidate["source_text"], source_text, section_id)
+            self.assertNotEqual(candidate["scope"], "history_fallback", section_id)
 
 
 if __name__ == "__main__":

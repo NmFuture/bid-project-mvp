@@ -368,6 +368,28 @@ class PrepareHistoryBidOutlineInputsTest(unittest.TestCase):
         self.assertEqual([candidate["number"] for candidate in output["outline_candidates"]], [None, None, None])
         self.assertEqual([candidate["level"] for candidate in output["outline_candidates"]], [1, 1, 2])
 
+    def test_candidate_ids_are_unique_after_auto_toc_deep_heading_backfill(self):
+        output = self.run_script([
+            paragraph("封面"),
+            auto_toc_sdt([
+                {"title": "7 资格证明文件", "bookmark": "_Toc6001", "page": 1, "style": "TOC1"},
+                {"title": "7.1 资格证明材料", "bookmark": "_Toc6002", "page": 2, "style": "TOC2"},
+                {"title": "8 商务偏差表", "bookmark": "_Toc6003", "page": 8, "style": "TOC1"},
+                {"title": "9 其他材料", "bookmark": "_Toc6004", "page": 9, "style": "TOC1"},
+            ]),
+            paragraph("7 资格证明文件", outline_level=0, runs=[bookmark_start("_Toc6001"), run_text("7 资格证明文件")]),
+            paragraph("7.1 资格证明材料", outline_level=1, runs=[bookmark_start("_Toc6002"), run_text("7.1 资格证明材料")]),
+            paragraph("7.1.1.1 EW10.0-220 设计认证证书", outline_level=3),
+            paragraph("7.1.1.2 EW6.25-220 型式认证证书", outline_level=3),
+            paragraph("8 商务偏差表", outline_level=0, runs=[bookmark_start("_Toc6003"), run_text("8 商务偏差表")]),
+            paragraph("9 其他材料", outline_level=0, runs=[bookmark_start("_Toc6004"), run_text("9 其他材料")]),
+        ])
+
+        ids = [candidate["candidate_id"] for candidate in output["outline_candidates"]]
+
+        self.assertEqual(ids, [f"hist-cand-{index:03d}" for index in range(1, len(ids) + 1)])
+        self.assertEqual(len(ids), len(set(ids)))
+
 
 if __name__ == "__main__":
     unittest.main()

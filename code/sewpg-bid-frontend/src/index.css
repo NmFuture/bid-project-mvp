@@ -465,6 +465,15 @@ input,
   line-height: 1.65;
 }
 
+.business-core-text-cell {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.65;
+  vertical-align: top;
+}
+
 .business-parse-empty {
   min-height: 300px;
   display: flex;

@@ -20,14 +20,28 @@ def compact_for_match(text):
     return text
 
 
+TOC_LINE_RE = re.compile(r"(?:\.{2,}|…{2,}|\s{2,}|\t)\s*\d+\s*$")
+SIMPLE_PAGE_LINE_RE = re.compile(r"^.{2,90}\s+\d{1,4}\s*$")
+
+
+def is_toc_like_text(text):
+    stripped = (text or "").strip()
+    if compact_for_match(stripped) in {"目录", "目次"}:
+        return True
+    return bool(TOC_LINE_RE.search(stripped) or SIMPLE_PAGE_LINE_RE.match(stripped))
+
+
+def is_toc_source(source):
+    heading_path = source.get("heading_path", []) or []
+    path_text = " ".join(heading_path or [])
+    return compact_for_match(path_text) in {"目录", "目次"} or "目录" in path_text or "目次" in path_text or is_toc_like_text(source.get("text", ""))
+
+
 def load_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
 def iter_source_texts(outline):
-    source = outline.get("outline_source", {})
-    yield "outline_source.source_text", source.get("source_text")
-
     def walk_sections(sections, prefix):
         for index, section in enumerate(sections or []):
             path = f"{prefix}[{index}].source_text"
@@ -48,6 +62,7 @@ def build_sources(tender_map_inputs):
             "text": block.get("text", ""),
             "heading_path": block.get("heading_path", []),
             "table_id": block.get("table_id"),
+            "is_toc": is_toc_source(block),
         })
     for table in tender_map_inputs.get("tables", []) or []:
         table_text = "\n".join(row.get("row_text", "") for row in table.get("rows", []) or [])
@@ -56,6 +71,7 @@ def build_sources(tender_map_inputs):
             "id": table.get("table_id"),
             "text": table_text,
             "nearby_heading": table.get("nearby_heading", ""),
+            "is_toc": False,
         })
     for zone in tender_map_inputs.get("zones", []) or []:
         sources.append({
@@ -63,6 +79,7 @@ def build_sources(tender_map_inputs):
             "id": zone.get("zone_id"),
             "text": zone.get("text", ""),
             "heading_path": zone.get("heading_path", []),
+            "is_toc": is_toc_source(zone),
         })
     return sources
 
@@ -99,21 +116,49 @@ def best_match(source_text, sources):
 
 def main():
     parser = argparse.ArgumentParser(description="Check whether outline source_text values are traceable to tender_map_inputs.json.")
-    parser.add_argument("outline_json", help="Path to outline.json")
-    parser.add_argument("tender_map_inputs", help="Path to tender_map_inputs.json")
+    parser.add_argument("first", help="Path to outline.json or tender_map_inputs.json")
+    parser.add_argument("second", help="Path to tender_map_inputs.json or outline.json")
     args = parser.parse_args()
 
-    outline = load_json(args.outline_json)
-    tender_map_inputs = load_json(args.tender_map_inputs)
+    first = load_json(args.first)
+    second = load_json(args.second)
+    if "sections" in first and "blocks" in second:
+        outline = first
+        tender_map_inputs = second
+    elif "blocks" in first and "sections" in second:
+        tender_map_inputs = first
+        outline = second
+    else:
+        raise SystemExit("expected one outline.json and one tender_map_inputs.json")
     sources = build_sources(tender_map_inputs)
     results = []
     unmatched = []
+    metrics = {
+        "source_text_total": 0,
+        "source_text_matched_current": 0,
+        "source_text_matched_toc_only": 0,
+        "source_text_history_fallback": 0,
+        "source_text_unmatched": 0,
+    }
     for path, source_text in iter_source_texts(outline):
+        metrics["source_text_total"] += 1
         match, score = best_match(source_text or "", sources)
+        status = "unmatched"
+        if match and match.get("is_toc"):
+            status = "toc_only"
+            metrics["source_text_matched_toc_only"] += 1
+        elif match:
+            status = "matched"
+            metrics["source_text_matched_current"] += 1
+        elif source_text and is_toc_like_text(source_text):
+            status = "history_fallback"
+            metrics["source_text_history_fallback"] += 1
+        else:
+            metrics["source_text_unmatched"] += 1
         item = {
             "path": path,
             "source_text": source_text,
-            "status": "matched" if match else "unmatched",
+            "status": status,
             "score": round(score, 3),
         }
         if match:
@@ -121,10 +166,10 @@ def main():
             item["matched_id"] = match["id"]
             if match.get("table_id"):
                 item["table_id"] = match["table_id"]
-        else:
+        elif status == "unmatched":
             unmatched.append(path)
         results.append(item)
-    output = {"results": results, "unmatched": unmatched}
+    output = {"metrics": metrics, "results": results, "unmatched": unmatched}
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 1 if unmatched else 0
 
