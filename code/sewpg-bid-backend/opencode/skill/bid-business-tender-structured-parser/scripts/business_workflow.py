@@ -9,39 +9,58 @@ from typing import Any
 from business_contract import (
     SCHEMA_VERSION,
     SKILL_NAME,
+    PROJECT_BASIC_FIELDS,
     _clause_number_tuple,
     _build_business_coverage,
     _build_business_project_fact_fields,
     _clean,
+    _best_project_candidate,
+    _bidder_instruction_for_project_field,
+    _candidate_from_bidder_instruction,
     _is_docx_source,
+    _is_reference_only_value,
     _is_rejection_child_line,
     _is_rejection_parent_heading,
     _is_same_or_higher_clause,
     _iter_docx_blocks,
-    _business_template_appendices_from_manifest,
     _load_texts_by_id,
     _looks_like_qualification_requirement,
     _looks_like_section_heading,
     _normalize_applicable_scope,
+    _normalize_bid_deadline,
     _normalize_qualification_content,
+    _reference_section_nodes,
+    _reference_section_project_candidates,
     _qualification_source_text,
     _with_commercial_rejection_display_fields,
+    business_appendices_for_result,
+    business_structured_records,
     build_business_result,
+)
+from qualification_section_selector import select_qualification_section_nodes
+
+
+PROJECT_BASIC_DEADLINE_REVIEW_KEYWORDS = ("投标文件应于", "响应文件应于", "应答文件应于", "截止时间")
+PROJECT_BASIC_DATE_CONTEXT_PATTERN = re.compile(
+    r"20\d{2}\s*(?:年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|[/-]\s*\d{1,2}\s*[/-]\s*\d{1,2}|[.]\s*\d{1,2}\s*[.]\s*\d{1,2})"
 )
 
 
 TASK_NAMES = (
     "qualification_review",
+    "project_basics_reference_review",
     "rejection_clause_review",
     "scoring_table_review",
 )
 TASK_MODULE_KEYS = {
     "qualification_review": "qualification",
+    "project_basics_reference_review": "projectBasicsReferenceReview",
     "rejection_clause_review": "rejection",
     "scoring_table_review": "scoringTableReview",
 }
 TASK_INSTRUCTIONS = {
     "qualification_review": ("qualification", "只判断真正影响投标人资格的条件；材料说明、评分项、目录、引用句、废标项都应拒绝。"),
+    "project_basics_reference_review": ("projectBasicsReferenceReview", "只从候选的前一行、当前行、后一行中识别项目基础信息字段；无法确认时拒绝，不得编造候选窗口外内容。"),
     "rejection_clause_review": ("rejection", "只保留影响投标有效性的商务废标、否决、无效投标、不予受理条款。"),
     "scoring_table_review": ("scoringTableReview", "只判断疑难评分行块是否属于商务评分细则；表头不固定时也要能从行块中识别评分/审查项、分值、评分标准，且只有看到具体分值时才能接受；权重、分值构成、推荐原则、报价评审条件不是商务评分细则。"),
 }
@@ -92,10 +111,21 @@ ALLOWED_STRUCTURED_KEYS = (
 ALLOWED_SCORING_KEYS = ("business",)
 ALLOWED_PROJECT_DATE_KEYS = ("endDate",)
 BUSINESS_SCORING_EXACT_KEYWORD = "商务评分标准"
-SCORING_ITEM_HEADERS = ("评分项", "评审因素", "评审项目", "项目", "因素")
-SCORING_SCORE_HEADERS = ("分值", "满分", "权重", "标准分")
-SCORING_POINT_VALUE_HEADERS = ("分值", "满分", "标准分")
-SCORING_STANDARD_HEADERS = ("得分点", "评分标准", "评分办法", "评审标准", "标准")
+BUSINESS_SCORING_TITLE_KEYWORDS = (
+    "商务评分标准",
+    "商务评分细则",
+    "商务部分评审细则",
+    "商务部分评分细则",
+    "商务评审细则",
+    "商务评审标准",
+    "商务部分评审评分标准",
+)
+SCORING_ITEM_HEADERS = ("评分项", "评审因素", "评审项目", "评审项目", "项目", "因素")
+SCORING_SCORE_HEADERS = ("分值", "分 值", "满分", "权重", "标准分")
+SCORING_POINT_VALUE_HEADERS = ("分值", "分 值", "满分", "标准分")
+SCORING_STANDARD_HEADERS = ("得分点", "评分细则", "评分标准", "评分办法", "评审标准", "标准", "描述")
+NON_BUSINESS_SCORING_KEYWORDS = ("技术", "报价", "价格", "投标报价", "其他因素", "符合性", "热电", "LCOE", "lcoe")
+SCORING_NOISE_KEYWORDS = ("分值构成", "权重比例", "评标基准价", "偏差率", "推荐原则", "报价评审", "价格评审", "见上表")
 
 REJECTION_KEYWORDS = ("否决", "废标", "无效投标", "不予受理", "★", "实质性响应", "不得存在下列情形")
 NON_BID_REJECTION_CONTEXT = ("异议", "投诉", "质疑", "合同执行", "合同履行", "保证金不退还", "不退还")
@@ -103,11 +133,19 @@ PROJECT_FACT_LABELS = ("项目名称", "招标编号", "项目编号", "招标�
 DETERMINISTIC_MODULES = ("projectBasics", "bidderInstructions", "businessScoringTables")
 SEMANTIC_REVIEW_MODULES = {
     "qualification_review": "qualification",
+    "project_basics_reference_review": "projectBasicsReferenceReview",
     "rejection_clause_review": "commercialRejectionClauses",
     "scoring_table_review": "scoring_table_review",
 }
 QUALIFICATION_ANCHOR_KEYWORDS = ("投标人资格要求", "资格条件", "资质条件", "资格能力要求", "专用资格条件", "通用资格条件")
 QUALIFICATION_STOP_KEYWORDS = ("招标文件的获取", "投标文件的递交", "投标人须知", "资格审查资料", "评标办法", "投标文件格式", "合同条款")
+BIDDER_INSTRUCTION_SECTION_TREE_KEYWORDS = (
+    "投标人须知前附表",
+    "供应商须知前附表",
+    "框架供应商须知前附表",
+    "谈判采购供应商须知前附表",
+)
+SCORING_SECTION_TREE_KEYWORDS = ("商务评分标准", "商务评分", "评分标准", "评审办法", "评标办法")
 QUALIFICATION_ITEM_CUES = (
     "投标人",
     "供应商",
@@ -343,6 +381,142 @@ def _update_qualification_path(path: list[str], line: str) -> list[str]:
     return [*trimmed, line]
 
 
+def _load_business_section_tree(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    tree_path = Path(str(manifest.get("businessSectionTreePath") or "")).expanduser()
+    if not tree_path.is_file():
+        return None
+    try:
+        payload = json.loads(tree_path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or str(payload.get("schemaVersion") or "") != "bid-business-section-tree-v1":
+        return None
+    return payload
+
+
+def _section_tree_nodes_for_document(section_tree: dict[str, Any] | None, document_id: str) -> list[dict[str, Any]]:
+    if not isinstance(section_tree, dict):
+        return []
+    return [
+        node
+        for node in section_tree.get("nodes") or []
+        if isinstance(node, dict) and str(node.get("documentId") or "") == document_id
+    ]
+
+
+def _section_node_path_text(node: dict[str, Any]) -> str:
+    path = " ".join(str(item or "") for item in node.get("path") or [])
+    return f"{path} {node.get('title') or ''}".strip()
+
+
+def _section_tree_scope_nodes(
+    section_tree: dict[str, Any] | None,
+    document_id: str,
+    keywords: tuple[str, ...],
+    *,
+    title_only: bool = False,
+) -> list[dict[str, Any]]:
+    matched: list[dict[str, Any]] = []
+    for node in _section_tree_nodes_for_document(section_tree, document_id):
+        text = str(node.get("title") or "") if title_only else _section_node_path_text(node)
+        if not any(keyword in text for keyword in keywords):
+            continue
+        start_line = int(node.get("startLine") or 0)
+        end_line = int(node.get("endLine") or 0)
+        if start_line <= 0 or end_line < start_line:
+            continue
+        matched.append(node)
+    return sorted(matched, key=lambda item: (int(item.get("startLine") or 0), int(item.get("level") or 9)))
+
+
+def _section_tree_node_for_block(section_tree: dict[str, Any] | None, document_id: str, block_index: int) -> dict[str, Any] | None:
+    matches = [
+        node
+        for node in _section_tree_nodes_for_document(section_tree, document_id)
+        if int(node.get("startBlockIndex") or 0) <= block_index <= int(node.get("endBlockIndex") or 0)
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda item: (int(item.get("level") or 0), int(item.get("startBlockIndex") or 0)))
+
+
+def _section_tree_node_title(node: dict[str, Any]) -> str:
+    return _clean(node.get("title")) or "招标文件"
+
+
+def _qualification_section_slices_from_tree(document: dict[str, Any], text: str, section_tree: dict[str, Any] | None) -> list[dict[str, Any]]:
+    document_id = str(document.get("id") or "")
+    source_file = str(document.get("name") or document_id or "招标文件")
+    raw_lines = text.splitlines()
+    lines = [(line_number, _clean(raw_line)) for line_number, raw_line in enumerate(raw_lines, start=1) if _clean(raw_line)]
+    if not lines:
+        return []
+    line_by_number = {line_number: line for line_number, line in lines}
+    nodes = select_qualification_section_nodes(section_tree, document_id)
+    if not nodes:
+        return []
+
+    slices: list[dict[str, Any]] = []
+    for node in nodes:
+        start_line_number = int(node.get("startLine") or 0)
+        end_line_number = int(node.get("endLine") or 0)
+        if start_line_number <= 0 or end_line_number < start_line_number:
+            continue
+        section_title = _section_tree_node_title(node)
+        slice_lines: list[dict[str, Any]] = []
+        qualification_path = [section_title]
+        current_scope = "全部标段"
+        for line_number in range(start_line_number, end_line_number + 1):
+            line = line_by_number.get(line_number)
+            if not line:
+                continue
+            if line_number == start_line_number:
+                qualification_path = [line]
+            else:
+                if _is_qualification_scope_hint_text(line):
+                    current_scope = _normalize_applicable_scope(line)
+                if _leading_clause_parts(line):
+                    qualification_path = _update_qualification_path(qualification_path, line)
+            source_path = _qualification_source_path(qualification_path, "" if _leading_clause_parts(line) else line)
+            evidence_id = _evidence_id(document_id, f"L{line_number}")
+            slice_lines.append(
+                {
+                    "lineNumber": line_number,
+                    "text": line,
+                    "evidenceId": evidence_id,
+                    "evidenceLocation": f"L{line_number}",
+                    "sourceText": _qualification_source_text(source_file=source_file, section=source_path or section_title),
+                    "sourcePath": source_path or section_title,
+                    "applicableScopeHint": current_scope or "全部标段",
+                }
+            )
+        if len(slice_lines) <= 1:
+            continue
+        content = "\n".join(str(item.get("text") or "") for item in slice_lines if str(item.get("text") or "").strip())
+        evidence_ids = [str(item["evidenceId"]) for item in slice_lines if item.get("evidenceId")]
+        slices.append(
+            {
+                "id": f"QUALIFICATION-SECTION-SLICE-{document_id or 'DOC'}-{start_line_number:04d}",
+                "module": "qualification",
+                "candidateType": "qualification_section_slice",
+                "content": content,
+                "applicableScope": "全部标段",
+                "sourceFile": source_file,
+                "sourceDocumentId": document_id,
+                "section": section_title,
+                "evidence": content,
+                "evidenceLocation": f"L{start_line_number}",
+                "evidenceIds": evidence_ids,
+                "sourceText": _qualification_source_text(source_file=source_file, section=section_title),
+                "confidence": max(0.9, float(node.get("confidence") or 0.0)),
+                "startLine": start_line_number,
+                "endLine": int(slice_lines[-1].get("lineNumber") or end_line_number),
+                "lines": slice_lines,
+            }
+        )
+    return slices
+
+
 def _qualification_section_slices(document: dict[str, Any], text: str) -> list[dict[str, Any]]:
     document_id = str(document.get("id") or "")
     source_file = str(document.get("name") or document_id or "招标文件")
@@ -431,11 +605,20 @@ def _is_markdown_separator(cells: list[str]) -> bool:
     return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
 
 
+def _is_business_scoring_text(text: str) -> bool:
+    normalized = _clean(text)
+    if not normalized:
+        return False
+    if any(keyword in normalized for keyword in BUSINESS_SCORING_TITLE_KEYWORDS):
+        return not any(keyword in normalized for keyword in NON_BUSINESS_SCORING_KEYWORDS)
+    return "商务" in normalized and ("评分" in normalized or "评审" in normalized) and "细则" in normalized
+
+
 def _business_scoring_table_type(title: str) -> str:
     text = _clean(title)
     if not text:
         return ""
-    if BUSINESS_SCORING_EXACT_KEYWORD in text:
+    if _is_business_scoring_text(text):
         return "business"
     return ""
 
@@ -446,7 +629,7 @@ def _is_non_target_scoring_title(title: str) -> bool:
         return False
     if _business_scoring_table_type(text) == "business":
         return False
-    return any(keyword in text for keyword in ("技术", "报价", "价格", "符合性", "热电", "LCOE", "lcoe"))
+    return any(keyword in text for keyword in NON_BUSINESS_SCORING_KEYWORDS)
 
 
 def _collect_markdown_tables(document: dict[str, Any], text: str) -> list[dict[str, Any]]:
@@ -512,7 +695,7 @@ def _collect_markdown_tables(document: dict[str, Any], text: str) -> list[dict[s
     return tables
 
 
-def _collect_docx_tables(document: dict[str, Any]) -> list[dict[str, Any]]:
+def _collect_docx_tables(document: dict[str, Any], section_tree: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     source_path = Path(str(document.get("sourcePath") or ""))
     if not _is_docx_source(source_path):
         return []
@@ -537,13 +720,15 @@ def _collect_docx_tables(document: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         headers = raw_rows[0]
         data_rows = raw_rows[1:]
+        tree_node = _section_tree_node_for_block(section_tree, document_id, block_index)
+        table_section = _section_tree_node_title(tree_node) if tree_node else current_section
         tables.append(
             {
                 "id": _evidence_id(document_id, f"B{block_index}"),
                 "sourceDocumentId": document_id,
                 "sourceFile": source_file,
-                "section": current_section,
-                "tableType": _business_scoring_table_type(current_section),
+                "section": table_section,
+                "tableType": _business_scoring_table_type(table_section),
                 "startLine": block_index,
                 "endLine": block_index,
                 "headers": headers,
@@ -638,9 +823,131 @@ def _line_candidate(
     }
 
 
-def _raw_line_candidates(document: dict[str, Any], text: str) -> dict[str, list[dict[str, Any]]]:
+def _bid_deadline_ai_candidate_context_lines(lines: list[str], line_number: int) -> list[str]:
+    previous_line = lines[line_number - 2] if line_number - 2 >= 0 else ""
+    line = lines[line_number - 1] if 1 <= line_number <= len(lines) else ""
+    next_line = lines[line_number] if line_number < len(lines) else ""
+    return [item for item in (previous_line, line, next_line) if item]
+
+
+def _is_bid_deadline_ai_candidate_line(line: str, context_lines: list[str]) -> bool:
+    if not any(keyword in line for keyword in PROJECT_BASIC_DEADLINE_REVIEW_KEYWORDS):
+        return False
+    return bool(PROJECT_BASIC_DATE_CONTEXT_PATTERN.search("\n".join(context_lines)))
+
+
+def _project_reference_review_candidates(
+    *,
+    documents: list[dict[str, Any]],
+    texts_by_id: dict[str, str],
+    section_tree: dict[str, Any] | None,
+    bidder_instruction_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, int]] = set()
+    for spec in PROJECT_BASIC_FIELDS:
+        instruction = _bidder_instruction_for_project_field(bidder_instruction_rows, spec)
+        if instruction is None:
+            continue
+        instruction_candidate = _candidate_from_bidder_instruction(instruction, spec)
+        reference_target = str(instruction_candidate.get("referenceTarget") or "")
+        if not reference_target:
+            continue
+        if spec.key != "bidDeadline":
+            scripted = _reference_section_project_candidates(
+                spec=spec,
+                reference_target=reference_target,
+                documents=documents,
+                texts_by_id=texts_by_id,
+                section_tree=section_tree,
+            )
+            if _best_project_candidate(scripted, spec) is not None:
+                continue
+        for document in documents:
+            document_id = str(document.get("id") or "")
+            source_file = str(document.get("name") or document_id or "招标文件")
+            lines = [_clean(line) for line in str(texts_by_id.get(document_id) or "").splitlines()]
+            for node in _reference_section_nodes(section_tree, document_id, reference_target):
+                section_title = _section_tree_node_title(node)
+                start_line = max(1, int(node.get("contentStartLine") or node.get("startLine") or 1))
+                end_line = min(len(lines), int(node.get("endLine") or len(lines)))
+                for line_number in range(start_line, end_line + 1):
+                    line = lines[line_number - 1] if 1 <= line_number <= len(lines) else ""
+                    if not line:
+                        continue
+                    context_lines = _bid_deadline_ai_candidate_context_lines(lines, line_number)
+                    if spec.key == "bidDeadline":
+                        if not _is_bid_deadline_ai_candidate_line(line, context_lines):
+                            continue
+                        key = (document_id, spec.key, line_number)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        evidence_id = _evidence_id(document_id, f"L{line_number}")
+                        candidates.append(
+                            {
+                                "id": f"PROJECT-BASIC-REF-{document_id or 'DOC'}-{spec.key}-{line_number:04d}",
+                                "module": "projectBasicsReferenceReview",
+                                "candidateType": "project_basic_reference_context",
+                                "fieldKey": spec.key,
+                                "fieldLabel": spec.label,
+                                "referenceTarget": reference_target,
+                                "content": line,
+                                "contextLines": context_lines,
+                                "sourceFile": source_file,
+                                "sourceDocumentId": document_id,
+                                "section": section_title,
+                                "evidence": "\n".join(context_lines),
+                                "evidenceLocation": f"L{line_number}",
+                                "evidenceIds": [evidence_id],
+                                "sourceText": _qualification_source_text(source_file=source_file, section=section_title),
+                                "confidence": 0.62,
+                            }
+                        )
+                        continue
+                    field_cues = set(spec.aliases)
+                    if spec.key == "tenderer":
+                        field_cues.update(("项目业主", "业主为", "采购人为", "招标人为"))
+                    if spec.key == "tenderAgency":
+                        field_cues.update(("委托", "代理", "采购代理", "招标代理"))
+                    if spec.key == "projectName":
+                        field_cues.update(("本项目", "项目名称", "采购项目"))
+                    if spec.key == "bidDeadline":
+                        field_cues.update(("递交", "提交", "截止", "响应文件"))
+                    if not any(cue and cue in line for cue in field_cues):
+                        continue
+                    key = (document_id, spec.key, line_number)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    evidence_id = _evidence_id(document_id, f"L{line_number}")
+                    candidates.append(
+                        {
+                            "id": f"PROJECT-BASIC-REF-{document_id or 'DOC'}-{spec.key}-{line_number:04d}",
+                            "module": "projectBasicsReferenceReview",
+                            "candidateType": "project_basic_reference_context",
+                            "fieldKey": spec.key,
+                            "fieldLabel": spec.label,
+                            "referenceTarget": reference_target,
+                            "content": line,
+                            "contextLines": context_lines,
+                            "sourceFile": source_file,
+                            "sourceDocumentId": document_id,
+                            "section": section_title,
+                            "evidence": "\n".join(context_lines),
+                            "evidenceLocation": f"L{line_number}",
+                            "evidenceIds": [evidence_id],
+                            "sourceText": _qualification_source_text(source_file=source_file, section=section_title),
+                            "confidence": 0.62,
+                        }
+                    )
+    return candidates
+
+
+def _raw_line_candidates(document: dict[str, Any], text: str, section_tree: dict[str, Any] | None = None) -> dict[str, list[dict[str, Any]]]:
     candidates = {
         "projectFacts": [],
+        "projectBasicsReferenceReview": [],
         "bidderInstructions": [],
         "qualification": [],
         "rejection": [],
@@ -650,7 +957,7 @@ def _raw_line_candidates(document: dict[str, Any], text: str) -> dict[str, list[
     current_section = ""
     in_toc = False
     lines = text.splitlines()
-    candidates["qualification"] = _qualification_section_slices(document, text)
+    candidates["qualification"] = _qualification_section_slices_from_tree(document, text, section_tree) or _qualification_section_slices(document, text)
     for line_number, raw_line in enumerate(lines, start=1):
         line = _clean(raw_line)
         if not line:
@@ -788,11 +1095,26 @@ def _table_has_scoring_columns(table: dict[str, Any]) -> bool:
     return False
 
 
+def _table_has_strong_scoring_standard_columns(table: dict[str, Any]) -> bool:
+    rows = [[str(cell) for cell in table.get("headers") or []]]
+    rows.extend([[str(cell) for cell in row.get("cells") or []] for row in table.get("rows") or [] if isinstance(row, dict)])
+    for row in rows[:5]:
+        joined = "".join(_clean(cell) for cell in row)
+        if not joined:
+            continue
+        has_item = any(keyword in joined for keyword in SCORING_ITEM_HEADERS)
+        has_score = any(keyword in joined for keyword in SCORING_SCORE_HEADERS)
+        has_standard = any(keyword in joined for keyword in ("得分点", "评分细则", "评分标准", "评分办法"))
+        if has_item and has_score and has_standard:
+            return True
+    return False
+
+
 def _table_has_exact_business_scoring_anchor(table: dict[str, Any]) -> bool:
-    if BUSINESS_SCORING_EXACT_KEYWORD in _clean(str(table.get("section") or "")):
+    if _is_business_scoring_text(str(table.get("section") or "")):
         return True
     return any(
-        BUSINESS_SCORING_EXACT_KEYWORD in _clean(" ".join(str(cell) for cell in row.get("cells") or []))
+        _is_business_scoring_text(" ".join(str(cell) for cell in row.get("cells") or []))
         for row in table.get("rows") or []
         if isinstance(row, dict)
     )
@@ -847,7 +1169,7 @@ def _score_row_cells_by_headers(headers: list[str], cells: list[str]) -> dict[st
 
 
 def _score_row_cells_by_exact_anchor(table: dict[str, Any], cells: list[str]) -> dict[str, str]:
-    anchor_index = next((index for index, cell in enumerate(cells) if BUSINESS_SCORING_EXACT_KEYWORD in _clean(cell)), -1)
+    anchor_index = next((index for index, cell in enumerate(cells) if _is_business_scoring_text(cell)), -1)
     headers = [str(header) for header in table.get("headers") or []]
     standard_index = _find_header_col(headers, SCORING_STANDARD_HEADERS)
     score_point = cells[standard_index] if 0 <= standard_index < len(cells) else ""
@@ -856,7 +1178,7 @@ def _score_row_cells_by_exact_anchor(table: dict[str, Any], cells: list[str]) ->
         if index == standard_index:
             continue
         cell = _clean(cells[index])
-        if not cell or BUSINESS_SCORING_EXACT_KEYWORD in cell:
+        if not cell or _is_business_scoring_text(cell):
             continue
         if "评分标准" in cell or "评审标准" in cell:
             continue
@@ -886,6 +1208,8 @@ def _score_row_cells_by_exact_anchor(table: dict[str, Any], cells: list[str]) ->
 def _row_has_concrete_score(table: dict[str, Any], row: dict[str, Any]) -> bool:
     cells = [str(cell) for cell in row.get("cells") or []]
     row_text = " ".join(cells)
+    if _is_scoring_noise_text(row_text):
+        return False
     headers = [str(header) for header in table.get("headers") or []]
     score_index = next((idx for idx, header in enumerate(headers) if any(keyword in header for keyword in SCORING_POINT_VALUE_HEADERS)), -1)
     standard_index = next((idx for idx, header in enumerate(headers) if any(keyword in header for keyword in SCORING_STANDARD_HEADERS)), -1)
@@ -931,19 +1255,39 @@ def _normalize_scoring_clause(value: str) -> str:
     return str(value or "").replace("（", "(").replace("）", ")").replace(" ", "")
 
 
+def _is_scoring_noise_text(text: str) -> bool:
+    normalized = _clean(text)
+    return any(keyword in normalized for keyword in SCORING_NOISE_KEYWORDS)
+
+
+def _is_non_business_scoring_text(text: str) -> bool:
+    normalized = _clean(text)
+    return bool(normalized) and any(keyword in normalized for keyword in NON_BUSINESS_SCORING_KEYWORDS) and ("评分" in normalized or "评审" in normalized or "分值" in normalized)
+
+
 def _is_business_scoring_row_anchor(text: str) -> bool:
-    return "商务" in text and any(keyword in text for keyword in ("评分", "评审", "分值"))
+    normalized = _clean(text)
+    if _is_scoring_noise_text(normalized) or _is_non_business_scoring_text(normalized):
+        return False
+    return _is_business_scoring_text(normalized) or ("商务" in normalized and any(keyword in normalized for keyword in ("评分", "评审")))
 
 
 def _score_group_from_table_row(table: dict[str, Any], row: dict[str, Any], current_group: str = "") -> str:
     cells = [str(cell) for cell in row.get("cells") or []]
     text = _clean(" ".join(cells[:2]))
-    clause_no = _normalize_scoring_clause(cells[0] if cells else "")
-    if re.search(r"2\.2\.4\(?1\)?", clause_no) or BUSINESS_SCORING_EXACT_KEYWORD in text or _is_business_scoring_row_anchor(text):
+    if _is_scoring_noise_text(text):
+        return ""
+    if _is_non_business_scoring_text(text):
+        if "技术" in text:
+            return "technical"
+        if "符合性" in text:
+            return "compliance"
+        return "price"
+    if _is_business_scoring_row_anchor(text):
         return "business"
-    if re.search(r"2\.2\.4\(?2\)?", clause_no) or ("技术" in text and ("评分" in text or "评审" in text)):
+    if "技术" in text and ("评分" in text or "评审" in text):
         return "technical"
-    if re.search(r"2\.2\.4\(?3\)?", clause_no) or (("报价" in text or "价格" in text) and ("评分" in text or "评审" in text)):
+    if ("报价" in text or "价格" in text) and ("评分" in text or "评审" in text):
         return "price"
     if "符合性" in text and ("审查" in text or "评审" in text):
         return "compliance"
@@ -1026,10 +1370,13 @@ def _apply_table_deterministic_scoring(deterministic: dict[str, list[dict[str, A
         if _is_non_target_scoring_title(str(table.get("section") or "")):
             continue
         has_scoring_columns = _table_has_scoring_columns(table)
+        has_strong_scoring_columns = _table_has_strong_scoring_standard_columns(table)
         has_exact_anchor = _table_has_exact_business_scoring_anchor(table)
         if not has_scoring_columns and not has_exact_anchor:
             continue
         table_type = str(table.get("tableType") or "")
+        if has_exact_anchor and has_strong_scoring_columns and not table_type:
+            table_type = "business"
         if has_exact_anchor and not has_scoring_columns:
             table_type = "business"
         current_group = "business" if table_type == "business" else ""
@@ -1075,6 +1422,7 @@ def _apply_table_deterministic_scoring(deterministic: dict[str, list[dict[str, A
 def build_candidate_package(manifest: dict[str, Any], base_result: dict[str, Any]) -> dict[str, Any]:
     documents = [item for item in manifest.get("documents") or [] if isinstance(item, dict)]
     texts_by_id = _load_texts_by_id(documents)
+    section_tree = _load_business_section_tree(manifest)
     structured = base_result.get("structured") if isinstance(base_result.get("structured"), dict) else {}
     field_groups = structured.get("fieldGroups") if isinstance(structured.get("fieldGroups"), dict) else {}
     scoring = structured.get("scoringCriteria") if isinstance(structured.get("scoringCriteria"), dict) else {}
@@ -1085,6 +1433,7 @@ def build_candidate_package(manifest: dict[str, Any], base_result: dict[str, Any
     all_tables: list[dict[str, Any]] = []
     candidates: dict[str, list[dict[str, Any]]] = {
         "projectFacts": [],
+        "projectBasicsReferenceReview": [],
         "bidderInstructions": [],
         "qualification": [],
         "rejection": [],
@@ -1109,8 +1458,8 @@ def build_candidate_package(manifest: dict[str, Any], base_result: dict[str, Any
         all_blocks.extend(blocks)
         all_sections.extend(sections)
         all_tables.extend(_collect_markdown_tables(document, text))
-        all_tables.extend(_collect_docx_tables(document))
-        raw_candidates = _raw_line_candidates(document, text)
+        all_tables.extend(_collect_docx_tables(document, section_tree))
+        raw_candidates = _raw_line_candidates(document, text, section_tree)
         for key, values in raw_candidates.items():
             candidates[key].extend(values)
 
@@ -1124,6 +1473,14 @@ def build_candidate_package(manifest: dict[str, Any], base_result: dict[str, Any
     for field in structured.get("projectFactFields") or []:
         if str(field.get("status") or "") == "found":
             candidates["projectFacts"].append(_candidate_from_result("projectFacts", field, "project_fact", content_key="value"))
+    candidates["projectBasicsReferenceReview"].extend(
+        _project_reference_review_candidates(
+            documents=documents,
+            texts_by_id=texts_by_id,
+            section_tree=section_tree,
+            bidder_instruction_rows=[row for row in field_groups.get("bidderInstructions") or [] if isinstance(row, dict)],
+        )
+    )
     for row in scoring.get("business") or []:
         candidate = _candidate_from_result("scoring", row, "business_scoring", content_key="scorePoint")
         candidate["scoringType"] = "business"
@@ -1211,8 +1568,12 @@ def _candidate_context(candidate: dict[str, Any], candidate_package: dict[str, A
         "candidateId": str(candidate.get("id") or ""),
         "module": str(candidate.get("module") or ""),
         "candidateType": str(candidate.get("candidateType") or ""),
+        "fieldKey": str(candidate.get("fieldKey") or ""),
+        "fieldLabel": str(candidate.get("fieldLabel") or ""),
+        "referenceTarget": str(candidate.get("referenceTarget") or ""),
         "id": str(candidate.get("id") or ""),
         "content": str(candidate.get("content") or ""),
+        "contextLines": [str(item) for item in candidate.get("contextLines") or [] if str(item).strip()],
         "evidence": str(candidate.get("evidence") or candidate.get("content") or ""),
         "evidenceIds": evidence_ids,
         "sourceFile": str(candidate.get("sourceFile") or ""),
@@ -1449,7 +1810,7 @@ def _decision_item(candidate: dict[str, Any], status: str, reason: str) -> dict[
     return {
         "candidateId": str(candidate.get("candidateId") or candidate.get("id") or ""),
         "decision": status,
-        "fieldType": str(candidate.get("candidateType") or "review_candidate"),
+        "fieldType": str(candidate.get("fieldKey") or candidate.get("candidateType") or "review_candidate"),
         "content": str(candidate.get("content") or ""),
         "applicableScope": str(candidate.get("applicableScope") or "全部标段"),
         "sourceText": str(candidate.get("sourceText") or candidate.get("sectionPath") or candidate.get("sourceFile") or "招标文件"),
@@ -1479,6 +1840,9 @@ def _is_qualification_parent_line(text: str) -> bool:
         token in cleaned
         for token in (
             "投标人资格要求",
+            "供应商资格要求",
+            "框架供应商资格要求",
+            "资格能力要求",
             "通用资格条件",
             "专用资格条件",
             "业绩要求",
@@ -1573,9 +1937,8 @@ def _classify_candidate(task_name: str, candidate: dict[str, Any]) -> tuple[str,
         return ("accepted", "属于影响投标有效性的商务废标或否决条款。") if any(token in content for token in REJECTION_KEYWORDS) else ("rejected", "不属于商务废标或否决条款。")
     if task_name == "scoring_table_review":
         score_group = str(candidate.get("scoreGroup") or "").strip().lower()
-        clause_no = _normalize_scoring_clause(str(candidate.get("clauseNo") or ""))
         has_concrete_score = bool(candidate.get("hasConcreteScore")) or _text_has_concrete_score(content)
-        is_business_scoring = score_group == "business" or re.search(r"2\.2\.4\(?1\)?", clause_no) or _is_business_scoring_row_anchor(content)
+        is_business_scoring = score_group == "business" or _is_business_scoring_row_anchor(content)
         if is_business_scoring and has_concrete_score:
             return "accepted", "属于商务评分细则，且候选中有具体分值。"
         if is_business_scoring:
@@ -1966,6 +2329,64 @@ def _filter_records_by_decision(records: list[dict[str, Any]], candidates: list[
     ]
 
 
+def _candidate_meta_by_id(candidates: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {str(candidate.get("id") or ""): candidate for candidate in candidates if isinstance(candidate, dict)}
+
+
+def _project_basic_field_from_ai_item(item: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any] | None:
+    field_key = str(candidate.get("fieldKey") or item.get("fieldType") or "").strip()
+    spec = next((field_spec for field_spec in PROJECT_BASIC_FIELDS if field_spec.key == field_key), None)
+    if spec is None:
+        return None
+    value = _clean(item.get("content"))
+    if not value:
+        return None
+    if spec.key == "bidDeadline":
+        value = _normalize_bid_deadline(value)
+    evidence_ids = [str(value) for value in item.get("evidenceIds") or candidate.get("evidenceIds") or [] if str(value)]
+    return {
+        "key": spec.key,
+        "label": spec.label,
+        "value": value,
+        "status": "found",
+        "sourceFile": str(candidate.get("sourceFile") or ""),
+        "sourceDocumentId": str(candidate.get("sourceDocumentId") or ""),
+        "section": str(candidate.get("section") or ""),
+        "evidence": str(candidate.get("evidence") or candidate.get("content") or ""),
+        "evidenceLocation": str(candidate.get("evidenceLocation") or ""),
+        "evidenceIds": evidence_ids,
+        "confidence": 0.82,
+        "sourcePriority": "ai_reference_section",
+        "referenceTarget": str(candidate.get("referenceTarget") or ""),
+        "reviewReason": str(item.get("reason") or ""),
+    }
+
+
+def _apply_project_basic_ai_decisions(
+    project_basics: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    decision: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not _has_review_decision(decision):
+        return project_basics
+    by_candidate = _candidate_meta_by_id(candidates)
+    by_key = {str(field.get("key") or ""): copy.deepcopy(field) for field in project_basics if isinstance(field, dict)}
+    for item in decision.get("accepted") or []:
+        if not isinstance(item, dict):
+            continue
+        candidate = by_candidate.get(str(item.get("candidateId") or ""))
+        if not candidate:
+            continue
+        field = _project_basic_field_from_ai_item(item, candidate)
+        if not field:
+            continue
+        existing = by_key.get(str(field.get("key") or "")) or {}
+        existing_value = str(existing.get("value") or "").strip()
+        if not existing_value or str(existing.get("status") or "") != "found" or _is_reference_only_value(existing_value):
+            by_key[str(field["key"])] = field
+    return [by_key.get(spec.key) or {"key": spec.key, "label": spec.label, "value": "", "status": "missing", "sourceFile": "", "sourceDocumentId": "", "section": "", "evidence": "", "evidenceLocation": "", "evidenceIds": [], "confidence": 0.0} for spec in PROJECT_BASIC_FIELDS]
+
+
 def _candidate_by_id(candidates: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {str(candidate.get("id") or ""): candidate for candidate in candidates if isinstance(candidate, dict)}
 
@@ -2074,10 +2495,9 @@ def _qualification_rows_from_decision_items(candidates: list[dict[str, Any]], de
 
 def _is_business_scoring_candidate(candidate: dict[str, Any]) -> bool:
     score_group = str(candidate.get("scoreGroup") or "").strip().lower()
-    clause_no = _normalize_scoring_clause(str(candidate.get("clauseNo") or ""))
     content = str(candidate.get("content") or "")
     has_concrete_score = bool(candidate.get("hasConcreteScore")) or _text_has_concrete_score(content)
-    return (score_group == "business" or bool(re.search(r"2\.2\.4\(?1\)?", clause_no)) or _is_business_scoring_row_anchor(content)) and has_concrete_score
+    return (score_group == "business" or _is_business_scoring_row_anchor(content)) and has_concrete_score
 
 
 def _accepted_scoring_field_types(decision: dict[str, Any]) -> dict[str, str]:
@@ -2238,6 +2658,7 @@ def _rebuild_field_groups(
     field_groups = copy.deepcopy(structured.get("fieldGroups") if isinstance(structured.get("fieldGroups"), dict) else {})
     candidates = candidate_package.get("candidates") if isinstance(candidate_package.get("candidates"), dict) else {}
     qualification_decision = decisions.get("qualification_review") or {}
+    project_basics_decision = decisions.get("project_basics_reference_review") or {}
     rejection_decision = decisions.get("rejection_clause_review") or {}
     scoring_decision = decisions.get("scoring_table_review") or {}
     deterministic = candidate_package.get("deterministicExtracts") if isinstance(candidate_package.get("deterministicExtracts"), dict) else {}
@@ -2255,6 +2676,11 @@ def _rebuild_field_groups(
         ],
         "commercialRejectionClauses": [],
     }
+    field_groups["projectBasics"] = _apply_project_basic_ai_decisions(
+        field_groups["projectBasics"],
+        candidates.get("projectBasicsReferenceReview") or [],
+        project_basics_decision,
+    )
     field_groups["qualificationRequirements"] = _qualification_rows_from_decision_items(
         candidates.get("qualification") or [],
         qualification_decision,
@@ -2293,9 +2719,12 @@ def _rebuild_field_groups(
     if not scoring["business"]:
         scoring = _filter_scoring(structured.get("scoringCriteria") or {}, candidates.get("scoring") or [], scoring_decision)
     scoring = _append_scoring_from_accepted_rows(scoring, candidate_package, scoring_decision)
-    project_dates = structured.get("projectDates") if isinstance(structured.get("projectDates"), dict) else {}
+    project_dates = copy.deepcopy(structured.get("projectDates") if isinstance(structured.get("projectDates"), dict) else {})
+    for field in field_groups.get("projectBasics") or []:
+        if isinstance(field, dict) and str(field.get("key") or "") == "bidDeadline" and str(field.get("value") or "").strip():
+            project_dates["endDate"] = str(field.get("value") or "").strip()
     project_fact_fields = _build_business_project_fact_fields(field_groups, project_dates)
-    return field_groups, scoring, project_fact_fields
+    return field_groups, scoring, project_fact_fields, project_dates
 
 
 def finalize_business_result(
@@ -2308,9 +2737,11 @@ def finalize_business_result(
     review_provenance: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     base_structured = base_result.get("structured") if isinstance(base_result.get("structured"), dict) else {}
-    field_groups, scoring, project_fact_fields = _rebuild_field_groups(base_result, manifest, candidate_package, decisions)
+    field_groups, scoring, project_fact_fields, project_dates = _rebuild_field_groups(base_result, manifest, candidate_package, decisions)
     coverage = _build_business_coverage(field_groups, scoring)
-    appendices = _business_template_appendices_from_manifest(manifest)
+    appendices = business_appendices_for_result(manifest, base_structured)
+    commitment_letters = business_structured_records("commitmentLetters", base_structured)
+    commitment_clues = business_structured_records("commitmentClues", base_structured)
     provenance = review_provenance or {}
     semantic_review_mode = str(provenance.get("semanticReviewMode") or "offline-fallback")
     offline_adapter_used = bool(provenance.get("offlineAdapterUsed"))
@@ -2346,10 +2777,10 @@ def finalize_business_result(
         "fieldGroups": field_groups,
         "requirementPresence": {},
         "coverage": coverage,
-        "projectDates": {"endDate": str((base_structured.get("projectDates") or {}).get("endDate") or "")},
+        "projectDates": {"endDate": str(project_dates.get("endDate") or "")},
         "appendices": appendices,
-        "commitmentLetters": [],
-        "commitmentClues": [],
+        "commitmentLetters": commitment_letters,
+        "commitmentClues": commitment_clues,
         "projectFactFields": project_fact_fields,
         "categoryCounts": {},
     }

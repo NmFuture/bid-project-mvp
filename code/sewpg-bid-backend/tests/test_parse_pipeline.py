@@ -152,6 +152,46 @@ def build_business_attachment_templates_docx_bytes() -> bytes:
     return file_obj.getvalue()
 
 
+def build_business_section_tree_docx_bytes() -> bytes:
+    file_obj = io.BytesIO()
+    doc = Document()
+    doc.add_paragraph("目录")
+    doc.add_paragraph("第一章 招标公告 1")
+    doc.add_paragraph("第二章 供应商须知 8")
+    doc.add_paragraph("第三章 评审办法 30")
+    doc.add_heading("第一章 招标公告", level=1)
+    doc.add_heading("3. 供应商资格要求", level=2)
+    doc.add_paragraph("3.1 供应商须为中华人民共和国境内合法注册的独立法人。")
+    doc.add_heading("第二章 供应商须知", level=1)
+    doc.add_heading("供应商须知前附表", level=2)
+    table = doc.add_table(rows=2, cols=3)
+    for col, text in enumerate(["条款号", "条款名称", "编列内容"]):
+        table.cell(0, col).text = text
+    for col, text in enumerate(["1.1.2", "采购人", "示例采购人"]):
+        table.cell(1, col).text = text
+    doc.add_heading("第三章 评审办法", level=1)
+    doc.add_heading("商务评分标准", level=2)
+    doc.add_paragraph("企业业绩评分标准。")
+    doc.save(file_obj)
+    return file_obj.getvalue()
+
+
+def build_business_section_tree_toc_docx_bytes() -> bytes:
+    file_obj = io.BytesIO()
+    doc = Document()
+    doc.add_paragraph("目录")
+    doc.add_paragraph("第一章 招标公告 2")
+    doc.add_paragraph("3. 供应商资格要求 5")
+    doc.add_paragraph("第二章 供应商须知 8")
+    doc.add_paragraph("第一章 招标公告")
+    doc.add_paragraph("3. 供应商资格要求")
+    doc.add_paragraph("3.1 供应商须为中华人民共和国境内合法注册的独立法人。")
+    doc.add_paragraph("第二章 供应商须知")
+    doc.add_paragraph("供应商须知前附表")
+    doc.save(file_obj)
+    return file_obj.getvalue()
+
+
 def build_business_multilevel_template_cluster_docx_bytes() -> bytes:
     file_obj = io.BytesIO()
     doc = Document()
@@ -454,6 +494,32 @@ class ParsePipelineTests(unittest.TestCase):
         calls: list[str] = []
         seen_manifest: dict[str, object] = {}
 
+        def fake_section_tree(documents: list[dict], project_dir: Path):
+            calls.append("section_tree")
+            tree_path = project_dir / "business_section_tree.json"
+            payload = {
+                "schemaVersion": "bid-business-section-tree-v1",
+                "maxLevel": 3,
+                "documents": [{"id": documents[0]["id"], "name": documents[0]["name"]}],
+                "nodes": [],
+                "toc": {"detected": False, "entries": []},
+                "validation": {
+                    "status": "not_applicable",
+                    "tocEntryCount": 0,
+                    "matchedTocEntryCount": 0,
+                    "unmatchedTocTitles": [],
+                },
+                "summary": {
+                    "documentCount": 1,
+                    "nodeCount": 0,
+                    "tocEntryCount": 0,
+                    "validationStatus": "not_applicable",
+                    "warnings": [],
+                },
+            }
+            tree_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            return tree_path, payload
+
         def fake_template_extractor(*, project_id: str, documents: list[dict], project_dir: Path):
             calls.append("template")
             output_dir = project_dir / "business_template_extraction"
@@ -513,6 +579,9 @@ class ParsePipelineTests(unittest.TestCase):
             }, ""
 
         with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+            "app.services.parsing.write_business_section_tree",
+            side_effect=fake_section_tree,
+        ), patch(
             "app.services.parsing.run_business_template_extractor",
             side_effect=fake_template_extractor,
             create=True,
@@ -538,13 +607,150 @@ class ParsePipelineTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(calls, ["template", "structured"])
+        self.assertEqual(calls, ["section_tree", "template", "structured"])
         extraction_path = Path(str(seen_manifest.get("businessTemplateExtractionPath") or ""))
         self.assertTrue(extraction_path.is_file())
         self.assertEqual(seen_manifest.get("businessTemplateExtractionSummary"), {"templateCount": 1})
+        self.assertTrue(Path(str(seen_manifest.get("businessSectionTreePath") or "")).is_file())
         appendices = response.json()["structured"]["appendices"]
         self.assertEqual(len(appendices), 1)
         self.assertEqual(appendices[0]["extractionMode"], "business_template_extractor_skill")
+
+    def test_business_section_tree_is_ready_before_structured_parser(self) -> None:
+        project_id = self.create_business_project()
+        calls: list[str] = []
+        seen_manifest: dict[str, object] = {}
+
+        def fake_template_extractor(*, project_id: str, documents: list[dict], project_dir: Path):
+            calls.append("template")
+            return [], {"schemaVersion": "bid-business-template-extractor-v1", "summary": {"templateCount": 0}}, ""
+
+        def fake_structured_parser(skill_manifest_path: Path, **kwargs):
+            calls.append("structured")
+            manifest = json.loads(skill_manifest_path.read_text(encoding="utf-8"))
+            seen_manifest.update(manifest)
+            tree_path = Path(str(manifest.get("businessSectionTreePath") or ""))
+            self.assertTrue(tree_path.is_file(), manifest)
+            tree_payload = json.loads(tree_path.read_text(encoding="utf-8"))
+            self.assertEqual(tree_payload["schemaVersion"], "bid-business-section-tree-v1")
+            titles = [node["title"] for node in tree_payload["nodes"]]
+            self.assertIn("3. 供应商资格要求", titles)
+            self.assertIn("供应商须知前附表", titles)
+            self.assertIn("商务评分标准", titles)
+            qualification_node = next(node for node in tree_payload["nodes"] if node["title"] == "3. 供应商资格要求")
+            self.assertLessEqual(qualification_node["contentStartLine"], qualification_node["endLine"])
+            self.assertEqual(qualification_node["documentId"], manifest["documents"][0]["id"])
+            return {
+                "items": [],
+                "structured": {
+                    "schemaVersion": "bid-business-tender-structured-v1",
+                    "targetSkill": "bid-business-tender-structured-parser",
+                    "mode": "opencode-skill",
+                    "sourceDocuments": [],
+                    "scoringCriteria": {"business": []},
+                    "fieldGroups": {},
+                    "requirementPresence": {},
+                    "coverage": [],
+                    "projectDates": {"endDate": ""},
+                    "appendices": [],
+                    "commitmentLetters": [],
+                    "commitmentClues": [],
+                    "projectFactFields": [],
+                    "categoryCounts": {},
+                },
+            }, ""
+
+        with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+            "app.services.parsing.run_business_template_extractor",
+            side_effect=fake_template_extractor,
+            create=True,
+        ), patch(
+            "app.services.parsing._run_parse_skill",
+            side_effect=fake_structured_parser,
+        ), patch(
+            "app.services.parsing._needs_business_s1_finalize_guard",
+            return_value=False,
+        ):
+            response = self.client.post(
+                self.parse_results_url(project_id, "/upload-and-run"),
+                files=[
+                    (
+                        "tenderFiles",
+                        (
+                            "business-section-tree.docx",
+                            build_business_section_tree_docx_bytes(),
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        ),
+                    )
+                ],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(calls, ["template", "structured"])
+        self.assertTrue(Path(str(seen_manifest.get("businessSectionTreePath") or "")).is_file())
+
+    def test_business_section_tree_keeps_plain_toc_lines_out_of_nodes(self) -> None:
+        project_id = self.create_business_project()
+        seen_tree: dict[str, object] = {}
+
+        def fake_template_extractor(*, project_id: str, documents: list[dict], project_dir: Path):
+            return [], {"schemaVersion": "bid-business-template-extractor-v1", "summary": {"templateCount": 0}}, ""
+
+        def fake_structured_parser(skill_manifest_path: Path, **kwargs):
+            manifest = json.loads(skill_manifest_path.read_text(encoding="utf-8"))
+            tree_path = Path(str(manifest.get("businessSectionTreePath") or ""))
+            seen_tree.update(json.loads(tree_path.read_text(encoding="utf-8")))
+            return {
+                "items": [],
+                "structured": {
+                    "schemaVersion": "bid-business-tender-structured-v1",
+                    "targetSkill": "bid-business-tender-structured-parser",
+                    "mode": "opencode-skill",
+                    "sourceDocuments": [],
+                    "scoringCriteria": {"business": []},
+                    "fieldGroups": {},
+                    "requirementPresence": {},
+                    "coverage": [],
+                    "projectDates": {"endDate": ""},
+                    "appendices": [],
+                    "commitmentLetters": [],
+                    "commitmentClues": [],
+                    "projectFactFields": [],
+                    "categoryCounts": {},
+                },
+            }, ""
+
+        with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+            "app.services.parsing.run_business_template_extractor",
+            side_effect=fake_template_extractor,
+            create=True,
+        ), patch(
+            "app.services.parsing._run_parse_skill",
+            side_effect=fake_structured_parser,
+        ), patch(
+            "app.services.parsing._needs_business_s1_finalize_guard",
+            return_value=False,
+        ):
+            response = self.client.post(
+                self.parse_results_url(project_id, "/upload-and-run"),
+                files=[
+                    (
+                        "tenderFiles",
+                        (
+                            "business-section-tree-toc.docx",
+                            build_business_section_tree_toc_docx_bytes(),
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        ),
+                    )
+                ],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        titles = [node["title"] for node in seen_tree["nodes"]]
+        self.assertNotIn("第一章 招标公告 2", titles)
+        self.assertNotIn("3. 供应商资格要求 5", titles)
+        self.assertIn("3. 供应商资格要求", titles)
+        self.assertEqual(seen_tree["validation"]["status"], "passed")
 
     def test_business_template_extractor_appendices_are_kept_when_structured_parser_returns_empty(self) -> None:
         project_id = self.create_business_project()
@@ -2250,6 +2456,75 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(bid_deadline["value"], "2026-01-26 15:00")
         self.assertIn("递交截止时间", bid_deadline["evidence"])
         self.assertNotIn("投标保证金到账截止时间", bid_deadline["evidence"])
+
+    def test_business_local_transform_discards_preface_reference_project_basics(self) -> None:
+        payload = {
+            "items": [
+                {
+                    "fieldKey": "projectName",
+                    "title": "招标项目名称",
+                    "keyEntity": "招标项目名称",
+                    "value": "见招标公告",
+                    "sourceFile": "商务招标文件.md",
+                    "sourceDocumentId": "DOC-1",
+                    "section": "投标人须知前附表",
+                    "evidence": "1.1.4 | 招标项目名称 | 见招标公告",
+                    "evidenceLocation": "L12",
+                    "confidence": 0.9,
+                },
+                {
+                    "fieldKey": "projectName",
+                    "title": "招标项目名称",
+                    "keyEntity": "招标项目名称",
+                    "value": "公告真实项目",
+                    "sourceFile": "商务招标文件.md",
+                    "sourceDocumentId": "DOC-1",
+                    "section": "第一章 招标公告",
+                    "evidence": "招标项目名称：公告真实项目",
+                    "evidenceLocation": "L4",
+                    "confidence": 0.86,
+                },
+                {
+                    "fieldKey": "tenderer",
+                    "title": "招标人",
+                    "keyEntity": "招标人",
+                    "value": "见招标公告",
+                    "sourceFile": "商务招标文件.md",
+                    "sourceDocumentId": "DOC-1",
+                    "section": "投标人须知前附表",
+                    "evidence": "1.1.2 | 招标人 | 见招标公告",
+                    "evidenceLocation": "L10",
+                    "confidence": 0.9,
+                },
+                {
+                    "fieldKey": "tenderer",
+                    "title": "招标人",
+                    "keyEntity": "招标人",
+                    "value": "公告真实招标单位",
+                    "sourceFile": "商务招标文件.md",
+                    "sourceDocumentId": "DOC-1",
+                    "section": "第一章 招标公告",
+                    "evidence": "招标人：公告真实招标单位",
+                    "evidenceLocation": "L5",
+                    "confidence": 0.86,
+                },
+            ],
+            "structured": {"projectDates": {"startDate": "", "endDate": ""}, "appendices": []},
+        }
+        result = parsing_service._transform_to_business_contract(
+            "PRJ-LOCAL-REFERENCE",
+            payload,
+            profile=parsing_service.BUSINESS_PARSE_PROFILE,
+            documents=[],
+            texts_by_id={},
+            run_semantic_review=False,
+        )
+
+        project_basics = result["structured"]["fieldGroups"]["projectBasics"]
+        self.assertEqual(field_by_key(project_basics, "projectName")["value"], "公告真实项目")
+        self.assertEqual(field_by_key(project_basics, "tenderer")["value"], "公告真实招标单位")
+        self.assertNotEqual(field_by_key(project_basics, "projectName")["value"], "见招标公告")
+        self.assertNotEqual(field_by_key(project_basics, "tenderer")["value"], "见招标公告")
 
     def test_business_bid_participating_promotes_parse_json_to_business_workspace(self) -> None:
         project_id = self.create_business_project()

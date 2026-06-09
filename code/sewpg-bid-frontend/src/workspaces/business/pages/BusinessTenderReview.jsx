@@ -16,6 +16,7 @@ import {
   recoverUploadAndRunTimeout,
   shouldPollParseProgress,
 } from '../businessParseUploadRecovery'
+import { businessProjectParseResultNavigation } from '../businessProjectRoutes'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -671,6 +672,11 @@ export default function BusinessTenderReview({ showToast }) {
     return latestProject
   }, [parseClient, projectsClient])
 
+  const navigateToParseResult = useCallback((targetProjectId) => {
+    const { to, options } = businessProjectParseResultNavigation(targetProjectId)
+    if (to) navigate(to, options)
+  }, [navigate])
+
   const loadProjects = useCallback(async () => {
     setLoadingProjects(true)
     setError('')
@@ -780,7 +786,10 @@ export default function BusinessTenderReview({ showToast }) {
         setParseProgress(progress)
         if (isParseProgressCompleted(progress)) {
           const result = await parseClient.results(selectedProjectId).catch(() => null)
-          if (!stopped && result) setParseData(result)
+          if (!stopped && result) {
+            setParseData(result)
+            navigateToParseResult(selectedProjectId)
+          }
           return
         }
         if (isParseProgressFailed(progress)) {
@@ -796,7 +805,7 @@ export default function BusinessTenderReview({ showToast }) {
       stopped = true
       clearInterval(timer)
     }
-  }, [parseClient, parseProgress?.status, selectedProjectId, uploading])
+  }, [navigateToParseResult, parseClient, parseProgress?.status, selectedProjectId, uploading])
 
   const sourceFiles = Array.isArray(parseData?.sourceFiles) && parseData.sourceFiles.length
     ? parseData.sourceFiles
@@ -1041,6 +1050,7 @@ export default function BusinessTenderReview({ showToast }) {
       const response = await parseClient.uploadAndRun(targetProjectId, { formData })
       setParseData(response)
       await syncParsedProject(targetProjectId)
+      navigateToParseResult(targetProjectId)
       setTenderFiles([])
       showToast?.(response?.message || `${BUSINESS_BID_TYPE}招标文件解析完成。`)
     } catch (e) {
@@ -1055,6 +1065,7 @@ export default function BusinessTenderReview({ showToast }) {
         if (recovered.completed) {
           setParseData(recovered.result)
           await syncParsedProject(targetProjectId)
+          navigateToParseResult(targetProjectId)
           setTenderFiles([])
           showToast?.(`${BUSINESS_BID_TYPE}招标文件解析完成。`)
           return

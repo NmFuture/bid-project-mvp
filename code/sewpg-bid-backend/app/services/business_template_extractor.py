@@ -12,6 +12,7 @@ from app.services.opencode_client import OpencodeClient
 SKILL_NAME = "bid-business-template-extractor"
 SCHEMA_VERSION = "bid-business-template-extractor-v1"
 BOUNDARY_DECISIONS_SCHEMA_VERSION = "bid-business-template-extractor-boundary-decisions-v1"
+TEMPLATE_BOUNDARY_AGENT_MAX_ATTEMPTS = 3
 
 
 def backend_root() -> Path:
@@ -20,6 +21,10 @@ def backend_root() -> Path:
 
 def skill_runner_path() -> Path:
     return backend_root() / "opencode" / "skill" / SKILL_NAME / "scripts" / "run_from_manifest.py"
+
+
+def btplbound_runner_path() -> Path:
+    return backend_root() / "opencode" / "skill" / SKILL_NAME / "scripts" / "btplbound_workflow.py"
 
 
 def build_business_template_extractor_manifest(
@@ -74,6 +79,93 @@ def _run_skill_manifest(manifest_path: Path) -> str:
         message = completed.stderr.strip() or completed.stdout.strip() or f"退出码 {completed.returncode}"
         raise RuntimeError(message)
     return completed.stdout
+
+
+def _run_btplbound_command(command: str, manifest_path: Path, *args: object) -> dict[str, Any]:
+    runner = btplbound_runner_path()
+    completed = subprocess.run(
+        [sys.executable, str(runner), command, str(manifest_path), *(str(arg) for arg in args)],
+        cwd=str(backend_root()),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        raise RuntimeError(f"btplbound {command} failed: {message}")
+    try:
+        payload = json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"btplbound {command} returned invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"btplbound {command} returned non-object JSON")
+    return payload
+
+
+def _load_btplbound_status(manifest_path: Path) -> dict[str, Any]:
+    return _run_btplbound_command("status", manifest_path)
+
+
+def _btplbound_status_is_ready(status: dict[str, Any]) -> bool:
+    if str(status.get("status") or "").strip().lower() == "ready":
+        return True
+    candidate = status.get("candidate") if isinstance(status.get("candidate"), dict) else {}
+    boundary = status.get("boundary") if isinstance(status.get("boundary"), dict) else {}
+    return (
+        int(candidate.get("pendingBatchCount") or 0) == 0
+        and int(boundary.get("pendingBatchCount") or 0) == 0
+        and int(candidate.get("decidedBatchCount") or 0) == int(candidate.get("batchCount") or 0)
+        and int(boundary.get("decidedBatchCount") or 0) == int(boundary.get("batchCount") or 0)
+    )
+
+
+def _compact_btplbound_status(status: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": str(status.get("status") or ""),
+        "candidate": status.get("candidate") if isinstance(status.get("candidate"), dict) else {},
+        "boundary": status.get("boundary") if isinstance(status.get("boundary"), dict) else {},
+    }
+
+
+def _append_boundary_attempt_trace(
+    traces: list[dict[str, Any]],
+    *,
+    attempt: int,
+    status: dict[str, Any] | None = None,
+    trace: dict[str, Any] | None = None,
+    error: str = "",
+) -> None:
+    item: dict[str, Any] = {"attempt": attempt}
+    if status is not None:
+        item["status"] = _compact_btplbound_status(status)
+    if trace:
+        item["opencodeOutput"] = trace
+        for key in ("sessionId", "providerId", "modelId", "receivedAt", "completionSource"):
+            if key in trace:
+                item[key] = trace[key]
+    if error:
+        item["error"] = error
+    traces.append(item)
+
+
+def _finalize_btplbound_decisions_if_ready(manifest_path: Path) -> dict[str, Any] | None:
+    status = _load_btplbound_status(manifest_path)
+    if not _btplbound_status_is_ready(status):
+        return None
+    return _run_btplbound_command("finalize", manifest_path)
+
+
+def _combine_boundary_agent_trace(traces: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not traces:
+        return None
+    for item in reversed(traces):
+        trace = item.get("opencodeOutput")
+        if isinstance(trace, dict):
+            combined = dict(trace)
+            combined["boundaryAgentAttempts"] = traces
+            combined["boundaryAgentAttemptCount"] = len(traces)
+            return combined
+    return {"status": "received", "boundaryAgentAttempts": traces, "boundaryAgentAttemptCount": len(traces)}
 
 
 def _load_extraction_payload(output_dir: Path) -> dict[str, Any] | None:
@@ -148,6 +240,9 @@ def build_business_template_boundary_decision_prompt(
     manifest_path: Path,
     output_dir: Path,
     prepare_payload: dict[str, Any],
+    attempt: int = 1,
+    max_attempts: int = TEMPLATE_BOUNDARY_AGENT_MAX_ATTEMPTS,
+    current_status: dict[str, Any] | None = None,
 ) -> str:
     documents = [_summarize_candidates(path) for path in _document_output_dirs(prepare_payload, output_dir)]
     payload = {
@@ -156,6 +251,9 @@ def build_business_template_boundary_decision_prompt(
         "projectId": project_id,
         "manifestPath": str(manifest_path),
         "outputDir": str(output_dir),
+        "attempt": attempt,
+        "maxAttempts": max_attempts,
+        "currentStatus": _compact_btplbound_status(current_status or {}),
         "documents": documents,
     }
     return f"""
@@ -167,6 +265,7 @@ Use the {SKILL_NAME} skill.
 
 命令流程：
 1. `btplbound status {manifest_path}`
+   - 这是第 {attempt}/{max_attempts} 次后端可恢复尝试；如果 status 显示已有已裁决批次，必须只从 `btplbound ... next` 返回的待处理批次继续，不要重写已经存在的 `candidate_decision_batch_*.json` 或 `boundary_decision_batch_*.json`。
 2. 循环执行 `btplbound candidate-batch {manifest_path} next`，读取每批候选和证据。
 3. 对每批候选写出候选裁决 JSON，然后执行 `btplbound candidate-decision {manifest_path} <批号> <裁决文件>`。
 4. 候选批全部完成后，循环执行 `btplbound boundary-batch {manifest_path} next`。
@@ -337,20 +436,55 @@ def run_business_template_extractor(
     if prepare_payload is None:
         return [], None, "商务模板提取 skill prepare 阶段未生成 business_template_extraction.json。"
 
-    opencode_trace: dict[str, Any] | None = None
+    boundary_attempts: list[dict[str, Any]] = []
     fallback_reason = ""
+    last_error = ""
+    for attempt in range(1, TEMPLATE_BOUNDARY_AGENT_MAX_ATTEMPTS + 1):
+        try:
+            status = _load_btplbound_status(manifest_path)
+            if _btplbound_status_is_ready(status):
+                _append_boundary_attempt_trace(boundary_attempts, attempt=attempt, status=status)
+                break
+
+            prompt = build_business_template_boundary_decision_prompt(
+                project_id=project_id,
+                manifest_path=manifest_path,
+                output_dir=output_dir,
+                prepare_payload=prepare_payload,
+                attempt=attempt,
+                max_attempts=TEMPLATE_BOUNDARY_AGENT_MAX_ATTEMPTS,
+                current_status=status,
+            )
+            decision_result = OpencodeClient().decide_business_template_boundaries_with_trace(prompt)
+            trace = decision_result.get("opencodeOutput") if isinstance(decision_result.get("opencodeOutput"), dict) else None
+            status_after = _load_btplbound_status(manifest_path)
+            _append_boundary_attempt_trace(boundary_attempts, attempt=attempt, status=status_after, trace=trace)
+            if _btplbound_status_is_ready(status_after):
+                break
+            if not _missing_decision_paths(prepare_payload, output_dir):
+                break
+        except Exception as exc:
+            last_error = str(exc)
+            try:
+                error_status = _load_btplbound_status(manifest_path)
+            except Exception:
+                error_status = None
+            _append_boundary_attempt_trace(boundary_attempts, attempt=attempt, status=error_status, error=last_error)
+
+    opencode_trace = _combine_boundary_agent_trace(boundary_attempts)
     try:
-        prompt = build_business_template_boundary_decision_prompt(
-            project_id=project_id,
-            manifest_path=manifest_path,
-            output_dir=output_dir,
-            prepare_payload=prepare_payload,
-        )
-        decision_result = OpencodeClient().decide_business_template_boundaries_with_trace(prompt)
-        opencode_trace = decision_result.get("opencodeOutput") if isinstance(decision_result.get("opencodeOutput"), dict) else None
-        missing = _missing_decision_paths(prepare_payload, output_dir)
-        if missing:
-            fallback_reason = "缺少 Agent 裁决文件：" + ", ".join(str(path) for path in missing)
+        finalized = _finalize_btplbound_decisions_if_ready(manifest_path)
+        if finalized is None:
+            missing = _missing_decision_paths(prepare_payload, output_dir)
+            if last_error:
+                fallback_reason = last_error
+                if missing:
+                    fallback_reason += "；缺少 Agent 裁决文件：" + ", ".join(str(path) for path in missing)
+            elif missing:
+                fallback_reason = "缺少 Agent 裁决文件：" + ", ".join(str(path) for path in missing)
+            else:
+                status = _load_btplbound_status(manifest_path)
+                fallback_reason = f"btplbound decisions incomplete after {TEMPLATE_BOUNDARY_AGENT_MAX_ATTEMPTS} attempts: {_compact_btplbound_status(status)}"
     except Exception as exc:
         fallback_reason = str(exc)
 

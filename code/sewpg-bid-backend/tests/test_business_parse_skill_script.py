@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import shutil
 import subprocess
@@ -161,6 +162,50 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
         decision["evidenceIds"] = sorted(set(decision["evidenceIds"]))
         decision_path.parent.mkdir(parents=True, exist_ok=True)
         decision_path.write_text(json.dumps(decision, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def write_bid_deadline_ai_decision(self, tmp_path: Path, review_plan: dict[str, Any], *, content: str) -> None:
+        for task_ref in review_plan["tasks"]:
+            task_path = tmp_path / task_ref["taskPath"]
+            decision_path = tmp_path / task_ref["decisionPath"]
+            task_payload = json.loads(task_path.read_text(encoding="utf-8"))
+            if task_ref["task"] == "project_basics_reference_review":
+                candidate = next(
+                    item
+                    for item in task_payload["candidates"]
+                    if item.get("fieldKey") == "bidDeadline"
+                )
+                decision_path.parent.mkdir(parents=True, exist_ok=True)
+                decision_path.write_text(
+                    json.dumps(
+                        {
+                            "schemaVersion": "bid-business-ai-decision-v1",
+                            "task": task_ref["task"],
+                            "taskId": task_ref["taskId"],
+                            "adapter": "unit-test-opencode-agent",
+                            "accepted": [
+                                {
+                                    "candidateId": candidate["candidateId"],
+                                    "decision": "accepted",
+                                    "fieldType": "bidDeadline",
+                                    "content": content,
+                                    "applicableScope": "全部标段",
+                                    "sourceText": candidate["sourceText"],
+                                    "reason": "候选窗口明确给出了递交截止时间。",
+                                    "evidenceIds": candidate["evidenceIds"],
+                                }
+                            ],
+                            "rejected": [],
+                            "needsReview": [],
+                            "reason": "单元测试确认 AI 提取递交截止时间。",
+                            "evidenceIds": candidate["evidenceIds"],
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                continue
+            self.write_plan_decision(task_path, decision_path, accepted_candidate_ids=set())
 
     def assert_rejection_display_fields(self, rows: list[dict]) -> None:
         self.assertTrue(rows)
@@ -472,7 +517,10 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             payload = json.loads(completed.stdout)
             self.assertEqual(payload["targetSkill"], "bid-business-tender-structured-parser")
             result = json.loads(structured_path.read_text(encoding="utf-8"))
-            self.assertNotIn("appendices", result["structured"])
+            appendices = result["structured"]["appendices"]
+            self.assertEqual(len(appendices), 1)
+            self.assertEqual(appendices[0]["id"], "APPX-0001")
+            self.assertEqual(appendices[0]["extractionMode"], "business_template_extractor_skill")
             self.assertEqual(
                 set(result["structured"]["fieldGroups"].keys()),
                 {"projectBasics", "qualificationRequirements", "bidderInstructions", "commercialRejectionClauses"},
@@ -701,7 +749,8 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             self.assertEqual(len(structured["scoringCriteria"]["business"]), 1)
             self.assertNotIn("technical", structured["scoringCriteria"])
             self.assertNotIn("lcoe", structured["scoringCriteria"])
-            self.assertNotIn("commitmentLetters", structured)
+            self.assertEqual(structured["commitmentLetters"], [])
+            self.assertEqual(structured["commitmentClues"], [])
 
     def test_business_parser_default_prepare_stage_writes_candidate_package_without_finalizing(self) -> None:
         script_path = self.runner_path()
@@ -1033,7 +1082,10 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            subprocess.run([sys.executable, str(script_path), "offline-fallback", str(manifest_path)], check=True, capture_output=True, text=True)
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+            review_plan = json.loads((tmp_path / "review_plan.json").read_text(encoding="utf-8"))
+            self.write_bid_deadline_ai_decision(tmp_path, review_plan, content="2026年5月6日09时30分")
+            subprocess.run([sys.executable, str(script_path), "finalize", str(manifest_path)], check=True, capture_output=True, text=True)
 
             payload = json.loads(output_path.read_text(encoding="utf-8"))
             rows = payload["structured"]["fieldGroups"]["bidderInstructions"]
@@ -1102,7 +1154,10 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            subprocess.run([sys.executable, str(script_path), "offline-fallback", str(manifest_path)], check=True, capture_output=True, text=True)
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+            review_plan = json.loads((tmp_path / "review_plan.json").read_text(encoding="utf-8"))
+            self.write_bid_deadline_ai_decision(tmp_path, review_plan, content="2026年5月6日09时30分")
+            subprocess.run([sys.executable, str(script_path), "finalize", str(manifest_path)], check=True, capture_output=True, text=True)
 
             payload = json.loads(output_path.read_text(encoding="utf-8"))
             rows = payload["structured"]["fieldGroups"]["bidderInstructions"]
@@ -1175,6 +1230,72 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             candidate_package = json.loads((tmp_path / "candidate_package.json").read_text(encoding="utf-8"))
             deterministic_rows = candidate_package["deterministicExtracts"]["scoringTables"]["business"]
             self.assertEqual([row["scoringItem"] for row in deterministic_rows], ["企业综合实力", "投标文件完整性"])
+            self.assertEqual(candidate_package["candidates"]["scoringTableReview"], [])
+
+            review_plan = json.loads((tmp_path / "review_plan.json").read_text(encoding="utf-8"))
+            self.assertFalse(any(task["task"] == "scoring_table_review" for task in review_plan["tasks"]))
+            self.assertIn("scoring_table_review", review_plan["skippedAiModules"])
+
+    def test_business_part_review_detail_table_is_deterministic_and_skips_scoring_ai(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "business-part-review-detail.docx"
+            doc = Document()
+            doc.add_paragraph("第三章 评标办法")
+            doc.add_paragraph("表 2：商务部分评审细则（满分 10 分）")
+            scoring_table = doc.add_table(rows=5, cols=4)
+            for col, text in enumerate(["序号", "评审项目", "分 值", "评分细则"]):
+                scoring_table.cell(0, col).text = text
+            scoring_rows = [
+                ("一", "售后服务、技术服务方案", "2", "供应商提供的售后服务承诺及措施完整，方案合理并具有可操作性，最优得满分，最低不得分。"),
+                ("二", "综合费用合理性", "2", "对运行维护费用、备品备件、塔筒造价及其他特殊情况增加费用等进行综合评比，最优得满分，最低不得分。"),
+                ("三", "同机型设备业绩", "2", "近三年响应机型批量并网和订货业绩清晰有效，本项最优得满分，最低不得分。"),
+                ("四", "战略合作", "4", "按照战略合作项目数量和规模两方面评分，本项最高得4分，最低不得分。"),
+            ]
+            for row_index, values in enumerate(scoring_rows, start=1):
+                for col, text in enumerate(values):
+                    scoring_table.cell(row_index, col).text = text
+            doc.add_paragraph("表 3 技术部分评分细则（满分 35 分）")
+            technical_table = doc.add_table(rows=2, cols=4)
+            for col, text in enumerate(["序号", "评审项目", "分 值", "评分细则"]):
+                technical_table.cell(0, col).text = text
+            for col, text in enumerate(["一", "响应机型成熟度", "3", "根据响应机型成熟度评分。"]):
+                technical_table.cell(1, col).text = text
+            doc.save(source_path)
+
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-BUSINESS-PART-REVIEW-DETAIL",
+                        "bidType": "商务标",
+                        "parseProfile": "business",
+                        "structuredResultPath": str(output_path),
+                        "documents": [
+                            {
+                                "id": "DOC-1",
+                                "name": source_path.name,
+                                "sourcePath": str(source_path),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+
+            candidate_package = json.loads((tmp_path / "candidate_package.json").read_text(encoding="utf-8"))
+            deterministic_rows = candidate_package["deterministicExtracts"]["scoringTables"]["business"]
+            self.assertEqual(
+                [row["scoringItem"] for row in deterministic_rows],
+                ["售后服务、技术服务方案", "综合费用合理性", "同机型设备业绩", "战略合作"],
+            )
+            self.assertEqual([row["score"] for row in deterministic_rows], ["2", "2", "2", "4"])
             self.assertEqual(candidate_package["candidates"]["scoringTableReview"], [])
 
             review_plan = json.loads((tmp_path / "review_plan.json").read_text(encoding="utf-8"))
@@ -1263,6 +1384,71 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             self.assertEqual([row["score"] for row in business_rows], ["2分", "3分", "5分"])
             self.assertTrue(all("商务评分标准" not in row["scoringItem"] for row in business_rows))
             self.assertFalse(any("技术评分标准" in row["evidence"] for row in business_rows))
+
+    def test_mixed_preface_business_scoring_block_excludes_score_composition_and_price_rows(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "mixed-preface-business-scoring.docx"
+            doc = Document()
+            doc.add_paragraph("第三章 评标办法")
+            doc.add_paragraph("评标办法前附表")
+            table = doc.add_table(rows=11, cols=4)
+            for col, text in enumerate(["条款号", "评分因素（偏差率）", "评分项", "评分标准"]):
+                table.cell(0, col).text = text
+            rows = [
+                ("2.2.1", "分值构成（总分100分）", "", "投标报价：45分；商务部分：10分；技术部分：45分。"),
+                ("2.2.2", "评标基准价计算方法", "", "按有效投标报价算术平均值计算。"),
+                ("2.2.3", "投标报价的偏差率计算公式", "", "偏差率=（评标价－评标基准价）/评标基准价×100%。"),
+                ("2.2.4（1）", "投标报价评分标准", "45分", "评标价等于评标基准价，得基础分35分。"),
+                ("2.2.4（2）", "商务评分标准", "业绩（5分）", "在满足资格要求的基础上，每增加1000MW加1分，最多得5分。"),
+                ("2.2.4（2）", "商务评分标准", "企业综合实力及财务状况（2分）", "根据企业实力及近三年财务状况横向对比，优秀得2分。"),
+                ("2.2.4（2）", "商务评分标准", "主要商务条款响应程度（2分）", "主要商务条款全部响应招标文件要求得2分，否则酌情扣分。"),
+                ("2.2.4（2）", "商务评分标准", "投标文件编制质量（1分）", "投标文件清晰完整、按招标文件要求格式编制得1分。"),
+                ("2.2.4（3）", "技术评分标准", "投标方案先进性（10分）", "根据投标方案先进性横向对比评分。"),
+                ("2.2.4（4）", "其他因素评分标准", "/", "无。"),
+            ]
+            for row_index, values in enumerate(rows, start=1):
+                for col, text in enumerate(values):
+                    table.cell(row_index, col).text = text
+            doc.save(source_path)
+
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-MIXED-PREFACE-BUSINESS-SCORING",
+                        "bidType": "商务标",
+                        "parseProfile": "business",
+                        "structuredResultPath": str(output_path),
+                        "documents": [
+                            {
+                                "id": "DOC-1",
+                                "name": source_path.name,
+                                "sourcePath": str(source_path),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+
+            candidate_package = json.loads((tmp_path / "candidate_package.json").read_text(encoding="utf-8"))
+            self.assertEqual(candidate_package["deterministicExtracts"]["scoringTables"]["business"], [])
+            row_block_candidates = candidate_package["candidates"]["scoringTableReview"]
+            self.assertEqual(len(row_block_candidates), 1)
+            content = row_block_candidates[0]["content"]
+            self.assertIn("业绩（5分）", content)
+            self.assertIn("投标文件编制质量（1分）", content)
+            self.assertNotIn("分值构成", content)
+            self.assertNotIn("投标报价评分标准", content)
+            self.assertNotIn("技术评分标准", content)
+            self.assertEqual(len(row_block_candidates[0]["evidenceIds"]), 4)
 
     def test_preface_scoring_noise_is_not_appended_without_concrete_scores(self) -> None:
         script_path = self.runner_path()
@@ -1742,6 +1928,704 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             self.assertEqual(field_by_key(candidate_package["deterministicExtracts"]["projectBasics"], "tenderer")["value"], "前附表招标单位")
             self.assertEqual(len(candidate_package["deterministicExtracts"]["bidderInstructions"]), 4)
 
+    def test_project_basics_resolve_preface_references_to_announcement_section_tree(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "preface-reference-announcement.md"
+            lines = [
+                "# 商务招标文件",
+                "第一章 招标公告",
+                "1. 招标条件",
+                "招标项目名称：公告真实项目",
+                "招标人：公告真实招标单位",
+                "招标代理机构：公告真实代理机构",
+                "投标文件递交截止时间：2026年5月6日09时30分",
+                "第二章 投标人须知",
+                "投标人须知前附表",
+                "| 条款号 | 条款名称 | 编列内容 |",
+                "| --- | --- | --- |",
+                "| 1.1.2 | 招标人 | 见招标公告 |",
+                "| 1.1.3 | 招标代理机构 | 详见招标公告 |",
+                "| 1.1.4 | 招标项目名称 | 见招标公告 |",
+                "| 4.2.1 | 投标截止时间 | 详见招标公告 |",
+                "第三章 评标办法",
+            ]
+            source_path.write_text("\n".join(lines), encoding="utf-8")
+            section_tree_path = tmp_path / "business_section_tree.json"
+            section_tree_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-section-tree-v1",
+                        "documents": [{"id": "DOC-1", "name": source_path.name}],
+                        "nodes": [
+                            {
+                                "id": "DOC-1-S0001",
+                                "documentId": "DOC-1",
+                                "level": 1,
+                                "number": "第一章",
+                                "title": "第一章 招标公告",
+                                "path": ["第一章 招标公告"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 2,
+                                "contentStartBlockIndex": 3,
+                                "endBlockIndex": 7,
+                                "startLine": 2,
+                                "contentStartLine": 3,
+                                "endLine": 7,
+                            },
+                            {
+                                "id": "DOC-1-S0002",
+                                "documentId": "DOC-1",
+                                "level": 2,
+                                "number": "",
+                                "title": "投标人须知前附表",
+                                "path": ["第二章 投标人须知", "投标人须知前附表"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 9,
+                                "contentStartBlockIndex": 10,
+                                "endBlockIndex": 15,
+                                "startLine": 9,
+                                "contentStartLine": 10,
+                                "endLine": 15,
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest = {
+                "projectId": "PRJ-PROJECT-BASICS-REFERENCE",
+                "bidType": "商务标",
+                "parseProfile": "business",
+                "structuredResultPath": str(output_path),
+                "businessSectionTreePath": str(section_tree_path),
+                "documents": [
+                    {
+                        "id": "DOC-1",
+                        "name": source_path.name,
+                        "sourcePath": str(source_path),
+                        "textPath": str(source_path),
+                    }
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+            review_plan = json.loads((tmp_path / "review_plan.json").read_text(encoding="utf-8"))
+            self.write_bid_deadline_ai_decision(tmp_path, review_plan, content="2026年5月6日09时30分")
+            subprocess.run([sys.executable, str(script_path), "finalize", str(manifest_path)], check=True, capture_output=True, text=True)
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            project_basics = payload["structured"]["fieldGroups"]["projectBasics"]
+            self.assertEqual(field_by_key(project_basics, "projectName")["value"], "公告真实项目")
+            self.assertEqual(field_by_key(project_basics, "tenderer")["value"], "公告真实招标单位")
+            self.assertEqual(field_by_key(project_basics, "tenderAgency")["value"], "公告真实代理机构")
+            self.assertEqual(field_by_key(project_basics, "bidDeadline")["value"], "2026-05-06 09:30")
+            self.assertEqual(payload["structured"]["projectDates"]["endDate"], "2026-05-06 09:30")
+            self.assertTrue(all("见招标公告" not in field["value"] for field in project_basics))
+            self.assertTrue(all("招标公告" in field["section"] for field in project_basics if field["status"] == "found"))
+
+    def test_project_basics_prefer_cover_procurement_labels_and_map_to_tender_fields(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "procurement-cover.docx"
+            doc = Document()
+            doc.add_paragraph("脱敏采购项目")
+            cover_table = doc.add_table(rows=4, cols=3)
+            rows = [
+                ("项目名称", "：", "封面采购项目"),
+                ("采购编号", "：", "CG-2026-001"),
+                ("采购人", "：", "封面采购单位"),
+                ("采购代理机构", "：", "封面采购代理"),
+            ]
+            for row_index, values in enumerate(rows):
+                for col, text in enumerate(values):
+                    cover_table.cell(row_index, col).text = text
+            doc.add_paragraph("第一章 采购公告")
+            doc.add_paragraph("采购人：公告采购单位")
+            doc.add_paragraph("采购代理机构：公告采购代理")
+            doc.add_paragraph("响应文件提交截止时间：2026年6月7日10时00分")
+            doc.save(source_path)
+
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest = {
+                "projectId": "PRJ-PROCUREMENT-COVER",
+                "bidType": "商务标",
+                "parseProfile": "business",
+                "structuredResultPath": str(output_path),
+                "documents": [
+                    {
+                        "id": "DOC-1",
+                        "name": source_path.name,
+                        "sourcePath": str(source_path),
+                    }
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+            review_plan = json.loads((tmp_path / "review_plan.json").read_text(encoding="utf-8"))
+            self.write_bid_deadline_ai_decision(tmp_path, review_plan, content="2026年5月6日09时30分")
+            subprocess.run([sys.executable, str(script_path), "finalize", str(manifest_path)], check=True, capture_output=True, text=True)
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            project_basics = payload["structured"]["fieldGroups"]["projectBasics"]
+            self.assertEqual(field_by_key(project_basics, "projectName")["value"], "封面采购项目")
+            self.assertEqual(field_by_key(project_basics, "tenderNo")["value"], "CG-2026-001")
+            self.assertEqual(field_by_key(project_basics, "tenderer")["value"], "封面采购单位")
+            self.assertEqual(field_by_key(project_basics, "tenderAgency")["value"], "封面采购代理")
+
+    def test_project_basics_reference_ai_candidates_use_one_line_context_window(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "project-basics-ai-fallback.md"
+            lines = [
+                "# 商务招标文件",
+                "第一章 招标公告",
+                "本项目已具备招标条件。",
+                "项目业主为脱敏能源有限公司，现委托脱敏代理有限公司进行公开招标。",
+                "建设地点详见技术规范书。",
+                "第二章 投标人须知",
+                "投标人须知前附表",
+                "| 条款号 | 条款名称 | 编列内容 |",
+                "| --- | --- | --- |",
+                "| 1.1.2 | 招标人 | 见招标公告 |",
+            ]
+            source_path.write_text("\n".join(lines), encoding="utf-8")
+            section_tree_path = tmp_path / "business_section_tree.json"
+            section_tree_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-section-tree-v1",
+                        "documents": [{"id": "DOC-1", "name": source_path.name}],
+                        "nodes": [
+                            {
+                                "id": "DOC-1-S0001",
+                                "documentId": "DOC-1",
+                                "level": 1,
+                                "number": "第一章",
+                                "title": "第一章 招标公告",
+                                "path": ["第一章 招标公告"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 2,
+                                "contentStartBlockIndex": 3,
+                                "endBlockIndex": 5,
+                                "startLine": 2,
+                                "contentStartLine": 3,
+                                "endLine": 5,
+                            },
+                            {
+                                "id": "DOC-1-S0002",
+                                "documentId": "DOC-1",
+                                "level": 2,
+                                "number": "",
+                                "title": "投标人须知前附表",
+                                "path": ["第二章 投标人须知", "投标人须知前附表"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 7,
+                                "contentStartBlockIndex": 8,
+                                "endBlockIndex": 10,
+                                "startLine": 7,
+                                "contentStartLine": 8,
+                                "endLine": 10,
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest = {
+                "projectId": "PRJ-PROJECT-BASICS-AI-FALLBACK",
+                "bidType": "商务标",
+                "parseProfile": "business",
+                "structuredResultPath": str(output_path),
+                "businessSectionTreePath": str(section_tree_path),
+                "documents": [
+                    {
+                        "id": "DOC-1",
+                        "name": source_path.name,
+                        "sourcePath": str(source_path),
+                        "textPath": str(source_path),
+                    }
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+
+            candidate_package = json.loads((tmp_path / "candidate_package.json").read_text(encoding="utf-8"))
+            fallback_candidates = candidate_package["candidates"]["projectBasicsReferenceReview"]
+            self.assertEqual(len(fallback_candidates), 1)
+            candidate = fallback_candidates[0]
+            self.assertEqual(candidate["fieldKey"], "tenderer")
+            self.assertEqual(candidate["referenceTarget"], "招标公告")
+            self.assertEqual(candidate["contextLines"], lines[2:5])
+
+            review_plan = json.loads((tmp_path / "review_plan.json").read_text(encoding="utf-8"))
+            self.assertTrue(any(task["task"] == "project_basics_reference_review" for task in review_plan["tasks"]))
+
+    def test_project_basics_reference_ai_decision_updates_final_project_basics(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "project-basics-ai-finalize.md"
+            lines = [
+                "# 商务招标文件",
+                "第一章 招标公告",
+                "本项目已具备招标条件。",
+                "项目业主为脱敏能源有限公司，现委托脱敏代理有限公司进行公开招标。",
+                "建设地点详见技术规范书。",
+                "第二章 投标人须知",
+                "投标人须知前附表",
+                "| 条款号 | 条款名称 | 编列内容 |",
+                "| --- | --- | --- |",
+                "| 1.1.2 | 招标人 | 见招标公告 |",
+            ]
+            source_path.write_text("\n".join(lines), encoding="utf-8")
+            section_tree_path = tmp_path / "business_section_tree.json"
+            section_tree_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-section-tree-v1",
+                        "documents": [{"id": "DOC-1", "name": source_path.name}],
+                        "nodes": [
+                            {
+                                "id": "DOC-1-S0001",
+                                "documentId": "DOC-1",
+                                "level": 1,
+                                "number": "第一章",
+                                "title": "第一章 招标公告",
+                                "path": ["第一章 招标公告"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 2,
+                                "contentStartBlockIndex": 3,
+                                "endBlockIndex": 5,
+                                "startLine": 2,
+                                "contentStartLine": 3,
+                                "endLine": 5,
+                            },
+                            {
+                                "id": "DOC-1-S0002",
+                                "documentId": "DOC-1",
+                                "level": 2,
+                                "number": "",
+                                "title": "投标人须知前附表",
+                                "path": ["第二章 投标人须知", "投标人须知前附表"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 7,
+                                "contentStartBlockIndex": 8,
+                                "endBlockIndex": 10,
+                                "startLine": 7,
+                                "contentStartLine": 8,
+                                "endLine": 10,
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest = {
+                "projectId": "PRJ-PROJECT-BASICS-AI-FINALIZE",
+                "bidType": "商务标",
+                "parseProfile": "business",
+                "structuredResultPath": str(output_path),
+                "businessSectionTreePath": str(section_tree_path),
+                "documents": [
+                    {
+                        "id": "DOC-1",
+                        "name": source_path.name,
+                        "sourcePath": str(source_path),
+                        "textPath": str(source_path),
+                    }
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+            review_plan = json.loads((tmp_path / "review_plan.json").read_text(encoding="utf-8"))
+            for task_ref in review_plan["tasks"]:
+                task_path = tmp_path / task_ref["taskPath"]
+                decision_path = tmp_path / task_ref["decisionPath"]
+                task_payload = json.loads(task_path.read_text(encoding="utf-8"))
+                if task_ref["task"] == "project_basics_reference_review":
+                    candidate = task_payload["candidates"][0]
+                    decision_path.parent.mkdir(parents=True, exist_ok=True)
+                    decision_path.write_text(
+                        json.dumps(
+                            {
+                                "schemaVersion": "bid-business-ai-decision-v1",
+                                "task": task_ref["task"],
+                                "taskId": task_ref["taskId"],
+                                "adapter": "unit-test-opencode-agent",
+                                "accepted": [
+                                    {
+                                        "candidateId": candidate["candidateId"],
+                                        "decision": "accepted",
+                                        "fieldType": "tenderer",
+                                        "content": "脱敏能源有限公司",
+                                        "applicableScope": "全部标段",
+                                        "sourceText": candidate["sourceText"],
+                                        "reason": "候选窗口中项目业主即招标人。",
+                                        "evidenceIds": candidate["evidenceIds"],
+                                    }
+                                ],
+                                "rejected": [],
+                                "needsReview": [],
+                                "reason": "单元测试确认 AI 兜底可回填项目基础信息。",
+                                "evidenceIds": candidate["evidenceIds"],
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                    continue
+                self.write_plan_decision(task_path, decision_path, accepted_candidate_ids=set())
+
+            subprocess.run([sys.executable, str(script_path), "finalize", str(manifest_path)], check=True, capture_output=True, text=True)
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            tenderer = field_by_key(payload["structured"]["fieldGroups"]["projectBasics"], "tenderer")
+            self.assertEqual(tenderer["value"], "脱敏能源有限公司")
+            self.assertEqual(tenderer["sourcePriority"], "ai_reference_section")
+            self.assertNotEqual(tenderer["value"], "见招标公告")
+
+    def test_bid_deadline_reference_ai_candidates_use_keyword_and_date_context(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "bid-deadline-ai-candidates.md"
+            lines = [
+                "# 商务招标文件",
+                "第一章 招标公告",
+                "本项目已具备招标条件。",
+                "投标文件应于 2026 年 3 月 23 日 10:00 之前递交到电子平台。",
+                "逾期递交的投标文件将被拒绝。",
+                "投标截止时间前完成 CA 绑定。",
+                "请投标人合理安排上传时间。",
+                "第二章 投标人须知",
+                "投标人须知前附表",
+                "| 条款号 | 条款名称 | 编列内容 |",
+                "| --- | --- | --- |",
+                "| 4.2.1 | 投标截止时间 | 详见招标公告 |",
+            ]
+            source_path.write_text("\n".join(lines), encoding="utf-8")
+            section_tree_path = tmp_path / "business_section_tree.json"
+            section_tree_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-section-tree-v1",
+                        "documents": [{"id": "DOC-1", "name": source_path.name}],
+                        "nodes": [
+                            {
+                                "id": "DOC-1-S0001",
+                                "documentId": "DOC-1",
+                                "level": 1,
+                                "number": "第一章",
+                                "title": "第一章 招标公告",
+                                "path": ["第一章 招标公告"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 2,
+                                "contentStartBlockIndex": 3,
+                                "endBlockIndex": 7,
+                                "startLine": 2,
+                                "contentStartLine": 3,
+                                "endLine": 7,
+                            },
+                            {
+                                "id": "DOC-1-S0002",
+                                "documentId": "DOC-1",
+                                "level": 2,
+                                "number": "",
+                                "title": "投标人须知前附表",
+                                "path": ["第二章 投标人须知", "投标人须知前附表"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 9,
+                                "contentStartBlockIndex": 10,
+                                "endBlockIndex": 12,
+                                "startLine": 9,
+                                "contentStartLine": 10,
+                                "endLine": 12,
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest = {
+                "projectId": "PRJ-BID-DEADLINE-AI-CANDIDATES",
+                "bidType": "商务标",
+                "parseProfile": "business",
+                "structuredResultPath": str(output_path),
+                "businessSectionTreePath": str(section_tree_path),
+                "documents": [
+                    {
+                        "id": "DOC-1",
+                        "name": source_path.name,
+                        "sourcePath": str(source_path),
+                        "textPath": str(source_path),
+                    }
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+
+            candidate_package = json.loads((tmp_path / "candidate_package.json").read_text(encoding="utf-8"))
+            deadline_candidates = [
+                candidate
+                for candidate in candidate_package["candidates"]["projectBasicsReferenceReview"]
+                if candidate["fieldKey"] == "bidDeadline"
+            ]
+            self.assertEqual(len(deadline_candidates), 1)
+            candidate = deadline_candidates[0]
+            self.assertEqual(candidate["content"], lines[3])
+            self.assertEqual(candidate["contextLines"], lines[2:5])
+            self.assertEqual(candidate["referenceTarget"], "招标公告")
+
+    def test_bid_deadline_ai_candidate_date_context_accepts_common_date_formats(self) -> None:
+        scripts_dir = self.runner_path().parent
+        sys.path.insert(0, str(scripts_dir))
+        try:
+            workflow = importlib.import_module("business_workflow")
+            accepted_lines = [
+                "投标文件应于 2026 年 03 月 23 日 10:00 前递交。",
+                "响应文件应于2026年3月23日10:00前提交。",
+                "应答文件应于2026/03/23 10:00前提交。",
+                "截止时间：2026/3/23 10:00。",
+                "截止时间：2026-03-23 10:00。",
+                "截止时间：2026-3-23 10:00。",
+                "截止时间：2026.03.23 10:00。",
+                "截止时间：2026.3.23 10:00。",
+            ]
+            for line in accepted_lines:
+                with self.subTest(line=line):
+                    self.assertTrue(workflow._is_bid_deadline_ai_candidate_line(line, [line]))
+            self.assertFalse(workflow._is_bid_deadline_ai_candidate_line("投标截止时间前完成 CA 绑定。", ["投标截止时间前完成 CA 绑定。"]))
+        finally:
+            sys.path.remove(str(scripts_dir))
+
+    def test_bid_deadline_reference_ai_decision_updates_final_project_basics(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "bid-deadline-ai-finalize.md"
+            lines = [
+                "# 商务招标文件",
+                "第一章 招标公告",
+                "本项目已具备招标条件。",
+                "响应文件应于2026/3/23 10:00之前提交到电子平台。",
+                "逾期提交的响应文件将被拒绝。",
+                "第二章 投标人须知",
+                "投标人须知前附表",
+                "| 条款号 | 条款名称 | 编列内容 |",
+                "| --- | --- | --- |",
+                "| 4.2.1 | 投标截止时间 | 详见招标公告 |",
+            ]
+            source_path.write_text("\n".join(lines), encoding="utf-8")
+            section_tree_path = tmp_path / "business_section_tree.json"
+            section_tree_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-section-tree-v1",
+                        "documents": [{"id": "DOC-1", "name": source_path.name}],
+                        "nodes": [
+                            {
+                                "id": "DOC-1-S0001",
+                                "documentId": "DOC-1",
+                                "level": 1,
+                                "number": "第一章",
+                                "title": "第一章 招标公告",
+                                "path": ["第一章 招标公告"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 2,
+                                "contentStartBlockIndex": 3,
+                                "endBlockIndex": 5,
+                                "startLine": 2,
+                                "contentStartLine": 3,
+                                "endLine": 5,
+                            },
+                            {
+                                "id": "DOC-1-S0002",
+                                "documentId": "DOC-1",
+                                "level": 2,
+                                "number": "",
+                                "title": "投标人须知前附表",
+                                "path": ["第二章 投标人须知", "投标人须知前附表"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 7,
+                                "contentStartBlockIndex": 8,
+                                "endBlockIndex": 10,
+                                "startLine": 7,
+                                "contentStartLine": 8,
+                                "endLine": 10,
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest = {
+                "projectId": "PRJ-BID-DEADLINE-AI-FINALIZE",
+                "bidType": "商务标",
+                "parseProfile": "business",
+                "structuredResultPath": str(output_path),
+                "businessSectionTreePath": str(section_tree_path),
+                "documents": [
+                    {
+                        "id": "DOC-1",
+                        "name": source_path.name,
+                        "sourcePath": str(source_path),
+                        "textPath": str(source_path),
+                    }
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+            review_plan = json.loads((tmp_path / "review_plan.json").read_text(encoding="utf-8"))
+            for task_ref in review_plan["tasks"]:
+                task_path = tmp_path / task_ref["taskPath"]
+                decision_path = tmp_path / task_ref["decisionPath"]
+                task_payload = json.loads(task_path.read_text(encoding="utf-8"))
+                if task_ref["task"] == "project_basics_reference_review":
+                    candidate = next(item for item in task_payload["candidates"] if item["fieldKey"] == "bidDeadline")
+                    decision_path.parent.mkdir(parents=True, exist_ok=True)
+                    decision_path.write_text(
+                        json.dumps(
+                            {
+                                "schemaVersion": "bid-business-ai-decision-v1",
+                                "task": task_ref["task"],
+                                "taskId": task_ref["taskId"],
+                                "adapter": "unit-test-opencode-agent",
+                                "accepted": [
+                                    {
+                                        "candidateId": candidate["candidateId"],
+                                        "decision": "accepted",
+                                        "fieldType": "projectBasics",
+                                        "content": "2026/3/23 10:00",
+                                        "applicableScope": "全部标段",
+                                        "sourceText": candidate["sourceText"],
+                                        "reason": "候选窗口明确说明响应文件应于该时间之前提交。",
+                                        "evidenceIds": candidate["evidenceIds"],
+                                    }
+                                ],
+                                "rejected": [],
+                                "needsReview": [],
+                                "reason": "单元测试确认 AI 提取递交截止时间。",
+                                "evidenceIds": candidate["evidenceIds"],
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                    continue
+                self.write_plan_decision(task_path, decision_path, accepted_candidate_ids=set())
+
+            subprocess.run([sys.executable, str(script_path), "finalize", str(manifest_path)], check=True, capture_output=True, text=True)
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            bid_deadline = field_by_key(payload["structured"]["fieldGroups"]["projectBasics"], "bidDeadline")
+            self.assertEqual(bid_deadline["value"], "2026-03-23 10:00")
+            self.assertEqual(bid_deadline["sourcePriority"], "ai_reference_section")
+            self.assertEqual(payload["structured"]["projectDates"]["endDate"], "2026-03-23 10:00")
+
+    def test_project_basics_reference_ai_does_not_replace_concrete_preface_value(self) -> None:
+        scripts_dir = self.runner_path().parent
+        sys.path.insert(0, str(scripts_dir))
+        try:
+            workflow = importlib.import_module("business_workflow")
+            project_basics = [
+                {
+                    "key": "projectName",
+                    "label": "项目名称",
+                    "value": "前附表真实项目名称",
+                    "status": "found",
+                    "sourcePriority": "bidder_instruction",
+                    "evidenceIds": ["DOC-1:B1/R1"],
+                },
+                {"key": "tenderNo", "label": "招标编号", "value": "", "status": "missing"},
+                {"key": "tenderer", "label": "招标人", "value": "", "status": "missing"},
+                {"key": "tenderAgency", "label": "招标代理机构", "value": "", "status": "missing"},
+                {"key": "bidDeadline", "label": "递交截止时间", "value": "", "status": "missing"},
+            ]
+            candidates = [
+                {
+                    "id": "PROJECT-BASIC-REF-DOC-1-projectName-0001",
+                    "candidateId": "PROJECT-BASIC-REF-DOC-1-projectName-0001",
+                    "fieldKey": "projectName",
+                    "content": "公告段落里的长项目描述",
+                    "sourceFile": "招标文件.docx",
+                    "sourceDocumentId": "DOC-1",
+                    "section": "第一章 招标公告",
+                    "evidence": "公告段落里的长项目描述",
+                    "evidenceIds": ["DOC-1:L1"],
+                    "referenceTarget": "招标公告",
+                }
+            ]
+            decision = {
+                "schemaVersion": "bid-business-ai-decision-v1",
+                "task": "project_basics_reference_review",
+                "taskId": "project_basics_reference_review/part-001",
+                "accepted": [
+                    {
+                        "candidateId": "PROJECT-BASIC-REF-DOC-1-projectName-0001",
+                        "decision": "accepted",
+                        "fieldType": "projectBasics",
+                        "content": "公告段落里的长项目描述",
+                        "applicableScope": "全部标段",
+                        "sourceText": "招标文件.docx：第一章 招标公告",
+                        "reason": "AI 认为公告段落可作为项目名称候选。",
+                        "evidenceIds": ["DOC-1:L1"],
+                    }
+                ],
+                "rejected": [],
+                "needsReview": [],
+            }
+
+            updated = workflow._apply_project_basic_ai_decisions(project_basics, candidates, decision)
+
+            self.assertEqual(field_by_key(updated, "projectName")["value"], "前附表真实项目名称")
+            self.assertEqual(field_by_key(updated, "projectName")["sourcePriority"], "bidder_instruction")
+        finally:
+            sys.path.remove(str(scripts_dir))
+
     def test_bid_deadline_ignores_preface_reference_and_opening_time_preserves_minutes(self) -> None:
         script_path = self.runner_path()
 
@@ -1769,6 +2653,49 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
                     table.cell(row_index, col).text = text
             doc.save(source_path)
 
+            text_path = tmp_path / "bid-deadline-reference-and-opening-time.txt"
+            text_path.write_text(
+                "\n".join(
+                    [
+                        "第一章 招标公告",
+                        "5.1 递交截止时间：2026年1月26日15时00分",
+                        "开标时间：2026年1月26日16时00分",
+                        "第二章 投标人须知",
+                        "投标人须知前附表",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            section_tree_path = tmp_path / "business_section_tree.json"
+            section_tree_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-section-tree-v1",
+                        "documents": [{"id": "DOC-1", "name": source_path.name}],
+                        "nodes": [
+                            {
+                                "id": "DOC-1-S0001",
+                                "documentId": "DOC-1",
+                                "level": 1,
+                                "number": "第一章",
+                                "title": "第一章 招标公告",
+                                "path": ["第一章 招标公告"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 1,
+                                "contentStartBlockIndex": 2,
+                                "endBlockIndex": 3,
+                                "startLine": 1,
+                                "contentStartLine": 2,
+                                "endLine": 3,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
             output_path = tmp_path / "s1_structured_result.json"
             manifest_path = tmp_path / "s1_parse_manifest.json"
             manifest_path.write_text(
@@ -1778,11 +2705,13 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
                         "bidType": "商务标",
                         "parseProfile": "business",
                         "structuredResultPath": str(output_path),
+                        "businessSectionTreePath": str(section_tree_path),
                         "documents": [
                             {
                                 "id": "DOC-1",
                                 "name": source_path.name,
                                 "sourcePath": str(source_path),
+                                "textPath": str(text_path),
                             }
                         ],
                     },
@@ -1791,19 +2720,18 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            subprocess.run(
-                [sys.executable, str(script_path), "offline-fallback", str(manifest_path)],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+            review_plan = json.loads((tmp_path / "review_plan.json").read_text(encoding="utf-8"))
+            self.write_bid_deadline_ai_decision(tmp_path, review_plan, content="2026年1月26日15时00分")
+            subprocess.run([sys.executable, str(script_path), "finalize", str(manifest_path)], check=True, capture_output=True, text=True)
 
             payload = json.loads(output_path.read_text(encoding="utf-8"))
             project_basics = payload["structured"]["fieldGroups"]["projectBasics"]
             bid_deadline = field_by_key(project_basics, "bidDeadline")
             self.assertEqual(bid_deadline["value"], "2026-01-26 15:00")
             self.assertIn("递交截止时间", bid_deadline["evidence"])
-            self.assertNotIn("开标时间", bid_deadline["evidence"])
+            self.assertIn("开标时间", bid_deadline["evidence"])
+            self.assertEqual(bid_deadline["sourcePriority"], "ai_reference_section")
             self.assertEqual(payload["structured"]["projectDates"]["endDate"], "2026-01-26 15:00")
 
             self.assertEqual(field_by_key(project_basics, "projectName")["value"], "前附表结构化项目")
@@ -2568,6 +3496,605 @@ class BusinessParseSkillScriptTests(unittest.TestCase):
             self.assertGreaterEqual(len(field_groups["qualificationRequirements"]), 6)
             self.assertTrue(all(row.get("evidenceIds") for row in field_groups["qualificationRequirements"]))
             self.assertEqual(workflow["validationStatus"], "passed")
+
+    def test_business_parser_uses_section_tree_for_qualification_scope(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "章节树资格范围.md"
+            lines = [
+                "# 商务招标文件",
+                "目录",
+                "3. 供应商资格要求 ........ 3",
+                "第一章 招标公告",
+                "3. 供应商资格要求",
+                "3.1 供应商须为中华人民共和国境内合法注册的独立法人。",
+                "3.2 本项目不接受联合体投标。",
+                "第二章 投标人须知",
+                "1.4 投标人资格要求",
+                "1.4.1 见投标人须知前附表，本行不应进入资格候选范围。",
+                "3.5 资格审查资料",
+                "投标人须提供营业执照复印件，本行属于资料要求而非资格要求。",
+                "第三章 评标办法",
+                "商务评分标准",
+                "类似合同业绩每增加一项加2分，本行不应进入资格候选范围。",
+            ]
+            source_path.write_text("\n".join(lines), encoding="utf-8")
+            section_tree_path = tmp_path / "business_section_tree.json"
+            section_tree_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-section-tree-v1",
+                        "documents": [{"id": "DOC-1", "name": source_path.name}],
+                        "nodes": [
+                            {
+                                "id": "DOC-1-S0001",
+                                "documentId": "DOC-1",
+                                "level": 2,
+                                "number": "3.",
+                                "title": "3. 供应商资格要求",
+                                "path": ["第一章 招标公告", "3. 供应商资格要求"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 5,
+                                "contentStartBlockIndex": 6,
+                                "endBlockIndex": 7,
+                                "startLine": 5,
+                                "contentStartLine": 6,
+                                "endLine": 7,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest = {
+                "projectId": "PRJ-SECTION-TREE-QUAL",
+                "bidType": "商务标",
+                "parseProfile": "business",
+                "structuredResultPath": str(output_path),
+                "businessSectionTreePath": str(section_tree_path),
+                "documents": [
+                    {
+                        "id": "DOC-1",
+                        "name": source_path.name,
+                        "sourcePath": str(source_path),
+                        "textPath": str(source_path),
+                    }
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+
+            candidate_package = json.loads((tmp_path / "candidate_package.json").read_text(encoding="utf-8"))
+            qualification_candidates = candidate_package["candidates"]["qualification"]
+            self.assertEqual(len(qualification_candidates), 1)
+            qualification_slice = qualification_candidates[0]
+            slice_text = "\n".join(line["text"] for line in qualification_slice["lines"])
+            self.assertIn("合法注册的独立法人", slice_text)
+            self.assertIn("不接受联合体", slice_text)
+            self.assertNotIn("见投标人须知前附表", slice_text)
+            self.assertNotIn("营业执照复印件", slice_text)
+            self.assertNotIn("类似合同业绩", slice_text)
+            self.assertEqual(qualification_slice["startLine"], 5)
+            self.assertEqual(qualification_slice["endLine"], 7)
+            self.assertEqual(qualification_slice["section"], "3. 供应商资格要求")
+
+    def test_business_parser_prefers_main_qualification_node_when_section_tree_has_bidder_instruction_duplicate(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "章节树重复资格节点.md"
+            lines = [
+                "# 商务招标文件",
+                "第一章 招标公告",
+                "3. 投标人资格要求",
+                "3.1 投标人须为中华人民共和国境内合法注册的独立法人。",
+                "3.2 投标人须具有近三年同类设备供货业绩。",
+                "第二章 投标人须知",
+                "1. 总则",
+                "1.4 投标人资格要求",
+                "1.4.1 投标人应具备承担本项目的资格条件：见投标人须知前附表。",
+                "1.4.2 投标人须提供营业执照复印件，本行属于资料要求而非资格要求。",
+            ]
+            source_path.write_text("\n".join(lines), encoding="utf-8")
+            section_tree_path = tmp_path / "business_section_tree.json"
+            section_tree_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-section-tree-v1",
+                        "documents": [{"id": "DOC-1", "name": source_path.name}],
+                        "nodes": [
+                            {
+                                "id": "DOC-1-S0001",
+                                "documentId": "DOC-1",
+                                "level": 2,
+                                "number": "3.",
+                                "title": "3. 投标人资格要求",
+                                "path": ["第一章 招标公告", "3. 投标人资格要求"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 3,
+                                "contentStartBlockIndex": 4,
+                                "endBlockIndex": 5,
+                                "startLine": 3,
+                                "contentStartLine": 4,
+                                "endLine": 5,
+                            },
+                            {
+                                "id": "DOC-1-S0002",
+                                "documentId": "DOC-1",
+                                "level": 3,
+                                "number": "1.4",
+                                "title": "1.4 投标人资格要求",
+                                "path": ["第二章 投标人须知", "1. 总则", "1.4 投标人资格要求"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 8,
+                                "contentStartBlockIndex": 9,
+                                "endBlockIndex": 10,
+                                "startLine": 8,
+                                "contentStartLine": 9,
+                                "endLine": 10,
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest = {
+                "projectId": "PRJ-SECTION-TREE-QUAL-DUPLICATE",
+                "bidType": "商务标",
+                "parseProfile": "business",
+                "structuredResultPath": str(output_path),
+                "businessSectionTreePath": str(section_tree_path),
+                "documents": [
+                    {
+                        "id": "DOC-1",
+                        "name": source_path.name,
+                        "sourcePath": str(source_path),
+                        "textPath": str(source_path),
+                    }
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run(
+                [sys.executable, str(script_path), "offline-fallback", str(manifest_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            candidate_package = json.loads((tmp_path / "candidate_package.json").read_text(encoding="utf-8"))
+            qualification_candidates = candidate_package["candidates"]["qualification"]
+            self.assertEqual(len(qualification_candidates), 1)
+            self.assertEqual(qualification_candidates[0]["section"], "3. 投标人资格要求")
+            candidate_text = qualification_candidates[0]["content"]
+            self.assertIn("合法注册的独立法人", candidate_text)
+            self.assertIn("同类设备供货业绩", candidate_text)
+            self.assertNotIn("见投标人须知前附表", candidate_text)
+            self.assertNotIn("营业执照复印件", candidate_text)
+
+            rows = json.loads(output_path.read_text(encoding="utf-8"))["structured"]["fieldGroups"]["qualificationRequirements"]
+            joined = "\n".join(row["content"] for row in rows)
+            self.assertEqual({row["section"] for row in rows}, {"3. 投标人资格要求"})
+            self.assertIn("合法注册的独立法人", joined)
+            self.assertIn("同类设备供货业绩", joined)
+            self.assertNotIn("见投标人须知前附表", joined)
+            self.assertNotIn("营业执照复印件", joined)
+
+    def test_business_contract_uses_shared_selector_for_duplicate_qualification_nodes(self) -> None:
+        scripts_dir = self.runner_path().parent
+        sys.path.insert(0, str(scripts_dir))
+        try:
+            contract = importlib.import_module("business_contract")
+            section_tree = {
+                "schemaVersion": "bid-business-section-tree-v1",
+                "nodes": [
+                    {
+                        "id": "DOC-1-S0001",
+                        "documentId": "DOC-1",
+                        "level": 2,
+                        "number": "3.",
+                        "title": "3. 投标人资格要求",
+                        "path": ["第一章 招标公告", "3. 投标人资格要求"],
+                        "startLine": 3,
+                        "endLine": 5,
+                    },
+                    {
+                        "id": "DOC-1-S0002",
+                        "documentId": "DOC-1",
+                        "level": 3,
+                        "number": "1.4",
+                        "title": "1.4 投标人资格要求",
+                        "path": ["第二章 投标人须知", "1. 总则", "1.4 投标人资格要求"],
+                        "startLine": 8,
+                        "endLine": 10,
+                    },
+                ],
+            }
+
+            nodes = contract._qualification_section_tree_nodes(section_tree, "DOC-1")
+
+            self.assertEqual([node["title"] for node in nodes], ["3. 投标人资格要求"])
+        finally:
+            sys.path.remove(str(scripts_dir))
+
+    def test_business_parser_does_not_duplicate_qualification_child_nodes_from_section_tree_path(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "章节树资格子节点.md"
+            lines = [
+                "# 商务采购文件",
+                "第一章 采购公告",
+                "3. 供应商资格要求",
+                "3.1 通用资格条件",
+                "供应商须为中华人民共和国境内合法注册的独立法人。",
+                "3.2 专用资格条件",
+                "本项目不接受联合体投标。",
+                "第二章 供应商须知",
+            ]
+            source_path.write_text("\n".join(lines), encoding="utf-8")
+            section_tree_path = tmp_path / "business_section_tree.json"
+            section_tree_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-section-tree-v1",
+                        "documents": [{"id": "DOC-1", "name": source_path.name}],
+                        "nodes": [
+                            {
+                                "id": "DOC-1-S0001",
+                                "documentId": "DOC-1",
+                                "level": 2,
+                                "number": "3.",
+                                "title": "3. 供应商资格要求",
+                                "path": ["第一章 采购公告", "3. 供应商资格要求"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 3,
+                                "contentStartBlockIndex": 4,
+                                "endBlockIndex": 7,
+                                "startLine": 3,
+                                "contentStartLine": 4,
+                                "endLine": 7,
+                            },
+                            {
+                                "id": "DOC-1-S0002",
+                                "documentId": "DOC-1",
+                                "level": 3,
+                                "number": "3.1",
+                                "title": "3.1 通用资格条件",
+                                "path": ["第一章 采购公告", "3. 供应商资格要求", "3.1 通用资格条件"],
+                                "source": "heading",
+                                "confidence": 0.93,
+                                "startBlockIndex": 4,
+                                "contentStartBlockIndex": 5,
+                                "endBlockIndex": 5,
+                                "startLine": 4,
+                                "contentStartLine": 5,
+                                "endLine": 5,
+                            },
+                            {
+                                "id": "DOC-1-S0003",
+                                "documentId": "DOC-1",
+                                "level": 3,
+                                "number": "3.2",
+                                "title": "3.2 专用资格条件",
+                                "path": ["第一章 采购公告", "3. 供应商资格要求", "3.2 专用资格条件"],
+                                "source": "heading",
+                                "confidence": 0.93,
+                                "startBlockIndex": 6,
+                                "contentStartBlockIndex": 7,
+                                "endBlockIndex": 7,
+                                "startLine": 6,
+                                "contentStartLine": 7,
+                                "endLine": 7,
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest = {
+                "projectId": "PRJ-SECTION-TREE-QUAL-CHILDREN",
+                "bidType": "商务标",
+                "parseProfile": "business",
+                "structuredResultPath": str(output_path),
+                "businessSectionTreePath": str(section_tree_path),
+                "documents": [
+                    {
+                        "id": "DOC-1",
+                        "name": source_path.name,
+                        "sourcePath": str(source_path),
+                        "textPath": str(source_path),
+                    }
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+
+            candidate_package = json.loads((tmp_path / "candidate_package.json").read_text(encoding="utf-8"))
+            qualification_candidates = candidate_package["candidates"]["qualification"]
+            self.assertEqual(len(qualification_candidates), 1)
+            self.assertEqual(qualification_candidates[0]["section"], "3. 供应商资格要求")
+
+    def test_business_parser_final_qualification_rows_use_section_tree_scope(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "章节树最终资格范围.md"
+            lines = [
+                "# 商务采购文件",
+                "目录",
+                "3. 供应商资格要求 ........ 3",
+                "第一章 采购公告",
+                "3. 供应商资格要求",
+                "3.1 供应商须为中华人民共和国境内合法注册的独立法人。",
+                "3.2 本项目不接受联合体投标。",
+                "（二）投标人资格要求相关证明材料",
+                "投标人须提供近三年业绩证明材料。",
+                "第二章 投标人须知",
+                "1.4 投标人资格要求",
+                "1.4.1 投标人应具备承担本项目的资格条件：见投标人须知前附表。",
+                "3.5 资格审查资料",
+                "投标人须提供营业执照复印件，本行属于资料要求而非资格要求。",
+                "第三章 评审办法",
+                "商务评分标准",
+                "类似合同业绩每增加一项加2分，本行不应进入资格结果。",
+            ]
+            source_path.write_text("\n".join(lines), encoding="utf-8")
+            section_tree_path = tmp_path / "business_section_tree.json"
+            section_tree_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-section-tree-v1",
+                        "documents": [{"id": "DOC-1", "name": source_path.name}],
+                        "nodes": [
+                            {
+                                "id": "DOC-1-S0001",
+                                "documentId": "DOC-1",
+                                "level": 2,
+                                "number": "3.",
+                                "title": "3. 供应商资格要求",
+                                "path": ["第一章 采购公告", "3. 供应商资格要求"],
+                                "source": "heading",
+                                "confidence": 0.95,
+                                "startBlockIndex": 5,
+                                "contentStartBlockIndex": 6,
+                                "endBlockIndex": 7,
+                                "startLine": 5,
+                                "contentStartLine": 6,
+                                "endLine": 7,
+                            },
+                            {
+                                "id": "DOC-1-S0002",
+                                "documentId": "DOC-1",
+                                "level": 2,
+                                "number": "（二）",
+                                "title": "（二）投标人资格要求相关证明材料",
+                                "path": ["第一章 采购公告", "（二）投标人资格要求相关证明材料"],
+                                "source": "heading",
+                                "confidence": 0.9,
+                                "startBlockIndex": 8,
+                                "contentStartBlockIndex": 9,
+                                "endBlockIndex": 9,
+                                "startLine": 8,
+                                "contentStartLine": 9,
+                                "endLine": 9,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest = {
+                "projectId": "PRJ-SECTION-TREE-FINAL-QUAL",
+                "bidType": "商务标",
+                "parseProfile": "business",
+                "structuredResultPath": str(output_path),
+                "businessSectionTreePath": str(section_tree_path),
+                "documents": [
+                    {
+                        "id": "DOC-1",
+                        "name": source_path.name,
+                        "sourcePath": str(source_path),
+                        "textPath": str(source_path),
+                    }
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run(
+                [sys.executable, str(script_path), "offline-fallback", str(manifest_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            rows = payload["structured"]["fieldGroups"]["qualificationRequirements"]
+            contents = [row["content"] for row in rows]
+            joined = "\n".join(contents)
+
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(any("合法注册的独立法人" in text for text in contents))
+            self.assertTrue(any("不接受联合体投标" in text for text in contents))
+            self.assertNotIn("业绩证明材料", joined)
+            self.assertNotIn("见投标人须知前附表", joined)
+            self.assertNotIn("营业执照复印件", joined)
+            self.assertNotIn("类似合同业绩", joined)
+            self.assertEqual({row["section"] for row in rows}, {"3. 供应商资格要求"})
+
+    def test_business_parser_uses_section_tree_for_supplier_instruction_table(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "供应商须知前附表.md"
+            lines = [
+                "# 商务采购文件",
+                "第一章 采购公告",
+                "第二章 供应商须知",
+                "供应商须知前附表",
+                "| 条款号 | 条款名称 | 编列内容 |",
+                "| --- | --- | --- |",
+                "| 1.1.2 | 采购人 | 示例采购人 |",
+                "| 4.2.1 | 响应文件递交截止时间 | 2026年3月8日09时00分 |",
+                "第三章 评审办法",
+            ]
+            source_path.write_text("\n".join(lines), encoding="utf-8")
+            section_tree_path = tmp_path / "business_section_tree.json"
+            section_tree_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-section-tree-v1",
+                        "documents": [{"id": "DOC-1", "name": source_path.name}],
+                        "nodes": [
+                            {
+                                "id": "DOC-1-S0001",
+                                "documentId": "DOC-1",
+                                "level": 2,
+                                "number": "",
+                                "title": "供应商须知前附表",
+                                "path": ["第二章 供应商须知", "供应商须知前附表"],
+                                "source": "heading",
+                                "confidence": 0.96,
+                                "startBlockIndex": 4,
+                                "contentStartBlockIndex": 5,
+                                "endBlockIndex": 8,
+                                "startLine": 4,
+                                "contentStartLine": 5,
+                                "endLine": 8,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest = {
+                "projectId": "PRJ-SECTION-TREE-SUPPLIER-INSTRUCTIONS",
+                "bidType": "商务标",
+                "parseProfile": "business",
+                "structuredResultPath": str(output_path),
+                "businessSectionTreePath": str(section_tree_path),
+                "documents": [
+                    {
+                        "id": "DOC-1",
+                        "name": source_path.name,
+                        "sourcePath": str(source_path),
+                        "textPath": str(source_path),
+                    }
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run([sys.executable, str(script_path), "offline-fallback", str(manifest_path)], check=True, capture_output=True, text=True)
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            rows = payload["structured"]["fieldGroups"]["bidderInstructions"]
+            self.assertEqual(len(rows), 2)
+            self.assertEqual({row["section"] for row in rows}, {"供应商须知前附表"})
+            self.assertEqual(rows[0]["clauseName"], "采购人")
+            self.assertEqual(rows[1]["clauseNo"], "4.2.1")
+            candidate_package = json.loads((tmp_path / "candidate_package.json").read_text(encoding="utf-8"))
+            deterministic_rows = candidate_package["deterministicExtracts"]["bidderInstructions"]
+            self.assertEqual({row["tableTitle"] for row in deterministic_rows}, {"供应商须知前附表"})
+
+    def test_business_parser_binds_docx_scoring_table_section_from_section_tree(self) -> None:
+        script_path = self.runner_path()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "章节树商务评分表.docx"
+            doc = Document()
+            doc.add_paragraph("第三章 评审办法")
+            doc.add_paragraph("商务评分标准")
+            doc.add_paragraph("以下表格按项目实际情况进行评分。")
+            scoring_table = doc.add_table(rows=2, cols=4)
+            for col, text in enumerate(["序号", "评审因素", "分值", "评审标准"]):
+                scoring_table.cell(0, col).text = text
+            for col, text in enumerate(["1", "企业业绩", "20", "近三年类似项目业绩满足要求得20分。"]):
+                scoring_table.cell(1, col).text = text
+            doc.save(source_path)
+            section_tree_path = tmp_path / "business_section_tree.json"
+            section_tree_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-section-tree-v1",
+                        "documents": [{"id": "DOC-1", "name": source_path.name}],
+                        "nodes": [
+                            {
+                                "id": "DOC-1-S0001",
+                                "documentId": "DOC-1",
+                                "level": 2,
+                                "number": "",
+                                "title": "商务评分标准",
+                                "path": ["第三章 评审办法", "商务评分标准"],
+                                "source": "heading",
+                                "confidence": 0.96,
+                                "startBlockIndex": 2,
+                                "contentStartBlockIndex": 3,
+                                "endBlockIndex": 4,
+                                "startLine": 2,
+                                "contentStartLine": 3,
+                                "endLine": 4,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output_path = tmp_path / "s1_structured_result.json"
+            manifest_path = tmp_path / "s1_parse_manifest.json"
+            manifest = {
+                "projectId": "PRJ-SECTION-TREE-SCORING-TABLE",
+                "bidType": "商务标",
+                "parseProfile": "business",
+                "structuredResultPath": str(output_path),
+                "businessSectionTreePath": str(section_tree_path),
+                "documents": [
+                    {
+                        "id": "DOC-1",
+                        "name": source_path.name,
+                        "sourcePath": str(source_path),
+                    }
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run([sys.executable, str(script_path), str(manifest_path)], check=True, capture_output=True, text=True)
+
+            candidate_package = json.loads((tmp_path / "candidate_package.json").read_text(encoding="utf-8"))
+            table = next(item for item in candidate_package["tables"] if item["headers"] == ["序号", "评审因素", "分值", "评审标准"])
+            self.assertEqual(table["section"], "商务评分标准")
+            self.assertEqual(table["tableType"], "business")
+            scoring_rows = candidate_package["deterministicExtracts"]["scoringTables"]["business"]
+            self.assertEqual(len(scoring_rows), 1)
+            self.assertEqual(scoring_rows[0]["section"], "商务评分标准")
 
     def test_business_parser_uses_external_ai_decision_source(self) -> None:
         script_path = self.runner_path()

@@ -298,10 +298,21 @@ def _extract_table_field_items(
 
 
 BUSINESS_SCORING_EXACT_KEYWORD = "商务评分标准"
-SCORING_ITEM_HEADERS = ("评分项", "评审因素", "评审项目", "项目", "因素")
-SCORING_SCORE_HEADERS = ("分值", "满分", "权重", "标准分")
-SCORING_POINT_VALUE_HEADERS = ("分值", "满分", "标准分")
-SCORING_STANDARD_HEADERS = ("得分点", "评分标准", "评分办法", "评审标准", "标准")
+BUSINESS_SCORING_TITLE_KEYWORDS = (
+    "商务评分标准",
+    "商务评分细则",
+    "商务部分评审细则",
+    "商务部分评分细则",
+    "商务评审细则",
+    "商务评审标准",
+    "商务部分评审评分标准",
+)
+SCORING_ITEM_HEADERS = ("评分项", "评审因素", "评审项目", "评审项目", "项目", "因素")
+SCORING_SCORE_HEADERS = ("分值", "分 值", "满分", "权重", "标准分")
+SCORING_POINT_VALUE_HEADERS = ("分值", "分 值", "满分", "标准分")
+SCORING_STANDARD_HEADERS = ("得分点", "评分细则", "评分标准", "评分办法", "评审标准", "标准", "描述")
+NON_BUSINESS_SCORING_KEYWORDS = ("技术", "报价", "价格", "投标报价", "其他因素", "符合性", "热电", "LCOE", "lcoe")
+SCORING_NOISE_KEYWORDS = ("分值构成", "权重比例", "评标基准价", "偏差率", "推荐原则", "报价评审", "价格评审", "见上表")
 
 
 def _text_has_concrete_score(text: str) -> bool:
@@ -325,6 +336,15 @@ def _row_text(row: list[str]) -> str:
     return _clean(" ".join(_clean(cell) for cell in row if _clean(cell)))
 
 
+def _is_business_scoring_title(text: str) -> bool:
+    normalized = _clean(text)
+    if not normalized:
+        return False
+    if any(keyword in normalized for keyword in BUSINESS_SCORING_TITLE_KEYWORDS):
+        return not any(keyword in normalized for keyword in NON_BUSINESS_SCORING_KEYWORDS)
+    return "商务" in normalized and ("评分" in normalized or "评审" in normalized) and "细则" in normalized
+
+
 def _has_scoring_table_columns(rows: list[list[str]]) -> bool:
     for row in rows[:5]:
         joined = "".join(_clean(cell) for cell in row)
@@ -338,13 +358,26 @@ def _has_scoring_table_columns(rows: list[list[str]]) -> bool:
     return False
 
 
+def _has_strong_scoring_standard_columns(rows: list[list[str]]) -> bool:
+    for row in rows[:5]:
+        joined = "".join(_clean(cell) for cell in row)
+        if not joined:
+            continue
+        has_item = any(keyword in joined for keyword in SCORING_ITEM_HEADERS)
+        has_score = any(keyword in joined for keyword in SCORING_SCORE_HEADERS)
+        has_standard = any(keyword in joined for keyword in ("得分点", "评分细则", "评分标准", "评分办法"))
+        if has_item and has_score and has_standard:
+            return True
+    return False
+
+
 def _business_scoring_table(title: str, rows: list[list[str]]) -> bool:
     title_text = _clean(title)
-    if BUSINESS_SCORING_EXACT_KEYWORD in title_text and _has_scoring_table_columns(rows):
+    if _is_business_scoring_title(title_text) and _has_scoring_table_columns(rows):
         return True
-    if not _has_scoring_table_columns(rows):
+    if not _has_strong_scoring_standard_columns(rows):
         return False
-    return any(BUSINESS_SCORING_EXACT_KEYWORD in _row_text(row) for row in rows[1:])
+    return any(_is_business_scoring_title(_row_text(row)) for row in rows[1:])
 
 
 def _find_col(headers: list[str], aliases: tuple[str, ...]) -> int:
@@ -372,14 +405,31 @@ def _make_evidence(headers: list[str], row: list[str]) -> str:
     return "；".join(parts)
 
 
+def _is_non_business_scoring_text(text: str) -> bool:
+    normalized = _clean(text)
+    return bool(normalized) and any(keyword in normalized for keyword in NON_BUSINESS_SCORING_KEYWORDS) and ("评分" in normalized or "评审" in normalized or "分值" in normalized)
+
+
+def _is_scoring_noise_row(text: str) -> bool:
+    normalized = _clean(text)
+    return any(keyword in normalized for keyword in SCORING_NOISE_KEYWORDS)
+
+
 def _scoring_group_from_row(row: list[str], current_group: str = "") -> str:
     text = _row_text(row[:2])
-    clause_no = _clean(row[0] if row else "").replace("（", "(").replace("）", ")").replace(" ", "")
-    if re.search(r"2\.2\.4\(?1\)?", clause_no) or BUSINESS_SCORING_EXACT_KEYWORD in text or ("商务" in text and any(keyword in text for keyword in ("评分", "评审", "分值"))):
+    if _is_scoring_noise_row(text):
+        return ""
+    if _is_non_business_scoring_text(text):
+        if "技术" in text:
+            return "technical"
+        if "符合性" in text:
+            return "compliance"
+        return "price"
+    if _is_business_scoring_title(text) or ("商务" in text and any(keyword in text for keyword in ("评分", "评审"))):
         return "business"
-    if re.search(r"2\.2\.4\(?2\)?", clause_no) or ("技术" in text and ("评分" in text or "评审" in text)):
+    if "技术" in text and ("评分" in text or "评审" in text):
         return "technical"
-    if re.search(r"2\.2\.4\(?3\)?", clause_no) or (("报价" in text or "价格" in text or "度电成本" in text) and ("评分" in text or "评审" in text)):
+    if ("报价" in text or "价格" in text or "度电成本" in text) and ("评分" in text or "评审" in text):
         return "price"
     if "符合性" in text and ("审查" in text or "评审" in text):
         return "compliance"
@@ -400,15 +450,15 @@ def _parse_business_scoring_rows(
     header_index = 0
     for index, row in enumerate(cleaned_rows[:5]):
         joined = "".join(row)
-        if any(keyword in joined for keyword in ("评分项", "评审因素", "分值", "评分标准", "得分点")):
+        if any(keyword in joined for keyword in (*SCORING_ITEM_HEADERS, *SCORING_SCORE_HEADERS, *SCORING_STANDARD_HEADERS)):
             header_index = index
             break
     headers = cleaned_rows[header_index]
     data_rows = cleaned_rows[header_index + 1 :]
     order_col = _find_col(headers, ("序号", "条款号", "编号"))
-    item_col = _find_col(headers, ("评分项", "评审因素", "评审项目", "项目", "因素"))
-    score_col = _find_col(headers, ("分值", "满分", "权重", "标准分"))
-    point_col = _find_col(headers, ("得分点", "评分标准", "评分办法", "评审标准", "标准", "内容"))
+    item_col = _find_col(headers, SCORING_ITEM_HEADERS)
+    score_col = _find_col(headers, SCORING_POINT_VALUE_HEADERS)
+    point_col = _find_col(headers, (*SCORING_STANDARD_HEADERS, "内容"))
     proof_col = _find_col(headers, ("证明材料要求", "证明材料", "证明文件", "材料要求", "资料要求"))
 
     if item_col == -1:
@@ -418,7 +468,7 @@ def _parse_business_scoring_rows(
 
     parsed: list[dict[str, Any]] = []
     last_item = ""
-    current_group = "business" if BUSINESS_SCORING_EXACT_KEYWORD in _clean(section) else ""
+    current_group = "business" if _is_business_scoring_title(section) else ""
     for offset, row in enumerate(data_rows, start=header_index + 2):
         current_group = _scoring_group_from_row(row, current_group)
         if current_group != "business":

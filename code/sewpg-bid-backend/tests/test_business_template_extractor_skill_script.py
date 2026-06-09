@@ -2131,6 +2131,60 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
             test_case = self
 
             def fake_subprocess_run(args, **kwargs):  # type: ignore[no-untyped-def]
+                if len(args) >= 4 and str(args[1]).endswith("btplbound_workflow.py"):
+                    command = str(args[2])
+                    manifest_path = Path(args[3])
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    calls.append({"command": command})
+                    output_dir = Path(manifest["outputDir"])
+                    document_output = output_dir / "DOC-1"
+                    decision_path = document_output / "llm_boundary_decisions.json"
+
+                    class Completed:
+                        returncode = 0
+                        stderr = ""
+
+                        def __init__(self, stdout: str) -> None:
+                            self.stdout = stdout
+
+                    if command == "status":
+                        ready = decision_path.is_file()
+                        return Completed(
+                            json.dumps(
+                                {
+                                    "schemaVersion": "bid-business-template-extractor-btplbound-v1",
+                                    "status": "ready" if ready else "waiting",
+                                    "candidate": {
+                                        "total": 1,
+                                        "decided": 1 if ready else 0,
+                                        "batchCount": 1,
+                                        "decidedBatchCount": 1 if ready else 0,
+                                        "pendingBatchCount": 0 if ready else 1,
+                                    },
+                                    "boundary": {
+                                        "total": 1 if ready else 0,
+                                        "decided": 1 if ready else 0,
+                                        "batchCount": 1 if ready else 0,
+                                        "decidedBatchCount": 1 if ready else 0,
+                                        "pendingBatchCount": 0,
+                                    },
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
+                    if command == "finalize":
+                        return Completed(
+                            json.dumps(
+                                {
+                                    "schemaVersion": "bid-business-template-extractor-boundary-decisions-v1",
+                                    "decisionFiles": [str(decision_path)],
+                                    "summary": {"documentCount": 1, "decisionCount": 1, "acceptedTemplateCount": 1},
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
+                    return Completed("{}")
+
                 manifest_path = Path(args[-1])
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 calls.append(
@@ -2241,8 +2295,9 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
                 )
 
         self.assertEqual(warning, "")
-        self.assertEqual([call["stage"] for call in calls], ["prepare", "finalize"])
-        self.assertEqual([call["fallbackMode"] for call in calls], [None, None])
+        stage_calls = [call for call in calls if "stage" in call]
+        self.assertEqual([call["stage"] for call in stage_calls], ["prepare", "finalize"])
+        self.assertEqual([call["fallbackMode"] for call in stage_calls], [None, None])
         self.assertEqual(len(appendices), 1)
         self.assertEqual(appendices[0]["extractionMode"], "business_template_extractor_skill")
         self.assertFalse((payload or {})["quality"]["scriptFallbackUsed"])
@@ -2255,6 +2310,49 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
             calls: list[dict[str, object]] = []
 
             def fake_subprocess_run(args, **kwargs):  # type: ignore[no-untyped-def]
+                if len(args) >= 4 and str(args[1]).endswith("btplbound_workflow.py"):
+                    command = str(args[2])
+                    manifest_path = Path(args[3])
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    calls.append({"command": command})
+                    output_dir = Path(manifest["outputDir"])
+                    document_output = output_dir / "DOC-1"
+                    decision_path = document_output / "llm_boundary_decisions.json"
+
+                    class Completed:
+                        returncode = 0
+                        stderr = ""
+
+                        def __init__(self, stdout: str) -> None:
+                            self.stdout = stdout
+
+                    if command == "status":
+                        ready = decision_path.is_file()
+                        return Completed(
+                            json.dumps(
+                                {
+                                    "schemaVersion": "bid-business-template-extractor-btplbound-v1",
+                                    "status": "ready" if ready else "waiting",
+                                    "candidate": {
+                                        "total": 1,
+                                        "decided": 1 if ready else 0,
+                                        "batchCount": 1,
+                                        "decidedBatchCount": 1 if ready else 0,
+                                        "pendingBatchCount": 0 if ready else 1,
+                                    },
+                                    "boundary": {
+                                        "total": 0,
+                                        "decided": 0,
+                                        "batchCount": 0,
+                                        "decidedBatchCount": 0,
+                                        "pendingBatchCount": 0,
+                                    },
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
+                    return Completed("{}")
+
                 manifest_path = Path(args[-1])
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 calls.append({"stage": manifest.get("stage"), "fallbackMode": manifest.get("fallbackMode")})
@@ -2308,10 +2406,201 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
 
         self.assertEqual(appendices, [])
         self.assertIn("未识别到模板", warning)
-        self.assertEqual([call["fallbackMode"] for call in calls], [None, None])
+        stage_calls = [call for call in calls if "stage" in call]
+        self.assertEqual([call["fallbackMode"] for call in stage_calls], [None, None])
         self.assertFalse((payload or {})["quality"]["scriptFallbackUsed"])
-        self.assertEqual((payload or {})["quality"]["agentFallbackReason"], "agent stopped before finalize")
+        self.assertIn("agent stopped before finalize", (payload or {})["quality"]["agentFallbackReason"])
         self.assertTrue(any(item["code"] == "template_boundary_agent_failed" for item in (payload or {})["warnings"]))
+
+    def test_run_extractor_retries_boundary_agent_and_resumes_existing_batches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            source = project_dir / "resume-agent.docx"
+            source.write_bytes(b"fake-docx")
+            calls: list[dict[str, object]] = []
+            agent_prompts: list[str] = []
+
+            def completed(stdout: str = "{}", returncode: int = 0, stderr: str = ""):
+                class Completed:
+                    pass
+
+                item = Completed()
+                item.returncode = returncode
+                item.stdout = stdout
+                item.stderr = stderr
+                return item
+
+            def fake_btplbound_status(manifest_path: Path) -> dict[str, object]:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                output_dir = Path(manifest["outputDir"])
+                document_output = output_dir / "DOC-1"
+                partial_batch = document_output / "agent_decision_batches" / "candidate_decision_batch_0001.json"
+                final_decisions = document_output / "llm_boundary_decisions.json"
+                if final_decisions.is_file():
+                    return {
+                        "schemaVersion": "bid-business-template-extractor-btplbound-v1",
+                        "status": "ready",
+                        "candidate": {"total": 16, "decided": 16, "batchCount": 2, "decidedBatchCount": 2, "pendingBatchCount": 0},
+                        "boundary": {"total": 1, "decided": 1, "batchCount": 1, "decidedBatchCount": 1, "pendingBatchCount": 0},
+                    }
+                decided_batches = 1 if partial_batch.is_file() else 0
+                decided = 8 if partial_batch.is_file() else 0
+                return {
+                    "schemaVersion": "bid-business-template-extractor-btplbound-v1",
+                    "status": "waiting",
+                    "candidate": {"total": 16, "decided": decided, "batchCount": 2, "decidedBatchCount": decided_batches, "pendingBatchCount": 2 - decided_batches},
+                    "boundary": {"total": 0, "decided": 0, "batchCount": 0, "decidedBatchCount": 0, "pendingBatchCount": 0},
+                }
+
+            def fake_subprocess_run(args, **kwargs):  # type: ignore[no-untyped-def]
+                if len(args) >= 4 and str(args[1]).endswith("btplbound_workflow.py"):
+                    command = str(args[2])
+                    manifest_path = Path(args[3])
+                    calls.append({"command": command})
+                    if command == "status":
+                        return completed(json.dumps(fake_btplbound_status(manifest_path), ensure_ascii=False))
+                    if command == "finalize":
+                        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        output_dir = Path(manifest["outputDir"])
+                        document_output = output_dir / "DOC-1"
+                        decision_path = document_output / "llm_boundary_decisions.json"
+                        if not decision_path.is_file():
+                            decision_path.write_text(
+                                json.dumps(
+                                    {
+                                        "schemaVersion": "bid-business-template-extractor-boundary-decisions-v1",
+                                        "decider": "executing_agent",
+                                        "decisions": [],
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                                encoding="utf-8",
+                            )
+                        return completed(
+                            json.dumps(
+                                {
+                                    "schemaVersion": "bid-business-template-extractor-boundary-decisions-v1",
+                                    "decisionFiles": [str(decision_path)],
+                                    "summary": {"documentCount": 1, "decisionCount": 1, "acceptedTemplateCount": 1},
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
+                    return completed()
+
+                manifest_path = Path(args[-1])
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                calls.append({"stage": manifest.get("stage"), "fallbackMode": manifest.get("fallbackMode")})
+                output_dir = Path(manifest["outputDir"])
+                document_output = output_dir / "DOC-1"
+                document_output.mkdir(parents=True, exist_ok=True)
+                if manifest["stage"] == "prepare":
+                    (document_output / "candidate_templates.json").write_text(
+                        json.dumps(
+                            [
+                                {"candidateId": "CAND-0001", "candidateBlockId": 10, "text": "Bid Letter"},
+                                {"candidateId": "CAND-0002", "candidateBlockId": 20, "text": "Authorization"},
+                            ],
+                            ensure_ascii=False,
+                        ),
+                        encoding="utf-8",
+                    )
+                    (document_output / "candidate_windows.json").write_text("[]", encoding="utf-8")
+                    (output_dir / "business_template_extraction.json").write_text(
+                        json.dumps({"stage": "prepare", "documents": [{"id": "DOC-1", "outputDir": str(document_output)}]}),
+                        encoding="utf-8",
+                    )
+                else:
+                    self.assertNotEqual(manifest.get("fallbackMode"), "script")
+                    if (document_output / "llm_boundary_decisions.json").is_file():
+                        (output_dir / "business_template_extraction.json").write_text(
+                            json.dumps(
+                                {
+                                    "stage": "finalize",
+                                    "outputDir": str(output_dir),
+                                    "appendices": [
+                                        {
+                                            "id": "APPX-0001",
+                                            "title": "Bid Letter",
+                                            "artifactType": "business_attachment_template",
+                                            "docxPath": str(document_output / "templates" / "TPL-0001.docx"),
+                                            "sourceDocumentId": "DOC-1",
+                                        }
+                                    ],
+                                    "quality": {"scriptFallbackUsed": False},
+                                },
+                                ensure_ascii=False,
+                            ),
+                            encoding="utf-8",
+                        )
+                    else:
+                        (output_dir / "business_template_extraction.json").write_text(
+                            json.dumps({"stage": "finalize", "outputDir": str(output_dir), "appendices": [], "warnings": [], "quality": {"scriptFallbackUsed": False}}),
+                            encoding="utf-8",
+                        )
+                return completed()
+
+            def fake_agent(_client, prompt: str):  # type: ignore[no-untyped-def]
+                agent_prompts.append(prompt)
+                document_output = project_dir / "business_template_extraction" / "DOC-1"
+                batch_dir = document_output / "agent_decision_batches"
+                batch_dir.mkdir(parents=True, exist_ok=True)
+                if len(agent_prompts) == 1:
+                    (batch_dir / "candidate_decision_batch_0001.json").write_text(
+                        json.dumps({"phase": "candidate", "batchNo": 1, "decisions": [{"candidateId": "CAND-0001"}]}, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    raise RuntimeError("opencode disconnected after candidate batch 1")
+
+                self.assertTrue((batch_dir / "candidate_decision_batch_0001.json").is_file())
+                self.assertIn("btplbound status", prompt)
+                (document_output / "llm_boundary_decisions.json").write_text(
+                    json.dumps(
+                        {
+                            "schemaVersion": "bid-business-template-extractor-boundary-decisions-v1",
+                            "decider": "executing_agent",
+                            "decisions": [
+                                {
+                                    "candidateId": "CAND-0001",
+                                    "candidateBlockId": 10,
+                                    "isTemplateStart": True,
+                                    "headingRole": "template_start",
+                                    "templateTitle": "Bid Letter",
+                                    "templateType": "bid_letter",
+                                    "startBlockId": 10,
+                                    "endBlockId": 19,
+                                    "confidence": 0.95,
+                                    "reason": "resumed from existing batch decisions",
+                                    "needsReview": False,
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                return {"opencodeOutput": {"sessionId": "ses-resumed", "status": "received"}}
+
+            with (
+                patch("app.services.business_template_extractor.subprocess.run", side_effect=fake_subprocess_run),
+                patch(
+                    "app.services.business_template_extractor.OpencodeClient.decide_business_template_boundaries_with_trace",
+                    new=fake_agent,
+                ),
+            ):
+                appendices, payload, warning = run_business_template_extractor(
+                    project_id="PRJ-1",
+                    documents=[{"id": "DOC-1", "name": "resume-agent.docx", "sourcePath": str(source)}],
+                    project_dir=project_dir,
+                )
+
+        self.assertEqual(warning, "")
+        self.assertEqual(len(agent_prompts), 2)
+        self.assertEqual(len(appendices), 1)
+        self.assertEqual(appendices[0]["title"], "Bid Letter")
+        self.assertFalse((payload or {})["quality"]["scriptFallbackUsed"])
+        self.assertEqual((payload or {})["opencodeOutput"]["sessionId"], "ses-resumed")
+        self.assertGreaterEqual([call.get("command") for call in calls].count("status"), 2)
 
     def test_convert_extractor_appendices_preserves_docx_path_for_prepare_outputs(self) -> None:
         payload = {

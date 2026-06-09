@@ -19,6 +19,7 @@ from xml.etree import ElementTree as ET
 from docx import Document
 
 from app.core.config import settings
+from app.services.business_section_tree import write_business_section_tree
 from app.services.business_template_extractor import run_business_template_extractor
 from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
@@ -289,11 +290,11 @@ SCOPE_PATTERN = re.compile(
 CLAUSE_PATTERN = re.compile(r"^(?:\d+(?:\.\d+){1,4}|[（(][一二三四五六七八九十\d]+[）)]|[一二三四五六七八九十\d]+[、.．])\s*")
 
 BUSINESS_CORE_PROJECT_FIELDS: tuple[FieldSpec, ...] = (
-    FieldSpec("projectName", "项目名称", ("项目名称", "招标项目名称")),
-    FieldSpec("tenderNo", "招标编号", ("招标编号", "项目编号", "招标文件编号")),
-    FieldSpec("tenderer", "招标人", ("招标人", "业主", "建设单位", "项目单位")),
-    FieldSpec("tenderAgency", "招标代理机构", ("招标代理机构", "代理机构")),
-    FieldSpec("bidDeadline", "递交截止时间", ("递交截止时间", "投标截止时间", "投标文件递交截止时间", "提交截止时间")),
+    FieldSpec("projectName", "项目名称", ("项目名称", "招标项目名称", "采购项目名称")),
+    FieldSpec("tenderNo", "招标编号", ("招标编号", "项目编号", "招标文件编号", "采购编号", "采购项目编号")),
+    FieldSpec("tenderer", "招标人", ("招标人", "采购人", "采购单位", "业主", "建设单位", "项目单位")),
+    FieldSpec("tenderAgency", "招标代理机构", ("招标代理机构", "采购代理机构", "代理机构")),
+    FieldSpec("bidDeadline", "递交截止时间", ("递交截止时间", "投标截止时间", "投标文件递交截止时间", "提交截止时间", "响应文件提交截止时间", "响应截止时间", "提交响应文件截止时间")),
 )
 
 COMMERCIAL_REJECTION_KEYWORDS = (
@@ -707,13 +708,64 @@ def _is_reference_only_value(value: str) -> bool:
     normalized = re.sub(r"\s+", "", str(value or ""))
     if not normalized:
         return False
-    return normalized in {
+    if normalized in {
+        "见招标公告",
+        "见采购公告",
+        "详见采购公告",
         "见投标人须知前附表",
         "详见招标公告",
         "详见技术规范书",
         "详见招标文件",
         "按招标文件要求",
-    } or normalized.startswith("见投标人须知前附表")
+    }:
+        return True
+    return bool(re.match(r"^(?:详见|见|参见|按|同)", normalized)) and any(
+        token in normalized
+        for token in (
+            "招标公告",
+            "采购公告",
+            "投标人须知前附表",
+            "供应商须知前附表",
+            "招标文件",
+            "采购文件",
+            "技术规范书",
+        )
+    )
+
+
+def _is_bid_deadline_relative_context(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    return bool(
+        re.search(r"投标截止时间\d{1,3}(?:日|天)前", compact)
+        or re.search(r"收到(?:澄清|修改)后\d{1,3}小时内", compact)
+        or re.search(r"开标结束后\d{1,3}分钟内", compact)
+    )
+
+
+def _business_project_value_usable(spec: FieldSpec, value: str, evidence: str = "") -> bool:
+    cleaned = _clean(value).strip(" ：:；;，,。")
+    if not cleaned or _is_reference_only_value(cleaned):
+        return False
+    if spec.key == "bidDeadline":
+        normalized = _normalize_bid_deadline(cleaned)
+        combined = f"{evidence} {cleaned}"
+        is_opening_time = "开标" in combined and not any(token in combined for token in ("递交截止", "投标截止", "提交截止", "响应截止"))
+        return _is_normalized_bid_deadline(normalized) and not is_opening_time and not _is_bid_deadline_relative_context(combined)
+    if spec.key in {"tenderer", "tenderAgency"}:
+        if len(cleaned) > 100:
+            return False
+        if any(keyword in cleaned for keyword in ("联系人", "联系方式", "联系电话", "电话", "邮箱", "电子邮件", "地址")):
+            return False
+        combined = f"{evidence} {cleaned}"
+        if any(keyword in combined for keyword in ("招标人代表", "采购人代表", "异议", "投诉", "质疑", "服务费", "代理服务费", "招标人不接受", "采购人不接受")):
+            return False
+        if re.search(r"(?:现)?委托.+(?:招标|采购|代理)", cleaned):
+            return False
+        if "，" in cleaned and any(token in cleaned for token in ("进行公开招标", "进行采购", "项目业主为")):
+            return False
+    if spec.key == "projectName" and len(cleaned) > 160:
+        return False
+    return True
 
 
 def _block_number(location: str) -> int:
@@ -853,6 +905,15 @@ def _build_business_project_basics(
             if any(
                 alias in " ".join(str(item.get(key) or "") for key in ("title", "keyEntity", "evidence", "section"))
                 for alias in spec.aliases
+            )
+        ]
+        candidates = [
+            item
+            for item in candidates
+            if _business_project_value_usable(
+                spec,
+                str(item.get("value") or item.get("keyValue") or ""),
+                str(item.get("evidence") or ""),
             )
         ]
         if spec.key == "bidDeadline":
@@ -4772,6 +4833,88 @@ def _extract_structured_requirements(documents: list[dict[str, Any]], texts_by_i
     )
 
 
+def _business_local_contract_result(
+    project_id: str,
+    structured_result: dict[str, Any],
+    *,
+    profile: ParseProfile,
+    documents: list[dict[str, Any]],
+    texts_by_id: dict[str, str],
+) -> dict[str, Any]:
+    if profile.key != "business":
+        return structured_result
+    return _transform_to_business_contract(
+        project_id,
+        structured_result,
+        profile=profile,
+        documents=documents,
+        texts_by_id=texts_by_id,
+        run_semantic_review=True,
+    )
+
+
+def _business_template_extractor_allows_preview_fallback(warning: str) -> bool:
+    text = str(warning or "")
+    if not text:
+        return False
+    return any(
+        token in text
+        for token in (
+            "商务模板提取 skill 未识别到模板",
+            "未找到可用于商务模板提取 skill 的 DOCX 招标文件",
+            "商务模板提取 skill prepare 阶段失败",
+            "商务模板提取 skill finalize 阶段失败",
+            "商务模板提取 skill 未生成 business_template_extraction.json",
+        )
+    )
+
+
+def _merge_business_local_artifacts(
+    structured_result: dict[str, Any],
+    local_business_result: dict[str, Any],
+    *,
+    profile: ParseProfile,
+) -> dict[str, Any]:
+    if profile.key != "business":
+        return structured_result
+    structured = structured_result.get("structured") if isinstance(structured_result.get("structured"), dict) else {}
+    local_structured = local_business_result.get("structured") if isinstance(local_business_result.get("structured"), dict) else {}
+    if not isinstance(structured, dict) or not isinstance(local_structured, dict):
+        return structured_result
+
+    field_groups = structured.setdefault("fieldGroups", {})
+    local_field_groups = local_structured.get("fieldGroups") if isinstance(local_structured.get("fieldGroups"), dict) else {}
+    if isinstance(field_groups, dict):
+        for key in ("businessResponse", "qualificationSupport", "commitmentRequirements"):
+            if key not in field_groups and isinstance(local_field_groups.get(key), list):
+                field_groups[key] = copy.deepcopy(local_field_groups.get(key) or [])
+
+    scoring = structured.setdefault("scoringCriteria", {})
+    if isinstance(scoring, dict):
+        for key in ("price", "compliance"):
+            scoring.setdefault(key, [])
+
+    for key in ("appendices", "commitmentLetters", "commitmentClues", "commitmentTemplateAlignments", "businessFormatRegions"):
+        local_value = local_structured.get(key)
+        if isinstance(local_value, list) and (local_value or not isinstance(structured.get(key), list)):
+            if not structured.get(key):
+                structured[key] = copy.deepcopy(local_value)
+
+    local_presence = local_structured.get("requirementPresence")
+    if isinstance(local_presence, dict):
+        current_presence = structured.get("requirementPresence")
+        if not isinstance(current_presence, dict) or not current_presence:
+            structured["requirementPresence"] = copy.deepcopy(local_presence)
+
+    category_counts = structured.setdefault("categoryCounts", {})
+    local_category_counts = local_structured.get("categoryCounts") if isinstance(local_structured.get("categoryCounts"), dict) else {}
+    if isinstance(category_counts, dict):
+        for key, value in local_category_counts.items():
+            category_counts.setdefault(key, value)
+
+    return structured_result
+
+
 def _build_tender_parse_prompt(skill_manifest_path: Path, profile: ParseProfile) -> str:
     if profile.key == "business":
         return f"""
@@ -4985,8 +5128,6 @@ def _run_parse_skill(
         )
         return _resolve_skill_structured_result(result, local_result=local_result, profile=profile), ""
     except RuntimeError as exc:
-        if profile.key == "business":
-            raise
         fallback = json.loads(json.dumps(local_result, ensure_ascii=False))
         structured = fallback.setdefault("structured", {})
         if isinstance(structured, dict):
@@ -5334,18 +5475,50 @@ def parse_tender_documents(
     template_extraction_payload: dict[str, Any] | None = None
     template_extraction_warning = ""
     template_extraction_path = project_dir / "business_template_extraction" / "business_template_extraction.json"
+    business_section_tree_path = ""
+    business_section_tree_summary: dict[str, Any] = {}
 
     if profile.key == "business":
+        section_tree_path, section_tree_payload = write_business_section_tree(documents, project_dir)
+        business_section_tree_path = str(section_tree_path)
+        business_section_tree_summary = (
+            section_tree_payload.get("summary")
+            if isinstance(section_tree_payload, dict) and isinstance(section_tree_payload.get("summary"), dict)
+            else {}
+        )
         appendices, template_extraction_payload, template_extraction_warning = run_business_template_extractor(
             project_id=project_id,
             documents=documents,
             project_dir=project_dir,
         )
+        if not appendices and _business_template_extractor_allows_preview_fallback(template_extraction_warning):
+            appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
+            appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices), profile=profile))
+            appendices.extend(
+                _extract_text_business_appendices(
+                    project_id,
+                    documents,
+                    texts_by_id,
+                    start_index=len(appendices),
+                    profile=profile,
+                )
+            )
     else:
         appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
         appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices), profile=profile))
     appendices = _prepare_appendix_outputs(project_id, appendices, renumber=True, profile=profile)
     structured_result["structured"]["appendices"] = appendices
+    if profile.key == "business" and not settings.s1_parse_opencode_enabled:
+        local_business_result = _business_local_contract_result(
+            project_id,
+            structured_result,
+            profile=profile,
+            documents=documents,
+            texts_by_id=texts_by_id,
+        )
+        structured_result = local_business_result
+    else:
+        local_business_result = structured_result
     if progress_callback:
         progress_callback(
             "appendices_extracted",
@@ -5370,6 +5543,8 @@ def parse_tender_documents(
             if profile.key == "business" and isinstance(template_extraction_payload, dict)
             else {}
         ),
+        "businessSectionTreePath": business_section_tree_path,
+        "businessSectionTreeSummary": business_section_tree_summary,
         "documents": documents,
         "targets": list(profile.targets),
     }
@@ -5396,6 +5571,11 @@ def parse_tender_documents(
             skill_warning = f"{skill_warning}；{finalize_warning}" if skill_warning else finalize_warning
     if template_extraction_warning:
         warnings.append(template_extraction_warning)
+    structured_result = _merge_business_local_artifacts(
+        structured_result,
+        local_business_result,
+        profile=profile,
+    )
     resolved_structured = structured_result.setdefault("structured", {})
     if profile.key == "business" and not resolved_structured.get("appendices") and appendices:
         resolved_structured["appendices"] = appendices
