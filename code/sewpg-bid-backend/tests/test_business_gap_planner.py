@@ -969,7 +969,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertFalse((technical_workspace_dir(project_id) / "s4_gap_workdir" / "manual_upload").exists())
         self.assertEqual(uploaded["materialSyncStatus"], "not_synced")
         self.assertEqual(uploaded["materialSyncPolicy"], "manual_project_only")
-        self.assertIn(f"商务标/项目素材/{project_id}/项目商务响应文件", uploaded["materialTargetPath"])
+        self.assertIn(f"商务标/项目素材/{project_id}/资格审查与商务响应成册", uploaded["materialTargetPath"])
 
         multipart_upload_response = self.client.post(
             f"/api/business/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/upload-files",
@@ -1014,7 +1014,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         async def fake_raw_upload(**kwargs):
             self.assertNotIn("bid_type", kwargs)
             self.assertEqual(kwargs["material_tier"], "project")
-            self.assertIn(f"商务标/项目素材/{project_id}/项目商务响应文件", kwargs["target_path"])
+            self.assertIn(f"商务标/项目素材/{project_id}/资格审查与商务响应成册", kwargs["target_path"])
             return {
                 "message": "mock upload",
                 "items": [
@@ -1041,7 +1041,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         synced = sync_response.json()["artifact"]
         self.assertEqual(synced["materialSyncStatus"], "synced_to_project_material")
         self.assertEqual(synced["wikiSyncStatus"], "wiki_rebuild_required")
-        self.assertIn(f"商务标/项目素材/{project_id}/项目商务响应文件", synced["materialTargetPath"])
+        self.assertIn(f"商务标/项目素材/{project_id}/资格审查与商务响应成册", synced["materialTargetPath"])
         self.assertTrue(sync_response.json()["wikiRebuildRequired"])
         synced_material = sync_response.json()["material"]
         self.assertEqual(synced_material["bidType"], "商务标")
@@ -1142,9 +1142,33 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertEqual(facts_response.status_code, 200)
         facts = facts_response.json()
         labels = {field["label"]: field for field in facts["fields"]}
-        self.assertEqual(labels["项目名称"]["value"], "商务S3项目")
+        self.assertEqual(len(facts["fields"]), 15)
+        self.assertEqual(
+            list(labels),
+            [
+                "招标项目名称",
+                "招标编号",
+                "招标人",
+                "招标项目单位",
+                "招标代理机构",
+                "风机型号",
+                "投标项目标段名称",
+                "投标人",
+                "投标人地址",
+                "投标人电话",
+                "法定代表人姓名/性别/年龄/职务",
+                "委托人姓名/身份证",
+                "营业执照信息注册资本/信用代码/类型（可选）",
+                "存款账户号码/银行/编号（不确定）",
+                "日期",
+            ],
+        )
+        self.assertEqual(labels["招标项目名称"]["value"], "商务S3项目")
         self.assertEqual(labels["招标编号"]["value"], "BIZ-2026-001")
         self.assertIn("投标人", labels)
+        self.assertNotIn("投标报价", labels)
+        self.assertNotIn("币种", labels)
+        self.assertNotIn("商务偏差说明", labels)
         confirm_facts_response = self.client.put(
             f"/api/business/projects/{project_id}/business-gaps/facts",
             json={"fields": facts["fields"], "confirm": True, "operator": "测试用户"},
@@ -1154,6 +1178,175 @@ class BusinessGapPlannerTests(unittest.TestCase):
         stored_project = store._require(project_id)
         self.assertEqual(stored_project["business_gap_state"]["projectFactTable"]["status"], "confirmed")
         self.assertEqual(stored_project["gap_state"]["projectFactTable"], {})
+
+    def test_business_gap_api_consumes_published_s1_handoff_fields(self) -> None:
+        self._setup_app_test()
+        from app.services.bid_runtime_state import now_iso
+        from app.services.store import store
+        from app.services.workspace_artifacts import business_workspace_dir
+
+        project = store.create_project({"name": "旧项目名不应使用", "customerName": "旧招标人", "bidType": "商务标"})
+        project_id = project["id"]
+        business_workspace = business_workspace_dir(project_id)
+        parse_dir = business_workspace / "parse"
+        parse_dir.mkdir(parents=True, exist_ok=True)
+        structured_path = parse_dir / "s1_structured_result.json"
+        structured_path.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": "bid-business-tender-structured-v1",
+                    "items": [],
+                    "structured": {
+                        "schemaVersion": "bid-business-tender-structured-v1",
+                        "fieldGroups": {
+                            "projectBasics": [
+                                {"fieldKey": "projectName", "title": "项目名称", "value": "PWF交接项目", "confidence": 0.96},
+                                {"fieldKey": "tenderNo", "title": "招标编号", "value": "PWF-2026-001", "confidence": 0.95},
+                                {
+                                    "fieldKey": "tenderer",
+                                    "title": "招标人",
+                                    "value": "PWF能源集团有限公司",
+                                    "confidence": 0.94,
+                                },
+                            ]
+                        },
+                        "appendices": [],
+                        "commitmentLetters": [],
+                        "projectFactFields": [
+                            {
+                                "fieldKey": "tenderAgency",
+                                "label": "招标代理机构",
+                                "value": "PWF招标代理有限公司",
+                                "confidence": 0.9,
+                            }
+                        ],
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        _update_parse_result_for_tests(
+            store,
+            project_id,
+            {
+                "status": "completed",
+                "structured": {
+                    "projectFactFields": [
+                        {"fieldKey": "projectName", "label": "项目名称", "value": "旧解析项目"},
+                        {"fieldKey": "tenderNo", "label": "招标编号", "value": "OLD-001"},
+                    ]
+                },
+            },
+            parse_storage={
+                "projectDir": str(business_workspace),
+                "parseDir": str(parse_dir),
+                "structuredResultPath": str(parse_dir / "legacy_should_not_be_used.json"),
+            },
+        )
+        record = store._require(project_id)
+        record["stageArtifacts"] = {
+            "s1": {
+                "schemaVersion": "business-s1-handoff-v1",
+                "status": "published",
+                "version": 3,
+                "projectId": project_id,
+                "bidType": "商务标",
+                "parseProfile": "business",
+                "publishedAt": "2026-06-05T00:00:00+08:00",
+                "paths": {
+                    "workspaceRoot": str(business_workspace),
+                    "parseDir": str(parse_dir),
+                    "structuredResultPath": str(structured_path),
+                    "combinedTextPath": str(parse_dir / "combined.txt"),
+                    "businessSectionTreePath": str(parse_dir / "business_section_tree.json"),
+                    "skillManifestPath": str(parse_dir / "s1_parse_manifest.json"),
+                    "manifestPath": str(parse_dir / "manifest.json"),
+                    "appendicesDir": str(business_workspace / "appendices"),
+                    "commitmentLettersDir": str(business_workspace / "commitment-letters"),
+                },
+            }
+        }
+        store._persist_project(record)
+        _save_generated_outline_for_tests(
+            store,
+            project_id=project_id,
+            nodes=[{"id": "OL-1", "title": "投标函", "children": []}],
+            generated_at=now_iso(),
+            summary="商务目录已生成。",
+        )
+        _confirm_outline_for_tests(store, project_id)
+
+        async def empty_raw_files(**kwargs):
+            return {"items": [], "total": 0}
+
+        with patch(
+            "app.services.business_gap_planning.OpencodeClient.run_bid_business_gap_planner_with_trace",
+            side_effect=RuntimeError("offline test fallback"),
+        ), patch(
+            "app.services.business_gap_planning.business_material_store.raw_files",
+            side_effect=empty_raw_files,
+        ):
+            response = self.client.post(f"/api/business/projects/{project_id}/business-gaps/run")
+        self.assertEqual(response.status_code, 200)
+        plan = response.json()["plan"]
+        self.assertEqual(plan["s1Consumption"]["source"], "stageArtifacts.s1")
+        self.assertEqual(plan["s1Consumption"]["handoff"]["version"], 3)
+        manifest_path = business_workspace / "gaps" / "business_gap_input.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["s1Consumption"]["source"], "stageArtifacts.s1")
+        self.assertEqual(manifest["s1Handoff"]["version"], 3)
+        parse_snapshot = json.loads((business_workspace / "gaps" / "parse_result.json").read_text(encoding="utf-8"))
+        self.assertEqual(parse_snapshot["structured"]["fieldGroups"]["projectBasics"][0]["value"], "PWF交接项目")
+
+        facts_response = self.client.post(f"/api/business/projects/{project_id}/business-gaps/facts/build")
+        self.assertEqual(facts_response.status_code, 200)
+        labels = {field["label"]: field for field in facts_response.json()["fields"]}
+        self.assertEqual(labels["招标项目名称"]["value"], "PWF交接项目")
+        self.assertEqual(labels["招标编号"]["value"], "PWF-2026-001")
+        self.assertEqual(labels["招标人"]["value"], "PWF能源集团有限公司")
+        self.assertEqual(labels["招标代理机构"]["value"], "PWF招标代理有限公司")
+        self.assertNotEqual(labels["招标项目名称"]["value"], "旧解析项目")
+
+    def test_business_gap_rejects_unpublished_s1_handoff(self) -> None:
+        self._setup_app_test()
+        from app.services.bid_runtime_state import now_iso
+        from app.services.store import store
+        from app.services.workspace_artifacts import business_workspace_dir
+
+        project = store.create_project({"name": "未发布交接测试", "customerName": "测试业主", "bidType": "商务标"})
+        project_id = project["id"]
+        business_workspace = business_workspace_dir(project_id)
+        parse_dir = business_workspace / "parse"
+        parse_dir.mkdir(parents=True, exist_ok=True)
+        structured_path = parse_dir / "s1_structured_result.json"
+        structured_path.write_text(json.dumps({"structured": {"projectFactFields": []}}, ensure_ascii=False), encoding="utf-8")
+        record = store._require(project_id)
+        record["stageArtifacts"] = {
+            "s1": {
+                "schemaVersion": "business-s1-handoff-v1",
+                "status": "readyForReview",
+                "version": 1,
+                "projectId": project_id,
+                "bidType": "商务标",
+                "parseProfile": "business",
+                "paths": {"structuredResultPath": str(structured_path)},
+            }
+        }
+        store._persist_project(record)
+        _save_generated_outline_for_tests(
+            store,
+            project_id=project_id,
+            nodes=[{"id": "OL-1", "title": "投标函", "children": []}],
+            generated_at=now_iso(),
+            summary="商务目录已生成。",
+        )
+        _confirm_outline_for_tests(store, project_id)
+
+        response = self.client.post(f"/api/business/projects/{project_id}/business-gaps/run")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("尚未发布", response.json()["detail"])
 
     def test_business_gap_table_fill_creates_artifact_from_target_and_sources(self) -> None:
         self._setup_app_test()
@@ -1241,6 +1434,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
             manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
             self.assertEqual(manifest["target"]["templateId"], "TPL-001")
             self.assertEqual(manifest["sourceMaterials"][0]["materialId"], "RAW-TABLE-001")
+            self.assertEqual(manifest["s1Consumption"]["source"], "legacy_parse_result")
             output_path = Path(manifest["outputFile"])
             output_path.parent.mkdir(parents=True, exist_ok=True)
             Document(str(target_path)).save(output_path)

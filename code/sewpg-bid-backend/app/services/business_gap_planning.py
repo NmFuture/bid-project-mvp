@@ -20,6 +20,7 @@ from app.models import async_session
 from app.models.materials import WikiDoc, WikiNode
 from app.services.bid_type import BUSINESS_BID_TYPE
 from app.services.business_material_store import business_material_store
+from app.services.business_s1_handoff import business_s1_consumption_context
 from app.services.bid_runtime_state import now_iso
 from app.services.identity import build_project_material_scope
 from app.services.material_runtime_tables import ensure_material_runtime_tables
@@ -63,9 +64,10 @@ def build_business_gap_plan_for_project(project: dict[str, Any]) -> dict[str, An
     work_dir.mkdir(parents=True, exist_ok=True)
 
     toc_json_path = _resolve_business_toc_json(project, work_dir)
+    s1_context = business_s1_consumption_context(project)
     parse_result_path = work_dir / "parse_result.json"
     parse_result_path.write_text(
-        json.dumps(project.get("parse_result") or {}, ensure_ascii=False, indent=2),
+        json.dumps(s1_context.get("parseResult") or {}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     state_path = work_dir / "business_gap_state.json"
@@ -90,6 +92,12 @@ def build_business_gap_plan_for_project(project: dict[str, Any]) -> dict[str, An
         "workDir": str(work_dir),
         "tocJsonPath": str(toc_json_path),
         "parseResultPath": str(parse_result_path),
+        "s1Handoff": s1_context.get("handoff") or {},
+        "s1Consumption": {
+            "source": str(s1_context.get("source") or "legacy_parse_result"),
+            "structuredResultPath": str(s1_context.get("structuredResultPath") or ""),
+            "paths": copy_jsonable_dict(s1_context.get("paths")),
+        },
         "businessWikiDir": str(business_wiki_dir or ""),
         "businessWikiIndex": business_wiki_index,
         "projectIdentity": project.get("identity") or {},
@@ -113,6 +121,11 @@ def build_business_gap_plan_for_project(project: dict[str, Any]) -> dict[str, An
     plan["planFile"] = str(plan_path)
     plan["manifestPath"] = str(manifest_path)
     plan["phase"] = "business_gap_detection"
+    plan["s1Consumption"] = {
+        "source": str(s1_context.get("source") or "legacy_parse_result"),
+        "structuredResultPath": str(s1_context.get("structuredResultPath") or ""),
+        "handoff": copy_jsonable_dict(s1_context.get("handoff")),
+    }
     plan["opencodeOutput"] = result.get("opencodeOutput") or _local_opencode_output(manifest_path, result)
     return plan
 
@@ -147,6 +160,12 @@ def build_business_gap_material_picker_index(project: dict[str, Any]) -> dict[st
         "businessWikiIndexSummary": business_wiki_index.get("summary") if isinstance(business_wiki_index.get("summary"), dict) else {},
         "selectedBusinessTurbineModel": selected_model,
     }
+
+
+def copy_jsonable_dict(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return json.loads(json.dumps(value, ensure_ascii=False))
 
 
 def _business_material_feedback_index(state: Any) -> dict[str, Any]:

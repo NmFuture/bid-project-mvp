@@ -48,6 +48,7 @@ from app.services.business_gap_fact_table import (
     build_project_fact_table,
     empty_project_fact_table,
     fact_table_value_map,
+    normalize_business_fact_fields_for_save,
     normalize_project_fact_field,
     summarize_project_fact_fields,
 )
@@ -56,6 +57,7 @@ from app.services.business_gap_table_fill import (
     prepare_business_table_fill_sources,
     prepare_business_table_fill_target,
 )
+from app.services.business_s1_handoff import business_s1_consumption_context
 from app.services.business_gap_state import (
     ensure_business_gap_state,
     finalize_business_gap_plan_update,
@@ -575,7 +577,8 @@ class BusinessGapService:
         current = business_gap_state.get("projectFactTable")
         if not isinstance(current, dict) or current.get("schemaVersion") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
             current = build_project_fact_table(project, business_gap_state)
-        incoming_fields = payload.get("fields") if isinstance(payload.get("fields"), list) else current.get("fields") or []
+        raw_incoming_fields = payload.get("fields") if isinstance(payload.get("fields"), list) else current.get("fields") or []
+        incoming_fields = normalize_business_fact_fields_for_save(raw_incoming_fields)
         confirm = bool(payload.get("confirm") or payload.get("confirmed"))
         operator = str(payload.get("operator") or "当前用户")
         saved_at = now_iso()
@@ -1276,6 +1279,7 @@ class BusinessGapService:
     ) -> dict[str, Any]:
         payload = data or {}
         project = self._project_for_update(project_id)
+        business_s1_consumption_context(project)
         business_gap_state = ensure_business_gap_state(project)
         if business_gap_state["recognitionStatus"] != "completed":
             raise ValueError("请先生成商务标缺口计划。")
@@ -1369,6 +1373,7 @@ class BusinessGapService:
         url_scope: dict[str, str],
     ) -> dict[str, Any]:
         project = self._project_for_update(project_id)
+        s1_context = business_s1_consumption_context(project)
         business_gap_state = ensure_business_gap_state(project)
         if business_gap_state["recognitionStatus"] != "completed":
             raise ValueError("请先生成商务标缺口计划。")
@@ -1407,6 +1412,11 @@ class BusinessGapService:
             "sourceMaterials": prepared_sources,
             "projectFactTable": fact_table,
             "facts": fact_table_value_map(fact_table),
+            "s1Consumption": {
+                "source": str(s1_context.get("source") or "legacy_parse_result"),
+                "structuredResultPath": str(s1_context.get("structuredResultPath") or ""),
+                "handoff": copy.deepcopy(s1_context.get("handoff") if isinstance(s1_context.get("handoff"), dict) else {}),
+            },
             "operator": str(data.get("operator") or "当前用户"),
             "outputFile": str(output_path),
         }
