@@ -1515,7 +1515,7 @@ def material_match_score(task: dict[str, Any], material: dict[str, Any], selecte
     elif str(material.get("materialTier") or "") == "customer":
         score += 0.05
         reasons.append("客户素材")
-    if str(material.get("sourceType") or "") == "performance_library":
+    if str(material.get("sourceType") or "") in {"performance_library", "performance_package"}:
         if module_key == "performance_cooperation_support":
             score += 0.18
             reasons.append("共用业绩库候选")
@@ -1620,7 +1620,28 @@ def merge_state(tasks: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
         if isinstance(saved.get("resolvedArtifacts"), list):
             for artifact in saved["resolvedArtifacts"]:
                 if isinstance(artifact, dict):
-                    append_unique_artifact(task, artifact)
+                    append_saved_artifact(task, artifact)
+
+
+def append_saved_artifact(task: dict[str, Any], artifact: dict[str, Any]) -> None:
+    artifacts = task.setdefault("resolvedArtifacts", [])
+    key = str(artifact.get("artifactId") or artifact.get("filePath") or artifact.get("fileName") or "")
+    parse_generated = str(artifact.get("artifactType") or "").startswith("parse_") or str(
+        artifact.get("sourceMode") or ""
+    ).startswith("parsed_")
+    for existing in artifacts:
+        if not isinstance(existing, dict):
+            continue
+        existing_key = str(existing.get("artifactId") or existing.get("filePath") or existing.get("fileName") or "")
+        if existing_key and existing_key == key:
+            if parse_generated:
+                # 解析类工件的路径以本次解析为准，历史状态只保留人工审核结论
+                review_keys = ("confirmed", "reviewStatus", "notes")
+                existing.update({k: artifact[k] for k in review_keys if k in artifact and artifact[k] not in (None, "")})
+            else:
+                existing.update({k: v for k, v in artifact.items() if v not in (None, "")})
+            return
+    artifacts.append(artifact)
 
 
 def update_toc_ref_statuses(toc_refs: list[dict[str, Any]], tasks: list[dict[str, Any]]) -> None:
@@ -2064,7 +2085,7 @@ def remove_value(target: dict[str, Any], key: str, value: Any) -> None:
 
 
 def file_type(material: dict[str, Any]) -> str:
-    if str(material.get("sourceType") or "") == "performance_library" and str(material.get("cleanStatus") or "") == "metadata_only":
+    if str(material.get("sourceType") or "") in {"performance_library", "performance_package"} and str(material.get("cleanStatus") or "") == "metadata_only":
         return "record"
     name = str(material.get("name") or material.get("fileName") or material.get("cleanedFileName") or "").lower()
     suffix = Path(name).suffix.lower().strip(".")

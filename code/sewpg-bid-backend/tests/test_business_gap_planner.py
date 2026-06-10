@@ -626,6 +626,159 @@ class BusinessGapPlannerTests(unittest.TestCase):
         bid_letter = next(task for task in plan["tasks"] if task["title"] == "投标函")
         self.assertEqual(bid_letter["candidateMaterials"], [])
 
+    def test_businessgap_runner_uses_performance_package_candidates_for_performance_task(self) -> None:
+        backend_root = Path(__file__).resolve().parents[1]
+        script_path = backend_root / "opencode" / "skills" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse_result.json"
+            output_path = root / "business_gap_plan.json"
+            toc_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "bid-toc-json-v1",
+                        "items": [
+                            {"order": 1, "number": "一", "title": "投标函", "level": 1},
+                            {"order": 2, "number": "九", "title": "近年类似项目业绩表", "level": 1},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            parse_path.write_text(json.dumps({"status": "completed", "structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest_path = root / "business_gap_input.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-BG-PERFORMANCE-PKG",
+                        "projectName": "商务业绩包候选测试",
+                        "bidType": "商务标",
+                        "workDir": str(root),
+                        "tocJsonPath": str(toc_path),
+                        "parseResultPath": str(parse_path),
+                        "businessWikiDir": "",
+                        "materialScope": {"bidType": "商务标", "readableScopes": []},
+                        "materialIndex": [
+                            {
+                                "id": "PERITEM-0268",
+                                "materialId": "PERITEM-0268",
+                                "categoryId": "PERCAT-0011",
+                                "name": "华电新疆喀什 2x66 万千瓦",
+                                "fileName": "001-华电新疆喀什 2x66 万千瓦_合同.docx",
+                                "folderPath": "商务标/共用业绩库/陆上6MW业绩",
+                                "path": "商务标/共用业绩库/陆上6MW业绩/华电新疆喀什 2x66 万千瓦",
+                                "materialTier": "standard",
+                                "libraryScope": "standard",
+                                "sourceType": "performance_package",
+                                "candidateType": "performance_item",
+                                "businessMaterialKind": "performance",
+                                "businessMaterialKindLabel": "共用业绩",
+                                "cleanStatus": "original_only",
+                                "tags": ["陆上"],
+                                "keywords": ["陆上6MW业绩", "业绩", "华电", "11-230", "2024"],
+                                "summary": "华电；11-230；2 台；2024",
+                                "businessCategory": "业绩证明",
+                                "documentType": "业绩明细",
+                                "attachments": [
+                                    {
+                                        "id": "PERITEMATT-0118",
+                                        "categoryId": "PERCAT-0011",
+                                        "itemId": "PERITEM-0268",
+                                        "fileName": "001-华电新疆喀什 2x66 万千瓦_合同.docx",
+                                        "matchConfidence": 95,
+                                        "matchMethod": "project_name",
+                                    }
+                                ],
+                            }
+                        ],
+                        "selectedBusinessTurbineModel": {},
+                        "outputFile": str(output_path),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [sys.executable, str(script_path), "--manifest", str(manifest_path), "--response", "summary"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            plan = json.loads(output_path.read_text(encoding="utf-8"))
+
+        performance_task = next(task for task in plan["tasks"] if "业绩" in task["title"])
+        performance_candidate = performance_task["candidateMaterials"][0]
+        self.assertEqual(performance_candidate["materialId"], "PERITEM-0268")
+        self.assertEqual(performance_candidate["sourceType"], "performance_package")
+        self.assertEqual(performance_candidate["candidateType"], "performance_item")
+        self.assertIn("共用业绩库候选", performance_candidate["reason"])
+        bid_letter = next(task for task in plan["tasks"] if task["title"] == "投标函")
+        self.assertEqual(bid_letter["candidateMaterials"], [])
+
+    def test_performance_package_candidate_builders_map_items_and_categories(self) -> None:
+        from app.services.business_gap_planning import (
+            _performance_package_candidate_from_category,
+            _performance_package_candidate_from_item,
+        )
+
+        category = {
+            "id": "PERCAT-0011",
+            "name": "陆上6MW业绩",
+            "scene": "陆上",
+            "powerRating": "6MW及以上",
+            "scope": "standard",
+            "tags": ["陆上"],
+            "turbineModels": ["6.25-182", "11-230"],
+            "summaryFileName": "陆上6MW业绩_汇总表.docx",
+            "summary": "陆上 6MW 及以上业绩汇总",
+            "reviewStatus": "draft",
+            "itemCount": 104,
+        }
+        item = {
+            "id": "PERITEM-0268",
+            "categoryId": "PERCAT-0011",
+            "rowIndex": 1,
+            "projectName": "华电新疆喀什 2x66 万千瓦",
+            "customerName": "华电",
+            "turbineModels": ["11-230"],
+            "contractQuantity": "2",
+            "commissionedCapacityMw": "132",
+            "deliveryOrOperationTime": "2024",
+            "operationYear": 2024,
+            "values": {"项目名称": "华电新疆喀什 2x66 万千瓦", "业主单位": "华电"},
+            "attachments": [
+                {
+                    "id": "PERITEMATT-0118",
+                    "categoryId": "PERCAT-0011",
+                    "itemId": "PERITEM-0268",
+                    "attachmentType": "contract_item",
+                    "fileName": "001-华电新疆喀什 2x66 万千瓦_合同.docx",
+                    "sizeBytes": 2048,
+                    "matchConfidence": 95,
+                    "matchMethod": "project_name",
+                }
+            ],
+        }
+
+        category_candidate = _performance_package_candidate_from_category(category)
+        self.assertEqual(category_candidate["sourceType"], "performance_package")
+        self.assertEqual(category_candidate["candidateType"], "performance_category")
+        self.assertEqual(category_candidate["path"], "商务标/共用业绩库/陆上6MW业绩")
+        self.assertEqual(category_candidate["businessMaterialKind"], "performance")
+        self.assertIn("陆上6MW业绩", category_candidate["keywords"])
+
+        item_candidate = _performance_package_candidate_from_item(category, item)
+        self.assertEqual(item_candidate["materialId"], "PERITEM-0268")
+        self.assertEqual(item_candidate["candidateType"], "performance_item")
+        self.assertEqual(item_candidate["cleanStatus"], "original_only")
+        self.assertEqual(item_candidate["fileName"], "001-华电新疆喀什 2x66 万千瓦_合同.docx")
+        self.assertEqual(item_candidate["attachments"][0]["matchMethod"], "project_name")
+        self.assertEqual(item_candidate["attachments"][0]["matchConfidence"], 95)
+        self.assertIn("11-230", item_candidate["keywords"])
+        self.assertIn("华电", item_candidate["summary"])
+
     def test_businessgap_runner_emits_template_candidates_from_template_index(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
         script_path = backend_root / "opencode" / "skills" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
@@ -1347,6 +1500,22 @@ class BusinessGapPlannerTests(unittest.TestCase):
         response = self.client.post(f"/api/business/projects/{project_id}/business-gaps/run")
         self.assertEqual(response.status_code, 400)
         self.assertIn("尚未发布", response.json()["detail"])
+
+    def test_table_fill_lookup_does_not_pollute_specific_labels(self) -> None:
+        import importlib.util
+
+        backend_root = Path(__file__).resolve().parents[1]
+        script_path = backend_root / "opencode" / "skills" / "bid-business-table-fill" / "scripts" / "run_from_manifest.py"
+        spec = importlib.util.spec_from_file_location("business_table_fill_runner", script_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        facts = {"投标人": "上海电气风电集团股份有限公司", "招标项目名称": "某风电项目"}
+        self.assertEqual(module.lookup("投标人", facts), "上海电气风电集团股份有限公司")
+        self.assertEqual(module.lookup("投标人（盖章）", facts), "上海电气风电集团股份有限公司")
+        self.assertEqual(module.lookup("投标人名称", facts), "上海电气风电集团股份有限公司")
+        self.assertEqual(module.lookup("投标人地址", facts), "")
+        self.assertEqual(module.lookup("投标人电话", facts), "")
+        self.assertEqual(module.lookup("项目名称", facts), "某风电项目")
 
     def test_business_gap_table_fill_creates_artifact_from_target_and_sources(self) -> None:
         self._setup_app_test()

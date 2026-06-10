@@ -28,6 +28,7 @@ from app.services.minio_client import minio_client
 from app.services.opencode_client import OpencodeClient
 from app.services.parse_profiles import BUSINESS_PARSE_PROFILE
 from app.services.performance_library_service import performance_library_service
+from app.services.performance_package_service import performance_package_service
 from app.services.template_store import resolve_fallback_bid_template_file_sync
 from app.services.turbine_models import project_turbine_model
 from app.services.workspace_artifacts import business_workspace_dir, legacy_workspace_roots
@@ -1068,7 +1069,160 @@ def _business_material_index(material_scope: dict[str, Any], selected_model: dic
             continue
         seen.add(material_id)
         items.append(candidate)
+    for candidate in _performance_package_candidates(limit=300):
+        material_id = str(candidate.get("id") or "")
+        if not material_id or material_id in seen:
+            continue
+        seen.add(material_id)
+        items.append(candidate)
     return items
+
+
+def _performance_package_candidates(limit: int = 300) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    try:
+        listing = _run_async(performance_package_service.list_categories(page=1, page_size=50))
+    except Exception:
+        return candidates
+    for summary in listing.get("items") or []:
+        if not isinstance(summary, dict) or not str(summary.get("id") or ""):
+            continue
+        try:
+            detail = _run_async(performance_package_service.get_category(str(summary["id"])))
+        except Exception:
+            continue
+        category = detail.get("item") if isinstance(detail.get("item"), dict) else summary
+        candidates.append(_performance_package_candidate_from_category(category))
+        for row in detail.get("rows") or []:
+            if isinstance(row, dict):
+                candidates.append(_performance_package_candidate_from_item(category, row))
+        if len(candidates) >= limit:
+            break
+    return candidates[:limit]
+
+
+def _performance_package_candidate_from_category(category: dict[str, Any]) -> dict[str, Any]:
+    name = str(category.get("name") or "") or str(category.get("id") or "业绩包")
+    scope = str(category.get("scope") or "standard")
+    models = [str(model) for model in category.get("turbineModels") or [] if str(model).strip()]
+    keywords = [
+        keyword
+        for keyword in [name, str(category.get("scene") or ""), str(category.get("powerRating") or ""), *models]
+        if str(keyword).strip()
+    ]
+    return {
+        "id": str(category.get("id") or ""),
+        "materialId": str(category.get("id") or ""),
+        "categoryId": str(category.get("id") or ""),
+        "name": name,
+        "fileName": str(category.get("summaryFileName") or name),
+        "folderPath": "商务标/共用业绩库",
+        "path": "/".join(["商务标", "共用业绩库", name]),
+        "materialTier": scope,
+        "libraryScope": scope,
+        "businessMaterialKind": "performance",
+        "businessMaterialKindLabel": "共用业绩",
+        "sourceType": "performance_package",
+        "candidateType": "performance_category",
+        "hasCleanedWord": False,
+        "cleanedFileName": "",
+        "cleanStatus": "original_only" if category.get("summaryFileName") else "metadata_only",
+        "size": 0,
+        "turbineModelLabel": "/".join(models[:5]),
+        "tags": [str(tag) for tag in category.get("tags") or [] if str(tag).strip()],
+        "keywords": keywords[:24],
+        "summary": str(category.get("summary") or ""),
+        "businessCategory": "业绩证明",
+        "documentType": "业绩汇总表",
+        "reviewStatus": str(category.get("reviewStatus") or "draft"),
+        "updatedAt": str(category.get("updatedAt") or ""),
+        "itemCount": int(category.get("itemCount") or 0),
+    }
+
+
+def _performance_package_candidate_from_item(category: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+    category_name = str(category.get("name") or "")
+    scope = str(category.get("scope") or "standard")
+    project_name = str(item.get("projectName") or "")
+    customer = str(item.get("customerName") or "")
+    title = project_name or f"{category_name}-行{item.get('rowIndex')}"
+    models = [str(model) for model in item.get("turbineModels") or [] if str(model).strip()]
+    contract_items = [
+        attachment
+        for attachment in item.get("attachments") or []
+        if isinstance(attachment, dict) and str(attachment.get("attachmentType") or "") == "contract_item"
+    ]
+    years = [
+        str(year)
+        for year in (item.get("contractYear"), item.get("deliveryYear"), item.get("operationYear"))
+        if year
+    ]
+    keywords = [
+        keyword
+        for keyword in [
+            category_name,
+            str(category.get("scene") or ""),
+            str(category.get("powerRating") or ""),
+            project_name,
+            customer,
+            *models,
+            *years,
+        ]
+        if str(keyword).strip()
+    ]
+    values = item.get("values") if isinstance(item.get("values"), dict) else {}
+    for raw_value in values.values():
+        text_value = str(raw_value or "").strip()
+        if text_value and text_value not in keywords:
+            keywords.append(text_value)
+    summary_parts = [
+        customer,
+        "/".join(models),
+        str(item.get("contractQuantity") or ""),
+        str(item.get("commissionedCapacityMw") or ""),
+        str(item.get("deliveryOrOperationTime") or ""),
+    ]
+    return {
+        "id": str(item.get("id") or ""),
+        "materialId": str(item.get("id") or ""),
+        "categoryId": str(item.get("categoryId") or category.get("id") or ""),
+        "name": title,
+        "fileName": str(contract_items[0].get("fileName") or "") if contract_items else str(category.get("summaryFileName") or title),
+        "folderPath": "/".join(["商务标", "共用业绩库", category_name or "业绩包"]),
+        "path": "/".join(["商务标", "共用业绩库", category_name or "业绩包", title]),
+        "materialTier": scope,
+        "libraryScope": scope,
+        "businessMaterialKind": "performance",
+        "businessMaterialKindLabel": "共用业绩",
+        "sourceType": "performance_package",
+        "candidateType": "performance_item",
+        "hasCleanedWord": False,
+        "cleanedFileName": "",
+        "cleanStatus": "original_only" if contract_items else "metadata_only",
+        "size": int(contract_items[0].get("sizeBytes") or 0) if contract_items else 0,
+        "turbineModelLabel": "/".join(models[:5]),
+        "tags": [str(tag) for tag in category.get("tags") or [] if str(tag).strip()],
+        "keywords": keywords[:24],
+        "summary": "；".join(part for part in (str(value).strip() for value in summary_parts) if part),
+        "businessCategory": "业绩证明",
+        "documentType": "业绩明细",
+        "reviewStatus": str(category.get("reviewStatus") or "draft"),
+        "updatedAt": str(category.get("updatedAt") or ""),
+        "contractYear": item.get("contractYear"),
+        "deliveryYear": item.get("deliveryYear"),
+        "operationYear": item.get("operationYear"),
+        "attachments": [
+            {
+                "id": str(attachment.get("id") or ""),
+                "categoryId": str(attachment.get("categoryId") or ""),
+                "itemId": str(attachment.get("itemId") or item.get("id") or ""),
+                "fileName": str(attachment.get("fileName") or ""),
+                "matchConfidence": attachment.get("matchConfidence"),
+                "matchMethod": str(attachment.get("matchMethod") or ""),
+            }
+            for attachment in contract_items
+        ],
+    }
 
 
 def _business_template_index(project: dict[str, Any], work_dir: Path) -> list[dict[str, Any]]:
