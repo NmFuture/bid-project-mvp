@@ -138,6 +138,9 @@ def source_fact_map(manifest: dict[str, Any]) -> tuple[dict[str, str], list[dict
     return facts, evidence
 
 
+LABEL_DECOR_SUFFIXES = {"名称", "全称", "盖章", "公章", "签字", "签章", "印章", "签名"}
+
+
 def lookup(label: str, facts: dict[str, str]) -> str:
     key = norm(label)
     if not key:
@@ -145,7 +148,15 @@ def lookup(label: str, facts: dict[str, str]) -> str:
     if key in facts:
         return facts[key]
     for existing, value in facts.items():
-        if key and (key in existing or existing in key):
+        if key in existing:
+            return value
+    # 事实键比标签更泛时（如标签"投标人地址"含事实键"投标人"），残余部分必须是
+    # 装饰性后缀才允许回填，避免地址/电话等更具体的字段被泛值污染
+    for existing, value in facts.items():
+        if not existing or existing not in key:
+            continue
+        remainder = key.replace(existing, "", 1)
+        if remainder in LABEL_DECOR_SUFFIXES:
             return value
     return ""
 
