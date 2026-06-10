@@ -1349,7 +1349,6 @@ def test_bid_type_rules_have_single_source_of_truth() -> None:
         "technical_gap_planner": Path("app/services/technical_gap_planner.py").read_text(encoding="utf-8"),
         "technical_gap_review": Path("app/services/technical_gap_review.py").read_text(encoding="utf-8"),
         "technical_gap_state": Path("app/services/technical_gap_state.py").read_text(encoding="utf-8"),
-        "business_gap_fact_table": Path("app/services/business_gap_fact_table.py").read_text(encoding="utf-8"),
         "technical_gap_fact_table": Path("app/services/technical_gap_fact_table.py").read_text(encoding="utf-8"),
         "business_gap_service": Path("app/services/business_gap_service.py").read_text(encoding="utf-8"),
         "bid_project_service": Path("app/services/bid_project_service.py").read_text(encoding="utf-8"),
@@ -3189,6 +3188,110 @@ def test_business_gap_build_facts_stays_in_business_service() -> None:
     assert store._require(project_id)["business_gap_state"]["projectFactTable"]["fields"][0]["value"] == "BIZ-001"
 
 
+def test_business_gap_save_facts_allows_user_add_and_delete_fields() -> None:
+    project_id = _seed_business_gap_project(
+        {
+            "schemaVersion": "bid-business-gap-plan-v1",
+            "tocRefs": [],
+            "tasks": [],
+            "summary": {},
+        }
+    )
+    record = store._require(project_id)
+    record["business_gap_state"]["projectFactTable"] = {
+        "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+        "projectId": project_id,
+        "status": "draft",
+        "builtAt": now_iso(),
+        "updatedAt": now_iso(),
+        "fields": [
+            {"label": "招标项目名称", "value": "", "status": "missing"},
+            {"label": "招标编号", "value": "", "status": "missing"},
+        ],
+        "summary": {"totalCount": 2},
+    }
+    store._persist_project(record)
+
+    payload = asyncio.run(
+        business_gap_service.save_facts(
+            project_id,
+            {
+                "fields": [
+                    {"label": "项目名称", "value": "商务标服务拆分测试项目"},
+                    {"label": "投标人", "value": "测试投标单位"},
+                    {"label": "自定义联系人", "value": "张三"},
+                ],
+                "confirm": False,
+                "operator": "测试用户",
+            },
+        )
+    )
+
+    labels = {field["label"]: field for field in payload["fields"]}
+    assert len(payload["fields"]) == 3
+    assert payload["fields"][0]["label"] == "招标项目名称"
+    assert labels["招标项目名称"]["value"] == "商务标服务拆分测试项目"
+    assert labels["投标人"]["value"] == "测试投标单位"
+    assert labels["自定义联系人"]["category"] == "人工补充事实"
+    assert labels["自定义联系人"]["sourceMode"] == "manual"
+    assert "招标编号" not in labels
+    assert "项目名称" not in labels
+
+
+def test_business_fact_table_ignores_empty_turbine_model_dict_and_signature_party_noise() -> None:
+    from app.services.business_gap_fact_table import build_project_fact_table
+
+    project = {
+        "id": "PRJ-BIZ-FACT-NOISE",
+        "name": "真实样本事实表降噪测试",
+        "customerName": "京能集团",
+        "bidType": "商务标",
+        "turbineModel": {
+            "model": "",
+            "platform": "",
+            "layout": "",
+            "status": "manual",
+            "aliases": [],
+        },
+        "parse_result": {
+            "status": "completed",
+            "structured": {
+                "projectFactFields": [
+                    {
+                        "fieldKey": "tenderer",
+                        "label": "招标人",
+                        "value": "山西漳山发电有限责任公司 （盖单位章",
+                        "confidence": 0.95,
+                    },
+                    {
+                        "fieldKey": "tenderer",
+                        "label": "招标人",
+                        "value": "将在收到异议之日起 3 日内作出答复，作出答复前，将暂停招标投标活动",
+                        "confidence": 0.96,
+                    },
+                    {
+                        "fieldKey": "tenderer",
+                        "label": "招标人",
+                        "value": "收到澄清后12小时内,逾期未在规定时间内确认的，招标人一律视为已收到",
+                        "confidence": 0.97,
+                    },
+                    {
+                        "fieldKey": "tenderer",
+                        "label": "招标人",
+                        "value": "在本章第 4.2.1 项规定的投标截止时间(开标时间),通过中国华能集团有限公司电子商务平台公开开标",
+                        "confidence": 0.98,
+                    },
+                ]
+            },
+        },
+    }
+
+    table = build_project_fact_table(project, {"plan": {}})
+    labels = {field["label"]: field for field in table["fields"]}
+    assert labels["招标人"]["value"] == "京能集团"
+    assert labels["风机型号"]["value"] == ""
+
+
 def test_business_assembly_fact_table_stays_in_fact_table_helper(tmp_path) -> None:
     from app.services import business_assembly
 
@@ -3269,7 +3372,10 @@ def test_business_gap_save_facts_stays_in_business_service() -> None:
 
     assert payload["status"] == "confirmed"
     assert payload["confirmedBy"] == "测试用户"
-    assert payload["fields"][0]["status"] == "confirmed"
+    labels = {field["label"]: field for field in payload["fields"]}
+    assert len(payload["fields"]) == 1
+    assert labels["投标人"]["status"] == "confirmed"
+    assert labels["投标人"]["value"] == "测试投标单位"
     assert store._require(project_id)["business_gap_state"]["projectFactTable"]["status"] == "confirmed"
 
 

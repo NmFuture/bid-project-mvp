@@ -384,7 +384,9 @@ function FactMaintenanceModal({
   busy,
   onClose,
   onConfirm,
+  onFieldAdd,
   onFieldChange,
+  onFieldRemove,
 }) {
   if (!open) return null
   const summary = factTable?.summary || {}
@@ -407,6 +409,16 @@ function FactMaintenanceModal({
           <Toolbar>
             <Button
               type="button"
+              onClick={onFieldAdd}
+              disabled={busy}
+              size="sm"
+              variant="secondary"
+              icon="add"
+            >
+              新增字段
+            </Button>
+            <Button
+              type="button"
               onClick={onConfirm}
               disabled={busy || !fields.length}
               size="sm"
@@ -421,14 +433,15 @@ function FactMaintenanceModal({
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {fields.length ? (
             <div className="overflow-hidden rounded-md border border-surface-container-high">
-              <table className="w-full min-w-[880px] border-collapse bg-surface-container-lowest text-sm">
+              <table className="w-full min-w-[980px] border-collapse bg-surface-container-lowest text-sm">
                 <thead className="bg-surface-container-low text-left text-xs text-outline">
                   <tr>
-                    <th className="w-36 px-3 py-2 font-semibold">字段</th>
+                    <th className="w-52 px-3 py-2 font-semibold">字段</th>
                     <th className="w-64 px-3 py-2 font-semibold">确认值</th>
                     <th className="w-24 px-3 py-2 font-semibold">状态</th>
                     <th className="w-28 px-3 py-2 font-semibold">置信度</th>
                     <th className="px-3 py-2 font-semibold">来源依据</th>
+                    <th className="w-16 px-3 py-2 text-right font-semibold">操作</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-surface-container-high">
@@ -444,7 +457,11 @@ function FactMaintenanceModal({
                     return (
                       <tr key={field.id || `${field.label}-${index}`} className="align-top">
                         <td className="px-3 py-2">
-                          <div className="font-semibold text-on-surface">{field.label}</div>
+                          <input
+                            value={field.label || ''}
+                            onChange={(event) => onFieldChange(index, 'label', event.target.value)}
+                            className="h-9 w-full rounded-md border border-surface-container-high bg-surface px-2 text-sm font-semibold text-on-surface"
+                          />
                           <div className="mt-1 text-[11px] text-outline">{field.category || '项目事实'}</div>
                         </td>
                         <td className="px-3 py-2">
@@ -469,6 +486,16 @@ function FactMaintenanceModal({
                             </div>
                           )) : '-'}
                         </td>
+                        <td className="px-3 py-2 text-right">
+                          <IconButton
+                            aria-label="删除字段"
+                            icon="delete"
+                            onClick={() => onFieldRemove(index)}
+                            disabled={busy}
+                            size="sm"
+                            variant="danger"
+                          />
+                        </td>
                       </tr>
                     )
                   })}
@@ -479,7 +506,7 @@ function FactMaintenanceModal({
             <div className="flex min-h-[260px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest text-center">
               <div>
                 <span className="material-symbols-outlined text-4xl text-primary">fact_check</span>
-                <p className="mt-3 text-sm text-on-surface-variant">还没有商务标项目事实表，先从解析字段、商务任务和素材库生成候选事实。</p>
+                <p className="mt-3 text-sm text-on-surface-variant">还没有商务标项目事实表，先生成当前字段口径或新增人工字段。</p>
               </div>
             </div>
           )}
@@ -1582,12 +1609,46 @@ export default function BusinessGapRecognition({ showToast }) {
 
   const changeFactField = (index, key, value) => {
     setFactFields((current) => current.map((field, idx) => (
-      idx === index ? { ...field, [key]: value, status: value ? (field.status === 'confirmed' ? 'confirmed' : 'candidate') : 'missing' } : field
+      idx === index
+        ? {
+            ...field,
+            [key]: value,
+            status: key === 'value'
+              ? (value ? (field.status === 'confirmed' ? 'confirmed' : 'candidate') : 'missing')
+              : field.status,
+          }
+        : field
     )))
   }
 
+  const addFactField = () => {
+    const nextIndex = factFields.length + 1
+    setFactFields((current) => [
+      ...current,
+      {
+        id: `FACT-CUSTOM-${Date.now()}`,
+        key: `custom-${nextIndex}`,
+        label: `自定义字段${nextIndex}`,
+        category: '人工补充事实',
+        sourceMode: 'manual',
+        sourceHint: '用户新增',
+        value: '',
+        required: true,
+        status: 'missing',
+        confidence: 0,
+        sourceRefs: [{ type: 'manualFact', title: '用户新增', field: `自定义字段${nextIndex}`, sourceMode: 'manual' }],
+        alternatives: [],
+        notes: '',
+      },
+    ])
+  }
+
+  const removeFactField = (index) => {
+    setFactFields((current) => current.filter((_, idx) => idx !== index))
+  }
+
   const confirmFactTable = async () => {
-    if (actionLoading || !factFields.length) return null
+    if (actionLoading) return null
     setActionLoading('facts-confirm')
     try {
       const data = await businessGapsAPI.saveFacts(id, { fields: factFields, confirm: true, operator: '当前用户' })
@@ -1907,7 +1968,9 @@ export default function BusinessGapRecognition({ showToast }) {
         busy={['facts-build', 'facts-load', 'facts-confirm'].includes(actionLoading)}
         onClose={() => setFactModalOpen(false)}
         onConfirm={confirmFactTable}
+        onFieldAdd={addFactField}
         onFieldChange={changeFactField}
+        onFieldRemove={removeFactField}
       />
       <BusinessMaterialPickerModal
         open={materialPickerOpen}
