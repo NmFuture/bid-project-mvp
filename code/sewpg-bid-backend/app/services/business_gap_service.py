@@ -43,6 +43,7 @@ from app.services.business_gap_domain import (
     update_toc_ref_statuses,
     unique_path,
 )
+from app.services.business_bidder_profile import load_business_bidder_facts, store_business_bidder_facts
 from app.services.business_gap_fact_table import (
     PROJECT_FACT_TABLE_SCHEMA_VERSION,
     build_project_fact_table,
@@ -562,11 +563,20 @@ class BusinessGapService:
         business_gap_state = ensure_business_gap_state(project)
         if business_gap_state["recognitionStatus"] != "completed":
             raise ValueError("请先生成商务标缺口计划，再维护项目事实表。")
-        table = build_project_fact_table(project, business_gap_state)
+        table = build_project_fact_table(
+            project, business_gap_state, bidder_profile=await self._bidder_profile_safe()
+        )
         business_gap_state["projectFactTable"] = table
         project["updatedAt"] = now_iso()
         persist_business_gap_project(project)
         return copy.deepcopy(table)
+
+    @staticmethod
+    async def _bidder_profile_safe() -> dict[str, str]:
+        try:
+            return await load_business_bidder_facts()
+        except Exception:
+            return {}
 
     async def save_facts(self, project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = data or {}
@@ -576,7 +586,9 @@ class BusinessGapService:
             raise ValueError("请先生成商务标缺口计划，再维护项目事实表。")
         current = business_gap_state.get("projectFactTable")
         if not isinstance(current, dict) or current.get("schemaVersion") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
-            current = build_project_fact_table(project, business_gap_state)
+            current = build_project_fact_table(
+                project, business_gap_state, bidder_profile=await self._bidder_profile_safe()
+            )
         raw_incoming_fields = payload.get("fields") if isinstance(payload.get("fields"), list) else current.get("fields") or []
         incoming_fields = normalize_business_fact_fields_for_save(raw_incoming_fields)
         confirm = bool(payload.get("confirm") or payload.get("confirmed"))
@@ -601,6 +613,16 @@ class BusinessGapService:
         business_gap_state["projectFactTable"] = table
         project["updatedAt"] = saved_at
         persist_business_gap_project(project)
+        fixed_updates = {
+            str(field.get("label")): str(field.get("value") or "").strip()
+            for field in fields
+            if str(field.get("sourceMode") or "") == "fixed" and str(field.get("value") or "").strip()
+        }
+        if fixed_updates:
+            try:
+                await store_business_bidder_facts(fixed_updates, updated_by=operator)
+            except Exception:
+                pass
         return copy.deepcopy(table)
 
     def update_task(self, project_id: str, task_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:

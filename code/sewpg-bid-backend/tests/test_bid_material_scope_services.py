@@ -3340,6 +3340,88 @@ def test_business_fact_table_drops_placeholder_values_on_rebuild() -> None:
     assert labels["招标编号"]["value"] == "ZBA272600801"
 
 
+def test_business_fact_table_uses_shared_bidder_profile() -> None:
+    from app.services.business_gap_fact_table import build_project_fact_table
+
+    project = {"id": "PRJ-BIDDER-PROFILE", "name": "档案测试项目", "bidType": "商务标"}
+    with patch(
+        "app.services.business_gap_fact_table.load_business_bidder_facts_sync",
+        return_value={"投标人地址": "上海市闵行区东川路555号", "投标人电话": "021-00000000"},
+    ):
+        table = build_project_fact_table(project, {"plan": {}})
+    labels = {field["label"]: field for field in table["fields"]}
+    assert labels["投标人地址"]["value"] == "上海市闵行区东川路555号"
+    assert labels["投标人地址"]["sourceRefs"][0]["type"] == "bidderProfile"
+    assert labels["投标人电话"]["value"] == "021-00000000"
+    assert labels["投标人"]["value"] == "上海电气风电集团股份有限公司"
+
+
+def test_business_fact_table_profile_refreshes_unconfirmed_fixed_candidates() -> None:
+    from app.services.business_gap_fact_table import build_project_fact_table
+
+    project = {"id": "PRJ-BIDDER-PROFILE-2", "name": "档案刷新测试", "bidType": "商务标"}
+    gap_state = {
+        "plan": {},
+        "projectFactTable": {
+            "schemaVersion": "bid-project-fact-table-v1",
+            "fields": [
+                {"label": "投标人地址", "value": "旧地址", "status": "candidate"},
+                {
+                    "label": "投标人电话",
+                    "value": "010-11111111",
+                    "status": "confirmed",
+                    "confirmedAt": "2026-06-01T00:00:00+00:00",
+                    "confirmedBy": "人工",
+                },
+            ],
+        },
+    }
+    with patch(
+        "app.services.business_gap_fact_table.load_business_bidder_facts_sync",
+        return_value={"投标人地址": "上海市浦东新区新地址1号", "投标人电话": "021-22222222"},
+    ):
+        table = build_project_fact_table(project, gap_state)
+    labels = {field["label"]: field for field in table["fields"]}
+    assert labels["投标人地址"]["value"] == "上海市浦东新区新地址1号"
+    assert labels["投标人电话"]["value"] == "010-11111111"
+
+
+def test_business_gap_save_facts_persists_fixed_fields_to_bidder_profile() -> None:
+    project_id = _seed_business_gap_project(
+        {
+            "schemaVersion": "bid-business-gap-plan-v1",
+            "tocRefs": [],
+            "tasks": [],
+            "summary": {},
+        }
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_store(values, *, updated_by=""):
+        captured["values"] = dict(values)
+        captured["updated_by"] = updated_by
+        return dict(values)
+
+    with patch("app.services.business_gap_service.store_business_bidder_facts", side_effect=fake_store):
+        asyncio.run(
+            business_gap_service.save_facts(
+                project_id,
+                {
+                    "fields": [
+                        {"label": "投标人地址", "value": "上海市闵行区东川路555号"},
+                        {"label": "招标项目名称", "value": "某风电项目"},
+                        {"label": "自定义联系人", "value": "张三"},
+                    ],
+                    "confirm": False,
+                    "operator": "测试用户",
+                },
+            )
+        )
+
+    assert captured["values"] == {"投标人地址": "上海市闵行区东川路555号"}
+    assert captured["updated_by"] == "测试用户"
+
+
 def test_business_assembly_fact_table_stays_in_fact_table_helper(tmp_path) -> None:
     from app.services import business_assembly
 

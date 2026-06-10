@@ -6,6 +6,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from app.services.business_bidder_profile import load_business_bidder_facts_sync
 from app.services.business_s1_handoff import business_s1_parse_result
 from app.services.identity import build_project_identity
 
@@ -138,6 +139,10 @@ BASIC_BUSINESS_FACT_FIELD_SPECS = [
 FIXED_BUSINESS_FACT_VALUES = {
     "投标人": "上海电气风电集团股份有限公司",
 }
+
+FIXED_BUSINESS_FACT_LABELS = tuple(
+    str(spec["label"]) for spec in BASIC_BUSINESS_FACT_FIELD_SPECS if str(spec.get("sourceMode")) == "fixed"
+)
 
 FACT_VALUE_COMPAT_LABELS = {
     "招标项目名称": ["项目名称", "采购项目名称", "工程名称"],
@@ -463,8 +468,16 @@ def fact_table_value_map(fact_table: dict[str, Any]) -> dict[str, str]:
     return values
 
 
-def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any]) -> dict[str, Any]:
+def build_project_fact_table(
+    project: dict[str, Any],
+    gap_state: dict[str, Any],
+    *,
+    bidder_profile: dict[str, str] | None = None,
+) -> dict[str, Any]:
     built_at = _now_iso()
+    if bidder_profile is None:
+        # 事件循环线程内的 async 调用方应自行预载档案后传入
+        bidder_profile = load_business_bidder_facts_sync()
     existing_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
     existing_by_key = {
         fact_label_key(field.get("label")): field
@@ -504,6 +517,15 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         preserve_existing = bool(existing_value and existing_status in {"candidate", "confirmed"})
         if preserve_existing and existing_status == "candidate" and not fact_candidate_value_valid(label, existing_value):
             preserve_existing = False
+        profile_value = bidder_profile.get(label, "") if source_mode == "fixed" else ""
+        if (
+            preserve_existing
+            and existing_status == "candidate"
+            and profile_value
+            and existing_value != profile_value
+        ):
+            # 共享投标人档案是固定字段的最新口径，未确认的旧候选值随档案刷新
+            preserve_existing = False
         parse_fact = parse_for(label) if source_mode in {"parse", "manual"} else {}
         parse_value = str(parse_fact.get("value") or "").strip()
         if parse_value and fact_value_is_placeholder(label, parse_value):
@@ -523,6 +545,13 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             confidence = float(parse_fact.get("confidence") or 0.82)
             source_priority = 260
             source_refs = normalize_fact_source_refs([copy.deepcopy(parse_fact.get("sourceRef") or {})])
+        if not value and profile_value:
+            value = profile_value
+            confidence = 0.9
+            source_priority = 290
+            source_refs = normalize_fact_source_refs(
+                [{"type": "bidderProfile", "title": "投标人共享事实", "field": label, "sourceMode": source_mode}]
+            )
         if not value:
             value, fallback_ref, fallback_confidence, fallback_priority = default_business_fact_value(
                 project,
