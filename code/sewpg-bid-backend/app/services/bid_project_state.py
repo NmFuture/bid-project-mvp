@@ -361,6 +361,8 @@ def update_review_decision_state(project: dict[str, Any], project_id: str, value
             )
             project["parse_result"] = promoted["parseResult"]
             project["parse_storage"] = promoted["parseStorage"]
+            if promoted["stageArtifacts"]:
+                project["stageArtifacts"] = promoted["stageArtifacts"]
             project["workspaceArtifacts"] = promoted["artifacts"]
             cleanup_parse_temp_workspace(project_id)
     elif decision == "abandon":

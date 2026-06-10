@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
+from app.services.business_s1_handoff import BUSINESS_S1_HANDOFF_SCHEMA_VERSION, PUBLISHED_S1_STATUS
 from app.services.parse_profiles import (
     BUSINESS_PARSE_PROFILE,
     TECHNICAL_PARSE_PROFILE,
@@ -320,10 +321,44 @@ def promote_parse_artifacts_to_workspace(
             "structured": copy.deepcopy(workspace_result.get("structured") or parse_storage.get("structured") or {}),
         }
     )
+    stage_artifacts: dict[str, Any] = {}
+    if profile.key == BUSINESS_PARSE_PROFILE.key:
+        stage_artifact_paths = {
+            "workspaceRoot": str(workspace_root),
+            "parseDir": str(parse_dir),
+            "combinedTextPath": str(combined_text_path),
+            "businessSectionTreePath": str(parse_dir / "business_section_tree.json"),
+            "structuredResultPath": str(structured_result_path),
+            "skillManifestPath": str(skill_manifest_path),
+            "manifestPath": str(manifest_path),
+            "parseResultWorkspacePath": str(parse_dir / "parse-result.workspace.json"),
+            "templateExtractionPath": str(parse_dir / "business_template_extraction" / "business_template_extraction.json"),
+            "appendicesDir": str(appendix_dir),
+            "commitmentLettersDir": str(commitment_letter_dir),
+        }
+        stage_artifacts = {
+            "s1": {
+                "schemaVersion": BUSINESS_S1_HANDOFF_SCHEMA_VERSION,
+                "status": PUBLISHED_S1_STATUS,
+                "version": 1,
+                "projectId": project_id,
+                "bidType": bid_type,
+                "parseProfile": profile.key,
+                "publishedAt": str(workspace_result.get("parsedAt") or ""),
+                "paths": stage_artifact_paths,
+                "summary": {
+                    "sourceFileCount": len(workspace_documents),
+                    "itemCount": len(workspace_result.get("items") if isinstance(workspace_result.get("items"), list) else []),
+                    "appendixCount": len(promoted_appendices),
+                    "commitmentLetterCount": len(promoted_letters),
+                },
+            }
+        }
 
     return {
         "parseResult": workspace_result,
         "parseStorage": workspace_storage,
+        "stageArtifacts": stage_artifacts,
         "artifacts": {
             "root": str(workspace_root),
             "parseDir": str(parse_dir),
