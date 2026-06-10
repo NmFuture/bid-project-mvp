@@ -502,8 +502,12 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         existing_value = str(existing.get("value") or "").strip()
         existing_status = str(existing.get("status") or "").strip()
         preserve_existing = bool(existing_value and existing_status in {"candidate", "confirmed"})
+        if preserve_existing and existing_status == "candidate" and not fact_candidate_value_valid(label, existing_value):
+            preserve_existing = False
         parse_fact = parse_for(label) if source_mode in {"parse", "manual"} else {}
         parse_value = str(parse_fact.get("value") or "").strip()
+        if parse_value and fact_value_is_placeholder(label, parse_value):
+            parse_value = ""
         value = existing_value if preserve_existing else ""
         confidence = float(existing.get("confidence") or 0) if preserve_existing else 0.0
         source_priority = int(existing.get("sourcePriority") or 0) if preserve_existing else 0
@@ -767,11 +771,39 @@ def iter_parse_fact_fields(value: Any) -> list[dict[str, Any]]:
     return fields
 
 
+def fact_value_is_placeholder(label: str, value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    aliases = [label, *FACT_VALUE_COMPAT_LABELS.get(str(label), [])]
+    for alias in aliases:
+        if re.fullmatch(rf"[（(【\[]?\s*{re.escape(str(alias))}\s*[)）】\]]?", text):
+            return True
+    return False
+
+
+def fact_candidate_value_valid(label: str, value: str) -> bool:
+    if fact_value_is_placeholder(label, value):
+        return False
+    label_text = str(label)
+    if label_text == "招标项目名称":
+        return looks_like_project_name(value)
+    if label_text == "招标编号":
+        return looks_like_tender_no(value)
+    if label_text in {"招标人", "招标项目单位", "招标代理机构"}:
+        return looks_like_party_name(value)
+    return True
+
+
 def looks_like_project_name(value: Any) -> bool:
     text = str(value or "").strip()
     if not text or len(text) > 160:
         return False
-    if re.search(r"投标人|招标人|应当|必须|不得|标准|规范|条款|认可|提供", text):
+    if re.match(r"^[（(【\[]\s*(项目名称|工程名称|招标项目名称|采购项目名称)\s*[)）】\]]", text):
+        return False
+    if re.search(r"[。！？；]", text):
+        return False
+    if re.search(r"投标人|招标人|应当|必须|不得|标准|规范|条款|认可|提供|协议|事宜|订立|承诺|声明", text):
         return False
     return "项目" in text or "工程" in text
 

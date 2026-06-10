@@ -3292,6 +3292,54 @@ def test_business_fact_table_ignores_empty_turbine_model_dict_and_signature_part
     assert labels["风机型号"]["value"] == ""
 
 
+def test_business_fact_table_drops_placeholder_values_on_rebuild() -> None:
+    from app.services.business_gap_fact_table import build_project_fact_table
+
+    project = {
+        "id": "PRJ-BIZ-FACT-PLACEHOLDER",
+        "name": "占位符清洗测试",
+        "bidType": "商务标",
+        "parse_result": {
+            "status": "completed",
+            "structured": {
+                "projectFactFields": [
+                    {
+                        "fieldKey": "projectName",
+                        "label": "项目名称",
+                        "value": "（项目名称）",
+                        "confidence": 0.9,
+                    }
+                ]
+            },
+        },
+    }
+    gap_state = {
+        "plan": {},
+        "projectFactTable": {
+            "schemaVersion": "bid-project-fact-table-v1",
+            "fields": [
+                {
+                    "label": "招标项目名称",
+                    "value": "（项目名称）",
+                    "status": "candidate",
+                    "confidence": 0.86,
+                },
+                {
+                    "label": "招标编号",
+                    "value": "ZBA272600801",
+                    "status": "candidate",
+                    "confidence": 0.9,
+                },
+            ],
+        },
+    }
+
+    table = build_project_fact_table(project, gap_state)
+    labels = {field["label"]: field for field in table["fields"]}
+    assert labels["招标项目名称"]["value"] == "占位符清洗测试"
+    assert labels["招标编号"]["value"] == "ZBA272600801"
+
+
 def test_business_assembly_fact_table_stays_in_fact_table_helper(tmp_path) -> None:
     from app.services import business_assembly
 
