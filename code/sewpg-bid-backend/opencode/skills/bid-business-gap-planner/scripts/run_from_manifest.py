@@ -1627,8 +1627,43 @@ def project_fact_overview(manifest: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def converge_final_artifact_tasks(tasks: list[dict[str, Any]]) -> None:
+    """已选定终局产物的任务保持收敛：重跑时新挂载的解析底稿归入过程参考。"""
+    for task in tasks:
+        final_id = str(task.get("finalArtifactId") or "")
+        if not final_id:
+            continue
+        artifacts = [item for item in task.get("resolvedArtifacts") or [] if isinstance(item, dict)]
+        if not any(str(item.get("artifactId") or "") == final_id for item in artifacts):
+            task["finalArtifactId"] = ""
+            continue
+        references = [item for item in task.get("referenceArtifacts") or [] if isinstance(item, dict)]
+        reference_ids = {str(item.get("artifactId") or "") for item in references}
+        kept: list[dict[str, Any]] = []
+        for item in artifacts:
+            if str(item.get("artifactId") or "") == final_id:
+                kept.append(item)
+                continue
+            artifact_type = str(item.get("artifactType") or "")
+            source_mode = str(item.get("sourceMode") or "")
+            if (
+                artifact_type.startswith("parse_")
+                or source_mode.startswith("parsed_")
+                or artifact_type == "selected_material"
+                or source_mode == "selected_from_business_material_library"
+                or str(item.get("materialUsage") or "") == "fill_template"
+            ):
+                if str(item.get("artifactId") or "") not in reference_ids:
+                    references.append(item)
+                continue
+            kept.append(item)
+        task["resolvedArtifacts"] = kept
+        task["referenceArtifacts"] = references
+
+
 def annotate_fact_readiness(tasks: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
     overview = project_fact_overview(manifest)
+    converge_final_artifact_tasks(tasks)
     for task in tasks:
         fill_plan = task.get("fillPlan") if isinstance(task.get("fillPlan"), dict) else {}
         artifacts = [item for item in task.get("resolvedArtifacts") or [] if isinstance(item, dict)]
@@ -1724,6 +1759,7 @@ def merge_state(tasks: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
             "materialUsage",
             "fillPlan",
             "selectedEvidenceSegments",
+            "finalArtifactId",
         ):
             if key in saved:
                 task[key] = saved[key]
@@ -1731,6 +1767,8 @@ def merge_state(tasks: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
             for artifact in saved["resolvedArtifacts"]:
                 if isinstance(artifact, dict):
                     append_saved_artifact(task, artifact)
+        if isinstance(saved.get("referenceArtifacts"), list):
+            task["referenceArtifacts"] = [item for item in saved["referenceArtifacts"] if isinstance(item, dict)]
 
 
 def append_saved_artifact(task: dict[str, Any], artifact: dict[str, Any]) -> None:

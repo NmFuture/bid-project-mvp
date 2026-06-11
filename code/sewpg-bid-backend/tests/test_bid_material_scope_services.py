@@ -3500,6 +3500,38 @@ def test_drop_unconfirmed_generated_artifacts_supersedes_same_target() -> None:
     assert "APPX-0001.docx" in names
 
 
+def test_confirm_generated_artifact_converges_task_to_single_output() -> None:
+    from app.services.business_gap_service import (
+        _converge_task_to_final_artifact,
+        _restore_task_reference_artifacts,
+    )
+
+    final = {"artifactId": "BART-1-TBL-2", "artifactType": "business_table_fill", "sourceMode": "generated_by_business_table_fill", "confirmed": True}
+    task = {
+        "resolvedArtifacts": [
+            {"artifactId": "APPX-0001", "artifactType": "parse_appendix_template", "sourceMode": "parsed_from_tender_attachment_template", "confirmed": True},
+            {"artifactId": "SEL-1", "artifactType": "selected_material", "sourceMode": "selected_from_business_material_library", "materialUsage": "fill_template", "confirmed": True},
+            {"artifactId": "BART-1-TBL-1", "artifactType": "business_table_fill", "sourceMode": "generated_by_business_table_fill", "confirmed": False},
+            final,
+            {"artifactId": "UP-1", "artifactType": "manual_supplement", "sourceMode": "uploaded_in_business_s3", "confirmed": True},
+        ]
+    }
+
+    _converge_task_to_final_artifact(task, final)
+    resolved_ids = [item["artifactId"] for item in task["resolvedArtifacts"]]
+    reference_ids = [item["artifactId"] for item in task["referenceArtifacts"]]
+    # 终局产物 + 人工上传留在装配列表；底稿与填写参考素材挪入过程参考；旧生成产物删除
+    assert resolved_ids == ["BART-1-TBL-2", "UP-1"]
+    assert set(reference_ids) == {"APPX-0001", "SEL-1"}
+    assert task["finalArtifactId"] == "BART-1-TBL-2"
+
+    _restore_task_reference_artifacts(task)
+    restored_ids = {item["artifactId"] for item in task["resolvedArtifacts"]}
+    assert {"BART-1-TBL-2", "UP-1", "APPX-0001", "SEL-1"} <= restored_ids
+    assert task["referenceArtifacts"] == []
+    assert task["finalArtifactId"] == ""
+
+
 def test_business_assembly_fact_table_stays_in_fact_table_helper(tmp_path) -> None:
     from app.services import business_assembly
 

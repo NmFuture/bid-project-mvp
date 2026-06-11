@@ -316,6 +316,8 @@ def _write_state_snapshot(state: Any, state_path: Path) -> None:
                 "notes",
                 "confirmed",
                 "resolvedArtifacts",
+                "referenceArtifacts",
+                "finalArtifactId",
                 "assemblyMode",
                 "materialUsage",
                 "fillPlan",

@@ -288,6 +288,7 @@ const tableFillTargetCandidates = (task) => {
     ...asArray(task?.templateCandidates).filter((item) => !isProjectUploadedBidTemplate(item)),
     ...asArray(task?.candidateMaterials),
     ...asArray(task?.resolvedArtifacts),
+    ...asArray(task?.referenceArtifacts),
   ]
   const grouped = new Map()
   entries.forEach((item) => {
@@ -1922,6 +1923,7 @@ export default function BusinessGapRecognition({ showToast }) {
                   </div>
                 ) : visibleTasks.map((task) => {
                   const resolvedArtifacts = asArray(task.resolvedArtifacts)
+                  const referenceArtifacts = asArray(task.referenceArtifacts)
                   const selectedMaterialIds = new Set(
                     resolvedArtifacts
                       .filter((artifact) => artifact?.sourceMode === 'selected_from_business_material_library')
@@ -1957,11 +1959,14 @@ export default function BusinessGapRecognition({ showToast }) {
                     </div>
 
                     <div className="mt-4 grid gap-3">
-                      {resolvedArtifacts.length > 0 && (
+                      {(resolvedArtifacts.length > 0 || referenceArtifacts.length > 0) && (
                         <div className="rounded-md border border-surface-container-high bg-surface p-3">
                           <div className="flex flex-wrap items-center gap-2">
                             <h4 className="text-sm font-semibold text-on-surface">任务产物</h4>
                             <Badge size="xs" variant="pending">{resolvedArtifacts.length} 个</Badge>
+                            {referenceArtifacts.length > 0 && (
+                              <span className="text-[11px] text-outline">另有 {referenceArtifacts.length} 个过程参考件</span>
+                            )}
                           </div>
                           {resolvedArtifacts.map((artifact, artifactIndex) => {
                             const reviewStatus = String(artifact?.reviewStatus || '')
@@ -2022,6 +2027,30 @@ export default function BusinessGapRecognition({ showToast }) {
                               </div>
                             )
                           })}
+                          {referenceArtifacts.map((artifact, referenceIndex) => (
+                            <div
+                              key={String(artifact?.artifactId || `${artifact?.fileName || 'reference'}-${referenceIndex}`)}
+                              className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest/60 px-3 py-2"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Badge size="xs" variant="pending">过程参考</Badge>
+                                  <span className="truncate text-sm text-on-surface-variant">{taskArtifactTypeLabel(artifact)} · {artifact?.fileName || artifact?.artifactId || '-'}</span>
+                                </div>
+                              </div>
+                              {artifact?.artifactId && (
+                                <Button
+                                  type="button"
+                                  onClick={() => previewTaskArtifact(artifact)}
+                                  disabled={!!actionLoading}
+                                  size="sm"
+                                  variant="quiet"
+                                >
+                                  预览
+                                </Button>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       )}
                       <div className="rounded-md border border-surface-container-high bg-surface p-3">

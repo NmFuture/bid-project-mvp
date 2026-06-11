@@ -802,6 +802,8 @@ class BusinessGapService:
         artifact["reviewStatus"] = "approved" if confirmed else "pending_review"
         artifact["confirmedAt"] = now_iso() if confirmed else ""
         if confirmed:
+            if str(artifact.get("sourceMode") or "").startswith("generated_"):
+                _converge_task_to_final_artifact(task, artifact)
             task["decision"] = "ready"
             task["status"] = "ready"
             task["riskFlags"] = [
@@ -810,6 +812,8 @@ class BusinessGapService:
                 if flag not in {"missing_material", "parser_generated_unconfirmed"}
             ]
         else:
+            if str(task.get("finalArtifactId") or "") == str(artifact.get("artifactId") or ""):
+                _restore_task_reference_artifacts(task)
             task["decision"] = "review_required"
             task["status"] = "review_required"
         task["updatedAt"] = now_iso()
@@ -1598,10 +1602,65 @@ class BusinessGapService:
         for task in plan.get("tasks") or []:
             if not isinstance(task, dict):
                 continue
-            for artifact in task.get("resolvedArtifacts") or []:
-                if isinstance(artifact, dict) and str(artifact.get("artifactId") or "") == artifact_id:
-                    return copy.deepcopy(artifact)
+            for pool in ("resolvedArtifacts", "referenceArtifacts"):
+                for artifact in task.get(pool) or []:
+                    if isinstance(artifact, dict) and str(artifact.get("artifactId") or "") == artifact_id:
+                        return copy.deepcopy(artifact)
         raise KeyError(artifact_id)
+
+
+def _converge_task_to_final_artifact(task: dict[str, Any], final_artifact: dict[str, Any]) -> None:
+    """确认生成产物即选定任务终局：其他生成产物删除，底稿/填写参考素材挪入过程参考。
+
+    装配器只消费 resolvedArtifacts，收敛后任务交给装配的只有终局这一份。
+    """
+    final_id = str(final_artifact.get("artifactId") or "")
+    artifacts = task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else []
+    references = task.get("referenceArtifacts") if isinstance(task.get("referenceArtifacts"), list) else []
+    kept: list[dict[str, Any]] = []
+    for item in artifacts:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("artifactId") or "") == final_id:
+            kept.append(item)
+            continue
+        source_mode = str(item.get("sourceMode") or "")
+        artifact_type = str(item.get("artifactType") or "")
+        if source_mode.startswith("generated_"):
+            stale_path = Path(str(item.get("filePath") or ""))
+            if stale_path.exists() and stale_path.is_file():
+                try:
+                    stale_path.unlink()
+                except OSError:
+                    pass
+            continue
+        if (
+            artifact_type.startswith("parse_")
+            or source_mode.startswith("parsed_")
+            or artifact_type == "selected_material"
+            or source_mode == "selected_from_business_material_library"
+            or str(item.get("materialUsage") or "") == "fill_template"
+        ):
+            references.append(item)
+            continue
+        kept.append(item)
+    task["resolvedArtifacts"] = kept
+    task["referenceArtifacts"] = references
+    task["finalArtifactId"] = final_id
+
+
+def _restore_task_reference_artifacts(task: dict[str, Any]) -> None:
+    """取消终局确认时，把过程参考件恢复回任务工件列表。"""
+    references = task.get("referenceArtifacts") if isinstance(task.get("referenceArtifacts"), list) else []
+    if references:
+        artifacts = task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else []
+        existing_ids = {str(item.get("artifactId") or "") for item in artifacts if isinstance(item, dict)}
+        for item in references:
+            if isinstance(item, dict) and str(item.get("artifactId") or "") not in existing_ids:
+                artifacts.append(item)
+        task["resolvedArtifacts"] = artifacts
+    task["referenceArtifacts"] = []
+    task["finalArtifactId"] = ""
 
 
 def _drop_unconfirmed_generated_artifacts(
