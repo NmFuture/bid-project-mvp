@@ -1,6 +1,18 @@
 {
   "schemaVersion": "bid-business-gap-manifest-schema-v1",
-  "required": ["projectId", "projectName", "bidType", "workDir", "tocJsonPath", "parseResultPath", "businessWikiDir", "materialScope", "materialIndex", "selectedBusinessTurbineModel", "outputFile"],
+  "required": [
+    "projectId",
+    "projectName",
+    "bidType",
+    "workDir",
+    "tocJsonPath",
+    "parseResultPath",
+    "businessWikiDir",
+    "materialScope",
+    "materialIndex",
+    "selectedBusinessTurbineModel",
+    "outputFile"
+  ],
   "properties": {
     "projectId": "string",
     "projectName": "string",
@@ -12,6 +24,42 @@
     "materialScope": "object",
     "materialIndex": "array",
     "selectedBusinessTurbineModel": "object",
-    "outputFile": "path"
+    "outputFile": "path",
+    "projectIdentity": {
+      "type": "object",
+      "description": "项目身份信息（可选）。"
+    },
+    "statePath": {
+      "type": "string",
+      "description": "上一轮任务状态快照路径（可选）；解析类工件路径以本次解析为准。"
+    },
+    "businessWikiIndex": {
+      "type": "object",
+      "description": "商务 Wiki 节点与证据片段索引（可选）；素材级证据片段已合并进 evidenceSegments 键。"
+    },
+    "templateIndex": {
+      "type": "array",
+      "description": "项目上传模板与系统默认模板候选（可选）。"
+    },
+    "materialFeedback": {
+      "type": "object",
+      "description": "人工选择素材反馈记录 bid-business-material-feedback-v1（可选）。"
+    },
+    "projectFactTable": {
+      "type": "object",
+      "description": "商务项目事实表 bid-project-fact-table-v1（可选）；runner 用于标注 fillPlan.missingFacts 与 missing_project_facts 风险。"
+    },
+    "s1Handoff": {
+      "type": "object",
+      "description": "S1 阶段交接件索引 stageArtifacts.s1（可选）。"
+    },
+    "s1Consumption": {
+      "type": "object",
+      "description": "S1 消费来源说明：stageArtifacts.s1 或 legacy_parse_result（可选）。"
+    },
+    "evidenceSegments": {
+      "type": "array",
+      "description": "兼容字段（可选）；runner 实际读取 businessWikiIndex.evidenceSegments。"
+    }
   }
 }

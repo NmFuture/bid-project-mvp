@@ -49,11 +49,20 @@ manifest 至少包含：
 - `selectedBusinessTurbineModel`
 - `outputFile`
 
-可选输入：
+可选输入（后端实际会传，runner 会消费）：
 
-- `projectIdentity`
-- `existingArtifacts`
-- `statePath`
+- `projectIdentity`：项目身份信息。
+- `statePath`：上一轮任务状态快照，用于保留人工决策；解析类工件的文件路径以本次解析为准，不被历史状态覆盖。
+- `businessWikiIndex`：商务 Wiki 节点与证据片段索引（后端已把素材级证据片段合并进 `businessWikiIndex.evidenceSegments`）。
+- `templateIndex`：项目上传模板与系统默认模板候选。
+- `materialFeedback`：人工选择素材的反馈记录（`bid-business-material-feedback-v1`），用于匹配学习。
+- `projectFactTable`：商务项目事实表（`bid-project-fact-table-v1`）。runner 据此给 `requiresProjectFacts` 的任务标注 `fillPlan.missingFacts`/`readyFactCount`/`totalFactCount`，缺必填事实时追加 `missing_project_facts` 风险标记。
+- `s1Handoff` / `s1Consumption`：S1 阶段交接件索引与消费来源说明（`stageArtifacts.s1` 或 legacy 回退）。
+- `evidenceSegments`：兼容字段；runner 实际读取 `businessWikiIndex.evidenceSegments`，后端已预合并，无数据丢失。
+
+业绩库候选说明：`materialIndex` 中 `sourceType` 为 `performance_library`（旧单条业绩记录）或 `performance_package`（新业绩包分类/明细，带项目级合同附件与 `matchConfidence`/`matchMethod`）的条目按共用业绩处理：业绩类模块加分，跨模块降分。
+
+历史可选项 `existingArtifacts` 已废弃：后端不传，runner 不消费。
 
 ## Output
 
