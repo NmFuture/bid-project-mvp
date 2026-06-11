@@ -49,6 +49,13 @@ const factStatusLabels = {
   conflict: '冲突',
 }
 
+const factSourceModeLabels = {
+  parse: '解析产生',
+  manual: '项目人工填写',
+  fixed: '投标人固定事实',
+  system: '系统自动',
+}
+
 const usageModeLabels = {
   attach_whole: '整件挂载',
   extract_fields: '抽字段',
@@ -440,6 +447,7 @@ function FactMaintenanceModal({
                     <th className="w-64 px-3 py-2 font-semibold">确认值</th>
                     <th className="w-24 px-3 py-2 font-semibold">状态</th>
                     <th className="w-28 px-3 py-2 font-semibold">置信度</th>
+                    <th className="w-72 px-3 py-2 font-semibold">来源/用处</th>
                     <th className="px-3 py-2 font-semibold">来源依据</th>
                     <th className="w-16 px-3 py-2 text-right font-semibold">操作</th>
                   </tr>
@@ -462,7 +470,10 @@ function FactMaintenanceModal({
                             onChange={(event) => onFieldChange(index, 'label', event.target.value)}
                             className="h-9 w-full rounded-md border border-surface-container-high bg-surface px-2 text-sm font-semibold text-on-surface"
                           />
-                          <div className="mt-1 text-[11px] text-outline">{field.category || '项目事实'}</div>
+                          <div className="mt-1 text-[11px] text-outline">
+                            {field.category || '项目事实'}
+                            {field.sourceMode ? ` · ${factSourceModeLabels[field.sourceMode] || field.sourceMode}` : ''}
+                          </div>
                         </td>
                         <td className="px-3 py-2">
                           <input
@@ -478,6 +489,16 @@ function FactMaintenanceModal({
                         </td>
                         <td className="px-3 py-2 text-xs text-on-surface-variant">
                           {field.confidence ? `${Math.round(Number(field.confidence) * 100)}%` : '-'}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-on-surface-variant">
+                          <div className="mb-1 line-clamp-2" title={field.sourceHint || ''}>
+                            <span className="text-outline">来源：</span>
+                            {field.sourceHint || '-'}
+                          </div>
+                          <div className="line-clamp-2" title={field.usage || ''}>
+                            <span className="text-outline">用处：</span>
+                            {field.usage || '-'}
+                          </div>
                         </td>
                         <td className="px-3 py-2 text-xs text-on-surface-variant">
                           {refs.length ? refs.map((ref) => (
@@ -1746,6 +1767,17 @@ export default function BusinessGapRecognition({ showToast }) {
           <StatCard label="已就绪" value={summary.readyCount || 0} />
         </div>
         <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+          {plan?.s1Consumption?.source ? (
+            <div className="mb-1 flex items-center gap-1 text-[11px] text-on-surface-variant">
+              <span className="material-symbols-outlined text-[14px] leading-none">
+                {plan.s1Consumption.source === 'stageArtifacts.s1' ? 'verified' : 'history'}
+              </span>
+              解析数据来源：
+              {plan.s1Consumption.source === 'stageArtifacts.s1'
+                ? `已发布 S1 交接件 v${plan.s1Consumption?.handoff?.version || 1}`
+                : '兼容回退（历史解析结果）'}
+            </div>
+          ) : null}
           <div className="flex min-h-7 items-center gap-2">
             <div className="shrink-0 text-xs font-semibold text-on-surface-variant">处理方式统计</div>
             <div className="grid min-w-0 flex-1 grid-cols-3 gap-1.5 text-center">
