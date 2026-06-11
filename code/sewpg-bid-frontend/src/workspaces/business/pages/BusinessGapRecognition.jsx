@@ -1363,6 +1363,30 @@ export default function BusinessGapRecognition({ showToast }) {
     }))
   }
 
+  const previewTaskArtifact = (artifact) => {
+    const artifactId = String(artifact?.artifactId || '')
+    if (!artifactId) {
+      showToast?.('该产物缺少 ID，暂不能预览。', 'error')
+      return
+    }
+    window.open(businessGapsAPI.artifactContentUrl(id, artifactId, artifact?.fileName), '_blank', 'noopener')
+  }
+
+  const removeTaskArtifact = async (task, artifact) => {
+    const artifactId = String(artifact?.artifactId || '')
+    if (!task || !artifactId) return
+    setActionLoading(`remove-artifact:${artifactId}`)
+    try {
+      const data = await businessGapsAPI.removeArtifact(id, task.id, artifactId)
+      mergePlanPayload(data)
+      showToast?.('产物已删除')
+    } catch (e) {
+      showToast?.(e?.message || '产物删除失败', 'error')
+    } finally {
+      setActionLoading('')
+    }
+  }
+
   const confirmTaskArtifact = async (task, artifact) => {
     const artifactId = String(artifact?.artifactId || '')
     if (!task || !artifactId) return
@@ -1956,17 +1980,45 @@ export default function BusinessGapRecognition({ showToast }) {
                                   </div>
                                   {artifactTime && <div className="mt-0.5 text-[11px] text-outline">{artifactTime.replace('T', ' ').slice(0, 19)}</div>}
                                 </div>
-                                {!confirmedArtifact && artifact?.artifactId && (
-                                  <Button
-                                    type="button"
-                                    onClick={() => confirmTaskArtifact(task, artifact)}
-                                    disabled={!!actionLoading}
-                                    size="sm"
-                                    variant="secondary"
-                                  >
-                                    {actionLoading === `confirm-artifact:${artifact.artifactId}` ? '确认中...' : '确认产物'}
-                                  </Button>
-                                )}
+                                <div className="flex shrink-0 items-center gap-2">
+                                  {artifact?.artifactId && (
+                                    <Button
+                                      type="button"
+                                      onClick={() => previewTaskArtifact(artifact)}
+                                      disabled={!!actionLoading}
+                                      size="sm"
+                                      variant="quiet"
+                                    >
+                                      预览
+                                    </Button>
+                                  )}
+                                  {!confirmedArtifact && artifact?.artifactId && (
+                                    <Button
+                                      type="button"
+                                      onClick={() => confirmTaskArtifact(task, artifact)}
+                                      disabled={!!actionLoading}
+                                      size="sm"
+                                      variant="secondary"
+                                    >
+                                      {actionLoading === `confirm-artifact:${artifact.artifactId}` ? '确认中...' : '确认产物'}
+                                    </Button>
+                                  )}
+                                  {!confirmedArtifact && artifact?.artifactId && (
+                                    String(artifact?.sourceMode || '').startsWith('generated_')
+                                    || String(artifact?.sourceMode || '') === 'uploaded_in_business_s3'
+                                    || String(artifact?.sourceMode || '') === 'selected_from_business_material_library'
+                                  ) && (
+                                    <Button
+                                      type="button"
+                                      onClick={() => removeTaskArtifact(task, artifact)}
+                                      disabled={!!actionLoading}
+                                      size="sm"
+                                      variant="danger"
+                                    >
+                                      {actionLoading === `remove-artifact:${artifact.artifactId}` ? '删除中...' : '删除'}
+                                    </Button>
+                                  )}
+                                </div>
                               </div>
                             )
                           })}

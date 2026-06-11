@@ -3465,6 +3465,41 @@ def test_business_gap_save_facts_persists_fixed_fields_to_bidder_profile() -> No
     assert captured["updated_by"] == "测试用户"
 
 
+def test_drop_unconfirmed_generated_artifacts_supersedes_same_target() -> None:
+    from app.services.business_gap_service import _drop_unconfirmed_generated_artifacts
+
+    task = {
+        "resolvedArtifacts": [
+            {"artifactType": "parse_appendix_template", "confirmed": True, "fileName": "APPX-0001.docx"},
+            {
+                "artifactType": "business_table_fill",
+                "confirmed": False,
+                "fileName": "投标函-AI填写.docx",
+                "target": {"fileName": "投标函.docx"},
+            },
+            {
+                "artifactType": "business_table_fill",
+                "confirmed": True,
+                "fileName": "投标函-AI填写-旧确认.docx",
+                "target": {"fileName": "投标函.docx"},
+            },
+            {
+                "artifactType": "business_table_fill",
+                "confirmed": False,
+                "fileName": "其他表-AI填写.docx",
+                "target": {"fileName": "其他表.docx"},
+            },
+        ]
+    }
+    _drop_unconfirmed_generated_artifacts(task, artifact_type="business_table_fill", target_file_name="投标函.docx")
+    names = [item["fileName"] for item in task["resolvedArtifacts"]]
+    # 同目标未确认的被替换；已确认的与其他目标的保留
+    assert "投标函-AI填写.docx" not in names
+    assert "投标函-AI填写-旧确认.docx" in names
+    assert "其他表-AI填写.docx" in names
+    assert "APPX-0001.docx" in names
+
+
 def test_business_assembly_fact_table_stays_in_fact_table_helper(tmp_path) -> None:
     from app.services import business_assembly
 

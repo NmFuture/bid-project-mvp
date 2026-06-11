@@ -293,6 +293,11 @@ export const businessGapsAPI = {
       timeoutMs: 5 * 60 * 1000,
       retryCount: 0,
     }),
+  artifactContentUrl: (projectId, artifactId, fileName) =>
+    joinUrl(
+      ENV.API_BASE_URL,
+      `/business/projects/${projectId}/business-gaps/artifacts/${encodeURIComponent(artifactId)}/content/${encodeURIComponent(fileName || 'artifact.docx')}`,
+    ),
   removeArtifact: (projectId, taskId, artifactId) =>
     request(`/business/projects/${projectId}/business-gaps/tasks/${taskId}/artifacts/${encodeURIComponent(artifactId)}`, { method: 'DELETE' }),
   selectMaterial: (projectId, taskId, data) =>

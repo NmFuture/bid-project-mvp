@@ -1009,7 +1009,9 @@ class BusinessGapService:
                 kept.append(artifact)
         if removed is None:
             raise KeyError(artifact_id)
-        if str(removed.get("sourceMode") or "") not in {"uploaded_in_business_s3", "selected_from_business_material_library"}:
+        removed_source_mode = str(removed.get("sourceMode") or "")
+        removable_generated = removed_source_mode.startswith("generated_") and not bool(removed.get("confirmed"))
+        if removed_source_mode not in {"uploaded_in_business_s3", "selected_from_business_material_library"} and not removable_generated:
             raise ValueError("解析生成产物不能在 S3 页面直接取消，请在解析产物审核处处理。")
         if str(removed.get("materialSyncStatus") or "") == "synced_to_project_material":
             raise ValueError("该补料已同步到项目素材库，不能直接取消；如需删除，请在素材库中处理。")
@@ -1318,6 +1320,7 @@ class BusinessGapService:
         created_at = now_iso()
         work_dir = business_workspace_dir(project_id) / "gaps" / "ai-drafts" / safe_filename(task_id, "task")
         work_dir.mkdir(parents=True, exist_ok=True)
+        _drop_unconfirmed_generated_artifacts(task, artifact_type="ai_draft")
         existing_count = len(task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else [])
         title = str(task.get("title") or "商务响应文件")
         output_path = unique_path(work_dir, f"{safe_filename(title, '商务响应文件')}-AI起草.docx")
@@ -1449,6 +1452,7 @@ class BusinessGapService:
         if not resolved_output.exists():
             raise RuntimeError(f"AI填写未生成输出文件：{resolved_output}")
 
+        _drop_unconfirmed_generated_artifacts(task, artifact_type="business_table_fill", target_file_name=str((target or {}).get("fileName") or ""))
         existing_count = len(task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else [])
         artifact_id = f"BART-{safe_filename(task_id, 'TASK')}-TBL-{existing_count + 1}"
         artifact = {
@@ -1598,6 +1602,34 @@ class BusinessGapService:
                 if isinstance(artifact, dict) and str(artifact.get("artifactId") or "") == artifact_id:
                     return copy.deepcopy(artifact)
         raise KeyError(artifact_id)
+
+
+def _drop_unconfirmed_generated_artifacts(
+    task: dict[str, Any],
+    *,
+    artifact_type: str,
+    target_file_name: str = "",
+) -> None:
+    """同一目标重复生成时，旧的未确认 AI 产物让位给最新一份，避免产物堆积。"""
+    artifacts = task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else []
+    kept: list[dict[str, Any]] = []
+    for item in artifacts:
+        if not isinstance(item, dict):
+            continue
+        same_type = str(item.get("artifactType") or "") == artifact_type
+        unconfirmed = not bool(item.get("confirmed"))
+        item_target = item.get("target") if isinstance(item.get("target"), dict) else {}
+        same_target = not target_file_name or str(item_target.get("fileName") or "") == target_file_name
+        if same_type and unconfirmed and same_target:
+            stale_path = Path(str(item.get("filePath") or ""))
+            if stale_path.exists() and stale_path.is_file():
+                try:
+                    stale_path.unlink()
+                except OSError:
+                    pass
+            continue
+        kept.append(item)
+    task["resolvedArtifacts"] = kept
 
 
 business_gap_service = BusinessGapService()
