@@ -1160,8 +1160,8 @@ class BusinessGapPlannerTests(unittest.TestCase):
         )
         self.assertEqual(ai_draft_response.status_code, 200)
         ai_draft_task = ai_draft_response.json()["task"]
-        self.assertEqual(ai_draft_task["status"], "ready")
-        self.assertEqual(ai_draft_task["decision"], "ready")
+        self.assertEqual(ai_draft_task["status"], "review_required")
+        self.assertEqual(ai_draft_task["decision"], "review_required")
         self.assertNotIn("ai_draft_required", ai_draft_task["riskFlags"])
 
         async def fake_raw_upload(**kwargs):
@@ -1868,8 +1868,8 @@ class BusinessGapPlannerTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["artifact"]["sourceMode"], "generated_by_business_table_fill")
         self.assertEqual(payload["artifact"]["assemblyMode"], "table_fill_from_material")
-        self.assertEqual(payload["task"]["status"], "ready")
-        self.assertEqual(payload["task"]["decision"], "ready")
+        self.assertEqual(payload["task"]["status"], "review_required")
+        self.assertEqual(payload["task"]["decision"], "review_required")
         self.assertEqual(payload["task"]["handlingMode"], "ai_table_fill")
         self.assertEqual(payload["task"]["resolvedArtifacts"][0]["operator"], "测试用户")
         self.assertTrue(Path(payload["artifact"]["filePath"]).exists())

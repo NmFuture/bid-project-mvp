@@ -1332,9 +1332,9 @@ class BusinessGapService:
             "sourceMode": "generated_by_business_s3_ai_draft",
             "version": 1,
             "previewable": True,
-            "confirmed": True,
-            "reviewStatus": "approved",
-            "confirmedAt": created_at,
+            # AI 生成产物默认待人工确认
+            "confirmed": False,
+            "reviewStatus": "pending_review",
             "createdAt": created_at,
             "operator": str(payload.get("operator") or "当前用户"),
             "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1346,8 +1346,9 @@ class BusinessGapService:
         }
         task.setdefault("resolvedArtifacts", []).append(artifact)
         apply_task_artifact_intent(task, [artifact])
-        task["decision"] = "ready"
-        task["status"] = "ready"
+        # AI 草稿待人工审核，确认产物后任务才转 ready
+        task["decision"] = "review_required"
+        task["status"] = "review_required"
         task["assigneeMode"] = "ai_draft"
         task["updatedAt"] = created_at
         task["resolvedAt"] = created_at
@@ -1460,9 +1461,9 @@ class BusinessGapService:
             "materialUsage": "fill_table",
             "version": 1,
             "previewable": True,
-            "confirmed": True,
-            "reviewStatus": "approved",
-            "confirmedAt": created_at,
+            # AI 生成产物默认待人工确认，避免冒充人工决策绕过 ready 守卫
+            "confirmed": False,
+            "reviewStatus": "pending_review",
             "createdAt": created_at,
             "operator": str(data.get("operator") or "当前用户"),
             "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1476,8 +1477,9 @@ class BusinessGapService:
         }
         task.setdefault("resolvedArtifacts", []).append(artifact)
         apply_task_artifact_intent(task, [artifact])
-        task["decision"] = "ready"
-        task["status"] = "ready"
+        # AI 填写产物待人工审核，确认产物后任务才转 ready
+        task["decision"] = "review_required"
+        task["status"] = "review_required"
         task["handlingMode"] = "ai_table_fill"
         task["updatedAt"] = created_at
         task["resolvedAt"] = created_at

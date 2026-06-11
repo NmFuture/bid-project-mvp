@@ -3971,7 +3971,7 @@ def test_business_gap_ai_draft_stays_in_business_service() -> None:
             )
         )
 
-    assert payload["task"]["status"] == "ready"
+    assert payload["task"]["status"] == "review_required"
     assert payload["artifact"]["sourceMode"] == "generated_by_business_s3_ai_draft"
     assert payload["artifact"]["operator"] == "测试用户"
     assert payload["artifact"]["factTableStatus"] == "confirmed"
@@ -4073,7 +4073,7 @@ def test_business_gap_table_fill_stays_in_business_service(tmp_path) -> None:
             )
         )
 
-    assert payload["task"]["status"] == "ready"
+    assert payload["task"]["status"] == "review_required"
     assert payload["task"]["handlingMode"] == "ai_table_fill"
     assert payload["artifact"]["sourceMode"] == "generated_by_business_table_fill"
     assert payload["artifact"]["operator"] == "测试用户"
