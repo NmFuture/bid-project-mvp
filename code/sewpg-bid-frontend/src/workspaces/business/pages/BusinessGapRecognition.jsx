@@ -56,6 +56,27 @@ const factSourceModeLabels = {
   system: '系统自动',
 }
 
+const taskArtifactTypeLabels = {
+  business_table_fill: 'AI填写产物',
+  ai_draft: 'AI草稿',
+  parse_appendix_template: '解析附件模板',
+  parse_commitment_letter: '承诺函切片',
+  parse_business_scoring: '商务评分标准',
+  business_attachment_template: '附件模板',
+  selected_material: '已选素材',
+  manual_supplement: '人工上传',
+}
+
+const taskArtifactTypeLabel = (artifact) => {
+  const type = String(artifact?.artifactType || '')
+  if (taskArtifactTypeLabels[type]) return taskArtifactTypeLabels[type]
+  const sourceMode = String(artifact?.sourceMode || '')
+  if (sourceMode.startsWith('uploaded')) return '人工上传'
+  if (sourceMode.startsWith('generated')) return 'AI生成产物'
+  if (sourceMode.startsWith('selected')) return '已选素材'
+  return type || '任务产物'
+}
+
 const usageModeLabels = {
   attach_whole: '整件挂载',
   extract_fields: '抽字段',
@@ -1342,6 +1363,21 @@ export default function BusinessGapRecognition({ showToast }) {
     }))
   }
 
+  const confirmTaskArtifact = async (task, artifact) => {
+    const artifactId = String(artifact?.artifactId || '')
+    if (!task || !artifactId) return
+    setActionLoading(`confirm-artifact:${artifactId}`)
+    try {
+      const data = await businessGapsAPI.confirmArtifact(id, task.id, { artifactId, confirmed: true })
+      mergePlanPayload(data)
+      showToast?.('产物已确认，任务转为就绪')
+    } catch (e) {
+      showToast?.(e?.message || '产物确认失败', 'error')
+    } finally {
+      setActionLoading('')
+    }
+  }
+
   const selectMaterials = async (task, materials) => {
     const selectedMaterials = asArray(materials).filter(Boolean)
     if (!task || !selectedMaterials.length) return
@@ -1897,6 +1933,45 @@ export default function BusinessGapRecognition({ showToast }) {
                     </div>
 
                     <div className="mt-4 grid gap-3">
+                      {resolvedArtifacts.length > 0 && (
+                        <div className="rounded-md border border-surface-container-high bg-surface p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h4 className="text-sm font-semibold text-on-surface">任务产物</h4>
+                            <Badge size="xs" variant="pending">{resolvedArtifacts.length} 个</Badge>
+                          </div>
+                          {resolvedArtifacts.map((artifact, artifactIndex) => {
+                            const reviewStatus = String(artifact?.reviewStatus || '')
+                            const confirmedArtifact = Boolean(artifact?.confirmed) || reviewStatus === 'approved'
+                            const artifactTime = String(artifact?.confirmedAt || artifact?.createdAt || artifact?.uploadedAt || '')
+                            const artifactKey = String(artifact?.artifactId || `${artifact?.fileName || 'artifact'}-${artifactIndex}`)
+                            return (
+                              <div key={artifactKey} className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Badge size="xs" variant="info">{taskArtifactTypeLabel(artifact)}</Badge>
+                                    <span className="truncate text-sm font-semibold text-on-surface">{artifact?.fileName || artifact?.artifactId || '-'}</span>
+                                    <Badge size="xs" variant={confirmedArtifact ? 'done' : 'warn'}>
+                                      {confirmedArtifact ? '已确认' : reviewStatus === 'pending_review' ? '待审核' : reviewStatus || '待审核'}
+                                    </Badge>
+                                  </div>
+                                  {artifactTime && <div className="mt-0.5 text-[11px] text-outline">{artifactTime.replace('T', ' ').slice(0, 19)}</div>}
+                                </div>
+                                {!confirmedArtifact && artifact?.artifactId && (
+                                  <Button
+                                    type="button"
+                                    onClick={() => confirmTaskArtifact(task, artifact)}
+                                    disabled={!!actionLoading}
+                                    size="sm"
+                                    variant="secondary"
+                                  >
+                                    {actionLoading === `confirm-artifact:${artifact.artifactId}` ? '确认中...' : '确认产物'}
+                                  </Button>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
                       <div className="rounded-md border border-surface-container-high bg-surface p-3">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
