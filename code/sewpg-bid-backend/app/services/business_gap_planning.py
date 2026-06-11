@@ -27,6 +27,8 @@ from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.minio_client import minio_client
 from app.services.opencode_client import OpencodeClient
 from app.services.parse_profiles import BUSINESS_PARSE_PROFILE
+from app.services.business_bidder_profile import load_business_bidder_facts
+from app.services.business_gap_fact_table import PROJECT_FACT_TABLE_SCHEMA_VERSION, build_project_fact_table
 from app.services.performance_library_service import performance_library_service
 from app.services.performance_package_service import performance_package_service
 from app.services.template_store import resolve_fallback_bid_template_file_sync
@@ -86,6 +88,17 @@ def build_business_gap_plan_for_project(project: dict[str, Any]) -> dict[str, An
     business_wiki_index = _merge_material_evidence_segments(business_wiki_index, evidence_segments)
     business_gap_state = project.get("business_gap_state") if isinstance(project.get("business_gap_state"), dict) else {}
     material_feedback = _business_material_feedback_index(business_gap_state)
+    project_fact_table = (
+        business_gap_state.get("projectFactTable")
+        if isinstance(business_gap_state.get("projectFactTable"), dict)
+        else {}
+    )
+    if str(project_fact_table.get("schemaVersion") or "") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
+        try:
+            bidder_profile = _run_async(load_business_bidder_facts())
+        except Exception:
+            bidder_profile = {}
+        project_fact_table = build_project_fact_table(project, business_gap_state, bidder_profile=bidder_profile)
     manifest = {
         "projectId": project_id,
         "projectName": str(project.get("name") or project_id),
@@ -107,6 +120,7 @@ def build_business_gap_plan_for_project(project: dict[str, Any]) -> dict[str, An
         "templateIndex": template_index,
         "evidenceSegments": evidence_segments,
         "materialFeedback": material_feedback,
+        "projectFactTable": project_fact_table,
         "selectedBusinessTurbineModel": selected_model,
         "statePath": str(state_path),
         "outputFile": str(output_file),
@@ -192,10 +206,27 @@ def run_business_gap_planner_skill(manifest_path: Path) -> dict[str, Any]:
 
 
 def run_business_table_fill_skill(manifest_path: Path) -> dict[str, Any]:
+    prompt = _build_business_table_fill_prompt(manifest_path)
     try:
-        return _run_local_skill_runner(BUSINESS_TABLE_FILL_RUNNER, manifest_path, BUSINESS_TABLE_FILL_SCHEMA_VERSION)
+        return OpencodeClient().run_bid_business_table_fill_with_trace(prompt)
     except Exception:
-        raise
+        return _run_local_skill_runner(BUSINESS_TABLE_FILL_RUNNER, manifest_path, BUSINESS_TABLE_FILL_SCHEMA_VERSION)
+
+
+def _build_business_table_fill_prompt(manifest_path: Path) -> str:
+    return f"""
+Use the {BUSINESS_TABLE_FILL_SKILL_NAME} skill.
+
+你现在在做 S3 商务标 AI 填写。后端已经准备好 manifest，其中包含待填写文件、来源素材、项目事实表和输出文件路径。
+
+manifest：{manifest_path}
+
+请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径。命令会把填写后的文件写入 manifest 指定的输出路径，并只在 stdout 打印小型摘要 JSON：
+
+businesstablefill {manifest_path}
+
+只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
+""".strip()
 
 
 def summarize_business_gap_plan(plan: dict[str, Any]) -> dict[str, Any]:
@@ -713,7 +744,7 @@ def _business_evidence_segments_from_materials(materials: list[dict[str, Any]]) 
             "source_pages": "整件/待定位",
             "summary": "素材文件级兜底片段，当前主要依据文件名和路径匹配；如文件内包含多个模块，建议后续通过商务 Wiki/OCR 生成更细证据片段。",
             "key_fields": [],
-            "keywords": _material_segment_keywords(path),
+            "keywords": _dedupe_strings([*_material_segment_keywords(path), *_material_tag_keywords(material)])[:24],
             "validity_status": "",
             "expiry_date": "",
             "risk_notes": "文件级兜底片段，需人工确认文件内具体位置。",
@@ -801,7 +832,9 @@ def _looks_like_business_segment_heading(line: str) -> bool:
 def _segment_from_text_block(material: dict[str, Any], title: str, text: str, path: str, index: int) -> dict[str, Any]:
     material_id = str(material.get("id") or material.get("materialId") or "").strip()
     summary = re.sub(r"\s+", " ", text).strip()[:240]
-    keywords = _dedupe_strings([*_material_segment_keywords(f"{path}/{title}"), *_keywords_from_text(summary)])
+    keywords = _dedupe_strings(
+        [*_material_segment_keywords(f"{path}/{title}"), *_keywords_from_text(summary), *_material_tag_keywords(material)]
+    )
     return {
         "segment_id": f"mat-docx-seg-{_stable_short_id(f'{material_id}:{title}:{index}:{summary[:60]}')}",
         "card_id": "",
@@ -933,6 +966,10 @@ def _infer_material_segment_document_type(path: str, ext: str) -> str:
     if ext:
         return ext.upper()
     return "商务文件"
+
+
+def _material_tag_keywords(material: dict[str, Any]) -> list[str]:
+    return [str(tag).strip() for tag in material.get("tags") or [] if str(tag).strip()]
 
 
 def _material_segment_keywords(path: str) -> list[str]:
@@ -1080,6 +1117,8 @@ def _business_material_index(material_scope: dict[str, Any], selected_model: dic
 
 def _performance_package_candidates(limit: int = 300) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
+    if str(settings.project_store_backend or "").lower() != "postgres":
+        return candidates
     try:
         listing = _run_async(performance_package_service.list_categories(page=1, page_size=50))
     except Exception:

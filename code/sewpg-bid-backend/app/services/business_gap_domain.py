@@ -131,6 +131,10 @@ def task_fill_plan(task: dict[str, Any]) -> dict[str, Any]:
     }
     if task.get("selectedEvidenceSegments"):
         plan["evidenceSegmentCount"] = len(task.get("selectedEvidenceSegments") or [])
+    existing = task.get("fillPlan") if isinstance(task.get("fillPlan"), dict) else {}
+    for key in ("expectedInputs", "missingFacts", "readyFactCount", "totalFactCount"):
+        if key in existing:
+            plan[key] = existing[key]
     return plan
 
 

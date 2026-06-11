@@ -138,7 +138,12 @@ def source_fact_map(manifest: dict[str, Any]) -> tuple[dict[str, str], list[dict
     return facts, evidence
 
 
-LABEL_DECOR_SUFFIXES = {"名称", "全称", "盖章", "公章", "签字", "签章", "印章", "签名"}
+LABEL_DECOR_SUFFIXES = {"名称", "全称", "盖章", "公章", "签字", "签章", "印章", "签名", "盖公章", "盖单位章"}
+
+BRACKET_FIELD_RE = re.compile(r"[（(]\s*([一-龥A-Za-z][一-龥A-Za-z0-9/、]{1,24}?)\s*([:：])?\s*[)）]")
+UNDERLINE_FIELD_RE = re.compile(r"([一-龥A-Za-z/]{2,20})\s*[:：]?\s*[_＿]{3,}")
+LABEL_ONLY_LINE_RE = re.compile(r"^([一-龥A-Za-z/（()）]{2,30})[:：]\s*$")
+DATE_SKELETON_RE = re.compile(r"^(日期)[:：][\s年月日]*$")
 
 
 def lookup(label: str, facts: dict[str, str]) -> str:
@@ -249,6 +254,73 @@ def suggested_labels(manifest: dict[str, Any], facts: dict[str, str]) -> list[st
     return result[:24]
 
 
+def fill_text_placeholders(text: str, facts: dict[str, str]) -> tuple[str, int]:
+    filled = 0
+
+    def bracket_sub(match: re.Match[str]) -> str:
+        nonlocal filled
+        label, colon = match.group(1), match.group(2)
+        value = lookup(label, facts)
+        if not value:
+            return match.group(0)
+        filled += 1
+        if colon:
+            return f"（{label}：{value}）"
+        return value
+
+    updated = BRACKET_FIELD_RE.sub(bracket_sub, text)
+
+    def underline_sub(match: re.Match[str]) -> str:
+        nonlocal filled
+        label = match.group(1)
+        value = lookup(label, facts)
+        if not value:
+            return match.group(0)
+        filled += 1
+        return f"{label}：{value}"
+
+    updated = UNDERLINE_FIELD_RE.sub(underline_sub, updated)
+
+    stripped = updated.strip()
+    date_match = DATE_SKELETON_RE.match(stripped)
+    if date_match:
+        value = lookup(date_match.group(1), facts)
+        if value:
+            return f"{date_match.group(1)}：{value}", filled + 1
+    label_match = LABEL_ONLY_LINE_RE.match(stripped)
+    if label_match:
+        label = label_match.group(1)
+        value = lookup(label, facts)
+        if value:
+            return f"{label}：{value}", filled + 1
+    return updated, filled
+
+
+def fill_docx_paragraph_placeholders(doc: Any, facts: dict[str, str]) -> int:
+    filled = 0
+
+    def handle(paragraph: Any) -> None:
+        nonlocal filled
+        original = paragraph.text
+        if not original or not original.strip() or not paragraph.runs:
+            return
+        updated, count = fill_text_placeholders(original, facts)
+        if count and updated != original:
+            paragraph.runs[0].text = updated
+            for run in paragraph.runs[1:]:
+                run.text = ""
+            filled += count
+
+    for paragraph in doc.paragraphs:
+        handle(paragraph)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    handle(paragraph)
+    return filled
+
+
 def fill_docx(target_path: Path, output_path: Path, facts: dict[str, str]) -> dict[str, Any]:
     doc = Document(str(target_path))
     filled = 0
@@ -277,6 +349,7 @@ def fill_docx(target_path: Path, output_path: Path, facts: dict[str, str]) -> di
                 elif label:
                     unfilled.append({"label": label, "tableIndex": table_index, "rowIndex": row_index})
                     highlight_cell(target_cell)
+    filled += fill_docx_paragraph_placeholders(doc, facts)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_path))
     return {"filled": filled, "unfilledFields": unfilled}

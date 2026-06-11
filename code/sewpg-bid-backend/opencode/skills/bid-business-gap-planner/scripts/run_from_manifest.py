@@ -198,6 +198,7 @@ def build_business_gap_plan(manifest: dict[str, Any], manifest_path: Path | None
     add_candidate_materials(tasks, manifest)
     recompute_task_states(tasks, manifest)
     merge_state(tasks, manifest)
+    annotate_fact_readiness(tasks, manifest)
     update_toc_ref_statuses(toc_refs, tasks)
 
     summary = summarize_plan(toc_refs, tasks)
@@ -1548,6 +1549,41 @@ def certificate_model_score(material: dict[str, Any], selected_model: dict[str, 
         return 0.05
     risks.append("model_fit_review_required")
     return 0.0
+
+
+def project_fact_overview(manifest: dict[str, Any]) -> dict[str, Any]:
+    table = manifest.get("projectFactTable") if isinstance(manifest.get("projectFactTable"), dict) else {}
+    fields = [field for field in table.get("fields") or [] if isinstance(field, dict)]
+    missing = [
+        str(field.get("label") or "")
+        for field in fields
+        if bool(field.get("required", True)) and not str(field.get("value") or "").strip()
+    ]
+    ready_count = sum(1 for field in fields if str(field.get("value") or "").strip())
+    return {
+        "available": bool(fields),
+        "missingFacts": [label for label in missing if label],
+        "readyFactCount": ready_count,
+        "totalFactCount": len(fields),
+    }
+
+
+def annotate_fact_readiness(tasks: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
+    overview = project_fact_overview(manifest)
+    if not overview["available"]:
+        return
+    for task in tasks:
+        fill_plan = task.get("fillPlan") if isinstance(task.get("fillPlan"), dict) else {}
+        if not fill_plan.get("requiresProjectFacts"):
+            continue
+        fill_plan["missingFacts"] = list(overview["missingFacts"])
+        fill_plan["readyFactCount"] = overview["readyFactCount"]
+        fill_plan["totalFactCount"] = overview["totalFactCount"]
+        task["fillPlan"] = fill_plan
+        if overview["missingFacts"]:
+            add_unique(task, "riskFlags", "missing_project_facts")
+        else:
+            remove_value(task, "riskFlags", "missing_project_facts")
 
 
 def recompute_task_states(tasks: list[dict[str, Any]], manifest: dict[str, Any]) -> None:

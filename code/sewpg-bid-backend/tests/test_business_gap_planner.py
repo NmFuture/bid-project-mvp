@@ -1501,6 +1501,163 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("尚未发布", response.json()["detail"])
 
+    def test_businessgap_runner_annotates_fact_readiness_from_project_fact_table(self) -> None:
+        backend_root = Path(__file__).resolve().parents[1]
+        script_path = backend_root / "opencode" / "skills" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse_result.json"
+            output_path = root / "business_gap_plan.json"
+            toc_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "bid-toc-json-v1",
+                        "items": [{"order": 1, "number": "一", "title": "投标函", "level": 1}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            parse_path.write_text(json.dumps({"status": "completed", "structured": {}}, ensure_ascii=False), encoding="utf-8")
+            manifest_path = root / "business_gap_input.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-BG-FACTS",
+                        "projectName": "事实感知测试",
+                        "bidType": "商务标",
+                        "workDir": str(root),
+                        "tocJsonPath": str(toc_path),
+                        "parseResultPath": str(parse_path),
+                        "businessWikiDir": "",
+                        "materialScope": {"bidType": "商务标", "readableScopes": []},
+                        "materialIndex": [],
+                        "projectFactTable": {
+                            "schemaVersion": "bid-project-fact-table-v1",
+                            "fields": [
+                                {"label": "招标项目名称", "value": "某项目", "required": True},
+                                {"label": "招标编号", "value": "", "required": True},
+                                {"label": "投标人", "value": "上海电气风电集团股份有限公司", "required": True},
+                            ],
+                        },
+                        "selectedBusinessTurbineModel": {},
+                        "outputFile": str(output_path),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [sys.executable, str(script_path), "--manifest", str(manifest_path), "--response", "summary"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            plan = json.loads(output_path.read_text(encoding="utf-8"))
+
+        bid_letter = next(task for task in plan["tasks"] if task["title"] == "投标函")
+        fill_plan = bid_letter["fillPlan"]
+        self.assertTrue(fill_plan["requiresProjectFacts"])
+        self.assertIn("招标编号", fill_plan["missingFacts"])
+        self.assertNotIn("招标项目名称", fill_plan["missingFacts"])
+        self.assertEqual(fill_plan["readyFactCount"], 2)
+        self.assertEqual(fill_plan["totalFactCount"], 3)
+        self.assertIn("missing_project_facts", bid_letter.get("riskFlags") or [])
+
+    def test_business_table_fill_prefers_opencode_with_local_fallback(self) -> None:
+        from app.services import business_gap_planning as planning
+
+        manifest_path = Path("/tmp/business_table_fill_input.json")
+        traced = {"schemaVersion": "bid-business-table-fill-v1", "outputFile": "/tmp/out.docx", "opencodeOutput": {"status": "completed"}}
+
+        class _FakeClient:
+            def run_bid_business_table_fill_with_trace(self, prompt_text, **kwargs):
+                assert "businesstablefill" in prompt_text
+                return traced
+
+        with patch.object(planning, "OpencodeClient", _FakeClient):
+            self.assertEqual(planning.run_business_table_fill_skill(manifest_path), traced)
+
+        class _BrokenClient:
+            def run_bid_business_table_fill_with_trace(self, prompt_text, **kwargs):
+                raise RuntimeError("opencode unavailable")
+
+        local_result = {"schemaVersion": "bid-business-table-fill-v1", "outputFile": "/tmp/local.docx"}
+        with patch.object(planning, "OpencodeClient", _BrokenClient), patch.object(
+            planning, "_run_local_skill_runner", return_value=local_result
+        ) as local_runner:
+            self.assertEqual(planning.run_business_table_fill_skill(manifest_path), local_result)
+            local_runner.assert_called_once()
+
+    def _load_table_fill_runner(self):
+        import importlib.util
+
+        backend_root = Path(__file__).resolve().parents[1]
+        script_path = backend_root / "opencode" / "skills" / "bid-business-table-fill" / "scripts" / "run_from_manifest.py"
+        spec = importlib.util.spec_from_file_location("business_table_fill_runner", script_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_table_fill_paragraph_placeholders(self) -> None:
+        module = self._load_table_fill_runner()
+        facts = {
+            "招标人": "中国华能集团有限公司",
+            "招标编号": "HNZB2025-12-1-382",
+            "投标人": "上海电气风电集团股份有限公司",
+            "投标人地址": "上海市闵行区东川路555号",
+            "日期": "2026年06月11日",
+        }
+        text, count = module.fill_text_placeholders("致：(招标人名称)", facts)
+        self.assertEqual(text, "致：中国华能集团有限公司")
+        self.assertEqual(count, 1)
+        text, count = module.fill_text_placeholders("按照贵方招标采购(招标编号：        )设备", facts)
+        self.assertEqual(text, "按照贵方招标采购（招标编号：HNZB2025-12-1-382）设备")
+        text, count = module.fill_text_placeholders("投标人(盖公章)：", facts)
+        self.assertEqual(text, "投标人(盖公章)：上海电气风电集团股份有限公司")
+        text, count = module.fill_text_placeholders("地址：", facts)
+        self.assertEqual(text, "地址：上海市闵行区东川路555号")
+        text, count = module.fill_text_placeholders("日期：       年    月   日", facts)
+        self.assertEqual(text, "日期：2026年06月11日")
+        text, count = module.fill_text_placeholders("传真：", facts)
+        self.assertEqual(text, "传真：")
+        self.assertEqual(count, 0)
+        text, count = module.fill_text_placeholders("商务文件：除随本投标文件提交的偏差表外，其他均完全响应。", facts)
+        self.assertEqual(count, 0)
+
+    def test_table_fill_docx_fills_paragraphs_without_tables(self) -> None:
+        from docx import Document as DocxDocument
+
+        module = self._load_table_fill_runner()
+        facts = {"招标人": "中国华能集团有限公司", "日期": "2026年06月11日"}
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "letter.docx"
+            output = Path(tmp) / "letter-filled.docx"
+            doc = DocxDocument()
+            doc.add_paragraph("致：(招标人名称)")
+            doc.add_paragraph("日期：       年    月   日")
+            doc.save(str(target))
+            result = module.fill_docx(target, output, facts)
+            self.assertEqual(result["filled"], 2)
+            filled_doc = DocxDocument(str(output))
+            texts = [p.text for p in filled_doc.paragraphs]
+            self.assertIn("致：中国华能集团有限公司", texts)
+            self.assertIn("日期：2026年06月11日", texts)
+
+    def test_business_evidence_segment_keywords_include_material_tags(self) -> None:
+        from app.services.business_gap_planning import _segment_from_text_block
+
+        material = {
+            "id": "RAW-0001",
+            "materialId": "RAW-0001",
+            "tags": ["资质", "三证合一"],
+            "materialTier": "standard",
+        }
+        segment = _segment_from_text_block(material, "营业执照", "营业执照统一社会信用代码相关内容", "商务标/通用素材/营业执照", 1)
+        self.assertIn("资质", segment["keywords"])
+        self.assertIn("三证合一", segment["keywords"])
+
     def test_table_fill_lookup_does_not_pollute_specific_labels(self) -> None:
         import importlib.util
 
