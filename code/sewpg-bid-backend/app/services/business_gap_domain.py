@@ -268,6 +268,17 @@ def recompute_task_after_artifact_change(task: dict[str, Any]) -> None:
         if candidate_matches_assembly_mode(task, item)
     ]
     if confirmed_artifacts:
+        parse_inherited_only = all(
+            str(item.get("artifactType") or "").startswith("parse_")
+            or str(item.get("sourceMode") or "").startswith("parsed_")
+            for item in confirmed_artifacts
+        )
+        if parse_inherited_only and "missing_project_facts" in (task.get("riskFlags") or []):
+            # 解析继承的工件只代表模板边界已审，必填事实缺失时不放行，
+            # 人工选择/上传/填写产物视为人工已决策，不在此降级
+            task["decision"] = "review_required"
+            task["status"] = "review_required"
+            return
         task["decision"] = "ready"
         task["status"] = "ready"
         return

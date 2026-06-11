@@ -142,8 +142,9 @@ LABEL_DECOR_SUFFIXES = {"名称", "全称", "盖章", "公章", "签字", "签�
 
 BRACKET_FIELD_RE = re.compile(r"[（(]\s*([一-龥A-Za-z][一-龥A-Za-z0-9/、]{1,24}?)\s*([:：])?\s*[)）]")
 UNDERLINE_FIELD_RE = re.compile(r"([一-龥A-Za-z/]{2,20})\s*[:：]?\s*[_＿]{3,}")
-LABEL_ONLY_LINE_RE = re.compile(r"^([一-龥A-Za-z/（()）]{2,30})[:：]\s*$")
+TRAILING_LABEL_RE = re.compile(r"([一-龥A-Za-z/（()）]{2,30})[:：]\s*$")
 DATE_SKELETON_RE = re.compile(r"^(日期)[:：][\s年月日]*$")
+INLINE_LABEL_BLANK_RE = re.compile(r"([一-龥A-Za-z/]{2,20})[:：]([ 　]{4,})(?=[一-龥（(A-Za-z]|$)")
 
 
 def lookup(label: str, facts: dict[str, str]) -> str:
@@ -254,14 +255,24 @@ def suggested_labels(manifest: dict[str, Any], facts: dict[str, str]) -> list[st
     return result[:24]
 
 
-def fill_text_placeholders(text: str, facts: dict[str, str]) -> tuple[str, int]:
+def fill_text_placeholders(text: str, facts: dict[str, str]) -> tuple[str, int, list[str]]:
     filled = 0
+    unmatched: list[str] = []
+
+    date_match = DATE_SKELETON_RE.match(text.strip())
+    if date_match:
+        value = lookup(date_match.group(1), facts)
+        if value:
+            return f"{date_match.group(1)}：{value}", 1, []
+        return text, 0, [date_match.group(1)]
 
     def bracket_sub(match: re.Match[str]) -> str:
         nonlocal filled
         label, colon = match.group(1), match.group(2)
         value = lookup(label, facts)
         if not value:
+            if colon:
+                unmatched.append(label)
             return match.group(0)
         filled += 1
         if colon:
@@ -275,50 +286,78 @@ def fill_text_placeholders(text: str, facts: dict[str, str]) -> tuple[str, int]:
         label = match.group(1)
         value = lookup(label, facts)
         if not value:
+            unmatched.append(label)
             return match.group(0)
         filled += 1
         return f"{label}：{value}"
 
     updated = UNDERLINE_FIELD_RE.sub(underline_sub, updated)
 
-    stripped = updated.strip()
-    date_match = DATE_SKELETON_RE.match(stripped)
-    if date_match:
-        value = lookup(date_match.group(1), facts)
-        if value:
-            return f"{date_match.group(1)}：{value}", filled + 1
-    label_match = LABEL_ONLY_LINE_RE.match(stripped)
-    if label_match:
-        label = label_match.group(1)
+    def inline_blank_sub(match: re.Match[str]) -> str:
+        nonlocal filled
+        label = match.group(1)
+        value = lookup(label, facts)
+        if not value:
+            unmatched.append(label)
+            return match.group(0)
+        filled += 1
+        return f"{label}：{value}  "
+
+    updated = INLINE_LABEL_BLANK_RE.sub(inline_blank_sub, updated)
+
+    trailing_match = TRAILING_LABEL_RE.search(updated.rstrip())
+    if trailing_match:
+        label = trailing_match.group(1)
         value = lookup(label, facts)
         if value:
-            return f"{label}：{value}", filled + 1
-    return updated, filled
+            prefix = updated.rstrip()[: trailing_match.start()]
+            return f"{prefix}{label}：{value}", filled + 1, unmatched
+        unmatched.append(label)
+    return updated, filled, unmatched
 
 
-def fill_docx_paragraph_placeholders(doc: Any, facts: dict[str, str]) -> int:
+def fill_docx_paragraph_placeholders(doc: Any, facts: dict[str, str]) -> tuple[int, list[dict[str, Any]]]:
     filled = 0
+    unfilled: list[dict[str, Any]] = []
 
-    def handle(paragraph: Any) -> None:
+    def handle(paragraph: Any, location: str) -> None:
         nonlocal filled
         original = paragraph.text
         if not original or not original.strip() or not paragraph.runs:
             return
-        updated, count = fill_text_placeholders(original, facts)
+        updated, count, unmatched = fill_text_placeholders(original, facts)
         if count and updated != original:
             paragraph.runs[0].text = updated
             for run in paragraph.runs[1:]:
                 run.text = ""
             filled += count
+        if unmatched:
+            for run in paragraph.runs:
+                run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+            for label in unmatched:
+                unfilled.append({"label": label, "location": location, "text": original[:60]})
 
-    for paragraph in doc.paragraphs:
-        handle(paragraph)
-    for table in doc.tables:
+    for index, paragraph in enumerate(doc.paragraphs, start=1):
+        handle(paragraph, f"段落{index}")
+    for table_index, table in enumerate(doc.tables, start=1):
         for row in table.rows:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
-                    handle(paragraph)
-    return filled
+                    handle(paragraph, f"表{table_index}单元格")
+    return filled, unfilled
+
+
+def is_template_body_missing(doc: Any) -> bool:
+    paragraphs = [paragraph.text.strip() for paragraph in doc.paragraphs if paragraph.text.strip()]
+    return len(paragraphs) <= 2 and not doc.tables
+
+
+def append_manual_notice(output_path: Path, message: str) -> None:
+    doc = Document(str(output_path))
+    paragraph = doc.add_paragraph()
+    run = paragraph.add_run(message)
+    run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+    doc.save(str(output_path))
 
 
 def fill_docx(target_path: Path, output_path: Path, facts: dict[str, str]) -> dict[str, Any]:
@@ -349,7 +388,9 @@ def fill_docx(target_path: Path, output_path: Path, facts: dict[str, str]) -> di
                 elif label:
                     unfilled.append({"label": label, "tableIndex": table_index, "rowIndex": row_index})
                     highlight_cell(target_cell)
-    filled += fill_docx_paragraph_placeholders(doc, facts)
+    paragraph_filled, paragraph_unfilled = fill_docx_paragraph_placeholders(doc, facts)
+    filled += paragraph_filled
+    unfilled.extend(paragraph_unfilled)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_path))
     return {"filled": filled, "unfilledFields": unfilled}
@@ -404,8 +445,19 @@ def main() -> None:
     suffix = target_path.suffix.lower()
     if suffix == ".docx":
         fill_result = fill_docx(target_path, output_path, merged_facts)
-        if fill_result["filled"] == 0:
-            fill_result = write_fill_report_docx(output_path, manifest, merged_facts)
+        if is_template_body_missing(Document(str(target_path))):
+            # 模板正文缺失时绝不注入通用事实表，保留原样并显式告警
+            append_manual_notice(
+                output_path,
+                "【AI填写】模板正文缺失（解析切片仅含标题），未注入任何内容；请人工处理或重跑 S1 模板提取。",
+            )
+            fill_result["unfilledFields"] = [
+                *fill_result["unfilledFields"],
+                {"label": "模板正文", "location": "全文", "text": "模板正文缺失"},
+            ]
+            fill_result["templateBodyMissing"] = True
+        elif fill_result["filled"] == 0:
+            append_manual_notice(output_path, "【AI填写】未找到可自动填写的字段，已保留模板原样，请人工填写。")
     elif suffix in {".xlsx", ".xlsm"}:
         xlsx_output = output_path.with_suffix(target_path.suffix)
         fill_result = fill_xlsx(target_path, xlsx_output, merged_facts)
@@ -423,6 +475,7 @@ def main() -> None:
             "factCount": len(merged_facts),
             "filledFieldCount": fill_result["filled"],
             "unfilledFieldCount": len(fill_result["unfilledFields"]),
+            "templateBodyMissing": bool(fill_result.get("templateBodyMissing")),
         },
         "unfilledFields": fill_result["unfilledFields"],
         "evidenceRefs": evidence_refs,

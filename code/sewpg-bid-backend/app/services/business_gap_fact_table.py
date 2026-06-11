@@ -145,7 +145,7 @@ FIXED_BUSINESS_FACT_LABELS = tuple(
 )
 
 FACT_VALUE_COMPAT_LABELS = {
-    "招标项目名称": ["项目名称", "采购项目名称", "工程名称"],
+    "招标项目名称": ["项目名称", "采购项目名称", "工程名称", "招标文件名称"],
     "招标人": ["招标方", "客户名称", "业主"],
     "招标项目单位": ["项目单位", "建设单位", "管理单位"],
     "风机型号": ["投标机型", "机型", "机组型号", "投标方案"],
@@ -380,6 +380,10 @@ def normalize_project_fact_field(
     source_mode = str(field.get("sourceMode") or spec.get("sourceMode") or "")
     value = str(field.get("value") or "").strip()
     status = str(field.get("status") or ("candidate" if value else "missing")).strip()
+    if value and status == "missing":
+        status = "candidate"
+    if not value and status in {"candidate", "confirmed"}:
+        status = "missing"
     if confirm:
         status = "confirmed" if value else "missing"
     source_refs = normalize_fact_source_refs(field.get("sourceRefs"))
@@ -508,6 +512,7 @@ def build_project_fact_table(
         return {}
 
     fields: list[dict[str, Any]] = []
+    used_field_ids: set[str] = set()
     for index, spec in enumerate(BASIC_BUSINESS_FACT_FIELD_SPECS, start=1):
         label = str(spec["label"])
         source_mode = str(spec.get("sourceMode") or "")
@@ -530,6 +535,11 @@ def build_project_fact_table(
         parse_value = str(parse_fact.get("value") or "").strip()
         if parse_value and fact_value_is_placeholder(label, parse_value):
             parse_value = ""
+        if preserve_existing and existing_status == "candidate" and parse_value and existing_value != parse_value:
+            existing_refs = normalize_fact_source_refs(existing.get("sourceRefs"))
+            # 项目档案兜底产生的候选在解析真值出现后让位
+            if existing_refs and str(existing_refs[0].get("type") or "") == "project":
+                preserve_existing = False
         value = existing_value if preserve_existing else ""
         confidence = float(existing.get("confidence") or 0) if preserve_existing else 0.0
         source_priority = int(existing.get("sourcePriority") or 0) if preserve_existing else 0
@@ -578,7 +588,7 @@ def build_project_fact_table(
                 ref.setdefault("sourceMode", source_mode)
         fields.append(
             {
-                "id": str(existing.get("id") or f"FACT-{index:04d}"),
+                "id": _unique_fact_field_id(str(existing.get("id") or ""), index, used_field_ids),
                 "key": fact_label_key(label),
                 "label": label,
                 "category": str(spec.get("category") or "项目事实"),
@@ -732,19 +742,22 @@ def trusted_parse_fact_fields(parse_result: Any) -> list[dict[str, Any]]:
             fact_label_key("招标方"),
             fact_label_key("客户名称"),
         }:
-            if looks_like_party_name(value) and not looks_like_bidder_signature_context(value, text):
-                add("招标人", value, category="招标解析字段", source_field=field, confidence=0.84, required=False)
+            party_value = clean_party_name(value)
+            if looks_like_party_name(party_value) and not looks_like_bidder_signature_context(party_value, text):
+                add("招标人", party_value, category="招标解析字段", source_field=field, confidence=0.84, required=False)
         elif field_key in {"managementUnit", "projectUnit", "tenderProjectUnit", "constructionUnit"} or fact_label_key(label) in {
             fact_label_key("管理单位"),
             fact_label_key("项目单位"),
             fact_label_key("招标项目单位"),
             fact_label_key("建设单位"),
         }:
-            if looks_like_party_name(value):
-                add("招标项目单位", value, category="招标解析字段", source_field=field, confidence=0.82, required=False)
+            party_value = clean_party_name(value)
+            if looks_like_party_name(party_value):
+                add("招标项目单位", party_value, category="招标解析字段", source_field=field, confidence=0.82, required=False)
         elif field_key in {"agency", "tenderAgency", "tenderAgent", "biddingAgency"} or fact_label_key(label) == fact_label_key("招标代理机构"):
-            if looks_like_party_name(value):
-                add("招标代理机构", value, category="招标解析字段", source_field=field, confidence=0.82, required=False)
+            party_value = clean_party_name(value)
+            if looks_like_party_name(party_value):
+                add("招标代理机构", party_value, category="招标解析字段", source_field=field, confidence=0.82, required=False)
         elif field_key in {"turbineModel", "model", "selectedTurbineModel", "windTurbineModel"} or fact_label_key(label) in {
             fact_label_key("风机型号"),
             fact_label_key("投标机型"),
@@ -811,6 +824,18 @@ def fact_value_is_placeholder(label: str, value: Any) -> bool:
     return False
 
 
+def _unique_fact_field_id(existing_id: str, index: int, used_ids: set[str]) -> str:
+    candidate = existing_id or f"FACT-{index:04d}"
+    if candidate in used_ids:
+        candidate = f"FACT-{index:04d}"
+    suffix = 0
+    while candidate in used_ids:
+        suffix += 1
+        candidate = f"FACT-{index:04d}-{suffix}"
+    used_ids.add(candidate)
+    return candidate
+
+
 def fact_candidate_value_valid(label: str, value: str) -> bool:
     if fact_value_is_placeholder(label, value):
         return False
@@ -842,6 +867,14 @@ def looks_like_tender_no(value: Any) -> bool:
     return bool(text and len(text) <= 80 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_\-./]+", text))
 
 
+PARTY_NAME_DECOR_RE = re.compile(r"[（(]\s*盖?[^）)]*章[^）)]*[)）]?\s*$")
+
+
+def clean_party_name(value: Any) -> str:
+    text = str(value or "").strip()
+    return PARTY_NAME_DECOR_RE.sub("", text).strip()
+
+
 def looks_like_party_name(value: Any) -> bool:
     text = str(value or "").strip()
     if not text or len(text) > 80:
@@ -861,6 +894,9 @@ def looks_like_bidder_signature_context(value: Any, context: Any) -> bool:
     text = re.sub(r"\s+", "", str(context or ""))
     if not value_text or not text:
         return False
+    # 值本身及其后缀的盖章装饰（如"招标人：XX公司（盖单位章"）不属于投标人签名场景
+    text = text.replace(value_text, "", 1)
+    text = re.sub(r"[（(][^）)]*章[^）)]*[)）]?", "", text)
     window = text[: max(len(value_text) + 40, 80)]
     return bool(re.search(r"盖单位章|盖章|法定代表人|委托代理人|投标人[:：]|签字|签章|年月日|答复前.*暂停", window))
 

@@ -65,6 +65,12 @@ NEGATIVE_MATCH_RULES = [
         "reason": "项目响应文件不适合作为业绩支撑",
     },
     {
+        "taskTitleHints": ["银行", "资信"],
+        "materialHints": ["纳税"],
+        "penalty": 0.5,
+        "reason": "纳税信用材料不适用于银行资信任务",
+    },
+    {
         "taskTypes": {"certificate"},
         "materialHints": ["投标函", "报价", "价格表", "偏差", "承诺", "授权"],
         "penalty": 0.5,
@@ -1418,6 +1424,38 @@ def synonym_hit_count(task: dict[str, Any], haystack: str) -> int:
     return hits
 
 
+CAPACITY_THRESHOLD_RE = re.compile(r"(\d{1,2}(?:\.\d{1,2})?)\s*mw及以上")
+MODEL_POWER_RE = re.compile(r"(?:ew)?(\d{1,2}(?:\.\d{1,2})?)[-—](\d{2,3})")
+
+
+def _capacity_text(value: Any) -> str:
+    # 容量/机型解析不能用 normalize_text（它会剥掉小数点和连字符）
+    return re.sub(r"\s+", "", str(value or "").lower())
+
+
+def task_capacity_threshold_mw(title: str) -> float:
+    match = CAPACITY_THRESHOLD_RE.search(_capacity_text(title))
+    return float(match.group(1)) if match else 0.0
+
+
+def material_max_power_mw(material: dict[str, Any]) -> float:
+    text = _capacity_text(
+        " ".join(
+            [
+                str(material.get("turbineModelLabel") or ""),
+                str(material.get("name") or ""),
+                *[str(keyword) for keyword in material.get("keywords") or []],
+            ]
+        )
+    )
+    best = 0.0
+    for match in MODEL_POWER_RE.finditer(text):
+        power = float(match.group(1))
+        if 1.0 <= power <= 30.0:
+            best = max(best, power)
+    return best
+
+
 def negative_match_penalty(task: dict[str, Any], material: dict[str, Any]) -> tuple[float, list[str]]:
     haystack = normalize_text(
         " ".join(
@@ -1446,9 +1484,12 @@ def negative_match_penalty(task: dict[str, Any], material: dict[str, Any]) -> tu
     for rule in NEGATIVE_MATCH_RULES:
         modules = rule.get("taskModules") or set()
         types = rule.get("taskTypes") or set()
+        title_hints = rule.get("taskTitleHints") or []
         module_ok = not modules or module_key in modules
         type_ok = not types or task_type in types
-        if not module_ok or not type_ok:
+        title_norm = normalize_text(task.get("title"))
+        title_ok = not title_hints or any(normalize_text(hint) in title_norm for hint in title_hints)
+        if not module_ok or not type_ok or not title_ok:
             continue
         if any(normalize_text(hint) and normalize_text(hint) in haystack for hint in rule.get("materialHints") or []):
             total += float(rule.get("penalty") or 0)
@@ -1491,6 +1532,7 @@ def material_match_score(task: dict[str, Any], material: dict[str, Any], selecte
     task_type = str(task.get("taskType") or "")
     risks: list[str] = []
     score = 0.0
+    hard_cap = 0.99
     reasons: list[str] = []
 
     if task_title and task_title in haystack:
@@ -1518,10 +1560,27 @@ def material_match_score(task: dict[str, Any], material: dict[str, Any], selecte
         reasons.append("客户素材")
     if str(material.get("sourceType") or "") in {"performance_library", "performance_package"}:
         if module_key == "performance_cooperation_support":
+            threshold = task_capacity_threshold_mw(str(task.get("title") or ""))
+            if threshold:
+                power = material_max_power_mw(material)
+                if power and power < threshold:
+                    # 机型容量低于任务门槛（如 6.25MW 条目进 10MW 任务），直接排除
+                    return 0.0, "", []
+                if not power:
+                    risks.append("capacity_unverified")
+            title_norm = normalize_text(str(task.get("title") or ""))
+            if ("240" in title_norm or "试运行" in title_norm) and not any(
+                token in haystack for token in ("240", "试运行")
+            ):
+                score -= 0.25
+                risks.append("trial_run_evidence_unverified")
+                reasons.append("缺试运行证据待人工确认")
             score += 0.18
             reasons.append("共用业绩库候选")
         else:
-            score -= 0.12
+            # 跨模块时业绩资产硬性封顶，避免同义词饱和把分数顶满
+            hard_cap = min(hard_cap, 0.3)
+            reasons.append("业绩资产跨模块降权")
 
     if task_type == "certificate":
         score += certificate_model_score(material, selected_model, risks, reasons)
@@ -1532,7 +1591,7 @@ def material_match_score(task: dict[str, Any], material: dict[str, Any], selecte
         reasons.extend(penalty_reasons)
     if score <= 0.24:
         return 0.0, "", []
-    return min(score, 0.99), " + ".join(dedupe(reasons)) or "素材语义候选", risks
+    return min(score, hard_cap), " + ".join(dedupe(reasons)) or "素材语义候选", risks
 
 
 def certificate_model_score(material: dict[str, Any], selected_model: dict[str, Any], risks: list[str], reasons: list[str]) -> float:
@@ -1570,11 +1629,22 @@ def project_fact_overview(manifest: dict[str, Any]) -> dict[str, Any]:
 
 def annotate_fact_readiness(tasks: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
     overview = project_fact_overview(manifest)
-    if not overview["available"]:
-        return
     for task in tasks:
         fill_plan = task.get("fillPlan") if isinstance(task.get("fillPlan"), dict) else {}
-        if not fill_plan.get("requiresProjectFacts"):
+        artifacts = [item for item in task.get("resolvedArtifacts") or [] if isinstance(item, dict)]
+        if (
+            any(str(item.get("assemblyMode") or "") == "template_fill_docx" for item in artifacts)
+            and str(task.get("assemblyMode") or "") != "template_fill_docx"
+        ):
+            # 任务装配方式以解析附件模板工件为准，避免 fillPlan 与工件自相矛盾
+            task["assemblyMode"] = "template_fill_docx"
+            task["materialUsage"] = "fill_template"
+            fill_plan["mode"] = "template_fill_docx"
+            fill_plan["requiresProjectFacts"] = True
+            fill_plan["requiresMaterialEvidence"] = False
+            fill_plan["outputArtifactType"] = "filled_docx"
+            task["fillPlan"] = fill_plan
+        if not overview["available"] or not fill_plan.get("requiresProjectFacts"):
             continue
         fill_plan["missingFacts"] = list(overview["missingFacts"])
         fill_plan["readyFactCount"] = overview["readyFactCount"]
@@ -1582,6 +1652,10 @@ def annotate_fact_readiness(tasks: list[dict[str, Any]], manifest: dict[str, Any
         task["fillPlan"] = fill_plan
         if overview["missingFacts"]:
             add_unique(task, "riskFlags", "missing_project_facts")
+            if str(task.get("status") or "") == "ready":
+                # 必填事实缺失时不允许 ready，防止带空白占位直接进装配
+                task["status"] = "review_required"
+                task["decision"] = "review_required"
         else:
             remove_value(task, "riskFlags", "missing_project_facts")
 

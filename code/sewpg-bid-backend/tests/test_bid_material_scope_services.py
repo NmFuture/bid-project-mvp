@@ -3288,8 +3288,51 @@ def test_business_fact_table_ignores_empty_turbine_model_dict_and_signature_part
 
     table = build_project_fact_table(project, {"plan": {}})
     labels = {field["label"]: field for field in table["fields"]}
-    assert labels["招标人"]["value"] == "京能集团"
+    # 盖章装饰剥离后封面招标人是可信值；句子型噪声仍被拒绝
+    assert labels["招标人"]["value"] == "山西漳山发电有限责任公司"
     assert labels["风机型号"]["value"] == ""
+
+
+def test_business_fact_table_accepts_party_name_with_seal_decoration() -> None:
+    from app.services.business_gap_fact_table import build_project_fact_table
+
+    project = {
+        "id": "PRJ-BIZ-FACT-SEAL",
+        "name": "盖章尾巴清洗测试",
+        "customerName": "京能集团",
+        "bidType": "商务标",
+        "parse_result": {
+            "status": "completed",
+            "structured": {
+                "projectFactFields": [
+                    {
+                        "fieldKey": "tenderer",
+                        "label": "招标人",
+                        "value": "山西漳山发电有限责任公司 （盖单位章",
+                        "confidence": 0.95,
+                    }
+                ]
+            },
+        },
+    }
+    gap_state = {
+        "plan": {},
+        "projectFactTable": {
+            "schemaVersion": "bid-project-fact-table-v1",
+            "fields": [
+                {
+                    "label": "招标人",
+                    "value": "京能集团",
+                    "status": "candidate",
+                    "sourceRefs": [{"type": "project", "field": "customerName", "title": "招标人"}],
+                }
+            ],
+        },
+    }
+
+    table = build_project_fact_table(project, gap_state)
+    labels = {field["label"]: field for field in table["fields"]}
+    assert labels["招标人"]["value"] == "山西漳山发电有限责任公司"
 
 
 def test_business_fact_table_drops_placeholder_values_on_rebuild() -> None:

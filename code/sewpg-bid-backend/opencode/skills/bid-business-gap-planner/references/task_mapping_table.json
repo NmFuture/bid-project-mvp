@@ -1,47 +1,388 @@
 {
   "schemaVersion": "bid-business-gap-task-mapping-v1",
   "moduleGroups": [
-    {"key": "base_documents_guarantees", "label": "01-基础响应文书与担保文件", "order": 10},
-    {"key": "structured_response_tables", "label": "02-报价与结构化响应表", "order": 20},
-    {"key": "qualification_compliance_certificates", "label": "03-主体资格、合规信用与专题证书", "order": 30},
-    {"key": "enterprise_finance_supply", "label": "04-企业能力、财务与供货保障", "order": 40},
-    {"key": "performance_cooperation_support", "label": "05-业绩、合作与专项支撑", "order": 50},
-    {"key": "commitments_and_notes", "label": "06-承诺函与其他说明", "order": 60}
+    {
+      "key": "base_documents_guarantees",
+      "label": "01-基础响应文书与担保文件",
+      "order": 10
+    },
+    {
+      "key": "structured_response_tables",
+      "label": "02-报价与结构化响应表",
+      "order": 20
+    },
+    {
+      "key": "qualification_compliance_certificates",
+      "label": "03-主体资格、合规信用与专题证书",
+      "order": 30
+    },
+    {
+      "key": "enterprise_finance_supply",
+      "label": "04-企业能力、财务与供货保障",
+      "order": 40
+    },
+    {
+      "key": "performance_cooperation_support",
+      "label": "05-业绩、合作与专项支撑",
+      "order": 50
+    },
+    {
+      "key": "commitments_and_notes",
+      "label": "06-承诺函与其他说明",
+      "order": 60
+    }
   ],
   "subModuleGroups": [
-    {"moduleKey": "qualification_compliance_certificates", "key": "subject_qualification", "label": "03-1 主体资质"},
-    {"moduleKey": "qualification_compliance_certificates", "key": "compliance_credit", "label": "03-2 合规与信用"},
-    {"moduleKey": "qualification_compliance_certificates", "key": "special_certificates", "label": "03-3 专题证书"}
+    {
+      "moduleKey": "qualification_compliance_certificates",
+      "key": "subject_qualification",
+      "label": "03-1 主体资质"
+    },
+    {
+      "moduleKey": "qualification_compliance_certificates",
+      "key": "compliance_credit",
+      "label": "03-2 合规与信用"
+    },
+    {
+      "moduleKey": "qualification_compliance_certificates",
+      "key": "special_certificates",
+      "label": "03-3 专题证书"
+    }
   ],
   "rules": [
-    {"key": "bid_letter", "keywords": ["投标函"], "moduleKey": "base_documents_guarantees", "taskType": "document", "decision": "fill_required"},
-    {"key": "legal_representative_identity", "keywords": ["法定代表人身份证明", "单位负责人身份证明"], "moduleKey": "base_documents_guarantees", "taskType": "document", "decision": "fill_required"},
-    {"key": "authorization_letter", "keywords": ["授权委托书", "授权书", "法定代表人授权"], "moduleKey": "base_documents_guarantees", "taskType": "document", "decision": "fill_required"},
-    {"key": "integrity_commitment", "keywords": ["廉洁", "自律承诺"], "moduleKey": "base_documents_guarantees", "taskType": "document", "decision": "fill_required"},
-    {"key": "special_seal_statement", "keywords": ["投标专用章", "专用章效力"], "moduleKey": "base_documents_guarantees", "taskType": "document", "decision": "fill_required"},
-    {"key": "bid_bond", "keywords": ["投标保证金", "电汇回单", "保证金回单", "保函"], "moduleKey": "base_documents_guarantees", "taskType": "attachment", "decision": "material_required"},
-    {"key": "performance_bond_commitment", "keywords": ["履约保证函", "履约保证金", "履约保函"], "moduleKey": "base_documents_guarantees", "taskType": "document", "decision": "fill_required"},
-    {"key": "bid_price_table", "keywords": ["投标价格", "价格表", "报价表"], "moduleKey": "structured_response_tables", "taskType": "table", "decision": "fill_required"},
-    {"key": "opening_price_table", "keywords": ["开标价格表", "开标一览表"], "moduleKey": "structured_response_tables", "taskType": "table", "decision": "fill_required"},
-    {"key": "specification_table", "keywords": ["货物规格", "规格一览表", "规格表"], "moduleKey": "structured_response_tables", "taskType": "table", "decision": "fill_required"},
-    {"key": "business_deviation_table", "keywords": ["商务偏差", "条款偏差"], "moduleKey": "structured_response_tables", "taskType": "table", "decision": "fill_required"},
-    {"key": "supply_scope", "keywords": ["供货范围", "供货清单"], "moduleKey": "structured_response_tables", "taskType": "table", "decision": "fill_required"},
-    {"key": "business_summary", "keywords": ["商务部分摘要", "摘要表"], "moduleKey": "structured_response_tables", "taskType": "table", "decision": "fill_required"},
-    {"key": "business_scoring", "keywords": ["商务评分", "评分标准", "评审标准"], "moduleKey": "structured_response_tables", "taskType": "table", "decision": "review_required"},
-    {"key": "business_appendix_template", "keywords": ["附件", "格式", "模板"], "moduleKey": "structured_response_tables", "taskType": "document", "decision": "review_required"},
-    {"key": "business_license", "keywords": ["营业执照", "营业证明"], "moduleKey": "qualification_compliance_certificates", "subModuleKey": "subject_qualification", "taskType": "certificate", "decision": "material_required"},
-    {"key": "bank_account", "keywords": ["基本账户", "开户", "开户行"], "moduleKey": "qualification_compliance_certificates", "subModuleKey": "subject_qualification", "taskType": "attachment", "decision": "material_required"},
-    {"key": "equity_structure", "keywords": ["股权结构"], "moduleKey": "qualification_compliance_certificates", "subModuleKey": "subject_qualification", "taskType": "attachment", "decision": "material_required"},
-    {"key": "iso_certificates", "keywords": ["ISO", "体系认证", "管理体系"], "moduleKey": "qualification_compliance_certificates", "subModuleKey": "subject_qualification", "taskType": "certificate", "decision": "material_required"},
-    {"key": "credit_compliance", "keywords": ["信用中国", "失信", "经营异常", "诉讼", "仲裁", "企业状况声明"], "moduleKey": "qualification_compliance_certificates", "subModuleKey": "compliance_credit", "taskType": "bundle", "decision": "material_required"},
-    {"key": "turbine_model_certificate", "keywords": ["机型认证", "整机认证", "型式认证证书"], "moduleKey": "qualification_compliance_certificates", "subModuleKey": "special_certificates", "taskType": "certificate", "decision": "material_required"},
-    {"key": "component_type_certificate", "keywords": ["大部件", "部件型式认证", "叶片", "齿轮箱", "发电机", "变流器", "主轴承"], "moduleKey": "qualification_compliance_certificates", "subModuleKey": "special_certificates", "taskType": "certificate", "decision": "material_required"},
-    {"key": "company_profile", "keywords": ["公司简介", "工厂简介", "组织架构", "生产能力", "服务能力", "质量管理", "供货保障"], "moduleKey": "enterprise_finance_supply", "taskType": "bundle", "decision": "material_required"},
-    {"key": "financial_documents", "keywords": ["财务", "审计报告", "财务报表", "资信证明", "纳税信用"], "moduleKey": "enterprise_finance_supply", "taskType": "bundle", "decision": "material_required"},
-    {"key": "performance_records", "keywords": ["业绩", "合同", "中标通知书", "240h", "试运行", "验收报告"], "moduleKey": "performance_cooperation_support", "taskType": "bundle", "decision": "material_required"},
-    {"key": "cooperation_support", "keywords": ["战略协议", "框架协议", "示范应用", "供应链协同", "合作协议", "评价信", "优秀供应商"], "moduleKey": "performance_cooperation_support", "taskType": "attachment", "decision": "review_required"},
-    {"key": "commitment_document", "keywords": ["承诺函", "承诺书", "声明", "其他说明", "投标人需要说明"], "moduleKey": "commitments_and_notes", "taskType": "document", "decision": "fill_required"},
-    {"key": "negative_eligibility_commitment", "keywords": ["不得存在下列情形", "不存在下列情形"], "moduleKey": "commitments_and_notes", "taskType": "document", "decision": "review_required"}
+    {
+      "key": "bid_letter",
+      "keywords": [
+        "投标函"
+      ],
+      "moduleKey": "base_documents_guarantees",
+      "taskType": "document",
+      "decision": "fill_required"
+    },
+    {
+      "key": "legal_representative_identity",
+      "keywords": [
+        "法定代表人身份证明",
+        "单位负责人身份证明"
+      ],
+      "moduleKey": "base_documents_guarantees",
+      "taskType": "document",
+      "decision": "fill_required"
+    },
+    {
+      "key": "authorization_letter",
+      "keywords": [
+        "授权委托书",
+        "授权书",
+        "法定代表人授权"
+      ],
+      "moduleKey": "base_documents_guarantees",
+      "taskType": "document",
+      "decision": "fill_required"
+    },
+    {
+      "key": "integrity_commitment",
+      "keywords": [
+        "廉洁",
+        "自律承诺"
+      ],
+      "moduleKey": "base_documents_guarantees",
+      "taskType": "document",
+      "decision": "fill_required"
+    },
+    {
+      "key": "special_seal_statement",
+      "keywords": [
+        "投标专用章",
+        "专用章效力"
+      ],
+      "moduleKey": "base_documents_guarantees",
+      "taskType": "document",
+      "decision": "fill_required"
+    },
+    {
+      "key": "bid_bond",
+      "keywords": [
+        "投标保证金",
+        "电汇回单",
+        "保证金回单",
+        "保函"
+      ],
+      "moduleKey": "base_documents_guarantees",
+      "taskType": "attachment",
+      "decision": "material_required"
+    },
+    {
+      "key": "performance_bond_commitment",
+      "keywords": [
+        "履约保证函",
+        "履约保证金",
+        "履约保函"
+      ],
+      "moduleKey": "base_documents_guarantees",
+      "taskType": "document",
+      "decision": "fill_required"
+    },
+    {
+      "key": "bid_price_table",
+      "keywords": [
+        "投标价格",
+        "价格表",
+        "报价表"
+      ],
+      "moduleKey": "structured_response_tables",
+      "taskType": "table",
+      "decision": "fill_required"
+    },
+    {
+      "key": "opening_price_table",
+      "keywords": [
+        "开标价格表",
+        "开标一览表"
+      ],
+      "moduleKey": "structured_response_tables",
+      "taskType": "table",
+      "decision": "fill_required"
+    },
+    {
+      "key": "specification_table",
+      "keywords": [
+        "货物规格",
+        "规格一览表",
+        "规格表"
+      ],
+      "moduleKey": "structured_response_tables",
+      "taskType": "table",
+      "decision": "fill_required"
+    },
+    {
+      "key": "business_deviation_table",
+      "keywords": [
+        "商务偏差",
+        "条款偏差"
+      ],
+      "moduleKey": "structured_response_tables",
+      "taskType": "table",
+      "decision": "fill_required"
+    },
+    {
+      "key": "supply_scope",
+      "keywords": [
+        "供货范围",
+        "供货清单"
+      ],
+      "moduleKey": "structured_response_tables",
+      "taskType": "table",
+      "decision": "fill_required"
+    },
+    {
+      "key": "business_summary",
+      "keywords": [
+        "商务部分摘要",
+        "摘要表"
+      ],
+      "moduleKey": "structured_response_tables",
+      "taskType": "table",
+      "decision": "fill_required"
+    },
+    {
+      "key": "business_scoring",
+      "keywords": [
+        "商务评分",
+        "评分标准",
+        "评审标准"
+      ],
+      "moduleKey": "structured_response_tables",
+      "taskType": "table",
+      "decision": "review_required"
+    },
+    {
+      "key": "business_appendix_template",
+      "keywords": [
+        "附件",
+        "格式",
+        "模板"
+      ],
+      "moduleKey": "structured_response_tables",
+      "taskType": "document",
+      "decision": "review_required"
+    },
+    {
+      "key": "business_license",
+      "keywords": [
+        "营业执照",
+        "营业证明"
+      ],
+      "moduleKey": "qualification_compliance_certificates",
+      "subModuleKey": "subject_qualification",
+      "taskType": "certificate",
+      "decision": "material_required"
+    },
+    {
+      "key": "bank_account",
+      "keywords": [
+        "基本账户",
+        "开户",
+        "开户行"
+      ],
+      "moduleKey": "qualification_compliance_certificates",
+      "subModuleKey": "subject_qualification",
+      "taskType": "attachment",
+      "decision": "material_required"
+    },
+    {
+      "key": "equity_structure",
+      "keywords": [
+        "股权结构"
+      ],
+      "moduleKey": "qualification_compliance_certificates",
+      "subModuleKey": "subject_qualification",
+      "taskType": "attachment",
+      "decision": "material_required"
+    },
+    {
+      "key": "iso_certificates",
+      "keywords": [
+        "ISO",
+        "体系认证",
+        "管理体系"
+      ],
+      "moduleKey": "qualification_compliance_certificates",
+      "subModuleKey": "subject_qualification",
+      "taskType": "certificate",
+      "decision": "material_required"
+    },
+    {
+      "key": "credit_compliance",
+      "keywords": [
+        "信用中国",
+        "失信",
+        "经营异常",
+        "诉讼",
+        "仲裁",
+        "企业状况声明"
+      ],
+      "moduleKey": "qualification_compliance_certificates",
+      "subModuleKey": "compliance_credit",
+      "taskType": "bundle",
+      "decision": "material_required"
+    },
+    {
+      "key": "turbine_model_certificate",
+      "keywords": [
+        "机型认证",
+        "整机认证",
+        "型式认证证书"
+      ],
+      "moduleKey": "qualification_compliance_certificates",
+      "subModuleKey": "special_certificates",
+      "taskType": "certificate",
+      "decision": "material_required"
+    },
+    {
+      "key": "component_type_certificate",
+      "keywords": [
+        "大部件",
+        "部件型式认证",
+        "叶片",
+        "齿轮箱",
+        "发电机",
+        "变流器",
+        "主轴承"
+      ],
+      "moduleKey": "qualification_compliance_certificates",
+      "subModuleKey": "special_certificates",
+      "taskType": "certificate",
+      "decision": "material_required"
+    },
+    {
+      "key": "company_profile",
+      "keywords": [
+        "公司简介",
+        "工厂简介",
+        "组织架构",
+        "生产能力",
+        "服务能力",
+        "质量管理",
+        "供货保障"
+      ],
+      "moduleKey": "enterprise_finance_supply",
+      "taskType": "bundle",
+      "decision": "material_required"
+    },
+    {
+      "key": "financial_documents",
+      "keywords": [
+        "财务",
+        "审计报告",
+        "财务报表",
+        "资信证明",
+        "纳税信用"
+      ],
+      "moduleKey": "enterprise_finance_supply",
+      "taskType": "bundle",
+      "decision": "material_required"
+    },
+    {
+      "key": "performance_records",
+      "keywords": [
+        "业绩",
+        "合同",
+        "中标通知书",
+        "240h",
+        "试运行",
+        "验收报告",
+        "正在供货",
+        "新承接",
+        "在供项目"
+      ],
+      "moduleKey": "performance_cooperation_support",
+      "taskType": "bundle",
+      "decision": "material_required"
+    },
+    {
+      "key": "cooperation_support",
+      "keywords": [
+        "战略协议",
+        "框架协议",
+        "示范应用",
+        "供应链协同",
+        "合作协议",
+        "评价信",
+        "优秀供应商"
+      ],
+      "moduleKey": "performance_cooperation_support",
+      "taskType": "attachment",
+      "decision": "review_required"
+    },
+    {
+      "key": "commitment_document",
+      "keywords": [
+        "承诺函",
+        "承诺书",
+        "声明",
+        "其他说明",
+        "投标人需要说明"
+      ],
+      "moduleKey": "commitments_and_notes",
+      "taskType": "document",
+      "decision": "fill_required"
+    },
+    {
+      "key": "negative_eligibility_commitment",
+      "keywords": [
+        "不得存在下列情形",
+        "不存在下列情形"
+      ],
+      "moduleKey": "commitments_and_notes",
+      "taskType": "document",
+      "decision": "review_required"
+    }
   ],
-  "fallback": {"key": "manual_mapping_required", "moduleKey": "commitments_and_notes", "taskType": "document", "decision": "review_required"}
+  "fallback": {
+    "key": "manual_mapping_required",
+    "moduleKey": "commitments_and_notes",
+    "taskType": "document",
+    "decision": "review_required"
+  }
 }

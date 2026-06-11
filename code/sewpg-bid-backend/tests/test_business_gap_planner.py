@@ -1609,21 +1609,21 @@ class BusinessGapPlannerTests(unittest.TestCase):
             "投标人地址": "上海市闵行区东川路555号",
             "日期": "2026年06月11日",
         }
-        text, count = module.fill_text_placeholders("致：(招标人名称)", facts)
+        text, count, _ = module.fill_text_placeholders("致：(招标人名称)", facts)
         self.assertEqual(text, "致：中国华能集团有限公司")
         self.assertEqual(count, 1)
-        text, count = module.fill_text_placeholders("按照贵方招标采购(招标编号：        )设备", facts)
+        text, count, _ = module.fill_text_placeholders("按照贵方招标采购(招标编号：        )设备", facts)
         self.assertEqual(text, "按照贵方招标采购（招标编号：HNZB2025-12-1-382）设备")
-        text, count = module.fill_text_placeholders("投标人(盖公章)：", facts)
+        text, count, _ = module.fill_text_placeholders("投标人(盖公章)：", facts)
         self.assertEqual(text, "投标人(盖公章)：上海电气风电集团股份有限公司")
-        text, count = module.fill_text_placeholders("地址：", facts)
+        text, count, _ = module.fill_text_placeholders("地址：", facts)
         self.assertEqual(text, "地址：上海市闵行区东川路555号")
-        text, count = module.fill_text_placeholders("日期：       年    月   日", facts)
+        text, count, _ = module.fill_text_placeholders("日期：       年    月   日", facts)
         self.assertEqual(text, "日期：2026年06月11日")
-        text, count = module.fill_text_placeholders("传真：", facts)
+        text, count, _ = module.fill_text_placeholders("传真：", facts)
         self.assertEqual(text, "传真：")
         self.assertEqual(count, 0)
-        text, count = module.fill_text_placeholders("商务文件：除随本投标文件提交的偏差表外，其他均完全响应。", facts)
+        text, count, _ = module.fill_text_placeholders("商务文件：除随本投标文件提交的偏差表外，其他均完全响应。", facts)
         self.assertEqual(count, 0)
 
     def test_table_fill_docx_fills_paragraphs_without_tables(self) -> None:
@@ -1657,6 +1657,82 @@ class BusinessGapPlannerTests(unittest.TestCase):
         segment = _segment_from_text_block(material, "营业执照", "营业执照统一社会信用代码相关内容", "商务标/通用素材/营业执照", 1)
         self.assertIn("资质", segment["keywords"])
         self.assertIn("三证合一", segment["keywords"])
+
+    def test_table_fill_inline_blanks_and_empty_template_guard(self) -> None:
+        from docx import Document as DocxDocument
+
+        module = self._load_table_fill_runner()
+        facts = {
+            "招标项目名称": "华能赤峰项目",
+            "招标文件名称": "华能赤峰项目",
+            "招标编号": "HNZB2025-12-1-382",
+        }
+        text, count, unmatched = module.fill_text_placeholders(
+            "招标文件名称：                      招标编号：", facts
+        )
+        self.assertIn("招标文件名称：华能赤峰项目", text)
+        self.assertIn("招标编号：HNZB2025-12-1-382", text)
+        self.assertEqual(count, 2)
+        self.assertEqual(unmatched, [])
+        text, count, unmatched = module.fill_text_placeholders("法定代表人或其委托代理人(签字)：", facts)
+        self.assertEqual(count, 0)
+        self.assertEqual(unmatched, ["法定代表人或其委托代理人(签字)"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "empty-template.docx"
+            output = Path(tmp) / "empty-filled.docx"
+            doc = DocxDocument()
+            doc.add_paragraph("保密承诺书")
+            doc.save(str(target))
+            self.assertTrue(module.is_template_body_missing(DocxDocument(str(target))))
+            result = module.fill_docx(target, output, facts)
+            self.assertEqual(result["filled"], 0)
+            filled_doc = DocxDocument(str(output))
+            self.assertEqual(len(filled_doc.tables), 0)
+
+    def test_businessgap_capacity_threshold_filters_performance_candidates(self) -> None:
+        import importlib.util
+
+        backend_root = Path(__file__).resolve().parents[1]
+        script_path = backend_root / "opencode" / "skills" / "bid-business-gap-planner" / "scripts" / "run_from_manifest.py"
+        spec = importlib.util.spec_from_file_location("business_gap_runner", script_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        self.assertEqual(module.task_capacity_threshold_mw("近年完成的10MW及以上容量等级风电机组合同业绩表"), 10.0)
+        self.assertEqual(
+            module.task_capacity_threshold_mw("近年完成的6.25MW及以上容量等级风电机组且通过240小时试运行业绩表"),
+            6.25,
+        )
+        low_item = {"turbineModelLabel": "6.25-202", "name": "华润渭南项目", "keywords": ["6.25-202"]}
+        high_item = {"turbineModelLabel": "EW14.0-270", "name": "试验风电场", "keywords": ["EW14.0-270"]}
+        self.assertEqual(module.material_max_power_mw(low_item), 6.25)
+        self.assertEqual(module.material_max_power_mw(high_item), 14.0)
+
+        task = {
+            "title": "近年完成的10MW及以上容量等级风电机组合同业绩表",
+            "moduleKey": "performance_cooperation_support",
+            "taskType": "bundle",
+        }
+        low_candidate = {
+            "sourceType": "performance_package",
+            "businessMaterialKind": "performance",
+            "path": "商务标/共用业绩库/陆上6MW业绩/华润渭南项目",
+            "name": "华润渭南项目",
+            "turbineModelLabel": "6.25-202",
+            "keywords": ["业绩", "合同", "6.25-202"],
+            "summary": "华润；6.25-202；36",
+        }
+        score, _, _ = module.material_match_score(task, low_candidate, {})
+        self.assertEqual(score, 0.0)
+
+        statement_task = {
+            "title": "投标人没有被确认的不良记录",
+            "moduleKey": "commitments_and_notes",
+            "taskType": "document",
+        }
+        score, _, _ = module.material_match_score(statement_task, low_candidate, {})
+        self.assertLessEqual(score, 0.3)
 
     def test_table_fill_lookup_does_not_pollute_specific_labels(self) -> None:
         import importlib.util
