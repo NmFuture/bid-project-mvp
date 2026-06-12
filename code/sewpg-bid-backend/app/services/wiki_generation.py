@@ -25,8 +25,11 @@ from app.services.bid_type import BUSINESS_BID_TYPE, GENERAL_BID_TYPE, TECHNICAL
 from app.services.identity import canonical_customer, classify_material_path, material_identity
 from app.services.business_material_store import business_material_store
 from app.services.business_wiki_blueprint import build_business_wiki_blueprint
+from app.services.material_tags import normalize_material_tags
+from app.services.material_taxonomy import infer_business_material_category, infer_business_material_subcategory
 from app.services.minio_client import minio_client
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
+from app.services.opencode_client import OpencodeClient
 from app.services.peripheral import PeripheralError
 from app.services.technical_material_store import technical_material_store
 
@@ -232,7 +235,7 @@ def _wiki_skill_name(bid_type: str) -> str:
 
 def _wiki_skill_runner(bid_type: str) -> Path:
     skill_name = _wiki_skill_name(bid_type)
-    return BASE_DIR / "opencode" / "skill" / skill_name / "scripts" / "run_from_manifest.py"
+    return BASE_DIR / "opencode" / "skills" / skill_name / "scripts" / "run_from_manifest.py"
 
 
 def _wiki_root_title(bid_type: str) -> str:
@@ -687,6 +690,9 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
     cleaned_minio_key = str(ext_fields.get("cleanedMinioKey") or "")
     cleaned_bucket = str(ext_fields.get("cleanedMinioBucket") or item.minio_bucket or "")
     cleaned_file_name = str(ext_fields.get("cleanedFileName") or "")
+    tags = normalize_material_tags(ext_fields.get("tags"))
+    clean_report = ext_fields.get("cleanReport") if isinstance(ext_fields.get("cleanReport"), dict) else {}
+    clean_report_record = clean_report.get("record") if isinstance(clean_report.get("record"), dict) else {}
     has_cleaned_word = bool(cleaned_minio_key)
     ext = "docx" if source_ext == "docx" or has_cleaned_word else source_ext
     inferred_bid_type = _material_bid_type(folder_path, file_name, folder_bid_type)
@@ -702,8 +708,19 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
     elif material_tier in {"customer", "project"}:
         scope = "定制"
     if bid_type == BUSINESS_BID_TYPE:
+        material_category = str(ext_fields.get("materialCategory") or "") or infer_business_material_category(
+            folder_path,
+            file_name,
+            material_tier,
+        )
+        material_subcategory = str(ext_fields.get("materialSubcategory") or "") or infer_business_material_subcategory(
+            folder_path,
+            file_name,
+        )
         group = "项目商务数据" if scope == "定制" else _classify_business_group(folder_path, file_name)
     else:
+        material_category = ""
+        material_subcategory = ""
         group = "项目数据" if scope == "定制" else _classify_material_group(folder_path, file_name)
     path = f"{folder_path}/{file_name}".strip("/")
     identity = material_identity(
@@ -739,7 +756,23 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
         "path": path,
         "ext": ext,
         "sourceExt": source_ext,
+        "tags": tags,
+        "businessMaterialKind": str(ext_fields.get("businessMaterialKind") or ""),
+        "businessMaterialKindLabel": str(ext_fields.get("businessMaterialKindLabel") or ""),
+        "materialCategory": material_category,
+        "materialCategoryLabel": str(ext_fields.get("materialCategoryLabel") or ""),
+        "materialSubcategory": material_subcategory,
         "hasCleanedWord": has_cleaned_word,
+        "cleanStatus": str(ext_fields.get("cleanStatus") or ""),
+        "cleanMessage": str(ext_fields.get("cleanMessage") or ""),
+        "cleanUpdatedAt": str(ext_fields.get("cleanUpdatedAt") or ""),
+        "cleanResultStatus": str(ext_fields.get("cleanResultStatus") or ""),
+        "cleanError": str(ext_fields.get("cleanError") or ""),
+        "cleanNeedsHumanReview": bool(ext_fields.get("cleanNeedsHumanReview")),
+        "cleanUsableForRetrieval": bool(ext_fields.get("cleanUsableForRetrieval", has_cleaned_word)),
+        "cleanRelativeSourcePath": str(ext_fields.get("cleanRelativeSourcePath") or clean_report_record.get("relativeSourcePath") or ""),
+        "cleanRelativeOutputPath": str(ext_fields.get("cleanRelativeOutputPath") or clean_report_record.get("relativeOutputPath") or ""),
+        "cleanReport": clean_report,
         "cleanedFileName": cleaned_file_name,
         "cleanedMinioBucket": cleaned_bucket,
         "cleanedMinioKey": cleaned_minio_key,
@@ -852,87 +885,6 @@ def _filter_inventory_for_bid_type(inventory: dict[str, Any], bid_type: str) -> 
     }
 
 
-def _build_wiki_generation_prompt(reference: dict[str, Any], material_inventory: dict[str, Any], bid_type: str) -> str:
-    skill_name = _wiki_skill_name(bid_type)
-    root_title = _wiki_root_title(bid_type)
-    opposite_bid_type = BUSINESS_BID_TYPE if bid_type == TECHNICAL_BID_TYPE else TECHNICAL_BID_TYPE
-    bid_focus = (
-        "技术方案、机型参数、技术标准、风资源、设备子系统、供货交付、评分点映射"
-        if bid_type == TECHNICAL_BID_TYPE
-        else "投标函、授权委托、资质证书、业绩证明、报价、保证金、商务偏差、合同条款响应"
-    )
-    payload = json.dumps(
-        {
-            "referenceWiki": reference,
-            "materialInventory": material_inventory,
-            "targetBidType": bid_type,
-            "targetSkill": skill_name,
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-    return f"""
-Use the {skill_name} skill.
-
-目标：
-基于当前 `{bid_type}` 原始素材清单和参考 wiki 摘要，生成一份“{bid_type} Wiki = AI 看懂素材库的最小索引库”的初始化蓝图。
-
-业务要求：
-1. 本次只生成 `{bid_type}` Wiki；不要生成 `{opposite_bid_type}` 体系，也不要输出跨标类混合库。
-2. 必须优先使用 materialInventory.items 中的真实文件名和路径生成卡片节点。
-3. `{bid_type}` Wiki 要服务三个后续任务：缺口识别、空表/待填写项选择来源并填写、标书正文拼接。
-4. `{bid_type}` 关注范围：{bid_focus}。
-5. Wiki 不是越复杂越好。只保留完成目标所需的最小结构：
-   - 01-素材总表
-   - 02-模板模块映射表
-   - 03-证据卡片
-   - 04-待填写与待确认清单
-   - 05-使用规则
-6. `03-证据卡片` 是按需加载入口。每个真实素材应形成一张卡或在卡中明确引用，不要把原文全文塞进 Wiki。
-7. 如果某个素材只适合拼接其中一段、摘取图片或用于填写某张表，必须在卡片和模板模块映射里标明使用方式，不要默认为整篇拼接。
-8. `04-待填写与待确认清单` 只标记需要每个项目现场填写、AI 填写或用户确认的内容，不在 Wiki 里代填。
-9. 每张素材卡片必须写清 AI 检索身份：
-   - identity_scope=general/customer/project
-   - customer_id/customer_name/customer_aliases
-   - project_id/project_code
-   未命中项目身份的客户素材、项目素材，后续 skill 不得读取。
-10. 结果要适合落入当前系统的 wiki tree，每个节点都可以有 markdown 内容。
-11. 商务标没有真实素材时，只生成待补料框架和规则提醒，不要虚构商务卡片。
-
-输出要求：
-1. 只输出 JSON，不要解释，不要 Markdown 代码块。
-2. JSON 结构必须为：
-{{
-  "summary": "一句简短总结",
-  "rootTitle": "{root_title}",
-  "nodes": [
-    {{
-      "title": "节点标题",
-      "markdownContent": "# 标题\\n\\n正文",
-      "tags": ["{bid_type}", "素材库"],
-      "applicableTypes": ["{bid_type}"],
-      "children": []
-    }}
-  ]
-}}
-3. nodes 第一层必须且只需要包含这些工作节点，标题要完全一致：
-   - 01-素材总表
-   - 02-模板模块映射表
-   - 03-证据卡片
-   - 04-待填写与待确认清单
-   - 05-使用规则
-4. `01-素材总表`：列真实文件、路径、素材层级、身份、业务分类、清洗策略、推荐模块。
-5. `02-模板模块映射表`：列模板模块到证据卡片的候选关系，并标明 attach_whole / extract_fields / extract_image / fill_table / reference_only。
-6. `03-证据卡片`：按“通用素材/客户素材/项目素材”分组，并尽量镜像原始素材库路径；每张卡必须保留 path、material_id、cleaned_file_name、identity_scope、customer_id、customer_name、project_id、project_code、usage_mode、validity_status。
-7. `04-待填写与待确认清单`：列需要缺口处理页面确认/填写的内容，如项目基础变量、金额时效变量、证据选择与版本确认、合规与页码确认。
-8. `05-使用规则`：写清后续 Agent 的读取顺序、身份过滤、证据优先级、模块使用方式、OCR/图片处理和禁止编造事实。
-9. 如果 materialInventory.items 为空，只生成 `{bid_type}` 的待补料框架和使用规则，不要虚构证据卡片。
-
-输入摘要：
-{payload}
-""".strip()
-
-
 def _compact_material_for_manifest(material: dict[str, Any]) -> dict[str, Any]:
     keys = [
         "id",
@@ -1029,18 +981,33 @@ def _write_wiki_manifest(reference: dict[str, Any], material_inventory: dict[str
     return manifest_path
 
 
-def _build_wiki_tool_prompt(skill_name: str, manifest_path: Path, bid_type: str) -> str:
+def _build_wiki_refine_prompt(skill_name: str, manifest_path: Path, bid_type: str) -> str:
+    """脚本产骨架 + LLM 精修：先用 wikibuild 生成确定性骨架，再在骨架上做语义增强。"""
     return f"""
 Use the {skill_name} skill.
 
-请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径：
+这是「脚本产骨架 + LLM 精修」流程，分两步，必须按顺序完成：
+
+## 第一步：调用 wikibuild 生成确定性骨架
+直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat，不要拆成多条命令，不要改写命令或路径：
 
 ```bash
 wikibuild {manifest_path}
 ```
 
-命令会把完整 `{bid_type}` Wiki 写入 outputFile，并在 stdout 打印小型 JSON 摘要。不要读取、cat、head、tail、grep outputFile；完整文件由后端读取并导入。
-执行完成后，只返回该命令 stdout 中的 JSON，不要解释。
+命令会把确定性 `{bid_type}` Wiki 骨架写入 outputFile（路径在 stdout 的 JSON 里），并保证：五个一级节点齐全、素材不遗漏不重复、模块映射固定、绝不编造金额/承诺/证书编号。
+
+## 第二步：在骨架上做语义精修
+读取 outputFile 后，在**不破坏结构、不编造事实**的前提下增强：
+1. 修正脚本规则误判的 business_category / evidence_topic / usage_mode。
+2. 补全脚本留空或标「待识别」「待映射」的语义字段（关键词、适用章节、摘要）。
+3. 复核脚本标 needs_human_confirm=yes、validity_status=pending_verify 的项，让 risk_notes 更聚焦，便于人工复核。
+4. 映射表 candidate_card_ids 为空但确有合适素材时，按 fallback_scope 给出更精准的候选。
+
+铁律：精修只能改「判断/描述」，不能改「事实」。inventory 里从未出现过的价格、日期、证书编号、授权人、业绩数据一律不得新增；找不到就保持 pending 并写进待确认清单。issue_date/expiry_date/document_number/issuer 等正则抽取字段是提示性的，不要当成已核实事实对外承诺。
+
+## 输出
+把精修后的完整 blueprint（保持骨架的 nodes 结构与五节点顺序）写回 outputFile，然后只返回 stdout 中含 outputFile 的 JSON，不要解释，不要 Markdown 代码块。
 """.strip()
 
 
@@ -1887,6 +1854,20 @@ def _now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _run_llm_wiki_skill(manifest_path: Path, bid_type: str) -> dict[str, Any]:
+    """LLM 主路径：让 opencode 调 wikibuild 生成骨架，再在骨架上语义精修。"""
+    normalized_bid_type = _normalize_wiki_bid_type(bid_type)
+    skill_name = _wiki_skill_name(normalized_bid_type)
+    runner = _wiki_skill_runner(normalized_bid_type)
+    if not runner.exists():
+        raise RuntimeError(f"{normalized_bid_type} Wiki Skill runner 不存在：{runner}")
+
+    prompt = _build_wiki_refine_prompt(skill_name, manifest_path, normalized_bid_type)
+    result = OpencodeClient().generate_wiki_blueprint_with_trace(prompt)
+    result.setdefault("schema_version", "bid-wiki-blueprint-v1")
+    return result
+
+
 def _run_local_wiki_skill(manifest_path: Path, bid_type: str) -> dict[str, Any]:
     normalized_bid_type = _normalize_wiki_bid_type(bid_type)
     skill_name = _wiki_skill_name(normalized_bid_type)
@@ -1939,37 +1920,60 @@ async def generate_platform_wiki(
     full_inventory = await _summarize_material_inventory()
     material_inventory = _filter_inventory_for_bid_type(full_inventory, normalized_bid_type)
     manifest_path = _write_wiki_manifest(reference, material_inventory, normalized_bid_type)
-    generator = "local_skill"
+    generator = "llm_refine"
     fallback_used = False
 
     try:
-        skill_result = await asyncio.to_thread(_run_local_wiki_skill, manifest_path, normalized_bid_type)
+        # 主路径：LLM 调 wikibuild 产骨架，再语义精修。
+        skill_result = await asyncio.to_thread(_run_llm_wiki_skill, manifest_path, normalized_bid_type)
         blueprint = _normalize_blueprint(_load_wiki_blueprint_result(skill_result))
         blueprint["rootTitle"] = _wiki_root_title(normalized_bid_type)
         opencode_output: dict[str, Any] = skill_result.get("opencodeOutput") or {}
-    except Exception as exc:
-        failed_output = {
-            "status": "failed",
-            "sessionId": str(manifest_path),
-            "providerId": "local-skill",
-            "modelId": skill_name,
-            "receivedAt": _now_iso(),
-            "parts": [{"type": "text", "text": f"执行{normalized_bid_type} Wiki Skill runner 失败：{exc}"}],
-        }
-        if not fallback_to_deterministic:
-            raise PeripheralError(
-                502,
-                f"创建 {normalized_bid_type} Wiki 调用 {skill_name} 失败：{exc}",
-                "WIKI_SKILL_FAILED",
-                {"opencodeOutput": failed_output},
-            ) from exc
-        blueprint = _normalize_blueprint(_build_material_wiki_blueprint(reference, material_inventory, normalized_bid_type))
-        opencode_output = {
-            **failed_output,
-            "fallback": "deterministic",
-        }
-        generator = "deterministic_fallback"
-        fallback_used = True
+    except Exception as llm_exc:
+        # 一级回退：opencode 不可用/精修失败时，直接用确定性脚本骨架。
+        try:
+            skill_result = await asyncio.to_thread(_run_local_wiki_skill, manifest_path, normalized_bid_type)
+            blueprint = _normalize_blueprint(_load_wiki_blueprint_result(skill_result))
+            blueprint["rootTitle"] = _wiki_root_title(normalized_bid_type)
+            opencode_output = skill_result.get("opencodeOutput") or {}
+            opencode_output = {
+                **opencode_output,
+                "fallback": "local_skill",
+                "llmError": str(llm_exc),
+            }
+            generator = "local_skill"
+            fallback_used = True
+        except Exception as exc:
+            failed_output = {
+                "status": "failed",
+                "sessionId": str(manifest_path),
+                "providerId": "local-skill",
+                "modelId": skill_name,
+                "receivedAt": _now_iso(),
+                "parts": [
+                    {
+                        "type": "text",
+                        "text": f"LLM 精修失败（{llm_exc}）；脚本骨架回退也失败（{exc}）。",
+                    }
+                ],
+            }
+            if not fallback_to_deterministic:
+                raise PeripheralError(
+                    502,
+                    f"创建 {normalized_bid_type} Wiki 调用 {skill_name} 失败：{exc}",
+                    "WIKI_SKILL_FAILED",
+                    {"opencodeOutput": failed_output},
+                ) from exc
+            # 二级回退：仅在显式允许时使用内联确定性蓝图。
+            blueprint = _normalize_blueprint(
+                _build_material_wiki_blueprint(reference, material_inventory, normalized_bid_type)
+            )
+            opencode_output = {
+                **failed_output,
+                "fallback": "deterministic",
+            }
+            generator = "deterministic_fallback"
+            fallback_used = True
 
     imported = await _import_generated_wiki_blueprint(
         normalized_bid_type,

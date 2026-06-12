@@ -189,6 +189,17 @@ class TechnicalMaterialStore:
         )
         return self._with_urls(_force_technical_tree(payload))
 
+    async def raw_cleanup_project_folder(self, path: str) -> dict[str, Any]:
+        normalized = self.ensure_path(path, "项目素材目录")
+        parts = [part for part in normalized.split("/") if part]
+        if len(parts) != 3 or parts[:2] != [TECHNICAL_BID_TYPE, "项目素材"]:
+            raise PeripheralError(400, "只能清理技术标项目素材目录。", "PROJECT_MATERIAL_PATH_REQUIRED")
+        payload = await material_store.raw_cleanup_project_folder(
+            normalized,
+            bid_type=TECHNICAL_BID_TYPE,
+        )
+        return self._with_urls(_force_technical_tree(payload))
+
     async def raw_upload(
         self,
         *,

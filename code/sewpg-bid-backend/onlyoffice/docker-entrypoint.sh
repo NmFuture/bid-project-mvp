@@ -46,4 +46,11 @@ if [ -f /etc/onlyoffice/documentserver/nginx/includes/ds-common.conf ]; then
     /etc/onlyoffice/documentserver/nginx/includes/ds-common.conf
 fi
 
+if [ -d /usr/share/fonts/truetype/custom ]; then
+  fc-cache -f /usr/share/fonts/truetype/custom || true
+  if command -v documentserver-generate-allfonts.sh >/dev/null 2>&1; then
+    documentserver-generate-allfonts.sh || true
+  fi
+fi
+
 exec /app/ds/run-document-server.sh "$@"

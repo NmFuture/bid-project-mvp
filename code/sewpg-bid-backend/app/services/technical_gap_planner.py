@@ -25,7 +25,7 @@ TECHNICAL_GAP_PLAN_SCHEMA_VERSION = "bid-tech-gap-plan-v1"
 TECHNICAL_GAP_PLANNER_SKILL_NAME = "bid-tech-gap-planner"
 TECHNICAL_TABLE_FILL_SKILL_NAME = "bid-tech-table-filler"
 TECHNICAL_WORD_FILL_SKILL_NAME = "bid-tech-word-placeholder-filler"
-GAP_PLANNER_RUNNER = BASE_DIR / "opencode" / "skill" / TECHNICAL_GAP_PLANNER_SKILL_NAME / "scripts" / "run_from_manifest.py"
+GAP_PLANNER_RUNNER = BASE_DIR / "opencode" / "skills" / TECHNICAL_GAP_PLANNER_SKILL_NAME / "scripts" / "run_from_manifest.py"
 
 
 def _now_iso() -> str:

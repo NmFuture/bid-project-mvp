@@ -112,6 +112,7 @@ async def move_raw_file(
             source_file_name=item.name,
             material_tier=tier,
             destination_bid_type=str(destination.bid_type or ""),
+            folder_path=str(destination.path or ""),
             destination_project_id=str(destination.project_id or ""),
             destination_customer_name=str(destination.customer_name or ""),
             last_action=move_action,
@@ -214,6 +215,7 @@ async def move_raw_folder(
                 source_file_name=item.name,
                 material_tier=inherited_tier,
                 destination_bid_type=str(target_parent.bid_type or ""),
+                folder_path=new_folder_path,
                 destination_project_id=str(target_parent.project_id or ""),
                 destination_customer_name=str(target_parent.customer_name or ""),
             )

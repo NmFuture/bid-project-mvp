@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,22 @@ from app.services.workspace_project_access import persist_workspace_project_stat
 
 
 _CHUNK_SIZE = 1024 * 1024
+
+
+async def _parse_tender_documents_async(
+    project_id: str,
+    tender_files: list[dict[str, Any]],
+    *,
+    bid_type: str,
+    progress_callback=None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return await asyncio.to_thread(
+        parse_tender_documents,
+        project_id,
+        tender_files,
+        bid_type=bid_type,
+        progress_callback=progress_callback,
+    )
 
 
 def _add_callback_token(url: str) -> str:
@@ -326,6 +343,21 @@ def _progress_callback(service: "BidParseService", project_id: str):
     return update
 
 
+def _parse_result_opencode_output(parse_result: dict[str, Any]) -> dict[str, Any] | None:
+    structured = parse_result.get("structured") if isinstance(parse_result, dict) else {}
+    trace = structured.get("opencodeOutput") if isinstance(structured, dict) else {}
+    return copy.deepcopy(trace) if isinstance(trace, dict) and trace else None
+
+
+def _completed_opencode_output(trace: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(trace, dict) or not trace:
+        return None
+    closed = copy.deepcopy(trace)
+    if str(closed.get("status") or "").strip().lower() in {"", "waiting", "running", "streaming"}:
+        closed["status"] = "received"
+    return closed
+
+
 class BidParseService:
     def __init__(self, project_service: BidProjectService, api_prefix: str) -> None:
         self.project_service = project_service
@@ -420,6 +452,28 @@ class BidParseService:
         persist_workspace_project_state(project)
         return parse_result
 
+    def finalize_parse_progress(
+        self,
+        project_id: str,
+        parse_result: dict[str, Any],
+        *,
+        summary: dict[str, Any] | None = None,
+    ) -> None:
+        extracted_count = 0
+        if isinstance(summary, dict):
+            extracted_count = int(summary.get("extractedCount") or 0)
+        if not extracted_count and isinstance(parse_result.get("items"), list):
+            extracted_count = len(parse_result.get("items") or [])
+        current_progress = self.parse_progress(project_id)
+        current_trace = current_progress.get("opencodeOutput") if isinstance(current_progress, dict) else {}
+        self.update_parse_progress(
+            project_id,
+            status="completed",
+            percentage=100,
+            summary=f"解析完成，提取 {extracted_count} 条结构化要求。",
+            opencode_output=_completed_opencode_output(_parse_result_opencode_output(parse_result) or current_trace),
+        )
+
     def update_template_files(self, project_id: str, template_files: list[dict[str, Any]]) -> dict[str, Any]:
         project = self.require_project_for_update(project_id)
         payload = update_template_files_state(project, template_files)
@@ -454,7 +508,7 @@ class BidParseService:
             event_message=f"复用 {len(tender_files)} 个已上传招标文件。",
         )
         try:
-            summary, parse_storage = parse_tender_documents(
+            summary, parse_storage = await _parse_tender_documents_async(
                 project_id,
                 tender_files,
                 bid_type=self.project_service.bid_type,
@@ -483,6 +537,7 @@ class BidParseService:
             parse_result,
             bid_type=self.project_service.bid_type,
         )
+        self.finalize_parse_progress(project_id, parse_result, summary=summary)
         return {**parse_result, "message": "解析完成"}
 
     async def upload_and_parse(
@@ -518,7 +573,7 @@ class BidParseService:
         self.start_parse_progress(project_id)
         _progress_callback(self, project_id)("upload_ready", {"fileCount": len(active_tender)})
         try:
-            summary, parse_storage = parse_tender_documents(
+            summary, parse_storage = await _parse_tender_documents_async(
                 project_id,
                 active_tender,
                 bid_type=self.project_service.bid_type,
@@ -547,6 +602,7 @@ class BidParseService:
             parse_result,
             bid_type=self.project_service.bid_type,
         )
+        self.finalize_parse_progress(project_id, parse_result, summary=summary)
         return {
             **parse_result,
             "message": "上传成功，已自动完成解析。",

@@ -9,6 +9,14 @@ import PageHeader from '../../../components/shared/PageHeader'
 import BusinessProjectWizardModal from './BusinessProjectWizardModal'
 import Button from '../../../components/ui/Button'
 import { normalizeBidType, projectRoute } from '../../../utils/workspace'
+import {
+  isParseProgressCompleted,
+  isParseProgressFailed,
+  isUploadAndRunTimeout,
+  recoverUploadAndRunTimeout,
+  shouldPollParseProgress,
+} from '../businessParseUploadRecovery'
+import { businessProjectParseResultNavigation } from '../businessProjectRoutes'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -33,6 +41,26 @@ const REVIEW_DECISION_BADGE_CLASSES = {
 }
 
 const EMPTY_APPENDICES = []
+const PROJECT_BASIC_FIELDS = [
+  ['projectName', '项目名称'],
+  ['tenderNo', '招标编号'],
+  ['tenderer', '招标人'],
+  ['tenderAgency', '招标代理机构'],
+  ['bidDeadline', '递交截止时间'],
+]
+
+const CORE_REVIEW_SECTIONS = [
+  'projectBasics',
+  'qualificationRequirements',
+  'bidderInstructions',
+  'commercialRejectionClauses',
+]
+
+const SCORING_SECTION_TITLES = {
+  business: '五、商务评分细则',
+  price: '六、投标报价评分标准',
+  compliance: '七、符合性审查标准',
+}
 
 const extensionOf = (name) => {
   const parts = String(name || '').split('.')
@@ -62,6 +90,26 @@ const formatDateTime = (value) => {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
+const formatBidDeadline = (value, emptyText = '-') => {
+  const text = String(value ?? '').trim()
+  if (!text) return emptyText
+
+  const normalized = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::\d{2})?)?$/)
+  if (normalized) {
+    const [, year, month, day, hour, minute] = normalized
+    return hour ? `${year}-${month}-${day} ${hour}:${minute}` : `${year}-${month}-${day}`
+  }
+
+  const chinese = text.match(/(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?(?:\s*(\d{1,2})\s*(?:时|:)\s*(\d{1,2})?\s*分?)?/)
+  if (chinese) {
+    const [, year, month, day, hour, minute] = chinese
+    const datePart = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`
+    return hour ? `${datePart} ${hour.padStart(2, '0')}:${String(minute || '0').padStart(2, '0')}` : datePart
+  }
+
+  return text
+}
+
 const validatePickedFiles = (picked = []) => {
   if (picked.length > MAX_BATCH_FILES) return `单次最多上传 ${MAX_BATCH_FILES} 个文件。`
 
@@ -83,10 +131,29 @@ const buildFallbackSourceFiles = (fileNames = []) =>
     size: '-',
   }))
 
-const groupValue = (field) => {
-  if (!field) return '-'
-  const value = String(field.value || '').trim()
-  return value || '未识别'
+const displayValue = (value, emptyText = '-') => {
+  if (Array.isArray(value)) {
+    const text = value.map((item) => String(item || '').trim()).filter(Boolean).join('，')
+    return text || emptyText
+  }
+  const text = String(value ?? '').trim()
+  return text || emptyText
+}
+
+const sourceValue = (row = {}) => displayValue(
+  [row.sourceFile, row.section, row.evidenceLocation].filter(Boolean),
+)
+
+const qualificationSourceValue = (row = {}) => {
+  const readable = displayValue(row.sourceText || row.sourceLabel || row.source)
+  if (readable !== '-') return readable
+  return displayValue([row.sourceFile, row.section].filter(Boolean))
+}
+
+const riskLevelLabel = (value = '') => {
+  if (value === 'high') return '高风险'
+  if (value === 'medium') return '中风险'
+  return displayValue(value, '未识别')
 }
 
 const presenceLabel = (status) => (status === 'present' ? '有明确要求' : '未识别')
@@ -116,11 +183,9 @@ const BUSINESS_REVIEW_CONFIG = {
   appendixEmptyHint: '未识别到可保存的商务附件模板。',
   scoringGroups: [
     ['business', '商务评分标准'],
-    ['price', '投标报价评分标准'],
-    ['compliance', '符合性审查标准'],
   ],
   fallbackScoringTitle: '商务评分细则',
-  fieldGroupSections: [],
+  coreReviewSections: CORE_REVIEW_SECTIONS,
   showPresence: false,
   showCommitmentClues: false,
   showEvidenceDetails: false,
@@ -144,37 +209,213 @@ const commitmentStatusLabel = (value = '') => {
   return value || '-'
 }
 
-function FieldGroupTable({ title, fields = [], showEvidenceLocationColumn = true }) {
+function ProjectBasicsTable({ title, fields = [] }) {
+  const fieldsByKey = new Map(
+    fields
+      .filter((field) => field && typeof field === 'object')
+      .map((field) => [String(field.key || field.fieldKey || ''), field]),
+  )
+
   return (
     <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
-      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low">
+      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
         <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[640px]">
+        <table className="w-full table-fixed text-sm min-w-[720px]">
+          <colgroup>
+            <col className="w-44" />
+            <col className="w-[28rem]" />
+            <col className="w-56" />
+          </colgroup>
           <thead>
             <tr className="border-b border-surface-container-high">
-              <th className="px-4 py-2 text-center font-semibold text-on-surface">字段</th>
-              <th className="px-4 py-2 text-center font-semibold text-on-surface">解析内容</th>
-              <th className="px-4 py-2 text-center font-semibold text-on-surface">来源</th>
-              {showEvidenceLocationColumn ? (
-                <th className="px-4 py-2 text-center font-semibold text-on-surface">证据位置</th>
-              ) : null}
+              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">字段</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">识别结果</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">来源</th>
             </tr>
           </thead>
           <tbody>
-            {fields.map((field) => (
-              <tr key={field.key || field.label} className="border-b border-surface-container-high last:border-b-0">
-                <td className="px-4 py-2 text-on-surface whitespace-nowrap">{field.label || '-'}</td>
-                <td className={`px-4 py-2 min-w-[220px] ${field.status === 'found' ? 'text-primary font-medium' : 'text-outline'}`}>
-                  {groupValue(field)}
+            {PROJECT_BASIC_FIELDS.map(([key, label]) => {
+              const field = fieldsByKey.get(key) || {}
+              const value = key === 'bidDeadline'
+                ? formatBidDeadline(field.value, '未识别')
+                : displayValue(field.value, '未识别')
+              return (
+                <tr key={key} className="border-b border-surface-container-high last:border-b-0">
+                  <td className="px-4 py-2 text-on-surface font-medium whitespace-nowrap">{label}</td>
+                  <td className={`business-core-text-cell px-4 py-2 ${value === '未识别' ? 'text-outline' : 'text-primary font-medium'}`}>
+                    {value}
+                  </td>
+                  <td className="business-core-text-cell px-4 py-2 text-on-surface-variant">{sourceValue(field)}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function QualificationRequirementsTable({ title, rows = [] }) {
+  return (
+    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
+      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
+        <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
+        <span className="text-xs text-outline">{rows.length} 条</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full table-fixed text-sm min-w-[920px]">
+          <colgroup>
+            <col className="w-20" />
+            <col className="w-[34rem]" />
+            <col className="w-40" />
+            <col className="w-72" />
+          </colgroup>
+          <thead>
+            <tr className="border-b border-surface-container-high">
+              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">序号</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">要求内容</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">适用范围</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">来源</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map((row, index) => (
+              <tr key={row.id || `qualification-${index}`} className="border-b border-surface-container-high last:border-b-0">
+                <td className="px-4 py-2 text-center text-on-surface-variant whitespace-nowrap">{row.order || index + 1}</td>
+                <td className="business-core-text-cell px-4 py-2 text-on-surface">
+                  {displayValue(row.content || row.value || row.evidence)}
                 </td>
-                <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{field.sourceFile || '-'}</td>
-                {showEvidenceLocationColumn ? (
-                  <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{field.evidenceLocation || '-'}</td>
-                ) : null}
+                <td className="business-core-text-cell px-4 py-2 text-center text-on-surface-variant">
+                  {displayValue(row.applicableScope, '全部标段')}
+                </td>
+                <td className="business-core-text-cell px-4 py-2 text-on-surface-variant">
+                  {qualificationSourceValue(row)}
+                </td>
               </tr>
-            ))}
+            )) : (
+              <tr>
+                <td className="px-4 py-3 text-outline" colSpan={4}>未识别到投标人资格要求。</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function BidderInstructionsTable({ title, rows = [] }) {
+  const fallbackHeaders = ['条款号', '条款名称', '编列内容']
+  const headers = rows.find((row) => Array.isArray(row.headers) && row.headers.length)?.headers || fallbackHeaders
+  const normalizedHeaders = headers.map((header, index) => displayValue(header, `列${index + 1}`))
+  const columnCount = Math.max(normalizedHeaders.length, 1)
+  const cellsForRow = (row = {}) => {
+    if (Array.isArray(row.cells) && row.cells.length) return row.cells
+    return [row.clauseNo, row.clauseName, row.content]
+  }
+
+  return (
+    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
+      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
+        <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
+        <span className="text-xs text-outline">{rows.length} 行</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[900px]">
+          <thead>
+            <tr className="border-b border-surface-container-high">
+              {normalizedHeaders.map((header, index) => (
+                <th
+                  key={`${header}-${index}`}
+                  className="min-w-36 px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap"
+                >
+                  {header}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map((row, index) => (
+              <tr key={row.id || `${row.clauseNo || 'instruction'}-${index}`} className="border-b border-surface-container-high last:border-b-0">
+                {Array.from({ length: columnCount }, (_, cellIndex) => (
+                  <td
+                    key={`${row.id || index}-${cellIndex}`}
+                    className={[
+                      'px-4 py-2',
+                      cellIndex === 0
+                        ? 'text-center text-on-surface-variant whitespace-nowrap'
+                        : 'business-core-text-cell text-on-surface-variant',
+                      cellIndex === 1 ? 'font-medium text-on-surface' : '',
+                    ].filter(Boolean).join(' ')}
+                  >
+                    {displayValue(cellsForRow(row)[cellIndex])}
+                  </td>
+                ))}
+              </tr>
+            )) : (
+              <tr>
+                <td className="px-4 py-3 text-outline" colSpan={columnCount}>未识别到投标人须知前附表。</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function CommercialRejectionClausesTable({ title, rows = [] }) {
+  return (
+    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
+      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
+        <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
+        <span className="text-xs text-outline">{rows.length} 条</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full table-fixed text-sm min-w-[900px]">
+          <colgroup>
+            <col className="w-28" />
+            <col className="w-56" />
+            <col className="w-[40rem]" />
+          </colgroup>
+          <thead>
+            <tr className="border-b border-surface-container-high">
+              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">风险级别</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">命中词</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">条款内容</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map((row, index) => {
+              const riskClass = row.riskLevel === 'high'
+                ? 'bg-error-container text-error'
+                : row.riskLevel === 'medium'
+                  ? 'bg-tertiary-container text-on-tertiary-container'
+                  : 'bg-surface-container-high text-on-surface-variant'
+
+              return (
+                <tr key={row.id || `rejection-${index}`} className="border-b border-surface-container-high last:border-b-0">
+                  <td className="px-4 py-2 text-center whitespace-nowrap">
+                    <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${riskClass}`}>
+                      {riskLevelLabel(row.riskLevel)}
+                    </span>
+                  </td>
+                  <td className={`business-core-text-cell px-4 py-2 font-medium ${row.riskLevel === 'high' ? 'text-error' : 'text-on-surface-variant'}`}>
+                    {displayValue(row.matchedKeywords)}
+                  </td>
+                  <td className={`business-core-text-cell px-4 py-2 ${row.riskLevel === 'high' ? 'text-error' : 'text-on-surface-variant'}`}>
+                    {displayValue(row.content)}
+                  </td>
+                </tr>
+              )
+            }) : (
+              <tr>
+                <td className="px-4 py-3 text-outline" colSpan={3}>未识别到商务废标项。</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -206,7 +447,10 @@ function ScoringCriteriaTable({
     <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
       <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
         <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
-        {headerAction || (showCount ? <span className="text-xs text-outline">{rows.length} 条</span> : null)}
+        <div className="flex items-center gap-2">
+          {showCount ? <span className="text-xs text-outline">{rows.length} 条</span> : null}
+          {headerAction}
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className={`business-scoring-table w-full table-fixed text-sm ${showSourceColumns ? 'min-w-[980px]' : 'min-w-[860px]'}`}>
@@ -415,6 +659,24 @@ export default function BusinessTenderReview({ showToast }) {
     return data
   }, [parseClient, selectedProjectId])
 
+  const syncParsedProject = useCallback(async (targetProjectId) => {
+    const latestProgress = await parseClient.progress(targetProjectId).catch(() => null)
+    if (latestProgress) setParseProgress(latestProgress)
+    const latestProject = await projectsClient.get(targetProjectId)
+    setSelectedProjectId(targetProjectId)
+    setProject(latestProject)
+    setProjects((prev) => {
+      const next = prev.map((item) => (item.id === latestProject.id ? { ...item, ...latestProject } : item))
+      return next.some((item) => item.id === latestProject.id) ? next : [latestProject, ...prev]
+    })
+    return latestProject
+  }, [parseClient, projectsClient])
+
+  const navigateToParseResult = useCallback((targetProjectId) => {
+    const { to, options } = businessProjectParseResultNavigation(targetProjectId)
+    if (to) navigate(to, options)
+  }, [navigate])
+
   const loadProjects = useCallback(async () => {
     setLoadingProjects(true)
     setError('')
@@ -514,12 +776,25 @@ export default function BusinessTenderReview({ showToast }) {
   }, [loadCurrentProject])
 
   useEffect(() => {
-    if (!uploading || !selectedProjectId) return undefined
+    const progressStatus = parseProgress?.status
+    if (!selectedProjectId || !shouldPollParseProgress({ uploading, progress: { status: progressStatus } })) return undefined
     let stopped = false
     const loadProgress = async () => {
       try {
         const progress = await parseClient.progress(selectedProjectId)
-        if (!stopped) setParseProgress(progress)
+        if (stopped) return
+        setParseProgress(progress)
+        if (isParseProgressCompleted(progress)) {
+          const result = await parseClient.results(selectedProjectId).catch(() => null)
+          if (!stopped && result) {
+            setParseData(result)
+            navigateToParseResult(selectedProjectId)
+          }
+          return
+        }
+        if (isParseProgressFailed(progress)) {
+          setUploadError(progress?.summary || '上传并解析失败')
+        }
       } catch {
         // Keep the previous progress snapshot while the upload request owns the main path.
       }
@@ -530,7 +805,7 @@ export default function BusinessTenderReview({ showToast }) {
       stopped = true
       clearInterval(timer)
     }
-  }, [parseClient, selectedProjectId, uploading])
+  }, [navigateToParseResult, parseClient, parseProgress?.status, selectedProjectId, uploading])
 
   const sourceFiles = Array.isArray(parseData?.sourceFiles) && parseData.sourceFiles.length
     ? parseData.sourceFiles
@@ -545,12 +820,22 @@ export default function BusinessTenderReview({ showToast }) {
     const fallbackRows = Array.isArray(fieldGroups.scoringCriteria) ? fieldGroups.scoringCriteria : []
     const groups = reviewConfig.scoringGroups.map(([key, title]) => ({
       key,
-      title,
+      title: SCORING_SECTION_TITLES[key] || title,
       rows: Array.isArray(structuredScoring[key]) ? structuredScoring[key] : [],
     }))
     if (groups.some((group) => group.rows.length)) return groups
     return [{ key: 'flat', title: reviewConfig.fallbackScoringTitle, rows: fallbackRows }]
   }, [fieldGroups.scoringCriteria, reviewConfig.fallbackScoringTitle, reviewConfig.scoringGroups, structuredScoring])
+  const projectBasics = Array.isArray(fieldGroups.projectBasics) ? fieldGroups.projectBasics : []
+  const qualificationRequirements = Array.isArray(fieldGroups.qualificationRequirements)
+    ? fieldGroups.qualificationRequirements
+    : EMPTY_APPENDICES
+  const bidderInstructions = Array.isArray(fieldGroups.bidderInstructions)
+    ? fieldGroups.bidderInstructions
+    : EMPTY_APPENDICES
+  const commercialRejectionClauses = Array.isArray(fieldGroups.commercialRejectionClauses)
+    ? fieldGroups.commercialRejectionClauses
+    : EMPTY_APPENDICES
   const requirementPresence = useMemo(
     () => parseData?.structured?.requirementPresence || {},
     [parseData?.structured?.requirementPresence],
@@ -751,8 +1036,8 @@ export default function BusinessTenderReview({ showToast }) {
       events: [{ step: 'upload', level: 'info', message: `正在上传${BUSINESS_FILE_LABEL}招标文件。` }],
       opencodeOutput: { parts: [] },
     })
+    let targetProjectId = selectedProjectId
     try {
-      let targetProjectId = selectedProjectId
       if (!targetProjectId) {
         const created = await createReviewProject({ silent: true })
         targetProjectId = created?.id || ''
@@ -764,18 +1049,37 @@ export default function BusinessTenderReview({ showToast }) {
       tenderFiles.forEach((file) => formData.append('tenderFiles', file))
       const response = await parseClient.uploadAndRun(targetProjectId, { formData })
       setParseData(response)
-      const latestProgress = await parseClient.progress(targetProjectId).catch(() => null)
-      if (latestProgress) setParseProgress(latestProgress)
-      const latestProject = await projectsClient.get(targetProjectId)
-      setSelectedProjectId(targetProjectId)
-      setProject(latestProject)
-      setProjects((prev) => {
-        const next = prev.map((item) => (item.id === latestProject.id ? { ...item, ...latestProject } : item))
-        return next.some((item) => item.id === latestProject.id) ? next : [latestProject, ...prev]
-      })
+      await syncParsedProject(targetProjectId)
+      navigateToParseResult(targetProjectId)
       setTenderFiles([])
       showToast?.(response?.message || `${BUSINESS_BID_TYPE}招标文件解析完成。`)
     } catch (e) {
+      if (isUploadAndRunTimeout(e) && targetProjectId) {
+        setUploadError('')
+        showToast?.('解析仍在后台继续，正在同步最新进度。')
+        const recovered = await recoverUploadAndRunTimeout({
+          projectId: targetProjectId,
+          parseClient,
+          onProgress: (progress) => setParseProgress(progress),
+        })
+        if (recovered.completed) {
+          setParseData(recovered.result)
+          await syncParsedProject(targetProjectId)
+          navigateToParseResult(targetProjectId)
+          setTenderFiles([])
+          showToast?.(`${BUSINESS_BID_TYPE}招标文件解析完成。`)
+          return
+        }
+        if (recovered.failed) {
+          const message = recovered.progress?.summary || '上传并解析失败'
+          setUploadError(message)
+          showToast?.(message, 'error')
+          return
+        }
+        setUploadError('')
+        showToast?.('解析仍在后台运行，可继续查看进度或稍后刷新结果。')
+        return
+      }
       const message = e?.message || '上传并解析失败'
       setUploadError(message)
       showToast?.(message, 'error')
@@ -1270,7 +1574,7 @@ export default function BusinessTenderReview({ showToast }) {
             </div>
             <div className="rounded-md bg-[#f7f7f7] p-3 border border-surface-container-high">
               <p className="font-medium text-on-surface mb-1">投标截止日期</p>
-              <p>{parsedDates?.endDate || '-'}</p>
+              <p>{formatBidDeadline(parsedDates?.endDate)}</p>
             </div>
           </div>
         </DataCard>
@@ -1288,6 +1592,21 @@ export default function BusinessTenderReview({ showToast }) {
             {reviewConfig.showApproveBusinessScoring && (
               null
             )}
+
+            <div className="flex flex-col gap-4">
+              {reviewConfig.coreReviewSections.includes('projectBasics') ? (
+                <ProjectBasicsTable title="一、项目基础信息" fields={projectBasics} />
+              ) : null}
+              {reviewConfig.coreReviewSections.includes('qualificationRequirements') ? (
+                <QualificationRequirementsTable title="二、投标人资格要求" rows={qualificationRequirements} />
+              ) : null}
+              {reviewConfig.coreReviewSections.includes('bidderInstructions') ? (
+                <BidderInstructionsTable title="三、投标人须知前附表" rows={bidderInstructions} />
+              ) : null}
+              {reviewConfig.coreReviewSections.includes('commercialRejectionClauses') ? (
+                <CommercialRejectionClausesTable title="四、商务废标项" rows={commercialRejectionClauses} />
+              ) : null}
+            </div>
 
             <div className="flex flex-col gap-4">
               {scoringGroups.map((group) => (
@@ -1317,19 +1636,6 @@ export default function BusinessTenderReview({ showToast }) {
               ))}
             </div>
 
-            {reviewConfig.fieldGroupSections.length ? (
-              <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
-                {reviewConfig.fieldGroupSections.map(([key, title]) => (
-                  <FieldGroupTable
-                    key={key}
-                    title={title}
-                    fields={fieldGroups[key] || []}
-                    showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
-                  />
-                ))}
-              </div>
-            ) : null}
-
             {reviewConfig.showPresence !== false && (
               <PresenceTable
                 title={reviewConfig.presenceTitle}
@@ -1347,7 +1653,7 @@ export default function BusinessTenderReview({ showToast }) {
               )}
               <div className="border border-surface-container-high rounded-md overflow-hidden">
                   <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
-                    <h4 className="text-sm font-semibold text-on-surface">商务文档预览</h4>
+                    <h4 className="text-sm font-semibold text-on-surface">八、商务文档预览</h4>
                     <div className="flex items-center gap-2">
                       {activeBusinessDocumentIsCommitment && reviewConfig.showApproveCommitmentLetters && commitmentLetters.length ? (
                         <>

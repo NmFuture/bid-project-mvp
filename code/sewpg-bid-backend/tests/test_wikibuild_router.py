@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-ROUTER_PATH = Path(__file__).resolve().parents[1] / "opencode" / "skill" / "wikibuild_router.py"
+ROUTER_PATH = Path(__file__).resolve().parents[1] / "opencode" / "skills" / "wikibuild_router.py"
 
 
 def load_router_module():

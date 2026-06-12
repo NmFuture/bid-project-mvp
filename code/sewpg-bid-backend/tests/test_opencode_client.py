@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import time
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from app.services.opencode_client import OpencodeClient
@@ -212,6 +215,189 @@ class OpencodeClientTests(unittest.TestCase):
         send_prompt.assert_called_once()
         self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "s4gap")
 
+    def test_generate_tender_parse_uses_s1_finalize_completion(self) -> None:
+        client = OpencodeClient()
+
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-s1"}),
+            patch.object(
+                client,
+                "_send_prompt_with_session_polling",
+                return_value={
+                    "parts": [
+                        {
+                            "type": "text",
+                            "text": (
+                                '{"schemaVersion":"bid-business-tender-structured-v1",'
+                                '"outputFile":"/tmp/s1_structured_result.json",'
+                                '"summary":{"workflowStage":"finalized"}}'
+                            ),
+                        }
+                    ]
+                },
+            ) as send_prompt,
+            patch.object(
+                client,
+                "_extract_tender_parse_json",
+                return_value={"outputFile": "/tmp/s1_structured_result.json"},
+            ),
+            patch.object(client, "_build_output_trace", return_value={"status": "received"}),
+        ):
+            client.generate_tender_parse_with_trace("prompt", stream_callback=lambda _: None)
+
+        send_prompt.assert_called_once()
+        self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "s1parse-finalize")
+
+    def test_decide_business_template_boundaries_with_trace_accepts_decision_file_summary(self) -> None:
+        client = OpencodeClient()
+
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-template-boundary"}),
+            patch.object(
+                client,
+                "_send_prompt_with_session_polling",
+                return_value={
+                    "parts": [
+                        {
+                            "type": "text",
+                            "text": (
+                                '{"schemaVersion":"bid-business-template-extractor-boundary-decisions-v1",'
+                                '"decisionFiles":["/tmp/llm_boundary_decisions.json"],'
+                                '"summary":{"documentCount":1,"decisionCount":2,"rejectedCount":1}}'
+                            ),
+                        }
+                    ]
+                },
+            ) as send_prompt,
+            patch.object(client, "_build_output_trace", return_value={"sessionId": "ses-template-boundary"}),
+        ):
+            result = client.decide_business_template_boundaries_with_trace("prompt")
+
+        send_prompt.assert_called_once()
+        self.assertEqual(result["decisionFiles"], ["/tmp/llm_boundary_decisions.json"])
+        self.assertEqual(result["summary"]["decisionCount"], 2)
+        self.assertEqual(result["opencodeOutput"]["sessionId"], "ses-template-boundary")
+
+    def test_decide_business_template_boundaries_uses_btplbound_finalize_early_completion(self) -> None:
+        client = OpencodeClient()
+
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-template-boundary"}),
+            patch.object(
+                client,
+                "_send_prompt_with_session_polling",
+                return_value={
+                    "parts": [
+                        {
+                            "type": "text",
+                            "text": (
+                                '{"schemaVersion":"bid-business-template-extractor-boundary-decisions-v1",'
+                                '"decisionFiles":["/tmp/llm_boundary_decisions.json"],'
+                                '"summary":{"decisionCount":2,"acceptedTemplateCount":1}}'
+                            ),
+                        }
+                    ]
+                },
+            ) as send_prompt,
+            patch.object(client, "_build_output_trace", return_value={"completionSource": "btplbound-finalize"}),
+        ):
+            result = client.decide_business_template_boundaries_with_trace("prompt")
+
+        send_prompt.assert_called_once()
+        self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "btplbound-finalize")
+        self.assertEqual(result["summary"]["acceptedTemplateCount"], 1)
+        self.assertEqual(result["opencodeOutput"]["completionSource"], "btplbound-finalize")
+
+    def test_btplbound_non_finalize_commands_do_not_trigger_early_completion(self) -> None:
+        final_output = (
+            '{"schemaVersion":"bid-business-template-extractor-boundary-decisions-v1",'
+            '"decisionFiles":["/tmp/llm_boundary_decisions.json"],'
+            '"summary":{"decisionCount":2,"acceptedTemplateCount":1}}'
+        )
+        for command in [
+            "btplbound status /data/parsed/PRJ/business_template_extraction_manifest.json",
+            "btplbound candidate-batch /data/parsed/PRJ/business_template_extraction_manifest.json next",
+            "btplbound candidate-decision /data/parsed/PRJ/business_template_extraction_manifest.json 1 /tmp/d.json",
+            "btplbound boundary-batch /data/parsed/PRJ/business_template_extraction_manifest.json next",
+            "btplbound boundary-decision /data/parsed/PRJ/business_template_extraction_manifest.json 1 /tmp/d.json",
+        ]:
+            with self.subTest(command=command):
+                messages = [
+                    {
+                        "parts": [
+                            {
+                                "type": "tool",
+                                "tool": "bash",
+                                "state": {
+                                    "status": "completed",
+                                    "input": {"command": command},
+                                    "output": final_output,
+                                    "exit": 0,
+                                },
+                            }
+                        ]
+                    }
+                ]
+
+                output = OpencodeClient._find_completed_bash_tool_output(messages, "btplbound-finalize")
+
+                self.assertEqual(output, "")
+
+    def test_btplbound_finalize_requires_terminal_json_output(self) -> None:
+        messages = [
+            {
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "btplbound finalize /data/parsed/PRJ/manifest.json"},
+                            "output": '{"status":"waiting","summary":{"candidate":{"decided":1}}}',
+                            "exit": 0,
+                        },
+                    },
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "btplbound finalize /data/parsed/PRJ/manifest.json"},
+                            "output": (
+                                '{"schemaVersion":"bid-business-template-extractor-boundary-decisions-v1",'
+                                '"decisionFiles":["/tmp/llm_boundary_decisions.json"],'
+                                '"summary":{"decisionCount":2,"acceptedTemplateCount":1}}'
+                            ),
+                            "exit": 0,
+                        },
+                    },
+                ]
+            }
+        ]
+
+        output = OpencodeClient._find_completed_bash_tool_output(messages, "btplbound-finalize")
+
+        self.assertIn('"decisionFiles"', output)
+        self.assertIn('"acceptedTemplateCount":1', output)
+
+    def test_extract_tender_parse_json_rejects_prepared_workflow_stage(self) -> None:
+        client = OpencodeClient()
+        response = {
+            "parts": [
+                {
+                    "type": "text",
+                    "text": (
+                        '{"schemaVersion":"bid-business-tender-structured-v1",'
+                        '"outputFile":"/data/parsed/PRJ/s1_structured_result.json",'
+                        '"summary":{"workflowStage":"prepared"}}'
+                    ),
+                }
+            ]
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "prepared"):
+            client._extract_tender_parse_json(response)
+
     def test_polling_can_early_complete_without_stream_callback(self) -> None:
         client = OpencodeClient()
 
@@ -255,6 +441,255 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(response["_completionSource"], "s4gap")
         self.assertIn("bid-tech-gap-plan-v1", response["parts"][0]["text"])
 
+    def test_s1_parse_does_not_complete_on_prepare_stdout(self) -> None:
+        client = OpencodeClient()
+
+        def slow_send_prompt(session_id: str, prompt_text: str) -> dict:
+            time.sleep(1.0)
+            return {
+                "parts": [
+                    {
+                        "type": "text",
+                        "text": (
+                            '{"schemaVersion":"bid-business-tender-structured-v1",'
+                            '"outputFile":"/data/parsed/PRJ/s1_structured_result.json",'
+                            '"summary":{"workflowStage":"prepared"}}'
+                        ),
+                    }
+                ]
+            }
+
+        messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-prepare"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "s1parse /data/parsed/PRJ/s1_parse_manifest.json"},
+                            "exit": 0,
+                            "output": (
+                                '{"schemaVersion":"bid-business-tender-structured-v1",'
+                                '"outputFile":"/data/parsed/PRJ/s1_structured_result.json",'
+                                '"summary":{"workflowStage":"prepared"}}'
+                            ),
+                        },
+                    }
+                ],
+            }
+        ]
+
+        with (
+            patch.object(client, "send_prompt", side_effect=slow_send_prompt),
+            patch.object(client, "list_session_messages", return_value=messages),
+            patch("app.services.opencode_client.settings.opencode_timeout_sec", 1),
+            patch("app.services.opencode_client.time.monotonic", side_effect=[0.0, 121.0, 242.0]),
+            patch("app.services.opencode_client.time.sleep", return_value=None),
+            patch.object(client, "_raise_s1_opencode_stalled", side_effect=RuntimeError("opencode incomplete/stalled")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "opencode incomplete/stalled"):
+                client._send_prompt_with_session_polling(
+                    "ses-s1",
+                    "prompt",
+                    early_tool_command="s1parse-finalize",
+                )
+
+    def test_s1_parse_waits_for_finalize_after_prompt_returns_between_tool_calls(self) -> None:
+        client = OpencodeClient()
+        finalize_output = (
+            '{"schemaVersion":"bid-business-tender-structured-v1",'
+            '"outputFile":"/data/parsed/PRJ/s1_structured_result.json",'
+            '"summary":{"workflowStage":"finalized"}}'
+        )
+        intermediate_messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-between-tools"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {
+                                "command": (
+                                    "s1parse validate-decision /data/parsed/PRJ/s1_parse_manifest.json "
+                                    "qualification_review/part-003"
+                                )
+                            },
+                            "exit": 0,
+                            "output": '{"status":"passed"}',
+                        },
+                    }
+                ],
+            }
+        ]
+        finalized_messages = [
+            *intermediate_messages,
+            {
+                "info": {"role": "assistant", "id": "msg-finalize"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "s1parse finalize /data/parsed/PRJ/s1_parse_manifest.json"},
+                            "exit": 0,
+                            "output": finalize_output,
+                        },
+                    }
+                ],
+            },
+        ]
+        snapshots = iter([intermediate_messages, finalized_messages])
+
+        def list_messages(session_id: str) -> list[dict]:
+            try:
+                return next(snapshots)
+            except StopIteration:
+                return finalized_messages
+
+        with (
+            patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": ""}]}),
+            patch.object(client, "list_session_messages", side_effect=list_messages) as list_session_messages,
+            patch("app.services.opencode_client.time.sleep", return_value=None),
+        ):
+            response = client._send_prompt_with_session_polling(
+                "ses-s1",
+                "prompt",
+                early_tool_command="s1parse-finalize",
+            )
+
+        self.assertTrue(response["_earlyCompletion"])
+        self.assertEqual(response["_completionSource"], "s1parse-finalize")
+        self.assertIn('"workflowStage":"finalized"', response["parts"][0]["text"])
+        self.assertGreaterEqual(list_session_messages.call_count, 2)
+
+    def test_btplbound_waits_for_finalize_after_prompt_timeout(self) -> None:
+        client = OpencodeClient()
+        finalize_output = (
+            '{"schemaVersion":"bid-business-template-extractor-boundary-decisions-v1",'
+            '"decisionFiles":["/data/parsed/PRJ/TEN-1/llm_boundary_decisions.json"],'
+            '"summary":{"decisionCount":11,"acceptedTemplateCount":11}}'
+        )
+        candidate_messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-candidate"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {
+                                "command": (
+                                    "btplbound candidate-decision "
+                                    "/data/parsed/PRJ/business_template_extraction_manifest.json "
+                                    "3 /tmp/candidate_decision_batch_0003.json"
+                                )
+                            },
+                            "exit": 0,
+                            "output": '{"status":"accepted"}',
+                        },
+                    }
+                ],
+            }
+        ]
+        finalized_messages = [
+            *candidate_messages,
+            {
+                "info": {"role": "assistant", "id": "msg-finalize"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {
+                                "command": (
+                                    "btplbound finalize "
+                                    "/data/parsed/PRJ/business_template_extraction_manifest.json"
+                                )
+                            },
+                            "exit": 0,
+                            "output": finalize_output,
+                        },
+                    }
+                ],
+            },
+        ]
+        snapshots = iter([candidate_messages, finalized_messages])
+
+        def list_messages(session_id: str) -> list[dict]:
+            try:
+                return next(snapshots)
+            except StopIteration:
+                return finalized_messages
+
+        with (
+            patch.object(client, "send_prompt", side_effect=RuntimeError("futurecode 生成超时，请缩短输入或稍后重试。")),
+            patch.object(client, "list_session_messages", side_effect=list_messages) as list_session_messages,
+            patch("app.services.opencode_client.time.sleep", return_value=None),
+        ):
+            response = client._send_prompt_with_session_polling(
+                "ses-template-boundary",
+                "prompt",
+                early_tool_command="btplbound-finalize",
+            )
+
+        self.assertTrue(response["_earlyCompletion"])
+        self.assertEqual(response["_completionSource"], "btplbound-finalize")
+        self.assertIn('"acceptedTemplateCount":11', response["parts"][0]["text"])
+        self.assertGreaterEqual(list_session_messages.call_count, 2)
+
+    def test_s1_parse_stalled_running_read_reports_trace(self) -> None:
+        client = OpencodeClient()
+
+        def slow_send_prompt(session_id: str, prompt_text: str) -> dict:
+            time.sleep(2.0)
+            return {"parts": [{"type": "text", "text": '{"late":true}'}]}
+
+        messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-read"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "read",
+                        "state": {
+                            "status": "running",
+                            "input": {"filePath": "/data/parsed/PRJ-0017/review_plan.json"},
+                        },
+                    }
+                ],
+            }
+        ]
+
+        with (
+            patch.object(client, "send_prompt", side_effect=slow_send_prompt),
+            patch.object(client, "list_session_messages", return_value=messages),
+            patch("app.services.opencode_client.settings.opencode_timeout_sec", 1),
+            patch("app.services.opencode_client.time.monotonic", side_effect=[0.0, 0.0, 121.0]),
+        ):
+            with self.assertRaises(RuntimeError) as context:
+                client._send_prompt_with_session_polling(
+                    "ses-stalled",
+                    "prompt",
+                    early_tool_command="s1parse-finalize",
+                )
+
+        exc = context.exception
+        self.assertIn("opencode incomplete/stalled", str(exc))
+        trace = getattr(exc, "opencode_trace")
+        self.assertEqual(trace["status"], "stalled")
+        self.assertEqual(trace["sessionId"], "ses-stalled")
+        self.assertEqual(trace["lastTool"], "read")
+        self.assertEqual(trace["lastToolStatus"], "running")
+        self.assertEqual(trace["lastMessageId"], "msg-read")
+        self.assertIn("review_plan.json", json.dumps(trace["lastToolInput"], ensure_ascii=False))
+
     def test_early_s2_tool_output_does_not_repair_traceback_into_outline(self) -> None:
         client = OpencodeClient()
         response = client._tool_output_response(
@@ -290,6 +725,46 @@ class OpencodeClientTests(unittest.TestCase):
         output = OpencodeClient._find_completed_bash_tool_output(messages, "s2toc")
 
         self.assertEqual(output, "")
+
+    def test_business_outline_tool_output_never_triggers_early_completion(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            manifest_path = tmpdir / "s2_input.json"
+            work_dir = tmpdir / "work"
+            work_dir.mkdir()
+            (work_dir / "outline.json").write_text(
+                json.dumps({"schema_version": "business_bid_outline.v1", "sections": []}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            manifest_path.write_text(
+                json.dumps({"workDir": str(work_dir), "outputFile": str(work_dir / "toc.json")}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            messages = [
+                {
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "input": {"command": f"business-outline {manifest_path}"},
+                                "exit": 0,
+                                "output": '{"schema_version":"business-outline-inputs-v1"}',
+                            },
+                        }
+                    ]
+                }
+            ]
+
+            output = OpencodeClient._find_completed_bash_tool_output(messages, "business-outline")
+            synthesized = OpencodeClient._synthesize_tool_response_from_manifest(
+                f"business-outline {manifest_path}",
+                "business-outline",
+            )
+
+        self.assertEqual(output, "")
+        self.assertEqual(synthesized, "")
 
     def test_extract_wiki_blueprint_json_accepts_valid_payload(self) -> None:
         client = OpencodeClient()

@@ -63,6 +63,10 @@ export function renderBusinessRoutes({ user, showToast }) {
         element={withAccess(user, <BusinessMaterialWiki showToast={showToast} />)}
       />
       <Route
+        path="/workspace/business/materials/performance"
+        element={<Navigate to="/workspace/shared/materials/performance" replace />}
+      />
+      <Route
         path="/workspace/business/logs"
         element={withAccess(user, <BusinessAuditLog showToast={showToast} />)}
       />

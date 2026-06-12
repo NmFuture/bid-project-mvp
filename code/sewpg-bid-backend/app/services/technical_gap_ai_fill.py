@@ -28,8 +28,8 @@ TABLE_FILL_SCHEMA_VERSION = "bid-tech-table-fill-v1"
 WORD_FILL_SCHEMA_VERSION = "bid-tech-word-placeholder-fill-v1"
 TECHNICAL_TABLE_FILL_SKILL_NAME = "bid-tech-table-filler"
 TECHNICAL_WORD_FILL_SKILL_NAME = "bid-tech-word-placeholder-filler"
-TABLE_FILL_RUNNER = BASE_DIR / "opencode" / "skill" / TECHNICAL_TABLE_FILL_SKILL_NAME / "scripts" / "run_from_manifest.py"
-WORD_FILL_RUNNER = BASE_DIR / "opencode" / "skill" / TECHNICAL_WORD_FILL_SKILL_NAME / "scripts" / "run_from_manifest.py"
+TABLE_FILL_RUNNER = BASE_DIR / "opencode" / "skills" / TECHNICAL_TABLE_FILL_SKILL_NAME / "scripts" / "run_from_manifest.py"
+WORD_FILL_RUNNER = BASE_DIR / "opencode" / "skills" / TECHNICAL_WORD_FILL_SKILL_NAME / "scripts" / "run_from_manifest.py"
 
 
 def _now_iso() -> str:

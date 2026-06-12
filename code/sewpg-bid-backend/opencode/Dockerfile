@@ -26,19 +26,19 @@ RUN python3 -m pip install --no-cache-dir --break-system-packages "lxml>=5.2.0" 
 
 COPY opencode.json /workspace/opencode.json
 COPY .opencode /workspace/.opencode
-COPY skill /workspace/skill
+COPY skills /workspace/skills
 COPY docker-entrypoint.sh /usr/local/bin/opencode-entrypoint
 
 RUN chmod +x /usr/local/bin/opencode-entrypoint \
     && mkdir -p /root/.local/share/opencode /workspace/.opencode/skills \
-    && cp -R /workspace/skill/. /workspace/.opencode/skills/ \
+    && cp -R /workspace/skills/. /workspace/.opencode/skills/ \
     && printf '%s\n' \
       '#!/bin/sh' \
-      'if [ "$#" -ne 1 ]; then' \
-      '  echo "usage: s1parse <manifest>" >&2' \
+      'if [ "$#" -ne 1 ] && [ "$#" -ne 2 ] && [ "$#" -ne 3 ] && [ "$#" -ne 6 ] && [ "$#" -ne 8 ] && [ "$#" -ne 9 ]; then' \
+      '  echo "usage: s1parse [prepare|finalize|offline-fallback|tasks|status|task|validate-decision|decision-all|decision-set|qualification-item] <manifest> [taskId] [...]" >&2' \
       '  exit 64' \
       'fi' \
-      'exec python3 /workspace/.opencode/skills/s1parse_router.py "$1"' \
+      'exec python3 /workspace/.opencode/skills/s1parse_router.py "$@"' \
       > /usr/local/bin/s1parse \
     && printf '%s\n' \
       '#!/bin/sh' \
@@ -56,6 +56,14 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       'fi' \
       'exec python3 /workspace/.opencode/skills/bid-business-outline-generator/scripts/run_from_manifest.py --manifest "$1" --response summary' \
       > /usr/local/bin/business-outline \
+    && printf '%s\n' \
+      '#!/bin/sh' \
+      'case "$1" in' \
+      '  status|candidate-batch|candidate-decision|boundary-batch|boundary-decision|finalize) ;;' \
+      '  *) echo "usage: btplbound [status|candidate-batch|candidate-decision|boundary-batch|boundary-decision|finalize] ..." >&2; exit 64 ;;' \
+      'esac' \
+      'exec python3 /workspace/.opencode/skills/bid-business-template-extractor/scripts/btplbound_workflow.py "$@"' \
+      > /usr/local/bin/btplbound \
     && printf '%s\n' \
       '#!/bin/sh' \
       'if [ "$#" -ne 1 ]; then' \
@@ -99,6 +107,14 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
     && printf '%s\n' \
       '#!/bin/sh' \
       'if [ "$#" -ne 1 ]; then' \
+      '  echo "usage: businesstablefill <manifest>" >&2' \
+      '  exit 64' \
+      'fi' \
+      'exec python3 /workspace/.opencode/skills/bid-business-table-fill/scripts/run_from_manifest.py --manifest "$1" --response summary' \
+      > /usr/local/bin/businesstablefill \
+    && printf '%s\n' \
+      '#!/bin/sh' \
+      'if [ "$#" -ne 1 ]; then' \
       '  echo "usage: s4fill <manifest>" >&2' \
       '  exit 64' \
       'fi' \
@@ -120,7 +136,7 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       'fi' \
       'exec python3 /workspace/.opencode/skills/wikibuild_router.py "$1"' \
       > /usr/local/bin/wikibuild \
-    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/business-outline /usr/local/bin/s7assemble /usr/local/bin/businessassemble /usr/local/bin/businessformat /usr/local/bin/s4gap /usr/local/bin/businessgap /usr/local/bin/s4fill /usr/local/bin/s4wordfill /usr/local/bin/wikibuild
+    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/business-outline /usr/local/bin/btplbound /usr/local/bin/s7assemble /usr/local/bin/businessassemble /usr/local/bin/businessformat /usr/local/bin/s4gap /usr/local/bin/businessgap /usr/local/bin/businesstablefill /usr/local/bin/s4fill /usr/local/bin/s4wordfill /usr/local/bin/wikibuild
 
 EXPOSE 4096
 

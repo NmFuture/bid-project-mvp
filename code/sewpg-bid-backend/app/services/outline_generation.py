@@ -69,7 +69,7 @@ def _outline_skill_command(bid_type: Any) -> str:
 
 
 def _outline_skill_runner(skill_name: str) -> Path:
-    return BASE_DIR / "opencode" / "skill" / skill_name / "scripts" / "run_from_manifest.py"
+    return BASE_DIR / "opencode" / "skills" / skill_name / "scripts" / "run_from_manifest.py"
 
 
 def generate_outline_for_project(project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -203,7 +203,7 @@ def _run_business_outline_skill(
 ) -> dict[str, Any]:
     prompt = _build_business_outline_prompt(manifest_path)
     try:
-        result = OpencodeClient().generate_outline_with_trace(
+        result = OpencodeClient(timeout_ms=int(settings.opencode_timeout_sec * 1000)).generate_outline_with_trace(
             prompt,
             session_ready_callback=(
                 (lambda details: progress_callback("outline_session_ready", details))
@@ -215,7 +215,7 @@ def _run_business_outline_skill(
                 if progress_callback
                 else None
             ),
-            early_tool_command=BUSINESS_OUTLINE_SKILL_COMMAND,
+            early_tool_command="",
         )
     except Exception as exc:
         if progress_callback:
@@ -223,15 +223,11 @@ def _run_business_outline_skill(
                 "outline_fallback",
                 {"error": str(exc), "manifestPath": str(manifest_path)},
             )
-        try:
-            fallback = _run_local_outline_skill(manifest_path)
-            return _load_outline_result(fallback, manifest_path)
-        except Exception as fallback_exc:
-            raise RuntimeError(
-                "商务标目录生成失败："
-                f"futurecode 执行失败：{exc}；"
-                f"本地 bid-business-outline-generator 兜底也失败：{fallback_exc}"
-            ) from fallback_exc
+        raise RuntimeError(
+            "商务标目录生成失败："
+            f"futurecode 执行失败：{exc}。"
+            "本地 bid-business-outline-generator 只负责准备候选材料，不能兜底生成最终 outline.json。"
+        ) from exc
     return _load_outline_result(result, manifest_path)
 
 
@@ -309,12 +305,15 @@ def _build_business_outline_prompt(manifest_path: Path) -> str:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
     business_outline_file = str(work_dir / "outline.json")
+    decisions_file = str(work_dir / "outline_authoring_decisions.json")
     history_file = str(work_dir / "history_bid_outline_inputs.json")
     tender_file = str(work_dir / "tender_map_inputs.json")
+    document_structure_index_file = str(work_dir / "document_structure_index.json")
+    source_text_candidates_file = str(work_dir / "source_text_candidates.json")
     return f"""
 Use the {BUSINESS_OUTLINE_SKILL_NAME} skill.
 
-你现在在做 S2 商务标目录生成。必须完整执行 bid-business-outline-generator Skill，并严格遵循原有 Skill 的产物边界：准备脚本只生成输入材料，最终 outline.json 只能由 AI 判断后写入。
+你现在在做 S2 商务标目录生成。必须完整执行 bid-business-outline-generator Skill，并严格遵循原有 Skill 的产物边界：准备脚本只生成输入材料，opencode 只输出语义选择、状态判断和保留/延后理由，最终 outline.json 必须通过固定的 outline_authoring_helper.py 机械写回。
 
 manifest：{manifest_path}
 
@@ -322,23 +321,58 @@ manifest：{manifest_path}
 
 {BUSINESS_OUTLINE_SKILL_COMMAND} {manifest_path}
 
+强制工具顺序：加载 skill 之后，第一条非 skill 工具调用必须是 Bash，且 Bash command 必须完全等于上面这一行。禁止在这条 Bash 命令完成前调用 read、glob、list、ls、cat、head、tail、grep 或任何读取 manifest/JSON 的工具。不要读取 manifest 内容来“理解输入”；准备命令会读取 manifest 并产出后续判断所需材料。
+
+Mandatory tool order: after the skill tool is loaded, your first non-skill tool call MUST be the Bash tool with exactly the `business-outline {manifest_path}` command above. Do not call read, glob, list, ls, cat, head, tail, grep, or any manifest/JSON inspection tool before that Bash command completes. Do not inspect the manifest first.
+
 该命令只负责根据 manifest.templateFile 和 manifest.tenderFiles 生成：
 - {history_file}
 - {tender_file}
+- {document_structure_index_file}
+- {source_text_candidates_file}
 
 该命令不得被视为最终目录生成；不得把它的 stdout、summary 或任何候选信息当作最终 outline.json。
 
-AI 判断动作：命令完成后，继续按 bid-business-outline-generator Skill 的步骤 2-7 做 AI 判断：学习历史商务标目录结构，分析当前招标文件，匹配每个目录项的 source_text，判断 required_status，补强必须提交材料，最终写入 outline.json。
+AI 判断动作：命令完成后，继续按 bid-business-outline-generator Skill 的步骤 2-6 做 AI 判断：学习历史商务标目录结构，分析当前招标文件，读取并消费 document_structure_index.json 与 source_text_candidates.json，匹配每个目录项的 source_text，判断 required_status，补强必须提交材料，并把每个保留目录项的语义决策写入 outline_authoring_decisions.json。不得现场编写临时 Python 写回脚本。
 
 必须使用后端 manifest.templateFile 作为历史商务标/商务模板来源，不扫描当前工作目录，不使用 user_confirmed_inputs.json。
 
 后续判断只基于原始 Skill 输入产物：
 - 历史商务标输入：{history_file}
 - 招标文件输入：{tender_file}
+- 文档结构索引：{document_structure_index_file}
+- source_text 候选：{source_text_candidates_file}
+
+source_text 选择必须先消费 source_text_candidates.json 的首选候选：若某目录项已有 candidates[0]，且候选不是目录页/目次页，也不是合计、总计、小计等汇总行，最终 section.source_text 应优先逐字采用该候选，并把候选的 scope、evidence_strength、evidence_category、match_reason 写入 section.evidence_scope、section.evidence_strength、section.evidence_category、section.reason。不要用同一章节内的表格汇总行替换强标题候选或强段落候选；若首选候选是目录项标题本身或明确提交材料名称，最终 source_text 必须保留该候选，不得改用“合计 | 100”这类汇总行。
+
+历史继承策略：章节级、材料级目录应保留；具体项目业绩清单、具体证书扫描件、协议明细、过程材料明细、逐页附件、图片说明、合同逐项列表等细碎内容，应由 opencode 判断为“素材库组装项/正文素材”，在 outline_authoring_decisions.json 中显式写 action: "defer" 并说明理由，不能因为只有历史原文就默认以 history_fallback 全部保留进目录。
 
 禁止调用 read 工具；不要使用 cat/head/tail/grep 直接打印 JSON 大文件。需要访问文件内容或写回结果时，只能调用 Bash 工具执行 python3 脚本读取上述原始产物、按 bid-business-outline-generator Skill 逻辑分析和写回。Python 脚本可以完整读取 JSON 文件到内存，但每次 stdout 只输出当前判断所需的简短检查结果，避免刷屏或截断。
 
-必须把最终 AI 判断后的原生产物写入：
+必须先把 opencode 的语义判断写入固定决策文件：
+{decisions_file}
+
+outline_authoring_decisions.json 只表达 opencode 的判断，不负责机械拼装。至少包含：
+{{
+  "document_name": "商务标目录",
+  "sections": [
+    {{
+      "id": "BIZ-FALLBACK-0001",
+      "candidate_source_id": "hist-cand-001",
+      "selected_candidate_id": "cand-001",
+      "required_status": "必要",
+      "reason": "结合当前招标文件证据与历史目录语义保留。"
+    }}
+  ],
+  "review_items": []
+}}
+
+写好决策文件后，必须调用固定 helper 机械生成最终 outline.json，不得自己现场编写 Python 写回逻辑：
+python scripts/outline_authoring_helper.py --history "{history_file}" --source-candidates "{source_text_candidates_file}" --decisions "{decisions_file}" --output "{business_outline_file}"
+
+helper 只负责读取候选、保持 ID、组装/写回 outline.json、运行基础校验；它不判断章节是否必要，不写死商务标题。
+
+最终原生产物必须写入：
 {business_outline_file}
 
 outline.json 必须满足：
@@ -352,6 +386,8 @@ outline.json 必须满足：
       "level": 1,
       "required_status": "待确认",
       "source_text": "逐字证据",
+      "evidence_scope": "parent_context",
+      "evidence_strength": "strong",
       "children": []
     }}
   ]
@@ -367,6 +403,8 @@ outline.json 必须满足：
   "businessOutlineFile": "{business_outline_file}",
   "historyBidOutlineInputsFile": "{history_file}",
   "tenderMapInputsFile": "{tender_file}",
+  "sourceTextCandidatesFile": "{source_text_candidates_file}",
+  "outlineAuthoringDecisionsFile": "{decisions_file}",
   "summary": {{"total_sections": 0}}
 }}
 """.strip()

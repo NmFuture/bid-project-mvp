@@ -43,11 +43,13 @@ from app.services.business_gap_domain import (
     update_toc_ref_statuses,
     unique_path,
 )
+from app.services.business_bidder_profile import load_business_bidder_facts, store_business_bidder_facts
 from app.services.business_gap_fact_table import (
     PROJECT_FACT_TABLE_SCHEMA_VERSION,
     build_project_fact_table,
     empty_project_fact_table,
     fact_table_value_map,
+    normalize_business_fact_fields_for_save,
     normalize_project_fact_field,
     summarize_project_fact_fields,
 )
@@ -56,6 +58,7 @@ from app.services.business_gap_table_fill import (
     prepare_business_table_fill_sources,
     prepare_business_table_fill_target,
 )
+from app.services.business_s1_handoff import business_s1_consumption_context
 from app.services.business_gap_state import (
     ensure_business_gap_state,
     finalize_business_gap_plan_update,
@@ -73,6 +76,7 @@ from app.services.bid_runtime_state import now_iso
 from app.services.file_utils import safe_filename
 from app.services.material_folder_scope import project_material_root_path
 from app.services.minio_client import minio_client
+from app.services.performance_library_service import performance_library_service
 from app.services.url_utils import onlyoffice_backend_base_url
 from app.services.workspace_artifacts import business_workspace_dir
 
@@ -364,7 +368,21 @@ class BusinessGapService:
                 continue
             name = str(material.get("name") or material.get("fileName") or material_id)
             folder_path = str(material.get("folderPath") or "")
-            haystack = " ".join([name, folder_path, str(material.get("cleanedFileName") or ""), str(material.get("turbineModelLabel") or "")])
+            haystack = " ".join(
+                [
+                    name,
+                    folder_path,
+                    str(material.get("cleanedFileName") or ""),
+                    str(material.get("turbineModelLabel") or ""),
+                    str(material.get("summary") or ""),
+                    str(material.get("businessCategory") or ""),
+                    str(material.get("documentType") or ""),
+                    str(material.get("customerName") or ""),
+                    str(material.get("projectType") or ""),
+                    " ".join(str(item) for item in material.get("tags") or []),
+                    " ".join(str(item) for item in material.get("keywords") or []),
+                ]
+            )
             if not matches(haystack):
                 continue
             selectable_materials.append(
@@ -377,9 +395,16 @@ class BusinessGapService:
                     "materialTier": str(material.get("materialTier") or ""),
                     "businessMaterialKind": str(material.get("businessMaterialKind") or ""),
                     "businessMaterialKindLabel": str(material.get("businessMaterialKindLabel") or ""),
+                    "sourceType": str(material.get("sourceType") or ""),
+                    "candidateType": str(material.get("candidateType") or ""),
                     "cleanStatus": str(material.get("cleanStatus") or ""),
                     "hasCleanedWord": bool(material.get("hasCleanedWord")),
                     "cleanedFileName": str(material.get("cleanedFileName") or ""),
+                    "fileName": str(material.get("fileName") or ""),
+                    "summary": str(material.get("summary") or ""),
+                    "tags": [str(item) for item in material.get("tags") or [] if str(item).strip()][:16],
+                    "keywords": [str(item) for item in material.get("keywords") or [] if str(item).strip()][:24],
+                    "reviewStatus": str(material.get("reviewStatus") or ""),
                     "size": int(material.get("size") or 0),
                     "turbineModelLabel": str(material.get("turbineModelLabel") or ""),
                     "updatedAt": str(material.get("updatedAt") or ""),
@@ -416,7 +441,30 @@ class BusinessGapService:
         mode: str = "quick",
     ) -> dict[str, Any]:
         material = self._readable_material(project_id, material_id)
-        payload = await business_material_store.raw_download_content(str(material["id"]))
+        if self._is_performance_material(material) and not str(material.get("wordObjectKey") or ""):
+            quick_summary = self._material_preview_summary(material)
+            return {
+                "schemaVersion": "bid-business-material-preview-v1",
+                "projectId": project_id,
+                "materialId": str(material["id"]),
+                "materialName": str(material.get("name") or material.get("fileName") or material["id"]),
+                "fileName": str(material.get("fileName") or material.get("name") or material["id"]),
+                "folderPath": str(material.get("folderPath") or ""),
+                "materialTier": str(material.get("materialTier") or material.get("libraryScope") or ""),
+                "businessMaterialKind": str(material.get("businessMaterialKind") or ""),
+                "businessMaterialKindLabel": str(material.get("businessMaterialKindLabel") or ""),
+                "mimeType": "",
+                "renderer": "record",
+                "browserFileUrl": "",
+                "quickSummary": quick_summary,
+                "cleanStatus": str(material.get("cleanStatus") or ""),
+                "hasCleanedWord": False,
+                "cleanedFileName": "",
+                "officeAvailable": False,
+                "previewMode": "metadata",
+                "message": "该业绩暂未上传 Word 文件，可先核对业绩字段。",
+            }
+        payload, source_kind = await self._material_preview_download_payload(material)
         file_name = str(payload.get("fileName") or material.get("name") or material["id"])
         mime_type = str(payload.get("mimeType") or mimetypes.guess_type(file_name)[0] or "application/octet-stream")
         renderer = self._preview_renderer(file_name, mime_type)
@@ -459,7 +507,7 @@ class BusinessGapService:
                 "renderer": renderer,
                 "officeAvailable": True,
                 "onlyoffice": {
-                    "documentKey": f"business-gap-material-{material['id']}-v{payload.get('version') or material.get('version') or 1}",
+                    "documentKey": f"business-gap-material-{material['id']}-{source_kind}-v{payload.get('version') or material.get('version') or 1}",
                     "title": file_name,
                     "fileUrl": document_server_url,
                     "browserFileUrl": browser_file_url,
@@ -471,7 +519,7 @@ class BusinessGapService:
                         "name": "当前用户",
                     },
                 },
-                "message": "已生成原素材 OnlyOffice 预览。",
+                "message": "已生成业绩 Word 预览。" if source_kind == "performance_library" else "已生成原素材 OnlyOffice 预览。",
             }
 
         return {
@@ -482,10 +530,27 @@ class BusinessGapService:
 
     async def material_preview_content(self, project_id: str, material_id: str) -> dict[str, Any]:
         material = self._readable_material(project_id, material_id)
-        return await business_material_store.raw_download_content(str(material["id"]))
+        payload, _source_kind = await self._material_preview_download_payload(material)
+        return payload
 
     @staticmethod
-    async def _business_material_download_payload(material_id: str) -> tuple[dict[str, Any], str]:
+    def _is_performance_material(material: dict[str, Any] | None) -> bool:
+        if not isinstance(material, dict):
+            return False
+        material_id = str(material.get("id") or material.get("materialId") or "")
+        return str(material.get("sourceType") or "") == "performance_library" or material_id.startswith("PERF-")
+
+    @staticmethod
+    async def _material_preview_download_payload(material: dict[str, Any]) -> tuple[dict[str, Any], str]:
+        material_id = str(material.get("id") or material.get("materialId") or "")
+        if BusinessGapService._is_performance_material(material):
+            return await performance_library_service.download_word(material_id), "performance_library"
+        return await business_material_store.raw_download_content(material_id), "raw"
+
+    @staticmethod
+    async def _business_material_download_payload(material_id: str, material: dict[str, Any] | None = None) -> tuple[dict[str, Any], str]:
+        if BusinessGapService._is_performance_material(material or {"id": material_id}):
+            return await performance_library_service.download_word(material_id), "performance_library"
         try:
             payload = await business_material_store.raw_download_cleaned_content(material_id)
             return payload, "cleaned"
@@ -498,11 +563,20 @@ class BusinessGapService:
         business_gap_state = ensure_business_gap_state(project)
         if business_gap_state["recognitionStatus"] != "completed":
             raise ValueError("请先生成商务标缺口计划，再维护项目事实表。")
-        table = build_project_fact_table(project, business_gap_state)
+        table = build_project_fact_table(
+            project, business_gap_state, bidder_profile=await self._bidder_profile_safe()
+        )
         business_gap_state["projectFactTable"] = table
         project["updatedAt"] = now_iso()
         persist_business_gap_project(project)
         return copy.deepcopy(table)
+
+    @staticmethod
+    async def _bidder_profile_safe() -> dict[str, str]:
+        try:
+            return await load_business_bidder_facts()
+        except Exception:
+            return {}
 
     async def save_facts(self, project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = data or {}
@@ -512,8 +586,11 @@ class BusinessGapService:
             raise ValueError("请先生成商务标缺口计划，再维护项目事实表。")
         current = business_gap_state.get("projectFactTable")
         if not isinstance(current, dict) or current.get("schemaVersion") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
-            current = build_project_fact_table(project, business_gap_state)
-        incoming_fields = payload.get("fields") if isinstance(payload.get("fields"), list) else current.get("fields") or []
+            current = build_project_fact_table(
+                project, business_gap_state, bidder_profile=await self._bidder_profile_safe()
+            )
+        raw_incoming_fields = payload.get("fields") if isinstance(payload.get("fields"), list) else current.get("fields") or []
+        incoming_fields = normalize_business_fact_fields_for_save(raw_incoming_fields)
         confirm = bool(payload.get("confirm") or payload.get("confirmed"))
         operator = str(payload.get("operator") or "当前用户")
         saved_at = now_iso()
@@ -536,6 +613,16 @@ class BusinessGapService:
         business_gap_state["projectFactTable"] = table
         project["updatedAt"] = saved_at
         persist_business_gap_project(project)
+        fixed_updates = {
+            str(field.get("label")): str(field.get("value") or "").strip()
+            for field in fields
+            if str(field.get("sourceMode") or "") == "fixed" and str(field.get("value") or "").strip()
+        }
+        if fixed_updates:
+            try:
+                await store_business_bidder_facts(fixed_updates, updated_by=operator)
+            except Exception:
+                pass
         return copy.deepcopy(table)
 
     def update_task(self, project_id: str, task_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -715,6 +802,8 @@ class BusinessGapService:
         artifact["reviewStatus"] = "approved" if confirmed else "pending_review"
         artifact["confirmedAt"] = now_iso() if confirmed else ""
         if confirmed:
+            if str(artifact.get("sourceMode") or "").startswith("generated_"):
+                _converge_task_to_final_artifact(task, artifact)
             task["decision"] = "ready"
             task["status"] = "ready"
             task["riskFlags"] = [
@@ -723,6 +812,8 @@ class BusinessGapService:
                 if flag not in {"missing_material", "parser_generated_unconfirmed"}
             ]
         else:
+            if str(task.get("finalArtifactId") or "") == str(artifact.get("artifactId") or ""):
+                _restore_task_reference_artifacts(task)
             task["decision"] = "review_required"
             task["status"] = "review_required"
         task["updatedAt"] = now_iso()
@@ -922,7 +1013,9 @@ class BusinessGapService:
                 kept.append(artifact)
         if removed is None:
             raise KeyError(artifact_id)
-        if str(removed.get("sourceMode") or "") not in {"uploaded_in_business_s3", "selected_from_business_material_library"}:
+        removed_source_mode = str(removed.get("sourceMode") or "")
+        removable_generated = removed_source_mode.startswith("generated_") and not bool(removed.get("confirmed"))
+        if removed_source_mode not in {"uploaded_in_business_s3", "selected_from_business_material_library"} and not removable_generated:
             raise ValueError("解析生成产物不能在 S3 页面直接取消，请在解析产物审核处处理。")
         if str(removed.get("materialSyncStatus") or "") == "synced_to_project_material":
             raise ValueError("该补料已同步到项目素材库，不能直接取消；如需删除，请在素材库中处理。")
@@ -983,44 +1076,58 @@ class BusinessGapService:
             material_id = str(material.get("id") or material.get("materialId") or "").strip()
             if not material_id:
                 continue
-            raw_payload, source_kind = await self._business_material_download_payload(material_id)
+            material_context = dict(material)
+            if self._is_performance_material({**material_context, "id": material_id}):
+                try:
+                    readable_material = self._readable_material(project_id, material_id)
+                    material_context = {**readable_material, **material_context}
+                except Exception:
+                    material_context = {**material_context, "id": material_id, "sourceType": "performance_library"}
+            raw_payload, source_kind = await self._business_material_download_payload(material_id, material_context)
             raw_name = safe_filename(
-                str(raw_payload.get("fileName") or material.get("materialName") or material.get("name") or f"{material_id}.bin"),
+                str(raw_payload.get("fileName") or material_context.get("materialName") or material_context.get("name") or f"{material_id}.bin"),
                 f"{material_id}.bin",
             )
             target_path = unique_path(work_dir, f"{index:02d}-{raw_name}")
             minio_client.download_file(str(raw_payload["bucket"]), str(raw_payload["key"]), target_path)
             mime_type = str(raw_payload.get("mimeType") or mimetypes.guess_type(target_path.name)[0] or "application/octet-stream")
             cleaned_snapshot: dict[str, Any] = {}
-            try:
-                cleaned_payload = await business_material_store.raw_download_cleaned_content(material_id)
-                cleaned_name = safe_filename(
-                    str(cleaned_payload.get("fileName") or material.get("cleanedFileName") or f"{material_id}-cleaned.docx"),
-                    f"{material_id}-cleaned.docx",
-                )
-                cleaned_target_path = unique_path(work_dir, f"{index:02d}-清洗稿-{cleaned_name}")
-                minio_client.download_file(str(cleaned_payload["bucket"]), str(cleaned_payload["key"]), cleaned_target_path)
-                if cleaned_target_path.exists():
-                    cleaned_snapshot = {
-                        "cleanedFileName": cleaned_target_path.name,
-                        "cleanedFilePath": str(cleaned_target_path),
-                        "cleanedMimeType": str(
-                            cleaned_payload.get("mimeType")
-                            or mimetypes.guess_type(cleaned_target_path.name)[0]
-                            or "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                        ),
-                    }
-                    source_kind = "raw_with_cleaned"
-            except Exception:
-                cleaned_snapshot = {}
+            if source_kind != "performance_library":
+                try:
+                    cleaned_payload = await business_material_store.raw_download_cleaned_content(material_id)
+                    cleaned_name = safe_filename(
+                        str(cleaned_payload.get("fileName") or material_context.get("cleanedFileName") or f"{material_id}-cleaned.docx"),
+                        f"{material_id}-cleaned.docx",
+                    )
+                    cleaned_target_path = unique_path(work_dir, f"{index:02d}-清洗稿-{cleaned_name}")
+                    minio_client.download_file(str(cleaned_payload["bucket"]), str(cleaned_payload["key"]), cleaned_target_path)
+                    if cleaned_target_path.exists():
+                        cleaned_snapshot = {
+                            "cleanedFileName": cleaned_target_path.name,
+                            "cleanedFilePath": str(cleaned_target_path),
+                            "cleanedMimeType": str(
+                                cleaned_payload.get("mimeType")
+                                or mimetypes.guess_type(cleaned_target_path.name)[0]
+                                or "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                            ),
+                        }
+                        source_kind = "raw_with_cleaned"
+                except Exception:
+                    cleaned_snapshot = {}
             ref = {
                 "materialId": material_id,
-                "materialName": str(material.get("materialName") or material.get("name") or raw_payload.get("fileName") or material_id),
-                "folderPath": str(material.get("folderPath") or material.get("path") or ""),
-                "materialTier": str(material.get("materialTier") or material.get("libraryScope") or ""),
-                "businessMaterialKind": str(material.get("businessMaterialKind") or ""),
-                "businessMaterialKindLabel": str(material.get("businessMaterialKindLabel") or ""),
+                "materialName": str(
+                    material_context.get("materialName")
+                    or material_context.get("name")
+                    or raw_payload.get("fileName")
+                    or material_id
+                ),
+                "folderPath": str(material_context.get("folderPath") or material_context.get("path") or ""),
+                "materialTier": str(material_context.get("materialTier") or material_context.get("libraryScope") or ""),
+                "businessMaterialKind": str(material_context.get("businessMaterialKind") or ""),
+                "businessMaterialKindLabel": str(material_context.get("businessMaterialKindLabel") or ""),
                 "sourceKind": source_kind,
+                "sourceType": str(material_context.get("sourceType") or ""),
                 "selectedAt": created_at,
             }
             artifact_id = f"BART-{safe_filename(task_id, 'TASK')}-MAT-{existing_count + index}"
@@ -1032,10 +1139,10 @@ class BusinessGapService:
                 "sourceMode": "selected_from_business_material_library",
                 "assemblyMode": assembly_mode_for_artifact(
                     task,
-                    {**material, "fileName": target_path.name, "mimeType": mime_type},
+                    {**material_context, "fileName": target_path.name, "mimeType": mime_type},
                 ),
-                "materialUsage": str(material.get("wikiUsageMode") or ""),
-                "materialSourceType": "material_library",
+                "materialUsage": str(material_context.get("wikiUsageMode") or ""),
+                "materialSourceType": "performance_library" if source_kind == "performance_library" else "material_library",
                 "materialId": material_id,
                 "materialName": ref["materialName"],
                 "folderPath": ref["folderPath"],
@@ -1043,6 +1150,7 @@ class BusinessGapService:
                 "businessMaterialKind": ref["businessMaterialKind"],
                 "businessMaterialKindLabel": ref["businessMaterialKindLabel"],
                 "sourceKind": source_kind,
+                "sourceType": ref["sourceType"],
                 "version": 1,
                 "previewable": True,
                 "confirmed": True,
@@ -1051,17 +1159,17 @@ class BusinessGapService:
                 "selectedAt": created_at,
                 "operator": str(payload.get("operator") or "当前用户"),
                 "mimeType": mime_type,
-                "wikiCardId": str(material.get("wikiCardId") or ""),
-                "wikiUsageMode": str(material.get("wikiUsageMode") or ""),
-                "evidenceSegmentId": str(material.get("evidenceSegmentId") or ""),
-                "evidenceSegmentTitle": str(material.get("evidenceSegmentTitle") or ""),
-                "evidenceSegmentType": str(material.get("evidenceSegmentType") or ""),
-                "evidenceSourcePages": str(material.get("evidenceSourcePages") or ""),
-                "evidenceSummary": str(material.get("evidenceSummary") or ""),
+                "wikiCardId": str(material_context.get("wikiCardId") or ""),
+                "wikiUsageMode": str(material_context.get("wikiUsageMode") or ""),
+                "evidenceSegmentId": str(material_context.get("evidenceSegmentId") or ""),
+                "evidenceSegmentTitle": str(material_context.get("evidenceSegmentTitle") or ""),
+                "evidenceSegmentType": str(material_context.get("evidenceSegmentType") or ""),
+                "evidenceSourcePages": str(material_context.get("evidenceSourcePages") or ""),
+                "evidenceSummary": str(material_context.get("evidenceSummary") or material_context.get("summary") or ""),
                 "selectedEvidenceSegments": copy.deepcopy(
-                    material.get("evidenceSegments") if isinstance(material.get("evidenceSegments"), list) else []
+                    material_context.get("evidenceSegments") if isinstance(material_context.get("evidenceSegments"), list) else []
                 ),
-                "wikiEvidence": copy.deepcopy(material.get("wikiEvidence") or {}),
+                "wikiEvidence": copy.deepcopy(material_context.get("wikiEvidence") or {}),
                 "rawFileName": target_path.name,
                 "rawFilePath": str(target_path),
                 "rawMimeType": mime_type,
@@ -1199,6 +1307,7 @@ class BusinessGapService:
     ) -> dict[str, Any]:
         payload = data or {}
         project = self._project_for_update(project_id)
+        business_s1_consumption_context(project)
         business_gap_state = ensure_business_gap_state(project)
         if business_gap_state["recognitionStatus"] != "completed":
             raise ValueError("请先生成商务标缺口计划。")
@@ -1215,6 +1324,7 @@ class BusinessGapService:
         created_at = now_iso()
         work_dir = business_workspace_dir(project_id) / "gaps" / "ai-drafts" / safe_filename(task_id, "task")
         work_dir.mkdir(parents=True, exist_ok=True)
+        _drop_unconfirmed_generated_artifacts(task, artifact_type="ai_draft")
         existing_count = len(task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else [])
         title = str(task.get("title") or "商务响应文件")
         output_path = unique_path(work_dir, f"{safe_filename(title, '商务响应文件')}-AI起草.docx")
@@ -1229,9 +1339,9 @@ class BusinessGapService:
             "sourceMode": "generated_by_business_s3_ai_draft",
             "version": 1,
             "previewable": True,
-            "confirmed": True,
-            "reviewStatus": "approved",
-            "confirmedAt": created_at,
+            # AI 生成产物默认待人工确认
+            "confirmed": False,
+            "reviewStatus": "pending_review",
             "createdAt": created_at,
             "operator": str(payload.get("operator") or "当前用户"),
             "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1243,8 +1353,9 @@ class BusinessGapService:
         }
         task.setdefault("resolvedArtifacts", []).append(artifact)
         apply_task_artifact_intent(task, [artifact])
-        task["decision"] = "ready"
-        task["status"] = "ready"
+        # AI 草稿待人工审核，确认产物后任务才转 ready
+        task["decision"] = "review_required"
+        task["status"] = "review_required"
         task["assigneeMode"] = "ai_draft"
         task["updatedAt"] = created_at
         task["resolvedAt"] = created_at
@@ -1292,6 +1403,7 @@ class BusinessGapService:
         url_scope: dict[str, str],
     ) -> dict[str, Any]:
         project = self._project_for_update(project_id)
+        s1_context = business_s1_consumption_context(project)
         business_gap_state = ensure_business_gap_state(project)
         if business_gap_state["recognitionStatus"] != "completed":
             raise ValueError("请先生成商务标缺口计划。")
@@ -1330,6 +1442,11 @@ class BusinessGapService:
             "sourceMaterials": prepared_sources,
             "projectFactTable": fact_table,
             "facts": fact_table_value_map(fact_table),
+            "s1Consumption": {
+                "source": str(s1_context.get("source") or "legacy_parse_result"),
+                "structuredResultPath": str(s1_context.get("structuredResultPath") or ""),
+                "handoff": copy.deepcopy(s1_context.get("handoff") if isinstance(s1_context.get("handoff"), dict) else {}),
+            },
             "operator": str(data.get("operator") or "当前用户"),
             "outputFile": str(output_path),
         }
@@ -1339,6 +1456,7 @@ class BusinessGapService:
         if not resolved_output.exists():
             raise RuntimeError(f"AI填写未生成输出文件：{resolved_output}")
 
+        _drop_unconfirmed_generated_artifacts(task, artifact_type="business_table_fill", target_file_name=str((target or {}).get("fileName") or ""))
         existing_count = len(task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else [])
         artifact_id = f"BART-{safe_filename(task_id, 'TASK')}-TBL-{existing_count + 1}"
         artifact = {
@@ -1351,9 +1469,9 @@ class BusinessGapService:
             "materialUsage": "fill_table",
             "version": 1,
             "previewable": True,
-            "confirmed": True,
-            "reviewStatus": "approved",
-            "confirmedAt": created_at,
+            # AI 生成产物默认待人工确认，避免冒充人工决策绕过 ready 守卫
+            "confirmed": False,
+            "reviewStatus": "pending_review",
             "createdAt": created_at,
             "operator": str(data.get("operator") or "当前用户"),
             "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1367,8 +1485,9 @@ class BusinessGapService:
         }
         task.setdefault("resolvedArtifacts", []).append(artifact)
         apply_task_artifact_intent(task, [artifact])
-        task["decision"] = "ready"
-        task["status"] = "ready"
+        # AI 填写产物待人工审核，确认产物后任务才转 ready
+        task["decision"] = "review_required"
+        task["status"] = "review_required"
         task["handlingMode"] = "ai_table_fill"
         task["updatedAt"] = created_at
         task["resolvedAt"] = created_at
@@ -1483,10 +1602,93 @@ class BusinessGapService:
         for task in plan.get("tasks") or []:
             if not isinstance(task, dict):
                 continue
-            for artifact in task.get("resolvedArtifacts") or []:
-                if isinstance(artifact, dict) and str(artifact.get("artifactId") or "") == artifact_id:
-                    return copy.deepcopy(artifact)
+            for pool in ("resolvedArtifacts", "referenceArtifacts"):
+                for artifact in task.get(pool) or []:
+                    if isinstance(artifact, dict) and str(artifact.get("artifactId") or "") == artifact_id:
+                        return copy.deepcopy(artifact)
         raise KeyError(artifact_id)
+
+
+def _converge_task_to_final_artifact(task: dict[str, Any], final_artifact: dict[str, Any]) -> None:
+    """确认生成产物即选定任务终局：其他生成产物删除，底稿/填写参考素材挪入过程参考。
+
+    装配器只消费 resolvedArtifacts，收敛后任务交给装配的只有终局这一份。
+    """
+    final_id = str(final_artifact.get("artifactId") or "")
+    artifacts = task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else []
+    references = task.get("referenceArtifacts") if isinstance(task.get("referenceArtifacts"), list) else []
+    kept: list[dict[str, Any]] = []
+    for item in artifacts:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("artifactId") or "") == final_id:
+            kept.append(item)
+            continue
+        source_mode = str(item.get("sourceMode") or "")
+        artifact_type = str(item.get("artifactType") or "")
+        if source_mode.startswith("generated_"):
+            stale_path = Path(str(item.get("filePath") or ""))
+            if stale_path.exists() and stale_path.is_file():
+                try:
+                    stale_path.unlink()
+                except OSError:
+                    pass
+            continue
+        if (
+            artifact_type.startswith("parse_")
+            or source_mode.startswith("parsed_")
+            or artifact_type == "selected_material"
+            or source_mode == "selected_from_business_material_library"
+            or str(item.get("materialUsage") or "") == "fill_template"
+        ):
+            references.append(item)
+            continue
+        kept.append(item)
+    task["resolvedArtifacts"] = kept
+    task["referenceArtifacts"] = references
+    task["finalArtifactId"] = final_id
+
+
+def _restore_task_reference_artifacts(task: dict[str, Any]) -> None:
+    """取消终局确认时，把过程参考件恢复回任务工件列表。"""
+    references = task.get("referenceArtifacts") if isinstance(task.get("referenceArtifacts"), list) else []
+    if references:
+        artifacts = task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else []
+        existing_ids = {str(item.get("artifactId") or "") for item in artifacts if isinstance(item, dict)}
+        for item in references:
+            if isinstance(item, dict) and str(item.get("artifactId") or "") not in existing_ids:
+                artifacts.append(item)
+        task["resolvedArtifacts"] = artifacts
+    task["referenceArtifacts"] = []
+    task["finalArtifactId"] = ""
+
+
+def _drop_unconfirmed_generated_artifacts(
+    task: dict[str, Any],
+    *,
+    artifact_type: str,
+    target_file_name: str = "",
+) -> None:
+    """同一目标重复生成时，旧的未确认 AI 产物让位给最新一份，避免产物堆积。"""
+    artifacts = task.get("resolvedArtifacts") if isinstance(task.get("resolvedArtifacts"), list) else []
+    kept: list[dict[str, Any]] = []
+    for item in artifacts:
+        if not isinstance(item, dict):
+            continue
+        same_type = str(item.get("artifactType") or "") == artifact_type
+        unconfirmed = not bool(item.get("confirmed"))
+        item_target = item.get("target") if isinstance(item.get("target"), dict) else {}
+        same_target = not target_file_name or str(item_target.get("fileName") or "") == target_file_name
+        if same_type and unconfirmed and same_target:
+            stale_path = Path(str(item.get("filePath") or ""))
+            if stale_path.exists() and stale_path.is_file():
+                try:
+                    stale_path.unlink()
+                except OSError:
+                    pass
+            continue
+        kept.append(item)
+    task["resolvedArtifacts"] = kept
 
 
 business_gap_service = BusinessGapService()

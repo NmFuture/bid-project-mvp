@@ -463,19 +463,18 @@ export default function MaterialWiki({ showToast = () => {} }) {
   }
 
   return (
-    <div className="flex flex-col gap-6 animate-fade-in">
+    <div className="flex flex-col gap-3 animate-fade-in">
       <MaterialsViewSwitch
         active="wiki"
         activeBidType={activeBidType}
         title={`${activeBidType} Wiki`}
-        subtitle={selectedNode?.pathText || selectedNode?.title || `${activeBidType} Wiki 内容维护`}
         actions={(
           <div className="flex flex-nowrap gap-2">
             <button
               type="button"
               onClick={handleRefreshWiki}
               disabled={refreshingWiki || rebuildingWiki}
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-secondary-container text-on-secondary-container hover:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="h-9 whitespace-nowrap rounded-lg bg-secondary-container px-3 text-sm font-medium text-on-secondary-container transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {refreshingWiki ? '刷新中...' : '刷新Wiki'}
             </button>
@@ -483,7 +482,7 @@ export default function MaterialWiki({ showToast = () => {} }) {
               type="button"
               onClick={handleRebuildWiki}
               disabled={refreshingWiki || rebuildingWiki}
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium rounded-lg bg-surface-container-high text-on-surface-variant hover:bg-surface-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="h-9 whitespace-nowrap rounded-lg bg-surface-container-high px-3 text-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
             >
               {rebuildingWiki ? '重建中...' : '重建Wiki'}
             </button>

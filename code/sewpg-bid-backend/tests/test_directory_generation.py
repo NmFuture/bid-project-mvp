@@ -218,9 +218,21 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertIn("manifest.templateFile", prompt)
         self.assertIn("不扫描当前工作目录", prompt)
         self.assertIn("不使用 user_confirmed_inputs.json", prompt)
+        self.assertIn("第一条非 skill 工具调用必须是 Bash", prompt)
+        self.assertIn("禁止在这条 Bash 命令完成前调用 read", prompt)
+        self.assertIn("不要读取 manifest 内容来“理解输入”", prompt)
+        self.assertIn("Mandatory tool order", prompt)
+        self.assertIn("Do not inspect the manifest first", prompt)
+        self.assertIn("source_text_candidates.json 的首选候选", prompt)
+        self.assertIn("outline_authoring_decisions.json", prompt)
+        self.assertIn("outline_authoring_helper.py", prompt)
+        self.assertIn("opencode 只输出语义选择、状态判断和保留/延后理由", prompt)
+        self.assertIn("evidence_scope", prompt)
+        self.assertIn("evidence_strength", prompt)
+        self.assertIn("合计 | 100", prompt)
         self.assertIn('"schema_version": "business_bid_outline.v1"', prompt)
         self.assertTrue(any(line.strip().startswith("business-outline ") for line in prompt.splitlines()))
-        self.assertEqual(kwargs.get("early_tool_command"), "business-outline")
+        self.assertEqual(kwargs.get("early_tool_command"), "")
         manifest_line = next(line for line in prompt.splitlines() if line.strip().startswith("business-outline "))
         manifest_path = Path(manifest_line.strip().split(" ", 1)[1])
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -516,6 +528,69 @@ class DirectoryGenerationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "outline.json"):
                 generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
+    def test_business_outline_uses_task_timeout_for_long_opencode_run(self) -> None:
+        from app.services.outline_generation import _run_business_outline_skill
+
+        work_dir = settings.documents_dir / "business-timeout-work"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = work_dir / "s2_input.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "projectId": "PRJ-TIMEOUT",
+                    "projectCode": "PRJ-TIMEOUT",
+                    "projectName": "商务目录长任务",
+                    "bidType": "商务标",
+                    "workDir": str(work_dir),
+                    "tenderFiles": [],
+                    "templateFile": str(work_dir / "template.docx"),
+                    "outputFile": str(work_dir / "toc.json"),
+                    "evidenceFile": str(work_dir / "toc_evidence.json"),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        business_outline_file = work_dir / "outline.json"
+
+        def _generate(*args, **kwargs) -> dict:
+            business_outline_file.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "business_bid_outline.v1",
+                        "sections": [
+                            {
+                                "id": "BIZ-1",
+                                "title": "商务响应文件",
+                                "number": None,
+                                "level": 1,
+                                "required_status": "必要",
+                                "source_text": "招标文件要求提交商务响应文件。",
+                                "children": [],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            return {
+                "schema_version": "business_bid_outline.v1",
+                "businessOutlineFile": str(business_outline_file),
+                "summary": {"total_sections": 1},
+                "opencodeOutput": {"status": "received", "parts": []},
+            }
+
+        with patch("app.services.outline_generation.OpencodeClient") as client_cls:
+            client_cls.return_value.generate_outline_with_trace.side_effect = _generate
+
+            _run_business_outline_skill(manifest_path)
+
+        self.assertEqual(
+            client_cls.call_args.kwargs["timeout_ms"],
+            int(settings.opencode_timeout_sec * 1000),
+        )
+
     def test_generate_business_outline_rejects_invalid_outline_schema(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
 
@@ -544,7 +619,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "sections"):
                 generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
-    def test_generate_business_outline_falls_back_to_local_business_runner(self) -> None:
+    def test_generate_business_outline_does_not_fallback_to_local_business_runner(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
 
         project_id = self._prepare_project_with_parse_result("商务标")
@@ -553,17 +628,12 @@ class DirectoryGenerationTests(unittest.TestCase):
             "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
             side_effect=RuntimeError("offline business outline"),
         ):
-            payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+            with self.assertRaisesRegex(RuntimeError, "只负责准备候选材料"):
+                generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
         work_dir = business_workspace_dir(project_id) / "s2_toc_workdir"
-        self.assertEqual(payload["status"], "completed")
-        self.assertTrue((work_dir / "outline.json").exists())
-        self.assertTrue(Path(payload["opencodeOutput"]["tocJsonPath"]).exists())
-        toc = json.loads(Path(payload["opencodeOutput"]["tocJsonPath"]).read_text(encoding="utf-8"))
-        self.assertEqual(toc["schema_version"], "bid-toc-json-v1")
-        self.assertTrue(toc["items"])
-        self.assertTrue(all(item.get("source") == "business_outline" for item in toc["items"]))
-        self.assertTrue(all("number" in item for item in toc["items"]))
+        self.assertFalse((work_dir / "outline.json").exists())
+        self.assertFalse((work_dir / "toc.json").exists())
 
     def test_generate_business_outline_rejects_missing_section_number(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
@@ -592,7 +662,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "sections\\[0\\]\\.number"):
                 generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
-    def test_business_outline_runner_prepares_inputs_and_fallback_outline(self) -> None:
+    def test_business_outline_runner_prepares_inputs_without_final_outline(self) -> None:
         import importlib.util
         import sys
 
@@ -632,20 +702,19 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         self.assertTrue((work_dir / "history_bid_outline_inputs.json").exists())
         self.assertTrue((work_dir / "tender_map_inputs.json").exists())
+        self.assertTrue((work_dir / "document_structure_index.json").exists())
+        self.assertTrue((work_dir / "source_text_candidates.json").exists())
         outline_path = work_dir / "outline.json"
-        self.assertTrue(outline_path.exists())
-        outline = json.loads(outline_path.read_text(encoding="utf-8"))
-        self.assertEqual(outline["schema_version"], "business_bid_outline.v1")
-        self.assertTrue(outline["sections"])
-        self.assertTrue(all("number" in section for section in outline["sections"]))
-        self.assertEqual(outline["outline_source"]["source_type"], "local_runner_fallback")
+        self.assertFalse(outline_path.exists())
         self.assertFalse((work_dir / "toc.json").exists())
         self.assertFalse((work_dir / "toc_evidence.json").exists())
         self.assertFalse((work_dir / "agent_review_input.json").exists())
         self.assertEqual(result["summary"]["schema_version"], "business-outline-inputs-v1")
-        self.assertEqual(result["summary"]["businessOutlineFile"], str(outline_path))
+        self.assertNotIn("businessOutlineFile", result["summary"])
         self.assertEqual(result["summary"]["historyBidOutlineInputsFile"], str(work_dir / "history_bid_outline_inputs.json"))
         self.assertEqual(result["summary"]["tenderMapInputsFile"], str(work_dir / "tender_map_inputs.json"))
+        self.assertEqual(result["summary"]["documentStructureIndexFile"], str(work_dir / "document_structure_index.json"))
+        self.assertEqual(result["summary"]["sourceTextCandidatesFile"], str(work_dir / "source_text_candidates.json"))
 
     def test_business_outline_regenerate_uses_generated_business_toc_not_technical_defaults(self) -> None:
         from app.services.outline_generation import generate_outline_for_project

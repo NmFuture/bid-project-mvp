@@ -86,6 +86,9 @@ class MaterialStore:
         customer_name: str = "",
         material_tier: str = "",
         clean_status: str = "",
+        business_material_kind: str = "",
+        tag: Any = "",
+        title: str = "",
         keyword: str = "",
         recursive: bool = True,
         page: int = 1,
@@ -98,6 +101,9 @@ class MaterialStore:
             bid_type=bid_type,
             material_tier=material_tier,
             clean_status=clean_status,
+            business_material_kind=business_material_kind,
+            tag=tag,
+            title=title,
             keyword=keyword,
             recursive=recursive,
             page=page,
@@ -134,6 +140,20 @@ class MaterialStore:
             raw_tree=lambda: self.raw_tree(bid_type=bid_type),
         )
 
+    async def raw_cleanup_project_folder(self, path: str, *, bid_type: str) -> dict[str, Any]:
+        return await delete_raw_folder(
+            path=path,
+            bid_type=bid_type,
+            ensure_runtime_tables=ensure_material_runtime_tables,
+            purge_raw_file_objects=partial(
+                purge_raw_file_objects,
+                ensure_runtime_tables=ensure_material_runtime_tables,
+            ),
+            mark_default_folder_deleted=self._raw_folders.mark_default_folder_deleted,
+            raw_tree=lambda: self.raw_tree(bid_type=bid_type),
+            allow_protected=True,
+        )
+
     async def raw_upload(
         self,
         *,
@@ -146,6 +166,7 @@ class MaterialStore:
         business_material_kind: str = "",
         customer_id: str = "",
         customer_name: str = "",
+        tags: Any = None,
         on_conflict: str = "",
         files: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
@@ -159,6 +180,7 @@ class MaterialStore:
             material_tier=material_tier,
             business_material_kind=business_material_kind,
             customer_id=customer_id,
+            tags=tags,
             on_conflict=on_conflict,
             files=list(files or []),
             ensure_runtime_tables=ensure_material_runtime_tables,
@@ -182,12 +204,16 @@ class MaterialStore:
         bid_type: str,
         name: str = "",
         business_material_kind: str = "",
+        tags: Any = None,
+        update_tags: bool = False,
     ) -> dict[str, Any]:
         return await update_raw_file(
             file_id=file_id,
             bid_type=bid_type,
             name=name,
             business_material_kind=business_material_kind,
+            tags=tags,
+            update_tags=update_tags,
             ensure_runtime_tables=ensure_material_runtime_tables,
             raw_object_key=raw_object_key,
         )

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import unittest
+from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from app.services.bid_type import BUSINESS_BID_TYPE, GENERAL_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.material_store import material_store
@@ -42,6 +45,7 @@ from app.services.material_taxonomy import (
     is_raw_material_protected_folder_path,
     material_suffix,
 )
+from app.services.material_tags import normalize_material_tags
 from app.services.material_upload_metadata import (
     build_raw_upload_existing_ext_fields,
     build_raw_upload_ext_fields,
@@ -67,6 +71,58 @@ from app.services.material_wiki_scope import wiki_node_bid_types, wiki_root_bid_
 from app.services.peripheral import PeripheralError
 
 
+class _FakePerformanceResult:
+    def __init__(self, row: dict | None = None, *, rows: list[dict] | None = None, scalar: int | None = None) -> None:
+        self.row = row
+        self.rows = rows
+        self.scalar = scalar
+
+    def first(self):
+        if self.row is None:
+            return None
+        return SimpleNamespace(_mapping=self.row)
+
+    def scalar_one(self):
+        return self.scalar if self.scalar is not None else 0
+
+    def __iter__(self):
+        return iter([SimpleNamespace(_mapping=row) for row in (self.rows if self.rows is not None else [])])
+
+
+class _FakePerformanceSession:
+    def __init__(
+        self,
+        row: dict | None = None,
+        *,
+        rows: list[dict] | None = None,
+        scalar: int | None = None,
+        results: list[_FakePerformanceResult] | None = None,
+    ) -> None:
+        self.row = row
+        self.rows = rows
+        self.scalar = scalar
+        self.results = list(results or [])
+        self.statements: list[str] = []
+        self.params: list[dict] = []
+        self.committed = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def execute(self, statement, params=None):
+        self.statements.append(str(statement))
+        self.params.append(dict(params or {}))
+        if self.results:
+            return self.results.pop(0)
+        return _FakePerformanceResult(self.row, rows=self.rows, scalar=self.scalar)
+
+    async def commit(self):
+        self.committed = True
+
+
 class BusinessMaterialLibraryRulesTests(unittest.TestCase):
     def test_image_files_are_marked_original_only(self) -> None:
         status, message = clean_status_for_new_file("机型认证证书.png")
@@ -88,7 +144,7 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
             "project",
         )
         self.assertEqual(
-            business_customized_tier_from_path("商务标/客户素材/华能集团/01-客户关系与专项证明"),
+            business_customized_tier_from_path("商务标/客户素材/华能集团/客户关系与专项证明"),
             "",
         )
 
@@ -110,9 +166,9 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
         self.assertEqual(
             [item["name"] for item in BUSINESS_CUSTOMIZED_SUBFOLDERS],
             [
-                "01-客户关系与专项证明",
-                "02-商务响应文件",
-                "03-模板底稿与过程文件",
+                "客户准入与专项证明",
+                "客户专用响应口径",
+                "客户模板与历史文件",
             ],
         )
 
@@ -146,7 +202,7 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
     def test_business_upload_metadata_sets_business_kind_and_identity(self) -> None:
         ext, clean_status = build_raw_upload_ext_fields(
             file_name="授权委托书.docx",
-            folder_path="商务标/客户素材/华能集团/02-商务响应文件",
+            folder_path="商务标/客户素材/华能集团/客户专用商务响应文件",
             folder_tier="customer",
             requested_bid_type="商务标",
             business_material_kind="fixed",
@@ -154,15 +210,25 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
             source_minio_bucket="bid-materials",
             source_minio_key="raw/business.docx",
             clean_updated_at="2026-05-24T00:00:00Z",
+            tags=["资质", "授权书", "资质"],
         )
 
         self.assertEqual(clean_status, "pending")
         self.assertEqual(ext["bidType"], "商务标")
         self.assertEqual(ext["materialTier"], "customer")
         self.assertEqual(ext["businessMaterialKind"], "fixed")
+        self.assertEqual(ext["materialCategory"], "customer_response")
+        self.assertEqual(ext["materialCategoryLabel"], "客户专用响应口径")
         self.assertEqual(ext["customerId"], "CUST-HN")
         self.assertEqual(ext["customerName"], "华能集团")
         self.assertEqual(ext["cleanUpdatedAt"], "2026-05-24T00:00:00Z")
+        self.assertEqual(ext["tags"], ["资质", "授权书"])
+
+    def test_material_tags_normalize_arrays_json_and_delimited_text(self) -> None:
+        self.assertEqual(normalize_material_tags(["资质", " 资质 ", "承诺函"]), ["资质", "承诺函"])
+        self.assertEqual(normalize_material_tags(["资质，承诺函", "授权书;报价"]), ["资质", "承诺函", "授权书", "报价"])
+        self.assertEqual(normalize_material_tags('["报价", "商务附件", "报价"]'), ["报价", "商务附件"])
+        self.assertEqual(normalize_material_tags("业绩，资格; 授权书\n承诺函"), ["业绩", "资格", "授权书", "承诺函"])
 
     def test_technical_upload_metadata_adds_turbine_hint_without_business_kind(self) -> None:
         ext, clean_status = build_raw_upload_ext_fields(
@@ -238,14 +304,14 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
 
     def test_raw_upload_target_plan_infers_business_customer_subfolder(self) -> None:
         plan = build_raw_upload_target_plan(
-            target_path="商务标/客户素材/华能集团/01-客户关系与专项证明",
+            target_path="商务标/客户素材/华能集团/客户关系与专项证明",
             bid_type="商务标",
         )
 
         self.assertEqual(plan["mode"], "scoped-path")
         self.assertEqual(plan["materialTier"], "customer")
         self.assertEqual(plan["customerName"], "华能集团")
-        self.assertEqual(plan["requestedPath"], "商务标/客户素材/华能集团/01-客户关系与专项证明")
+        self.assertEqual(plan["requestedPath"], "商务标/客户素材/华能集团/客户关系与专项证明")
 
     def test_raw_upload_target_plan_keeps_legacy_customer_aliases_canonicalizable(self) -> None:
         plan = build_raw_upload_target_plan(
@@ -260,10 +326,10 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
     def test_raw_upload_canonical_target_resolution(self) -> None:
         self.assertEqual(
             resolve_raw_upload_canonical_target(
-                "商务标/项目素材/BIZ-001/02-商务响应文件",
+                "商务标/项目素材/BIZ-001/项目商务响应文件",
                 "商务标/项目素材/BIZ-001",
             ),
-            {"mode": "nested", "relativeDir": "02-商务响应文件"},
+            {"mode": "nested", "relativeDir": "项目商务响应文件"},
         )
         self.assertEqual(
             resolve_raw_upload_canonical_target("客户素材/华能集团", "商务标/客户素材/华能集团")["mode"],
@@ -429,11 +495,14 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
 
     def test_business_folder_scope_rules_describe_standard_and_customized_children(self) -> None:
         standard_specs = business_standard_subfolder_specs("平台标准")
-        self.assertEqual(standard_specs[0]["name"], "01-资质合规库")
+        self.assertEqual(standard_specs[0]["name"], "资格审查与基础证明")
         self.assertEqual(standard_specs[0]["bidType"], "商务标")
         self.assertEqual(standard_specs[0]["customerName"], "平台标准")
-        certificate_specs = [item for item in standard_specs if item["name"] == "05-专题证书库"][0]
-        self.assertEqual([child["name"] for child in certificate_specs["children"]], ["01-机型认证证书", "02-大部件型式认证证书"])
+        self.assertEqual(standard_specs[0]["materialCategory"], "qualification_evidence")
+        self.assertEqual(
+            [item["name"] for item in standard_specs],
+            ["资格审查与基础证明", "财务信用与合规声明", "制造商与供应链材料", "机型认证与测试报告", "企业能力与供货业绩", "表单模板与过程稿"],
+        )
 
         customized_specs = business_customized_subfolder_specs(
             tier="project",
@@ -502,7 +571,14 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
     def test_raw_folder_move_scope_rules_protect_roots_and_descendants(self) -> None:
         self.assertTrue(is_raw_folder_move_protected_path("技术标"))
         self.assertTrue(is_raw_folder_move_protected_path("商务标"))
-        self.assertFalse(is_raw_folder_move_protected_path("商务标/客户素材/华能集团"))
+        self.assertTrue(is_raw_folder_move_protected_path("商务标/通用素材"))
+        self.assertTrue(is_raw_folder_move_protected_path("商务标/客户素材"))
+        self.assertTrue(is_raw_folder_move_protected_path("商务标/项目素材"))
+        self.assertTrue(is_raw_folder_move_protected_path("商务标/客户素材/华能集团"))
+        self.assertTrue(is_raw_folder_move_protected_path("商务标/项目素材/BIZ-001"))
+        self.assertTrue(is_raw_folder_move_protected_path("商务标/客户素材/华能集团/客户专用响应口径"))
+        self.assertTrue(is_raw_folder_move_protected_path("商务标/客户素材/华能集团/客户专用商务响应文件"))
+        self.assertFalse(is_raw_folder_move_protected_path("商务标/客户素材/华能集团/临时目录"))
         self.assertTrue(
             is_raw_folder_move_descendant_target(
                 "商务标/客户素材/华能集团",
@@ -529,6 +605,26 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
         self.assertEqual(ext["businessMaterialKind"], "fixed")
         self.assertEqual(ext["businessMaterialKindLabel"], "固定素材")
         self.assertEqual(ext["lastAction"], "update")
+
+    def test_raw_update_metadata_updates_and_clears_tags(self) -> None:
+        ext = build_raw_update_file_ext_fields(
+            {"bidType": "商务标", "tags": ["旧标签"]},
+            source_minio_key="raw/商务标/通用素材/授权书.docx",
+            source_file_name="授权书.docx",
+            tags="资质，承诺函，资质",
+            update_tags=True,
+        )
+        cleared = build_raw_update_file_ext_fields(
+            ext,
+            source_minio_key="raw/商务标/通用素材/授权书.docx",
+            source_file_name="授权书.docx",
+            tags=[],
+            update_tags=True,
+        )
+
+        self.assertEqual(ext["tags"], ["资质", "承诺函"])
+        self.assertEqual(ext["lastAction"], "update")
+        self.assertEqual(cleared["tags"], [])
 
     def test_raw_update_metadata_keeps_technical_updates_as_rename(self) -> None:
         ext = build_raw_update_file_ext_fields(
@@ -573,6 +669,53 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
         self.assertEqual(payload["items"], [{"id": "RAW-COMMON"}])
         self.assertEqual(payload["page"], 2)
         self.assertEqual(payload["pageSize"], 1)
+
+    def test_raw_file_filter_supports_title_and_tag_options(self) -> None:
+        items = [
+            SimpleNamespace(
+                name="质量专题更新20240729.docx",
+                ext_fields={"bidType": "商务标", "materialTier": "standard", "tags": ["资质", "质量"]},
+                folder=SimpleNamespace(tier="standard"),
+                to_dict=lambda: {"id": "RAW-QUALITY"},
+            ),
+            SimpleNamespace(
+                name="财务审计报告.docx",
+                ext_fields={"bidType": "商务标", "materialTier": "standard", "tags": ["财务"]},
+                folder=SimpleNamespace(tier="standard"),
+                to_dict=lambda: {"id": "RAW-FINANCE"},
+            ),
+            SimpleNamespace(
+                name="质量体系证书.docx",
+                ext_fields={"bidType": "商务标", "materialTier": "standard", "tags": ["资质"]},
+                folder=SimpleNamespace(tier="standard"),
+                to_dict=lambda: {"id": "RAW-CERT"},
+            ),
+        ]
+
+        payload = build_raw_files_payload(
+            items,
+            bid_type="商务标",
+            title="质量",
+            tag=["资质"],
+            page=1,
+            page_size=20,
+        )
+
+        self.assertEqual(payload["items"], [{"id": "RAW-QUALITY"}, {"id": "RAW-CERT"}])
+        self.assertEqual(payload["tagOptions"], ["资质", "质量"])
+        self.assertEqual(payload["total"], 2)
+
+        multi_tag_payload = build_raw_files_payload(
+            items,
+            bid_type="商务标",
+            title="质量",
+            tag=["资质", "质量"],
+            page=1,
+            page_size=20,
+        )
+
+        self.assertEqual(multi_tag_payload["items"], [{"id": "RAW-QUALITY"}])
+        self.assertEqual(multi_tag_payload["total"], 1)
 
     def test_raw_file_filter_applies_project_customer_tier_and_clean_status(self) -> None:
         item = SimpleNamespace(
@@ -625,44 +768,46 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
 
 
 class RawMaterialProtectedFolderTests(unittest.IsolatedAsyncioTestCase):
-    async def test_bid_material_tier_roots_can_be_deleted(self) -> None:
+    async def test_technical_tier_roots_can_be_deleted_but_business_tier_roots_are_protected(self) -> None:
         expected_deletable = {
             "技术标/通用素材",
             "技术标/客户素材",
             "技术标/项目素材",
-            "商务标/通用素材",
-            "商务标/客户素材",
-            "商务标/项目素材",
         }
 
         for folder_path in expected_deletable:
             self.assertNotIn(folder_path, RAW_MATERIAL_PROTECTED_FOLDER_PATHS)
             self.assertFalse(is_raw_material_protected_folder_path(folder_path))
 
-        for folder_path in {"技术标", "商务标"}:
+        for folder_path in {"技术标", "商务标", "商务标/通用素材", "商务标/客户素材", "商务标/项目素材"}:
             self.assertIn(folder_path, RAW_MATERIAL_PROTECTED_FOLDER_PATHS)
             self.assertTrue(is_raw_material_protected_folder_path(folder_path))
 
     async def test_auto_bootstrapped_business_folders_cannot_be_deleted(self) -> None:
         expected_static_paths = {
-            "商务标/通用素材/01-资质合规库",
-            "商务标/通用素材/02-企业能力库",
-            "商务标/通用素材/03-业绩资产池",
-            "商务标/通用素材/04-财务资料库",
-            "商务标/通用素材/05-专题证书库",
-            "商务标/通用素材/05-专题证书库/01-机型认证证书",
-            "商务标/通用素材/05-专题证书库/02-大部件型式认证证书",
-            "商务标/通用素材/06-通用模板底稿库",
+            "商务标/通用素材",
+            "商务标/客户素材",
+            "商务标/项目素材",
+            "商务标/通用素材/资格审查与基础证明",
+            "商务标/通用素材/财务信用与合规声明",
+            "商务标/通用素材/制造商与供应链材料",
+            "商务标/通用素材/机型认证与测试报告",
+            "商务标/通用素材/企业能力与供货业绩",
+            "商务标/通用素材/表单模板与过程稿",
         }
         self.assertTrue(expected_static_paths.issubset(RAW_MATERIAL_PROTECTED_FOLDER_PATHS))
+        self.assertTrue(is_raw_material_protected_folder_path("商务标/通用素材/专题证书库/机型认证证书"))
+        self.assertTrue(is_raw_material_protected_folder_path("商务标/通用素材/通用模板底稿库"))
 
         dynamic_paths = {
-            "商务标/客户素材/华能集团/01-客户关系与专项证明",
-            "商务标/客户素材/华能集团/02-商务响应文件",
-            "商务标/客户素材/华能集团/03-模板底稿与过程文件",
-            "商务标/项目素材/MAT-BIZ-HN-001/01-客户关系与专项证明",
-            "商务标/项目素材/MAT-BIZ-HN-001/02-商务响应文件",
-            "商务标/项目素材/MAT-BIZ-HN-001/03-模板底稿与过程文件",
+            "商务标/客户素材/华能集团",
+            "商务标/客户素材/华能集团/客户准入与专项证明",
+            "商务标/客户素材/华能集团/客户专用响应口径",
+            "商务标/客户素材/华能集团/客户模板与历史文件",
+            "商务标/项目素材/MAT-BIZ-HN-001",
+            "商务标/项目素材/MAT-BIZ-HN-001/招标要求与专项证明",
+            "商务标/项目素材/MAT-BIZ-HN-001/资格审查与商务响应成册",
+            "商务标/项目素材/MAT-BIZ-HN-001/项目过程稿与澄清文件",
         }
         for folder_path in expected_static_paths | dynamic_paths:
             self.assertTrue(is_raw_material_protected_folder_path(folder_path))
@@ -671,6 +816,228 @@ class RawMaterialProtectedFolderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(context.exception.code, "RAW_FOLDER_DELETE_PROTECTED")
 
         self.assertFalse(is_raw_material_protected_folder_path("商务标/客户素材/华能集团/临时目录"))
+        self.assertFalse(is_raw_material_protected_folder_path("商务标/客户素材/华能集团/资格审查与商务响应成册"))
+        self.assertFalse(is_raw_material_protected_folder_path("商务标/项目素材/MAT-BIZ-HN-001/客户专用响应口径"))
+
+
+class BusinessPerformanceLibraryTests(unittest.IsolatedAsyncioTestCase):
+    def _performance_row(self, **overrides) -> dict:
+        row = {
+            "id": 7,
+            "name": "华能风电业绩",
+            "customer_name": "华能集团",
+            "project_type": "风电项目",
+            "scale": "100MW",
+            "location": "内蒙古",
+            "started_at": "2024-01",
+            "completed_at": "2024-12",
+            "amount": "1200万",
+            "turbine_model": "EW6.25",
+            "tags": ["业绩"],
+            "applicable_bid_types": ["商务标"],
+            "scope": "customer",
+            "word_object_key": "performance/PERF-0007/业绩.docx",
+            "word_file_name": "业绩.docx",
+            "word_size_bytes": 128,
+            "word_mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "cleaned_object_key": "",
+            "review_status": "reviewed",
+            "created_at": None,
+            "updated_at": None,
+        }
+        row.update(overrides)
+        return row
+
+    async def test_performance_list_filters_disabled_records_by_default(self) -> None:
+        from app.services.performance_library_service import PerformanceLibraryService
+
+        session = _FakePerformanceSession(
+            results=[
+                _FakePerformanceResult(scalar=1),
+                _FakePerformanceResult(rows=[self._performance_row()]),
+            ]
+        )
+        with patch("app.services.performance_library_service.async_session", return_value=session), patch(
+            "app.services.performance_library_service.ensure_material_runtime_tables", new=AsyncMock()
+        ):
+            payload = await PerformanceLibraryService().list_records(page=1, page_size=20)
+
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["items"][0]["id"], "PERF-0007")
+        self.assertIn("review_status <> 'disabled'", session.statements[0])
+        self.assertIn("review_status <> 'disabled'", session.statements[1])
+
+    async def test_performance_create_and_update_normalize_payload_fields(self) -> None:
+        from app.services.performance_library_service import PerformanceLibraryService
+
+        service = PerformanceLibraryService()
+        create_session = _FakePerformanceSession(row=self._performance_row(tags=["业绩", "合同"], applicable_bid_types=["商务标"]))
+        update_session = _FakePerformanceSession(row=self._performance_row(tags=["业绩", "中标"], applicable_bid_types=["商务标", "技术标"]))
+        with patch("app.services.performance_library_service.ensure_material_runtime_tables", new=AsyncMock()):
+            with patch("app.services.performance_library_service.async_session", return_value=create_session):
+                created = await service.create_record(
+                    {
+                        "name": " 华能风电业绩 ",
+                        "customerName": "华能集团",
+                        "tags": "业绩，合同，业绩",
+                        "applicableBidTypes": ["商务标", "bad"],
+                        "scope": "bad-scope",
+                        "reviewStatus": "bad-status",
+                    }
+                )
+            with patch("app.services.performance_library_service.async_session", return_value=update_session):
+                updated = await service.update_record(
+                    "PERF-0007",
+                    {
+                        "tags": ["业绩", "中标", "业绩"],
+                        "applicableBidTypes": ["商务标", "技术标"],
+                        "reviewStatus": "reviewed",
+                    },
+                )
+
+        create_params = create_session.params[0]
+        update_params = update_session.params[0]
+        self.assertEqual(create_params["name"], "华能风电业绩")
+        self.assertEqual(create_params["scope"], "standard")
+        self.assertEqual(create_params["review_status"], "draft")
+        self.assertEqual(json.loads(create_params["tags"]), ["业绩", "合同"])
+        self.assertEqual(json.loads(create_params["applicable_bid_types"]), ["商务标"])
+        self.assertIn("CAST(:tags AS JSONB)", update_session.statements[0])
+        self.assertEqual(json.loads(update_params["tags"]), ["业绩", "中标"])
+        self.assertEqual(json.loads(update_params["applicable_bid_types"]), ["商务标", "技术标"])
+        self.assertEqual(created["item"]["name"], "华能风电业绩")
+        self.assertEqual(updated["item"]["reviewStatus"], "reviewed")
+
+    async def test_performance_delete_soft_disables_record_without_removing_word_object(self) -> None:
+        from app.services.performance_library_service import PerformanceLibraryService
+
+        session = _FakePerformanceSession(self._performance_row(review_status="disabled"))
+        service = PerformanceLibraryService()
+
+        with patch("app.services.performance_library_service.async_session", return_value=session), patch(
+            "app.services.performance_library_service.ensure_material_runtime_tables", new=AsyncMock()
+        ), patch("app.services.performance_library_service.minio_client.remove_object") as remove_object:
+            result = await service.delete_record("PERF-0007")
+
+        self.assertIn("停用", result["message"])
+        self.assertEqual(result["item"]["reviewStatus"], "disabled")
+        self.assertTrue(session.committed)
+        self.assertIn("UPDATE performance_records", session.statements[0])
+        self.assertIn("review_status = 'disabled'", session.statements[0])
+        self.assertNotIn("DELETE FROM performance_records", session.statements[0])
+        remove_object.assert_not_called()
+
+    async def test_performance_word_upload_and_download_use_minio_payload(self) -> None:
+        from app.services.performance_library_service import PerformanceLibraryService
+
+        service = PerformanceLibraryService()
+        upload = SimpleNamespace(
+            filename='华能/业绩?.docx',
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            file=BytesIO(b"docx-bytes"),
+        )
+        upload_session = _FakePerformanceSession(row=self._performance_row(word_file_name="华能-业绩-.docx", word_size_bytes=10))
+
+        with patch("app.services.performance_library_service.async_session", return_value=upload_session), patch(
+            "app.services.performance_library_service.ensure_material_runtime_tables", new=AsyncMock()
+        ), patch("app.services.performance_library_service.minio_client.put_object_stream") as put_object:
+            result = await service.upload_word("PERF-0007", upload)
+
+        put_object.assert_called_once()
+        _bucket, object_key, _stream, size = put_object.call_args.args[:4]
+        self.assertEqual(object_key, "performance/PERF-0007/华能-业绩-.docx")
+        self.assertEqual(size, 10)
+        self.assertEqual(upload_session.params[0]["word_file_name"], "华能-业绩-.docx")
+        self.assertEqual(result["item"]["wordFileName"], "华能-业绩-.docx")
+
+        with patch.object(service, "get_record", AsyncMock(return_value=result["item"])):
+            payload = await service.download_word("PERF-0007")
+
+        self.assertEqual(payload["key"], "performance/PERF-0007/业绩.docx")
+        self.assertEqual(payload["fileName"], "华能-业绩-.docx")
+
+    async def test_performance_match_candidates_filter_scope_and_shape_materials(self) -> None:
+        from app.services.performance_library_service import PerformanceLibraryService
+
+        rows = [
+            self._performance_row(id=1, scope="standard", customer_name="平台标准", name="平台标准供货业绩"),
+            self._performance_row(id=2, scope="customer", customer_name="华能集团", name="华能集团供货业绩"),
+            self._performance_row(id=3, scope="customer", customer_name="大唐集团", name="大唐集团供货业绩"),
+            self._performance_row(id=4, scope="project", customer_name="华能集团", name="MAT-001 项目供货业绩"),
+            self._performance_row(id=5, scope="project", customer_name="华能集团", name="其他项目业绩"),
+        ]
+        session = _FakePerformanceSession(rows=rows)
+        scope = {
+            "identity": {"customerCanonicalName": "华能集团", "projectId": "MAT-001"},
+            "readableScopes": [
+                {"customerName": "华能集团"},
+                {"projectId": "MAT-001"},
+            ],
+        }
+
+        with patch("app.services.performance_library_service.async_session", return_value=session), patch(
+            "app.services.performance_library_service.ensure_material_runtime_tables", new=AsyncMock()
+        ):
+            items = await PerformanceLibraryService().list_match_candidates(scope, limit=10)
+
+        self.assertEqual([item["id"] for item in items], ["PERF-0001", "PERF-0002", "PERF-0004"])
+        self.assertTrue(all(item["sourceType"] == "performance_library" for item in items))
+        self.assertEqual(items[1]["businessMaterialKindLabel"], "共用业绩")
+        self.assertIn("华能集团", items[1]["summary"])
+        self.assertIn("业绩证明", items[1]["keywords"])
+        self.assertIn("review_status <> 'disabled'", session.statements[0])
+
+    async def test_business_material_index_includes_performance_candidates(self) -> None:
+        from app.services import business_gap_planning
+
+        material_scope = {
+            "bidType": "商务标",
+            "identity": {"customerCanonicalName": "华能集团", "projectId": "MAT-001"},
+            "readableScopes": [{"path": "商务标/通用素材", "materialTier": "standard"}],
+        }
+        performance_candidate = {
+            "id": "PERF-0008",
+            "materialId": "PERF-0008",
+            "name": "华能风电供货业绩",
+            "folderPath": "商务标/共用业绩库/华能集团",
+            "materialTier": "customer",
+            "sourceType": "performance_library",
+            "candidateType": "performance_record",
+            "businessMaterialKind": "performance",
+            "businessMaterialKindLabel": "共用业绩",
+            "cleanStatus": "original_only",
+            "tags": ["业绩"],
+            "summary": "华能集团；风电供货；合同",
+        }
+
+        async def fake_raw_files(**_kwargs):
+            return {
+                "items": [
+                    {
+                        "id": "RAW-0001",
+                        "name": "授权书.docx",
+                        "folderPath": "商务标/通用素材/主体资质与基础证照",
+                        "materialTier": "standard",
+                        "tags": ["授权"],
+                    }
+                ]
+            }
+
+        async def fake_performance_candidates(scope, *, limit=300):
+            self.assertEqual(scope, material_scope)
+            self.assertEqual(limit, 300)
+            return [performance_candidate]
+
+        with patch.object(business_gap_planning.business_material_store, "raw_files", side_effect=fake_raw_files), patch.object(
+            business_gap_planning.performance_library_service,
+            "list_match_candidates",
+            side_effect=fake_performance_candidates,
+        ):
+            items = business_gap_planning._business_material_index(material_scope, {})
+
+        self.assertEqual([item["id"] for item in items], ["RAW-0001", "PERF-0008"])
+        self.assertEqual(items[1]["sourceType"], "performance_library")
+        self.assertEqual(items[1]["businessMaterialKindLabel"], "共用业绩")
 
 
 if __name__ == "__main__":

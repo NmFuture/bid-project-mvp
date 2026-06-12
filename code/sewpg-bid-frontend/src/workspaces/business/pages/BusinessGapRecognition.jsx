@@ -49,6 +49,34 @@ const factStatusLabels = {
   conflict: '冲突',
 }
 
+const factSourceModeLabels = {
+  parse: '解析产生',
+  manual: '项目人工填写',
+  fixed: '投标人固定事实',
+  system: '系统自动',
+}
+
+const taskArtifactTypeLabels = {
+  business_table_fill: 'AI填写产物',
+  ai_draft: 'AI草稿',
+  parse_appendix_template: '解析附件模板',
+  parse_commitment_letter: '承诺函切片',
+  parse_business_scoring: '商务评分标准',
+  business_attachment_template: '附件模板',
+  selected_material: '已选素材',
+  manual_supplement: '人工上传',
+}
+
+const taskArtifactTypeLabel = (artifact) => {
+  const type = String(artifact?.artifactType || '')
+  if (taskArtifactTypeLabels[type]) return taskArtifactTypeLabels[type]
+  const sourceMode = String(artifact?.sourceMode || '')
+  if (sourceMode.startsWith('uploaded')) return '人工上传'
+  if (sourceMode.startsWith('generated')) return 'AI生成产物'
+  if (sourceMode.startsWith('selected')) return '已选素材'
+  return type || '任务产物'
+}
+
 const usageModeLabels = {
   attach_whole: '整件挂载',
   extract_fields: '抽字段',
@@ -260,6 +288,7 @@ const tableFillTargetCandidates = (task) => {
     ...asArray(task?.templateCandidates).filter((item) => !isProjectUploadedBidTemplate(item)),
     ...asArray(task?.candidateMaterials),
     ...asArray(task?.resolvedArtifacts),
+    ...asArray(task?.referenceArtifacts),
   ]
   const grouped = new Map()
   entries.forEach((item) => {
@@ -384,7 +413,9 @@ function FactMaintenanceModal({
   busy,
   onClose,
   onConfirm,
+  onFieldAdd,
   onFieldChange,
+  onFieldRemove,
 }) {
   if (!open) return null
   const summary = factTable?.summary || {}
@@ -407,6 +438,16 @@ function FactMaintenanceModal({
           <Toolbar>
             <Button
               type="button"
+              onClick={onFieldAdd}
+              disabled={busy}
+              size="sm"
+              variant="secondary"
+              icon="add"
+            >
+              新增字段
+            </Button>
+            <Button
+              type="button"
               onClick={onConfirm}
               disabled={busy || !fields.length}
               size="sm"
@@ -421,14 +462,16 @@ function FactMaintenanceModal({
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {fields.length ? (
             <div className="overflow-hidden rounded-md border border-surface-container-high">
-              <table className="w-full min-w-[880px] border-collapse bg-surface-container-lowest text-sm">
+              <table className="w-full min-w-[980px] border-collapse bg-surface-container-lowest text-sm">
                 <thead className="bg-surface-container-low text-left text-xs text-outline">
                   <tr>
-                    <th className="w-36 px-3 py-2 font-semibold">字段</th>
+                    <th className="w-52 px-3 py-2 font-semibold">字段</th>
                     <th className="w-64 px-3 py-2 font-semibold">确认值</th>
                     <th className="w-24 px-3 py-2 font-semibold">状态</th>
                     <th className="w-28 px-3 py-2 font-semibold">置信度</th>
+                    <th className="w-72 px-3 py-2 font-semibold">来源/用处</th>
                     <th className="px-3 py-2 font-semibold">来源依据</th>
+                    <th className="w-16 px-3 py-2 text-right font-semibold">操作</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-surface-container-high">
@@ -444,8 +487,15 @@ function FactMaintenanceModal({
                     return (
                       <tr key={field.id || `${field.label}-${index}`} className="align-top">
                         <td className="px-3 py-2">
-                          <div className="font-semibold text-on-surface">{field.label}</div>
-                          <div className="mt-1 text-[11px] text-outline">{field.category || '项目事实'}</div>
+                          <input
+                            value={field.label || ''}
+                            onChange={(event) => onFieldChange(index, 'label', event.target.value)}
+                            className="h-9 w-full rounded-md border border-surface-container-high bg-surface px-2 text-sm font-semibold text-on-surface"
+                          />
+                          <div className="mt-1 text-[11px] text-outline">
+                            {field.category || '项目事实'}
+                            {field.sourceMode ? ` · ${factSourceModeLabels[field.sourceMode] || field.sourceMode}` : ''}
+                          </div>
                         </td>
                         <td className="px-3 py-2">
                           <input
@@ -463,11 +513,31 @@ function FactMaintenanceModal({
                           {field.confidence ? `${Math.round(Number(field.confidence) * 100)}%` : '-'}
                         </td>
                         <td className="px-3 py-2 text-xs text-on-surface-variant">
+                          <div className="mb-1 line-clamp-2" title={field.sourceHint || ''}>
+                            <span className="text-outline">来源：</span>
+                            {field.sourceHint || '-'}
+                          </div>
+                          <div className="line-clamp-2" title={field.usage || ''}>
+                            <span className="text-outline">用处：</span>
+                            {field.usage || '-'}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 text-xs text-on-surface-variant">
                           {refs.length ? refs.map((ref) => (
                             <div key={`${ref.type || ''}-${ref.field || ref.title || ''}`} className="mb-1 truncate" title={[ref.title, ref.field, ref.taskId].filter(Boolean).join(' · ')}>
                               {[ref.title, ref.field, ref.taskId].filter(Boolean).join(' · ')}
                             </div>
                           )) : '-'}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <IconButton
+                            aria-label="删除字段"
+                            icon="delete"
+                            onClick={() => onFieldRemove(index)}
+                            disabled={busy}
+                            size="sm"
+                            variant="danger"
+                          />
                         </td>
                       </tr>
                     )
@@ -479,7 +549,7 @@ function FactMaintenanceModal({
             <div className="flex min-h-[260px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest text-center">
               <div>
                 <span className="material-symbols-outlined text-4xl text-primary">fact_check</span>
-                <p className="mt-3 text-sm text-on-surface-variant">还没有商务标项目事实表，先从解析字段、商务任务和素材库生成候选事实。</p>
+                <p className="mt-3 text-sm text-on-surface-variant">还没有商务标项目事实表，先生成当前字段口径或新增人工字段。</p>
               </div>
             </div>
           )}
@@ -1294,6 +1364,45 @@ export default function BusinessGapRecognition({ showToast }) {
     }))
   }
 
+  const previewTaskArtifact = (artifact) => {
+    const artifactId = String(artifact?.artifactId || '')
+    if (!artifactId) {
+      showToast?.('该产物缺少 ID，暂不能预览。', 'error')
+      return
+    }
+    window.open(businessGapsAPI.artifactContentUrl(id, artifactId, artifact?.fileName), '_blank', 'noopener')
+  }
+
+  const removeTaskArtifact = async (task, artifact) => {
+    const artifactId = String(artifact?.artifactId || '')
+    if (!task || !artifactId) return
+    setActionLoading(`remove-artifact:${artifactId}`)
+    try {
+      const data = await businessGapsAPI.removeArtifact(id, task.id, artifactId)
+      mergePlanPayload(data)
+      showToast?.('产物已删除')
+    } catch (e) {
+      showToast?.(e?.message || '产物删除失败', 'error')
+    } finally {
+      setActionLoading('')
+    }
+  }
+
+  const confirmTaskArtifact = async (task, artifact) => {
+    const artifactId = String(artifact?.artifactId || '')
+    if (!task || !artifactId) return
+    setActionLoading(`confirm-artifact:${artifactId}`)
+    try {
+      const data = await businessGapsAPI.confirmArtifact(id, task.id, { artifactId, confirmed: true })
+      mergePlanPayload(data)
+      showToast?.('产物已确认，任务转为就绪')
+    } catch (e) {
+      showToast?.(e?.message || '产物确认失败', 'error')
+    } finally {
+      setActionLoading('')
+    }
+  }
+
   const selectMaterials = async (task, materials) => {
     const selectedMaterials = asArray(materials).filter(Boolean)
     if (!task || !selectedMaterials.length) return
@@ -1582,12 +1691,46 @@ export default function BusinessGapRecognition({ showToast }) {
 
   const changeFactField = (index, key, value) => {
     setFactFields((current) => current.map((field, idx) => (
-      idx === index ? { ...field, [key]: value, status: value ? (field.status === 'confirmed' ? 'confirmed' : 'candidate') : 'missing' } : field
+      idx === index
+        ? {
+            ...field,
+            [key]: value,
+            status: key === 'value'
+              ? (value ? (field.status === 'confirmed' ? 'confirmed' : 'candidate') : 'missing')
+              : field.status,
+          }
+        : field
     )))
   }
 
+  const addFactField = () => {
+    const nextIndex = factFields.length + 1
+    setFactFields((current) => [
+      ...current,
+      {
+        id: `FACT-CUSTOM-${Date.now()}`,
+        key: `custom-${nextIndex}`,
+        label: `自定义字段${nextIndex}`,
+        category: '人工补充事实',
+        sourceMode: 'manual',
+        sourceHint: '用户新增',
+        value: '',
+        required: true,
+        status: 'missing',
+        confidence: 0,
+        sourceRefs: [{ type: 'manualFact', title: '用户新增', field: `自定义字段${nextIndex}`, sourceMode: 'manual' }],
+        alternatives: [],
+        notes: '',
+      },
+    ])
+  }
+
+  const removeFactField = (index) => {
+    setFactFields((current) => current.filter((_, idx) => idx !== index))
+  }
+
   const confirmFactTable = async () => {
-    if (actionLoading || !factFields.length) return null
+    if (actionLoading) return null
     setActionLoading('facts-confirm')
     try {
       const data = await businessGapsAPI.saveFacts(id, { fields: factFields, confirm: true, operator: '当前用户' })
@@ -1685,6 +1828,17 @@ export default function BusinessGapRecognition({ showToast }) {
           <StatCard label="已就绪" value={summary.readyCount || 0} />
         </div>
         <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+          {plan?.s1Consumption?.source ? (
+            <div className="mb-1 flex items-center gap-1 text-[11px] text-on-surface-variant">
+              <span className="material-symbols-outlined text-[14px] leading-none">
+                {plan.s1Consumption.source === 'stageArtifacts.s1' ? 'verified' : 'history'}
+              </span>
+              解析数据来源：
+              {plan.s1Consumption.source === 'stageArtifacts.s1'
+                ? `已发布 S1 交接件 v${plan.s1Consumption?.handoff?.version || 1}`
+                : '兼容回退（历史解析结果）'}
+            </div>
+          ) : null}
           <div className="flex min-h-7 items-center gap-2">
             <div className="shrink-0 text-xs font-semibold text-on-surface-variant">处理方式统计</div>
             <div className="grid min-w-0 flex-1 grid-cols-3 gap-1.5 text-center">
@@ -1769,6 +1923,7 @@ export default function BusinessGapRecognition({ showToast }) {
                   </div>
                 ) : visibleTasks.map((task) => {
                   const resolvedArtifacts = asArray(task.resolvedArtifacts)
+                  const referenceArtifacts = asArray(task.referenceArtifacts)
                   const selectedMaterialIds = new Set(
                     resolvedArtifacts
                       .filter((artifact) => artifact?.sourceMode === 'selected_from_business_material_library')
@@ -1804,6 +1959,100 @@ export default function BusinessGapRecognition({ showToast }) {
                     </div>
 
                     <div className="mt-4 grid gap-3">
+                      {(resolvedArtifacts.length > 0 || referenceArtifacts.length > 0) && (
+                        <div className="rounded-md border border-surface-container-high bg-surface p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h4 className="text-sm font-semibold text-on-surface">任务产物</h4>
+                            <Badge size="xs" variant="pending">{resolvedArtifacts.length} 个</Badge>
+                            {referenceArtifacts.length > 0 && (
+                              <span className="text-[11px] text-outline">另有 {referenceArtifacts.length} 个过程参考件</span>
+                            )}
+                          </div>
+                          {resolvedArtifacts.map((artifact, artifactIndex) => {
+                            const reviewStatus = String(artifact?.reviewStatus || '')
+                            const confirmedArtifact = Boolean(artifact?.confirmed) || reviewStatus === 'approved'
+                            const artifactTime = String(artifact?.confirmedAt || artifact?.createdAt || artifact?.uploadedAt || '')
+                            const artifactKey = String(artifact?.artifactId || `${artifact?.fileName || 'artifact'}-${artifactIndex}`)
+                            return (
+                              <div key={artifactKey} className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Badge size="xs" variant="info">{taskArtifactTypeLabel(artifact)}</Badge>
+                                    <span className="truncate text-sm font-semibold text-on-surface">{artifact?.fileName || artifact?.artifactId || '-'}</span>
+                                    <Badge size="xs" variant={confirmedArtifact ? 'done' : 'warn'}>
+                                      {confirmedArtifact ? '已确认' : reviewStatus === 'pending_review' ? '待审核' : reviewStatus || '待审核'}
+                                    </Badge>
+                                  </div>
+                                  {artifactTime && <div className="mt-0.5 text-[11px] text-outline">{artifactTime.replace('T', ' ').slice(0, 19)}</div>}
+                                </div>
+                                <div className="flex shrink-0 items-center gap-2">
+                                  {artifact?.artifactId && (
+                                    <Button
+                                      type="button"
+                                      onClick={() => previewTaskArtifact(artifact)}
+                                      disabled={!!actionLoading}
+                                      size="sm"
+                                      variant="quiet"
+                                    >
+                                      预览
+                                    </Button>
+                                  )}
+                                  {!confirmedArtifact && artifact?.artifactId && (
+                                    <Button
+                                      type="button"
+                                      onClick={() => confirmTaskArtifact(task, artifact)}
+                                      disabled={!!actionLoading}
+                                      size="sm"
+                                      variant="secondary"
+                                    >
+                                      {actionLoading === `confirm-artifact:${artifact.artifactId}` ? '确认中...' : '确认产物'}
+                                    </Button>
+                                  )}
+                                  {!confirmedArtifact && artifact?.artifactId && (
+                                    String(artifact?.sourceMode || '').startsWith('generated_')
+                                    || String(artifact?.sourceMode || '') === 'uploaded_in_business_s3'
+                                    || String(artifact?.sourceMode || '') === 'selected_from_business_material_library'
+                                  ) && (
+                                    <Button
+                                      type="button"
+                                      onClick={() => removeTaskArtifact(task, artifact)}
+                                      disabled={!!actionLoading}
+                                      size="sm"
+                                      variant="danger"
+                                    >
+                                      {actionLoading === `remove-artifact:${artifact.artifactId}` ? '删除中...' : '删除'}
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                            )
+                          })}
+                          {referenceArtifacts.map((artifact, referenceIndex) => (
+                            <div
+                              key={String(artifact?.artifactId || `${artifact?.fileName || 'reference'}-${referenceIndex}`)}
+                              className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest/60 px-3 py-2"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Badge size="xs" variant="pending">过程参考</Badge>
+                                  <span className="truncate text-sm text-on-surface-variant">{taskArtifactTypeLabel(artifact)} · {artifact?.fileName || artifact?.artifactId || '-'}</span>
+                                </div>
+                              </div>
+                              {artifact?.artifactId && (
+                                <Button
+                                  type="button"
+                                  onClick={() => previewTaskArtifact(artifact)}
+                                  disabled={!!actionLoading}
+                                  size="sm"
+                                  variant="quiet"
+                                >
+                                  预览
+                                </Button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <div className="rounded-md border border-surface-container-high bg-surface p-3">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
@@ -1907,7 +2156,9 @@ export default function BusinessGapRecognition({ showToast }) {
         busy={['facts-build', 'facts-load', 'facts-confirm'].includes(actionLoading)}
         onClose={() => setFactModalOpen(false)}
         onConfirm={confirmFactTable}
+        onFieldAdd={addFactField}
         onFieldChange={changeFactField}
+        onFieldRemove={removeFactField}
       />
       <BusinessMaterialPickerModal
         open={materialPickerOpen}

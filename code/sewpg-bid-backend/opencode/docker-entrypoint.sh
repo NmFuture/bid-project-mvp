@@ -9,9 +9,38 @@ if [ -f /bootstrap/opencode-host/auth.json ]; then
 fi
 
 RUNTIME_CONFIG_PATH="${OPENCODE_RUNTIME_CONFIG_PATH:-/data/documents/_runtime/opencode/opencode.runtime.json}"
+EFFECTIVE_CONFIG_PATH="/workspace/opencode.effective.json"
+
+write_effective_config() {
+  python3 - "$1" "${EFFECTIVE_CONFIG_PATH}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source_path = Path(sys.argv[1])
+target_path = Path(sys.argv[2])
+
+config = json.loads(source_path.read_text(encoding="utf-8"))
+permission = config.get("permission")
+if not isinstance(permission, dict):
+    permission = {}
+    config["permission"] = permission
+external_directory = permission.get("external_directory")
+if not isinstance(external_directory, dict):
+    external_directory = {}
+    permission["external_directory"] = external_directory
+external_directory.update({
+    "/data/parsed/**": "allow",
+    "/data/documents/**": "allow",
+    "/data/uploads/**": "allow",
+})
+target_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+}
 
 if [ -f "${RUNTIME_CONFIG_PATH}" ]; then
-  export OPENCODE_CONFIG="${RUNTIME_CONFIG_PATH}"
+  write_effective_config "${RUNTIME_CONFIG_PATH}"
+  export OPENCODE_CONFIG="${EFFECTIVE_CONFIG_PATH}"
 elif [ -n "${INTERNAL_LLM_BASE_URL:-}" ]; then
   python3 - <<'PY'
 import json
@@ -45,6 +74,13 @@ config = {
             "*": "allow",
         },
         "bash": "allow",
+        "external_directory": {
+            "/data/parsed/**": "allow",
+            "/data/documents/**": "allow",
+            "/data/uploads/**": "allow",
+        },
+        "task": "deny",
+        "read": "deny",
         "edit": "deny",
     },
 }

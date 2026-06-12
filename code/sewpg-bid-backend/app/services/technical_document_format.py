@@ -91,7 +91,7 @@ def _prepare_technical_format_style_spec(
     style_overrides: dict[str, Any],
     work_dir: Path,
 ) -> Path:
-    base_path = BASE_DIR / "opencode" / "skill" / "bid-tech-assembler" / "references" / "heading_style.json"
+    base_path = BASE_DIR / "opencode" / "skills" / "bid-tech-assembler" / "references" / "heading_style.json"
     spec = json.loads(base_path.read_text(encoding="utf-8"))
     if not isinstance(spec, dict):
         raise ValueError("技术标格式规范配置不是 JSON object。")

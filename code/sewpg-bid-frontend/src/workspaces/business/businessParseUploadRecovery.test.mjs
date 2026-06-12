@@ -1,0 +1,65 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+
+import {
+  isUploadAndRunTimeout,
+  shouldPollParseProgress,
+  recoverUploadAndRunTimeout,
+} from './businessParseUploadRecovery.js'
+
+test('识别上传解析请求超时错误', () => {
+  assert.equal(isUploadAndRunTimeout({ code: 'TIMEOUT' }), true)
+  assert.equal(isUploadAndRunTimeout({ code: 'NETWORK_ERROR', message: '请求超时，请稍后重试。' }), false)
+  assert.equal(isUploadAndRunTimeout(null), false)
+})
+
+test('上传解析请求超时后轮询到 completed 并读取最终结果', async () => {
+  const progressSnapshots = [
+    { status: 'running', percentage: 98, summary: '正在合成结果。' },
+    { status: 'completed', percentage: 100, summary: '解析完成。' },
+  ]
+  const observed = []
+  const parseClient = {
+    progress: async () => progressSnapshots.shift(),
+    results: async () => ({ status: 'completed', itemCount: 1070 }),
+  }
+
+  const recovered = await recoverUploadAndRunTimeout({
+    projectId: 'PRJ-0021',
+    parseClient,
+    pollIntervalMs: 0,
+    maxPollMs: 1000,
+    onProgress: (progress) => observed.push(progress),
+  })
+
+  assert.equal(recovered.completed, true)
+  assert.deepEqual(recovered.result, { status: 'completed', itemCount: 1070 })
+  assert.deepEqual(observed.map((item) => item.status), ['running', 'completed'])
+})
+
+test('上传解析请求超时后仍在 running 时返回可继续展示的进度', async () => {
+  const parseClient = {
+    progress: async () => ({ status: 'running', percentage: 75, summary: 'AI 审查中。' }),
+    results: async () => {
+      throw new Error('不应读取最终结果')
+    },
+  }
+
+  const recovered = await recoverUploadAndRunTimeout({
+    projectId: 'PRJ-0021',
+    parseClient,
+    pollIntervalMs: 0,
+    maxPollMs: 0,
+  })
+
+  assert.equal(recovered.completed, false)
+  assert.equal(recovered.progress.status, 'running')
+  assert.equal(recovered.progress.percentage, 75)
+})
+
+test('上传请求结束后只要后端仍 running 就继续轮询进度', () => {
+  assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'running', percentage: 40 } }), true)
+  assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'completed', percentage: 100 } }), false)
+  assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'idle' } }), false)
+  assert.equal(shouldPollParseProgress({ uploading: true, progress: null }), true)
+})

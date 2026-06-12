@@ -477,7 +477,7 @@ export default function BusinessCoCreationEditor({ showToast }) {
                     <div className="rounded-md bg-surface-container-low px-3 py-2">
                       <span className="font-semibold text-on-surface">修改理由：</span>{rewriteSuggestion.reason || '未返回修改理由'}
                     </div>
-                    <div className="rounded-md bg-warning/10 px-3 py-2 text-on-surface">
+                    <div className="rounded-md border border-tertiary/30 bg-tertiary-container/60 px-3 py-2 text-on-tertiary-container">
                       <span className="font-semibold">风险提示：</span>{rewriteSuggestion.riskTip || '请人工复核事实、金额、日期和承诺边界。'}
                     </div>
                   </div>

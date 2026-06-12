@@ -1,0 +1,24 @@
+services:
+  web:
+    container_name: sewpg_bid_second_web
+
+  fastapi:
+    container_name: sewpg_bid_second_fastapi
+
+  worker:
+    container_name: sewpg_bid_second_worker
+
+  opencode:
+    container_name: sewpg_bid_second_opencode
+
+  onlyoffice:
+    container_name: sewpg_bid_second_onlyoffice
+
+  postgres:
+    container_name: sewpg_bid_second_postgres
+
+  redis:
+    container_name: sewpg_bid_second_redis
+
+  minio:
+    container_name: sewpg_bid_second_minio

@@ -6,6 +6,7 @@ import asyncio
 import mimetypes
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import zipfile
@@ -18,6 +19,8 @@ from xml.etree import ElementTree as ET
 from docx import Document
 
 from app.core.config import settings
+from app.services.business_section_tree import write_business_section_tree
+from app.services.business_template_extractor import run_business_template_extractor
 from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.opencode_client import OpencodeClient
@@ -31,7 +34,7 @@ from app.services.parse_profiles import (
 from app.services.peripheral import PeripheralError
 
 PARSER_CORE_DIR = (
-    Path(__file__).resolve().parents[2] / "opencode" / "skill" / TECHNICAL_PARSE_SKILL_NAME / "scripts"
+    Path(__file__).resolve().parents[2] / "opencode" / "skills" / TECHNICAL_PARSE_SKILL_NAME / "scripts"
 )
 if str(PARSER_CORE_DIR) not in sys.path:
     sys.path.insert(0, str(PARSER_CORE_DIR))
@@ -119,11 +122,17 @@ PARSE_CATEGORIES: tuple[ParseCategory, ...] = (
 DATE_PATTERN = re.compile(
     r"(?P<year>20\d{2})\s*(?:年|[-/.])\s*(?P<month>\d{1,2})\s*(?:月|[-/.])\s*(?P<day>\d{1,2})\s*日?"
 )
+BID_DEADLINE_DATE_PATTERN = re.compile(
+    r"(?P<year>20\d{2})\s*(?:年|[-/.])\s*(?P<month>\d{1,2})\s*(?:月|[-/.])\s*(?P<day>\d{1,2})\s*日?"
+    r"(?:[\sT]*(?P<hour>\d{1,2})\s*(?:时|:|：)\s*(?P<minute>\d{1,2})\s*分?)?"
+)
 LABEL_VALUE_PATTERN = re.compile(r"^\s*(?P<label>[^:：]{2,40})\s*[:：]\s*(?P<value>.+?)\s*$")
 LEADING_NUMBER_PATTERN = re.compile(r"^\s*(?:第?[一二三四五六七八九十百千0-9]+[章节条]?|[（(]?\d+[）)]?)\s*[、.．\s]+")
 
 START_DATE_KEYWORDS = ("起始日期", "开始日期", "开工日期", "计划开工", "服务期自", "合同开始")
 END_DATE_KEYWORDS = ("投标截止", "截止日期", "截止时间", "结束日期", "竣工日期", "完成日期", "服务期至")
+BID_DEADLINE_CONTEXT = ("递交截止时间", "投标文件递交截止时间", "投标截止时间", "提交截止时间")
+OPENING_TIME_CONTEXT = ("开标时间", "开标日期", "开标时间和地点", "开标地点")
 
 
 @dataclass(frozen=True)
@@ -206,8 +215,102 @@ COMMITMENT_REQUIREMENT_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("commitmentGenerationBasis", "承诺文件生成依据", ("承诺函", "承诺书", "不得存在下列情形")),
 )
 
+QUALIFICATION_SECTION_ANCHORS = (
+    "投标人资格要求",
+    "投标人资格条件",
+    "资格能力要求",
+    "专用资格条件",
+    "通用资格条件",
+    "合格投标人资格",
+    "供应商资格要求",
+    "资质条件、能力和信誉",
+)
+
+QUALIFICATION_STOP_ANCHORS = (
+    "投标文件的组成",
+    "投标报价",
+    "投标保证金",
+    "投标人须知",
+    "资格审查资料",
+    "评标办法",
+    "符合性审查",
+    "商务评分",
+    "技术评分",
+    "投标文件格式",
+    "合同条款",
+)
+
+QUALIFICATION_EXCLUDE_KEYWORDS = (
+    "资格审查资料",
+    "复印件",
+    "扫描件",
+    "附件",
+    "评分",
+    "得分",
+    "分值",
+    "满分",
+    "基础分",
+    "加分",
+    "否决",
+    "废标",
+    "不予受理",
+    "目录",
+    "页码",
+    "见投标人须知前附表",
+    "见评标办法前附表",
+    "同招标公告",
+)
+
+QUALIFICATION_REQUIRED_CUES = (
+    "投标人",
+    "投标机型",
+    "供应商",
+    "联合体",
+    "须",
+    "应",
+    "需",
+    "具有",
+    "具备",
+    "不得",
+    "不允许",
+    "不接受",
+    "没有处于",
+    "未被",
+)
+
+SCOPE_PATTERN = re.compile(
+    r"^(?:"
+    r"标段[一二三四五六七八九十\d]+(?:[、至和及,\-]+标段?[一二三四五六七八九十\d]+)*"
+    r"|第[一二三四五六七八九十\d]+标段"
+    r"|所有标段"
+    r"|全部标段"
+    r"|本项目"
+    r")(?:（[^）]*）)?[:：]?$"
+)
+CLAUSE_PATTERN = re.compile(r"^(?:\d+(?:\.\d+){1,4}|[（(][一二三四五六七八九十\d]+[）)]|[一二三四五六七八九十\d]+[、.．])\s*")
+
+BUSINESS_CORE_PROJECT_FIELDS: tuple[FieldSpec, ...] = (
+    FieldSpec("projectName", "项目名称", ("项目名称", "招标项目名称", "采购项目名称")),
+    FieldSpec("tenderNo", "招标编号", ("招标编号", "项目编号", "招标文件编号", "采购编号", "采购项目编号")),
+    FieldSpec("tenderer", "招标人", ("招标人", "采购人", "采购单位", "业主", "建设单位", "项目单位")),
+    FieldSpec("tenderAgency", "招标代理机构", ("招标代理机构", "采购代理机构", "代理机构")),
+    FieldSpec("bidDeadline", "递交截止时间", ("递交截止时间", "投标截止时间", "投标文件递交截止时间", "提交截止时间", "响应文件提交截止时间", "响应截止时间", "提交响应文件截止时间")),
+)
+
+COMMERCIAL_REJECTION_KEYWORDS = (
+    "否决",
+    "废标",
+    "无效投标",
+    "不予受理",
+    "★",
+    "实质性响应",
+    "投标人不得存在",
+    "不得存在下列情形",
+)
+
 SCORING_SCORE_PATTERN = re.compile(r"(?P<item>[\u4e00-\u9fa5A-Za-z0-9（）()、/]+?)\s*(?P<score>\d+(?:\.\d+)?\s*分)")
 MARKDOWN_TABLE_LINE_PATTERN = re.compile(r"^\s*\|.*\|\s*$")
+BIDDER_INSTRUCTION_TABLE_TITLE = "投标人须知前附表"
 
 
 def parsed_project_dir(project_id: str) -> Path:
@@ -551,6 +654,14 @@ def _copy_meta_fields(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _qualification_source_text(*, source_file: str, section: str, clause_no: str = "") -> str:
+    parts = [part.strip(" ：:") for part in (section, clause_no) if str(part or "").strip()]
+    readable = " > ".join(dict.fromkeys(parts))
+    if readable:
+        return f"{source_file}：{readable}"
+    return source_file
+
+
 def _business_field_from_item(spec: FieldSpec, item: dict[str, Any], *, value_override: str | None = None) -> dict[str, Any]:
     field = {
         "key": spec.key,
@@ -589,19 +700,269 @@ def _find_business_item(items: list[dict[str, Any]], spec: FieldSpec) -> dict[st
     return None
 
 
-def _build_business_project_basics(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    filtered_specs = tuple(spec for spec in PROJECT_BASIC_FIELDS if spec.key != "technicalCommitment")
-    fields: list[dict[str, Any]] = []
-    for spec in filtered_specs:
-        matched = next(
-            (
-                item
-                for item in items
-                if any(alias in str(item.get("keyEntity") or item.get("title") or item.get("evidence") or "") for alias in spec.aliases)
-            ),
-            None,
+def _clean(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").replace("\u3000", " ")).strip()
+
+
+def _is_reference_only_value(value: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(value or ""))
+    if not normalized:
+        return False
+    if normalized in {
+        "见招标公告",
+        "见采购公告",
+        "详见采购公告",
+        "见投标人须知前附表",
+        "详见招标公告",
+        "详见技术规范书",
+        "详见招标文件",
+        "按招标文件要求",
+    }:
+        return True
+    return bool(re.match(r"^(?:详见|见|参见|按|同)", normalized)) and any(
+        token in normalized
+        for token in (
+            "招标公告",
+            "采购公告",
+            "投标人须知前附表",
+            "供应商须知前附表",
+            "招标文件",
+            "采购文件",
+            "技术规范书",
         )
-        fields.append(_business_field_from_item(spec, matched) if matched else _empty_business_field(spec))
+    )
+
+
+def _is_bid_deadline_relative_context(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    return bool(
+        re.search(r"投标截止时间\d{1,3}(?:日|天)前", compact)
+        or re.search(r"收到(?:澄清|修改)后\d{1,3}小时内", compact)
+        or re.search(r"开标结束后\d{1,3}分钟内", compact)
+    )
+
+
+def _business_project_value_usable(spec: FieldSpec, value: str, evidence: str = "") -> bool:
+    cleaned = _clean(value).strip(" ：:；;，,。")
+    if not cleaned or _is_reference_only_value(cleaned):
+        return False
+    if spec.key == "bidDeadline":
+        normalized = _normalize_bid_deadline(cleaned)
+        combined = f"{evidence} {cleaned}"
+        is_opening_time = "开标" in combined and not any(token in combined for token in ("递交截止", "投标截止", "提交截止", "响应截止"))
+        return _is_normalized_bid_deadline(normalized) and not is_opening_time and not _is_bid_deadline_relative_context(combined)
+    if spec.key in {"tenderer", "tenderAgency"}:
+        if len(cleaned) > 100:
+            return False
+        if any(keyword in cleaned for keyword in ("联系人", "联系方式", "联系电话", "电话", "邮箱", "电子邮件", "地址")):
+            return False
+        combined = f"{evidence} {cleaned}"
+        if any(keyword in combined for keyword in ("招标人代表", "采购人代表", "异议", "投诉", "质疑", "服务费", "代理服务费", "招标人不接受", "采购人不接受")):
+            return False
+        if re.search(r"(?:现)?委托.+(?:招标|采购|代理)", cleaned):
+            return False
+        if "，" in cleaned and any(token in cleaned for token in ("进行公开招标", "进行采购", "项目业主为")):
+            return False
+    if spec.key == "projectName" and len(cleaned) > 160:
+        return False
+    return True
+
+
+def _block_number(location: str) -> int:
+    match = re.match(r"B(\d+)", str(location or ""))
+    return int(match.group(1)) if match else 0
+
+
+def _business_core_field_score(item: dict[str, Any], spec: FieldSpec) -> int:
+    value = str(item.get("value") or item.get("keyValue") or "").strip()
+    section = str(item.get("section") or "")
+    evidence = str(item.get("evidence") or "")
+    location = str(item.get("evidenceLocation") or "")
+    block_no = _block_number(location)
+    score = 0
+    if location.startswith("B"):
+        score += 40
+        if 0 < block_no <= 30:
+            score += 25
+    if section == "封面":
+        score += 90
+    if "投标人须知前附表" in section:
+        score += 80
+    if "招标公告" in section or "联系方式" in section:
+        score += 50
+    if _is_reference_only_value(value):
+        score -= 220
+    if re.search(r"\d{4}-\d{2}-\d{2}|20\d{2}年", value):
+        score += 30
+    if spec.key == "bidDeadline":
+        haystack = " ".join(str(item.get(key) or "") for key in ("title", "keyEntity", "value", "evidence", "section"))
+        if any(token in haystack for token in BID_DEADLINE_CONTEXT):
+            score += 120
+        if any(token in haystack for token in OPENING_TIME_CONTEXT):
+            score -= 180
+        if _is_normalized_bid_deadline(_normalize_bid_deadline(" ".join(part for part in (value, evidence) if part))):
+            score += 120
+        else:
+            score -= 260
+    if spec.key == "projectName":
+        if "项目" in value and len(value) <= 120:
+            score += 45
+        if value.endswith("招标") or "采购" in value:
+            score += 20
+    if spec.key == "tenderNo":
+        if re.search(r"[A-Z]{2,}.*\d", value):
+            score += 70
+        if value in {"招标编号", "项目编号", "招标文件编号"}:
+            score -= 100
+    if spec.key in {"tenderer", "tenderAgency"}:
+        if len(value) <= 100:
+            score += 35
+        if "：" in value or ":" in value:
+            score -= 10
+    if len(value) > 180:
+        score -= 50
+    if not value:
+        score -= 300
+    if "目录" in evidence:
+        score -= 60
+    return score
+
+
+def _normalize_bid_deadline(value: str) -> str:
+    text = str(value or "").strip()
+    matches = list(BID_DEADLINE_DATE_PATTERN.finditer(text))
+    if not matches:
+        return text
+    first_date = ""
+    for match in matches:
+        try:
+            parsed = date(
+                int(match.group("year")),
+                int(match.group("month")),
+                int(match.group("day")),
+            )
+        except ValueError:
+            continue
+        normalized = parsed.isoformat()
+        if not first_date:
+            first_date = normalized
+        hour = match.group("hour")
+        minute = match.group("minute")
+        if hour is None or minute is None:
+            continue
+        hour_int = int(hour)
+        minute_int = int(minute)
+        if hour_int > 23 or minute_int > 59:
+            continue
+        return f"{normalized} {hour_int:02d}:{minute_int:02d}"
+    return first_date or text
+
+
+def _is_normalized_bid_deadline(value: str) -> bool:
+    return bool(re.fullmatch(r"20\d{2}-\d{2}-\d{2}(?: \d{2}:\d{2})?", str(value or "").strip()))
+
+
+def _strip_core_party_contact_tail(value: str) -> str:
+    text = _clean(value).strip(" ：:")
+    tail_match = re.search(
+        r"\s*(?:地\s*址|联\s*系\s*人|电\s*话|电子\s*邮\s*件|邮\s*箱|传\s*真|网\s*址)\s*[：:]",
+        text,
+    )
+    if tail_match:
+        text = text[: tail_match.start()]
+    return text.strip(" ：:")
+
+
+def _normalize_core_field_value(spec: FieldSpec, value: str) -> str:
+    cleaned = _clean(value)
+    if spec.key == "bidDeadline":
+        return _normalize_bid_deadline(cleaned)
+    stripped = cleaned
+    for alias in sorted(spec.aliases, key=len, reverse=True):
+        alias_pattern = r"\s*".join(re.escape(char) for char in alias)
+        stripped_candidate = re.sub(rf"^\s*{alias_pattern}\s*[：:]\s*", "", cleaned, count=1)
+        if stripped_candidate != cleaned:
+            stripped = stripped_candidate.strip()
+            break
+    if spec.key in {"tenderer", "tenderAgency"}:
+        return _strip_core_party_contact_tail(stripped)
+    return stripped
+
+
+def _build_business_project_basics(
+    items: list[dict[str, Any]],
+    project_dates: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    project_dates = project_dates or {}
+    fields: list[dict[str, Any]] = []
+    for spec in BUSINESS_CORE_PROJECT_FIELDS:
+        project_deadline_value = ""
+        if spec.key == "bidDeadline":
+            project_deadline_value = _normalize_bid_deadline(str(project_dates.get("endDate") or ""))
+        candidates = [
+            item
+            for item in items
+            if any(
+                alias in " ".join(str(item.get(key) or "") for key in ("title", "keyEntity", "evidence", "section"))
+                for alias in spec.aliases
+            )
+        ]
+        candidates = [
+            item
+            for item in candidates
+            if _business_project_value_usable(
+                spec,
+                str(item.get("value") or item.get("keyValue") or ""),
+                str(item.get("evidence") or ""),
+            )
+        ]
+        if spec.key == "bidDeadline":
+            candidates = [
+                item
+                for item in candidates
+                if (
+                    any(
+                        token in " ".join(str(item.get(key) or "") for key in ("title", "keyEntity", "evidence", "section", "value"))
+                        for token in BID_DEADLINE_CONTEXT
+                    )
+                    and not any(
+                        token in " ".join(str(item.get(key) or "") for key in ("title", "keyEntity", "evidence", "section"))
+                        for token in OPENING_TIME_CONTEXT
+                    )
+                    and _is_normalized_bid_deadline(
+                        _normalize_bid_deadline(
+                            " ".join(
+                                str(item.get(key) or "")
+                                for key in ("value", "keyValue", "evidence")
+                                if str(item.get(key) or "").strip()
+                            )
+                        )
+                    )
+                )
+            ]
+        matched = max(candidates, key=lambda item: _business_core_field_score(item, spec)) if candidates else None
+        if matched and _business_core_field_score(matched, spec) > -50:
+            if spec.key == "bidDeadline":
+                normalized = _normalize_core_field_value(
+                    spec,
+                    " ".join(
+                        str(matched.get(key) or "")
+                        for key in ("value", "keyValue", "evidence")
+                        if str(matched.get(key) or "").strip()
+                    ),
+                )
+                project_dates["endDate"] = normalized
+            else:
+                normalized = _normalize_core_field_value(spec, str(matched.get("value") or matched.get("keyValue") or ""))
+            fields.append(_business_field_from_item(spec, matched, value_override=normalized))
+        elif spec.key == "bidDeadline" and project_deadline_value:
+            project_dates["endDate"] = project_deadline_value
+            field = _empty_business_field(spec, value=project_deadline_value)
+            field["status"] = "found"
+            field["confidence"] = 0.78
+            fields.append(field)
+        else:
+            fields.append(_empty_business_field(spec))
     return fields
 
 
@@ -619,6 +980,440 @@ def _build_qualification_support_fields(items: list[dict[str, Any]]) -> list[dic
         matched = _find_business_item(items, spec)
         fields.append(_business_field_from_item(spec, matched) if matched else _empty_business_field(spec))
     return fields
+
+
+def _new_docx_candidate_item(
+    items: list[dict[str, Any]],
+    *,
+    document: dict[str, Any],
+    label: str,
+    value: str,
+    section: str,
+    evidence: str,
+    location: str,
+    confidence: float = 0.86,
+) -> None:
+    cleaned_label = _clean(label)
+    cleaned_value = _clean(value)
+    if not cleaned_label or not cleaned_value:
+        return
+    items.append(
+        {
+            "id": f"DOCX-{len(items) + 1:04d}",
+            "type": "商务核心字段候选",
+            "category": "business_core_candidate",
+            "title": cleaned_label,
+            "keyEntity": cleaned_label,
+            "keyValue": cleaned_value,
+            "value": cleaned_value,
+            "sourceFile": str(document.get("name") or document.get("id") or "招标文件"),
+            "sourceDocumentId": str(document.get("id") or ""),
+            "section": section,
+            "evidence": evidence,
+            "evidenceLocation": location,
+            "confidence": confidence,
+        }
+    )
+
+
+def _is_docx_source(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() == ".docx"
+
+
+def _document_text_lines(document: dict[str, Any], texts_by_id: dict[str, str]) -> list[dict[str, Any]]:
+    document_id = str(document.get("id") or "")
+    source_file = str(document.get("name") or document_id or "招标文件")
+    text = str(texts_by_id.get(document_id) or "")
+    lines: list[dict[str, Any]] = []
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = _clean(raw_line)
+        if not line:
+            continue
+        lines.append(
+            {
+                "text": line,
+                "sourceFile": source_file,
+                "sourceDocumentId": document_id,
+                "evidenceLocation": f"L{line_number}",
+            }
+        )
+    return lines
+
+
+def _qualification_heading_level(text: str) -> int:
+    stripped = str(text or "").strip()
+    match = re.match(r"^(\d+(?:\.\d+){0,4})\s+", stripped)
+    if not match:
+        return 99
+    return match.group(1).count(".") + 1
+
+
+def _is_qualification_anchor(text: str) -> bool:
+    return any(anchor in text for anchor in QUALIFICATION_SECTION_ANCHORS)
+
+
+def _is_qualification_stop(text: str, active_root_level: int) -> bool:
+    if not text:
+        return False
+    if any(anchor in text for anchor in QUALIFICATION_STOP_ANCHORS):
+        return True
+    level = _qualification_heading_level(text)
+    return level <= active_root_level and not _is_qualification_anchor(text)
+
+
+def _normalize_qualification_content(text: str) -> str:
+    value = _clean(text)
+    value = re.sub(r"^\d+(?:\.\d+){1,4}\s*", "", value)
+    value = re.sub(r"^[（(][一二三四五六七八九十\d]+[）)]\s*", "", value)
+    value = re.sub(r"^[一二三四五六七八九十\d]+[、.．]\s*", "", value)
+    value = value.strip(" ：:；;。")
+    return value
+
+
+def _looks_like_scope_heading(text: str) -> bool:
+    return bool(SCOPE_PATTERN.match(str(text or "").strip()))
+
+
+def _looks_like_qualification_intro_line(text: str) -> bool:
+    value = _normalize_qualification_content(text)
+    return bool(
+        re.search(r"(?:下列|如下|以下)(?:条件|要求|规定)$", value)
+        or re.search(r"(?:应|需)(?:具备|满足|符合).*(?:下列|如下|以下)(?:条件|要求|规定)$", value)
+    )
+
+
+def _normalize_qualification_scope(text: str) -> str:
+    value = str(text or "").strip()
+    value = re.split(r"[（(]", value, maxsplit=1)[0]
+    return value.strip(" ：:")
+
+
+def _looks_like_qualification_requirement(text: str) -> bool:
+    value = _normalize_qualification_content(text)
+    if len(value) < 8:
+        return False
+    if _looks_like_scope_heading(value):
+        return False
+    if _looks_like_qualification_intro_line(value):
+        return False
+    compact = re.sub(r"\s+", "", value)
+    if re.search(r"\t\d+$|\.{3,}\d+$", value):
+        return False
+    if any(keyword in value for keyword in QUALIFICATION_EXCLUDE_KEYWORDS):
+        return False
+    if compact in {"见评标办法前附表", "见投标人须知前附表", "同招标公告"}:
+        return False
+    return any(cue in value for cue in QUALIFICATION_REQUIRED_CUES)
+
+
+def _extract_qualification_requirements_from_documents(
+    documents: list[dict[str, Any]],
+    texts_by_id: dict[str, str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for document in documents:
+        source_file = str(document.get("name") or document.get("id") or "招标文件")
+        document_id = str(document.get("id") or "")
+        active = False
+        active_root_level = 99
+        section_path: list[tuple[int, str]] = []
+        applicable_scope = "全部标段"
+
+        for line in _document_text_lines(document, texts_by_id):
+            text = str(line["text"])
+            level = _qualification_heading_level(text)
+
+            if _is_qualification_anchor(text):
+                was_active = active
+                active = True
+                if level < 99 and (not was_active or active_root_level == 99):
+                    active_root_level = level
+                if level < 99:
+                    section_path = [(old_level, title) for old_level, title in section_path if old_level < level]
+                    section_path.append((level, text))
+                elif not section_path:
+                    section_path = [(1, text)]
+                continue
+
+            if not active:
+                continue
+
+            if _is_qualification_stop(text, active_root_level):
+                active = False
+                section_path = []
+                applicable_scope = "全部标段"
+                continue
+
+            if level < 99:
+                section_path = [(old_level, title) for old_level, title in section_path if old_level < level]
+                section_path.append((level, text))
+                applicable_scope = "全部标段"
+
+            if _looks_like_scope_heading(text):
+                applicable_scope = _normalize_qualification_scope(text)
+                continue
+
+            if not _looks_like_qualification_requirement(text):
+                continue
+
+            content = _normalize_qualification_content(text)
+            section = " > ".join(title for _, title in section_path) or "投标人资格要求"
+            clause_no_match = re.match(r"^(\d+(?:\.\d+){1,4}|[（(][一二三四五六七八九十\d]+[）)])", text)
+            clause_no = clause_no_match.group(1) if clause_no_match else ""
+            dedupe_key = (content, applicable_scope, section)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            rows.append(
+                {
+                    "id": f"QUAL-{len(rows) + 1:04d}",
+                    "order": len(rows) + 1,
+                    "content": content,
+                    "applicableScope": applicable_scope or "全部标段",
+                    "sourceText": _qualification_source_text(
+                        source_file=source_file,
+                        section=section,
+                        clause_no=clause_no,
+                    ),
+                    "sourceFile": source_file,
+                    "sourceDocumentId": document_id,
+                    "section": section,
+                    "evidence": text,
+                    "evidenceLocation": str(line.get("evidenceLocation") or ""),
+                    "confidence": 0.9,
+                }
+            )
+
+    return rows
+
+
+def _extract_docx_core_candidate_items(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for document in documents:
+        source_path = Path(str(document.get("sourcePath") or ""))
+        if not _is_docx_source(source_path):
+            continue
+        blocks = _iter_docx_blocks(source_path)
+        current_section = "封面"
+        for block_index, block in enumerate(blocks, start=1):
+            if block.get("type") == "paragraph":
+                text = _clean(block.get("text"))
+                if text:
+                    current_section = text
+                continue
+            if block.get("type") != "table":
+                continue
+            rows = block.get("rows") or []
+            section = current_section or ("封面" if block_index <= 30 else "")
+            for row_index, row in enumerate(rows, start=1):
+                cells = [_clean(cell) for cell in row if _clean(cell)]
+                if len(cells) < 2:
+                    continue
+                _new_docx_candidate_item(
+                    items,
+                    document=document,
+                    label=cells[0].strip(" ：:"),
+                    value=cells[-1].strip(" ：:"),
+                    section=section,
+                    evidence=" | ".join(cells),
+                    location=f"B{block_index}/R{row_index}",
+                    confidence=0.9 if block_index <= 30 or "投标人须知前附表" in section else 0.82,
+                )
+    return items
+
+
+def _strip_bidder_instruction_title_prefix(text: str) -> str:
+    cleaned = _clean(text).strip("# ").strip(" ：:。；;")
+    cleaned = re.sub(r"^\s*第?[一二三四五六七八九十百千0-9]+[章节条]?\s*[、.．\s]+", "", cleaned)
+    return re.sub(r"\s+", "", cleaned)
+
+
+def _is_bidder_instruction_title_anchor(text: str) -> bool:
+    compact = _strip_bidder_instruction_title_prefix(text)
+    if not compact.startswith(BIDDER_INSTRUCTION_TABLE_TITLE):
+        return False
+    suffix = compact.removeprefix(BIDDER_INSTRUCTION_TABLE_TITLE)
+    return bool(re.fullmatch(r"(?:[0-9一二三四五六七八九十百千页（）()、.．:-]*)", suffix))
+
+
+def _docx_table_after_bidder_instruction_anchor(
+    blocks: list[dict[str, Any]],
+    anchor_index: int,
+    *,
+    max_text_gap: int,
+) -> tuple[int, list[list[str]]] | None:
+    gap = 0
+    index = anchor_index + 1
+    while index < len(blocks):
+        block = blocks[index]
+        if block.get("type") == "table":
+            rows = [[_clean(cell) for cell in row] for row in block.get("rows") or [] if any(_clean(cell) for cell in row)]
+            return (index, rows) if gap <= max_text_gap and len(rows) > 1 else None
+        text = _clean(block.get("text")) if block.get("type") == "paragraph" else ""
+        if text:
+            gap += 1
+            if gap > max_text_gap:
+                return None
+        index += 1
+    return None
+
+
+def _parse_bidder_instruction_rows(
+    rows: list[list[str]],
+    *,
+    document: dict[str, Any],
+    section: str,
+    block_index: int,
+    table_title: str = BIDDER_INSTRUCTION_TABLE_TITLE,
+) -> list[dict[str, Any]]:
+    cleaned_rows = [[_clean(cell) for cell in row] for row in rows if any(_clean(cell) for cell in row)]
+    if len(cleaned_rows) <= 1:
+        return []
+    header = cleaned_rows[0]
+    parsed: list[dict[str, Any]] = []
+    for row_index, row in enumerate(cleaned_rows[1:], start=2):
+        if len(row) < 2:
+            continue
+        clause_no = row[0]
+        clause_name = row[1]
+        content = "；".join(cell for cell in row[2:] if cell).strip()
+        if not clause_no and not clause_name and not content:
+            continue
+        parsed.append(
+            {
+                "id": f"BIDDER-INST-{len(parsed) + 1:04d}",
+                "clauseNo": clause_no,
+                "clauseName": clause_name,
+                "content": content,
+                "headers": header,
+                "cells": row,
+                "tableTitle": table_title or BIDDER_INSTRUCTION_TABLE_TITLE,
+                "tableLocation": f"B{block_index}",
+                "sourceFile": str(document.get("name") or ""),
+                "sourceDocumentId": str(document.get("id") or ""),
+                "section": section,
+                "evidence": "；".join(
+                    f"{header[index]}：{cell}" if index < len(header) and header[index] else cell
+                    for index, cell in enumerate(row)
+                    if cell
+                ),
+                "evidenceLocation": f"B{block_index}/R{row_index}",
+                "confidence": 0.9,
+            }
+        )
+    return parsed
+
+
+def _extract_bidder_instruction_rows(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for document in documents:
+        source_path = Path(str(document.get("sourcePath") or ""))
+        if not _is_docx_source(source_path):
+            continue
+        blocks = _iter_docx_blocks(source_path)
+        anchors = [
+            (index, _clean(block.get("text")))
+            for index, block in enumerate(blocks)
+            if block.get("type") == "paragraph" and _is_bidder_instruction_title_anchor(str(block.get("text") or ""))
+        ]
+        for max_text_gap in (0, 3):
+            for anchor_index, anchor_title in anchors:
+                match = _docx_table_after_bidder_instruction_anchor(blocks, anchor_index, max_text_gap=max_text_gap)
+                if not match:
+                    continue
+                table_index, rows = match
+                return _parse_bidder_instruction_rows(
+                    rows,
+                    document=document,
+                    section=anchor_title or BIDDER_INSTRUCTION_TABLE_TITLE,
+                    block_index=table_index + 1,
+                    table_title=anchor_title or BIDDER_INSTRUCTION_TABLE_TITLE,
+                )
+    return []
+
+
+def _build_qualification_requirements(
+    items: list[dict[str, Any]],
+    *,
+    documents: list[dict[str, Any]] | None = None,
+    texts_by_id: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    if documents is not None and texts_by_id is not None:
+        rows = _extract_qualification_requirements_from_documents(documents, texts_by_id)
+        if rows:
+            return rows
+
+    keywords = ("投标人资格要求", "资格要求", "资格能力要求", "投标人资质条件", "合格投标人")
+    matched: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        text = " ".join(str(item.get(key) or "") for key in ("title", "keyEntity", "value", "evidence", "section"))
+        if not any(keyword in text for keyword in keywords):
+            continue
+        content = str(item.get("evidence") or item.get("value") or "").strip()
+        if not _looks_like_qualification_requirement(content):
+            continue
+        content = _normalize_qualification_content(content)
+        if not content or content in seen:
+            continue
+        seen.add(content)
+        source_file = str(item.get("sourceFile") or "招标文件")
+        section = str(item.get("section") or item.get("title") or "投标人资格要求")
+        matched.append(
+            {
+                "id": f"QUAL-{len(matched) + 1:04d}",
+                "order": len(matched) + 1,
+                "content": content,
+                "applicableScope": "全部标段",
+                "sourceText": _qualification_source_text(source_file=source_file, section=section),
+                **_copy_meta_fields(item),
+                "confidence": float(item.get("confidence") or 0.78),
+            }
+        )
+    return matched[:12]
+
+
+def _extract_commercial_rejection_clauses(
+    documents: list[dict[str, Any]],
+    texts_by_id: dict[str, str],
+) -> list[dict[str, Any]]:
+    clauses: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for document in documents:
+        document_id = str(document.get("id") or "")
+        source_file = str(document.get("name") or document_id or "招标文件")
+        current_section = ""
+        for line_number, raw_line in enumerate(str(texts_by_id.get(document_id) or "").splitlines(), start=1):
+            line = _clean(raw_line)
+            if not line:
+                continue
+            if _looks_like_section_heading(line):
+                current_section = line
+            if not any(keyword in line for keyword in COMMERCIAL_REJECTION_KEYWORDS):
+                continue
+            if line in seen:
+                continue
+            seen.add(line)
+            matched_keywords = [keyword for keyword in COMMERCIAL_REJECTION_KEYWORDS if keyword in line]
+            clauses.append(
+                {
+                    "id": f"REJECT-{len(clauses) + 1:04d}",
+                    "title": current_section or "商务废标项",
+                    "content": line,
+                    "matchedKeywords": matched_keywords,
+                    "riskLevel": "high"
+                    if any(keyword in matched_keywords for keyword in ("否决", "废标", "无效投标", "不予受理"))
+                    else "medium",
+                    "sourceFile": source_file,
+                    "sourceDocumentId": document_id,
+                    "section": current_section,
+                    "evidence": line,
+                    "evidenceLocation": f"L{line_number}",
+                    "confidence": 0.82,
+                }
+            )
+    return clauses
 
 
 def _line_has_explicit_commitment_obligation(text: str) -> bool:
@@ -1859,7 +2654,8 @@ def _transform_to_business_contract(
     result = copy.deepcopy(payload if isinstance(payload, dict) else {})
     items = result.get("items") if isinstance(result.get("items"), list) else []
     hint_items = _scan_business_hint_items(documents, texts_by_id)
-    merged_items = [*copy.deepcopy(items), *hint_items]
+    docx_candidate_items = _extract_docx_core_candidate_items(documents)
+    merged_items = [*copy.deepcopy(items), *docx_candidate_items, *hint_items]
     result["items"] = merged_items
     structured = result.get("structured") if isinstance(result.get("structured"), dict) else {}
     source_documents = copy.deepcopy(structured.get("sourceDocuments") or [])
@@ -1874,9 +2670,16 @@ def _transform_to_business_contract(
         run_semantic_review=run_semantic_review,
     )
     field_groups = {
-        "projectBasics": _build_business_project_basics(merged_items),
+        "projectBasics": _build_business_project_basics(merged_items, project_dates),
         "businessResponse": _build_business_response_fields(merged_items),
         "qualificationSupport": _build_qualification_support_fields(merged_items),
+        "qualificationRequirements": _build_qualification_requirements(
+            merged_items,
+            documents=documents,
+            texts_by_id=texts_by_id,
+        ),
+        "bidderInstructions": _extract_bidder_instruction_rows(documents),
+        "commercialRejectionClauses": _extract_commercial_rejection_clauses(documents, texts_by_id),
         "commitmentRequirements": _build_commitment_requirement_fields(
             merged_items,
             analysis=commitment_analysis,
@@ -2500,6 +3303,7 @@ def materialize_appendix_docx(project_id: str, appendix: dict[str, Any], *, prof
     existing_path = Path(str(item.get("docxPath") or ""))
     if not existing_path.is_absolute():
         existing_path = Path()
+    extractor_docx_path = existing_path if str(item.get("extractionMode") or "") == "business_template_extractor_skill" else Path()
     existing_path_allowed = (
         bool(existing_path)
         and (
@@ -2512,6 +3316,14 @@ def materialize_appendix_docx(project_id: str, appendix: dict[str, Any], *, prof
         existing_path, workspace_path = _appendix_asset_path(project_id, appendix_id, title)
     else:
         workspace_path = str(item.get("workspacePath") or f"{profile.workspace_dirname}/appendices/{existing_path.name}")
+    if (
+        extractor_docx_path
+        and extractor_docx_path.is_file()
+        and existing_path != extractor_docx_path
+        and not existing_path.exists()
+    ):
+        existing_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(extractor_docx_path), str(existing_path))
 
     should_rewrite = False
     if should_rewrite or isinstance(slice_info, dict) or not existing_path.exists():
@@ -2671,7 +3483,10 @@ def _dedupe_appendix_page_number_artifacts(
         item
         for item in appendices
         if isinstance(item, dict) and (
-            str(item.get("extractionMode") or "") == "source_docx_table_fingerprint"
+            str(item.get("extractionMode") or "") in {
+                "source_docx_table_fingerprint",
+                "business_template_extractor_skill",
+            }
             or (
                 isinstance(item.get("tableFingerprint"), dict)
                 and bool(str(item["tableFingerprint"].get("type") or "").strip())
@@ -2720,7 +3535,10 @@ def _prepare_appendix_outputs(
         if profile.key == "business":
             rows = item.get("rows") if isinstance(item.get("rows"), list) else []
             content_blocks = item.get("contentBlocks") if isinstance(item.get("contentBlocks"), list) else []
-            if not _business_template_should_materialize(item, rows, content_blocks):
+            if (
+                str(item.get("extractionMode") or "") != "business_template_extractor_skill"
+                and not _business_template_should_materialize(item, rows, content_blocks)
+            ):
                 continue
         if renumber:
             new_id = f"APPX-{index:04d}"
@@ -4015,26 +4833,158 @@ def _extract_structured_requirements(documents: list[dict[str, Any]], texts_by_i
     )
 
 
+def _business_local_contract_result(
+    project_id: str,
+    structured_result: dict[str, Any],
+    *,
+    profile: ParseProfile,
+    documents: list[dict[str, Any]],
+    texts_by_id: dict[str, str],
+) -> dict[str, Any]:
+    if profile.key != "business":
+        return structured_result
+    return _transform_to_business_contract(
+        project_id,
+        structured_result,
+        profile=profile,
+        documents=documents,
+        texts_by_id=texts_by_id,
+        run_semantic_review=True,
+    )
+
+
+def _business_template_extractor_allows_preview_fallback(warning: str) -> bool:
+    text = str(warning or "")
+    if not text:
+        return False
+    return any(
+        token in text
+        for token in (
+            "商务模板提取 skill 未识别到模板",
+            "未找到可用于商务模板提取 skill 的 DOCX 招标文件",
+            "商务模板提取 skill prepare 阶段失败",
+            "商务模板提取 skill finalize 阶段失败",
+            "商务模板提取 skill 未生成 business_template_extraction.json",
+        )
+    )
+
+
+def _merge_business_local_artifacts(
+    structured_result: dict[str, Any],
+    local_business_result: dict[str, Any],
+    *,
+    profile: ParseProfile,
+) -> dict[str, Any]:
+    if profile.key != "business":
+        return structured_result
+    structured = structured_result.get("structured") if isinstance(structured_result.get("structured"), dict) else {}
+    local_structured = local_business_result.get("structured") if isinstance(local_business_result.get("structured"), dict) else {}
+    if not isinstance(structured, dict) or not isinstance(local_structured, dict):
+        return structured_result
+
+    field_groups = structured.setdefault("fieldGroups", {})
+    local_field_groups = local_structured.get("fieldGroups") if isinstance(local_structured.get("fieldGroups"), dict) else {}
+    if isinstance(field_groups, dict):
+        for key in ("businessResponse", "qualificationSupport", "commitmentRequirements"):
+            if key not in field_groups and isinstance(local_field_groups.get(key), list):
+                field_groups[key] = copy.deepcopy(local_field_groups.get(key) or [])
+
+    scoring = structured.setdefault("scoringCriteria", {})
+    if isinstance(scoring, dict):
+        for key in ("price", "compliance"):
+            scoring.setdefault(key, [])
+
+    for key in ("appendices", "commitmentLetters", "commitmentClues", "commitmentTemplateAlignments", "businessFormatRegions"):
+        local_value = local_structured.get(key)
+        if isinstance(local_value, list) and (local_value or not isinstance(structured.get(key), list)):
+            if not structured.get(key):
+                structured[key] = copy.deepcopy(local_value)
+
+    local_presence = local_structured.get("requirementPresence")
+    if isinstance(local_presence, dict):
+        current_presence = structured.get("requirementPresence")
+        if not isinstance(current_presence, dict) or not current_presence:
+            structured["requirementPresence"] = copy.deepcopy(local_presence)
+
+    category_counts = structured.setdefault("categoryCounts", {})
+    local_category_counts = local_structured.get("categoryCounts") if isinstance(local_structured.get("categoryCounts"), dict) else {}
+    if isinstance(category_counts, dict):
+        for key, value in local_category_counts.items():
+            category_counts.setdefault(key, value)
+
+    return structured_result
+
+
 def _build_tender_parse_prompt(skill_manifest_path: Path, profile: ParseProfile) -> str:
     if profile.key == "business":
         return f"""
 Use the {profile.skill_name} skill.
 
-你现在在做 S1 商务招标文件结构化解析。请调用解析 Skill 读取 manifest 中的多份招标文件文本，输出可直接给后端使用的结构化 JSON。
+你现在在做 S1 商务招标文件结构化解析。请按“脚本准备候选 -> 你作为 opencode agent 做 AI 语义审查 -> 脚本验真合成”的三步工作流执行。
 
 manifest：{skill_manifest_path}
 
-请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 600000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径。命令会把完整结构化 JSON 写入 manifest.structuredResultPath，并只在 stdout 打印小型摘要 JSON：
+第一步：调用 Bash 工具执行，timeout 必须设置为 600000 毫秒或更高：
 
 s1parse {skill_manifest_path}
 
-只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
+该命令只生成 candidate_package.json、review_plan.json 和 ai_tasks/<module>/part-NNN.json，并写入 prepared 阶段摘要。
+
+第二步：禁止使用 opencode 的 read 工具读取 review_plan.json、candidate_package.json 或任何大 JSON。禁止使用 opencode 的 Task/subagent/子代理/任务委派工具；不得调用 Task 工具、subagent 或把任一 task 委派给其他 agent。必须由当前 opencode agent 自己只用 Bash 小输出命令编排任务：
+
+s1parse tasks {skill_manifest_path}
+
+按 stdout 中 tasks[] 的顺序逐个处理 required=true 的 task。每个 task 用下面命令读取 bounded payload：
+
+s1parse task {skill_manifest_path} <taskId>
+
+Decision files MUST be written with short helper commands. Do not use shell heredoc, `cat >`, `tee`, inline Python, inline Node, or handwritten large JSON in Bash.
+If every candidate in the task has the same decision, run:
+s1parse decision-all {skill_manifest_path} <taskId> <accepted|rejected|needsReview> <fieldType> <reason>
+If selected candidateIds have different decisions, run:
+s1parse decision-set {skill_manifest_path} <taskId> <acceptedIdsCsv> <rejectedIdsCsv> <needsReviewIdsCsv> <defaultDecision> <fieldType> <reason>
+The helpers write the required decisionPath JSON with adapter `opencode-agent`, copy content/sourceText/evidenceIds from the task payload, and validate the decision. If the helper returns status=failed, fix the candidateId lists or decision bucket and rerun it.
+
+Exception for qualification_review: do not use decision-all or decision-set. For 投标人资格要求, the AI must split the section itself and write each raw item with:
+s1parse qualification-item {skill_manifest_path} <taskId> <content> <applicableScope> <evidenceIdsCsv> <sourceText> <reason>
+Qualification splitting rules: subtitles and parent headings such as “通用资格条件”“专用资格条件”“业绩要求”“资格能力要求” are not clauses; scope hints such as “标段一和标段二（需同时满足）” are not clauses and should only become applicableScope; parent lead-in sentences such as “投标人财务、信誉等方面应具备下列条件” are not clauses; repeated substantive requirements under different scopes must be output separately; project-level clauses such as 3.2.3/3.2.4/3.2.5 must not inherit a previous segment scope.
+
+只能基于该 task 的 candidates、candidateId、evidenceIds、sourceText 和上下文做语义裁判，并把 JSON 决策文件写入同一条记录指定的 decisionPath。禁止编造候选包外内容，禁止新增候选包外 candidateId/evidenceIds，禁止直接写最终 structured、fieldGroups、scoringCriteria、items 或 finalResult。
+
+每个 ai_decisions/<module>/part-NNN.json 必须包含：
+- schemaVersion: "bid-business-ai-decision-v1"
+- task
+- taskId
+- adapter: "opencode-agent"
+- accepted[]
+- rejected[]
+- needsReview[]
+- reason
+- evidenceIds[]
+
+accepted、rejected、needsReview 中每个元素必须包含 candidateId、decision、fieldType、content、applicableScope、sourceText、reason、evidenceIds。decision 只能是 accepted、rejected 或 needsReview。对不确定内容输出 needsReview，不要强行塞进最终字段。
+
+写完每个 decisionPath 后，必须立即调用：
+
+s1parse validate-decision {skill_manifest_path} <taskId>
+
+如果校验失败，修复同一个 task 的 decisionPath；若仍失败，必须在最终回复和 workflow trace 中明确报告 taskId 和失败原因，不得静默跳过。处理完一批或全部任务后调用：
+
+s1parse status {skill_manifest_path}
+
+只有 status.stdout 显示 missingDecisionTasks=[] 且所有 required decisionPath 都存在后，才进入第三步。不要停在读取阶段。
+
+第三步：调用 Bash 工具执行：
+
+s1parse finalize {skill_manifest_path}
+
+最终结构化 JSON 必须由该 finalize 命令写入 manifest.structuredResultPath。你最后只返回 finalize 命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
 返回格式必须是：
 {{
   "schemaVersion": "{profile.schema_version}",
   "targetSkill": "{profile.skill_name}",
   "outputFile": "manifest 中的 structuredResultPath",
-  "summary": {{"itemCount": 0, "categoryCounts": {{}}, "scoringCounts": {{"business": 0, "price": 0, "compliance": 0}}, "projectDates": {{"startDate": "", "endDate": ""}}}}
+  "summary": {{"itemCount": 0, "categoryCounts": {{}}, "scoringCounts": {{"business": 0, "price": 0, "compliance": 0, "lcoe": 0}}, "workflowStage": "finalized", "projectDates": {{"startDate": "", "endDate": ""}}}}
 }}
 
 解析目标必须覆盖：
@@ -4093,6 +5043,8 @@ def _resolve_skill_structured_result(
         loaded = json.loads(output_file.read_text(encoding="utf-8"))
         if isinstance(loaded, dict) and isinstance(loaded.get("items"), list):
             resolved = loaded
+        elif profile.key == "business":
+            raise RuntimeError(f"S1 商务解析 Skill 输出结构不合法：{output_file}")
         else:
             resolved = local_result
     elif isinstance(result.get("items"), list):
@@ -4100,21 +5052,54 @@ def _resolve_skill_structured_result(
             "items": result.get("items") or [],
             "structured": result.get("structured") if isinstance(result.get("structured"), dict) else {},
         }
+    elif profile.key == "business":
+        raise RuntimeError("S1 商务解析 Skill 未返回结构化 items。")
     else:
         resolved = local_result
 
     structured = resolved.setdefault("structured", {})
     if isinstance(structured, dict):
         local_structured = local_result.get("structured") if isinstance(local_result, dict) else {}
-        if isinstance(local_structured, dict):
+        if profile.key != "business" and isinstance(local_structured, dict):
             for key in ["sourceDocuments", "fieldGroups", "scoringCriteria", "requirementPresence", "coverage", "appendices"]:
                 if not structured.get(key) and local_structured.get(key):
                     structured[key] = local_structured[key]
         structured["targetSkill"] = profile.skill_name
         structured["mode"] = "opencode-skill"
-        structured["opencodeOutput"] = result.get("opencodeOutput") or {}
+        if isinstance(result.get("opencodeOutput"), dict):
+            structured["opencodeOutput"] = copy.deepcopy(result.get("opencodeOutput") or {})
+        elif isinstance(local_structured, dict) and isinstance(local_structured.get("opencodeOutput"), dict):
+            structured["opencodeOutput"] = copy.deepcopy(local_structured.get("opencodeOutput") or {})
+        _apply_opencode_trace_to_workflow(structured)
         structured["schemaVersion"] = str(structured.get("schemaVersion") or profile.schema_version)
     return resolved
+
+
+def _apply_opencode_trace_to_workflow(structured: dict[str, Any]) -> None:
+    trace = structured.get("opencodeOutput") if isinstance(structured.get("opencodeOutput"), dict) else {}
+    if not isinstance(trace, dict) or not trace:
+        return
+    workflow = structured.get("workflow") if isinstance(structured.get("workflow"), dict) else {}
+    workflow = copy.deepcopy(workflow)
+    session_id = str(trace.get("sessionId") or "").strip()
+    if session_id:
+        workflow["opencodeSessionId"] = session_id
+    agent_status = str(trace.get("agentStatus") or trace.get("status") or "").strip()
+    if agent_status:
+        workflow["opencodeAgentStatus"] = agent_status
+    last_tool = str(trace.get("lastTool") or "").strip()
+    if last_tool:
+        workflow["opencodeLastTool"] = last_tool
+    last_tool_status = str(trace.get("lastToolStatus") or "").strip()
+    if last_tool_status:
+        workflow["opencodeLastToolStatus"] = last_tool_status
+    failure_reason = str(trace.get("failureReason") or "").strip()
+    if failure_reason:
+        workflow["opencodeFailureReason"] = failure_reason
+    elif "opencodeFailureReason" not in workflow:
+        workflow["opencodeFailureReason"] = ""
+    if workflow:
+        structured["workflow"] = workflow
 
 
 def _run_parse_skill(
@@ -4125,6 +5110,12 @@ def _run_parse_skill(
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> tuple[dict[str, Any], str]:
     if not settings.s1_parse_opencode_enabled:
+        if profile.key == "business":
+            return _run_local_business_parse_skill(
+                skill_manifest_path,
+                local_result=local_result,
+                profile=profile,
+            ), ""
         return local_result, ""
     try:
         result = OpencodeClient().generate_tender_parse_with_trace(
@@ -4142,7 +5133,242 @@ def _run_parse_skill(
         if isinstance(structured, dict):
             structured["mode"] = "local-structured-parser"
             structured["opencodeError"] = str(exc)
+            trace = getattr(exc, "opencode_trace", None)
+            if isinstance(trace, dict):
+                structured["opencodeOutput"] = copy.deepcopy(trace)
+                if progress_callback:
+                    progress_callback("opencode_delta", copy.deepcopy(trace))
+                if not trace.get("failureReason"):
+                    structured["opencodeOutput"]["failureReason"] = str(exc)
+                _apply_opencode_trace_to_workflow(structured)
         return fallback, f"S1 解析 Skill 调用失败，已使用本地结构化解析兜底：{exc}"
+
+
+def _business_s1_runner_path() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "opencode"
+        / "skills"
+        / BUSINESS_PARSE_PROFILE.skill_name
+        / "scripts"
+        / "run_from_manifest.py"
+    )
+
+
+def _run_local_business_parse_skill(
+    skill_manifest_path: Path,
+    *,
+    local_result: dict[str, Any],
+    profile: ParseProfile,
+) -> dict[str, Any]:
+    runner_path = _business_s1_runner_path()
+    if not runner_path.is_file():
+        raise RuntimeError(f"商务 S1 runner 不存在：{runner_path}")
+    completed = subprocess.run(
+        [sys.executable, str(runner_path), "offline-fallback", str(skill_manifest_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=600,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise RuntimeError(f"商务 S1 runner 执行失败：{detail}")
+    manifest = json.loads(skill_manifest_path.read_text(encoding="utf-8"))
+    output_path = Path(str(manifest.get("structuredResultPath") or skill_manifest_path.with_name("s1_structured_result.json")))
+    if not output_path.is_file():
+        raise RuntimeError(f"商务 S1 runner 未写入结果文件：{output_path}")
+    return _resolve_skill_structured_result(
+        {"outputFile": str(output_path)},
+        local_result=local_result,
+        profile=profile,
+    )
+
+
+def _workflow_from_result(structured_result: dict[str, Any]) -> dict[str, Any]:
+    structured = structured_result.get("structured") if isinstance(structured_result, dict) else {}
+    workflow = structured.get("workflow") if isinstance(structured, dict) else {}
+    return workflow if isinstance(workflow, dict) else {}
+
+
+def _business_review_plan_path(skill_manifest_path: Path, workflow: dict[str, Any]) -> Path:
+    workflow_path = str(workflow.get("reviewPlanPath") or "").strip()
+    if workflow_path:
+        return Path(workflow_path)
+    return skill_manifest_path.with_name("review_plan.json")
+
+
+def _business_validation_report_path(skill_manifest_path: Path, workflow: dict[str, Any]) -> Path:
+    workflow_path = str(workflow.get("validationReportPath") or "").strip()
+    if workflow_path:
+        return Path(workflow_path)
+    return skill_manifest_path.with_name("validation_report.json")
+
+
+def _business_review_plan_exists(skill_manifest_path: Path, workflow: dict[str, Any]) -> bool:
+    default_path = skill_manifest_path.with_name("review_plan.json")
+    workflow_path = _business_review_plan_path(skill_manifest_path, workflow)
+    return default_path.is_file() or workflow_path.is_file()
+
+
+def _needs_business_s1_finalize_guard(
+    *,
+    profile: ParseProfile,
+    structured_result: dict[str, Any],
+    skill_manifest_path: Path,
+) -> bool:
+    if profile.key != "business":
+        return False
+    workflow = _workflow_from_result(structured_result)
+    if not _business_review_plan_exists(skill_manifest_path, workflow):
+        return False
+    workflow_stage = str(workflow.get("stage") or "").strip()
+    if workflow_stage != "finalized":
+        return True
+    return not _business_validation_report_path(skill_manifest_path, workflow).is_file()
+
+
+def _is_business_skill_workflow_payload(
+    *,
+    profile: ParseProfile,
+    structured_payload: dict[str, Any] | None,
+    skill_manifest_path: Path,
+) -> bool:
+    if profile.key != "business" or not isinstance(structured_payload, dict):
+        return False
+    if str(structured_payload.get("targetSkill") or "").strip() == BUSINESS_PARSE_PROFILE.skill_name:
+        return True
+    workflow = structured_payload.get("workflow") if isinstance(structured_payload.get("workflow"), dict) else {}
+    artifact_keys = ("candidatePackagePath", "reviewPlanPath", "validationReportPath")
+    if any(str(workflow.get(key) or "").strip() for key in artifact_keys):
+        return True
+    return _business_review_plan_exists(skill_manifest_path, workflow)
+
+
+def _mark_business_skill_workflow_guard(structured_payload: dict[str, Any]) -> None:
+    workflow = structured_payload.get("workflow") if isinstance(structured_payload.get("workflow"), dict) else {}
+    workflow = copy.deepcopy(workflow)
+    workflow["backendFinalizeGuardApplied"] = True
+    structured_payload["workflow"] = workflow
+
+
+def _review_plan_decision_counts(review_plan_path: Path, ai_decisions_dir: Path) -> tuple[int, int, list[str]]:
+    try:
+        review_plan = json.loads(review_plan_path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0, 0, []
+    required_tasks = [
+        item
+        for item in review_plan.get("tasks") or []
+        if isinstance(item, dict) and item.get("required", True)
+    ]
+    missing: list[str] = []
+    present = 0
+    for task in required_tasks:
+        task_id = str(task.get("taskId") or task.get("task") or "").strip()
+        decision_path_value = str(task.get("decisionPath") or "").strip()
+        if decision_path_value:
+            decision_path = review_plan_path.parent / decision_path_value
+        else:
+            decision_path = ai_decisions_dir / f"{task_id}.json"
+        if decision_path.is_file():
+            present += 1
+        elif task_id:
+            missing.append(task_id)
+    return len(required_tasks), present, sorted(missing)
+
+
+def _business_finalize_error_result(
+    skill_manifest_path: Path,
+    structured_result: dict[str, Any],
+    error: str,
+) -> dict[str, Any]:
+    fallback = copy.deepcopy(structured_result if isinstance(structured_result, dict) else {})
+    structured = fallback.setdefault("structured", {})
+    if not isinstance(structured, dict):
+        fallback["structured"] = structured = {}
+
+    existing_workflow = structured.get("workflow") if isinstance(structured.get("workflow"), dict) else {}
+    workflow = copy.deepcopy(existing_workflow)
+    review_plan_path = _business_review_plan_path(skill_manifest_path, workflow)
+    ai_tasks_dir = Path(str(workflow.get("aiTasksDir") or skill_manifest_path.with_name("ai_tasks")))
+    ai_decisions_dir = Path(str(workflow.get("aiDecisionsDir") or skill_manifest_path.with_name("ai_decisions")))
+    validation_report_path = _business_validation_report_path(skill_manifest_path, workflow)
+    required_count, present_count, missing_tasks = _review_plan_decision_counts(review_plan_path, ai_decisions_dir)
+    workflow.update(
+        {
+            "stage": "failed",
+            "semanticReviewMode": str(workflow.get("semanticReviewMode") or "opencode-agent"),
+            "aiReviewTrusted": False,
+            "reviewPlanPath": str(review_plan_path),
+            "aiTasksDir": str(ai_tasks_dir),
+            "aiDecisionsDir": str(ai_decisions_dir),
+            "validationReportPath": str(validation_report_path),
+            "requiredDecisionTaskCount": int(workflow.get("requiredDecisionTaskCount") or required_count),
+            "presentDecisionTaskCount": int(workflow.get("presentDecisionTaskCount") or present_count),
+            "missingDecisionTasks": list(workflow.get("missingDecisionTasks") or missing_tasks),
+            "backendFinalizeGuardApplied": True,
+            "backendFinalizeError": error,
+        }
+    )
+    structured["workflow"] = workflow
+    structured["mode"] = str(structured.get("mode") or "opencode-skill")
+    return fallback
+
+
+def _finalize_business_s1_result(
+    skill_manifest_path: Path,
+    structured_result: dict[str, Any],
+    profile: ParseProfile,
+) -> tuple[dict[str, Any], str]:
+    runner_path = _business_s1_runner_path()
+    try:
+        if not runner_path.is_file():
+            raise RuntimeError(f"商务 S1 finalize runner 不存在: {runner_path}")
+        completed = subprocess.run(
+            [sys.executable, str(runner_path), "finalize", str(skill_manifest_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=600,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise RuntimeError(f"s1parse finalize failed with exit {completed.returncode}: {detail}")
+        manifest = json.loads(skill_manifest_path.read_text(encoding="utf-8"))
+        output_path = Path(str(manifest.get("structuredResultPath") or skill_manifest_path.with_name("s1_structured_result.json")))
+        if not output_path.is_file():
+            raise RuntimeError(f"s1parse finalize 未写入结果文件: {output_path}")
+        resolved = _resolve_skill_structured_result(
+            {
+                "outputFile": str(output_path),
+            },
+            local_result=structured_result,
+            profile=profile,
+        )
+        structured = resolved.setdefault("structured", {})
+        if isinstance(structured, dict):
+            local_structured = structured_result.get("structured") if isinstance(structured_result, dict) else {}
+            if isinstance(local_structured, dict) and isinstance(local_structured.get("opencodeOutput"), dict):
+                structured["opencodeOutput"] = copy.deepcopy(local_structured.get("opencodeOutput") or {})
+            structured["backendFinalizeOutput"] = {
+                "backendFinalizeGuardApplied": True,
+                "stdout": completed.stdout.strip(),
+            }
+            _apply_opencode_trace_to_workflow(structured)
+            workflow = structured.get("workflow") if isinstance(structured.get("workflow"), dict) else {}
+            workflow = copy.deepcopy(workflow)
+            workflow["backendFinalizeGuardApplied"] = True
+            structured["workflow"] = workflow
+        return resolved, ""
+    except Exception as exc:
+        message = str(exc)
+        return (
+            _business_finalize_error_result(skill_manifest_path, structured_result, message),
+            f"S1 商务 finalize 收口失败，已保留错误 workflow：{message}",
+        )
 
 
 def parse_tender_documents(
@@ -4246,34 +5472,53 @@ def parse_tender_documents(
     combined_text_path.write_text(combined_text, encoding="utf-8")
 
     structured_result = _extract_structured_requirements(documents, texts_by_id)
-    appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
-    appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices), profile=profile))
+    template_extraction_payload: dict[str, Any] | None = None
+    template_extraction_warning = ""
+    template_extraction_path = project_dir / "business_template_extraction" / "business_template_extraction.json"
+    business_section_tree_path = ""
+    business_section_tree_summary: dict[str, Any] = {}
+
     if profile.key == "business":
-        appendices.extend(
-            _extract_text_business_appendices(
-                project_id,
-                documents,
-                texts_by_id,
-                start_index=len(appendices),
-                profile=profile,
+        section_tree_path, section_tree_payload = write_business_section_tree(documents, project_dir)
+        business_section_tree_path = str(section_tree_path)
+        business_section_tree_summary = (
+            section_tree_payload.get("summary")
+            if isinstance(section_tree_payload, dict) and isinstance(section_tree_payload.get("summary"), dict)
+            else {}
+        )
+        appendices, template_extraction_payload, template_extraction_warning = run_business_template_extractor(
+            project_id=project_id,
+            documents=documents,
+            project_dir=project_dir,
+        )
+        if not appendices and _business_template_extractor_allows_preview_fallback(template_extraction_warning):
+            appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
+            appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices), profile=profile))
+            appendices.extend(
+                _extract_text_business_appendices(
+                    project_id,
+                    documents,
+                    texts_by_id,
+                    start_index=len(appendices),
+                    profile=profile,
+                )
             )
-        )
+    else:
+        appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
+        appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices), profile=profile))
     appendices = _prepare_appendix_outputs(project_id, appendices, renumber=True, profile=profile)
-    if profile.key == "business":
-        appendices = _apply_business_template_semantic_review(
-            appendices,
-            run_semantic_review=not settings.s1_parse_opencode_enabled,
-        )
     structured_result["structured"]["appendices"] = appendices
-    if profile.key == "business":
-        structured_result = _transform_to_business_contract(
+    if profile.key == "business" and not settings.s1_parse_opencode_enabled:
+        local_business_result = _business_local_contract_result(
             project_id,
             structured_result,
             profile=profile,
             documents=documents,
             texts_by_id=texts_by_id,
-            run_semantic_review=not settings.s1_parse_opencode_enabled,
         )
+        structured_result = local_business_result
+    else:
+        local_business_result = structured_result
     if progress_callback:
         progress_callback(
             "appendices_extracted",
@@ -4292,6 +5537,14 @@ def parse_tender_documents(
         "targetSkill": profile.skill_name,
         "combinedTextPath": str(combined_text_path),
         "structuredResultPath": str(structured_path),
+        "businessTemplateExtractionPath": str(template_extraction_path) if profile.key == "business" and template_extraction_path.is_file() else "",
+        "businessTemplateExtractionSummary": (
+            template_extraction_payload.get("summary")
+            if profile.key == "business" and isinstance(template_extraction_payload, dict)
+            else {}
+        ),
+        "businessSectionTreePath": business_section_tree_path,
+        "businessSectionTreeSummary": business_section_tree_summary,
         "documents": documents,
         "targets": list(profile.targets),
     }
@@ -4304,33 +5557,31 @@ def parse_tender_documents(
         profile=profile,
         progress_callback=progress_callback,
     )
-    should_finalize_business_semantics = (
-        profile.key == "business"
-        and isinstance(structured_result.get("structured"), dict)
-        and (
-            str(structured_result["structured"].get("mode") or "").strip() == "opencode-skill"
-            or (settings.s1_parse_opencode_enabled and bool(skill_warning))
-        )
-    )
-    if should_finalize_business_semantics:
-        structured_result = _transform_to_business_contract(
-            project_id,
+    if _needs_business_s1_finalize_guard(
+        profile=profile,
+        structured_result=structured_result,
+        skill_manifest_path=skill_manifest_path,
+    ):
+        structured_result, finalize_warning = _finalize_business_s1_result(
+            skill_manifest_path,
             structured_result,
-            profile=profile,
-            documents=documents,
-            texts_by_id=texts_by_id,
-            run_semantic_review=True,
+            profile,
         )
-        resolved_appendices = structured_result.get("structured", {}).get("appendices")
-        if isinstance(resolved_appendices, list):
-            structured_result["structured"]["appendices"] = _apply_business_template_semantic_review(
-                resolved_appendices,
-                run_semantic_review=True,
-            )
+        if finalize_warning:
+            skill_warning = f"{skill_warning}；{finalize_warning}" if skill_warning else finalize_warning
+    if template_extraction_warning:
+        warnings.append(template_extraction_warning)
+    structured_result = _merge_business_local_artifacts(
+        structured_result,
+        local_business_result,
+        profile=profile,
+    )
     resolved_structured = structured_result.setdefault("structured", {})
-    if not resolved_structured.get("appendices"):
+    if profile.key == "business" and not resolved_structured.get("appendices") and appendices:
         resolved_structured["appendices"] = appendices
-    elif isinstance(resolved_structured.get("appendices"), list):
+    elif profile.key != "business" and not resolved_structured.get("appendices"):
+        resolved_structured["appendices"] = appendices
+    if isinstance(resolved_structured.get("appendices"), list):
         resolved_structured["appendices"] = _prepare_appendix_outputs(
             project_id,
             resolved_structured["appendices"],
@@ -4360,9 +5611,9 @@ def parse_tender_documents(
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    items = structured_result["items"]
-    structured = structured_result["structured"]
-    project_dates = structured["projectDates"]
+    items = structured_result.get("items") if isinstance(structured_result.get("items"), list) else []
+    structured = structured_result.get("structured") if isinstance(structured_result.get("structured"), dict) else {}
+    project_dates = structured.get("projectDates") if isinstance(structured.get("projectDates"), dict) else {}
 
     summary = {
         "fileCount": len(tender_files),

@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Query, Request, UploadFile, File
+from fastapi import APIRouter, Body, Depends, Query, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.api.utils import minio_streaming_response, onlyoffice_backend_base_url
@@ -17,6 +17,9 @@ from app.services.business_material_store import business_material_store
 from app.services.bid_ocr_service import business_ocr_service
 from app.services.bid_parse_service import business_parse_service
 from app.services.bid_project_service import business_project_service
+from app.services.material_tags import normalize_material_tags
+from app.services.performance_library_service import performance_library_service
+from app.services.performance_package_service import performance_package_service
 from app.services.wiki_generation import generate_platform_wiki
 
 router = APIRouter()
@@ -444,6 +447,167 @@ async def business_identity_options() -> dict[str, Any]:
     return await business_material_store.identity_options()
 
 
+@router.get("/api/business/materials/performance")
+async def list_business_performance_records(
+    keyword: str = "",
+    customerName: str = "",
+    bidType: str = "",
+    tag: str = "",
+    page: int = 1,
+    pageSize: int = 20,
+) -> dict[str, Any]:
+    return await performance_library_service.list_records(
+        keyword=keyword,
+        customer_name=customerName,
+        bid_type=bidType,
+        tag=tag,
+        page=page,
+        page_size=pageSize,
+)
+
+
+@router.get("/api/business/materials/performance/categories")
+async def list_business_performance_categories(
+    keyword: str = "",
+    scene: str = "",
+    powerRating: str = "",
+    turbineModel: str = "",
+    timeKeyword: str = "",
+    contractYear: str = "",
+    deliveryYear: str = "",
+    operationYear: str = "",
+    tag: str = "",
+    status: str = "enabled",
+    sortBy: str = "updatedAt",
+    sortOrder: str = "desc",
+    page: int = 1,
+    pageSize: int = 20,
+) -> dict[str, Any]:
+    return await performance_package_service.list_categories(
+        keyword=keyword,
+        scene=scene,
+        power_rating=powerRating,
+        turbine_model=turbineModel,
+        time_keyword=timeKeyword,
+        contract_year=contractYear,
+        delivery_year=deliveryYear,
+        operation_year=operationYear,
+        tag=tag,
+        status=status,
+        sort_by=sortBy,
+        sort_order=sortOrder,
+        page=page,
+        page_size=pageSize,
+    )
+
+
+@router.post("/api/business/materials/performance/categories/preview")
+async def preview_business_performance_summary(file: UploadFile = File(...)) -> dict[str, Any]:
+    try:
+        return await performance_package_service.preview_summary(file)
+    finally:
+        await file.close()
+
+
+@router.post("/api/business/materials/performance/categories/import")
+async def import_business_performance_summary(
+    file: UploadFile = File(...),
+    categoryName: str = Form(""),
+    scene: str = Form(""),
+    powerRating: str = Form(""),
+    tags: str = Form(""),
+    scope: str = Form("standard"),
+    reviewStatus: str = Form("draft"),
+) -> dict[str, Any]:
+    try:
+        return await performance_package_service.import_summary(
+            file,
+            category_name=categoryName,
+            scene=scene,
+            power_rating=powerRating,
+            tags=tags,
+            scope=scope,
+            review_status=reviewStatus,
+        )
+    finally:
+        await file.close()
+
+
+@router.get("/api/business/materials/performance/categories/{category_id}")
+async def get_business_performance_category(category_id: str) -> dict[str, Any]:
+    return await performance_package_service.get_category(category_id)
+
+
+@router.delete("/api/business/materials/performance/categories/{category_id}")
+async def delete_business_performance_category(category_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await performance_package_service.delete_category(category_id, confirm_name=str(data.get("confirmName") or ""))
+
+
+@router.patch("/api/business/materials/performance/categories/{category_id}/status")
+async def update_business_performance_category_status(category_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await performance_package_service.update_category_status(category_id, str(data.get("status") or ""))
+
+
+@router.post("/api/business/materials/performance/categories/{category_id}/attachments")
+async def upload_business_performance_category_attachment(
+    category_id: str,
+    file: UploadFile = File(...),
+    attachmentType: str = Form("contract_bundle"),
+) -> dict[str, Any]:
+    try:
+        return await performance_package_service.upload_attachment(
+            category_id,
+            file,
+            attachment_type=attachmentType,
+        )
+    finally:
+        await file.close()
+
+
+@router.get("/api/business/materials/performance/categories/{category_id}/attachments/{attachment_id}")
+async def download_business_performance_category_attachment(category_id: str, attachment_id: str) -> StreamingResponse:
+    payload = await performance_package_service.download_attachment(category_id, attachment_id)
+    return minio_streaming_response(payload)
+
+
+@router.get("/api/business/materials/performance/categories/{category_id}/items/{item_id}/attachments/{attachment_id}")
+async def download_business_performance_item_attachment(category_id: str, item_id: str, attachment_id: str) -> StreamingResponse:
+    payload = await performance_package_service.download_item_attachment(category_id, item_id, attachment_id)
+    return minio_streaming_response(payload)
+
+
+@router.post("/api/business/materials/performance")
+async def create_business_performance_record(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await performance_library_service.create_record(data)
+
+
+@router.put("/api/business/materials/performance/{record_id}")
+async def update_business_performance_record(
+    record_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    return await performance_library_service.update_record(record_id, data)
+
+
+@router.delete("/api/business/materials/performance/{record_id}")
+async def delete_business_performance_record(record_id: str) -> dict[str, Any]:
+    return await performance_library_service.delete_record(record_id)
+
+
+@router.post("/api/business/materials/performance/{record_id}/word")
+async def upload_business_performance_word(record_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+    try:
+        return await performance_library_service.upload_word(record_id, file)
+    finally:
+        await file.close()
+
+
+@router.get("/api/business/materials/performance/{record_id}/word")
+async def download_business_performance_word(record_id: str) -> StreamingResponse:
+    payload = await performance_library_service.download_word(record_id)
+    return minio_streaming_response(payload)
+
+
 @router.get("/api/business/materials/raw/tree")
 async def business_raw_tree() -> dict[str, Any]:
     return await business_material_store.raw_tree()
@@ -456,6 +620,9 @@ async def business_raw_files(
     customerName: str = "",
     materialTier: str = "",
     cleanStatus: str = "",
+    businessMaterialKind: str = "",
+    tag: list[str] = Query(default=[]),
+    title: str = "",
     keyword: str = "",
     recursive: bool = True,
     page: int = 1,
@@ -467,6 +634,9 @@ async def business_raw_files(
         customer_name=customerName,
         material_tier=materialTier,
         clean_status=cleanStatus,
+        business_material_kind=businessMaterialKind,
+        tag=tag,
+        title=title,
         keyword=keyword,
         recursive=recursive,
         page=page,
@@ -491,6 +661,7 @@ async def business_raw_upload(request: Request) -> dict[str, Any]:
             "bidType": BUSINESS_BID_TYPE,
             "materialTier": str(form.get("materialTier") or ""),
             "businessMaterialKind": str(form.get("businessMaterialKind") or ""),
+            "tags": normalize_material_tags(form.getlist("tags") or form.get("tags")),
             "customerId": str(form.get("customerId") or ""),
             "customerName": str(form.get("customerName") or ""),
             "onConflict": str(form.get("onConflict") or ""),
@@ -520,6 +691,7 @@ async def business_raw_upload(request: Request) -> dict[str, Any]:
         project_name=str(data.get("projectName") or ""),
         material_tier=str(data.get("materialTier") or ""),
         business_material_kind=str(data.get("businessMaterialKind") or ""),
+        tags=data.get("tags"),
         customer_id=str(data.get("customerId") or ""),
         customer_name=str(data.get("customerName") or ""),
         on_conflict=str(data.get("onConflict") or ""),
@@ -546,6 +718,8 @@ async def business_raw_update_file(file_id: str, data: dict[str, Any] = Body(def
         file_id,
         name=str(data.get("name") or ""),
         business_material_kind=str(data.get("businessMaterialKind") or ""),
+        tags=data.get("tags"),
+        update_tags="tags" in data,
     )
 
 
@@ -594,11 +768,12 @@ async def business_raw_preview_split(file_id: str, data: dict[str, Any] = Body(d
 
 @router.post("/api/business/materials/raw/{file_id}/business-split/confirm")
 async def business_raw_confirm_split(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    fragments = data.get("fragments") if "fragments" in data else data.get("items")
     return await business_material_store.confirm_business_split(
         file_id=file_id,
-        plan_id=str(data.get("planId") or ""),
+        fragments=list(fragments or []),
         target_path=str(data.get("targetPath") or ""),
-        items=list(data.get("items") or []),
+        on_conflict=str(data.get("onConflict") or ""),
     )
 
 

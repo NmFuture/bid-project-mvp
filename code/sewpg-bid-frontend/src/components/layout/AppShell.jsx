@@ -34,7 +34,7 @@ const NAV_DEFINITIONS = [
     key: 'materials',
     icon: 'database',
     label: '素材库',
-    match: /^\/workspace\/(business|tech)\/materials/,
+    match: /^\/workspace\/(business|tech|shared)\/materials/,
     path: (slug) => workspaceRoute(slug, '/materials/raw'),
   },
   {
@@ -48,6 +48,10 @@ const NAV_DEFINITIONS = [
 ]
 
 const WORKSPACE_STORAGE_KEY = 'sewpg.workspace'
+const SHARED_WORKSPACE_META = {
+  icon: 'database',
+  label: '共用',
+}
 
 export default function AppShell({ children, currentUser = null, onLogout = () => {} }) {
   const location = useLocation()
@@ -91,9 +95,11 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
 
   const showSwitcher = canViewBothWorkspaces(currentUser)
   const workspaceForLinks = activeWorkspace
+  const isSharedWorkspace = location.pathname.startsWith('/workspace/shared')
   const isWorkspaceExperience = location.pathname.startsWith('/workspace/tech')
     || location.pathname.startsWith('/parse/technical')
     || location.pathname.startsWith('/workspace/business')
+    || isSharedWorkspace
     || location.pathname.startsWith('/parse/business')
 
   const handleSwitchWorkspace = (slug) => {
@@ -111,6 +117,9 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
   }))
 
   const isActive = (def) => def.match.test(location.pathname)
+  const workspaceMeta = isSharedWorkspace
+    ? SHARED_WORKSPACE_META
+    : WORKSPACE_TYPES[workspaceForLinks]
 
   return (
     <div className={isWorkspaceExperience ? 'flex min-h-[100dvh] flex-col overflow-hidden bg-[#f6f8fb]' : 'h-screen flex flex-col overflow-hidden bg-surface'}>
@@ -231,17 +240,17 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
             })}
           </nav>
 
-          {workspaceForLinks && WORKSPACE_TYPES[workspaceForLinks] && (
+          {workspaceMeta && (
             <div className="px-2 pb-2 pt-1 border-t border-white/15">
               <div className="rounded-md bg-white/10 px-2 py-1.5 text-[10px] text-white/85 leading-tight text-center">
                 <span
                   className="material-symbols-outlined text-[14px] block"
                   style={{ fontVariationSettings: "'FILL' 1" }}
                 >
-                  {WORKSPACE_TYPES[workspaceForLinks].icon}
+                  {workspaceMeta.icon}
                 </span>
                 <span className="block mt-0.5 font-semibold">
-                  {WORKSPACE_TYPES[workspaceForLinks].label}
+                  {workspaceMeta.label}
                 </span>
               </div>
             </div>

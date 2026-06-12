@@ -35,10 +35,10 @@ from app.services.wiki_export import export_wiki
 
 ASSEMBLER_SKILL_NAME = "bid-tech-assembler"
 ASSEMBLER_SKILL_COMMAND = "s7assemble"
-ASSEMBLER_SKILL_DIR = BASE_DIR / "opencode" / "skill" / "bid-tech-assembler"
+ASSEMBLER_SKILL_DIR = BASE_DIR / "opencode" / "skills" / "bid-tech-assembler"
 ASSEMBLER_RUNNER = ASSEMBLER_SKILL_DIR / "scripts" / "run_from_manifest.py"
 TECH_FORMAT_CLEANER_SKILL_NAME = "bid-tech-format-cleaner"
-TECH_FORMAT_CLEANER_SKILL_DIR = BASE_DIR / "opencode" / "skill" / TECH_FORMAT_CLEANER_SKILL_NAME
+TECH_FORMAT_CLEANER_SKILL_DIR = BASE_DIR / "opencode" / "skills" / TECH_FORMAT_CLEANER_SKILL_NAME
 TECH_FORMAT_CLEANER_RUNNER = TECH_FORMAT_CLEANER_SKILL_DIR / "scripts" / "run_from_manifest.py"
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 

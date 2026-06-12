@@ -361,6 +361,8 @@ def update_review_decision_state(project: dict[str, Any], project_id: str, value
             )
             project["parse_result"] = promoted["parseResult"]
             project["parse_storage"] = promoted["parseStorage"]
+            if promoted["stageArtifacts"]:
+                project["stageArtifacts"] = promoted["stageArtifacts"]
             project["workspaceArtifacts"] = promoted["artifacts"]
             cleanup_parse_temp_workspace(project_id)
     elif decision == "abandon":
@@ -397,11 +399,11 @@ def run_workspace_material_folder_delete(path: str) -> dict[str, Any]:
     if normalized.startswith(f"{BUSINESS_BID_TYPE}/"):
         from app.services.business_material_store import business_material_store
 
-        result = run_awaitable_sync(business_material_store.raw_delete_folder(normalized))
+        result = run_awaitable_sync(business_material_store.raw_cleanup_project_folder(normalized))
     elif normalized.startswith(f"{TECHNICAL_BID_TYPE}/"):
         from app.services.technical_material_store import technical_material_store
 
-        result = run_awaitable_sync(technical_material_store.raw_delete_folder(normalized))
+        result = run_awaitable_sync(technical_material_store.raw_cleanup_project_folder(normalized))
     else:
         raise PeripheralError(400, "项目素材目录必须位于技术标或商务标素材库。", "PROJECT_MATERIAL_PATH_REQUIRED")
     return result if isinstance(result, dict) else {}

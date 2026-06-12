@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 OUTLINE_SCRIPT = (
     Path(__file__).resolve().parents[1]
-    / "opencode" / "skill" / "bid-tech-outline-generator"
+    / "opencode" / "skills" / "bid-tech-outline-generator"
     / "scripts" / "run_from_manifest.py"
 )
 
