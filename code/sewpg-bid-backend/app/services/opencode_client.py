@@ -427,6 +427,19 @@ class OpencodeClient:
             "opencodeOutput": self._build_output_trace(session_id, response),
         }
 
+    def decide_business_template_batch_with_trace(
+        self,
+        prompt_text: str,
+    ) -> dict[str, Any]:
+        session = self.create_session("Business template batch decision")
+        session_id = str(session.get("id") or "")
+        response = self._send_prompt_with_session_polling(session_id, prompt_text)
+        parsed = self._extract_business_template_batch_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
     def list_session_messages(self, session_id: str) -> list[dict[str, Any]]:
         try:
             with httpx.Client(timeout=httpx.Timeout(5.0, connect=5.0)) as client:
@@ -565,6 +578,16 @@ class OpencodeClient:
             raise RuntimeError("futurecode 返回的商务模板边界裁决 JSON 结构不正确。")
         return parsed
 
+    def _extract_business_template_batch_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = self._extract_json_response(
+            response,
+            empty_message="futurecode did not return business template batch decisions.",
+            repair_kind="business_template_boundary",
+        )
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("decisions"), list):
+            raise RuntimeError("futurecode business template batch JSON must contain decisions[].")
+        return parsed
+
     def _extract_table_fill_json(self, response: dict[str, Any]) -> dict[str, Any]:
         parsed = self._extract_json_response(
             response,
@@ -646,7 +669,7 @@ class OpencodeClient:
 
         last_signature: tuple[str, tuple[tuple[str, str], ...]] | None = None
         last_activity = time.monotonic()
-        idle_timeout = max(120.0, min(float(settings.opencode_timeout_sec), 900.0))
+        idle_timeout = self._session_polling_idle_timeout(early_tool_command)
         while not finished.wait(0.5):
             previous_signature = last_signature
             if stream_callback is not None:
@@ -665,12 +688,19 @@ class OpencodeClient:
             elif time.monotonic() - last_activity > idle_timeout:
                 if early_tool_command == "s1parse-finalize":
                     self._raise_s1_opencode_stalled(session_id, self.list_session_messages(session_id), idle_timeout)
+                if early_tool_command == "btplbound-finalize":
+                    self._raise_btplbound_opencode_stalled(
+                        session_id,
+                        self.list_session_messages(session_id),
+                        idle_timeout,
+                    )
                 raise RuntimeError(
                     f"futurecode idle timeout after {int(idle_timeout)} seconds without new output; "
                     f"check session {session_id} tool calls."
                 )
             if early_tool_command:
                 messages = self.list_session_messages(session_id)
+                self._raise_session_error_if_present(session_id, messages)
                 tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
                 if tool_output:
                     snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
@@ -707,6 +737,7 @@ class OpencodeClient:
 
         if early_tool_command == "s1parse-finalize":
             messages = self.list_session_messages(session_id)
+            self._raise_session_error_if_present(session_id, messages)
             tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
             if tool_output:
                 snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
@@ -743,6 +774,7 @@ class OpencodeClient:
                 while time.monotonic() < stalled_until:
                     time.sleep(0.5)
                     messages = self.list_session_messages(session_id)
+                    self._raise_session_error_if_present(session_id, messages)
                     tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
                     if tool_output:
                         snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
@@ -803,6 +835,8 @@ class OpencodeClient:
                 return pending_response
 
         if early_tool_command == "btplbound-finalize":
+            messages = self.list_session_messages(session_id)
+            self._raise_session_error_if_present(session_id, messages)
             pending_response = self._wait_for_btplbound_finalize_after_prompt_return(
                 session_id=session_id,
                 idle_timeout=idle_timeout,
@@ -812,6 +846,7 @@ class OpencodeClient:
                 return pending_response
 
         if stream_callback is not None:
+            self._raise_session_error_if_present(session_id, self.list_session_messages(session_id))
             last_signature = self._emit_session_output_delta(
                 session_id,
                 stream_callback,
@@ -835,6 +870,7 @@ class OpencodeClient:
 
         while time.monotonic() < deadline:
             messages = self.list_session_messages(session_id)
+            self._raise_session_error_if_present(session_id, messages)
             tool_output = self._find_completed_bash_tool_output(messages, "s1parse-finalize")
             if tool_output:
                 snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
@@ -900,6 +936,7 @@ class OpencodeClient:
 
         while time.monotonic() < deadline:
             messages = self.list_session_messages(session_id)
+            self._raise_session_error_if_present(session_id, messages)
             tool_output = self._find_completed_bash_tool_output(messages, "btplbound-finalize")
             if tool_output:
                 snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
@@ -949,10 +986,7 @@ class OpencodeClient:
                     )
             time.sleep(0.5)
 
-        raise RuntimeError(
-            "opencode incomplete/stalled: "
-            f"session {session_id} did not complete btplbound finalize within {int(idle_timeout)} seconds."
-        )
+        self._raise_btplbound_opencode_stalled(session_id, messages, idle_timeout)
         return None
 
     def _emit_session_output_delta(
@@ -1028,6 +1062,53 @@ class OpencodeClient:
             ),
         }
 
+    def _session_error_trace(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        for message in reversed(messages):
+            info = message.get("info") if isinstance(message.get("info"), dict) else {}
+            error = info.get("error") if isinstance(info.get("error"), dict) else {}
+            if not error:
+                continue
+            data = error.get("data") if isinstance(error.get("data"), dict) else {}
+            message_text = str(data.get("message") or error.get("message") or error.get("name") or "").strip()
+            status_code = data.get("statusCode") or data.get("status_code") or ""
+            provider_id = str(info.get("providerID") or self.provider_id)
+            model_id = str(info.get("modelID") or self.model_id)
+            failure_reason = "opencode session error"
+            if status_code:
+                failure_reason = f"{failure_reason} {status_code}"
+            if message_text:
+                failure_reason = f"{failure_reason}: {message_text}"
+            return {
+                "status": "error",
+                "sessionId": str(info.get("sessionID") or session_id),
+                "providerId": provider_id,
+                "modelId": model_id,
+                "receivedAt": self._coerce_timestamp((info.get("time") or {}).get("completed") if isinstance(info.get("time"), dict) else ""),
+                "parts": [],
+                "agentStatus": "error",
+                "errorName": str(error.get("name") or ""),
+                "errorStatusCode": status_code,
+                "failureReason": failure_reason,
+                **self._last_tool_trace(messages),
+            }
+        return {}
+
+    def _raise_session_error_if_present(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        trace = self._session_error_trace(session_id, messages)
+        if not trace:
+            return
+        error = RuntimeError(str(trace.get("failureReason") or "opencode session error"))
+        setattr(error, "opencode_trace", trace)
+        raise error
+
     @staticmethod
     def _matches_completed_command(command: str, expected: str) -> bool:
         words = command.split()
@@ -1050,7 +1131,7 @@ class OpencodeClient:
             return False
         summary = parsed.get("summary") if isinstance(parsed.get("summary"), dict) else {}
         stage = str(summary.get("workflowStage") or "").strip().lower()
-        return stage not in {"prepare", "prepared"}
+        return stage == "finalized"
 
     @staticmethod
     def _btplbound_finalize_output_is_terminal(output: str) -> bool:
@@ -1129,16 +1210,25 @@ class OpencodeClient:
             return False
         return str(trace.get("lastToolStatus") or "").lower() in {"running", "pending", "started"}
 
-    def _build_s1_stalled_trace(
+    @staticmethod
+    def _session_polling_idle_timeout(early_tool_command: str = "") -> float:
+        timeout = max(120.0, min(float(settings.opencode_timeout_sec), 900.0))
+        if early_tool_command == "btplbound-finalize":
+            return min(timeout, 120.0)
+        return timeout
+
+    def _build_tool_stalled_trace(
         self,
+        *,
         session_id: str,
         messages: list[dict[str, Any]],
         idle_timeout: float,
+        command_label: str,
     ) -> dict[str, Any]:
         snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
         last_tool = self._last_tool_trace(messages)
         failure_reason = (
-            f"opencode incomplete/stalled: session {session_id} did not complete s1parse finalize "
+            f"opencode incomplete/stalled: session {session_id} did not complete {command_label} "
             f"within {int(idle_timeout)} seconds."
         )
         return {
@@ -1153,6 +1243,32 @@ class OpencodeClient:
             **last_tool,
         }
 
+    def _build_s1_stalled_trace(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        idle_timeout: float,
+    ) -> dict[str, Any]:
+        return self._build_tool_stalled_trace(
+            session_id=session_id,
+            messages=messages,
+            idle_timeout=idle_timeout,
+            command_label="s1parse finalize",
+        )
+
+    def _build_btplbound_stalled_trace(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        idle_timeout: float,
+    ) -> dict[str, Any]:
+        return self._build_tool_stalled_trace(
+            session_id=session_id,
+            messages=messages,
+            idle_timeout=idle_timeout,
+            command_label="btplbound finalize",
+        )
+
     def _raise_s1_opencode_stalled(
         self,
         session_id: str,
@@ -1160,6 +1276,23 @@ class OpencodeClient:
         idle_timeout: float,
     ) -> None:
         trace = self._build_s1_stalled_trace(session_id, messages, idle_timeout)
+        last_tool = str(trace.get("lastTool") or "unknown")
+        last_status = str(trace.get("lastToolStatus") or "unknown")
+        last_input = self._shorten_text(json.dumps(trace.get("lastToolInput") or {}, ensure_ascii=False), limit=260)
+        error = RuntimeError(
+            "opencode incomplete/stalled: "
+            f"sessionId={session_id}, lastTool={last_tool}, lastStatus={last_status}, lastInput={last_input}"
+        )
+        setattr(error, "opencode_trace", trace)
+        raise error
+
+    def _raise_btplbound_opencode_stalled(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        idle_timeout: float,
+    ) -> None:
+        trace = self._build_btplbound_stalled_trace(session_id, messages, idle_timeout)
         last_tool = str(trace.get("lastTool") or "unknown")
         last_status = str(trace.get("lastToolStatus") or "unknown")
         last_input = self._shorten_text(json.dumps(trace.get("lastToolInput") or {}, ensure_ascii=False), limit=260)

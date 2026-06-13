@@ -1,183 +1,108 @@
 ---
 name: bid-business-tender-structured-parser
-description: 用于 S1 阶段解析商务标招标文件，只抽取项目名称、招标编号、招标人、代理机构、递交截止时间、资格要求、投标人须知前附表、商务废标项、商务评分细则，并输出可追溯结构化 JSON。
+description: Use when S1 parsing a business/commercial tender or procurement document into the frontend delivery checklist for project basics, qualification requirements, bidder instructions, commercial rejection clauses, and business scoring criteria.
 ---
 
-# 商务标招标文件结构化解析工作流
+# 商务标 S1 结构化解析
 
-当后端提供 `s1_parse_manifest.json` 时，先执行：
+## 角色
+
+你是招投标专家，不是关键词匹配器，负责商务部分的解析。你要像真实审阅招标文件一样，使用 `s1parse` 的小输出导航命令主动探索文档，按语义判断事实，最后只提交当前需要的交付清单字段。
+
+## 工作方式
+
+先运行：
 
 ```bash
-s1parse <manifest>
+s1parse prepare <manifest>
 ```
 
-该命令生成 `candidate_package.json`、`review_plan.json` 和分页后的 `ai_tasks/<module>/part-NNN.json`，工作流阶段为 `prepared`。随后由当前 opencode agent 通过 Bash 小输出命令查看任务、读取单个 task payload，并写入对应的 `ai_decisions/<module>/part-NNN.json`。
-
-完成 AI 决策后执行：
+用小输出命令探索，不直接读取或打印解析中间产物的大 JSON；所有证据定位必须通过下面的导航命令完成：
 
 ```bash
+s1parse overview <manifest> --page 1 --page-size 30
+s1parse search <manifest> "<query>" --limit 20
+s1parse read <manifest> <evidenceId> --mode summary --max-chars 2000
+s1parse window <manifest> <evidenceId> --before 4 --after 6
+s1parse table <manifest> <tableId> --rows 1-12 --max-chars 4000
+```
+
+提交、校验并收口：
+
+```bash
+s1parse submit <manifest> projectBasics '<json>'
+s1parse submit <manifest> qualificationRequirements '<json>'
+s1parse submit <manifest> bidderInstructions '<json>'
+s1parse submit <manifest> commercialRejectionClauses '<json>'
+s1parse submit <manifest> businessScoringCriteria '<json>'
+s1parse validate <manifest>
+s1parse status <manifest>
 s1parse finalize <manifest>
 ```
 
-最终结构化结果由 `finalize` 写入 `structuredResultPath`，标准输出只打印精简摘要 JSON。
+如果 `validate` 暴露缺口，继续用导航命令回查证据并重新提交。最终只返回 `finalize` stdout 的小型 JSON 摘要。
 
-## 解析目标
+## 总原则
 
-本 skill 只解析以下信息：
+- 不同招标文件对同一信息可能有不同叫法，按语义归入交付清单。比如原文叫“采购人”“发包人”等，只要语义上是本项目采购/招标发起主体，最终填入“招标人”。
+- 不同招标文件对同一内容的章节名称并不固定，比如“商务部分评审细则”“商务评分标准”等；优先查看公告/邀请书、须知前附表、评审办法、否决/废标/符合性审查区域。
+- 项目基础信息的提交值必须能被对应证据文本直接支撑；不要把封面抬头、集团名称、平台名称或监督单位误填为“招标人”，应优先采用原文明确标注的采购/招标发起主体。
+- 项目基础信息、前附表、资格要求、废标项、评分标准都要带可回查的 `evidenceIds`，项目基础信息至少为项目名称、招标人、递交截止时间提供字段级证据。
+- 递交截止时间指投标/响应文件最晚递交或提交时间，不要把交货期、供货期、服务期、工期等履约日期当作截止时间。
+- 只提交前端清单需要的业务字段，不额外扩展字段。证据编号和来源定位可保留用于后台校验。
+- 资格要求和商务评分的序号不需要提交；不要把原文序号当成业务字段。
+- 不要为了前端不用的字段额外提交证明材料要求；只在对应业务字段的 `evidenceIds` 里保留来源。
+- 商务废标项先用“否决、废标、无效、不予受理、拒收、重大偏差、实质性不响应、不符合评审标准”等高风险表达全文检索，再结合上下文自主判断；只提交导致上述后果的条款，普通“保证金不予退还”等履约/处罚表述不要作为废标项提交。
+- 商务评分标准只提交归属于“商务评分/商务评审/商务部分评分”等商务评分项；不得把“价格评分、报价评分、技术评分、评标价/评审价公式、分值权重构成”等价格评分、报价计算或权重说明条目归入商务评分。若招标文件没有明确商务评分项，则提交空数组。
 
-- 项目名称
-- 招标编号
-- 招标人
-- 代理机构
-- 递交截止时间
-- 资格要求
-- 投标人须知前附表
-- 商务废标项
-- 商务评分细则
+## 交付清单
 
-## 协作模型
+### 项目基础信息
 
-1. 结构层：脚本抽取文本、章节、段落块、表格块、行列位置、引用关系和确定性结构，生成 `candidate_package.json`。项目基础信息、投标人须知前附表和明确商务评分表写入 `deterministicExtracts`。
-2. 审查层：AI 只处理少量有证据约束的语义裁判。AI 输入是资格要求候选、商务废标候选或疑难商务评分表候选。
-3. 验真层：脚本读取 AI 决策并逐项校验，确认内容能被 evidence 覆盖、来源中文可读、目标模块边界清晰。
-4. 合成层：最终 `s1_structured_result.json` 只能由脚本生成。AI 决策只作为语义裁判输入。
+提交到 `projectBasics`：
 
-## 候选包契约
+- 项目名称：`projectName`
+- 招标编号：`tenderNo`
+- 项目单位：`projectUnit`
+- 招标人：`tenderer`
+- 招标代理机构：`tenderAgency`
+- 递交截止时间：`bidDeadline`
 
-`candidate_package.json` 至少包含：
+### 投标人资格要求
 
-- `documents[]`
-- `sections[]`
-- `blocks[]`
-- `tables[]`
-- `deterministicExtracts.projectBasics[]`
-- `deterministicExtracts.bidderInstructions[]`
-- `deterministicExtracts.scoringTables.business[]`
-- `candidates.projectFacts[]`
-- `candidates.bidderInstructions[]`
-- `candidates.qualification[]`
-- `candidates.rejection[]`
-- `candidates.scoring[]`
-- `candidates.scoringTableReview[]`
-- `evidenceIndex`
+提交到 `qualificationRequirements`。每条只需要：
 
-每个候选必须带 `candidateId` 或 `id`、原文内容、章节路径、位置、`evidenceIds` 和可读来源。候选包要给 AI 足够上下文，而不是只给碎片文本。
+- 要求内容：`content`
+- 适用范围：`applicableScope`，未明确时填“全部标段”
+- 来源或证据字段：`evidenceIds`
 
-## AI 任务
+### 投标人须知前附表
 
-AI 审查任务按需生成，通常只会出现：
+提交到 `bidderInstructions`。按表格行提交：
 
-- `qualification_review`
-- `rejection_clause_review`
-- `scoring_table_review`
+- 条款号：`clauseNo`
+- 条款名称：`clauseName`
+- 编列内容：`content`
 
-项目基础信息、投标人须知前附表、明确商务评分表由脚本确定性输出，不进入 AI 决策。若文档没有某类语义候选，该类 task 不出现在 `review_plan.json`。
+### 商务废标项
 
-资格任务只判断真正影响投标人资格的条件。
+提交到 `commercialRejectionClauses`：
 
-废标任务只判断影响投标有效性的商务废标、否决、无效投标、不予受理、实质性响应风险条款。
+- 风险级别：`riskLevel`，只能填写 `high`、`medium`、`low`
+- 命中词：`matchedKeywords`
+- 条款内容：`content`
 
-疑难评分表任务只判断是否属于商务评分细则及其边界。
+`riskLevel` 表示前端展示用风险等级，不是条款处置结果。不要填写“否决投标”“不予受理”“无效投标”“废标”“重大偏差”等中文后果。
 
-`review_plan.json` 至少包含：
+- `high`：条款明确会导致无效、否决、不予受理、废标、重大偏差或实质性不响应。
+- `medium`：条款表达为可能否决、可否决、经澄清仍不满足才否决等条件性风险。
+- `low`：条款有商务合规风险提示，但原文没有直接形成否决或无效后果；如不属于真正废标/否决条款，应不要提交。
 
-- `tasks[].taskId`
-- `tasks[].taskPath`
-- `tasks[].decisionPath`
-- `tasks[].required`
-- `taskCount` / `requiredTaskCount`
-- `deterministicModules`
-- `aiReviewModules`
-- `skippedAiModules`
+### 商务评分标准
 
-## opencode agent 执行要求
+提交到 `businessScoringCriteria`：
 
-任务编排、单 task 裁判和状态检查由当前 opencode agent 通过 Bash 命令完成：
+- 评分项：`scoringItem`
+- 分值：`score`
+- 得分点/要求：`scorePoint` 或 `scoringStandard`
 
-```bash
-s1parse tasks <manifest>
-s1parse task <manifest> <taskId>
-s1parse decision-all <manifest> <taskId> <accepted|rejected|needsReview> <fieldType> <reason>
-s1parse decision-set <manifest> <taskId> <acceptedIdsCsv> <rejectedIdsCsv> <needsReviewIdsCsv> <defaultDecision> <fieldType> <reason>
-s1parse qualification-item <manifest> <taskId> <content> <applicableScope> <evidenceIdsCsv> <sourceText> <reason>
-s1parse validate-decision <manifest> <taskId>
-s1parse status <manifest>
-```
-
-生产执行中，商务废标和商务评分任务用 `decision-all` 或 `decision-set` 生成 AI 决策文件。
-
-资格要求任务不得使用 `decision-all` 或 `decision-set` 自动拆分整节切片；必须由当前 AI 基于 `s1parse task` 返回的 `candidates[].lines[]` 逐条判断，并用 `qualification-item` 写入每一条 AI 原始拆分结果。
-
-资格要求通用拆分规则：
-
-- “通用资格条件”“专用资格条件”“业绩要求”“资格能力要求”等副标题、父标题不作为条款。
-- “标段一和标段二（需同时满足）”“标段五（需同时满足）”等范围提示行不作为条款，只作为后续条款的 `applicableScope`。
-- `3.1.2 投标人财务、信誉等方面应具备下列条件：` 这类父级引导句不作为条款，子项逐条输出。
-- 同一实质要求在不同标段下重复出现时，按不同适用范围分别输出，不按内容去重。
-- `3.2.3`、`3.2.4`、`3.2.5` 这类项目级资格条款适用范围为本项目或全部标段，不继承上一条“标段五”等范围提示。
-
-禁止用 Bash heredoc、临时 Python 小脚本或手写文件覆盖 `ai_decisions`。必须通过上述 `s1parse` 命令读取任务、写入决策并校验。
-
-禁止用 read 工具打开 `review_plan.json`、`candidate_package.json` 或 `ai_tasks/**` 来绕过任务命令；应使用 `s1parse tasks <manifest>` 和 `s1parse task <manifest> <taskId>` 查看任务。
-
-禁止使用 opencode 的 Task/subagent/子代理/任务委派工具处理 AI 审查；不得调用 Task 工具。所有裁判必须由当前 agent 按当前任务逐项完成。
-
-## AI 决策契约
-
-AI 决策默认写入 `review_plan.json` 指定的 `ai_decisions/<module>/part-NNN.json`。每个文件必须是 JSON 对象：
-
-```json
-{
-  "schemaVersion": "bid-business-ai-decision-v1",
-  "task": "qualification_review",
-  "taskId": "qualification_review/part-001",
-  "adapter": "opencode-agent",
-  "accepted": [],
-  "rejected": [],
-  "needsReview": [],
-  "reason": "",
-  "evidenceIds": []
-}
-```
-
-`accepted[]`、`rejected[]`、`needsReview[]` 的元素必须包含：
-
-```json
-{
-  "candidateId": "QUALIFICATION-CAND-DOC-1-0001",
-  "decision": "accepted",
-  "fieldType": "qualification_requirement",
-  "content": "候选原文或候选摘要",
-  "applicableScope": "全部标段",
-  "sourceText": "招标文件 > 投标人资格要求",
-  "reason": "语义判断理由",
-  "evidenceIds": ["DOC-1:L328"]
-}
-```
-
-## 最终输出
-
-最终 `s1_structured_result.json` 只保留以下结构化结果：
-
-- `structured.workflow`
-- `structured.sourceDocuments[]`
-- `structured.fieldGroups.projectBasics[]`
-- `structured.fieldGroups.qualificationRequirements[]`
-- `structured.fieldGroups.bidderInstructions[]`
-- `structured.fieldGroups.commercialRejectionClauses[]`
-- `structured.scoringCriteria.business[]`
-- `structured.projectFactFields[]`
-- `structured.coverage[]`
-- `structured.projectDates.endDate`
-
-其中 `projectBasics[]` 只包含 `projectName`、`tenderNo`、`tenderer`、`tenderAgency`、`bidDeadline`。
-
-## 验真规则
-
-- 项目基础信息优先来自投标人须知前附表、封面或招标公告中的明确字段；正文散文不覆盖结构化字段。
-- 递交截止时间从招标公告、投标文件递交、开标时间附近检索，并保留来源。
-- 投标人须知前附表由脚本拆表，输出条款号、条款名称、编列内容、表格位置和 evidence ID。
-- 资格要求输出投标人资格条件。
-- 商务废标项输出影响投标有效性的条款。
-- 商务评分细则输出商务评分项。
-- 所有最终记录保留 `sourceFile`、`sourceDocumentId`、`section`、`evidence`、`evidenceLocation`，并尽量保留 `evidenceIds`。

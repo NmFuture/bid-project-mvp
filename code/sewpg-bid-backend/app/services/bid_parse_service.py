@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
+import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
@@ -15,6 +18,7 @@ from app.services.bid_parse_state import (
     complete_parse_state,
     ensure_parse_progress_state,
     start_parse_progress_state,
+    update_parse_result_state,
     update_parse_progress_state,
     update_template_files_state,
 )
@@ -28,6 +32,7 @@ from app.services.business_parse_assets import (
     approve_business_commitment_letter_asset,
     approve_business_scoring_asset,
 )
+from app.services.business_template_extractor import convert_extractor_appendices
 from app.services.file_utils import format_size_mb
 from app.services.onlyoffice_documents import WORD_MEDIA_TYPE, build_editor_session_key
 from app.services.parse_profiles import BUSINESS_PARSE_PROFILE
@@ -298,6 +303,34 @@ def _progress_callback(service: "BidParseService", project_id: str):
                 event_step="extract",
                 event_message=f"{payload.get('fileName', '招标文件')} 已提取 {payload.get('textLength', 0)} 字。",
             )
+        elif event == "business_template_extraction_started":
+            service.update_parse_progress(
+                project_id,
+                percentage=45,
+                summary="正在识别商务附件模板。",
+                event_step="template",
+                event_message=f"开始对 {payload.get('documentCount', 0)} 个招标文件进行商务模板抽取。",
+            )
+        elif event == "business_template_extraction_agent":
+            service.update_parse_progress(
+                project_id,
+                percentage=50,
+                summary="opencode 正在裁决商务模板边界。",
+                event_step="template",
+                event_message="收到商务模板边界裁决进度。",
+                opencode_output=payload,
+            )
+        elif event == "business_template_extraction_finished":
+            service.update_parse_progress(
+                project_id,
+                percentage=55,
+                summary="商务附件模板识别已完成。",
+                event_step="template",
+                event_message=(
+                    f"商务模板识别 {payload.get('appendixCount', 0)} 个，"
+                    f"警告 {payload.get('warningCount', 0)} 条。"
+                ),
+            )
         elif event == "appendices_extracted":
             service.update_parse_progress(
                 project_id,
@@ -358,6 +391,346 @@ def _completed_opencode_output(trace: dict[str, Any] | None) -> dict[str, Any] |
     return closed
 
 
+def _load_structured_result_file(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    structured = payload.get("structured")
+    if not isinstance(structured, dict):
+        return None
+    items = payload.get("items")
+    return copy.deepcopy(items if isinstance(items, list) else []), copy.deepcopy(structured)
+
+
+def _load_json_file(path: Path) -> dict[str, Any] | None:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _business_template_extraction_candidates(parse_storage: dict[str, Any], structured_path: Path) -> list[Path]:
+    candidates: list[Path] = []
+
+    direct_path = str(parse_storage.get("businessTemplateExtractionPath") or "").strip()
+    if direct_path:
+        candidates.append(Path(direct_path))
+
+    skill_manifest_path = Path(str(parse_storage.get("skillManifestPath") or ""))
+    skill_manifest = _load_json_file(skill_manifest_path)
+    manifest_path = str((skill_manifest or {}).get("businessTemplateExtractionPath") or "").strip()
+    if manifest_path:
+        candidates.append(Path(manifest_path))
+
+    if structured_path:
+        candidates.append(structured_path.parent / "business_template_extraction" / "business_template_extraction.json")
+
+    project_dir = str(parse_storage.get("projectDir") or "").strip()
+    if project_dir:
+        candidates.append(Path(project_dir) / "business_template_extraction" / "business_template_extraction.json")
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def _load_business_template_appendices(
+    parse_storage: dict[str, Any],
+    structured_path: Path,
+) -> tuple[list[dict[str, Any]], Path | None]:
+    for candidate in _business_template_extraction_candidates(parse_storage, structured_path):
+        payload = _load_json_file(candidate)
+        if not payload:
+            continue
+        appendices = convert_extractor_appendices(payload)
+        if appendices:
+            return appendices, candidate
+    return [], None
+
+
+def _hydrate_business_template_appendices(
+    structured: dict[str, Any],
+    parse_storage: dict[str, Any],
+    structured_path: Path,
+) -> tuple[dict[str, Any], Path | None]:
+    if isinstance(structured.get("appendices"), list) and structured.get("appendices"):
+        return structured, None
+    appendices, extraction_path = _load_business_template_appendices(parse_storage, structured_path)
+    if not appendices:
+        return structured, None
+    hydrated = copy.deepcopy(structured)
+    hydrated["appendices"] = copy.deepcopy(appendices)
+    return hydrated, extraction_path
+
+
+def _compact_source_text(value: Any) -> str:
+    return "".join(str(value or "").split())
+
+
+def _source_documents_by_id(structured: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    documents = structured.get("sourceDocuments") if isinstance(structured, dict) else []
+    if isinstance(documents, dict):
+        documents = [documents]
+    if not isinstance(documents, list):
+        return {}
+    return {
+        str(document.get("id") or ""): document
+        for document in documents
+        if isinstance(document, dict) and str(document.get("id") or "").strip()
+    }
+
+
+def _resolve_business_nav_store_path(structured: dict[str, Any], structured_path: Path | None = None) -> Path | None:
+    workflow = structured.get("workflow") if isinstance(structured, dict) else {}
+    raw_path = str(workflow.get("navStorePath") or "").strip() if isinstance(workflow, dict) else ""
+    if raw_path:
+        return Path(raw_path)
+    if structured_path is not None:
+        return structured_path.parent / "s1_nav.sqlite"
+    return None
+
+
+def _readable_business_section(heading_path: Any, evidence_text: str) -> str:
+    parts = [part.strip() for part in str(heading_path or "").split(">") if part.strip()]
+    if not parts:
+        return ""
+    evidence_compact = _compact_source_text(evidence_text)
+    if evidence_compact and len(parts) > 1:
+        last_compact = _compact_source_text(parts[-1])
+        if last_compact and (last_compact in evidence_compact or evidence_compact in last_compact):
+            parts = parts[:-1]
+    filtered_parts = []
+    for index, part in enumerate(parts):
+        if index > 0 and len(part) > 80:
+            continue
+        if index > 0 and part.startswith(("(", "（")):
+            continue
+        if index > 0 and part.endswith(("。", "；", ";")):
+            continue
+        filtered_parts.append(part)
+    return " > ".join(filtered_parts or parts[:1])
+
+
+_BUSINESS_CLAUSE_PREFIX_RE = re.compile(r"^\s*(\d+(?:\.\d+)+)\s*(.+)$")
+_BUSINESS_LIST_PREFIX_RE = re.compile(r"^\s*[（(]\s*[0-9一二三四五六七八九十]+\s*[）)]\s*(.+)$")
+_BUSINESS_PHYSICAL_LOCATION_RE = re.compile(r"(正文第\d+段|表格第\d+行(?:第\d+列)?|表格第\d+列)")
+
+
+def _strip_business_source_caption(value: Any) -> str:
+    return str(value or "").strip().strip(" \t\r\n|:：,，;；。")
+
+
+def _short_business_source_caption(value: Any, max_length: int = 56) -> str:
+    text = " ".join(str(value or "").replace("\u3000", " ").split())
+    text = _strip_business_source_caption(text)
+    if len(text) <= max_length:
+        return text
+    return _strip_business_source_caption(text[: max_length - 3]) + "..."
+
+
+def _business_caption_head(value: Any) -> str:
+    text = " ".join(str(value or "").replace("\u3000", " ").split())
+    for separator in ("：", ":", "；", ";", "。", "，", ",", "\n"):
+        if separator in text:
+            text = text.split(separator, 1)[0]
+            break
+    return _short_business_source_caption(text)
+
+
+def _business_evidence_caption(evidence_text: Any) -> str:
+    text = " ".join(str(evidence_text or "").replace("\u3000", " ").split())
+    if not text:
+        return ""
+
+    if "|" in text:
+        parts = [_strip_business_source_caption(part) for part in text.split("|")]
+        parts = [part for part in parts if part and part not in {":", "："}]
+        if len(parts) >= 2:
+            if re.fullmatch(r"\d+(?:\.\d+)+", parts[0]):
+                return _short_business_source_caption(f"{parts[0]} {_business_caption_head(parts[1])}")
+            return _business_caption_head(parts[0])
+
+    clause_match = _BUSINESS_CLAUSE_PREFIX_RE.match(text)
+    if clause_match:
+        clause_no, clause_text = clause_match.groups()
+        return _short_business_source_caption(f"{clause_no} {_business_caption_head(clause_text)}")
+
+    list_match = _BUSINESS_LIST_PREFIX_RE.match(text)
+    if list_match:
+        return _business_caption_head(list_match.group(1))
+
+    return _business_caption_head(text)
+
+
+def _business_evidence_location(record: dict[str, Any], evidence_text: str) -> str:
+    caption = _business_evidence_caption(evidence_text)
+    if caption:
+        return caption
+    kind = str(record.get("kind") or "")
+    row_index = record.get("row_index")
+    col_index = record.get("col_index")
+    if kind in {"table_row", "table_cell"} or row_index is not None:
+        return "表格内容" if col_index is None else "表格单元格"
+    return "正文内容"
+
+
+def _business_source_text(parts: list[str]) -> str:
+    return " / ".join(part for part in parts if str(part or "").strip())
+
+
+def _looks_like_business_evidence_id(value: Any) -> bool:
+    text = str(value or "").strip()
+    return ":B" in text or ":T" in text or text.startswith("TEN-") or text.startswith("DOC-")
+
+
+def _business_source_value_needs_refresh(value: Any) -> bool:
+    text = str(value or "").strip()
+    return not text or _looks_like_business_evidence_id(text) or bool(_BUSINESS_PHYSICAL_LOCATION_RE.search(text))
+
+
+def _business_evidence_ids(row: dict[str, Any]) -> list[str]:
+    raw_ids = row.get("evidenceIds")
+    if isinstance(raw_ids, str):
+        raw_ids = [raw_ids]
+    if not isinstance(raw_ids, list):
+        return []
+    return list(dict.fromkeys(str(item).strip() for item in raw_ids if str(item or "").strip()))
+
+
+def _fetch_business_evidence_records(
+    conn: sqlite3.Connection,
+    evidence_ids: list[str],
+    documents_by_id: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for evidence_id in evidence_ids:
+        evidence_row = conn.execute("SELECT * FROM evidence WHERE id = ?", (evidence_id,)).fetchone()
+        if evidence_row is None:
+            continue
+        record = dict(evidence_row)
+        document_id = str(record.get("document_id") or "")
+        table_id = str(record.get("table_id") or "")
+        heading_path = ""
+        if table_id:
+            table_row = conn.execute("SELECT * FROM tables WHERE id = ?", (table_id,)).fetchone()
+            if table_row is not None:
+                table_record = dict(table_row)
+                heading_path = str(table_record.get("heading_path") or table_record.get("title") or "")
+        if not heading_path:
+            block_row = conn.execute(
+                "SELECT * FROM blocks WHERE document_id = ? AND body_index = ? LIMIT 1",
+                (document_id, record.get("body_index")),
+            ).fetchone()
+            if block_row is not None:
+                block_record = dict(block_row)
+                heading_path = str(block_record.get("heading_path") or "")
+        document = documents_by_id.get(document_id) or {}
+        evidence_text = str(record.get("text") or "")
+        records.append(
+            {
+                "sourceDocumentId": document_id,
+                "sourceFile": str(document.get("name") or document_id or "招标文件"),
+                "section": _readable_business_section(heading_path, evidence_text),
+                "evidence": evidence_text,
+                "evidenceLocation": _business_evidence_location(record, evidence_text),
+            }
+        )
+    return records
+
+
+def _apply_business_readable_source(row: dict[str, Any], records: list[dict[str, Any]]) -> bool:
+    if not records:
+        return False
+    changed = False
+    first = records[0]
+    for key in ("sourceFile", "sourceDocumentId", "section", "evidenceLocation"):
+        current = str(row.get(key) or "").strip()
+        if _business_source_value_needs_refresh(current) and str(first.get(key) or "").strip():
+            row[key] = first[key]
+            changed = True
+
+    evidence_text = "；".join(
+        dict.fromkeys(str(record.get("evidence") or "").strip() for record in records if str(record.get("evidence") or "").strip())
+    )
+    if evidence_text and not str(row.get("evidence") or "").strip():
+        row["evidence"] = evidence_text
+        changed = True
+
+    source_text = _business_source_text(
+        [
+            str(first.get("sourceFile") or ""),
+            str(first.get("section") or ""),
+            str(first.get("evidenceLocation") or ""),
+        ]
+    )
+    if source_text:
+        for key in ("sourceText", "sourceLabel", "source"):
+            current = str(row.get(key) or "").strip()
+            if _business_source_value_needs_refresh(current):
+                row[key] = source_text
+                changed = True
+    return changed
+
+
+def _materialize_business_readable_sources(
+    structured: dict[str, Any],
+    *,
+    structured_path: Path | None = None,
+) -> dict[str, Any]:
+    if not isinstance(structured, dict):
+        return structured
+    nav_path = _resolve_business_nav_store_path(structured, structured_path)
+    if nav_path is None or not nav_path.is_file():
+        return structured
+    field_groups = structured.get("fieldGroups") if isinstance(structured.get("fieldGroups"), dict) else {}
+    target_group_keys = ("projectBasics", "qualificationRequirements")
+    rows_by_group = {
+        key: field_groups.get(key)
+        for key in target_group_keys
+        if isinstance(field_groups.get(key), list)
+    }
+    if not rows_by_group:
+        return structured
+
+    materialized = copy.deepcopy(structured)
+    materialized_field_groups = materialized.get("fieldGroups") if isinstance(materialized.get("fieldGroups"), dict) else {}
+    documents_by_id = _source_documents_by_id(materialized)
+    try:
+        conn = sqlite3.connect(str(nav_path))
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return structured
+    try:
+        for group_key in target_group_keys:
+            rows = materialized_field_groups.get(group_key)
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                records = _fetch_business_evidence_records(conn, _business_evidence_ids(row), documents_by_id)
+                _apply_business_readable_source(row, records)
+    except sqlite3.Error:
+        return structured
+    finally:
+        conn.close()
+    return materialized
+
+
 class BidParseService:
     def __init__(self, project_service: BidProjectService, api_prefix: str) -> None:
         self.project_service = project_service
@@ -382,6 +755,45 @@ class BidParseService:
 
     def parse_result(self, project_id: str) -> dict[str, Any]:
         return copy.deepcopy(self.ensure_project(project_id)["parse_result"])
+
+    def _refresh_business_parse_result_from_structured_file(self, project_id: str) -> dict[str, Any]:
+        project = self.require_project_for_update(project_id)
+        parse_result = project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {}
+        if self.project_service.bid_type != BUSINESS_PARSE_PROFILE.bid_type or parse_result.get("status") != "completed":
+            return copy.deepcopy(parse_result)
+
+        parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
+        structured_path = Path(str(parse_storage.get("structuredResultPath") or ""))
+        loaded = _load_structured_result_file(structured_path)
+        if loaded is None:
+            return copy.deepcopy(parse_result)
+
+        items, structured = loaded
+        structured, template_extraction_path = _hydrate_business_template_appendices(
+            structured,
+            parse_storage,
+            structured_path,
+        )
+        structured = _materialize_business_readable_sources(structured, structured_path=structured_path)
+        if parse_result.get("items") == items and parse_result.get("structured") == structured:
+            return copy.deepcopy(parse_result)
+
+        refreshed = copy.deepcopy(parse_result)
+        refreshed["items"] = items
+        refreshed["structured"] = structured
+        updated_storage = copy.deepcopy(parse_storage)
+        updated_storage["items"] = items
+        updated_storage["structured"] = structured
+        if template_extraction_path:
+            updated_storage["businessTemplateExtractionPath"] = str(template_extraction_path)
+        payload = update_parse_result_state(project, refreshed, parse_storage=updated_storage)
+        persist_workspace_project_state(project)
+        return payload
+
+    def _materialize_completed_parse_result(self, project_id: str, parse_result: dict[str, Any]) -> dict[str, Any]:
+        if self.project_service.bid_type == BUSINESS_PARSE_PROFILE.bid_type:
+            return self._refresh_business_parse_result_from_structured_file(project_id)
+        return parse_result
 
     def parse_inputs(
         self,
@@ -481,9 +893,14 @@ class BidParseService:
         return payload
 
     async def results(self, project_id: str) -> dict[str, Any]:
+        parse_result = (
+            self._refresh_business_parse_result_from_structured_file(project_id)
+            if self.project_service.bid_type == BUSINESS_PARSE_PROFILE.bid_type
+            else self.parse_result(project_id)
+        )
         payload = materialize_parse_appendix_docx_assets(
             project_id,
-            self.parse_result(project_id),
+            parse_result,
             bid_type=self.project_service.bid_type,
         )
         return materialize_parse_business_commitment_letter_docx_assets(
@@ -532,6 +949,7 @@ class BidParseService:
             summary=summary,
             parse_storage=parse_storage,
         )
+        parse_result = self._materialize_completed_parse_result(project_id, parse_result)
         parse_result = materialize_parse_appendix_docx_assets(
             project_id,
             parse_result,
@@ -597,6 +1015,7 @@ class BidParseService:
             summary=summary,
             parse_storage=parse_storage,
         )
+        parse_result = self._materialize_completed_parse_result(project_id, parse_result)
         parse_result = materialize_parse_appendix_docx_assets(
             project_id,
             parse_result,

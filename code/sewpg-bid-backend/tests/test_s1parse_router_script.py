@@ -68,32 +68,39 @@ class S1ParseRouterScriptTests(unittest.TestCase):
             self.assertEqual(payload["structured"]["schemaVersion"], "bid-tender-structured-v1")
             self.assertEqual(payload["structured"]["targetSkill"], "bid-tech-tender-structured-parser")
 
-    def test_router_executes_business_manifest(self) -> None:
-        router_path = self.router_path()
+    def _run_router_json(self, *args: str) -> dict:
+        completed = subprocess.run(
+            [sys.executable, str(self.router_path()), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        return json.loads(completed.stdout)
 
+    def _submit(self, manifest_path: Path, target_key: str, value: object) -> dict:
+        return self._run_router_json("submit", str(manifest_path), target_key, json.dumps(value, ensure_ascii=False))
+
+    def test_router_prepares_business_manifest_then_finalizes_submitted_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            source_path = tmp_path / "商务招标文件.md"
+            source_path = tmp_path / "business_tender.md"
             source_path.write_text(
                 "\n".join(
                     [
-                        "# 商务招标文件",
-                        "项目名称：测试商务项目",
-                        "招标编号：BUS-2026-001",
-                        "招标人：测试招标人",
-                        "附表3：商务评分标准表",
-                        "| 序号 | 评分项 | 分值 | 得分点 | 证明材料要求 |",
-                        "| --- | --- | --- | --- | --- |",
-                        "| 1 | 企业业绩 | 20分 | 近三年同类项目业绩满足要求得满分。 | 提供合同或中标通知书。 |",
-                        "投标保证金：须提交保函。",
-                        "投标人应出具供货能力承诺函。",
-                        "保密承诺书",
-                        "投标人需提供保密承诺书。",
-                        "投标人应提供保密承诺书。",
-                        "发电量承诺书另附。",
-                        "技术承诺：详见技术部分。",
-                        "投标人不得存在下列情形之一。",
-                        "投标人需要说明的其他内容。",
+                        "# Business tender",
+                        "Project name: Router business project",
+                        "Tender No: BUS-2026-001",
+                        "Tenderer: Example Tenderer",
+                        "Qualification requirements: bidder must be an independent legal person.",
+                        "Bidder instructions table",
+                        "| No | Name | Content |",
+                        "| --- | --- | --- |",
+                        "| 1 | Deadline | Submit before 2026-05-06 10:00 |",
+                        "Commercial rejection: response is invalid if price exceeds ceiling.",
+                        "Business scoring table",
+                        "| No | Item | Score | Standard |",
+                        "| 1 | Service plan | 2 | Best reasonable plan gets full score. |",
                     ]
                 ),
                 encoding="utf-8",
@@ -104,7 +111,7 @@ class S1ParseRouterScriptTests(unittest.TestCase):
                 json.dumps(
                     {
                         "projectId": "PRJ-BUSINESS-ROUTER",
-                        "bidType": "商务标",
+                        "bidType": "business",
                         "parseProfile": "business",
                         "structuredResultPath": str(output_path),
                         "documents": [
@@ -121,56 +128,81 @@ class S1ParseRouterScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            completed = subprocess.run(
-                [sys.executable, str(router_path), str(manifest_path)],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            prepared = self._run_router_json(str(manifest_path))
+            self.assertEqual(prepared["schemaVersion"], "bid-business-agentic-nav-v1")
+            self.assertEqual(prepared["stage"], "prepared")
+            self.assertEqual(prepared["targetSkill"], "bid-business-tender-structured-parser")
+            self.assertTrue(Path(prepared["navStorePath"]).is_file())
+            self.assertFalse(output_path.exists())
 
-            summary = json.loads(completed.stdout)
+            self._submit(
+                manifest_path,
+                "projectBasics",
+                [
+                    {"key": "projectName", "value": "Router business project", "evidenceIds": ["DOC-1:B000002"]},
+                    {"key": "tenderNo", "value": "BUS-2026-001", "evidenceIds": ["DOC-1:B000003"]},
+                    {"key": "tenderer", "value": "Example Tenderer", "evidenceIds": ["DOC-1:B000004"]},
+                    {"key": "projectOwner", "value": "Example project owner", "evidenceIds": ["DOC-1:B000004"]},
+                    {"key": "biddingAgency", "value": "Example bidding agency", "evidenceIds": ["DOC-1:B000004"]},
+                ],
+            )
+            self._submit(
+                manifest_path,
+                "qualificationRequirements",
+                [{"content": "bidder must be an independent legal person", "evidenceIds": ["DOC-1:B000005"]}],
+            )
+            self._submit(
+                manifest_path,
+                "bidderInstructions",
+                [{"clauseNo": "1", "clauseName": "Deadline", "content": "Submit before 2026-05-06 10:00", "evidenceIds": ["DOC-1:T0001:R0002"]}],
+            )
+            self._submit(
+                manifest_path,
+                "commercialRejectionClauses",
+                [{"riskLevel": "high", "content": "response is invalid if price exceeds ceiling", "evidenceIds": ["DOC-1:B000008"]}],
+            )
+            self._submit(
+                manifest_path,
+                "businessScoringCriteria",
+                [{"scoringItem": "Service plan", "score": "2", "scoringStandard": "Best reasonable plan gets full score.", "evidenceIds": ["DOC-1:T0002:R0002"]}],
+            )
+            self._submit(
+                manifest_path,
+                "projectDates",
+                {"endDate": "2026-05-06 10:00", "evidenceIds": ["DOC-1:T0001:R0002"]},
+            )
+            finalized = self._run_router_json("finalize", str(manifest_path))
+
             payload = json.loads(output_path.read_text(encoding="utf-8"))
             structured = payload["structured"]
-
-            self.assertEqual(summary["schemaVersion"], "bid-business-tender-structured-v1")
-            self.assertEqual(structured["schemaVersion"], "bid-business-tender-structured-v1")
+            self.assertEqual(finalized["schemaVersion"], "bid-business-tender-structured-v1")
             self.assertEqual(structured["targetSkill"], "bid-business-tender-structured-parser")
-            field_group_keys = list(structured["fieldGroups"].keys())
-            self.assertIn("projectBasics", field_group_keys)
-            self.assertIn("businessResponse", field_group_keys)
-            self.assertIn("qualificationSupport", field_group_keys)
-            self.assertIn("commitmentRequirements", field_group_keys)
-            self.assertIn("qualificationRequirements", field_group_keys)
-            self.assertIn("bidderInstructions", field_group_keys)
-            self.assertIn("commercialRejectionClauses", field_group_keys)
-            self.assertEqual(len(structured["commitmentLetters"]), 3)
-            self.assertEqual(structured["commitmentLetters"][0]["title"], "供货能力承诺函")
-            self.assertEqual(structured["commitmentLetters"][1]["title"], "保密承诺书")
-            self.assertEqual(structured["commitmentLetters"][2]["title"], "投标人不存在下列情形之一承诺函")
-            self.assertEqual(len(structured.get("commitmentClues") or []), 0)
+            self.assertEqual(structured["workflow"]["mode"], "opencode-agentic-navigation")
+            self.assertNotIn("candidatePackagePath", structured["workflow"])
+            self.assertNotIn("reviewPlanPath", structured["workflow"])
+            self.assertNotIn("aiTasksDir", structured["workflow"])
+            self.assertEqual(structured["fieldGroups"]["projectBasics"][0]["value"], "Router business project")
+            basics_by_key = {row["key"]: row for row in structured["fieldGroups"]["projectBasics"]}
+            self.assertEqual(basics_by_key["projectUnit"]["value"], "Example project owner")
+            self.assertEqual(basics_by_key["tenderAgency"]["value"], "Example bidding agency")
+            self.assertEqual(structured["fieldGroups"]["qualificationRequirements"][0]["content"], "bidder must be an independent legal person")
+            self.assertEqual(structured["fieldGroups"]["bidderInstructions"][0]["clauseName"], "Deadline")
+            self.assertEqual(structured["fieldGroups"]["commercialRejectionClauses"][0]["content"], "response is invalid if price exceeds ceiling")
+            self.assertEqual(structured["scoringCriteria"]["business"][0]["scoringItem"], "Service plan")
+            self.assertEqual(structured["projectDates"]["endDate"], "2026-05-06 10:00")
 
-    def test_business_router_outputs_readable_qualification_requirements(self) -> None:
-        router_path = self.router_path()
-
+    def test_business_router_finalizes_submitted_qualification_requirements(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            source_path = tmp_path / "商务资格要求.md"
+            source_path = tmp_path / "business_qualification.md"
             source_path.write_text(
                 "\n".join(
                     [
-                        "# 商务招标文件",
-                        "第一章 招标公告",
-                        "3. 投标人资格要求",
-                        "3.1 通用资格条件",
-                        "3.1.1 投标人为中华人民共和国境内合法注册的独立法人或其他组织。",
-                        "3.2 专用资格条件",
-                        "3.2.1 业绩要求：",
-                        "标段一（需同时满足）：",
-                        "（1）投标人须提供近3年同类项目合同业绩。",
-                        "3.2.2 本项目不接受联合体投标。",
-                        "第三章 评标办法",
-                        "满足最低资格要求的合同业绩数量者得基础分12分。",
-                        "3.5 资格审查资料\t23",
+                        "# Business tender",
+                        "Qualification requirements",
+                        "The bidder must be registered in China as an independent legal person.",
+                        "The bidder must provide three similar project contracts.",
+                        "This project does not accept consortium bidding.",
                     ]
                 ),
                 encoding="utf-8",
@@ -181,7 +213,7 @@ class S1ParseRouterScriptTests(unittest.TestCase):
                 json.dumps(
                     {
                         "projectId": "PRJ-BUSINESS-QUAL-ROUTER",
-                        "bidType": "商务标",
+                        "bidType": "business",
                         "parseProfile": "business",
                         "structuredResultPath": str(output_path),
                         "documents": [
@@ -198,24 +230,25 @@ class S1ParseRouterScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            completed = subprocess.run(
-                [sys.executable, str(router_path), str(manifest_path)],
-                check=True,
-                capture_output=True,
-                text=True,
+            self._run_router_json(str(manifest_path))
+            self._submit(
+                manifest_path,
+                "qualificationRequirements",
+                [
+                    {"content": "registered in China as an independent legal person", "evidenceIds": ["DOC-1:B000003"]},
+                    {"content": "provide three similar project contracts", "evidenceIds": ["DOC-1:B000004"]},
+                    {"content": "does not accept consortium bidding", "evidenceIds": ["DOC-1:B000005"]},
+                ],
             )
+            self._run_router_json("finalize", str(manifest_path))
 
-            self.assertEqual(json.loads(completed.stdout)["schemaVersion"], "bid-business-tender-structured-v1")
             payload = json.loads(output_path.read_text(encoding="utf-8"))
             rows = payload["structured"]["fieldGroups"]["qualificationRequirements"]
             contents = "\n".join(row["content"] for row in rows)
-            self.assertIn("中华人民共和国境内合法注册", contents)
-            self.assertIn("近3年同类项目合同业绩", contents)
-            self.assertIn("不接受联合体投标", contents)
-            self.assertNotIn("基础分12分", contents)
-            self.assertNotIn("资格审查资料\t23", contents)
-            self.assertTrue(any(row["applicableScope"] == "标段一" for row in rows))
-            self.assertTrue(all("sourceText" in row and "L" not in row["sourceText"] for row in rows))
+            self.assertIn("registered in China", contents)
+            self.assertIn("three similar project contracts", contents)
+            self.assertIn("does not accept consortium", contents)
+            self.assertEqual(payload["structured"]["workflow"]["mode"], "opencode-agentic-navigation")
 
     def test_business_s1parse_router_still_targets_structured_parser_when_template_extraction_path_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -224,7 +257,7 @@ class S1ParseRouterScriptTests(unittest.TestCase):
             structured_path = temp_dir / "structured.json"
             extraction_path = temp_dir / "business_template_extraction.json"
             manifest_path = temp_dir / "s1_parse_manifest.json"
-            combined_path.write_text("第六章 投标文件格式\n商务评分 企业业绩 5分", encoding="utf-8")
+            combined_path.write_text("Business scoring Enterprise performance 5 points", encoding="utf-8")
             structured_path.write_text(json.dumps({"structured": {"appendices": []}}, ensure_ascii=False), encoding="utf-8")
             extraction_path.write_text(
                 json.dumps(
@@ -252,14 +285,12 @@ class S1ParseRouterScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            completed = subprocess.run(
-                [sys.executable, str(self.router_path()), str(manifest_path)],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
+            prepared = self._run_router_json(str(manifest_path))
+            self.assertEqual(prepared["targetSkill"], "bid-business-tender-structured-parser")
+            self.assertEqual(prepared["schemaVersion"], "bid-business-agentic-nav-v1")
+            finalized = self._run_router_json("finalize", str(manifest_path))
 
-            self.assertEqual(completed.returncode, 0, completed.stderr)
             payload = json.loads(structured_path.read_text(encoding="utf-8"))
+            self.assertEqual(finalized["targetSkill"], "bid-business-tender-structured-parser")
             self.assertEqual(payload["structured"]["targetSkill"], "bid-business-tender-structured-parser")
             self.assertEqual(payload["structured"]["schemaVersion"], "bid-business-tender-structured-v1")

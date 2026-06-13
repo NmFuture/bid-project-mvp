@@ -33,34 +33,34 @@ COMPOSE_FILE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
 @pytest.mark.skipif(os.getenv("BID_RUN_INTEGRATION") != "1", reason="requires running opencode container")
 class S1ParseContainerIntegrationTests(unittest.TestCase):
     def test_business_manifest_routes_to_business_parse_runner_inside_opencode_container(self) -> None:
-        container_script = '''
+        container_script = r'''
 import json
 import subprocess
 from pathlib import Path
 
 root = Path("/tmp/s1parse-business-test")
 root.mkdir(parents=True, exist_ok=True)
-source_path = root / "商务招标文件.md"
-text = """# 商务招标文件
-项目名称：脱敏风电设备采购项目
-招标编号：BUS-GEN-2026-001
-招标人：示例招标单位
-附表3：商务评分标准表
-| 序号 | 评分项 | 分值 | 得分点 | 证明材料要求 |
-| --- | --- | --- | --- | --- |
-| 1 | 企业业绩 | 20分 | 近三年同类风电项目业绩满足要求得满分。 | 提供合同或中标通知书。 |
-投标函：按招标文件格式填写并签字盖章。
-投标保证金：须提供电汇回单或保函。
-投标人证明其是合格投标人并有资格履行合同的证明文件。
-投标人不得存在下列情形之一。
-投标人需要说明的其他内容。
+source_path = root / "business_tender.md"
+text = """# Business tender
+Project name: Container business project
+Tender No: BUS-GEN-2026-001
+Tenderer: Example Tenderer
+Qualification requirements: bidder must be an independent legal person.
+Bidder instructions table
+| No | Name | Content |
+| --- | --- | --- |
+| 1 | Deadline | Submit before 2026-05-06 10:00 |
+Commercial rejection: response is invalid if price exceeds ceiling.
+Business scoring table
+| No | Item | Score | Standard |
+| 1 | Service plan | 2 | Best reasonable plan gets full score. |
 """
 source_path.write_text(text, encoding="utf-8")
 manifest_path = root / "manifest.json"
 output_path = root / "s1_structured_result.json"
 manifest = {
     "projectId": "PRJ-BUSINESS-CONTAINER",
-    "bidType": "商务标",
+    "bidType": "business",
     "parseProfile": "business",
     "structuredResultPath": str(output_path),
     "documents": [
@@ -73,23 +73,51 @@ manifest = {
     ],
 }
 manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-completed = subprocess.run(
-    ["/usr/local/bin/s1parse", str(manifest_path)],
-    check=True,
-    capture_output=True,
-    text=True,
-    encoding="utf-8",
-)
-response = json.loads(completed.stdout)
+
+def run(*args):
+    completed = subprocess.run(
+        ["/usr/local/bin/s1parse", *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return json.loads(completed.stdout)
+
+prepared = run(str(manifest_path))
+submissions = {
+    "projectBasics": [
+        {"key": "projectName", "value": "Container business project", "evidenceIds": ["DOC-1:B000002"]},
+        {"key": "tenderNo", "value": "BUS-GEN-2026-001", "evidenceIds": ["DOC-1:B000003"]},
+        {"key": "tenderer", "value": "Example Tenderer", "evidenceIds": ["DOC-1:B000004"]},
+    ],
+    "qualificationRequirements": [
+        {"content": "bidder must be an independent legal person", "evidenceIds": ["DOC-1:B000005"]}
+    ],
+    "bidderInstructions": [
+        {"clauseNo": "1", "clauseName": "Deadline", "content": "Submit before 2026-05-06 10:00", "evidenceIds": ["DOC-1:T0001:R0002"]}
+    ],
+    "commercialRejectionClauses": [
+        {"riskLevel": "high", "content": "response is invalid if price exceeds ceiling", "evidenceIds": ["DOC-1:B000008"]}
+    ],
+    "businessScoringCriteria": [
+        {"scoringItem": "Service plan", "score": "2", "scoringStandard": "Best reasonable plan gets full score.", "evidenceIds": ["DOC-1:T0002:R0002"]}
+    ],
+    "projectDates": {"endDate": "2026-05-06 10:00", "evidenceIds": ["DOC-1:T0001:R0002"]},
+}
+for key, value in submissions.items():
+    run("submit", str(manifest_path), key, json.dumps(value, ensure_ascii=False))
+response = run("finalize", str(manifest_path))
 payload = json.loads(output_path.read_text(encoding="utf-8"))
 print(json.dumps({
+    "prepared": prepared,
     "response": response,
     "schemaVersion": payload["structured"].get("schemaVersion"),
     "targetSkill": payload["structured"].get("targetSkill"),
+    "workflow": payload["structured"].get("workflow"),
     "fieldGroupKeys": list(payload["structured"].get("fieldGroups", {}).keys()),
     "scoringCounts": {key: len(value or []) for key, value in (payload["structured"].get("scoringCriteria") or {}).items()},
-    "commitmentLetterCount": len(payload["structured"].get("commitmentLetters") or []),
-    "projectFactFieldKeys": [item.get("fieldKey") for item in payload["structured"].get("projectFactFields") or []],
+    "projectFactFieldKeys": [item.get("key") for item in payload["structured"].get("projectFactFields") or []],
 }, ensure_ascii=False))
 '''.strip()
 
@@ -115,19 +143,18 @@ print(json.dumps({
         payload = json.loads(completed.stdout.strip())
         response = payload["response"]
 
+        self.assertEqual(payload["prepared"]["schemaVersion"], "bid-business-agentic-nav-v1")
+        self.assertEqual(payload["prepared"]["stage"], "prepared")
         self.assertEqual(response["schemaVersion"], "bid-business-tender-structured-v1")
         self.assertEqual(response["targetSkill"], "bid-business-tender-structured-parser")
         self.assertEqual(payload["schemaVersion"], "bid-business-tender-structured-v1")
         self.assertEqual(payload["targetSkill"], "bid-business-tender-structured-parser")
+        self.assertEqual(payload["workflow"]["mode"], "opencode-agentic-navigation")
         self.assertIn("projectBasics", payload["fieldGroupKeys"])
-        self.assertIn("businessResponse", payload["fieldGroupKeys"])
-        self.assertIn("qualificationSupport", payload["fieldGroupKeys"])
-        self.assertIn("commitmentRequirements", payload["fieldGroupKeys"])
         self.assertIn("qualificationRequirements", payload["fieldGroupKeys"])
         self.assertIn("bidderInstructions", payload["fieldGroupKeys"])
         self.assertIn("commercialRejectionClauses", payload["fieldGroupKeys"])
-        self.assertEqual(set(payload["scoringCounts"].keys()), {"business", "price", "compliance", "lcoe"})
-        self.assertGreaterEqual(payload["scoringCounts"]["business"], 1)
-        self.assertEqual(payload["commitmentLetterCount"], 1)
+        self.assertEqual(set(payload["scoringCounts"].keys()), {"business"})
+        self.assertEqual(payload["scoringCounts"]["business"], 1)
         self.assertIn("projectName", payload["projectFactFieldKeys"])
         self.assertIn("tenderNo", payload["projectFactFieldKeys"])

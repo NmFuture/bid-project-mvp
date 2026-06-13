@@ -10,13 +10,18 @@ import BusinessProjectWizardModal from './BusinessProjectWizardModal'
 import Button from '../../../components/ui/Button'
 import { normalizeBidType, projectRoute } from '../../../utils/workspace'
 import {
-  isParseProgressCompleted,
   isParseProgressFailed,
   isUploadAndRunTimeout,
+  pollParseProgressOnce,
   recoverUploadAndRunTimeout,
   shouldPollParseProgress,
 } from '../businessParseUploadRecovery'
-import { businessProjectParseResultNavigation } from '../businessProjectRoutes'
+import {
+  businessProjectParseResultNavigation,
+  selectBusinessParseProjectId,
+  shouldSyncBusinessProjectParseResultRoute,
+} from '../businessProjectRoutes'
+import { businessRiskLevelLabel } from '../businessRiskLevel'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -44,6 +49,7 @@ const EMPTY_APPENDICES = []
 const PROJECT_BASIC_FIELDS = [
   ['projectName', '项目名称'],
   ['tenderNo', '招标编号'],
+  ['projectUnit', '项目单位'],
   ['tenderer', '招标人'],
   ['tenderAgency', '招标代理机构'],
   ['bidDeadline', '递交截止时间'],
@@ -148,12 +154,6 @@ const qualificationSourceValue = (row = {}) => {
   const readable = displayValue(row.sourceText || row.sourceLabel || row.source)
   if (readable !== '-') return readable
   return displayValue([row.sourceFile, row.section].filter(Boolean))
-}
-
-const riskLevelLabel = (value = '') => {
-  if (value === 'high') return '高风险'
-  if (value === 'medium') return '中风险'
-  return displayValue(value, '未识别')
 }
 
 const presenceLabel = (status) => (status === 'present' ? '有明确要求' : '未识别')
@@ -400,11 +400,11 @@ function CommercialRejectionClausesTable({ title, rows = [] }) {
                 <tr key={row.id || `rejection-${index}`} className="border-b border-surface-container-high last:border-b-0">
                   <td className="px-4 py-2 text-center whitespace-nowrap">
                     <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${riskClass}`}>
-                      {riskLevelLabel(row.riskLevel)}
+                      {businessRiskLevelLabel(row.riskLevel)}
                     </span>
                   </td>
                   <td className={`business-core-text-cell px-4 py-2 font-medium ${row.riskLevel === 'high' ? 'text-error' : 'text-on-surface-variant'}`}>
-                    {displayValue(row.matchedKeywords)}
+                    {displayValue(row.matchedKeywords || row.label)}
                   </td>
                   <td className={`business-core-text-cell px-4 py-2 ${row.riskLevel === 'high' ? 'text-error' : 'text-on-surface-variant'}`}>
                     {displayValue(row.content)}
@@ -492,7 +492,7 @@ function ScoringCriteriaTable({
                 <td className="px-4 py-2 text-center text-on-surface-variant whitespace-nowrap">{item.order || index + 1}</td>
                 <td className={`business-scoring-text-cell px-4 py-2 text-on-surface font-medium align-middle ${scoringItemAlign === 'left' ? 'text-left' : 'text-center'}`}>{item.scoringItem || '-'}</td>
                 {showScoreColumn ? <td className="business-scoring-text-cell px-4 py-2 text-center text-primary align-top">{item.score || '-'}</td> : null}
-                {showRequirementColumn ? <td className="business-scoring-text-cell px-4 py-2 text-on-surface-variant align-top">{item.scorePoint || '-'}</td> : null}
+                {showRequirementColumn ? <td className="business-scoring-text-cell px-4 py-2 text-on-surface-variant align-top">{item.scorePoint || item.scoringStandard || '-'}</td> : null}
                 {showProofRequirementColumn ? <td className="business-scoring-text-cell px-4 py-2 text-on-surface-variant align-top">{item.proofRequirement || '-'}</td> : null}
                 {showSourceColumns ? (
                   <>
@@ -692,9 +692,11 @@ export default function BusinessTenderReview({ showToast }) {
         : reviewItemsBase
       setProjects(items)
       setSelectedProjectId((current) => {
-        if (queryProjectId && reviewItems.some((item) => item.id === queryProjectId)) return queryProjectId
-        if (current && reviewItems.some((item) => item.id === current)) return current
-        return reviewItems[0]?.id || ''
+        return selectBusinessParseProjectId({
+          queryProjectId,
+          currentProjectId: current,
+          reviewItems,
+        })
       })
     } catch (e) {
       setError(e?.message || '解析列表加载失败')
@@ -775,24 +777,32 @@ export default function BusinessTenderReview({ showToast }) {
     return () => clearTimeout(timer)
   }, [loadCurrentProject])
 
+  const parseProgressStatus = parseProgress?.status
+  const parseProgressPercentage = parseProgress?.percentage
+  const parseResultStatus = parseData?.status
+
   useEffect(() => {
-    const progressStatus = parseProgress?.status
-    if (!selectedProjectId || !shouldPollParseProgress({ uploading, progress: { status: progressStatus } })) return undefined
+    if (!selectedProjectId || !shouldPollParseProgress({
+      uploading,
+      progress: { status: parseProgressStatus, percentage: parseProgressPercentage },
+      result: { status: parseResultStatus },
+    })) return undefined
     let stopped = false
     const loadProgress = async () => {
       try {
-        const progress = await parseClient.progress(selectedProjectId)
+        const snapshot = await pollParseProgressOnce({
+          projectId: selectedProjectId,
+          parseClient,
+        })
         if (stopped) return
+        const progress = snapshot.progress
         setParseProgress(progress)
-        if (isParseProgressCompleted(progress)) {
-          const result = await parseClient.results(selectedProjectId).catch(() => null)
-          if (!stopped && result) {
-            setParseData(result)
-            navigateToParseResult(selectedProjectId)
-          }
+        if (snapshot.completed) {
+          setParseData(snapshot.result)
+          navigateToParseResult(selectedProjectId)
           return
         }
-        if (isParseProgressFailed(progress)) {
+        if (snapshot.failed || isParseProgressFailed(progress)) {
           setUploadError(progress?.summary || '上传并解析失败')
         }
       } catch {
@@ -805,7 +815,25 @@ export default function BusinessTenderReview({ showToast }) {
       stopped = true
       clearInterval(timer)
     }
-  }, [navigateToParseResult, parseClient, parseProgress?.status, selectedProjectId, uploading])
+  }, [
+    navigateToParseResult,
+    parseClient,
+    parseProgressPercentage,
+    parseProgressStatus,
+    parseResultStatus,
+    selectedProjectId,
+    uploading,
+  ])
+
+  useEffect(() => {
+    if (shouldSyncBusinessProjectParseResultRoute({
+      projectId: selectedProjectId,
+      queryProjectId,
+      parseCompleted: parseResultStatus === 'completed',
+    })) {
+      navigateToParseResult(selectedProjectId)
+    }
+  }, [navigateToParseResult, parseResultStatus, queryProjectId, selectedProjectId])
 
   const sourceFiles = Array.isArray(parseData?.sourceFiles) && parseData.sourceFiles.length
     ? parseData.sourceFiles

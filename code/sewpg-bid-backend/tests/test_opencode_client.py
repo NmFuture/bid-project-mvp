@@ -248,6 +248,52 @@ class OpencodeClientTests(unittest.TestCase):
         send_prompt.assert_called_once()
         self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "s1parse-finalize")
 
+    def test_s1_parse_raises_session_api_error_before_waiting_for_finalize(self) -> None:
+        client = OpencodeClient()
+        messages = [
+            {
+                "info": {
+                    "role": "assistant",
+                    "id": "msg-error",
+                    "sessionID": "ses-s1-api-error",
+                    "providerID": "deepseek",
+                    "modelID": "deepseek-v4-pro",
+                    "error": {
+                        "name": "APIError",
+                        "data": {
+                            "message": "The `reasoning_content` in the thinking mode must be passed back to the API.",
+                            "statusCode": 400,
+                        },
+                    },
+                },
+                "parts": [],
+            }
+        ]
+
+        with (
+            patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": ""}]}),
+            patch.object(client, "list_session_messages", return_value=messages),
+            patch.object(
+                client,
+                "_wait_for_s1_finalize_after_prompt_return",
+                side_effect=AssertionError("should fail on session error before waiting for finalize"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "reasoning_content") as context:
+                client._send_prompt_with_session_polling(
+                    "ses-s1-api-error",
+                    "prompt",
+                    early_tool_command="s1parse-finalize",
+                )
+
+        trace = getattr(context.exception, "opencode_trace")
+        self.assertEqual(trace["status"], "error")
+        self.assertEqual(trace["agentStatus"], "error")
+        self.assertEqual(trace["sessionId"], "ses-s1-api-error")
+        self.assertEqual(trace["providerId"], "deepseek")
+        self.assertEqual(trace["modelId"], "deepseek-v4-pro")
+        self.assertIn("reasoning_content", trace["failureReason"])
+
     def test_decide_business_template_boundaries_with_trace_accepts_decision_file_summary(self) -> None:
         client = OpencodeClient()
 
@@ -398,6 +444,23 @@ class OpencodeClientTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "prepared"):
             client._extract_tender_parse_json(response)
 
+    def test_s1_finalize_output_is_terminal_only_for_finalized_stage(self) -> None:
+        self.assertTrue(
+            OpencodeClient._s1_finalize_output_is_terminal(
+                '{"schemaVersion":"bid-business-tender-structured-v1","summary":{"workflowStage":"finalized"}}'
+            )
+        )
+        self.assertFalse(
+            OpencodeClient._s1_finalize_output_is_terminal(
+                '{"schemaVersion":"bid-business-tender-structured-v1","summary":{"workflowStage":"failed"}}'
+            )
+        )
+        self.assertFalse(
+            OpencodeClient._s1_finalize_output_is_terminal(
+                '{"schemaVersion":"bid-business-tender-structured-v1","summary":{"workflowStage":"prepared"}}'
+            )
+        )
+
     def test_polling_can_early_complete_without_stream_callback(self) -> None:
         client = OpencodeClient()
 
@@ -513,10 +576,7 @@ class OpencodeClientTests(unittest.TestCase):
                         "state": {
                             "status": "completed",
                             "input": {
-                                "command": (
-                                    "s1parse validate-decision /data/parsed/PRJ/s1_parse_manifest.json "
-                                    "qualification_review/part-003"
-                                )
+                                "command": "s1parse validate /data/parsed/PRJ/s1_parse_manifest.json"
                             },
                             "exit": 0,
                             "output": '{"status":"passed"}',
@@ -644,6 +704,41 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertIn('"acceptedTemplateCount":11', response["parts"][0]["text"])
         self.assertGreaterEqual(list_session_messages.call_count, 2)
 
+    def test_btplbound_stalled_running_tool_reports_trace(self) -> None:
+        client = OpencodeClient()
+        messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-btplbound-running"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "running",
+                            "input": {
+                                "command": (
+                                    "cat /tmp/boundary_batch_1.json | "
+                                    "python3 -c \"import json, sys; json.load(sys.stdin)\""
+                                )
+                            },
+                        },
+                    }
+                ],
+            }
+        ]
+
+        with self.assertRaises(RuntimeError) as context:
+            client._raise_btplbound_opencode_stalled("ses-btplbound", messages, 30)
+
+        exc = context.exception
+        self.assertIn("opencode incomplete/stalled", str(exc))
+        trace = getattr(exc, "opencode_trace")
+        self.assertEqual(trace["status"], "stalled")
+        self.assertEqual(trace["sessionId"], "ses-btplbound")
+        self.assertEqual(trace["lastTool"], "bash")
+        self.assertEqual(trace["lastToolStatus"], "running")
+        self.assertIn("boundary_batch_1.json", json.dumps(trace["lastToolInput"], ensure_ascii=False))
+
     def test_s1_parse_stalled_running_read_reports_trace(self) -> None:
         client = OpencodeClient()
 
@@ -660,7 +755,7 @@ class OpencodeClientTests(unittest.TestCase):
                         "tool": "read",
                         "state": {
                             "status": "running",
-                            "input": {"filePath": "/data/parsed/PRJ-0017/review_plan.json"},
+                            "input": {"filePath": "/data/parsed/PRJ-0017/document_map.json"},
                         },
                     }
                 ],
@@ -688,7 +783,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(trace["lastTool"], "read")
         self.assertEqual(trace["lastToolStatus"], "running")
         self.assertEqual(trace["lastMessageId"], "msg-read")
-        self.assertIn("review_plan.json", json.dumps(trace["lastToolInput"], ensure_ascii=False))
+        self.assertIn("document_map.json", json.dumps(trace["lastToolInput"], ensure_ascii=False))
 
     def test_early_s2_tool_output_does_not_repair_traceback_into_outline(self) -> None:
         client = OpencodeClient()

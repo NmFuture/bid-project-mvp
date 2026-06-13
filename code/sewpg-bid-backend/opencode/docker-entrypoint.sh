@@ -33,6 +33,7 @@ external_directory.update({
     "/data/parsed/**": "allow",
     "/data/documents/**": "allow",
     "/data/uploads/**": "allow",
+    "/tmp/**": "allow",
 })
 target_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 PY
@@ -78,6 +79,7 @@ config = {
             "/data/parsed/**": "allow",
             "/data/documents/**": "allow",
             "/data/uploads/**": "allow",
+            "/tmp/**": "allow",
         },
         "task": "deny",
         "read": "deny",

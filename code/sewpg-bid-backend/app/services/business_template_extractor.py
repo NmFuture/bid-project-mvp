@@ -13,6 +13,7 @@ SKILL_NAME = "bid-business-template-extractor"
 SCHEMA_VERSION = "bid-business-template-extractor-v1"
 BOUNDARY_DECISIONS_SCHEMA_VERSION = "bid-business-template-extractor-boundary-decisions-v1"
 TEMPLATE_BOUNDARY_AGENT_MAX_ATTEMPTS = 3
+TEMPLATE_BOUNDARY_AGENT_TIMEOUT_MS = 300_000
 
 
 def backend_root() -> Path:
@@ -155,6 +156,366 @@ def _finalize_btplbound_decisions_if_ready(manifest_path: Path) -> dict[str, Any
     return _run_btplbound_command("finalize", manifest_path)
 
 
+def _btplbound_batch_decision_input_path(batch: dict[str, Any], phase: str) -> Path:
+    document_output = Path(str(batch.get("documentOutputDir") or ""))
+    batch_no = int(batch.get("batchNo") or 0)
+    return document_output / "agent_decision_batches" / f"agent_{phase}_decision_input_{batch_no:04d}.json"
+
+
+_BTPLBOUND_MISSING_REASON = "后端补齐：Agent 未提供裁决理由。"
+_BTPLBOUND_MISSING_REJECT_REASON = "后端补齐：Agent 判定为非模板候选。"
+
+
+def _normalize_btplbound_batch_decisions(phase: str, decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for decision in decisions:
+        item = dict(decision)
+        if not str(item.get("reason") or "").strip():
+            item["reason"] = _BTPLBOUND_MISSING_REASON
+        if phase == "candidate":
+            heading_role = str(item.get("headingRole") or "").strip()
+            if not heading_role and item.get("isTemplateStart") is False:
+                heading_role = "reject"
+            if heading_role == "reject" and not str(item.get("rejectReason") or "").strip():
+                item["rejectReason"] = _BTPLBOUND_MISSING_REJECT_REASON
+        normalized.append(item)
+    return normalized
+
+
+def _write_btplbound_batch_decision_input(batch: dict[str, Any], phase: str, decisions: list[dict[str, Any]]) -> Path:
+    decision_path = _btplbound_batch_decision_input_path(batch, phase)
+    decision_path.parent.mkdir(parents=True, exist_ok=True)
+    normalized_decisions = _normalize_btplbound_batch_decisions(phase, decisions)
+    decision_path.write_text(json.dumps({"decisions": normalized_decisions}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return decision_path
+
+
+_BTPLBOUND_PROMPT_TEXT_LIMIT = 600
+_BTPLBOUND_PROMPT_BLOCK_LIMIT = 4
+_BTPLBOUND_PROMPT_LIST_LIMIT = 12
+
+
+def _compact_prompt_text(value: object, limit: int = _BTPLBOUND_PROMPT_TEXT_LIMIT) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}...(truncated {len(text) - limit} chars)"
+
+
+def _compact_prompt_list(values: object, *, limit: int = _BTPLBOUND_PROMPT_LIST_LIMIT) -> list[Any]:
+    if not isinstance(values, list):
+        return []
+    compacted = values[:limit]
+    if len(values) > limit:
+        compacted = [*compacted, f"... {len(values) - limit} more"]
+    return compacted
+
+
+def _compact_prompt_blocks(blocks: object) -> list[dict[str, Any]]:
+    if not isinstance(blocks, list):
+        return []
+    compacted: list[dict[str, Any]] = []
+    for block in blocks[:_BTPLBOUND_PROMPT_BLOCK_LIMIT]:
+        if not isinstance(block, dict):
+            continue
+        item: dict[str, Any] = {}
+        for key in ("blockId", "index", "page", "style", "kind", "text", "tablePreview"):
+            if key not in block:
+                continue
+            value = block.get(key)
+            item[key] = _compact_prompt_text(value, 260 if key in {"text", "tablePreview"} else 120) if isinstance(value, str) else value
+        compacted.append(item)
+    if len(blocks) > _BTPLBOUND_PROMPT_BLOCK_LIMIT:
+        compacted.append({"omittedBlockCount": len(blocks) - _BTPLBOUND_PROMPT_BLOCK_LIMIT})
+    return compacted
+
+
+def _compact_prompt_decisions(decisions: object) -> list[dict[str, Any]]:
+    if not isinstance(decisions, list):
+        return []
+    compacted: list[dict[str, Any]] = []
+    for decision in decisions[:_BTPLBOUND_PROMPT_LIST_LIMIT]:
+        if not isinstance(decision, dict):
+            continue
+        item: dict[str, Any] = {}
+        for key in (
+            "candidateId",
+            "isTemplateStart",
+            "headingRole",
+            "rejectReason",
+            "templateTitle",
+            "templateType",
+            "startBlockId",
+            "endBlockId",
+            "confidence",
+            "reason",
+            "needsReview",
+        ):
+            if key not in decision:
+                continue
+            value = decision.get(key)
+            item[key] = _compact_prompt_text(value, 240) if isinstance(value, str) else value
+        compacted.append(item)
+    if len(decisions) > _BTPLBOUND_PROMPT_LIST_LIMIT:
+        compacted.append({"omittedDecisionCount": len(decisions) - _BTPLBOUND_PROMPT_LIST_LIMIT})
+    return compacted
+
+
+def _compact_template_batch_for_prompt(batch: dict[str, Any], phase: str) -> dict[str, Any]:
+    compact: dict[str, Any] = {
+        key: batch.get(key)
+        for key in (
+            "schemaVersion",
+            "phase",
+            "batchNo",
+            "batchCount",
+            "batchSize",
+            "documentId",
+            "documentName",
+            "decisionSaveCommand",
+        )
+        if key in batch
+    }
+    if phase == "candidate":
+        compact_candidates: list[dict[str, Any]] = []
+        for candidate in batch.get("candidates") if isinstance(batch.get("candidates"), list) else []:
+            if not isinstance(candidate, dict):
+                continue
+            evidence_blocks = candidate.get("evidenceBlocks") if isinstance(candidate.get("evidenceBlocks"), list) else []
+            compact_candidates.append(
+                {
+                    "candidateId": candidate.get("candidateId"),
+                    "candidateBlockId": candidate.get("candidateBlockId"),
+                    "text": _compact_prompt_text(candidate.get("text"), 240),
+                    "regionId": candidate.get("regionId"),
+                    "regionTitle": _compact_prompt_text(candidate.get("regionTitle"), 160),
+                    "score": candidate.get("score"),
+                    "signals": _compact_prompt_list(candidate.get("signals")),
+                    "evidenceBlockCount": len(evidence_blocks),
+                    "evidenceBlocks": _compact_prompt_blocks(evidence_blocks),
+                }
+            )
+        compact["candidates"] = compact_candidates
+        return compact
+
+    compact_templates: list[dict[str, Any]] = []
+    for template in batch.get("templates") if isinstance(batch.get("templates"), list) else []:
+        if not isinstance(template, dict):
+            continue
+        evidence_blocks = template.get("boundaryEvidenceBlocks") if isinstance(template.get("boundaryEvidenceBlocks"), list) else []
+        compact_item: dict[str, Any] = {
+            "candidateId": template.get("candidateId"),
+            "candidateBlockId": template.get("candidateBlockId"),
+            "templateTitle": _compact_prompt_text(template.get("templateTitle"), 240),
+            "templateType": template.get("templateType"),
+            "headingRole": template.get("headingRole"),
+            "suggestedStartBlockId": template.get("suggestedStartBlockId"),
+            "maxEndBlockId": template.get("maxEndBlockId"),
+            "boundaryEvidenceBlockCount": len(evidence_blocks),
+            "boundaryEvidenceBlocks": _compact_prompt_blocks(evidence_blocks),
+        }
+        next_ref = template.get("nextBoundaryReference")
+        if isinstance(next_ref, dict):
+            compact_item["nextBoundaryReference"] = {
+                key: (_compact_prompt_text(value, 180) if isinstance(value, str) else value)
+                for key, value in next_ref.items()
+                if key in {"candidateId", "blockId", "text", "templateTitle", "headingRole"}
+            }
+        compact_templates.append(compact_item)
+    compact["templates"] = compact_templates
+    return compact
+
+
+def build_business_template_batch_decision_prompt(
+    *,
+    project_id: str,
+    phase: str,
+    batch: dict[str, Any],
+    validation_error: str = "",
+    previous_decisions: list[dict[str, Any]] | None = None,
+) -> str:
+    phase_label = "candidate heading role" if phase == "candidate" else "template boundary"
+    candidate_schema = {
+        "decisions": [
+            {
+                "candidateId": "CAND-0001",
+                "isTemplateStart": True,
+                "headingRole": "template_start",
+                "rejectReason": "",
+                "templateTitle": "Bid Letter",
+                "templateType": "bid_letter",
+                "confidence": 0.92,
+                "reason": "The evidence shows a standalone business form with body fields.",
+                "needsReview": False,
+            }
+        ]
+    }
+    boundary_schema = {
+        "decisions": [
+            {
+                "candidateId": "CAND-0001",
+                "startBlockId": 10,
+                "endBlockId": 25,
+                "confidence": 0.92,
+                "reason": "The range ends before the next boundary reference.",
+                "needsReview": False,
+            }
+        ]
+    }
+    schema = candidate_schema if phase == "candidate" else boundary_schema
+    if phase == "candidate":
+        rules = (
+            "Classify every candidate as one of: template_start, section_container, "
+            "boundary_only, reject. Return exactly one decision for every candidateId "
+            "in candidates[]. Only this phase may reject a candidate."
+        )
+    else:
+        rules = (
+            "Boundary phase cannot reject, skip, or null out templates. Return exactly one "
+            "decision for every candidateId in templates[]. startBlockId and endBlockId must "
+            "be integers. Do not return null, empty strings, or omit either field. Stay within "
+            "suggestedStartBlockId and maxEndBlockId and before nextBoundaryReference. For a "
+            "single-block template, or when suggestedStartBlockId equals maxEndBlockId, set "
+            "startBlockId and endBlockId to the same integer. If the candidate looks too broad "
+            "or uncertain, still provide the smallest valid range and set needsReview=true."
+        )
+    compact_batch = _compact_template_batch_for_prompt(batch, phase)
+    feedback = ""
+    if validation_error or previous_decisions:
+        feedback = f"""
+
+Previous validation failed for this same batch. Fix the same batch only; do not change the candidateId set.
+Validation error:
+{_compact_prompt_text(validation_error, 1200)}
+
+Previous invalid decisions:
+{json.dumps(_compact_prompt_decisions(previous_decisions or []), ensure_ascii=False, indent=2)}
+""".rstrip()
+    return f"""
+You are deciding one {phase_label} batch for business-bid template extraction.
+
+Do not run shell commands, do not read files, and do not create any output files. The backend already fetched
+the btplbound batch and will validate and save your JSON. Use only the evidence included below.
+
+Project: {project_id}
+Rules: {rules}
+
+Return JSON only, with this shape:
+{json.dumps(schema, ensure_ascii=False, indent=2)}
+
+Batch:
+{json.dumps(compact_batch, ensure_ascii=False, indent=2)}
+{feedback}
+""".strip()
+
+
+def _run_btplbound_agent_phase(
+    *,
+    project_id: str,
+    manifest_path: Path,
+    phase: str,
+    traces: list[dict[str, Any]],
+    progress_callback=None,
+) -> dict[str, Any]:
+    batch_command = f"{phase}-batch"
+    decision_command = f"{phase}-decision"
+    processed = 0
+    while True:
+        batch = _run_btplbound_command(batch_command, manifest_path, "next")
+        if str(batch.get("status") or "").strip().lower() == "complete":
+            return _load_btplbound_status(manifest_path)
+        batch_no = int(batch.get("batchNo") or 0)
+        if batch_no <= 0:
+            raise RuntimeError(f"btplbound {batch_command} returned invalid batchNo")
+
+        last_error = ""
+        previous_decisions: list[dict[str, Any]] = []
+        for attempt in range(1, TEMPLATE_BOUNDARY_AGENT_MAX_ATTEMPTS + 1):
+            trace: dict[str, Any] | None = None
+            prompt = build_business_template_batch_decision_prompt(
+                project_id=project_id,
+                phase=phase,
+                batch=batch,
+                validation_error=last_error,
+                previous_decisions=previous_decisions,
+            )
+            try:
+                decision_result = OpencodeClient(
+                    timeout_ms=TEMPLATE_BOUNDARY_AGENT_TIMEOUT_MS
+                ).decide_business_template_batch_with_trace(prompt)
+                trace = (
+                    decision_result.get("opencodeOutput")
+                    if isinstance(decision_result.get("opencodeOutput"), dict)
+                    else None
+                )
+                if trace and progress_callback:
+                    progress_callback("business_template_extraction_agent", trace)
+                decisions = decision_result.get("decisions") if isinstance(decision_result.get("decisions"), list) else []
+                previous_decisions = [item for item in decisions if isinstance(item, dict)]
+                decision_path = _write_btplbound_batch_decision_input(
+                    batch,
+                    phase,
+                    previous_decisions,
+                )
+                _run_btplbound_command(decision_command, manifest_path, batch_no, decision_path)
+                status_after = _load_btplbound_status(manifest_path)
+                _append_boundary_attempt_trace(
+                    traces,
+                    attempt=len(traces) + 1,
+                    status=status_after,
+                    trace=trace,
+                )
+                processed += 1
+                phase_status = status_after.get(phase) if isinstance(status_after.get(phase), dict) else {}
+                if int(phase_status.get("pendingBatchCount") or 0) <= 0:
+                    return status_after
+                break
+            except Exception as exc:
+                last_error = str(exc)
+                trace = _trace_from_exception(exc)
+                if trace and progress_callback:
+                    progress_callback("business_template_extraction_agent", trace)
+                try:
+                    error_status = _load_btplbound_status(manifest_path)
+                except Exception:
+                    error_status = None
+                _append_boundary_attempt_trace(
+                    traces,
+                    attempt=len(traces) + 1,
+                    status=error_status,
+                    trace=trace,
+                    error=last_error,
+                )
+                if attempt >= TEMPLATE_BOUNDARY_AGENT_MAX_ATTEMPTS:
+                    raise
+
+        if processed > 1000:
+            raise RuntimeError(f"btplbound {phase} phase exceeded 1000 batches")
+
+
+def _run_btplbound_backend_agent_decisions(
+    *,
+    project_id: str,
+    manifest_path: Path,
+    traces: list[dict[str, Any]],
+    progress_callback=None,
+) -> dict[str, Any]:
+    _run_btplbound_agent_phase(
+        project_id=project_id,
+        manifest_path=manifest_path,
+        phase="candidate",
+        traces=traces,
+        progress_callback=progress_callback,
+    )
+    return _run_btplbound_agent_phase(
+        project_id=project_id,
+        manifest_path=manifest_path,
+        phase="boundary",
+        traces=traces,
+        progress_callback=progress_callback,
+    )
+
+
 def _combine_boundary_agent_trace(traces: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not traces:
         return None
@@ -166,6 +527,11 @@ def _combine_boundary_agent_trace(traces: list[dict[str, Any]]) -> dict[str, Any
             combined["boundaryAgentAttemptCount"] = len(traces)
             return combined
     return {"status": "received", "boundaryAgentAttempts": traces, "boundaryAgentAttemptCount": len(traces)}
+
+
+def _trace_from_exception(exc: Exception) -> dict[str, Any] | None:
+    trace = getattr(exc, "opencode_trace", None)
+    return trace if isinstance(trace, dict) else None
 
 
 def _load_extraction_payload(output_dir: Path) -> dict[str, Any] | None:
@@ -414,6 +780,7 @@ def run_business_template_extractor(
     project_id: str,
     documents: list[dict[str, Any]],
     project_dir: Path,
+    progress_callback=None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, str]:
     output_dir = project_dir / "business_template_extraction"
     manifest_path = project_dir / "business_template_extraction_manifest.json"
@@ -439,37 +806,41 @@ def run_business_template_extractor(
     boundary_attempts: list[dict[str, Any]] = []
     fallback_reason = ""
     last_error = ""
-    for attempt in range(1, TEMPLATE_BOUNDARY_AGENT_MAX_ATTEMPTS + 1):
-        try:
-            status = _load_btplbound_status(manifest_path)
-            if _btplbound_status_is_ready(status):
-                _append_boundary_attempt_trace(boundary_attempts, attempt=attempt, status=status)
-                break
-
-            prompt = build_business_template_boundary_decision_prompt(
+    try:
+        status = _load_btplbound_status(manifest_path)
+        if _btplbound_status_is_ready(status):
+            _append_boundary_attempt_trace(boundary_attempts, attempt=1, status=status)
+        else:
+            status = _run_btplbound_backend_agent_decisions(
                 project_id=project_id,
                 manifest_path=manifest_path,
-                output_dir=output_dir,
-                prepare_payload=prepare_payload,
-                attempt=attempt,
-                max_attempts=TEMPLATE_BOUNDARY_AGENT_MAX_ATTEMPTS,
-                current_status=status,
+                traces=boundary_attempts,
+                progress_callback=progress_callback,
             )
-            decision_result = OpencodeClient().decide_business_template_boundaries_with_trace(prompt)
-            trace = decision_result.get("opencodeOutput") if isinstance(decision_result.get("opencodeOutput"), dict) else None
-            status_after = _load_btplbound_status(manifest_path)
-            _append_boundary_attempt_trace(boundary_attempts, attempt=attempt, status=status_after, trace=trace)
-            if _btplbound_status_is_ready(status_after):
-                break
-            if not _missing_decision_paths(prepare_payload, output_dir):
-                break
-        except Exception as exc:
-            last_error = str(exc)
-            try:
-                error_status = _load_btplbound_status(manifest_path)
-            except Exception:
-                error_status = None
-            _append_boundary_attempt_trace(boundary_attempts, attempt=attempt, status=error_status, error=last_error)
+            if not _btplbound_status_is_ready(status):
+                last_error = f"btplbound decisions incomplete: {_compact_btplbound_status(status)}"
+                _append_boundary_attempt_trace(
+                    boundary_attempts,
+                    attempt=len(boundary_attempts) + 1,
+                    status=status,
+                    error=last_error,
+                )
+    except Exception as exc:
+        last_error = str(exc)
+        trace = _trace_from_exception(exc)
+        if trace and progress_callback:
+            progress_callback("business_template_extraction_agent", trace)
+        try:
+            error_status = _load_btplbound_status(manifest_path)
+        except Exception:
+            error_status = None
+        _append_boundary_attempt_trace(
+            boundary_attempts,
+            attempt=len(boundary_attempts) + 1,
+            status=error_status,
+            trace=trace,
+            error=last_error,
+        )
 
     opencode_trace = _combine_boundary_agent_trace(boundary_attempts)
     try:
@@ -507,5 +878,7 @@ def run_business_template_extractor(
     _save_extraction_trace(payload, trace=opencode_trace, fallback_reason=fallback_reason)
     appendices = convert_extractor_appendices(payload)
     if not appendices:
+        if fallback_reason:
+            return [], payload, f"模板边界 Agent 裁决未完成，未启用脚本兜底：{fallback_reason}"
         return [], payload, "商务模板提取 skill 未识别到模板。"
     return appendices, payload, ""

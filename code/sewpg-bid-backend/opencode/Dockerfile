@@ -34,8 +34,8 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
     && cp -R /workspace/skill/. /workspace/.opencode/skills/ \
     && printf '%s\n' \
       '#!/bin/sh' \
-      'if [ "$#" -ne 1 ] && [ "$#" -ne 2 ] && [ "$#" -ne 3 ] && [ "$#" -ne 6 ] && [ "$#" -ne 8 ] && [ "$#" -ne 9 ]; then' \
-      '  echo "usage: s1parse [prepare|finalize|offline-fallback|tasks|status|task|validate-decision|decision-all|decision-set|qualification-item] <manifest> [taskId] [...]" >&2' \
+      'if [ "$#" -lt 1 ]; then' \
+      '  echo "usage: s1parse [prepare|overview|search|read|table|window|submit|status|validate|finalize] <manifest> [...]" >&2' \
       '  exit 64' \
       'fi' \
       'exec python3 /workspace/.opencode/skills/s1parse_router.py "$@"' \
