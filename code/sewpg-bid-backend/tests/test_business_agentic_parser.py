@@ -892,12 +892,10 @@ class BusinessAgenticParserTests(unittest.TestCase):
             self.assertIn("evidenceIds", structured["fieldGroups"]["commercialRejectionClauses"][0])
             self.assertIn("evidenceIds", structured["scoringCriteria"]["business"][0])
 
-    def test_template_extractor_directory_and_btplbound_are_not_modified_by_agentic_parser(self) -> None:
+    def test_template_extractor_directory_is_not_modified_by_agentic_parser(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
         extractor_dir = backend_root / "opencode" / "skill" / "bid-business-template-extractor"
-        btplbound = extractor_dir / "scripts" / "btplbound_workflow.py"
         before_files = sorted(path.relative_to(extractor_dir).as_posix() for path in extractor_dir.rglob("*") if path.is_file())
-        before_mtime = btplbound.stat().st_mtime_ns
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _, manifest_path, _ = self.write_sample_docx(root)
@@ -906,4 +904,3 @@ class BusinessAgenticParserTests(unittest.TestCase):
 
         after_files = sorted(path.relative_to(extractor_dir).as_posix() for path in extractor_dir.rglob("*") if path.is_file())
         self.assertEqual(before_files, after_files)
-        self.assertEqual(before_mtime, btplbound.stat().st_mtime_ns)

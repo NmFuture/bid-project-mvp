@@ -315,9 +315,9 @@ def _progress_callback(service: "BidParseService", project_id: str):
             service.update_parse_progress(
                 project_id,
                 percentage=50,
-                summary="opencode 正在裁决商务模板边界。",
+                summary="opencode 正在识别商务模板。",
                 event_step="template",
-                event_message="收到商务模板边界裁决进度。",
+                event_message="收到商务模板提取进度。",
                 opencode_output=payload,
             )
         elif event == "business_template_extraction_finished":

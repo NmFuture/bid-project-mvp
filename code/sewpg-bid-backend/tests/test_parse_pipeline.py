@@ -2544,7 +2544,9 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertTrue(extraction_path.is_file())
         extraction_payload = json.loads(extraction_path.read_text(encoding="utf-8"))
         self.assertEqual(extraction_payload["summary"]["templateCount"], 0)
-        self.assertTrue(any(item["code"] == "missing_agent_decisions" for item in extraction_payload["warnings"]))
+        self.assertEqual(extraction_payload.get("schemaVersion"), "bid-business-template-extractor-v1")
+        self.assertFalse((extraction_path.parent / "DOC-1" / "candidate_templates.json").exists())
+        self.assertFalse((extraction_path.parent / "DOC-1" / "llm_boundary_decisions.json").exists())
         skill_manifest = json.loads((parse_dir / "s1_parse_manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(skill_manifest["businessTemplateExtractionPath"], str(extraction_path))
         self.assertEqual(skill_manifest["businessTemplateExtractionSummary"]["templateCount"], 0)
@@ -2634,7 +2636,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(text_appendix_extractor.call_count, 0)
 
     def test_business_template_agent_failure_warning_does_not_allow_preview_fallback(self) -> None:
-        warning = "模板边界 Agent 裁决未完成，未启用脚本兜底：opencode incomplete/stalled"
+        warning = "商务模板提取 Agent 未完成，未启用脚本兜底：opencode incomplete/stalled"
 
         self.assertFalse(parsing_service._business_template_extractor_allows_preview_fallback(warning))
 
@@ -3714,7 +3716,7 @@ class ParsePipelineTests(unittest.TestCase):
                     {
                         "status": "streaming",
                         "sessionId": "ses-template",
-                        "parts": [{"type": "text", "text": "btplbound boundary running"}],
+                        "parts": [{"type": "text", "text": "btplnav extracting templates"}],
                     },
                 )
             return (

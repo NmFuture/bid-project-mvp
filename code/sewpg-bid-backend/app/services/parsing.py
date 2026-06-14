@@ -4862,9 +4862,10 @@ def _business_template_extractor_allows_preview_fallback(warning: str) -> bool:
         for token in (
             "Agent 裁决未完成",
             "agent 裁决未完成",
+            "Agent 未完成",
+            "agent 未完成",
             "缺少 Agent 裁决文件",
             "缺少 agent 裁决文件",
-            "btplbound boundary-decision failed",
             "opencode incomplete/stalled",
             "futurecode 创建 session 失败",
             "getaddrinfo failed",

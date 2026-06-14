@@ -55,6 +55,77 @@ class OpencodeClientTests(unittest.TestCase):
         repair.assert_called_once()
         self.assertIn("futurecode JSON 解析失败", str(context.exception))
 
+    def test_parse_json_payload_extracts_first_balanced_object_with_required_array(self) -> None:
+        content = """
+我先说明判断依据：
+{not json}
+```json
+{
+  "decisions": [
+    {"candidateId": "CAND-0001", "confidence": 0.9}
+  ]
+}
+```
+后续说明不应影响解析。
+"""
+
+        parsed = OpencodeClient._parse_json_payload(content)
+
+        self.assertEqual(parsed["decisions"][0]["candidateId"], "CAND-0001")
+
+    def test_extract_business_template_extraction_json_repairs_damaged_summary(self) -> None:
+        client = OpencodeClient()
+        response = {
+            "parts": [
+                {
+                    "type": "text",
+                    "text": (
+                        '{"schemaVersion":"bid-business-template-extractor-v1",'
+                        '"outputFile":"/tmp/business_template_extraction.json",'
+                        '"summary":{"templateCount":"2" broken}}'
+                    ),
+                }
+            ]
+        }
+        repaired = (
+            '{"schemaVersion":"bid-business-template-extractor-v1",'
+            '"outputFile":"/tmp/business_template_extraction.json",'
+            '"summary":{"templateCount":2,"warningCount":0}}'
+        )
+
+        with patch.object(client, "_repair_json_payload", return_value=repaired) as repair:
+            parsed = client._extract_business_template_extraction_json(response)
+
+        repair.assert_called_once()
+        self.assertEqual(parsed["summary"]["templateCount"], 2)
+
+    def test_extract_business_template_extraction_json_rejects_missing_output_and_summary(self) -> None:
+        client = OpencodeClient()
+        response = {"parts": [{"type": "text", "text": '{"schemaVersion":"bid-business-template-extractor-v1"}'}]}
+
+        with self.assertRaisesRegex(RuntimeError, "商务模板提取 JSON 结构不正确"):
+            client._extract_business_template_extraction_json(response)
+
+    def test_extract_business_template_extraction_json_accepts_summary_only(self) -> None:
+        client = OpencodeClient()
+        response = {
+            "parts": [
+                {
+                    "type": "text",
+                    "text": (
+                        '```json\n'
+                        '{"schemaVersion":"bid-business-template-extractor-v1",'
+                        '"summary":{"templateCount":1,"warningCount":0}}\n'
+                        '```'
+                    ),
+                }
+            ]
+        }
+
+        parsed = client._extract_business_template_extraction_json(response)
+
+        self.assertEqual(parsed["summary"]["templateCount"], 1)
+
     def test_extract_outline_json_accepts_v2_toc_items(self) -> None:
         client = OpencodeClient()
         response = {
@@ -294,11 +365,11 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(trace["modelId"], "deepseek-v4-pro")
         self.assertIn("reasoning_content", trace["failureReason"])
 
-    def test_decide_business_template_boundaries_with_trace_accepts_decision_file_summary(self) -> None:
+    def test_extract_business_templates_uses_btplnav_finalize_early_completion(self) -> None:
         client = OpencodeClient()
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-template-boundary"}),
+            patch.object(client, "create_session", return_value={"id": "ses-template-agentic"}),
             patch.object(
                 client,
                 "_send_prompt_with_session_polling",
@@ -307,65 +378,62 @@ class OpencodeClientTests(unittest.TestCase):
                         {
                             "type": "text",
                             "text": (
-                                '{"schemaVersion":"bid-business-template-extractor-boundary-decisions-v1",'
-                                '"decisionFiles":["/tmp/llm_boundary_decisions.json"],'
-                                '"summary":{"documentCount":1,"decisionCount":2,"rejectedCount":1}}'
+                                '{"schemaVersion":"bid-business-template-extractor-v1",'
+                                '"outputFile":"/tmp/business_template_extraction.json",'
+                                '"summary":{"templateCount":2,"warningCount":0}}'
                             ),
                         }
                     ]
                 },
             ) as send_prompt,
-            patch.object(client, "_build_output_trace", return_value={"sessionId": "ses-template-boundary"}),
+            patch.object(client, "_build_output_trace", return_value={"completionSource": "btplnav-finalize"}),
         ):
-            result = client.decide_business_template_boundaries_with_trace("prompt")
+            result = client.extract_business_templates_with_trace("prompt")
 
         send_prompt.assert_called_once()
-        self.assertEqual(result["decisionFiles"], ["/tmp/llm_boundary_decisions.json"])
-        self.assertEqual(result["summary"]["decisionCount"], 2)
-        self.assertEqual(result["opencodeOutput"]["sessionId"], "ses-template-boundary")
+        self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "btplnav-finalize")
+        self.assertEqual(result["summary"]["templateCount"], 2)
+        self.assertEqual(result["opencodeOutput"]["completionSource"], "btplnav-finalize")
 
-    def test_decide_business_template_boundaries_uses_btplbound_finalize_early_completion(self) -> None:
-        client = OpencodeClient()
-
-        with (
-            patch.object(client, "create_session", return_value={"id": "ses-template-boundary"}),
-            patch.object(
-                client,
-                "_send_prompt_with_session_polling",
-                return_value={
-                    "parts": [
-                        {
-                            "type": "text",
-                            "text": (
-                                '{"schemaVersion":"bid-business-template-extractor-boundary-decisions-v1",'
-                                '"decisionFiles":["/tmp/llm_boundary_decisions.json"],'
-                                '"summary":{"decisionCount":2,"acceptedTemplateCount":1}}'
-                            ),
-                        }
-                    ]
-                },
-            ) as send_prompt,
-            patch.object(client, "_build_output_trace", return_value={"completionSource": "btplbound-finalize"}),
-        ):
-            result = client.decide_business_template_boundaries_with_trace("prompt")
-
-        send_prompt.assert_called_once()
-        self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "btplbound-finalize")
-        self.assertEqual(result["summary"]["acceptedTemplateCount"], 1)
-        self.assertEqual(result["opencodeOutput"]["completionSource"], "btplbound-finalize")
-
-    def test_btplbound_non_finalize_commands_do_not_trigger_early_completion(self) -> None:
+    def test_btplnav_finalize_tool_output_is_terminal(self) -> None:
         final_output = (
-            '{"schemaVersion":"bid-business-template-extractor-boundary-decisions-v1",'
-            '"decisionFiles":["/tmp/llm_boundary_decisions.json"],'
-            '"summary":{"decisionCount":2,"acceptedTemplateCount":1}}'
+            '{"schemaVersion":"bid-business-template-extractor-v1",'
+            '"outputFile":"/data/parsed/PRJ/business_template_extraction/business_template_extraction.json",'
+            '"summary":{"templateCount":2,"warningCount":0}}'
+        )
+        messages = [
+            {
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "btplnav finalize /data/parsed/PRJ/business_template_extraction_manifest.json"},
+                            "exit": 0,
+                            "output": final_output,
+                        },
+                    }
+                ]
+            }
+        ]
+
+        output = OpencodeClient._find_completed_bash_tool_output(messages, "btplnav-finalize")
+
+        self.assertIn('"templateCount":2', output)
+
+    def test_btplnav_non_finalize_commands_do_not_trigger_early_completion(self) -> None:
+        final_output = (
+            '{"schemaVersion":"bid-business-template-extractor-v1",'
+            '"outputFile":"/data/parsed/PRJ/business_template_extraction/business_template_extraction.json",'
+            '"summary":{"templateCount":2,"warningCount":0}}'
         )
         for command in [
-            "btplbound status /data/parsed/PRJ/business_template_extraction_manifest.json",
-            "btplbound candidate-batch /data/parsed/PRJ/business_template_extraction_manifest.json next",
-            "btplbound candidate-decision /data/parsed/PRJ/business_template_extraction_manifest.json 1 /tmp/d.json",
-            "btplbound boundary-batch /data/parsed/PRJ/business_template_extraction_manifest.json next",
-            "btplbound boundary-decision /data/parsed/PRJ/business_template_extraction_manifest.json 1 /tmp/d.json",
+            "btplnav prepare /data/parsed/PRJ/business_template_extraction_manifest.json",
+            "btplnav overview /data/parsed/PRJ/business_template_extraction_manifest.json --page 1",
+            "btplnav submit /data/parsed/PRJ/business_template_extraction_manifest.json templates /tmp/templates.json",
+            "btplnav validate /data/parsed/PRJ/business_template_extraction_manifest.json",
+            "btplnav status /data/parsed/PRJ/business_template_extraction_manifest.json",
         ]:
             with self.subTest(command=command):
                 messages = [
@@ -385,11 +453,11 @@ class OpencodeClientTests(unittest.TestCase):
                     }
                 ]
 
-                output = OpencodeClient._find_completed_bash_tool_output(messages, "btplbound-finalize")
+                output = OpencodeClient._find_completed_bash_tool_output(messages, "btplnav-finalize")
 
                 self.assertEqual(output, "")
 
-    def test_btplbound_finalize_requires_terminal_json_output(self) -> None:
+    def test_btplnav_finalize_requires_terminal_json_output(self) -> None:
         messages = [
             {
                 "parts": [
@@ -398,8 +466,8 @@ class OpencodeClientTests(unittest.TestCase):
                         "tool": "bash",
                         "state": {
                             "status": "completed",
-                            "input": {"command": "btplbound finalize /data/parsed/PRJ/manifest.json"},
-                            "output": '{"status":"waiting","summary":{"candidate":{"decided":1}}}',
+                            "input": {"command": "btplnav finalize /data/parsed/PRJ/manifest.json"},
+                            "output": '{"status":"waiting","summary":{"templateCount":0}}',
                             "exit": 0,
                         },
                     },
@@ -408,11 +476,11 @@ class OpencodeClientTests(unittest.TestCase):
                         "tool": "bash",
                         "state": {
                             "status": "completed",
-                            "input": {"command": "btplbound finalize /data/parsed/PRJ/manifest.json"},
+                            "input": {"command": "btplnav finalize /data/parsed/PRJ/manifest.json"},
                             "output": (
-                                '{"schemaVersion":"bid-business-template-extractor-boundary-decisions-v1",'
-                                '"decisionFiles":["/tmp/llm_boundary_decisions.json"],'
-                                '"summary":{"decisionCount":2,"acceptedTemplateCount":1}}'
+                                '{"schemaVersion":"bid-business-template-extractor-v1",'
+                                '"outputFile":"/data/parsed/PRJ/business_template_extraction/business_template_extraction.json",'
+                                '"summary":{"templateCount":2,"warningCount":0}}'
                             ),
                             "exit": 0,
                         },
@@ -421,10 +489,10 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        output = OpencodeClient._find_completed_bash_tool_output(messages, "btplbound-finalize")
+        output = OpencodeClient._find_completed_bash_tool_output(messages, "btplnav-finalize")
 
-        self.assertIn('"decisionFiles"', output)
-        self.assertIn('"acceptedTemplateCount":1', output)
+        self.assertIn('"outputFile"', output)
+        self.assertIn('"templateCount":2', output)
 
     def test_extract_tender_parse_json_rejects_prepared_workflow_stage(self) -> None:
         client = OpencodeClient()
@@ -627,16 +695,16 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertIn('"workflowStage":"finalized"', response["parts"][0]["text"])
         self.assertGreaterEqual(list_session_messages.call_count, 2)
 
-    def test_btplbound_waits_for_finalize_after_prompt_timeout(self) -> None:
+    def test_btplnav_waits_for_finalize_after_prompt_timeout(self) -> None:
         client = OpencodeClient()
         finalize_output = (
-            '{"schemaVersion":"bid-business-template-extractor-boundary-decisions-v1",'
-            '"decisionFiles":["/data/parsed/PRJ/TEN-1/llm_boundary_decisions.json"],'
-            '"summary":{"decisionCount":11,"acceptedTemplateCount":11}}'
+            '{"schemaVersion":"bid-business-template-extractor-v1",'
+            '"outputFile":"/data/parsed/PRJ/business_template_extraction/business_template_extraction.json",'
+            '"summary":{"templateCount":11,"warningCount":0}}'
         )
-        candidate_messages = [
+        validation_messages = [
             {
-                "info": {"role": "assistant", "id": "msg-candidate"},
+                "info": {"role": "assistant", "id": "msg-validate"},
                 "parts": [
                     {
                         "type": "tool",
@@ -644,21 +712,17 @@ class OpencodeClientTests(unittest.TestCase):
                         "state": {
                             "status": "completed",
                             "input": {
-                                "command": (
-                                    "btplbound candidate-decision "
-                                    "/data/parsed/PRJ/business_template_extraction_manifest.json "
-                                    "3 /tmp/candidate_decision_batch_0003.json"
-                                )
+                                "command": "btplnav validate /data/parsed/PRJ/business_template_extraction_manifest.json"
                             },
                             "exit": 0,
-                            "output": '{"status":"accepted"}',
+                            "output": '{"status":"passed"}',
                         },
                     }
                 ],
             }
         ]
         finalized_messages = [
-            *candidate_messages,
+            *validation_messages,
             {
                 "info": {"role": "assistant", "id": "msg-finalize"},
                 "parts": [
@@ -668,10 +732,7 @@ class OpencodeClientTests(unittest.TestCase):
                         "state": {
                             "status": "completed",
                             "input": {
-                                "command": (
-                                    "btplbound finalize "
-                                    "/data/parsed/PRJ/business_template_extraction_manifest.json"
-                                )
+                                "command": "btplnav finalize /data/parsed/PRJ/business_template_extraction_manifest.json"
                             },
                             "exit": 0,
                             "output": finalize_output,
@@ -680,7 +741,7 @@ class OpencodeClientTests(unittest.TestCase):
                 ],
             },
         ]
-        snapshots = iter([candidate_messages, finalized_messages])
+        snapshots = iter([validation_messages, finalized_messages])
 
         def list_messages(session_id: str) -> list[dict]:
             try:
@@ -694,21 +755,21 @@ class OpencodeClientTests(unittest.TestCase):
             patch("app.services.opencode_client.time.sleep", return_value=None),
         ):
             response = client._send_prompt_with_session_polling(
-                "ses-template-boundary",
+                "ses-template-extraction",
                 "prompt",
-                early_tool_command="btplbound-finalize",
+                early_tool_command="btplnav-finalize",
             )
 
         self.assertTrue(response["_earlyCompletion"])
-        self.assertEqual(response["_completionSource"], "btplbound-finalize")
-        self.assertIn('"acceptedTemplateCount":11', response["parts"][0]["text"])
+        self.assertEqual(response["_completionSource"], "btplnav-finalize")
+        self.assertIn('"templateCount":11', response["parts"][0]["text"])
         self.assertGreaterEqual(list_session_messages.call_count, 2)
 
-    def test_btplbound_stalled_running_tool_reports_trace(self) -> None:
+    def test_btplnav_stalled_running_tool_reports_trace(self) -> None:
         client = OpencodeClient()
         messages = [
             {
-                "info": {"role": "assistant", "id": "msg-btplbound-running"},
+                "info": {"role": "assistant", "id": "msg-btplnav-running"},
                 "parts": [
                     {
                         "type": "tool",
@@ -716,10 +777,7 @@ class OpencodeClientTests(unittest.TestCase):
                         "state": {
                             "status": "running",
                             "input": {
-                                "command": (
-                                    "cat /tmp/boundary_batch_1.json | "
-                                    "python3 -c \"import json, sys; json.load(sys.stdin)\""
-                                )
+                                "command": "btplnav read /tmp/manifest.json DOC-1 100 180 --max-chars 4000"
                             },
                         },
                     }
@@ -728,16 +786,16 @@ class OpencodeClientTests(unittest.TestCase):
         ]
 
         with self.assertRaises(RuntimeError) as context:
-            client._raise_btplbound_opencode_stalled("ses-btplbound", messages, 30)
+            client._raise_template_finalize_opencode_stalled("ses-btplnav", messages, 30)
 
         exc = context.exception
         self.assertIn("opencode incomplete/stalled", str(exc))
         trace = getattr(exc, "opencode_trace")
         self.assertEqual(trace["status"], "stalled")
-        self.assertEqual(trace["sessionId"], "ses-btplbound")
+        self.assertEqual(trace["sessionId"], "ses-btplnav")
         self.assertEqual(trace["lastTool"], "bash")
         self.assertEqual(trace["lastToolStatus"], "running")
-        self.assertIn("boundary_batch_1.json", json.dumps(trace["lastToolInput"], ensure_ascii=False))
+        self.assertIn("btplnav read", json.dumps(trace["lastToolInput"], ensure_ascii=False))
 
     def test_s1_parse_stalled_running_read_reports_trace(self) -> None:
         client = OpencodeClient()

@@ -410,31 +410,18 @@ class OpencodeClient:
             "opencodeOutput": self._build_output_trace(session_id, response),
         }
 
-    def decide_business_template_boundaries_with_trace(
+    def extract_business_templates_with_trace(
         self,
         prompt_text: str,
     ) -> dict[str, Any]:
-        session = self.create_session("商务标模板边界裁决")
+        session = self.create_session("商务标模板自主提取")
         session_id = str(session.get("id") or "")
         response = self._send_prompt_with_session_polling(
             session_id,
             prompt_text,
-            early_tool_command="btplbound-finalize",
+            early_tool_command="btplnav-finalize",
         )
-        parsed = self._extract_business_template_boundary_json(response)
-        return {
-            **parsed,
-            "opencodeOutput": self._build_output_trace(session_id, response),
-        }
-
-    def decide_business_template_batch_with_trace(
-        self,
-        prompt_text: str,
-    ) -> dict[str, Any]:
-        session = self.create_session("Business template batch decision")
-        session_id = str(session.get("id") or "")
-        response = self._send_prompt_with_session_polling(session_id, prompt_text)
-        parsed = self._extract_business_template_batch_json(response)
+        parsed = self._extract_business_template_extraction_json(response)
         return {
             **parsed,
             "opencodeOutput": self._build_output_trace(session_id, response),
@@ -564,28 +551,17 @@ class OpencodeClient:
             raise RuntimeError("futurecode 返回的附件模板校验 JSON 结构不正确。")
         return parsed
 
-    def _extract_business_template_boundary_json(self, response: dict[str, Any]) -> dict[str, Any]:
+    def _extract_business_template_extraction_json(self, response: dict[str, Any]) -> dict[str, Any]:
         parsed = self._extract_json_response(
             response,
-            empty_message="futurecode 未返回商务模板边界裁决结果。",
-            repair_kind="business_template_boundary",
+            empty_message="futurecode 未返回商务模板提取结果。",
+            repair_kind="business_template_extraction",
         )
         if not isinstance(parsed, dict) or (
-            not isinstance(parsed.get("decisionFiles"), list)
+            not isinstance(parsed.get("outputFile"), str)
             and not isinstance(parsed.get("summary"), dict)
-            and not isinstance(parsed.get("decisions"), list)
         ):
-            raise RuntimeError("futurecode 返回的商务模板边界裁决 JSON 结构不正确。")
-        return parsed
-
-    def _extract_business_template_batch_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
-            response,
-            empty_message="futurecode did not return business template batch decisions.",
-            repair_kind="business_template_boundary",
-        )
-        if not isinstance(parsed, dict) or not isinstance(parsed.get("decisions"), list):
-            raise RuntimeError("futurecode business template batch JSON must contain decisions[].")
+            raise RuntimeError("futurecode 返回的商务模板提取 JSON 结构不正确。")
         return parsed
 
     def _extract_table_fill_json(self, response: dict[str, Any]) -> dict[str, Any]:
@@ -688,8 +664,8 @@ class OpencodeClient:
             elif time.monotonic() - last_activity > idle_timeout:
                 if early_tool_command == "s1parse-finalize":
                     self._raise_s1_opencode_stalled(session_id, self.list_session_messages(session_id), idle_timeout)
-                if early_tool_command == "btplbound-finalize":
-                    self._raise_btplbound_opencode_stalled(
+                if early_tool_command == "btplnav-finalize":
+                    self._raise_template_finalize_opencode_stalled(
                         session_id,
                         self.list_session_messages(session_id),
                         idle_timeout,
@@ -834,10 +810,10 @@ class OpencodeClient:
             if pending_response:
                 return pending_response
 
-        if early_tool_command == "btplbound-finalize":
+        if early_tool_command == "btplnav-finalize":
             messages = self.list_session_messages(session_id)
             self._raise_session_error_if_present(session_id, messages)
-            pending_response = self._wait_for_btplbound_finalize_after_prompt_return(
+            pending_response = self._wait_for_template_finalize_after_prompt_return(
                 session_id=session_id,
                 idle_timeout=idle_timeout,
                 stream_callback=stream_callback,
@@ -923,13 +899,14 @@ class OpencodeClient:
         self._raise_s1_opencode_stalled(session_id, messages, idle_timeout)
         return None
 
-    def _wait_for_btplbound_finalize_after_prompt_return(
+    def _wait_for_template_finalize_after_prompt_return(
         self,
         *,
         session_id: str,
         idle_timeout: float,
         stream_callback: Callable[[dict[str, Any]], None] | None,
     ) -> dict[str, Any] | None:
+        early_tool_command = "btplnav-finalize"
         messages: list[dict[str, Any]] = []
         last_signature: tuple[str, tuple[tuple[str, str], ...]] | None = None
         deadline = time.monotonic() + idle_timeout
@@ -937,14 +914,14 @@ class OpencodeClient:
         while time.monotonic() < deadline:
             messages = self.list_session_messages(session_id)
             self._raise_session_error_if_present(session_id, messages)
-            tool_output = self._find_completed_bash_tool_output(messages, "btplbound-finalize")
+            tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
             if tool_output:
                 snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
                 trace_parts = list(snapshot.get("parts") or [])
                 trace_parts.append(
                     {
                         "type": "text",
-                        "text": "btplbound finalize 已完成，后端使用 finalize stdout 作为模板边界裁决结果。",
+                        "text": f"{early_tool_command} 已完成，后端使用 finalize stdout 作为模板提取结果。",
                     }
                 )
                 early_response = self._tool_output_response(
@@ -952,7 +929,7 @@ class OpencodeClient:
                     output=tool_output,
                     trace_parts=trace_parts,
                 )
-                early_response["_completionSource"] = "btplbound-finalize"
+                early_response["_completionSource"] = early_tool_command
                 if stream_callback is not None:
                     stream_callback(
                         {
@@ -963,7 +940,7 @@ class OpencodeClient:
                             "receivedAt": early_response["_traceReceivedAt"],
                             "parts": self._normalize_output_parts(trace_parts),
                             "earlyCompletion": True,
-                            "completionSource": "btplbound-finalize",
+                            "completionSource": early_tool_command,
                         }
                     )
                 return early_response
@@ -986,7 +963,7 @@ class OpencodeClient:
                     )
             time.sleep(0.5)
 
-        self._raise_btplbound_opencode_stalled(session_id, messages, idle_timeout)
+        self._raise_template_finalize_opencode_stalled(session_id, messages, idle_timeout)
         return None
 
     def _emit_session_output_delta(
@@ -1117,8 +1094,8 @@ class OpencodeClient:
         first_word = Path(words[0]).name
         if expected == "s1parse-finalize":
             return first_word in {"s1parse", "s1parse_router.py"} and len(words) >= 3 and words[1] == "finalize"
-        if expected == "btplbound-finalize":
-            return first_word in {"btplbound", "btplbound_workflow.py"} and len(words) >= 3 and words[1] == "finalize"
+        if expected == "btplnav-finalize":
+            return first_word in {"btplnav", "run_from_manifest.py"} and len(words) >= 3 and words[1] == "finalize"
         return first_word == expected
 
     @staticmethod
@@ -1134,16 +1111,16 @@ class OpencodeClient:
         return stage == "finalized"
 
     @staticmethod
-    def _btplbound_finalize_output_is_terminal(output: str) -> bool:
+    def _btplnav_finalize_output_is_terminal(output: str) -> bool:
         if not OpencodeClient._looks_like_json_object(output):
             return False
         try:
             parsed = OpencodeClient._parse_json_payload(output)
         except RuntimeError:
             return False
-        if parsed.get("schemaVersion") != "bid-business-template-extractor-boundary-decisions-v1":
+        if parsed.get("schemaVersion") != "bid-business-template-extractor-v1":
             return False
-        return isinstance(parsed.get("decisionFiles"), list) and isinstance(parsed.get("summary"), dict)
+        return isinstance(parsed.get("outputFile"), str) and isinstance(parsed.get("summary"), dict)
 
     @staticmethod
     def _find_completed_bash_tool_output(
@@ -1176,8 +1153,8 @@ class OpencodeClient:
                     if OpencodeClient._s1_finalize_output_is_terminal(output):
                         return output
                     continue
-                if expected == "btplbound-finalize":
-                    if OpencodeClient._btplbound_finalize_output_is_terminal(output):
+                if expected == "btplnav-finalize":
+                    if OpencodeClient._btplnav_finalize_output_is_terminal(output):
                         return output
                     continue
                 if output and OpencodeClient._looks_like_json_object(output):
@@ -1213,8 +1190,6 @@ class OpencodeClient:
     @staticmethod
     def _session_polling_idle_timeout(early_tool_command: str = "") -> float:
         timeout = max(120.0, min(float(settings.opencode_timeout_sec), 900.0))
-        if early_tool_command == "btplbound-finalize":
-            return min(timeout, 120.0)
         return timeout
 
     def _build_tool_stalled_trace(
@@ -1256,7 +1231,7 @@ class OpencodeClient:
             command_label="s1parse finalize",
         )
 
-    def _build_btplbound_stalled_trace(
+    def _build_template_finalize_stalled_trace(
         self,
         session_id: str,
         messages: list[dict[str, Any]],
@@ -1266,7 +1241,7 @@ class OpencodeClient:
             session_id=session_id,
             messages=messages,
             idle_timeout=idle_timeout,
-            command_label="btplbound finalize",
+            command_label="btplnav finalize",
         )
 
     def _raise_s1_opencode_stalled(
@@ -1286,13 +1261,13 @@ class OpencodeClient:
         setattr(error, "opencode_trace", trace)
         raise error
 
-    def _raise_btplbound_opencode_stalled(
+    def _raise_template_finalize_opencode_stalled(
         self,
         session_id: str,
         messages: list[dict[str, Any]],
         idle_timeout: float,
     ) -> None:
-        trace = self._build_btplbound_stalled_trace(session_id, messages, idle_timeout)
+        trace = self._build_template_finalize_stalled_trace(session_id, messages, idle_timeout)
         last_tool = str(trace.get("lastTool") or "unknown")
         last_status = str(trace.get("lastToolStatus") or "unknown")
         last_input = self._shorten_text(json.dumps(trace.get("lastToolInput") or {}, ensure_ascii=False), limit=260)
@@ -1424,14 +1399,55 @@ class OpencodeClient:
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
-            start = cleaned.find("{")
-            end = cleaned.rfind("}")
-            if start == -1 or end == -1 or end <= start:
+            last_error: json.JSONDecodeError | None = None
+            candidates = OpencodeClient._balanced_json_object_candidates(cleaned)
+            if cleaned.startswith("{"):
+                candidates = [candidate for start, candidate in candidates if start == 0]
+            else:
+                candidates = [candidate for _start, candidate in candidates]
+            for candidate in candidates:
+                try:
+                    parsed = json.loads(candidate)
+                except json.JSONDecodeError as exc:
+                    last_error = exc
+                    continue
+                if isinstance(parsed, dict):
+                    return parsed
+            if "{" not in cleaned or "}" not in cleaned:
                 raise RuntimeError("futurecode 返回内容里没有可解析的 JSON。")
-            try:
-                return json.loads(cleaned[start : end + 1])
-            except json.JSONDecodeError as exc:  # pragma: no cover
-                raise RuntimeError("futurecode 返回的 JSON 无法解析。") from exc
+            if last_error is not None:
+                raise RuntimeError("futurecode 返回的 JSON 无法解析。") from last_error
+            raise RuntimeError("futurecode 返回内容里没有完整的 JSON 对象。")
+
+    @staticmethod
+    def _balanced_json_object_candidates(text: str) -> list[tuple[int, str]]:
+        candidates: list[tuple[int, str]] = []
+        for start, char in enumerate(text):
+            if char != "{":
+                continue
+            depth = 0
+            in_string = False
+            escaped = False
+            for index in range(start, len(text)):
+                current = text[index]
+                if in_string:
+                    if escaped:
+                        escaped = False
+                    elif current == "\\":
+                        escaped = True
+                    elif current == '"':
+                        in_string = False
+                    continue
+                if current == '"':
+                    in_string = True
+                elif current == "{":
+                    depth += 1
+                elif current == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidates.append((start, text[start : index + 1]))
+                        break
+        return candidates
 
     @staticmethod
     def _looks_like_json_object(content: str) -> bool:
@@ -1563,12 +1579,6 @@ class OpencodeClient:
                 '{"decisions":[{"id":"APPX-0001","action":"accept|review|reject",'
                 '"templateType":"bid_letter","quality":"complete|probably_incomplete|title_only",'
                 '"reason":"一句简短原因"}]}'
-            )
-        elif repair_kind == "business_template_boundary":
-            schema_hint = (
-                '{"schemaVersion":"bid-business-template-extractor-boundary-decisions-v1",'
-                '"decisionFiles":["/data/parsed/PRJ-0001/business_template_extraction/DOC-1/llm_boundary_decisions.json"],'
-                '"summary":{"documentCount":1,"decisionCount":1,"rejectedCount":0}}'
             )
         elif repair_kind == "table_fill":
             schema_hint = (
