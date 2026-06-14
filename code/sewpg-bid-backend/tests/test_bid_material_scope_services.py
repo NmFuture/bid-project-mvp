@@ -2459,6 +2459,56 @@ def test_project_fact_material_download_uses_workspace_material_stores() -> None
     assert not re.search(r"(?<![A-Za-z_])material_store\.raw_download", source)
 
 
+def test_project_fact_material_download_supports_performance_package(tmp_path) -> None:
+    from app.services.project_fact_materials import prepare_project_fact_material_files
+
+    async def fake_download_item_attachment(category_id: str, item_id: str, attachment_id: str) -> dict[str, str]:
+        assert category_id == "PERCAT-0011"
+        assert item_id == "PERITEM-0268"
+        assert attachment_id == "PERITEMATT-0118"
+        return {
+            "fileName": "001-华电新疆喀什_合同.docx",
+            "bucket": "mock-bucket",
+            "key": "performance-categories/PERCAT-0011/item-contracts/PERITEM-0268/doc.docx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+
+    def fake_download_file(bucket: str, key: str, target_path) -> None:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(b"performance-package-docx")
+
+    material_index = [
+        {
+            "id": "PERITEM-0268",
+            "materialId": "PERITEM-0268",
+            "categoryId": "PERCAT-0011",
+            "name": "华电新疆喀什 2x66 万千瓦",
+            "sourceType": "performance_package",
+            "candidateType": "performance_item",
+            "attachments": [{"id": "PERITEMATT-0118", "itemId": "PERITEM-0268", "categoryId": "PERCAT-0011"}],
+        }
+    ]
+
+    with patch(
+        "app.services.performance_material_resolver.performance_package_service.download_item_attachment",
+        side_effect=fake_download_item_attachment,
+    ), patch(
+        "app.services.project_fact_materials.business_material_store.raw_download_content",
+        side_effect=AssertionError("performance package must not use raw material downloads"),
+    ), patch(
+        "app.services.project_fact_materials.business_material_store.raw_download_cleaned_content",
+        side_effect=AssertionError("performance package must not use raw cleaned material downloads"),
+    ), patch(
+        "app.services.project_fact_materials.minio_client.download_file",
+        side_effect=fake_download_file,
+    ):
+        prepared = prepare_project_fact_material_files(material_index, tmp_path, bid_type="商务标")
+
+    assert prepared[0]["sourceKind"] == "performance_package_item"
+    assert prepared[0]["fileName"] == "PERITEM-0268-001-华电新疆喀什_合同.docx"
+    assert Path(prepared[0]["path"]).exists()
+
+
 def test_ocr_routes_are_workspace_scoped() -> None:
     router_source = Path("app/api/router.py").read_text(encoding="utf-8")
     business_source = Path("app/api/routes/business.py").read_text(encoding="utf-8")
@@ -4379,6 +4429,98 @@ def test_business_gap_select_material_stays_in_business_service() -> None:
     assert payload["artifact"]["businessMaterialKind"] == "fixed"
     feedback = store._require(project_id)["business_gap_state"]["materialFeedback"]
     assert feedback[0]["materialId"] == "RAW-BIZ-001"
+
+
+def test_business_gap_select_performance_package_uses_performance_service() -> None:
+    project_id = _seed_business_gap_project(
+        {
+            "schemaVersion": "bid-business-gap-plan-v1",
+            "tocRefs": [{"nodeId": "TOC-1", "title": "业绩情况表", "taskIds": ["BTASK-001"], "status": "partial"}],
+            "tasks": [
+                {
+                    "id": "BTASK-001",
+                    "title": "近年类似项目业绩表",
+                    "taskType": "performance",
+                    "decision": "material_required",
+                    "status": "needs_input",
+                    "moduleKey": "performance_cooperation_support",
+                    "candidateMaterials": [],
+                    "selectedMaterialRefs": [],
+                    "resolvedArtifacts": [],
+                    "riskFlags": ["missing_material"],
+                }
+            ],
+            "summary": {},
+        }
+    )
+
+    async def fake_download_item_attachment(category_id: str, item_id: str, attachment_id: str) -> dict[str, str]:
+        assert category_id == "PERCAT-0011"
+        assert item_id == "PERITEM-0268"
+        assert attachment_id == "PERITEMATT-0118"
+        return {
+            "fileName": "001-华电新疆喀什_合同.docx",
+            "bucket": "mock-bucket",
+            "key": "performance-categories/PERCAT-0011/item-contracts/PERITEM-0268/doc.docx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+
+    def fake_download_file(bucket: str, key: str, target_path) -> None:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(b"performance-package-docx")
+
+    with patch(
+        "app.services.performance_material_resolver.performance_package_service.download_item_attachment",
+        side_effect=fake_download_item_attachment,
+    ), patch(
+        "app.services.business_gap_service.business_material_store.raw_download_cleaned_content",
+        side_effect=AssertionError("performance package must not use raw cleaned material downloads"),
+    ), patch(
+        "app.services.business_gap_service.business_material_store.raw_download_content",
+        side_effect=AssertionError("performance package must not use raw material downloads"),
+    ), patch(
+        "app.services.business_gap_service.minio_client.download_file",
+        side_effect=fake_download_file,
+    ):
+        payload = asyncio.run(
+            business_gap_service.select_material(
+                project_id,
+                "BTASK-001",
+                _DummyRequest(),
+                {
+                    "materials": [
+                        {
+                            "materialId": "PERITEM-0268",
+                            "categoryId": "PERCAT-0011",
+                            "materialName": "华电新疆喀什 2x66 万千瓦",
+                            "folderPath": "业绩库/陆上6MW业绩",
+                            "materialTier": "standard",
+                            "businessMaterialKind": "performance",
+                            "businessMaterialKindLabel": "共用业绩",
+                            "sourceType": "performance_package",
+                            "candidateType": "performance_item",
+                            "attachments": [
+                                {
+                                    "id": "PERITEMATT-0118",
+                                    "categoryId": "PERCAT-0011",
+                                    "itemId": "PERITEM-0268",
+                                    "attachmentType": "contract_item",
+                                    "fileName": "001-华电新疆喀什_合同.docx",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
+        )
+
+    assert payload["task"]["status"] == "ready"
+    assert payload["selectedMaterialRefs"][0]["sourceType"] == "performance_package"
+    assert payload["artifact"]["materialSourceType"] == "performance_package"
+    assert payload["artifact"]["sourceKind"] == "performance_package_item"
+    assert payload["artifact"]["sourceType"] == "performance_package"
+    assert "华电新疆喀什_合同" in payload["artifact"]["fileName"]
+    assert payload["artifact"]["fileName"].endswith(".docx")
 
 
 def test_business_gap_select_non_fixed_material_counts_as_manual_supplement() -> None:

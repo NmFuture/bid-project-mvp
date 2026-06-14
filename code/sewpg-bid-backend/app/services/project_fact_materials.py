@@ -7,6 +7,10 @@ from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type
 from app.services.business_material_store import business_material_store
 from app.services.file_utils import run_awaitable_sync, safe_filename
 from app.services.minio_client import minio_client
+from app.services.performance_material_resolver import (
+    downloadable_performance_material_payload,
+    is_performance_material,
+)
 from app.services.technical_material_store import technical_material_store
 
 
@@ -20,7 +24,13 @@ def _scoped_material_store(bid_type: str):
     return technical_material_store
 
 
-async def _downloadable_project_fact_material_payload(material_id: str, bid_type: str) -> tuple[dict[str, Any], str]:
+async def _downloadable_project_fact_material_payload(
+    material_id: str,
+    bid_type: str,
+    material: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], str]:
+    if is_performance_material(material or {"id": material_id}):
+        return await downloadable_performance_material_payload({**(material or {}), "id": material_id})
     scoped_store = _scoped_material_store(bid_type)
     try:
         payload = await scoped_store.raw_download_cleaned_content(material_id)
@@ -48,7 +58,7 @@ def prepare_project_fact_material_files(
         if not material_id:
             prepared.append(item)
             continue
-        awaitable = _downloadable_project_fact_material_payload(material_id, bid_type)
+        awaitable = _downloadable_project_fact_material_payload(material_id, bid_type, item)
         try:
             payload, source_kind = run_awaitable_sync(awaitable)
         except Exception:
