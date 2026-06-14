@@ -76,7 +76,12 @@ from app.services.bid_runtime_state import now_iso
 from app.services.file_utils import safe_filename
 from app.services.material_folder_scope import project_material_root_path
 from app.services.minio_client import minio_client
-from app.services.performance_library_service import performance_library_service
+from app.services.performance_material_resolver import (
+    downloadable_performance_material_payload,
+    is_performance_download_source_kind,
+    is_performance_material,
+    performance_material_source_type,
+)
 from app.services.url_utils import onlyoffice_backend_base_url
 from app.services.workspace_artifacts import business_workspace_dir
 
@@ -519,7 +524,7 @@ class BusinessGapService:
                         "name": "当前用户",
                     },
                 },
-                "message": "已生成业绩 Word 预览。" if source_kind == "performance_library" else "已生成原素材 OnlyOffice 预览。",
+                "message": "已生成业绩 Word 预览。" if is_performance_download_source_kind(source_kind) else "已生成原素材 OnlyOffice 预览。",
             }
 
         return {
@@ -535,22 +540,19 @@ class BusinessGapService:
 
     @staticmethod
     def _is_performance_material(material: dict[str, Any] | None) -> bool:
-        if not isinstance(material, dict):
-            return False
-        material_id = str(material.get("id") or material.get("materialId") or "")
-        return str(material.get("sourceType") or "") == "performance_library" or material_id.startswith("PERF-")
+        return is_performance_material(material)
 
     @staticmethod
     async def _material_preview_download_payload(material: dict[str, Any]) -> tuple[dict[str, Any], str]:
         material_id = str(material.get("id") or material.get("materialId") or "")
         if BusinessGapService._is_performance_material(material):
-            return await performance_library_service.download_word(material_id), "performance_library"
+            return await downloadable_performance_material_payload({**material, "id": material_id})
         return await business_material_store.raw_download_content(material_id), "raw"
 
     @staticmethod
     async def _business_material_download_payload(material_id: str, material: dict[str, Any] | None = None) -> tuple[dict[str, Any], str]:
         if BusinessGapService._is_performance_material(material or {"id": material_id}):
-            return await performance_library_service.download_word(material_id), "performance_library"
+            return await downloadable_performance_material_payload({**(material or {}), "id": material_id})
         try:
             payload = await business_material_store.raw_download_cleaned_content(material_id)
             return payload, "cleaned"
@@ -1082,7 +1084,12 @@ class BusinessGapService:
                     readable_material = self._readable_material(project_id, material_id)
                     material_context = {**readable_material, **material_context}
                 except Exception:
-                    material_context = {**material_context, "id": material_id, "sourceType": "performance_library"}
+                    material_context = {
+                        **material_context,
+                        "id": material_id,
+                        "sourceType": str(material_context.get("sourceType") or "")
+                        or performance_material_source_type({**material_context, "id": material_id}),
+                    }
             raw_payload, source_kind = await self._business_material_download_payload(material_id, material_context)
             raw_name = safe_filename(
                 str(raw_payload.get("fileName") or material_context.get("materialName") or material_context.get("name") or f"{material_id}.bin"),
@@ -1092,7 +1099,7 @@ class BusinessGapService:
             minio_client.download_file(str(raw_payload["bucket"]), str(raw_payload["key"]), target_path)
             mime_type = str(raw_payload.get("mimeType") or mimetypes.guess_type(target_path.name)[0] or "application/octet-stream")
             cleaned_snapshot: dict[str, Any] = {}
-            if source_kind != "performance_library":
+            if not is_performance_download_source_kind(source_kind):
                 try:
                     cleaned_payload = await business_material_store.raw_download_cleaned_content(material_id)
                     cleaned_name = safe_filename(
@@ -1142,7 +1149,7 @@ class BusinessGapService:
                     {**material_context, "fileName": target_path.name, "mimeType": mime_type},
                 ),
                 "materialUsage": str(material_context.get("wikiUsageMode") or ""),
-                "materialSourceType": "performance_library" if source_kind == "performance_library" else "material_library",
+                "materialSourceType": str(material_context.get("sourceType") or "") if is_performance_download_source_kind(source_kind) else "material_library",
                 "materialId": material_id,
                 "materialName": ref["materialName"],
                 "folderPath": ref["folderPath"],
