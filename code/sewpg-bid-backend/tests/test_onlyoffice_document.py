@@ -230,7 +230,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
     def test_document_session_uses_docker_reachable_urls_for_local_dev(self) -> None:
         project_id = self.create_project()
 
-        with patch("app.api.utils.detect_lan_ip", return_value="192.168.31.148"):
+        with patch("app.services.url_utils.detect_lan_ip", return_value="192.168.31.148"):
             response = self.client.get(f"/api/technical/projects/{project_id}/document")
 
         self.assertEqual(response.status_code, 200)
@@ -245,7 +245,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
 
         project_id = self.create_project()
 
-        with patch("app.api.utils.detect_lan_ip", return_value=""):
+        with patch("app.services.url_utils.detect_lan_ip", return_value=""):
             response = self.client.get(f"/api/technical/projects/{project_id}/document")
 
         self.assertEqual(response.status_code, 200)

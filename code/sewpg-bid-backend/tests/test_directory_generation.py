@@ -27,6 +27,17 @@ from app.services.store import store
 from app.services.workspace_artifacts import business_workspace_dir, technical_workspace_dir
 
 
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
+
+def skill_script_path(skill_name: str, script_name: str) -> Path:
+    for root_name in ("skills", "skill"):
+        candidate = BACKEND_ROOT / "opencode" / root_name / skill_name / "scripts" / script_name
+        if candidate.exists():
+            return candidate
+    return BACKEND_ROOT / "opencode" / "skills" / skill_name / "scripts" / script_name
+
+
 class DirectoryGenerationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -666,14 +677,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         import importlib.util
         import sys
 
-        script_path = (
-            Path(__file__).resolve().parents[1]
-            / "opencode"
-            / "skill"
-            / "bid-business-outline-generator"
-            / "scripts"
-            / "run_from_manifest.py"
-        )
+        script_path = skill_script_path("bid-business-outline-generator", "run_from_manifest.py")
         spec = importlib.util.spec_from_file_location("business_outline_runner_input_only_test", script_path)
         runner = importlib.util.module_from_spec(spec)
         assert spec and spec.loader
@@ -1133,14 +1137,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         import importlib.util
         import sys
 
-        script_path = (
-            Path(__file__).resolve().parents[1]
-            / "opencode"
-            / "skill"
-            / "bid-tech-outline-generator"
-            / "scripts"
-            / "run_from_manifest.py"
-        )
+        script_path = skill_script_path("bid-tech-outline-generator", "run_from_manifest.py")
         spec = importlib.util.spec_from_file_location("outline_runner_for_shift_test", script_path)
         outline_runner = importlib.util.module_from_spec(spec)
         assert spec and spec.loader
