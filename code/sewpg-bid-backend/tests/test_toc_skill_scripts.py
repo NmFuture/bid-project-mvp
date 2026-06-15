@@ -17,48 +17,23 @@ from docx.oxml.ns import qn
 from openpyxl import Workbook
 
 
-ASSEMBLER_SCRIPT_DIR = (
-    Path(__file__).resolve().parents[1]
-    / "opencode"
-    / "skill"
-    / "bid-tech-assembler"
-    / "scripts"
-)
-OUTLINE_SCRIPT_DIR = (
-    Path(__file__).resolve().parents[1]
-    / "opencode"
-    / "skill"
-    / "bid-tech-outline-generator"
-    / "scripts"
-)
-WIKI_SCRIPT_DIR = (
-    Path(__file__).resolve().parents[1]
-    / "opencode"
-    / "skill"
-    / "bid-tech-wiki-material-builder"
-    / "scripts"
-)
-GAP_PLANNER_SCRIPT_DIR = (
-    Path(__file__).resolve().parents[1]
-    / "opencode"
-    / "skill"
-    / "bid-tech-gap-planner"
-    / "scripts"
-)
-TABLE_FILLER_SCRIPT_DIR = (
-    Path(__file__).resolve().parents[1]
-    / "opencode"
-    / "skill"
-    / "bid-tech-table-filler"
-    / "scripts"
-)
-WORD_FILLER_SCRIPT_DIR = (
-    Path(__file__).resolve().parents[1]
-    / "opencode"
-    / "skill"
-    / "bid-tech-word-placeholder-filler"
-    / "scripts"
-)
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
+
+def skill_script_dir(skill_name: str) -> Path:
+    for root_name in ("skills", "skill"):
+        candidate = BACKEND_ROOT / "opencode" / root_name / skill_name / "scripts"
+        if candidate.exists():
+            return candidate
+    return BACKEND_ROOT / "opencode" / "skills" / skill_name / "scripts"
+
+
+ASSEMBLER_SCRIPT_DIR = skill_script_dir("bid-tech-assembler")
+OUTLINE_SCRIPT_DIR = skill_script_dir("bid-tech-outline-generator")
+WIKI_SCRIPT_DIR = skill_script_dir("bid-tech-wiki-material-builder")
+GAP_PLANNER_SCRIPT_DIR = skill_script_dir("bid-tech-gap-planner")
+TABLE_FILLER_SCRIPT_DIR = skill_script_dir("bid-tech-table-filler")
+WORD_FILLER_SCRIPT_DIR = skill_script_dir("bid-tech-word-placeholder-filler")
 
 
 def load_assembler_script(name: str):

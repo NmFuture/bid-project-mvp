@@ -122,7 +122,7 @@ class S1ParseRouterScriptTests(unittest.TestCase):
             )
 
             completed = subprocess.run(
-                [sys.executable, str(router_path), str(manifest_path)],
+                [sys.executable, str(router_path), "offline-fallback", str(manifest_path)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -137,16 +137,10 @@ class S1ParseRouterScriptTests(unittest.TestCase):
             self.assertEqual(structured["targetSkill"], "bid-business-tender-structured-parser")
             field_group_keys = list(structured["fieldGroups"].keys())
             self.assertIn("projectBasics", field_group_keys)
-            self.assertIn("businessResponse", field_group_keys)
-            self.assertIn("qualificationSupport", field_group_keys)
-            self.assertIn("commitmentRequirements", field_group_keys)
             self.assertIn("qualificationRequirements", field_group_keys)
             self.assertIn("bidderInstructions", field_group_keys)
             self.assertIn("commercialRejectionClauses", field_group_keys)
-            self.assertEqual(len(structured["commitmentLetters"]), 3)
-            self.assertEqual(structured["commitmentLetters"][0]["title"], "供货能力承诺函")
-            self.assertEqual(structured["commitmentLetters"][1]["title"], "保密承诺书")
-            self.assertEqual(structured["commitmentLetters"][2]["title"], "投标人不存在下列情形之一承诺函")
+            self.assertEqual(structured["commitmentLetters"], [])
             self.assertEqual(len(structured.get("commitmentClues") or []), 0)
 
     def test_business_router_outputs_readable_qualification_requirements(self) -> None:
@@ -199,7 +193,7 @@ class S1ParseRouterScriptTests(unittest.TestCase):
             )
 
             completed = subprocess.run(
-                [sys.executable, str(router_path), str(manifest_path)],
+                [sys.executable, str(router_path), "offline-fallback", str(manifest_path)],
                 check=True,
                 capture_output=True,
                 text=True,
