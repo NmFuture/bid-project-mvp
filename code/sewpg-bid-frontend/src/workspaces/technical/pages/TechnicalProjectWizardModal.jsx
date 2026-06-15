@@ -1,23 +1,25 @@
 import { useEffect, useMemo, useState } from 'react'
-import { technicalMaterialsAPI, technicalProjectsAPI } from '../../../api'
+import { technicalMaterialsAPI, technicalProjectInfoOptionsAPI, technicalProjectsAPI } from '../../../api'
 import Button from '../../../components/ui/Button'
+import {
+  STATIC_FOUNDATION_TYPE_OPTIONS,
+  STATIC_PROJECT_INFO_OPTIONS,
+  loadProjectInfoOptions,
+} from '../../shared/projectInfoOptions'
+import {
+  buildPrimaryTurbineModel,
+  cleanTurbineModelRows,
+  createTurbineModelRow,
+  isPositiveIntegerText,
+  mergeOptionValues,
+  normalizeTurbineModelRows,
+} from '../../shared/projectInfoForm'
 
-const MANUAL_TURBINE_VALUE = '__manual_turbine_model__'
 const TECHNICAL_BID_TYPE = '技术标'
 const TECHNICAL_BID_TYPE_OPTIONS = [TECHNICAL_BID_TYPE]
 const TECHNICAL_PROJECT_WIZARD_DRAFT_VERSION = 1
 const TECHNICAL_PROJECT_WIZARD_DRAFT_PREFIX = 'sewpg.technicalProjectWizardDraft'
 const FORM_REQUIRED_STEP = 0
-
-const normalizeCustomers = (list = []) =>
-  (Array.isArray(list) ? list : [])
-    .map((item) => ({
-      id: String(item?.customerId || item?.id || item?.name || '').trim(),
-      customerId: String(item?.customerId || item?.id || '').trim(),
-      name: String(item?.customerCanonicalName || item?.name || item?.label || item?.id || '').trim(),
-      aliases: Array.isArray(item?.aliases) ? item.aliases : [],
-    }))
-    .filter((item) => item.id && item.name)
 
 const normalizeMaterialProjects = (list = []) =>
   (Array.isArray(list) ? list : [])
@@ -32,36 +34,6 @@ const normalizeMaterialProjects = (list = []) =>
     }))
     .filter((item) => item.id && item.name)
 
-const normalizeTurbineModel = (value = null) => {
-  if (!value) return { model: '', platform: '', layout: '', ratedPowerKw: '', rotorDiameterM: '', status: '', statusLabel: '', source: '', aliases: [] }
-  const item = typeof value === 'string' ? { model: value } : value
-  return {
-    id: String(item?.id || item?.model || '').trim(),
-    model: String(item?.model || item?.turbineModel || item?.name || '').trim(),
-    platform: String(item?.platform || item?.turbinePlatform || '').trim(),
-    layout: String(item?.layout || '').trim(),
-    ratedPowerKw: item?.ratedPowerKw || '',
-    rotorDiameterM: item?.rotorDiameterM || '',
-    status: String(item?.status || '').trim(),
-    statusLabel: String(item?.statusLabel || '').trim(),
-    source: String(item?.source || '').trim(),
-    sourceFileId: String(item?.sourceFileId || '').trim(),
-    sourceFileName: String(item?.sourceFileName || '').trim(),
-    aliases: Array.isArray(item?.aliases) ? item.aliases : [],
-  }
-}
-
-const turbineModelLabel = (item = {}) => {
-  const parts = [
-    item.platform,
-    item.ratedPowerKw ? `${item.ratedPowerKw}kW` : '',
-    item.rotorDiameterM ? `叶轮${item.rotorDiameterM}m` : '',
-    item.layout,
-    item.statusLabel,
-  ].filter(Boolean)
-  return `${item.model}${parts.length ? `（${parts.join(' / ')}）` : ''}`
-}
-
 const buildInitialForm = (project = null, defaultBidType = '') => ({
   projectCode: String(project?.projectCode || ''),
   name: String(project?.name || ''),
@@ -71,7 +43,7 @@ const buildInitialForm = (project = null, defaultBidType = '') => ({
   materialProjectName: String(project?.materialProjectName || ''),
   manager: String(project?.manager || ''),
   bidType: String(project?.bidType || defaultBidType || ''),
-  turbineModel: normalizeTurbineModel(project?.turbineModel || project?.selectedTurbineModel),
+  turbineModels: normalizeTurbineModelRows(project),
   startDate: String(project?.startDate || ''),
   endDate: String(project?.endDate || project?.deadline || ''),
 })
@@ -93,12 +65,11 @@ const readDraft = (key) => {
       step: FORM_REQUIRED_STEP,
       form: {
         ...parsed.form,
-        turbineModel: normalizeTurbineModel(parsed.form.turbineModel),
+        turbineModels: Array.isArray(parsed.form.turbineModels)
+          ? parsed.form.turbineModels.map(createTurbineModelRow)
+          : normalizeTurbineModelRows(parsed.form),
       },
-      turbineEntryMode: parsed.turbineEntryMode === 'manual' ? 'manual' : 'library',
-      customerMode: parsed.customerMode === 'library' ? 'library' : 'ordinary',
       materialProjectMode: parsed.materialProjectMode === 'library' ? 'library' : 'ordinary',
-      selectedMaterialCustomerId: String(parsed.selectedMaterialCustomerId || ''),
       selectedMaterialProjectId: String(parsed.selectedMaterialProjectId || ''),
     }
   } catch {
@@ -119,8 +90,6 @@ const clearDraft = (key) => {
   if (typeof window === 'undefined' || !key) return
   window.localStorage.removeItem(key)
 }
-
-const customerLabel = (item) => `${item.name}${item.customerId ? ` / ${item.customerId}` : ''}`
 
 const materialProjectLabel = (item) => {
   const parts = [
@@ -144,34 +113,19 @@ export default function TechnicalProjectWizardModal({
   const requiresTurbineModel = true
   const projectsApi = technicalProjectsAPI
   const materialsApi = technicalMaterialsAPI
-  const turbineModelOptionsApi = technicalMaterialsAPI
   const isUpdateMode = mode === 'update' && Boolean(project?.id)
   const draftKey = useMemo(() => buildDraftKey({ mode, project, defaultBidType }), [defaultBidType, mode, project])
   const draft = useMemo(() => readDraft(draftKey), [draftKey])
   const hasDraft = Boolean(draft)
   const [form, setForm] = useState(() => draft?.form || buildInitialForm(project, defaultBidType))
-  const [turbineEntryMode, setTurbineEntryMode] = useState(() => {
-    if (draft?.turbineEntryMode) return draft.turbineEntryMode
-    const initial = normalizeTurbineModel(project?.turbineModel || project?.selectedTurbineModel)
-    return initial.model && initial.source === 'manual' ? 'manual' : 'library'
-  })
-  const [customerMode, setCustomerMode] = useState(
-    draft?.customerMode || (project?.materialCustomerId || project?.customerId || project?.isKeyAccount ? 'library' : 'ordinary'),
-  )
   const [materialProjectMode, setMaterialProjectMode] = useState(
     draft?.materialProjectMode || project?.materialProjectMode || (project?.materialProjectId ? 'library' : 'ordinary'),
   )
-  const [materialCustomers, setMaterialCustomers] = useState([])
   const [materialProjects, setMaterialProjects] = useState([])
-  const [turbineOptions, setTurbineOptions] = useState([])
-  const [loadingTurbines, setLoadingTurbines] = useState(false)
-  const [turbineError, setTurbineError] = useState('')
-  const [selectedMaterialCustomerId, setSelectedMaterialCustomerId] = useState(
-    draft?.selectedMaterialCustomerId || String(project?.materialCustomerId || project?.customerId || project?.keyAccountId || ''),
-  )
   const [selectedMaterialProjectId, setSelectedMaterialProjectId] = useState(
     draft?.selectedMaterialProjectId || String(project?.materialProjectId || ''),
   )
+  const [projectInfoOptions, setProjectInfoOptions] = useState(STATIC_PROJECT_INFO_OPTIONS)
   const [loadingIdentities, setLoadingIdentities] = useState(false)
   const [identityError, setIdentityError] = useState('')
   const [creating, setCreating] = useState(false)
@@ -182,20 +136,38 @@ export default function TechnicalProjectWizardModal({
     const items = lockBidType ? [form.bidType] : bidTypeOptions
     return [...new Set((items || []).map((item) => String(item || '').trim()).filter(Boolean))]
   }, [bidTypeOptions, form.bidType, lockBidType])
-  const selectedMaterialCustomer = materialCustomers.find((item) => item.id === selectedMaterialCustomerId)
   const selectedMaterialProject = materialProjects.find((item) => item.id === selectedMaterialProjectId)
-  const selectedTurbineId = form.turbineModel?.id || form.turbineModel?.model || ''
-  const selectedTurbineOption = turbineOptions.find((item) => {
-    const optionId = item.id || item.model
-    return optionId === selectedTurbineId || item.model === form.turbineModel?.model
-  })
-  const turbineSelectValue = form.turbineModel?.model
-    ? turbineEntryMode === 'manual'
-      ? MANUAL_TURBINE_VALUE
-      : selectedTurbineOption?.id || selectedTurbineOption?.model || MANUAL_TURBINE_VALUE
-    : turbineEntryMode === 'manual'
-      ? MANUAL_TURBINE_VALUE
-      : ''
+  const customerOptions = mergeOptionValues(projectInfoOptions.customers, [form.customerName])
+  const turbineModelOptions = mergeOptionValues(
+    projectInfoOptions.turbineModels,
+    form.turbineModels.map((row) => row.model),
+  )
+
+  const updateTurbineRow = (rowId, key, value) => {
+    setForm((prev) => ({
+      ...prev,
+      turbineModels: prev.turbineModels.map((row) => (
+        row.id === rowId ? { ...row, [key]: value } : row
+      )),
+    }))
+  }
+
+  const addTurbineRow = () => {
+    setForm((prev) => ({
+      ...prev,
+      turbineModels: [...prev.turbineModels, createTurbineModelRow()],
+    }))
+  }
+
+  const removeTurbineRow = (rowId) => {
+    setForm((prev) => {
+      const nextRows = prev.turbineModels.filter((row) => row.id !== rowId)
+      return {
+        ...prev,
+        turbineModels: nextRows.length ? nextRows : [createTurbineModelRow()],
+      }
+    })
+  }
 
   useEffect(() => {
     if (hasDraft || isUpdateMode || !defaultBidType) return
@@ -211,24 +183,41 @@ export default function TechnicalProjectWizardModal({
       writeDraft(draftKey, {
         step: FORM_REQUIRED_STEP,
         form,
-        turbineEntryMode,
-        customerMode,
         materialProjectMode,
-        selectedMaterialCustomerId,
         selectedMaterialProjectId,
       })
     }, 250)
     return () => clearTimeout(timer)
   }, [
     creating,
-    customerMode,
     draftKey,
     form,
     materialProjectMode,
-    selectedMaterialCustomerId,
     selectedMaterialProjectId,
-    turbineEntryMode,
   ])
+
+  useEffect(() => {
+    let mounted = true
+    const loadOptions = async () => {
+      const options = await loadProjectInfoOptions(technicalProjectInfoOptionsAPI)
+      if (!mounted) return
+      setProjectInfoOptions(options)
+      setForm((prev) => {
+        if (prev.customerName) return prev
+        const firstCustomer = options.customers[0] || ''
+        return {
+          ...prev,
+          customerName: firstCustomer,
+          customerId: '',
+          customerCanonicalName: firstCustomer,
+        }
+      })
+    }
+    loadOptions()
+    return () => {
+      mounted = false
+    }
+  }, [])
 
   useEffect(() => {
     let mounted = true
@@ -241,24 +230,10 @@ export default function TechnicalProjectWizardModal({
         }
         const payload = await materialsApi.identityOptions({ bidType: form.bidType })
         if (!mounted) return
-        const customers = normalizeCustomers(payload?.customers || [])
         const projects = normalizeMaterialProjects(payload?.projects || [])
-        setMaterialCustomers(customers)
         setMaterialProjects(projects)
         if (isUpdateMode) {
           if (hasDraft) return
-          const selectedCustomer = customers.find((item) => item.id === String(project?.materialCustomerId || project?.customerId || project?.keyAccountId || ''))
-            || customers.find((item) => item.name === String(project?.customerName || ''))
-          if (selectedCustomer) {
-            setCustomerMode('library')
-            setSelectedMaterialCustomerId(selectedCustomer.id)
-            setForm((prev) => ({
-              ...prev,
-              customerId: selectedCustomer.customerId,
-              customerCanonicalName: selectedCustomer.name,
-              customerName: selectedCustomer.name,
-            }))
-          }
           const selectedProject = projects.find((item) => item.id === String(project?.materialProjectId || ''))
           if (selectedProject) {
             setMaterialProjectMode(project?.materialProjectMode || 'library')
@@ -271,16 +246,7 @@ export default function TechnicalProjectWizardModal({
           }
           return
         }
-        if (customers.length > 0 && !hasDraft) {
-          const defaultCustomer = customers[0]
-          setCustomerMode('library')
-          setSelectedMaterialCustomerId(defaultCustomer.id)
-          setForm((prev) => ({
-            ...prev,
-            customerId: defaultCustomer.customerId,
-            customerCanonicalName: defaultCustomer.name,
-            customerName: defaultCustomer.name,
-          }))
+        if (!hasDraft) {
           const defaultProject = projects[0]
           if (defaultProject) {
             setMaterialProjectMode('library')
@@ -294,10 +260,8 @@ export default function TechnicalProjectWizardModal({
         }
       } catch (e) {
         if (!mounted) return
-        setMaterialCustomers([])
         setMaterialProjects([])
-        if (!isUpdateMode) setCustomerMode('ordinary')
-        setIdentityError(e?.message || '技术标客户/项目候选加载失败，可选择普通客户或普通项目。')
+        setIdentityError(e?.message || '技术标项目候选加载失败，可选择普通项目。')
       } finally {
         if (mounted) setLoadingIdentities(false)
       }
@@ -306,60 +270,22 @@ export default function TechnicalProjectWizardModal({
     return () => {
       mounted = false
     }
-  }, [form.bidType, hasDraft, isUpdateMode, materialsApi, project?.customerId, project?.customerName, project?.keyAccountId, project?.materialCustomerId, project?.materialProjectId, project?.materialProjectMode])
-
-  useEffect(() => {
-    let mounted = true
-    const loadTurbineOptions = async () => {
-      if (!requiresTurbineModel) {
-        setTurbineOptions([])
-        setTurbineError('')
-        return
-      }
-      setLoadingTurbines(true)
-      setTurbineError('')
-      try {
-        if (!turbineModelOptionsApi?.turbineModelOptions) {
-          throw new Error('技术标投标机型候选接口未配置。')
-        }
-        const payload = await turbineModelOptionsApi.turbineModelOptions({ bidType: form.bidType })
-        if (!mounted) return
-        const options = (Array.isArray(payload?.items) ? payload.items : []).map(normalizeTurbineModel).filter((item) => item.model)
-        setTurbineOptions(options)
-        setForm((prev) => {
-          if (prev.turbineModel?.model) return prev
-          const first = options.find((item) => item.status !== 'deprecated') || options[0]
-          return first ? { ...prev, turbineModel: first } : prev
-        })
-      } catch (e) {
-        if (!mounted) return
-        setTurbineOptions([])
-        setTurbineError(e?.message || '技术标投标机型候选加载失败，可手工录入。')
-      } finally {
-        if (mounted) setLoadingTurbines(false)
-      }
-    }
-    loadTurbineOptions()
-    return () => {
-      mounted = false
-    }
-  }, [form.bidType, requiresTurbineModel, turbineModelOptionsApi])
+  }, [form.bidType, hasDraft, isUpdateMode, materialsApi, project?.materialProjectId, project?.materialProjectMode])
 
   const missingRequiredItems = useMemo(() => {
     const items = []
     if (!form.name.trim()) items.push('项目名称')
-    if (customerMode === 'library') {
-      if (!selectedMaterialCustomerId || !form.customerName.trim()) items.push('重点客户')
-    } else if (!form.customerName.trim()) {
-      items.push('普通客户')
-    }
+    if (!form.customerName.trim()) items.push('客户')
     if (materialProjectMode === 'library' && !selectedMaterialProjectId) items.push('重点项目')
-    if (requiresTurbineModel && !String(form.turbineModel?.model || '').trim()) items.push('投标机型')
+    const turbineRows = cleanTurbineModelRows(form.turbineModels)
+    if (requiresTurbineModel && (!turbineRows.length || turbineRows.some((row) => !row.model))) items.push('风机机型')
+    if (requiresTurbineModel && turbineRows.some((row) => !isPositiveIntegerText(row.turbineCount))) items.push('风机台数')
+    if (requiresTurbineModel && turbineRows.some((row) => !row.foundationType.trim())) items.push('基础形式')
     if (!form.manager.trim()) items.push('负责人')
     if (!form.startDate) items.push('起始日期')
     if (!form.endDate) items.push('截止日期')
     return items
-  }, [customerMode, form, materialProjectMode, requiresTurbineModel, selectedMaterialCustomerId, selectedMaterialProjectId])
+  }, [form, materialProjectMode, requiresTurbineModel, selectedMaterialProjectId])
   const canSubmit = missingRequiredItems.length === 0
   const nextDisabledReason = missingRequiredItems.length ? `请先补全：${missingRequiredItems.join('、')}` : ''
 
@@ -376,27 +302,24 @@ export default function TechnicalProjectWizardModal({
     setCreating(true)
     setCreateError('')
     try {
+      const turbineModels = cleanTurbineModelRows(form.turbineModels)
+      const primaryTurbineModel = buildPrimaryTurbineModel(turbineModels)
       const payload = {
         ...form,
+        turbineModels,
         deadline: form.endDate,
         owner: form.customerName,
-        isKeyAccount: customerMode === 'library' && Boolean(selectedMaterialCustomerId),
-        keyAccountId: customerMode === 'library' ? selectedMaterialCustomerId : '',
-        customerId: customerMode === 'library' ? selectedMaterialCustomer?.customerId || selectedMaterialCustomerId : '',
-        customerCanonicalName: customerMode === 'library' ? selectedMaterialCustomer?.name || form.customerName : '',
-        materialCustomerId: customerMode === 'library' ? selectedMaterialCustomer?.customerId || selectedMaterialCustomerId : '',
-        materialCustomerName: customerMode === 'library' ? selectedMaterialCustomer?.name || form.customerName : form.customerName,
+        isKeyAccount: false,
+        keyAccountId: '',
+        customerId: '',
+        customerCanonicalName: form.customerName,
+        materialCustomerId: '',
+        materialCustomerName: form.customerName,
         materialProjectMode,
         materialProjectId: materialProjectMode === 'library' ? selectedMaterialProject?.projectId || selectedMaterialProjectId : '',
         materialProjectCode: materialProjectMode === 'library' ? selectedMaterialProject?.projectCode || selectedMaterialProjectId : form.projectCode,
         materialProjectName: materialProjectMode === 'library' ? selectedMaterialProject?.name || selectedMaterialProjectId : (form.materialProjectName || form.name),
-        turbineModel: requiresTurbineModel
-          ? {
-              ...form.turbineModel,
-              model: String(form.turbineModel?.model || '').trim(),
-              source: form.turbineModel?.source || 'manual',
-            }
-          : {},
+        turbineModel: requiresTurbineModel ? primaryTurbineModel : {},
       }
       if (forceReviewDecision) payload.reviewDecision = forceReviewDecision
 
@@ -487,78 +410,31 @@ export default function TechnicalProjectWizardModal({
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">客户来源</label>
-                  <select
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
-                    value={customerMode}
-                    onChange={(e) => {
-                      const nextMode = e.target.value
-                      setCustomerMode(nextMode)
-                      if (nextMode === 'library') {
-                        const selected = materialCustomers.find((item) => item.id === selectedMaterialCustomerId) || materialCustomers[0]
-                        if (selected) {
-                          setSelectedMaterialCustomerId(selected.id)
-                          setForm((prev) => ({
-                            ...prev,
-                            customerId: selected.customerId,
-                            customerCanonicalName: selected.name,
-                            customerName: selected.name,
-                          }))
-                        }
-                      }
-                    }}
-                    disabled={loadingIdentities}
-                  >
-                    <option value="library" disabled={!materialCustomers.length}>重点客户</option>
-                    <option value="ordinary">普通客户</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">
-                    {customerMode === 'library' ? '重点客户 *' : '普通客户 *'}
-                  </label>
-                  {customerMode === 'library' && materialCustomers.length > 0 ? (
-                    <select
-                      className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
-                      value={selectedMaterialCustomerId}
-                      onChange={(e) => {
-                        const nextId = e.target.value
-                        setSelectedMaterialCustomerId(nextId)
-                        const selected = materialCustomers.find((item) => item.id === nextId)
-                        if (selected) {
-                          setForm((prev) => ({
-                            ...prev,
-                            customerId: selected.customerId,
-                            customerCanonicalName: selected.name,
-                            customerName: selected.name,
-                          }))
-                        }
-                      }}
-                    >
-                      {materialCustomers.map((item) => (
-                        <option key={item.id} value={item.id}>{customerLabel(item)}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                      placeholder="输入客户名称，例如：华能集团"
-                      value={form.customerName}
-                      onChange={(e) => {
-                        updateForm('customerName', e.target.value)
-                        updateForm('customerId', '')
-                        updateForm('customerCanonicalName', e.target.value)
-                      }}
-                    />
-                  )}
-                  {(identityError || loadingIdentities) && (
-                    <p className={`text-xs mt-2 ${identityError ? 'text-error' : 'text-outline'}`}>
-                      {identityError || '正在加载技术标客户/项目...'}
-                    </p>
-                  )}
-                </div>
+              <div>
+                <label className="block text-sm font-semibold text-on-surface mb-2">客户 *</label>
+                <select
+                  className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                  value={form.customerName}
+                  onChange={(e) => {
+                    const customerName = e.target.value
+                    setForm((prev) => ({
+                      ...prev,
+                      customerName,
+                      customerId: '',
+                      customerCanonicalName: customerName,
+                    }))
+                  }}
+                >
+                  <option value="">选择客户</option>
+                  {customerOptions.map((item) => (
+                    <option key={item} value={item}>{item}</option>
+                  ))}
+                </select>
+                {(identityError || loadingIdentities) && (
+                  <p className={`text-xs mt-2 ${identityError ? 'text-error' : 'text-outline'}`}>
+                    {identityError || '正在加载技术标项目...'}
+                  </p>
+                )}
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
@@ -624,78 +500,71 @@ export default function TechnicalProjectWizardModal({
                 </div>
               </div>
               {requiresTurbineModel && (
-                <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-                  <div className="lg:col-span-3">
-                    <label className="block text-sm font-semibold text-on-surface mb-2">投标机型 *</label>
-                    <select
-                      className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
-                      value={turbineSelectValue}
-                      onChange={(e) => {
-                        const value = e.target.value
-                        if (!value) {
-                          setTurbineEntryMode('library')
-                          updateForm('turbineModel', normalizeTurbineModel())
-                          return
-                        }
-                        if (value === MANUAL_TURBINE_VALUE) {
-                          setTurbineEntryMode('manual')
-                          updateForm('turbineModel', normalizeTurbineModel({
-                            model: form.turbineModel?.model || '',
-                            source: 'manual',
-                            status: 'manual',
-                            statusLabel: '人工指定',
-                          }))
-                          return
-                        }
-                        const selected = turbineOptions.find((item) => (item.id || item.model) === value)
-                        setTurbineEntryMode('library')
-                        updateForm('turbineModel', selected || normalizeTurbineModel())
-                      }}
-                      disabled={loadingTurbines && turbineOptions.length === 0}
+                <div className="border border-[#d2dce8] bg-[#f8fbfd] p-3">
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="block text-sm font-semibold text-on-surface">风机机型明细 *</label>
+                    <button
+                      type="button"
+                      onClick={addTurbineRow}
+                      className="h-8 px-3 border border-[#b8c7d8] bg-white text-xs font-semibold text-primary hover:bg-[#eef5fb] transition-colors"
                     >
-                      <option value="">{loadingTurbines ? '正在加载机型...' : '选择投标机型'}</option>
-                      {turbineOptions.map((item) => (
-                        <option key={`${item.id || item.model}-${item.platform}-${item.layout}`} value={item.id || item.model}>
-                          {turbineModelLabel(item)}
-                        </option>
-                      ))}
-                      <option value={MANUAL_TURBINE_VALUE}>人工指定机型</option>
-                    </select>
-                    {turbineSelectValue === MANUAL_TURBINE_VALUE && (
-                      <input
-                        className="mt-2 w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                        placeholder="输入投标机型，例如 EW10.0-220下置"
-                        value={form.turbineModel?.model || ''}
-                        onChange={(e) => updateForm('turbineModel', normalizeTurbineModel({
-                          ...form.turbineModel,
-                          model: e.target.value,
-                          source: 'manual',
-                          status: 'manual',
-                          statusLabel: '人工指定',
-                        }))}
-                      />
-                    )}
-                    {(turbineError || loadingTurbines) && (
-                      <p className={`text-xs mt-2 ${turbineError ? 'text-error' : 'text-outline'}`}>
-                        {turbineError || '正在加载机型候选...'}
-                      </p>
-                    )}
+                      添加机型
+                    </button>
                   </div>
-                  <div className="lg:col-span-2">
-                    <label className="block text-sm font-semibold text-on-surface mb-2">机型参数</label>
-                    <div className="min-h-[104px] border border-[#d2dce8] bg-[#f8fbfd] px-3 py-2 text-xs text-on-surface">
-                      {form.turbineModel?.model ? (
-                        <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-                          <span className="text-outline">机型</span><span className="font-semibold text-primary">{form.turbineModel.model || '—'}</span>
-                          <span className="text-outline">平台</span><span>{form.turbineModel.platform || '—'}</span>
-                          <span className="text-outline">功率</span><span>{form.turbineModel.ratedPowerKw ? `${form.turbineModel.ratedPowerKw} kW` : '—'}</span>
-                          <span className="text-outline">叶轮</span><span>{form.turbineModel.rotorDiameterM ? `${form.turbineModel.rotorDiameterM} m` : '—'}</span>
-                          <span className="text-outline">状态</span><span>{form.turbineModel.statusLabel || form.turbineModel.status || '—'}</span>
+                  <div className="flex flex-col gap-3">
+                    {form.turbineModels.map((row, index) => (
+                      <div key={row.id} className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.5fr)_110px_minmax(0,1fr)_40px] gap-3 items-end">
+                        <div>
+                          <label className="block text-xs font-semibold text-outline mb-1">风机机型</label>
+                          <select
+                            className="w-full min-h-0 h-9 px-3 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                            value={row.model}
+                            onChange={(e) => updateTurbineRow(row.id, 'model', e.target.value)}
+                          >
+                            <option value="">选择风机机型</option>
+                            {turbineModelOptions.map((item) => (
+                              <option key={item} value={item}>{item}</option>
+                            ))}
+                          </select>
                         </div>
-                      ) : (
-                        <span className="text-outline">选择或录入投标机型后，后续素材匹配和 Word 填写会自动带入。</span>
-                      )}
-                    </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-outline mb-1">风机台数</label>
+                          <input
+                            inputMode="numeric"
+                            pattern="[1-9][0-9]*"
+                            className="w-full min-h-0 h-9 px-3 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                            placeholder="正整数"
+                            value={row.turbineCount}
+                            onChange={(e) => {
+                              const value = e.target.value.replace(/\D/g, '')
+                              updateTurbineRow(row.id, 'turbineCount', value)
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-outline mb-1">基础形式</label>
+                          <select
+                            className="w-full min-h-0 h-9 px-3 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                            value={row.foundationType}
+                            onChange={(e) => updateTurbineRow(row.id, 'foundationType', e.target.value)}
+                          >
+                            <option value="">选择基础形式</option>
+                            {STATIC_FOUNDATION_TYPE_OPTIONS.map((item) => (
+                              <option key={item} value={item}>{item}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeTurbineRow(row.id)}
+                          className="h-9 border border-[#d6dee9] bg-white text-on-surface-variant hover:text-error hover:border-error/40 transition-colors"
+                          aria-label={`删除第 ${index + 1} 个风机机型`}
+                          title="删除"
+                        >
+                          <span className="material-symbols-outlined text-[18px]">delete</span>
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
