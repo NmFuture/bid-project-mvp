@@ -54,7 +54,7 @@ TASK_SYNONYMS = {
 NEGATIVE_MATCH_RULES = [
     {
         "taskModules": {"base_documents_guarantees", "structured_response_tables", "commitments_and_notes"},
-        "materialHints": ["通用素材/03-业绩资产池", "共用业绩库", "共用业绩", "业绩证明", "performance_library", "中标通知书", "合同扫描件", "验收报告", "240h"],
+        "materialHints": ["共用业绩库", "共用业绩", "业绩证明", "performance_library", "performance_package", "中标通知书", "合同扫描件", "验收报告", "240h"],
         "penalty": 0.42,
         "reason": "业绩资产不适合作为当前响应件",
     },
@@ -624,6 +624,12 @@ def add_candidate_materials(tasks: list[dict[str, Any]], manifest: dict[str, Any
                 "tags": [str(item) for item in material.get("tags") or [] if str(item).strip()][:16],
                 "keywords": [str(item) for item in material.get("keywords") or [] if str(item).strip()][:24],
                 "summary": str(material.get("summary") or ""),
+                "categoryId": str(material.get("categoryId") or ""),
+                "itemId": str(material.get("itemId") or ""),
+                "attachmentId": str(material.get("attachmentId") or ""),
+                "summaryAttachmentId": str(material.get("summaryAttachmentId") or ""),
+                "fileName": str(material.get("fileName") or ""),
+                "attachments": material_attachments(material),
             }
             merge_candidate_material(candidates_by_key, candidate)
             for flag in risk_flags:
@@ -2238,6 +2244,28 @@ def file_type(material: dict[str, Any]) -> str:
     name = str(material.get("name") or material.get("fileName") or material.get("cleanedFileName") or "").lower()
     suffix = Path(name).suffix.lower().strip(".")
     return suffix or "file"
+
+
+def material_attachments(material: dict[str, Any]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for attachment in material.get("attachments") or []:
+        if not isinstance(attachment, dict):
+            continue
+        attachment_id = str(attachment.get("id") or "").strip()
+        if not attachment_id:
+            continue
+        result.append(
+            {
+                "id": attachment_id,
+                "categoryId": str(attachment.get("categoryId") or material.get("categoryId") or ""),
+                "itemId": str(attachment.get("itemId") or material.get("itemId") or material.get("id") or material.get("materialId") or ""),
+                "attachmentType": str(attachment.get("attachmentType") or ""),
+                "fileName": str(attachment.get("fileName") or ""),
+                "matchConfidence": attachment.get("matchConfidence"),
+                "matchMethod": str(attachment.get("matchMethod") or ""),
+            }
+        )
+    return result
 
 
 def dedupe_materials(materials: list[dict[str, Any]]) -> list[dict[str, Any]]:

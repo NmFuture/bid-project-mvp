@@ -193,7 +193,7 @@ MODULE_CONFIGS = [
             "客户素材/*/客户准入与专项证明",
             "项目素材/*/招标要求与专项证明",
         ],
-        "source_types": ["performance"],
+        "source_types": ["performance", "performance_library", "performance_package"],
         "material_categories": ["customer_relationship_proof", "project_requirement_proof"],
         "categories": ["业绩库引用", "客户准入与专项证明", "招标要求与专项证明"],
         "keywords": ["业绩", "合同", "中标通知书", "验收", "运行", "240h", "示范应用"],
@@ -1566,7 +1566,7 @@ def build_todo_groups(rows: list[dict[str, Any]], profiles: list[dict[str, Any]]
         ],
         "03-证据选择与版本确认": [
             todo_row("todo-201", "evidence_selection", "qualification_package", "08-资格证明文件模块（附件7）", "card_list", candidate_sources_for_module(rows, "BM-08"), "yes", "high", "需确定附件7 最终挂载的资质、认证、信用、资信材料。", "商务标编制人"),
-            todo_row("todo-202", "evidence_selection", "performance_package", "09-业绩情况表模块（附件7I）", "card_list", candidate_sources_for_module(rows, "BM-09"), "yes", "high", "需按招标条件筛选业绩资产池中的合同/通知书/运行证明。", "商务标编制人"),
+            todo_row("todo-202", "evidence_selection", "performance_package", "09-业绩情况表模块（附件7I）", "card_list", candidate_sources_for_module(rows, "BM-09"), "yes", "high", "需按招标条件筛选业绩库中的合同/通知书/运行证明。", "商务标编制人"),
             todo_row("todo-203", "evidence_selection", "certificate_validity_check", "08-资格证明文件模块（附件7）", "check", candidate_sources_for_module(rows, "BM-08"), "yes", "medium", "证书、截图、资信证明的有效时间需要单独核验。", "商务标编制人"),
             todo_row("todo-204", "evidence_selection", "final_version_check", "11-其他说明与承诺模块（附件9）", "check", candidate_sources_for_module(rows, "BM-11"), "yes", "medium", "项目定制响应件需要确认是否为终版/盖章版。", "商务标编制人"),
         ],

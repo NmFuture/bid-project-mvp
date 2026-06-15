@@ -667,8 +667,8 @@ class BusinessGapPlannerTests(unittest.TestCase):
                                 "categoryId": "PERCAT-0011",
                                 "name": "华电新疆喀什 2x66 万千瓦",
                                 "fileName": "001-华电新疆喀什 2x66 万千瓦_合同.docx",
-                                "folderPath": "商务标/共用业绩库/陆上6MW业绩",
-                                "path": "商务标/共用业绩库/陆上6MW业绩/华电新疆喀什 2x66 万千瓦",
+                                "folderPath": "业绩库/陆上6MW业绩",
+                                "path": "业绩库/陆上6MW业绩/华电新疆喀什 2x66 万千瓦",
                                 "materialTier": "standard",
                                 "libraryScope": "standard",
                                 "sourceType": "performance_package",
@@ -713,6 +713,8 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertEqual(performance_candidate["materialId"], "PERITEM-0268")
         self.assertEqual(performance_candidate["sourceType"], "performance_package")
         self.assertEqual(performance_candidate["candidateType"], "performance_item")
+        self.assertEqual(performance_candidate["folderPath"], "业绩库/陆上6MW业绩")
+        self.assertEqual(performance_candidate["attachments"][0]["id"], "PERITEMATT-0118")
         self.assertIn("共用业绩库候选", performance_candidate["reason"])
         bid_letter = next(task for task in plan["tasks"] if task["title"] == "投标函")
         self.assertEqual(bid_letter["candidateMaterials"], [])
@@ -765,13 +767,14 @@ class BusinessGapPlannerTests(unittest.TestCase):
         category_candidate = _performance_package_candidate_from_category(category)
         self.assertEqual(category_candidate["sourceType"], "performance_package")
         self.assertEqual(category_candidate["candidateType"], "performance_category")
-        self.assertEqual(category_candidate["path"], "商务标/共用业绩库/陆上6MW业绩")
+        self.assertEqual(category_candidate["path"], "业绩库/陆上6MW业绩")
         self.assertEqual(category_candidate["businessMaterialKind"], "performance")
         self.assertIn("陆上6MW业绩", category_candidate["keywords"])
 
         item_candidate = _performance_package_candidate_from_item(category, item)
         self.assertEqual(item_candidate["materialId"], "PERITEM-0268")
         self.assertEqual(item_candidate["candidateType"], "performance_item")
+        self.assertEqual(item_candidate["folderPath"], "业绩库/陆上6MW业绩")
         self.assertEqual(item_candidate["cleanStatus"], "original_only")
         self.assertEqual(item_candidate["fileName"], "001-华电新疆喀什 2x66 万千瓦_合同.docx")
         self.assertEqual(item_candidate["attachments"][0]["matchMethod"], "project_name")

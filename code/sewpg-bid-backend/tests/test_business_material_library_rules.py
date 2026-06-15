@@ -1019,6 +1019,22 @@ class BusinessPerformanceLibraryTests(unittest.IsolatedAsyncioTestCase):
                         "folderPath": "商务标/通用素材/主体资质与基础证照",
                         "materialTier": "standard",
                         "tags": ["授权"],
+                    },
+                    {
+                        "id": "RAW-0002",
+                        "name": "陆上6MW及以上业绩.docx",
+                        "folderPath": "商务标/通用素材/企业能力与供货业绩",
+                        "materialTier": "standard",
+                        "businessMaterialKind": "fixed",
+                        "tags": ["商务标素材"],
+                    },
+                    {
+                        "id": "RAW-0003",
+                        "name": "公司简介.docx",
+                        "folderPath": "商务标/通用素材/企业能力与供货业绩",
+                        "materialTier": "standard",
+                        "businessMaterialKind": "fixed",
+                        "tags": ["商务标素材"],
                     }
                 ]
             }
@@ -1035,9 +1051,9 @@ class BusinessPerformanceLibraryTests(unittest.IsolatedAsyncioTestCase):
         ):
             items = business_gap_planning._business_material_index(material_scope, {})
 
-        self.assertEqual([item["id"] for item in items], ["RAW-0001", "PERF-0008"])
-        self.assertEqual(items[1]["sourceType"], "performance_library")
-        self.assertEqual(items[1]["businessMaterialKindLabel"], "共用业绩")
+        self.assertEqual([item["id"] for item in items], ["RAW-0001", "RAW-0003", "PERF-0008"])
+        self.assertEqual(items[2]["sourceType"], "performance_library")
+        self.assertEqual(items[2]["businessMaterialKindLabel"], "共用业绩")
 
 
 if __name__ == "__main__":

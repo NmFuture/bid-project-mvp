@@ -1062,6 +1062,8 @@ def _business_material_index(material_scope: dict[str, Any], selected_model: dic
         for raw in payload.get("items") or []:
             if not isinstance(raw, dict):
                 continue
+            if _is_raw_performance_material_candidate(raw):
+                continue
             material_id = str(raw.get("id") or "")
             if not material_id or material_id in seen:
                 continue
@@ -1117,6 +1119,20 @@ def _business_material_index(material_scope: dict[str, Any], selected_model: dic
     return items
 
 
+def _is_raw_performance_material_candidate(raw: dict[str, Any]) -> bool:
+    kind = str(raw.get("businessMaterialKind") or raw.get("business_material_kind") or "").strip()
+    if kind == "performance":
+        return True
+    file_text = "/".join(
+        str(raw.get(key) or "")
+        for key in ("name", "fileName", "cleanedFileName")
+        if str(raw.get(key) or "").strip()
+    )
+    tags = " ".join(str(tag) for tag in raw.get("tags") or [] if str(tag).strip())
+    haystack = f"{file_text} {tags}"
+    return "业绩" in haystack
+
+
 def _performance_package_candidates(limit: int = 300) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     if str(settings.project_store_backend or "").lower() != "postgres":
@@ -1146,6 +1162,17 @@ def _performance_package_candidate_from_category(category: dict[str, Any]) -> di
     name = str(category.get("name") or "") or str(category.get("id") or "业绩包")
     scope = str(category.get("scope") or "standard")
     models = [str(model) for model in category.get("turbineModels") or [] if str(model).strip()]
+    attachments = [
+        attachment
+        for attachment in category.get("attachments") or []
+        if isinstance(attachment, dict)
+    ]
+    summary_attachments = [
+        attachment
+        for attachment in attachments
+        if str(attachment.get("attachmentType") or "") == "summary_table"
+    ]
+    summary_attachment = summary_attachments[0] if summary_attachments else attachments[0] if attachments else {}
     keywords = [
         keyword
         for keyword in [name, str(category.get("scene") or ""), str(category.get("powerRating") or ""), *models]
@@ -1157,14 +1184,25 @@ def _performance_package_candidate_from_category(category: dict[str, Any]) -> di
         "categoryId": str(category.get("id") or ""),
         "name": name,
         "fileName": str(category.get("summaryFileName") or name),
-        "folderPath": "商务标/共用业绩库",
-        "path": "/".join(["商务标", "共用业绩库", name]),
+        "folderPath": "业绩库",
+        "path": "/".join(["业绩库", name]),
         "materialTier": scope,
         "libraryScope": scope,
         "businessMaterialKind": "performance",
         "businessMaterialKindLabel": "共用业绩",
         "sourceType": "performance_package",
         "candidateType": "performance_category",
+        "attachmentId": str(summary_attachment.get("id") or ""),
+        "summaryAttachmentId": str(summary_attachment.get("id") or ""),
+        "attachments": [
+            {
+                "id": str(attachment.get("id") or ""),
+                "categoryId": str(attachment.get("categoryId") or category.get("id") or ""),
+                "attachmentType": str(attachment.get("attachmentType") or ""),
+                "fileName": str(attachment.get("fileName") or ""),
+            }
+            for attachment in attachments
+        ],
         "hasCleanedWord": False,
         "cleanedFileName": "",
         "cleanStatus": "original_only" if category.get("summaryFileName") else "metadata_only",
@@ -1229,8 +1267,8 @@ def _performance_package_candidate_from_item(category: dict[str, Any], item: dic
         "categoryId": str(item.get("categoryId") or category.get("id") or ""),
         "name": title,
         "fileName": str(contract_items[0].get("fileName") or "") if contract_items else str(category.get("summaryFileName") or title),
-        "folderPath": "/".join(["商务标", "共用业绩库", category_name or "业绩包"]),
-        "path": "/".join(["商务标", "共用业绩库", category_name or "业绩包", title]),
+        "folderPath": "/".join(["业绩库", category_name or "业绩包"]),
+        "path": "/".join(["业绩库", category_name or "业绩包", title]),
         "materialTier": scope,
         "libraryScope": scope,
         "businessMaterialKind": "performance",
@@ -1258,6 +1296,7 @@ def _performance_package_candidate_from_item(category: dict[str, Any], item: dic
                 "categoryId": str(attachment.get("categoryId") or ""),
                 "itemId": str(attachment.get("itemId") or item.get("id") or ""),
                 "fileName": str(attachment.get("fileName") or ""),
+                "attachmentType": str(attachment.get("attachmentType") or "contract_item"),
                 "matchConfidence": attachment.get("matchConfidence"),
                 "matchMethod": str(attachment.get("matchMethod") or ""),
             }
