@@ -509,7 +509,7 @@ class ParsePipelineTests(unittest.TestCase):
         skill_path = (
             Path(__file__).resolve().parents[1]
             / "opencode"
-            / "skill"
+            / "skills"
             / "bid-business-tender-structured-parser"
             / "SKILL.md"
         )
