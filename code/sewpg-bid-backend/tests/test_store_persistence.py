@@ -66,7 +66,7 @@ class StorePersistenceTests(unittest.TestCase):
 
         store2 = AppStore(storage_backend="postgres")
         project = store2.get_project(created["id"])
-        directory = store2.get_directory_state(created["id"])
+        directory = store2.get_project_runtime_state(created["id"])["directory_state"]
 
         self.assertEqual(project["name"], "PostgreSQL 持久化验证")
         self.assertEqual(directory["status"], "completed")
