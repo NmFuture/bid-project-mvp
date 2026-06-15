@@ -97,7 +97,7 @@ def refresh_material_kind_labels(project: dict[str, Any], business_gap_state: di
     tasks = plan.get("tasks") if isinstance(plan.get("tasks"), list) else []
     if not tasks:
         return False
-    picker = build_business_gap_material_picker_index(project)
+    picker = build_business_gap_material_picker_index(project, include_evidence_segments=False)
     material_by_id = {
         str(item.get("id") or item.get("materialId") or ""): item
         for item in picker.get("materialIndex") or []

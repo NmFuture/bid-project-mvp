@@ -11,7 +11,8 @@
     "external_directory": {
       "/data/parsed/**": "allow",
       "/data/documents/**": "allow",
-      "/data/uploads/**": "allow"
+      "/data/uploads/**": "allow",
+      "/tmp/**": "allow"
     },
     "task": "deny",
     "read": "deny",

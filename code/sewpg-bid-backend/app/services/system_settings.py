@@ -45,6 +45,7 @@ OPENCODE_HEADLESS_EXTERNAL_DIRECTORY_PERMISSIONS = {
     "/data/parsed/**": "allow",
     "/data/documents/**": "allow",
     "/data/uploads/**": "allow",
+    "/tmp/**": "allow",
 }
 
 

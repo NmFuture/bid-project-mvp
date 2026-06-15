@@ -196,7 +196,12 @@ async def resolve_fallback_bid_template_file(project_id: str, bid_type: str) -> 
     return await resolve_system_default_bid_template_file(project_id, bid_type)
 
 
-def resolve_fallback_bid_template_file_sync(project_id: str, bid_type: str) -> dict[str, Any] | None:
+def resolve_fallback_bid_template_file_sync(
+    project_id: str,
+    bid_type: str,
+    *,
+    timeout_seconds: float = 3.0,
+) -> dict[str, Any] | None:
     import asyncio
 
     result: dict[str, Any] | None = None
@@ -212,7 +217,14 @@ def resolve_fallback_bid_template_file_sync(project_id: str, bid_type: str) -> d
 
     thread = threading.Thread(target=runner, daemon=True)
     thread.start()
-    thread.join()
+    thread.join(timeout=max(float(timeout_seconds or 0), 0.1))
+    if thread.is_alive():
+        logger.info(
+            "System default template resolution timed out for project %s and bid type %s.",
+            project_id,
+            bid_type,
+        )
+        return None
     if error is not None:
         raise error
     return result

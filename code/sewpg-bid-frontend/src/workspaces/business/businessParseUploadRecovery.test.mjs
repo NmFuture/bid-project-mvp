@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   isUploadAndRunTimeout,
+  pollParseProgressOnce,
   shouldPollParseProgress,
   recoverUploadAndRunTimeout,
 } from './businessParseUploadRecovery.js'
@@ -37,6 +38,55 @@ test('上传解析请求超时后轮询到 completed 并读取最终结果', asy
   assert.deepEqual(observed.map((item) => item.status), ['running', 'completed'])
 })
 
+test('进度完成但结果暂未就绪时继续轮询直到最终结果可展示', async () => {
+  const progressSnapshots = [
+    { status: 'completed', percentage: 100, summary: '解析完成。' },
+    { status: 'completed', percentage: 100, summary: '解析完成。' },
+  ]
+  const resultSnapshots = [
+    { status: 'idle' },
+    { status: 'completed', itemCount: 1070 },
+  ]
+  const parseClient = {
+    progress: async () => progressSnapshots.shift(),
+    results: async () => resultSnapshots.shift(),
+  }
+
+  const recovered = await recoverUploadAndRunTimeout({
+    projectId: 'PRJ-0021',
+    parseClient,
+    pollIntervalMs: 0,
+    maxPollMs: 1000,
+  })
+
+  assert.equal(recovered.completed, true)
+  assert.deepEqual(recovered.result, { status: 'completed', itemCount: 1070 })
+})
+
+test('completed progress poll reads result before publishing progress state', async () => {
+  const calls = []
+  const parseClient = {
+    progress: async () => {
+      calls.push('progress')
+      return { status: 'completed', percentage: 100, summary: '解析完成。' }
+    },
+    results: async () => {
+      calls.push('results')
+      return { status: 'completed', itemCount: 94 }
+    },
+  }
+
+  const snapshot = await pollParseProgressOnce({
+    projectId: 'PRJ-0051',
+    parseClient,
+    onProgress: () => calls.push('onProgress'),
+  })
+
+  assert.equal(snapshot.completed, true)
+  assert.deepEqual(snapshot.result, { status: 'completed', itemCount: 94 })
+  assert.deepEqual(calls, ['progress', 'results', 'onProgress'])
+})
+
 test('上传解析请求超时后仍在 running 时返回可继续展示的进度', async () => {
   const parseClient = {
     progress: async () => ({ status: 'running', percentage: 75, summary: 'AI 审查中。' }),
@@ -59,7 +109,12 @@ test('上传解析请求超时后仍在 running 时返回可继续展示的进�
 
 test('上传请求结束后只要后端仍 running 就继续轮询进度', () => {
   assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'running', percentage: 40 } }), true)
-  assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'completed', percentage: 100 } }), false)
+  assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'completed', percentage: 100 } }), true)
+  assert.equal(shouldPollParseProgress({
+    uploading: false,
+    progress: { status: 'completed', percentage: 100 },
+    result: { status: 'completed' },
+  }), false)
   assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'idle' } }), false)
   assert.equal(shouldPollParseProgress({ uploading: true, progress: null }), true)
 })

@@ -145,7 +145,11 @@ def build_business_gap_plan_for_project(project: dict[str, Any]) -> dict[str, An
     return plan
 
 
-def build_business_gap_material_picker_index(project: dict[str, Any]) -> dict[str, Any]:
+def build_business_gap_material_picker_index(
+    project: dict[str, Any],
+    *,
+    include_evidence_segments: bool = True,
+) -> dict[str, Any]:
     """Build the same business material/evidence index used by S3 planner for manual selection."""
     ensure_workspace_project_type(
         project,
@@ -158,10 +162,13 @@ def build_business_gap_material_picker_index(project: dict[str, Any]) -> dict[st
     selected_model = project_turbine_model(project)
     material_index = _business_material_index(material_scope, selected_model)
     template_index = _business_template_index(project, work_dir)
-    material_segments = _business_evidence_segments_from_materials(material_index)
-    business_wiki_dir = _resolve_business_wiki_dir(project, work_dir)
-    business_wiki_index = _build_business_wiki_index(business_wiki_dir)
-    business_wiki_index = _merge_material_evidence_segments(business_wiki_index, material_segments)
+    material_segments: list[dict[str, Any]] = []
+    business_wiki_index: dict[str, Any] = {}
+    if include_evidence_segments:
+        material_segments = _business_evidence_segments_from_materials(material_index)
+        business_wiki_dir = _resolve_business_wiki_dir(project, work_dir)
+        business_wiki_index = _build_business_wiki_index(business_wiki_dir)
+        business_wiki_index = _merge_material_evidence_segments(business_wiki_index, material_segments)
     business_gap_state = project.get("business_gap_state") if isinstance(project.get("business_gap_state"), dict) else {}
     return {
         "schemaVersion": "bid-business-material-picker-index-v1",
@@ -1311,7 +1318,11 @@ def _business_template_index(project: dict[str, Any], work_dir: Path) -> list[di
     candidates: list[dict[str, Any]] = []
     source_records = [record for record in project.get("templateFileRecords") or [] if isinstance(record, dict)]
     source_kind = "project_upload"
-    if not source_records and _template_fallback_enabled(project):
+    if (
+        not source_records
+        and _template_fallback_enabled(project)
+        and str(settings.project_store_backend or "").lower() == "postgres"
+    ):
         try:
             fallback_record = resolve_fallback_bid_template_file_sync(project_id, BUSINESS_BID_TYPE)
         except Exception:

@@ -438,18 +438,18 @@ class OpencodeClient:
             "opencodeOutput": self._build_output_trace(session_id, response),
         }
 
-    def decide_business_template_boundaries_with_trace(
+    def extract_business_templates_with_trace(
         self,
         prompt_text: str,
     ) -> dict[str, Any]:
-        session = self.create_session("商务标模板边界裁决")
+        session = self.create_session("商务标模板自主提取")
         session_id = str(session.get("id") or "")
         response = self._send_prompt_with_session_polling(
             session_id,
             prompt_text,
-            early_tool_command="btplbound-finalize",
+            early_tool_command="btplnav-finalize",
         )
-        parsed = self._extract_business_template_boundary_json(response)
+        parsed = self._extract_business_template_extraction_json(response)
         return {
             **parsed,
             "opencodeOutput": self._build_output_trace(session_id, response),
@@ -579,18 +579,17 @@ class OpencodeClient:
             raise RuntimeError("futurecode 返回的附件模板校验 JSON 结构不正确。")
         return parsed
 
-    def _extract_business_template_boundary_json(self, response: dict[str, Any]) -> dict[str, Any]:
+    def _extract_business_template_extraction_json(self, response: dict[str, Any]) -> dict[str, Any]:
         parsed = self._extract_json_response(
             response,
-            empty_message="futurecode 未返回商务模板边界裁决结果。",
-            repair_kind="business_template_boundary",
+            empty_message="futurecode 未返回商务模板提取结果。",
+            repair_kind="business_template_extraction",
         )
         if not isinstance(parsed, dict) or (
-            not isinstance(parsed.get("decisionFiles"), list)
+            not isinstance(parsed.get("outputFile"), str)
             and not isinstance(parsed.get("summary"), dict)
-            and not isinstance(parsed.get("decisions"), list)
         ):
-            raise RuntimeError("futurecode 返回的商务模板边界裁决 JSON 结构不正确。")
+            raise RuntimeError("futurecode 返回的商务模板提取 JSON 结构不正确。")
         return parsed
 
     def _extract_table_fill_json(self, response: dict[str, Any]) -> dict[str, Any]:
@@ -674,7 +673,7 @@ class OpencodeClient:
 
         last_signature: tuple[str, tuple[tuple[str, str], ...]] | None = None
         last_activity = time.monotonic()
-        idle_timeout = max(120.0, min(float(settings.opencode_timeout_sec), 900.0))
+        idle_timeout = self._session_polling_idle_timeout(early_tool_command)
         while not finished.wait(0.5):
             previous_signature = last_signature
             if stream_callback is not None:
@@ -693,12 +692,19 @@ class OpencodeClient:
             elif time.monotonic() - last_activity > idle_timeout:
                 if early_tool_command == "s1parse-finalize":
                     self._raise_s1_opencode_stalled(session_id, self.list_session_messages(session_id), idle_timeout)
+                if early_tool_command == "btplnav-finalize":
+                    self._raise_template_finalize_opencode_stalled(
+                        session_id,
+                        self.list_session_messages(session_id),
+                        idle_timeout,
+                    )
                 raise RuntimeError(
                     f"futurecode idle timeout after {int(idle_timeout)} seconds without new output; "
                     f"check session {session_id} tool calls."
                 )
             if early_tool_command:
                 messages = self.list_session_messages(session_id)
+                self._raise_session_error_if_present(session_id, messages)
                 tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
                 if tool_output:
                     snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
@@ -735,6 +741,7 @@ class OpencodeClient:
 
         if early_tool_command == "s1parse-finalize":
             messages = self.list_session_messages(session_id)
+            self._raise_session_error_if_present(session_id, messages)
             tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
             if tool_output:
                 snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
@@ -771,6 +778,7 @@ class OpencodeClient:
                 while time.monotonic() < stalled_until:
                     time.sleep(0.5)
                     messages = self.list_session_messages(session_id)
+                    self._raise_session_error_if_present(session_id, messages)
                     tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
                     if tool_output:
                         snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
@@ -830,8 +838,10 @@ class OpencodeClient:
             if pending_response:
                 return pending_response
 
-        if early_tool_command == "btplbound-finalize":
-            pending_response = self._wait_for_btplbound_finalize_after_prompt_return(
+        if early_tool_command == "btplnav-finalize":
+            messages = self.list_session_messages(session_id)
+            self._raise_session_error_if_present(session_id, messages)
+            pending_response = self._wait_for_template_finalize_after_prompt_return(
                 session_id=session_id,
                 idle_timeout=idle_timeout,
                 stream_callback=stream_callback,
@@ -840,6 +850,7 @@ class OpencodeClient:
                 return pending_response
 
         if stream_callback is not None:
+            self._raise_session_error_if_present(session_id, self.list_session_messages(session_id))
             last_signature = self._emit_session_output_delta(
                 session_id,
                 stream_callback,
@@ -863,6 +874,7 @@ class OpencodeClient:
 
         while time.monotonic() < deadline:
             messages = self.list_session_messages(session_id)
+            self._raise_session_error_if_present(session_id, messages)
             tool_output = self._find_completed_bash_tool_output(messages, "s1parse-finalize")
             if tool_output:
                 snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
@@ -915,27 +927,29 @@ class OpencodeClient:
         self._raise_s1_opencode_stalled(session_id, messages, idle_timeout)
         return None
 
-    def _wait_for_btplbound_finalize_after_prompt_return(
+    def _wait_for_template_finalize_after_prompt_return(
         self,
         *,
         session_id: str,
         idle_timeout: float,
         stream_callback: Callable[[dict[str, Any]], None] | None,
     ) -> dict[str, Any] | None:
+        early_tool_command = "btplnav-finalize"
         messages: list[dict[str, Any]] = []
         last_signature: tuple[str, tuple[tuple[str, str], ...]] | None = None
         deadline = time.monotonic() + idle_timeout
 
         while time.monotonic() < deadline:
             messages = self.list_session_messages(session_id)
-            tool_output = self._find_completed_bash_tool_output(messages, "btplbound-finalize")
+            self._raise_session_error_if_present(session_id, messages)
+            tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
             if tool_output:
                 snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
                 trace_parts = list(snapshot.get("parts") or [])
                 trace_parts.append(
                     {
                         "type": "text",
-                        "text": "btplbound finalize 已完成，后端使用 finalize stdout 作为模板边界裁决结果。",
+                        "text": f"{early_tool_command} 已完成，后端使用 finalize stdout 作为模板提取结果。",
                     }
                 )
                 early_response = self._tool_output_response(
@@ -943,7 +957,7 @@ class OpencodeClient:
                     output=tool_output,
                     trace_parts=trace_parts,
                 )
-                early_response["_completionSource"] = "btplbound-finalize"
+                early_response["_completionSource"] = early_tool_command
                 if stream_callback is not None:
                     stream_callback(
                         {
@@ -954,7 +968,7 @@ class OpencodeClient:
                             "receivedAt": early_response["_traceReceivedAt"],
                             "parts": self._normalize_output_parts(trace_parts),
                             "earlyCompletion": True,
-                            "completionSource": "btplbound-finalize",
+                            "completionSource": early_tool_command,
                         }
                     )
                 return early_response
@@ -977,10 +991,7 @@ class OpencodeClient:
                     )
             time.sleep(0.5)
 
-        raise RuntimeError(
-            "opencode incomplete/stalled: "
-            f"session {session_id} did not complete btplbound finalize within {int(idle_timeout)} seconds."
-        )
+        self._raise_template_finalize_opencode_stalled(session_id, messages, idle_timeout)
         return None
 
     def _emit_session_output_delta(
@@ -1056,6 +1067,53 @@ class OpencodeClient:
             ),
         }
 
+    def _session_error_trace(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        for message in reversed(messages):
+            info = message.get("info") if isinstance(message.get("info"), dict) else {}
+            error = info.get("error") if isinstance(info.get("error"), dict) else {}
+            if not error:
+                continue
+            data = error.get("data") if isinstance(error.get("data"), dict) else {}
+            message_text = str(data.get("message") or error.get("message") or error.get("name") or "").strip()
+            status_code = data.get("statusCode") or data.get("status_code") or ""
+            provider_id = str(info.get("providerID") or self.provider_id)
+            model_id = str(info.get("modelID") or self.model_id)
+            failure_reason = "opencode session error"
+            if status_code:
+                failure_reason = f"{failure_reason} {status_code}"
+            if message_text:
+                failure_reason = f"{failure_reason}: {message_text}"
+            return {
+                "status": "error",
+                "sessionId": str(info.get("sessionID") or session_id),
+                "providerId": provider_id,
+                "modelId": model_id,
+                "receivedAt": self._coerce_timestamp((info.get("time") or {}).get("completed") if isinstance(info.get("time"), dict) else ""),
+                "parts": [],
+                "agentStatus": "error",
+                "errorName": str(error.get("name") or ""),
+                "errorStatusCode": status_code,
+                "failureReason": failure_reason,
+                **self._last_tool_trace(messages),
+            }
+        return {}
+
+    def _raise_session_error_if_present(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        trace = self._session_error_trace(session_id, messages)
+        if not trace:
+            return
+        error = RuntimeError(str(trace.get("failureReason") or "opencode session error"))
+        setattr(error, "opencode_trace", trace)
+        raise error
+
     @staticmethod
     def _matches_completed_command(command: str, expected: str) -> bool:
         words = command.split()
@@ -1064,8 +1122,8 @@ class OpencodeClient:
         first_word = Path(words[0]).name
         if expected == "s1parse-finalize":
             return first_word in {"s1parse", "s1parse_router.py"} and len(words) >= 3 and words[1] == "finalize"
-        if expected == "btplbound-finalize":
-            return first_word in {"btplbound", "btplbound_workflow.py"} and len(words) >= 3 and words[1] == "finalize"
+        if expected == "btplnav-finalize":
+            return first_word in {"btplnav", "run_from_manifest.py"} and len(words) >= 3 and words[1] == "finalize"
         return first_word == expected
 
     @staticmethod
@@ -1078,19 +1136,19 @@ class OpencodeClient:
             return False
         summary = parsed.get("summary") if isinstance(parsed.get("summary"), dict) else {}
         stage = str(summary.get("workflowStage") or "").strip().lower()
-        return stage not in {"prepare", "prepared"}
+        return stage == "finalized"
 
     @staticmethod
-    def _btplbound_finalize_output_is_terminal(output: str) -> bool:
+    def _btplnav_finalize_output_is_terminal(output: str) -> bool:
         if not OpencodeClient._looks_like_json_object(output):
             return False
         try:
             parsed = OpencodeClient._parse_json_payload(output)
         except RuntimeError:
             return False
-        if parsed.get("schemaVersion") != "bid-business-template-extractor-boundary-decisions-v1":
+        if parsed.get("schemaVersion") != "bid-business-template-extractor-v1":
             return False
-        return isinstance(parsed.get("decisionFiles"), list) and isinstance(parsed.get("summary"), dict)
+        return isinstance(parsed.get("outputFile"), str) and isinstance(parsed.get("summary"), dict)
 
     @staticmethod
     def _find_completed_bash_tool_output(
@@ -1123,8 +1181,8 @@ class OpencodeClient:
                     if OpencodeClient._s1_finalize_output_is_terminal(output):
                         return output
                     continue
-                if expected == "btplbound-finalize":
-                    if OpencodeClient._btplbound_finalize_output_is_terminal(output):
+                if expected == "btplnav-finalize":
+                    if OpencodeClient._btplnav_finalize_output_is_terminal(output):
                         return output
                     continue
                 if output and OpencodeClient._looks_like_json_object(output):
@@ -1157,16 +1215,23 @@ class OpencodeClient:
             return False
         return str(trace.get("lastToolStatus") or "").lower() in {"running", "pending", "started"}
 
-    def _build_s1_stalled_trace(
+    @staticmethod
+    def _session_polling_idle_timeout(early_tool_command: str = "") -> float:
+        timeout = max(120.0, min(float(settings.opencode_timeout_sec), 900.0))
+        return timeout
+
+    def _build_tool_stalled_trace(
         self,
+        *,
         session_id: str,
         messages: list[dict[str, Any]],
         idle_timeout: float,
+        command_label: str,
     ) -> dict[str, Any]:
         snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
         last_tool = self._last_tool_trace(messages)
         failure_reason = (
-            f"opencode incomplete/stalled: session {session_id} did not complete s1parse finalize "
+            f"opencode incomplete/stalled: session {session_id} did not complete {command_label} "
             f"within {int(idle_timeout)} seconds."
         )
         return {
@@ -1181,6 +1246,32 @@ class OpencodeClient:
             **last_tool,
         }
 
+    def _build_s1_stalled_trace(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        idle_timeout: float,
+    ) -> dict[str, Any]:
+        return self._build_tool_stalled_trace(
+            session_id=session_id,
+            messages=messages,
+            idle_timeout=idle_timeout,
+            command_label="s1parse finalize",
+        )
+
+    def _build_template_finalize_stalled_trace(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        idle_timeout: float,
+    ) -> dict[str, Any]:
+        return self._build_tool_stalled_trace(
+            session_id=session_id,
+            messages=messages,
+            idle_timeout=idle_timeout,
+            command_label="btplnav finalize",
+        )
+
     def _raise_s1_opencode_stalled(
         self,
         session_id: str,
@@ -1188,6 +1279,23 @@ class OpencodeClient:
         idle_timeout: float,
     ) -> None:
         trace = self._build_s1_stalled_trace(session_id, messages, idle_timeout)
+        last_tool = str(trace.get("lastTool") or "unknown")
+        last_status = str(trace.get("lastToolStatus") or "unknown")
+        last_input = self._shorten_text(json.dumps(trace.get("lastToolInput") or {}, ensure_ascii=False), limit=260)
+        error = RuntimeError(
+            "opencode incomplete/stalled: "
+            f"sessionId={session_id}, lastTool={last_tool}, lastStatus={last_status}, lastInput={last_input}"
+        )
+        setattr(error, "opencode_trace", trace)
+        raise error
+
+    def _raise_template_finalize_opencode_stalled(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        idle_timeout: float,
+    ) -> None:
+        trace = self._build_template_finalize_stalled_trace(session_id, messages, idle_timeout)
         last_tool = str(trace.get("lastTool") or "unknown")
         last_status = str(trace.get("lastToolStatus") or "unknown")
         last_input = self._shorten_text(json.dumps(trace.get("lastToolInput") or {}, ensure_ascii=False), limit=260)
@@ -1319,14 +1427,55 @@ class OpencodeClient:
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
-            start = cleaned.find("{")
-            end = cleaned.rfind("}")
-            if start == -1 or end == -1 or end <= start:
+            last_error: json.JSONDecodeError | None = None
+            candidates = OpencodeClient._balanced_json_object_candidates(cleaned)
+            if cleaned.startswith("{"):
+                candidates = [candidate for start, candidate in candidates if start == 0]
+            else:
+                candidates = [candidate for _start, candidate in candidates]
+            for candidate in candidates:
+                try:
+                    parsed = json.loads(candidate)
+                except json.JSONDecodeError as exc:
+                    last_error = exc
+                    continue
+                if isinstance(parsed, dict):
+                    return parsed
+            if "{" not in cleaned or "}" not in cleaned:
                 raise RuntimeError("futurecode 返回内容里没有可解析的 JSON。")
-            try:
-                return json.loads(cleaned[start : end + 1])
-            except json.JSONDecodeError as exc:  # pragma: no cover
-                raise RuntimeError("futurecode 返回的 JSON 无法解析。") from exc
+            if last_error is not None:
+                raise RuntimeError("futurecode 返回的 JSON 无法解析。") from last_error
+            raise RuntimeError("futurecode 返回内容里没有完整的 JSON 对象。")
+
+    @staticmethod
+    def _balanced_json_object_candidates(text: str) -> list[tuple[int, str]]:
+        candidates: list[tuple[int, str]] = []
+        for start, char in enumerate(text):
+            if char != "{":
+                continue
+            depth = 0
+            in_string = False
+            escaped = False
+            for index in range(start, len(text)):
+                current = text[index]
+                if in_string:
+                    if escaped:
+                        escaped = False
+                    elif current == "\\":
+                        escaped = True
+                    elif current == '"':
+                        in_string = False
+                    continue
+                if current == '"':
+                    in_string = True
+                elif current == "{":
+                    depth += 1
+                elif current == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidates.append((start, text[start : index + 1]))
+                        break
+        return candidates
 
     @staticmethod
     def _looks_like_json_object(content: str) -> bool:
@@ -1458,12 +1607,6 @@ class OpencodeClient:
                 '{"decisions":[{"id":"APPX-0001","action":"accept|review|reject",'
                 '"templateType":"bid_letter","quality":"complete|probably_incomplete|title_only",'
                 '"reason":"一句简短原因"}]}'
-            )
-        elif repair_kind == "business_template_boundary":
-            schema_hint = (
-                '{"schemaVersion":"bid-business-template-extractor-boundary-decisions-v1",'
-                '"decisionFiles":["/data/parsed/PRJ-0001/business_template_extraction/DOC-1/llm_boundary_decisions.json"],'
-                '"summary":{"documentCount":1,"decisionCount":1,"rejectedCount":0}}'
             )
         elif repair_kind == "table_fill":
             schema_hint = (

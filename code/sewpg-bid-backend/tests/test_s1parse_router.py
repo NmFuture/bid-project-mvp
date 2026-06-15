@@ -84,13 +84,7 @@ class S1ParseRouterTests(unittest.TestCase):
 
     def test_main_dispatches_manifest_to_resolved_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            manifest_path = self.write_manifest(
-                Path(tmp),
-                {
-                    "bidType": "商务标",
-                    "documents": [],
-                },
-            )
+            manifest_path = self.write_manifest(Path(tmp), {"bidType": "商务标", "documents": []})
             resolved_runner = Path("/tmp/fake-business-runner.py")
 
             with (
@@ -106,13 +100,7 @@ class S1ParseRouterTests(unittest.TestCase):
 
     def test_main_dispatches_business_stage_to_resolved_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            manifest_path = self.write_manifest(
-                Path(tmp),
-                {
-                    "parseProfile": "business",
-                    "documents": [],
-                },
-            )
+            manifest_path = self.write_manifest(Path(tmp), {"parseProfile": "business", "documents": []})
             resolved_runner = Path("/tmp/fake-business-runner.py")
 
             with (
@@ -126,40 +114,9 @@ class S1ParseRouterTests(unittest.TestCase):
         resolve_runner.assert_called_once_with(manifest_path.resolve())
         run_path.assert_called_once_with(str(resolved_runner), run_name="__main__")
 
-    def test_main_dispatches_business_task_helper_to_resolved_runner(self) -> None:
+    def test_main_dispatches_business_navigation_extra_args(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            manifest_path = self.write_manifest(
-                Path(tmp),
-                {
-                    "parseProfile": "business",
-                    "documents": [],
-                },
-            )
-            resolved_runner = Path("/tmp/fake-business-runner.py")
-
-            with (
-                patch.object(ROUTER, "resolve_runner", return_value=resolved_runner) as resolve_runner,
-                patch.object(ROUTER.runpy, "run_path") as run_path,
-                patch.object(sys, "argv", ["s1parse_router.py", "task", str(manifest_path), "qualification_review/part-001"]),
-            ):
-                ROUTER.main()
-                self.assertEqual(
-                    sys.argv,
-                    [str(resolved_runner), "task", str(manifest_path.resolve()), "qualification_review/part-001"],
-                )
-
-        resolve_runner.assert_called_once_with(manifest_path.resolve())
-        run_path.assert_called_once_with(str(resolved_runner), run_name="__main__")
-
-    def test_main_dispatches_business_decision_helper_extra_args_to_resolved_runner(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            manifest_path = self.write_manifest(
-                Path(tmp),
-                {
-                    "parseProfile": "business",
-                    "documents": [],
-                },
-            )
+            manifest_path = self.write_manifest(Path(tmp), {"parseProfile": "business", "documents": []})
             resolved_runner = Path("/tmp/fake-business-runner.py")
 
             with (
@@ -168,44 +125,23 @@ class S1ParseRouterTests(unittest.TestCase):
                 patch.object(
                     sys,
                     "argv",
-                    [
-                        "s1parse_router.py",
-                        "decision-all",
-                        str(manifest_path),
-                        "qualification_review/part-001",
-                        "rejected",
-                        "process_note",
-                        "all candidates are directory entries",
-                    ],
+                    ["s1parse_router.py", "search", str(manifest_path), "递交截止", "--limit", "5"],
                 ),
             ):
                 ROUTER.main()
                 self.assertEqual(
                     sys.argv,
-                    [
-                        str(resolved_runner),
-                        "decision-all",
-                        str(manifest_path.resolve()),
-                        "qualification_review/part-001",
-                        "rejected",
-                        "process_note",
-                        "all candidates are directory entries",
-                    ],
+                    [str(resolved_runner), "search", str(manifest_path.resolve()), "递交截止", "--limit", "5"],
                 )
 
         resolve_runner.assert_called_once_with(manifest_path.resolve())
         run_path.assert_called_once_with(str(resolved_runner), run_name="__main__")
 
-    def test_main_dispatches_business_qualification_item_helper_to_resolved_runner(self) -> None:
+    def test_main_dispatches_business_submit_extra_args(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            manifest_path = self.write_manifest(
-                Path(tmp),
-                {
-                    "parseProfile": "business",
-                    "documents": [],
-                },
-            )
+            manifest_path = self.write_manifest(Path(tmp), {"parseProfile": "business", "documents": []})
             resolved_runner = Path("/tmp/fake-business-runner.py")
+            submitted_json = '[{"key":"projectName","value":"测试项目","evidenceIds":["DOC-1:B000001"]}]'
 
             with (
                 patch.object(ROUTER, "resolve_runner", return_value=resolved_runner) as resolve_runner,
@@ -213,33 +149,13 @@ class S1ParseRouterTests(unittest.TestCase):
                 patch.object(
                     sys,
                     "argv",
-                    [
-                        "s1parse_router.py",
-                        "qualification-item",
-                        str(manifest_path),
-                        "qualification_review/part-001",
-                        "3.1.1 投标人须为合法注册的独立法人。",
-                        "全部标段",
-                        "DOC-1:L1",
-                        "3.1.1 投标人须为合法注册的独立法人。",
-                        "AI 原始拆分结果。",
-                    ],
+                    ["s1parse_router.py", "submit", str(manifest_path), "projectBasics", submitted_json],
                 ),
             ):
                 ROUTER.main()
                 self.assertEqual(
                     sys.argv,
-                    [
-                        str(resolved_runner),
-                        "qualification-item",
-                        str(manifest_path.resolve()),
-                        "qualification_review/part-001",
-                        "3.1.1 投标人须为合法注册的独立法人。",
-                        "全部标段",
-                        "DOC-1:L1",
-                        "3.1.1 投标人须为合法注册的独立法人。",
-                        "AI 原始拆分结果。",
-                    ],
+                    [str(resolved_runner), "submit", str(manifest_path.resolve()), "projectBasics", submitted_json],
                 )
 
         resolve_runner.assert_called_once_with(manifest_path.resolve())
@@ -247,13 +163,7 @@ class S1ParseRouterTests(unittest.TestCase):
 
     def test_main_rejects_stage_for_technical_runner_with_clear_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            manifest_path = self.write_manifest(
-                Path(tmp),
-                {
-                    "parseProfile": "technical",
-                    "documents": [],
-                },
-            )
+            manifest_path = self.write_manifest(Path(tmp), {"parseProfile": "technical", "documents": []})
             stderr = io.StringIO()
 
             with (
@@ -266,13 +176,16 @@ class S1ParseRouterTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 64)
         self.assertIn("stage argument is only supported for business s1parse", stderr.getvalue())
 
-    def test_docker_s1parse_wrapper_forwards_optional_stage_argument(self) -> None:
+    def test_docker_s1parse_wrapper_forwards_agentic_commands(self) -> None:
         dockerfile = ROUTER_PATH.parents[1] / "Dockerfile"
 
         content = dockerfile.read_text(encoding="utf-8")
 
-        self.assertIn('&& [ "$#" -ne 6 ] && [ "$#" -ne 8 ] && [ "$#" -ne 9 ]; then', content)
-        self.assertIn("usage: s1parse [prepare|finalize|offline-fallback|tasks|status|task|validate-decision|decision-all|decision-set|qualification-item] <manifest> [taskId] [...]", content)
+        self.assertIn('if [ "$#" -lt 1 ]; then', content)
+        self.assertIn(
+            "usage: s1parse [prepare|overview|search|read|table|window|submit|status|validate|finalize] <manifest> [...]",
+            content,
+        )
         self.assertIn('exec python3 /workspace/.opencode/skills/s1parse_router.py "$@"', content)
 
     def test_opencode_docker_context_excludes_legacy_skill_snapshots(self) -> None:
@@ -301,6 +214,7 @@ class S1ParseRouterTests(unittest.TestCase):
                 "/data/parsed/**": "allow",
                 "/data/documents/**": "allow",
                 "/data/uploads/**": "allow",
+                "/tmp/**": "allow",
             },
         )
 
@@ -331,6 +245,7 @@ class S1ParseRouterTests(unittest.TestCase):
                 "/data/parsed/**": "allow",
                 "/data/documents/**": "allow",
                 "/data/uploads/**": "allow",
+                "/tmp/**": "allow",
             },
         )
 
@@ -350,6 +265,7 @@ class S1ParseRouterTests(unittest.TestCase):
         self.assertIn('"/data/parsed/**": "allow"', content)
         self.assertIn('"/data/documents/**": "allow"', content)
         self.assertIn('"/data/uploads/**": "allow"', content)
+        self.assertIn('"/tmp/**": "allow"', content)
 
     def test_opencode_entrypoint_merges_external_directory_permissions_into_existing_runtime_config(self) -> None:
         entrypoint = ROUTER_PATH.parents[1] / "docker-entrypoint.sh"
@@ -403,3 +319,4 @@ class S1ParseRouterTests(unittest.TestCase):
         self.assertEqual(effective["permission"]["external_directory"]["/data/parsed/**"], "allow")
         self.assertEqual(effective["permission"]["external_directory"]["/data/documents/**"], "allow")
         self.assertEqual(effective["permission"]["external_directory"]["/data/uploads/**"], "allow")
+        self.assertEqual(effective["permission"]["external_directory"]["/tmp/**"], "allow")

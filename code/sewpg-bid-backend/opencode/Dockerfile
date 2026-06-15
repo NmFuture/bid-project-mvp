@@ -34,8 +34,8 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
     && cp -R /workspace/skills/. /workspace/.opencode/skills/ \
     && printf '%s\n' \
       '#!/bin/sh' \
-      'if [ "$#" -ne 1 ] && [ "$#" -ne 2 ] && [ "$#" -ne 3 ] && [ "$#" -ne 6 ] && [ "$#" -ne 8 ] && [ "$#" -ne 9 ]; then' \
-      '  echo "usage: s1parse [prepare|finalize|offline-fallback|tasks|status|task|validate-decision|decision-all|decision-set|qualification-item] <manifest> [taskId] [...]" >&2' \
+      'if [ "$#" -lt 1 ]; then' \
+      '  echo "usage: s1parse [prepare|overview|search|read|table|window|submit|status|validate|finalize] <manifest> [...]" >&2' \
       '  exit 64' \
       'fi' \
       'exec python3 /workspace/.opencode/skills/s1parse_router.py "$@"' \
@@ -59,11 +59,11 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
     && printf '%s\n' \
       '#!/bin/sh' \
       'case "$1" in' \
-      '  status|candidate-batch|candidate-decision|boundary-batch|boundary-decision|finalize) ;;' \
-      '  *) echo "usage: btplbound [status|candidate-batch|candidate-decision|boundary-batch|boundary-decision|finalize] ..." >&2; exit 64 ;;' \
+      '  prepare|overview|search|read|window|submit|validate|status|finalize) ;;' \
+      '  *) echo "usage: btplnav [prepare|overview|search|read|window|submit|validate|status|finalize] <manifest> [...]" >&2; exit 64 ;;' \
       'esac' \
-      'exec python3 /workspace/.opencode/skills/bid-business-template-extractor/scripts/btplbound_workflow.py "$@"' \
-      > /usr/local/bin/btplbound \
+      'exec python3 /workspace/.opencode/skills/bid-business-template-extractor/scripts/run_from_manifest.py "$@"' \
+      > /usr/local/bin/btplnav \
     && printf '%s\n' \
       '#!/bin/sh' \
       'if [ "$#" -ne 1 ]; then' \
@@ -136,7 +136,7 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       'fi' \
       'exec python3 /workspace/.opencode/skills/wikibuild_router.py "$1"' \
       > /usr/local/bin/wikibuild \
-    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/business-outline /usr/local/bin/btplbound /usr/local/bin/s7assemble /usr/local/bin/businessassemble /usr/local/bin/businessformat /usr/local/bin/s4gap /usr/local/bin/businessgap /usr/local/bin/businesstablefill /usr/local/bin/s4fill /usr/local/bin/s4wordfill /usr/local/bin/wikibuild
+    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/business-outline /usr/local/bin/btplnav /usr/local/bin/s7assemble /usr/local/bin/businessassemble /usr/local/bin/businessformat /usr/local/bin/s4gap /usr/local/bin/businessgap /usr/local/bin/businesstablefill /usr/local/bin/s4fill /usr/local/bin/s4wordfill /usr/local/bin/wikibuild
 
 EXPOSE 4096
 
