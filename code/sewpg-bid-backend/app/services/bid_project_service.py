@@ -199,7 +199,6 @@ business_project_service = BidProjectService(
     not_found_message="商务标项目不存在。",
     wrong_type_message="该接口仅支持商务标项目。",
     delete_message="商务标项目已删除",
-    clear_turbine_model=True,
     sync_business_parse_assets=True,
 )
 

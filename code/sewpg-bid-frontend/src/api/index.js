@@ -339,6 +339,14 @@ export const technicalProjectsAPI = {
   parseStatus: (id) => request(`/technical/projects/${id}/materials/parse-status`),
 }
 
+export const businessProjectInfoOptionsAPI = {
+  get: () => request('/business/project-info/options'),
+}
+
+export const technicalProjectInfoOptionsAPI = {
+  get: () => request('/technical/project-info/options'),
+}
+
 export const technicalStagesAPI = {
   list: (projectId) => request(`/technical/projects/${projectId}/stages`),
   update: (projectId, stage, data) =>
