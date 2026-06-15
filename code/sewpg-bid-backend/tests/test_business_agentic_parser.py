@@ -17,7 +17,7 @@ class BusinessAgenticParserTests(unittest.TestCase):
         return (
             Path(__file__).resolve().parents[1]
             / "opencode"
-            / "skill"
+            / "skills"
             / "bid-business-tender-structured-parser"
             / "scripts"
             / "run_from_manifest.py"
@@ -894,7 +894,7 @@ class BusinessAgenticParserTests(unittest.TestCase):
 
     def test_template_extractor_directory_is_not_modified_by_agentic_parser(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        extractor_dir = backend_root / "opencode" / "skill" / "bid-business-template-extractor"
+        extractor_dir = backend_root / "opencode" / "skills" / "bid-business-template-extractor"
         before_files = sorted(path.relative_to(extractor_dir).as_posix() for path in extractor_dir.rglob("*") if path.is_file())
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -11,7 +11,7 @@ from pathlib import Path
 class S1ParseRouterScriptTests(unittest.TestCase):
     def router_path(self) -> Path:
         backend_root = Path(__file__).resolve().parents[1]
-        return backend_root / "opencode" / "skill" / "s1parse_router.py"
+        return backend_root / "opencode" / "skills" / "s1parse_router.py"
 
     def test_router_executes_technical_manifest(self) -> None:
         router_path = self.router_path()

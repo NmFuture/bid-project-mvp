@@ -14,7 +14,7 @@ from unittest.mock import patch
 from app.services.system_settings import system_settings_service
 
 
-ROUTER_PATH = Path(__file__).resolve().parents[1] / "opencode" / "skill" / "s1parse_router.py"
+ROUTER_PATH = Path(__file__).resolve().parents[1] / "opencode" / "skills" / "s1parse_router.py"
 
 
 def load_router_module():

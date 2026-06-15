@@ -54,6 +54,8 @@ def normalize_project_turbine_model(value: Any) -> dict[str, Any]:
         "ratedPowerKw": _number_or_empty(raw.get("ratedPowerKw") or raw.get("rated_power_kw")),
         "rotorDiameterM": _number_or_empty(raw.get("rotorDiameterM") or raw.get("rotor_diameter_m")),
         "hubHeightM": _number_or_empty(raw.get("hubHeightM") or raw.get("hub_height_m") or raw.get("hubHeight")),
+        "turbineCount": str(raw.get("turbineCount") or raw.get("count") or "").strip(),
+        "foundationType": str(raw.get("foundationType") or raw.get("foundation") or "").strip(),
         "status": str(raw.get("status") or "manual").strip() or "manual",
         "statusLabel": str(raw.get("statusLabel") or raw.get("statusText") or "").strip(),
         "source": str(raw.get("source") or "manual").strip() or "manual",
@@ -70,6 +72,17 @@ def project_turbine_model(project: dict[str, Any]) -> dict[str, Any]:
         or project.get("machineModel")
         or project.get("turbineModelLabel")
     )
+
+
+def normalize_project_turbine_models(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for item in value:
+        normalized = normalize_project_turbine_model(item)
+        if normalized:
+            output.append(normalized)
+    return output
 
 
 def model_aliases(model: str) -> list[str]:

@@ -1703,7 +1703,7 @@ class ParsePipelineTests(unittest.TestCase):
         script_path = (
             Path(__file__).resolve().parents[1]
             / "opencode"
-            / "skill"
+            / "skills"
             / "bid-tech-tender-structured-parser"
             / "scripts"
             / "run_from_manifest.py"
@@ -2220,7 +2220,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(approved.status_code, 200)
         approved_letter = approved.json()["letter"]
         self.assertEqual(approved_letter["assetReviewStatus"], "approved")
-        self.assertEqual(approved_letter["assetMaterialFolder"], "02-商务响应文件")
+        self.assertEqual(approved_letter["assetMaterialFolder"], "资格审查与商务响应成册")
 
     def test_business_bid_deadline_preserves_minutes_and_ignores_opening_time(self) -> None:
         project_id = self.create_business_project()
@@ -2413,6 +2413,13 @@ class ParsePipelineTests(unittest.TestCase):
         parse_storage = project["parse_storage"]
         self.assertEqual(Path(parse_storage["projectDir"]), settings.documents_dir / project_id / "business-workspace")
         self.assertEqual(Path(parse_storage["parseDir"]), workspace_parse_dir)
+        s1_handoff = project["stageArtifacts"]["s1"]
+        self.assertEqual(s1_handoff["schemaVersion"], "business-s1-handoff-v1")
+        self.assertEqual(s1_handoff["status"], "published")
+        self.assertEqual(s1_handoff["parseProfile"], "business")
+        self.assertEqual(Path(s1_handoff["paths"]["structuredResultPath"]), workspace_parse_dir / "s1_structured_result.json")
+        self.assertEqual(Path(s1_handoff["paths"]["appendicesDir"]), workspace_appendix_dir)
+        self.assertEqual(Path(s1_handoff["paths"]["commitmentLettersDir"]), workspace_commitment_dir)
 
         structured_result = json.loads((workspace_parse_dir / "s1_structured_result.json").read_text(encoding="utf-8"))
         self.assertEqual(structured_result["schemaVersion"], "bid-business-tender-structured-v1")

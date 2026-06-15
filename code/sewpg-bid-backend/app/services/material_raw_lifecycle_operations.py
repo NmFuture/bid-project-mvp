@@ -85,11 +85,12 @@ async def delete_raw_folder(
     purge_raw_file_objects: RawFilePurger,
     mark_default_folder_deleted: MarkDefaultFolderDeleted,
     raw_tree: RawTreeLoader,
+    allow_protected: bool = False,
 ) -> dict[str, Any]:
     folder_path = str(path or "").strip().strip("/")
     if not folder_path:
         raise PeripheralError(400, "path 不能为空。", "RAW_FOLDER_PATH_REQUIRED")
-    if is_raw_material_protected_folder_path(folder_path):
+    if is_raw_material_protected_folder_path(folder_path) and not allow_protected:
         raise PeripheralError(400, "基础素材目录不允许删除。", "RAW_FOLDER_DELETE_PROTECTED")
     async with async_session() as session:
         await ensure_runtime_tables(session)

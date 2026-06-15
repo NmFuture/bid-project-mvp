@@ -19,7 +19,7 @@ from app.services.project_stage_flow import (
     should_skip_technical_gap_stage,
     updated_project_stage_after_request,
 )
-from app.services.turbine_models import normalize_project_turbine_model, project_turbine_model
+from app.services.turbine_models import normalize_project_turbine_model, normalize_project_turbine_models, project_turbine_model
 from app.services.workspace_artifacts import cleanup_parse_temp_workspace, promote_parse_artifacts_to_workspace
 
 
@@ -59,8 +59,12 @@ def normalize_project_identity_state(project: dict[str, Any]) -> dict[str, Any]:
     project["materialProjectName"] = identity.get("projectName") or ""
     project["materialProjectMode"] = identity.get("materialProjectMode") or project.get("materialProjectMode") or ""
     turbine = project_turbine_model(project)
+    turbine_models = normalize_project_turbine_models(project.get("turbineModels"))
+    if not turbine_models and turbine:
+        turbine_models = [copy.deepcopy(turbine)]
     project["turbineModel"] = turbine
     project["selectedTurbineModel"] = copy.deepcopy(turbine)
+    project["turbineModels"] = copy.deepcopy(turbine_models)
     project["turbineModelLabel"] = str(turbine.get("model") or "")
     return project
 
@@ -89,6 +93,7 @@ def project_summary_state(project: dict[str, Any]) -> dict[str, Any]:
         "materialProjectMode": project.get("materialProjectMode") or identity.get("materialProjectMode") or "",
         "turbineModel": copy.deepcopy(turbine),
         "selectedTurbineModel": copy.deepcopy(turbine),
+        "turbineModels": copy.deepcopy(project.get("turbineModels") or ([] if not turbine else [turbine])),
         "turbineModelLabel": str(turbine.get("model") or ""),
         "owner": project["owner"],
         "manager": project["manager"],
@@ -274,6 +279,7 @@ def create_project_state(project_id: str, data: dict[str, Any]) -> dict[str, Any
         "turbineModel": normalize_project_turbine_model(
             data.get("turbineModel") or data.get("selectedTurbineModel") or data.get("machineModel")
         ),
+        "turbineModels": normalize_project_turbine_models(data.get("turbineModels")),
         "isKeyAccount": bool(data.get("isKeyAccount")),
         "keyAccountId": str(data.get("keyAccountId") or ""),
         "reviewDecision": review_decision,
@@ -333,6 +339,8 @@ def update_project_state(project: dict[str, Any], project_id: str, data: dict[st
         project["turbineModel"] = normalize_project_turbine_model(
             data.get("turbineModel") or data.get("selectedTurbineModel") or data.get("machineModel")
         )
+    if "turbineModels" in data:
+        project["turbineModels"] = normalize_project_turbine_models(data.get("turbineModels"))
     if "endDate" in data and "deadline" not in data:
         project["deadline"] = str(data.get("endDate") or "")
     if "deadline" in data and "endDate" not in data:
@@ -361,6 +369,8 @@ def update_review_decision_state(project: dict[str, Any], project_id: str, value
             )
             project["parse_result"] = promoted["parseResult"]
             project["parse_storage"] = promoted["parseStorage"]
+            if promoted["stageArtifacts"]:
+                project["stageArtifacts"] = promoted["stageArtifacts"]
             project["workspaceArtifacts"] = promoted["artifacts"]
             cleanup_parse_temp_workspace(project_id)
     elif decision == "abandon":
@@ -397,11 +407,11 @@ def run_workspace_material_folder_delete(path: str) -> dict[str, Any]:
     if normalized.startswith(f"{BUSINESS_BID_TYPE}/"):
         from app.services.business_material_store import business_material_store
 
-        result = run_awaitable_sync(business_material_store.raw_delete_folder(normalized))
+        result = run_awaitable_sync(business_material_store.raw_cleanup_project_folder(normalized))
     elif normalized.startswith(f"{TECHNICAL_BID_TYPE}/"):
         from app.services.technical_material_store import technical_material_store
 
-        result = run_awaitable_sync(technical_material_store.raw_delete_folder(normalized))
+        result = run_awaitable_sync(technical_material_store.raw_cleanup_project_folder(normalized))
     else:
         raise PeripheralError(400, "项目素材目录必须位于技术标或商务标素材库。", "PROJECT_MATERIAL_PATH_REQUIRED")
     return result if isinstance(result, dict) else {}

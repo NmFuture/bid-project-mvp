@@ -14,6 +14,7 @@ from app.services.material_folder_maintenance import (
     bootstrap_project_material_folder,
     ensure_business_standard_subfolders,
     migrate_legacy_technical_folders,
+    prune_empty_legacy_business_default_folders,
 )
 from app.services.material_folder_scope import (
     canonical_raw_folder_metadata,
@@ -30,6 +31,13 @@ def _safe_segment(value: str, fallback: str) -> str:
     text = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
     text = re.sub(r"\s+", " ", text).strip(" .")
     return text or fallback
+
+
+def _can_skip_default_folder(child_path: str, deleted_default_paths: set[str]) -> bool:
+    normalized = str(child_path or "").replace("\\", "/").strip("/")
+    if normalized.startswith(f"{BUSINESS_BID_TYPE}/"):
+        return False
+    return normalized in deleted_default_paths
 
 
 class RawFolderOperations:
@@ -73,7 +81,7 @@ class RawFolderOperations:
             bid_type = str(spec["name"])
             for child in raw_material_tier_folder_specs(bid_type):
                 child_path = f"{bid_type}/{child['name']}"
-                if child_path in deleted_default_paths:
+                if _can_skip_default_folder(child_path, deleted_default_paths):
                     continue
                 await self.ensure_folder_path(
                     session,
@@ -97,6 +105,7 @@ class RawFolderOperations:
                     session,
                     ensure_folder_path=self.ensure_folder_path,
                 )
+                await prune_empty_legacy_business_default_folders(session)
         await migrate_legacy_technical_folders(
             session,
             find_folder=self.find_folder,

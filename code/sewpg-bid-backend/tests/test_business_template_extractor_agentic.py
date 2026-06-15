@@ -17,8 +17,8 @@ from app.services.business_template_extractor import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNNER = ROOT / "opencode" / "skill" / "bid-business-template-extractor" / "scripts" / "run_from_manifest.py"
-SKILL_MD = ROOT / "opencode" / "skill" / "bid-business-template-extractor" / "SKILL.md"
+RUNNER = ROOT / "opencode" / "skills" / "bid-business-template-extractor" / "scripts" / "run_from_manifest.py"
+SKILL_MD = ROOT / "opencode" / "skills" / "bid-business-template-extractor" / "SKILL.md"
 
 
 def build_agentic_template_docx(path: Path) -> None:

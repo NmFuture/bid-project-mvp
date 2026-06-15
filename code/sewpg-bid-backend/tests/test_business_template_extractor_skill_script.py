@@ -17,8 +17,8 @@ from app.services.business_template_extractor import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNNER = ROOT / "opencode" / "skill" / "bid-business-template-extractor" / "scripts" / "run_from_manifest.py"
-SKILL_DIR = ROOT / "opencode" / "skill" / "bid-business-template-extractor"
+RUNNER = ROOT / "opencode" / "skills" / "bid-business-template-extractor" / "scripts" / "run_from_manifest.py"
+SKILL_DIR = ROOT / "opencode" / "skills" / "bid-business-template-extractor"
 SKILL_MD = SKILL_DIR / "SKILL.md"
 
 

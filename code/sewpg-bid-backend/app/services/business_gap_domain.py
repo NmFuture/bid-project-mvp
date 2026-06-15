@@ -131,6 +131,10 @@ def task_fill_plan(task: dict[str, Any]) -> dict[str, Any]:
     }
     if task.get("selectedEvidenceSegments"):
         plan["evidenceSegmentCount"] = len(task.get("selectedEvidenceSegments") or [])
+    existing = task.get("fillPlan") if isinstance(task.get("fillPlan"), dict) else {}
+    for key in ("expectedInputs", "missingFacts", "readyFactCount", "totalFactCount"):
+        if key in existing:
+            plan[key] = existing[key]
     return plan
 
 
@@ -264,6 +268,17 @@ def recompute_task_after_artifact_change(task: dict[str, Any]) -> None:
         if candidate_matches_assembly_mode(task, item)
     ]
     if confirmed_artifacts:
+        parse_inherited_only = all(
+            str(item.get("artifactType") or "").startswith("parse_")
+            or str(item.get("sourceMode") or "").startswith("parsed_")
+            for item in confirmed_artifacts
+        )
+        if parse_inherited_only and "missing_project_facts" in (task.get("riskFlags") or []):
+            # 解析继承的工件只代表模板边界已审，必填事实缺失时不放行，
+            # 人工选择/上传/填写产物视为人工已决策，不在此降级
+            task["decision"] = "review_required"
+            task["status"] = "review_required"
+            return
         task["decision"] = "ready"
         task["status"] = "ready"
         return
@@ -409,12 +424,12 @@ def default_material_target_path(project_id: str, task: dict[str, Any]) -> str:
     if module_key == "qualification_compliance_certificates" and (
         sub_module == "special_certificates" or task_type == "certificate" or "认证" in title or "证书" in title
     ):
-        return f"{root}/02-商务响应文件/专题证书"
+        return f"{root}/资格审查与商务响应成册"
     if module_key in {"base_documents_guarantees", "structured_response_tables", "commitments_and_notes"}:
-        return f"{root}/02-商务响应文件"
+        return f"{root}/资格审查与商务响应成册"
     if module_key == "performance_cooperation_support":
-        return f"{root}/01-客户关系与专项证明"
-    return f"{root}/03-模板底稿与过程文件"
+        return f"{root}/招标要求与专项证明"
+    return f"{root}/项目过程稿与澄清文件"
 
 
 def decode_upload_content(content: str, *, fallback_mime: str = "") -> tuple[bytes, str]:

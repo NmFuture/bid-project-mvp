@@ -19,7 +19,7 @@ def backend_root() -> Path:
 
 
 def btplnav_runner_path() -> Path:
-    return backend_root() / "opencode" / "skill" / SKILL_NAME / "scripts" / "run_from_manifest.py"
+    return backend_root() / "opencode" / "skills" / SKILL_NAME / "scripts" / "run_from_manifest.py"
 
 
 def build_business_template_extractor_manifest(

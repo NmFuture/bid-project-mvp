@@ -11,6 +11,22 @@ const cleanQuery = (params = {}) =>
     Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== ''),
   )
 
+const appendCleanQuery = (query, params = {}) => {
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (item !== undefined && item !== null && item !== '') {
+          query.append(key, item)
+        }
+      })
+      return
+    }
+    query.append(key, value)
+  })
+  return query
+}
+
 const joinUrl = (base, path) => {
   if (base.startsWith('http://') || base.startsWith('https://')) {
     return `${base.replace(/\/+$/, '')}${path}`
@@ -277,6 +293,11 @@ export const businessGapsAPI = {
       timeoutMs: 5 * 60 * 1000,
       retryCount: 0,
     }),
+  artifactContentUrl: (projectId, artifactId, fileName) =>
+    joinUrl(
+      ENV.API_BASE_URL,
+      `/business/projects/${projectId}/business-gaps/artifacts/${encodeURIComponent(artifactId)}/content/${encodeURIComponent(fileName || 'artifact.docx')}`,
+    ),
   removeArtifact: (projectId, taskId, artifactId) =>
     request(`/business/projects/${projectId}/business-gaps/tasks/${taskId}/artifacts/${encodeURIComponent(artifactId)}`, { method: 'DELETE' }),
   selectMaterial: (projectId, taskId, data) =>
@@ -316,6 +337,14 @@ export const technicalProjectsAPI = {
   updateTemplateFallback: (id, data) =>
     request(`/technical/projects/${id}/template-fallback`, { method: 'PUT', body: data }),
   parseStatus: (id) => request(`/technical/projects/${id}/materials/parse-status`),
+}
+
+export const businessProjectInfoOptionsAPI = {
+  get: () => request('/business/project-info/options'),
+}
+
+export const technicalProjectInfoOptionsAPI = {
+  get: () => request('/technical/project-info/options'),
 }
 
 export const technicalStagesAPI = {
@@ -639,10 +668,39 @@ export const businessDocumentAPI = {
 
 export const businessMaterialsAPI = {
   identityOptions: () => request('/business/materials/identity-options'),
+  performance: {
+    list: (params = {}) => {
+      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      return request(`/business/materials/performance${qs ? `?${qs}` : ''}`)
+    },
+    categories: (params = {}) => {
+      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      return request(`/materials/performance/categories${qs ? `?${qs}` : ''}`)
+    },
+    previewCategory: (data) =>
+      request('/materials/performance/categories/preview', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    importCategory: (data) =>
+      request('/materials/performance/categories/import', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    category: (id) => request(`/materials/performance/categories/${id}`),
+    deleteCategory: (id, data = {}) => request(`/materials/performance/categories/${id}`, { method: 'DELETE', body: data }),
+    updateCategoryStatus: (id, data) => request(`/materials/performance/categories/${id}/status`, { method: 'PATCH', body: data }),
+    uploadCategoryAttachment: (id, data) =>
+      request(`/materials/performance/categories/${id}/attachments`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    categoryAttachmentUrl: (categoryId, attachmentId) =>
+      joinUrl(ENV.API_BASE_URL, `/materials/performance/categories/${categoryId}/attachments/${attachmentId}`),
+    itemAttachmentUrl: (categoryId, itemId, attachmentId) =>
+      joinUrl(ENV.API_BASE_URL, `/materials/performance/categories/${categoryId}/items/${itemId}/attachments/${attachmentId}`),
+    create: (data) => request('/business/materials/performance', { method: 'POST', body: data }),
+    update: (id, data) => request(`/business/materials/performance/${id}`, { method: 'PUT', body: data }),
+    delete: (id) => request(`/business/materials/performance/${id}`, { method: 'DELETE' }),
+    uploadWord: (id, data) =>
+      request(`/business/materials/performance/${id}/word`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    wordUrl: (id) => joinUrl(ENV.API_BASE_URL, `/business/materials/performance/${id}/word`),
+  },
   raw: {
     tree: () => request('/business/materials/raw/tree'),
     files: (params = {}) => {
-      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      const qs = appendCleanQuery(new URLSearchParams(), params).toString()
       return request(`/business/materials/raw/files${qs ? `?${qs}` : ''}`)
     },
     upload: (data) =>

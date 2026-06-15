@@ -23,7 +23,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         settings.parsed_dir = self.original_parsed_dir
         self.temp_dir.cleanup()
 
-    async def test_generate_platform_wiki_uses_local_skill_blueprint(self) -> None:
+    async def test_generate_platform_wiki_uses_llm_refine_blueprint(self) -> None:
         skill_payload = {
             "summary": "Wiki 已由 skill 生成。",
             "rootTitle": "技术标Wiki（自动生成）",
@@ -52,7 +52,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"total": 1, "docxTotal": 1, "parsedDocxTotal": 1, "groups": {}, "items": []},
             ),
             patch(
-                "app.services.wiki_generation._run_local_wiki_skill",
+                "app.services.wiki_generation._run_llm_wiki_skill",
                 return_value=skill_payload,
             ) as generate,
             patch(
@@ -69,7 +69,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         import_blueprint.assert_awaited_once()
         self.assertEqual(import_blueprint.call_args.kwargs["root_title"], "技术标Wiki（自动生成）")
         self.assertEqual(import_blueprint.call_args.kwargs["nodes"][0]["title"], "00-Wiki使用说明")
-        self.assertEqual(result["generation"]["generator"], "local_skill")
+        self.assertEqual(result["generation"]["generator"], "llm_refine")
         self.assertEqual(result["generation"]["bidType"], "技术标")
         self.assertEqual(result["generation"]["skill"], "bid-tech-wiki-material-builder")
         self.assertFalse(result["generation"]["fallbackUsed"])
@@ -122,7 +122,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"total": 2, "docxTotal": 2, "parsedDocxTotal": 2, "groups": {}, "items": []},
             ),
             patch(
-                "app.services.wiki_generation._run_local_wiki_skill",
+                "app.services.wiki_generation._run_llm_wiki_skill",
                 return_value=skill_payload,
             ) as generate,
             patch(
@@ -186,7 +186,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"total": 1, "docxTotal": 1, "parsedDocxTotal": 1, "groups": {}, "items": []},
             ),
             patch(
-                "app.services.wiki_generation._run_local_wiki_skill",
+                "app.services.wiki_generation._run_llm_wiki_skill",
                 return_value=opencode_payload,
             ),
             patch(
@@ -210,6 +210,10 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"total": 0, "docxTotal": 0, "parsedDocxTotal": 0, "groups": {}, "items": []},
             ),
             patch(
+                "app.services.wiki_generation._run_llm_wiki_skill",
+                side_effect=RuntimeError("opencode 不可用"),
+            ),
+            patch(
                 "app.services.wiki_generation._run_local_wiki_skill",
                 side_effect=RuntimeError("skill 不可用"),
             ),
@@ -230,6 +234,10 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 "app.services.wiki_generation._summarize_material_inventory",
                 new_callable=AsyncMock,
                 return_value={"total": 0, "docxTotal": 0, "parsedDocxTotal": 0, "groups": {}, "items": []},
+            ),
+            patch(
+                "app.services.wiki_generation._run_llm_wiki_skill",
+                side_effect=RuntimeError("opencode 不可用"),
             ),
             patch(
                 "app.services.wiki_generation._run_local_wiki_skill",
@@ -258,6 +266,10 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 "app.services.wiki_generation._summarize_material_inventory",
                 new_callable=AsyncMock,
                 return_value={"total": 0, "docxTotal": 0, "parsedDocxTotal": 0, "groups": {}, "items": []},
+            ),
+            patch(
+                "app.services.wiki_generation._run_llm_wiki_skill",
+                side_effect=RuntimeError("opencode 不可用"),
             ),
             patch(
                 "app.services.wiki_generation._run_local_wiki_skill",
@@ -289,7 +301,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                     "id": "biz-001",
                     "name": "投标函.docx",
                     "title": "投标函",
-                    "path": "项目素材/PRJ-001/02-商务响应文件/投标函.docx",
+                    "path": "项目素材/PRJ-001/项目商务响应文件/投标函.docx",
                     "ext": "docx",
                     "cleanedFileName": "投标函-cleaned.docx",
                     "hasCleanedWord": True,
@@ -309,7 +321,7 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                     "id": "biz-002",
                     "name": "叶片型式认证.png",
                     "title": "叶片型式认证",
-                    "path": "通用素材/05-专题证书库/02-大部件型式认证证书/叶片型式认证.png",
+                    "path": "通用素材/专题证书库/大部件型式认证证书/叶片型式认证.png",
                     "ext": "png",
                     "identityScope": "general",
                     "materialTier": "standard",
@@ -327,6 +339,10 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 "app.services.wiki_generation._summarize_material_inventory",
                 new_callable=AsyncMock,
                 return_value=inventory,
+            ),
+            patch(
+                "app.services.wiki_generation._run_llm_wiki_skill",
+                side_effect=RuntimeError("opencode 不可用"),
             ),
             patch(
                 "app.services.wiki_generation._run_local_wiki_skill",
@@ -353,8 +369,8 @@ class WikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(imported_nodes[1]["children"][0]["title"], "01-商务评分索引表")
         self.assertEqual(imported_nodes[2]["children"][0]["title"], "通用素材")
-        self.assertEqual(imported_nodes[2]["children"][0]["children"][0]["title"], "05-专题证书库")
-        self.assertEqual(imported_nodes[2]["children"][0]["children"][0]["children"][0]["title"], "02-大部件型式认证证书")
+        self.assertEqual(imported_nodes[2]["children"][0]["children"][0]["title"], "机型认证与测试报告")
+        self.assertEqual(imported_nodes[2]["children"][0]["children"][0]["children"][0]["title"], "叶片型式认证")
         self.assertEqual(imported_nodes[3]["children"][0]["title"], "01-项目基础变量")
         self.assertEqual(imported_nodes[4]["children"][0]["title"], "01-身份过滤规则")
         card_markdowns: list[str] = []

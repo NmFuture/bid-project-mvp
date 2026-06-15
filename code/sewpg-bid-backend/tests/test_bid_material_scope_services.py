@@ -72,6 +72,7 @@ from app.services.technical_gap_review import (
 )
 from app.services.technical_gap_service import technical_gap_service
 from app.services.technical_gap_state import ensure_technical_review_document_state
+from app.services.peripheral import PeripheralError
 from app.services.technical_material_store import technical_material_store
 
 
@@ -884,10 +885,10 @@ def test_project_delete_uses_workspace_material_store_facades() -> None:
         return {"message": "technical deleted", "folderPath": path}
 
     with patch(
-        "app.services.business_material_store.business_material_store.raw_delete_folder",
+        "app.services.business_material_store.business_material_store.raw_cleanup_project_folder",
         side_effect=fake_business_delete,
     ), patch(
-        "app.services.technical_material_store.technical_material_store.raw_delete_folder",
+        "app.services.technical_material_store.technical_material_store.raw_cleanup_project_folder",
         side_effect=fake_technical_delete,
     ):
         store.delete_project(business_project_id)
@@ -895,6 +896,48 @@ def test_project_delete_uses_workspace_material_store_facades() -> None:
 
     assert business_deleted == [f"商务标/项目素材/{business_project_id}"]
     assert technical_deleted == [f"技术标/项目素材/{technical_project_id}"]
+
+
+def test_project_material_cleanup_facades_only_accept_project_roots() -> None:
+    from app.services.business_material_store import business_material_store
+    from app.services.technical_material_store import technical_material_store
+
+    business_calls: list[dict[str, str]] = []
+    technical_calls: list[dict[str, str]] = []
+
+    async def fake_business_cleanup(path: str, *, bid_type: str) -> dict[str, object]:
+        business_calls.append({"path": path, "bidType": bid_type})
+        return {"message": "business cleanup", "folderPath": path}
+
+    async def fake_technical_cleanup(path: str, *, bid_type: str) -> dict[str, object]:
+        technical_calls.append({"path": path, "bidType": bid_type})
+        return {"message": "technical cleanup", "folderPath": path}
+
+    with patch("app.services.business_material_store.material_store.raw_cleanup_project_folder", side_effect=fake_business_cleanup):
+        payload = asyncio.run(business_material_store.raw_cleanup_project_folder("商务标/项目素材/BIZ-001"))
+    assert payload["folderPath"] == "商务标/项目素材/BIZ-001"
+    assert business_calls == [{"path": "商务标/项目素材/BIZ-001", "bidType": "商务标"}]
+
+    with patch("app.services.technical_material_store.material_store.raw_cleanup_project_folder", side_effect=fake_technical_cleanup):
+        payload = asyncio.run(technical_material_store.raw_cleanup_project_folder("技术标/项目素材/TECH-001"))
+    assert payload["folderPath"] == "技术标/项目素材/TECH-001"
+    assert technical_calls == [{"path": "技术标/项目素材/TECH-001", "bidType": "技术标"}]
+
+    for invalid_path in ("商务标/通用素材", "商务标/项目素材", "商务标/项目素材/BIZ-001/项目商务响应文件"):
+        try:
+            asyncio.run(business_material_store.raw_cleanup_project_folder(invalid_path))
+        except PeripheralError as exc:
+            assert exc.code == "PROJECT_MATERIAL_PATH_REQUIRED"
+        else:
+            raise AssertionError(f"expected PeripheralError for {invalid_path}")
+
+    for invalid_path in ("技术标/通用素材", "技术标/项目素材", "技术标/项目素材/TECH-001/子目录"):
+        try:
+            asyncio.run(technical_material_store.raw_cleanup_project_folder(invalid_path))
+        except PeripheralError as exc:
+            assert exc.code == "PROJECT_MATERIAL_PATH_REQUIRED"
+        else:
+            raise AssertionError(f"expected PeripheralError for {invalid_path}")
 
 
 def test_bid_project_state_rules_are_outside_store() -> None:
@@ -1306,7 +1349,6 @@ def test_bid_type_rules_have_single_source_of_truth() -> None:
         "technical_gap_planner": Path("app/services/technical_gap_planner.py").read_text(encoding="utf-8"),
         "technical_gap_review": Path("app/services/technical_gap_review.py").read_text(encoding="utf-8"),
         "technical_gap_state": Path("app/services/technical_gap_state.py").read_text(encoding="utf-8"),
-        "business_gap_fact_table": Path("app/services/business_gap_fact_table.py").read_text(encoding="utf-8"),
         "technical_gap_fact_table": Path("app/services/technical_gap_fact_table.py").read_text(encoding="utf-8"),
         "business_gap_service": Path("app/services/business_gap_service.py").read_text(encoding="utf-8"),
         "bid_project_service": Path("app/services/bid_project_service.py").read_text(encoding="utf-8"),
@@ -1531,8 +1573,8 @@ def test_store_does_not_bypass_workspace_material_facades() -> None:
     assert not re.search(r"(?<![A-Za-z_])material_store\.", source)
     assert "business_material_store.raw_delete_folder" not in source
     assert "technical_material_store.raw_delete_folder" not in source
-    assert "business_material_store.raw_delete_folder" in project_state_source
-    assert "technical_material_store.raw_delete_folder" in project_state_source
+    assert "business_material_store.raw_cleanup_project_folder" in project_state_source
+    assert "technical_material_store.raw_cleanup_project_folder" in project_state_source
 
 
 def test_business_parse_assets_upload_uses_business_material_store() -> None:
@@ -1566,14 +1608,14 @@ def test_business_parse_assets_upload_uses_business_material_store() -> None:
         payload = asyncio.run(
             business_parse_assets_module._upload_business_material_files(
                 project,
-                target_folder="02-商务响应文件",
+                target_folder="项目商务响应文件",
                 files=[{"name": "商务评分标准.docx", "data": b"docx", "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}],
             )
         )
 
     assert payload["items"][0]["bidType"] == "商务标"
     assert len(calls) == 1
-    assert calls[0]["target_path"] == "商务标/项目素材/PRJ-BIZ-PARSE-ASSET/02-商务响应文件"
+    assert calls[0]["target_path"] == "商务标/项目素材/PRJ-BIZ-PARSE-ASSET/项目商务响应文件"
     assert calls[0]["project_id"] == "PRJ-BIZ-PARSE-ASSET"
     assert calls[0]["project_code"] == "BIZ-2026-001"
     assert calls[0]["project_name"] == "商务解析资产同步测试"
@@ -2417,6 +2459,56 @@ def test_project_fact_material_download_uses_workspace_material_stores() -> None
     assert not re.search(r"(?<![A-Za-z_])material_store\.raw_download", source)
 
 
+def test_project_fact_material_download_supports_performance_package(tmp_path) -> None:
+    from app.services.project_fact_materials import prepare_project_fact_material_files
+
+    async def fake_download_item_attachment(category_id: str, item_id: str, attachment_id: str) -> dict[str, str]:
+        assert category_id == "PERCAT-0011"
+        assert item_id == "PERITEM-0268"
+        assert attachment_id == "PERITEMATT-0118"
+        return {
+            "fileName": "001-华电新疆喀什_合同.docx",
+            "bucket": "mock-bucket",
+            "key": "performance-categories/PERCAT-0011/item-contracts/PERITEM-0268/doc.docx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+
+    def fake_download_file(bucket: str, key: str, target_path) -> None:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(b"performance-package-docx")
+
+    material_index = [
+        {
+            "id": "PERITEM-0268",
+            "materialId": "PERITEM-0268",
+            "categoryId": "PERCAT-0011",
+            "name": "华电新疆喀什 2x66 万千瓦",
+            "sourceType": "performance_package",
+            "candidateType": "performance_item",
+            "attachments": [{"id": "PERITEMATT-0118", "itemId": "PERITEM-0268", "categoryId": "PERCAT-0011"}],
+        }
+    ]
+
+    with patch(
+        "app.services.performance_material_resolver.performance_package_service.download_item_attachment",
+        side_effect=fake_download_item_attachment,
+    ), patch(
+        "app.services.project_fact_materials.business_material_store.raw_download_content",
+        side_effect=AssertionError("performance package must not use raw material downloads"),
+    ), patch(
+        "app.services.project_fact_materials.business_material_store.raw_download_cleaned_content",
+        side_effect=AssertionError("performance package must not use raw cleaned material downloads"),
+    ), patch(
+        "app.services.project_fact_materials.minio_client.download_file",
+        side_effect=fake_download_file,
+    ):
+        prepared = prepare_project_fact_material_files(material_index, tmp_path, bid_type="商务标")
+
+    assert prepared[0]["sourceKind"] == "performance_package_item"
+    assert prepared[0]["fileName"] == "PERITEM-0268-001-华电新疆喀什_合同.docx"
+    assert Path(prepared[0]["path"]).exists()
+
+
 def test_ocr_routes_are_workspace_scoped() -> None:
     router_source = Path("app/api/router.py").read_text(encoding="utf-8")
     business_source = Path("app/api/routes/business.py").read_text(encoding="utf-8")
@@ -3146,6 +3238,350 @@ def test_business_gap_build_facts_stays_in_business_service() -> None:
     assert store._require(project_id)["business_gap_state"]["projectFactTable"]["fields"][0]["value"] == "BIZ-001"
 
 
+def test_business_gap_save_facts_allows_user_add_and_delete_fields() -> None:
+    project_id = _seed_business_gap_project(
+        {
+            "schemaVersion": "bid-business-gap-plan-v1",
+            "tocRefs": [],
+            "tasks": [],
+            "summary": {},
+        }
+    )
+    record = store._require(project_id)
+    record["business_gap_state"]["projectFactTable"] = {
+        "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+        "projectId": project_id,
+        "status": "draft",
+        "builtAt": now_iso(),
+        "updatedAt": now_iso(),
+        "fields": [
+            {"label": "招标项目名称", "value": "", "status": "missing"},
+            {"label": "招标编号", "value": "", "status": "missing"},
+        ],
+        "summary": {"totalCount": 2},
+    }
+    store._persist_project(record)
+
+    payload = asyncio.run(
+        business_gap_service.save_facts(
+            project_id,
+            {
+                "fields": [
+                    {"label": "项目名称", "value": "商务标服务拆分测试项目"},
+                    {"label": "投标人", "value": "测试投标单位"},
+                    {"label": "自定义联系人", "value": "张三"},
+                ],
+                "confirm": False,
+                "operator": "测试用户",
+            },
+        )
+    )
+
+    labels = {field["label"]: field for field in payload["fields"]}
+    assert len(payload["fields"]) == 3
+    assert payload["fields"][0]["label"] == "招标项目名称"
+    assert labels["招标项目名称"]["value"] == "商务标服务拆分测试项目"
+    assert labels["投标人"]["value"] == "测试投标单位"
+    assert labels["自定义联系人"]["category"] == "人工补充事实"
+    assert labels["自定义联系人"]["sourceMode"] == "manual"
+    assert "招标编号" not in labels
+    assert "项目名称" not in labels
+
+
+def test_business_fact_table_ignores_empty_turbine_model_dict_and_signature_party_noise() -> None:
+    from app.services.business_gap_fact_table import build_project_fact_table
+
+    project = {
+        "id": "PRJ-BIZ-FACT-NOISE",
+        "name": "真实样本事实表降噪测试",
+        "customerName": "京能集团",
+        "bidType": "商务标",
+        "turbineModel": {
+            "model": "",
+            "platform": "",
+            "layout": "",
+            "status": "manual",
+            "aliases": [],
+        },
+        "parse_result": {
+            "status": "completed",
+            "structured": {
+                "projectFactFields": [
+                    {
+                        "fieldKey": "tenderer",
+                        "label": "招标人",
+                        "value": "山西漳山发电有限责任公司 （盖单位章",
+                        "confidence": 0.95,
+                    },
+                    {
+                        "fieldKey": "tenderer",
+                        "label": "招标人",
+                        "value": "将在收到异议之日起 3 日内作出答复，作出答复前，将暂停招标投标活动",
+                        "confidence": 0.96,
+                    },
+                    {
+                        "fieldKey": "tenderer",
+                        "label": "招标人",
+                        "value": "收到澄清后12小时内,逾期未在规定时间内确认的，招标人一律视为已收到",
+                        "confidence": 0.97,
+                    },
+                    {
+                        "fieldKey": "tenderer",
+                        "label": "招标人",
+                        "value": "在本章第 4.2.1 项规定的投标截止时间(开标时间),通过中国华能集团有限公司电子商务平台公开开标",
+                        "confidence": 0.98,
+                    },
+                ]
+            },
+        },
+    }
+
+    table = build_project_fact_table(project, {"plan": {}})
+    labels = {field["label"]: field for field in table["fields"]}
+    # 盖章装饰剥离后封面招标人是可信值；句子型噪声仍被拒绝
+    assert labels["招标人"]["value"] == "山西漳山发电有限责任公司"
+    assert labels["风机型号"]["value"] == ""
+
+
+def test_business_fact_table_accepts_party_name_with_seal_decoration() -> None:
+    from app.services.business_gap_fact_table import build_project_fact_table
+
+    project = {
+        "id": "PRJ-BIZ-FACT-SEAL",
+        "name": "盖章尾巴清洗测试",
+        "customerName": "京能集团",
+        "bidType": "商务标",
+        "parse_result": {
+            "status": "completed",
+            "structured": {
+                "projectFactFields": [
+                    {
+                        "fieldKey": "tenderer",
+                        "label": "招标人",
+                        "value": "山西漳山发电有限责任公司 （盖单位章",
+                        "confidence": 0.95,
+                    }
+                ]
+            },
+        },
+    }
+    gap_state = {
+        "plan": {},
+        "projectFactTable": {
+            "schemaVersion": "bid-project-fact-table-v1",
+            "fields": [
+                {
+                    "label": "招标人",
+                    "value": "京能集团",
+                    "status": "candidate",
+                    "sourceRefs": [{"type": "project", "field": "customerName", "title": "招标人"}],
+                }
+            ],
+        },
+    }
+
+    table = build_project_fact_table(project, gap_state)
+    labels = {field["label"]: field for field in table["fields"]}
+    assert labels["招标人"]["value"] == "山西漳山发电有限责任公司"
+
+
+def test_business_fact_table_drops_placeholder_values_on_rebuild() -> None:
+    from app.services.business_gap_fact_table import build_project_fact_table
+
+    project = {
+        "id": "PRJ-BIZ-FACT-PLACEHOLDER",
+        "name": "占位符清洗测试",
+        "bidType": "商务标",
+        "parse_result": {
+            "status": "completed",
+            "structured": {
+                "projectFactFields": [
+                    {
+                        "fieldKey": "projectName",
+                        "label": "项目名称",
+                        "value": "（项目名称）",
+                        "confidence": 0.9,
+                    }
+                ]
+            },
+        },
+    }
+    gap_state = {
+        "plan": {},
+        "projectFactTable": {
+            "schemaVersion": "bid-project-fact-table-v1",
+            "fields": [
+                {
+                    "label": "招标项目名称",
+                    "value": "（项目名称）",
+                    "status": "candidate",
+                    "confidence": 0.86,
+                },
+                {
+                    "label": "招标编号",
+                    "value": "ZBA272600801",
+                    "status": "candidate",
+                    "confidence": 0.9,
+                },
+            ],
+        },
+    }
+
+    table = build_project_fact_table(project, gap_state)
+    labels = {field["label"]: field for field in table["fields"]}
+    assert labels["招标项目名称"]["value"] == "占位符清洗测试"
+    assert labels["招标编号"]["value"] == "ZBA272600801"
+
+
+def test_business_fact_table_uses_shared_bidder_profile() -> None:
+    from app.services.business_gap_fact_table import build_project_fact_table
+
+    project = {"id": "PRJ-BIDDER-PROFILE", "name": "档案测试项目", "bidType": "商务标"}
+    with patch(
+        "app.services.business_gap_fact_table.load_business_bidder_facts_sync",
+        return_value={"投标人地址": "上海市闵行区东川路555号", "投标人电话": "021-00000000"},
+    ):
+        table = build_project_fact_table(project, {"plan": {}})
+    labels = {field["label"]: field for field in table["fields"]}
+    assert labels["投标人地址"]["value"] == "上海市闵行区东川路555号"
+    assert labels["投标人地址"]["sourceRefs"][0]["type"] == "bidderProfile"
+    assert labels["投标人电话"]["value"] == "021-00000000"
+    assert labels["投标人"]["value"] == "上海电气风电集团股份有限公司"
+
+
+def test_business_fact_table_profile_refreshes_unconfirmed_fixed_candidates() -> None:
+    from app.services.business_gap_fact_table import build_project_fact_table
+
+    project = {"id": "PRJ-BIDDER-PROFILE-2", "name": "档案刷新测试", "bidType": "商务标"}
+    gap_state = {
+        "plan": {},
+        "projectFactTable": {
+            "schemaVersion": "bid-project-fact-table-v1",
+            "fields": [
+                {"label": "投标人地址", "value": "旧地址", "status": "candidate"},
+                {
+                    "label": "投标人电话",
+                    "value": "010-11111111",
+                    "status": "confirmed",
+                    "confirmedAt": "2026-06-01T00:00:00+00:00",
+                    "confirmedBy": "人工",
+                },
+            ],
+        },
+    }
+    with patch(
+        "app.services.business_gap_fact_table.load_business_bidder_facts_sync",
+        return_value={"投标人地址": "上海市浦东新区新地址1号", "投标人电话": "021-22222222"},
+    ):
+        table = build_project_fact_table(project, gap_state)
+    labels = {field["label"]: field for field in table["fields"]}
+    assert labels["投标人地址"]["value"] == "上海市浦东新区新地址1号"
+    assert labels["投标人电话"]["value"] == "010-11111111"
+
+
+def test_business_gap_save_facts_persists_fixed_fields_to_bidder_profile() -> None:
+    project_id = _seed_business_gap_project(
+        {
+            "schemaVersion": "bid-business-gap-plan-v1",
+            "tocRefs": [],
+            "tasks": [],
+            "summary": {},
+        }
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_store(values, *, updated_by=""):
+        captured["values"] = dict(values)
+        captured["updated_by"] = updated_by
+        return dict(values)
+
+    with patch("app.services.business_gap_service.store_business_bidder_facts", side_effect=fake_store):
+        asyncio.run(
+            business_gap_service.save_facts(
+                project_id,
+                {
+                    "fields": [
+                        {"label": "投标人地址", "value": "上海市闵行区东川路555号"},
+                        {"label": "招标项目名称", "value": "某风电项目"},
+                        {"label": "自定义联系人", "value": "张三"},
+                    ],
+                    "confirm": False,
+                    "operator": "测试用户",
+                },
+            )
+        )
+
+    assert captured["values"] == {"投标人地址": "上海市闵行区东川路555号"}
+    assert captured["updated_by"] == "测试用户"
+
+
+def test_drop_unconfirmed_generated_artifacts_supersedes_same_target() -> None:
+    from app.services.business_gap_service import _drop_unconfirmed_generated_artifacts
+
+    task = {
+        "resolvedArtifacts": [
+            {"artifactType": "parse_appendix_template", "confirmed": True, "fileName": "APPX-0001.docx"},
+            {
+                "artifactType": "business_table_fill",
+                "confirmed": False,
+                "fileName": "投标函-AI填写.docx",
+                "target": {"fileName": "投标函.docx"},
+            },
+            {
+                "artifactType": "business_table_fill",
+                "confirmed": True,
+                "fileName": "投标函-AI填写-旧确认.docx",
+                "target": {"fileName": "投标函.docx"},
+            },
+            {
+                "artifactType": "business_table_fill",
+                "confirmed": False,
+                "fileName": "其他表-AI填写.docx",
+                "target": {"fileName": "其他表.docx"},
+            },
+        ]
+    }
+    _drop_unconfirmed_generated_artifacts(task, artifact_type="business_table_fill", target_file_name="投标函.docx")
+    names = [item["fileName"] for item in task["resolvedArtifacts"]]
+    # 同目标未确认的被替换；已确认的与其他目标的保留
+    assert "投标函-AI填写.docx" not in names
+    assert "投标函-AI填写-旧确认.docx" in names
+    assert "其他表-AI填写.docx" in names
+    assert "APPX-0001.docx" in names
+
+
+def test_confirm_generated_artifact_converges_task_to_single_output() -> None:
+    from app.services.business_gap_service import (
+        _converge_task_to_final_artifact,
+        _restore_task_reference_artifacts,
+    )
+
+    final = {"artifactId": "BART-1-TBL-2", "artifactType": "business_table_fill", "sourceMode": "generated_by_business_table_fill", "confirmed": True}
+    task = {
+        "resolvedArtifacts": [
+            {"artifactId": "APPX-0001", "artifactType": "parse_appendix_template", "sourceMode": "parsed_from_tender_attachment_template", "confirmed": True},
+            {"artifactId": "SEL-1", "artifactType": "selected_material", "sourceMode": "selected_from_business_material_library", "materialUsage": "fill_template", "confirmed": True},
+            {"artifactId": "BART-1-TBL-1", "artifactType": "business_table_fill", "sourceMode": "generated_by_business_table_fill", "confirmed": False},
+            final,
+            {"artifactId": "UP-1", "artifactType": "manual_supplement", "sourceMode": "uploaded_in_business_s3", "confirmed": True},
+        ]
+    }
+
+    _converge_task_to_final_artifact(task, final)
+    resolved_ids = [item["artifactId"] for item in task["resolvedArtifacts"]]
+    reference_ids = [item["artifactId"] for item in task["referenceArtifacts"]]
+    # 终局产物 + 人工上传留在装配列表；底稿与填写参考素材挪入过程参考；旧生成产物删除
+    assert resolved_ids == ["BART-1-TBL-2", "UP-1"]
+    assert set(reference_ids) == {"APPX-0001", "SEL-1"}
+    assert task["finalArtifactId"] == "BART-1-TBL-2"
+
+    _restore_task_reference_artifacts(task)
+    restored_ids = {item["artifactId"] for item in task["resolvedArtifacts"]}
+    assert {"BART-1-TBL-2", "UP-1", "APPX-0001", "SEL-1"} <= restored_ids
+    assert task["referenceArtifacts"] == []
+    assert task["finalArtifactId"] == ""
+
+
 def test_business_assembly_fact_table_stays_in_fact_table_helper(tmp_path) -> None:
     from app.services import business_assembly
 
@@ -3226,7 +3662,10 @@ def test_business_gap_save_facts_stays_in_business_service() -> None:
 
     assert payload["status"] == "confirmed"
     assert payload["confirmedBy"] == "测试用户"
-    assert payload["fields"][0]["status"] == "confirmed"
+    labels = {field["label"]: field for field in payload["fields"]}
+    assert len(payload["fields"]) == 1
+    assert labels["投标人"]["status"] == "confirmed"
+    assert labels["投标人"]["value"] == "测试投标单位"
     assert store._require(project_id)["business_gap_state"]["projectFactTable"]["status"] == "confirmed"
 
 
@@ -3649,7 +4088,7 @@ def test_business_gap_ai_draft_stays_in_business_service() -> None:
             )
         )
 
-    assert payload["task"]["status"] == "ready"
+    assert payload["task"]["status"] == "review_required"
     assert payload["artifact"]["sourceMode"] == "generated_by_business_s3_ai_draft"
     assert payload["artifact"]["operator"] == "测试用户"
     assert payload["artifact"]["factTableStatus"] == "confirmed"
@@ -3751,7 +4190,7 @@ def test_business_gap_table_fill_stays_in_business_service(tmp_path) -> None:
             )
         )
 
-    assert payload["task"]["status"] == "ready"
+    assert payload["task"]["status"] == "review_required"
     assert payload["task"]["handlingMode"] == "ai_table_fill"
     assert payload["artifact"]["sourceMode"] == "generated_by_business_table_fill"
     assert payload["artifact"]["operator"] == "测试用户"
@@ -3990,6 +4429,98 @@ def test_business_gap_select_material_stays_in_business_service() -> None:
     assert payload["artifact"]["businessMaterialKind"] == "fixed"
     feedback = store._require(project_id)["business_gap_state"]["materialFeedback"]
     assert feedback[0]["materialId"] == "RAW-BIZ-001"
+
+
+def test_business_gap_select_performance_package_uses_performance_service() -> None:
+    project_id = _seed_business_gap_project(
+        {
+            "schemaVersion": "bid-business-gap-plan-v1",
+            "tocRefs": [{"nodeId": "TOC-1", "title": "业绩情况表", "taskIds": ["BTASK-001"], "status": "partial"}],
+            "tasks": [
+                {
+                    "id": "BTASK-001",
+                    "title": "近年类似项目业绩表",
+                    "taskType": "performance",
+                    "decision": "material_required",
+                    "status": "needs_input",
+                    "moduleKey": "performance_cooperation_support",
+                    "candidateMaterials": [],
+                    "selectedMaterialRefs": [],
+                    "resolvedArtifacts": [],
+                    "riskFlags": ["missing_material"],
+                }
+            ],
+            "summary": {},
+        }
+    )
+
+    async def fake_download_item_attachment(category_id: str, item_id: str, attachment_id: str) -> dict[str, str]:
+        assert category_id == "PERCAT-0011"
+        assert item_id == "PERITEM-0268"
+        assert attachment_id == "PERITEMATT-0118"
+        return {
+            "fileName": "001-华电新疆喀什_合同.docx",
+            "bucket": "mock-bucket",
+            "key": "performance-categories/PERCAT-0011/item-contracts/PERITEM-0268/doc.docx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+
+    def fake_download_file(bucket: str, key: str, target_path) -> None:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(b"performance-package-docx")
+
+    with patch(
+        "app.services.performance_material_resolver.performance_package_service.download_item_attachment",
+        side_effect=fake_download_item_attachment,
+    ), patch(
+        "app.services.business_gap_service.business_material_store.raw_download_cleaned_content",
+        side_effect=AssertionError("performance package must not use raw cleaned material downloads"),
+    ), patch(
+        "app.services.business_gap_service.business_material_store.raw_download_content",
+        side_effect=AssertionError("performance package must not use raw material downloads"),
+    ), patch(
+        "app.services.business_gap_service.minio_client.download_file",
+        side_effect=fake_download_file,
+    ):
+        payload = asyncio.run(
+            business_gap_service.select_material(
+                project_id,
+                "BTASK-001",
+                _DummyRequest(),
+                {
+                    "materials": [
+                        {
+                            "materialId": "PERITEM-0268",
+                            "categoryId": "PERCAT-0011",
+                            "materialName": "华电新疆喀什 2x66 万千瓦",
+                            "folderPath": "业绩库/陆上6MW业绩",
+                            "materialTier": "standard",
+                            "businessMaterialKind": "performance",
+                            "businessMaterialKindLabel": "共用业绩",
+                            "sourceType": "performance_package",
+                            "candidateType": "performance_item",
+                            "attachments": [
+                                {
+                                    "id": "PERITEMATT-0118",
+                                    "categoryId": "PERCAT-0011",
+                                    "itemId": "PERITEM-0268",
+                                    "attachmentType": "contract_item",
+                                    "fileName": "001-华电新疆喀什_合同.docx",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
+        )
+
+    assert payload["task"]["status"] == "ready"
+    assert payload["selectedMaterialRefs"][0]["sourceType"] == "performance_package"
+    assert payload["artifact"]["materialSourceType"] == "performance_package"
+    assert payload["artifact"]["sourceKind"] == "performance_package_item"
+    assert payload["artifact"]["sourceType"] == "performance_package"
+    assert "华电新疆喀什_合同" in payload["artifact"]["fileName"]
+    assert payload["artifact"]["fileName"].endswith(".docx")
 
 
 def test_business_gap_select_non_fixed_material_counts_as_manual_supplement() -> None:

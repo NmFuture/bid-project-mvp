@@ -122,6 +122,9 @@ class BusinessMaterialStore:
         customer_name: str = "",
         material_tier: str = "",
         clean_status: str = "",
+        business_material_kind: str = "",
+        tag: Any = "",
+        title: str = "",
         keyword: str = "",
         recursive: bool = True,
         page: int = 1,
@@ -134,6 +137,9 @@ class BusinessMaterialStore:
             customer_name=customer_name,
             material_tier=material_tier,
             clean_status=clean_status,
+            business_material_kind=business_material_kind,
+            tag=tag,
+            title=title,
             keyword=keyword,
             recursive=recursive,
             page=page,
@@ -151,6 +157,7 @@ class BusinessMaterialStore:
         business_material_kind: str = "",
         customer_id: str = "",
         customer_name: str = "",
+        tags: Any = None,
         on_conflict: str = "",
         files: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
@@ -164,6 +171,7 @@ class BusinessMaterialStore:
             business_material_kind=business_material_kind,
             customer_id=customer_id,
             customer_name=customer_name,
+            tags=tags,
             on_conflict=on_conflict,
             files=list(files or []),
         ))
@@ -183,13 +191,34 @@ class BusinessMaterialStore:
         )
         return self._with_urls(_force_business_tree(payload))
 
-    async def raw_update_file(self, file_id: str, *, name: str = "", business_material_kind: str = "") -> dict[str, Any]:
+    async def raw_cleanup_project_folder(self, path: str) -> dict[str, Any]:
+        normalized = self.ensure_path(path, "项目素材目录")
+        parts = [part for part in normalized.split("/") if part]
+        if len(parts) != 3 or parts[:2] != [BUSINESS_BID_TYPE, "项目素材"]:
+            raise PeripheralError(400, "只能清理商务标项目素材目录。", "PROJECT_MATERIAL_PATH_REQUIRED")
+        payload = await material_store.raw_cleanup_project_folder(
+            normalized,
+            bid_type=BUSINESS_BID_TYPE,
+        )
+        return self._with_urls(_force_business_tree(payload))
+
+    async def raw_update_file(
+        self,
+        file_id: str,
+        *,
+        name: str = "",
+        business_material_kind: str = "",
+        tags: Any = None,
+        update_tags: bool = False,
+    ) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)
         return self._with_urls(await material_store.raw_update_file(
             file_id,
             bid_type=BUSINESS_BID_TYPE,
             name=name,
             business_material_kind=business_material_kind,
+            tags=tags,
+            update_tags=update_tags,
         ))
 
     async def raw_delete_file(self, file_id: str) -> dict[str, Any]:
@@ -253,16 +282,16 @@ class BusinessMaterialStore:
         self,
         file_id: str,
         *,
-        plan_id: str,
-        target_path: str,
-        items: list[dict[str, Any]],
+        fragments: list[dict[str, Any]],
+        target_path: str = "",
+        on_conflict: str = "",
     ) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)
         return await confirm_business_material_split(
             file_id=file_id,
-            plan_id=plan_id,
-            target_path=self.ensure_path(target_path, "目标目录"),
-            items=items,
+            fragments=fragments,
+            default_target_path=self.ensure_path(target_path, "目标目录"),
+            on_conflict=on_conflict,
         )
 
     async def wiki_list(self, node_id: str = "") -> dict[str, Any]:

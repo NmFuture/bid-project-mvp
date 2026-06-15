@@ -87,9 +87,41 @@ npx eslint src/workspaces/business/pages/BusinessGapRecognition.jsx src/workspac
 
 1. 2026-05-28 王立博整理真实商务标样本和验收清单。
 2. 彭维锋并行优化商务标智能解析和目录生成。
-3. 安博成先完成素材库标签、共用业绩库、素材清洗和商务 Wiki。
-4. 肖雨航基于素材库/Wiki 做素材匹配、项目事实表和 AI填写。
+3. 安博成继续推进素材清洗和商务 Wiki。
+4. 肖雨航基于素材库/Wiki/业绩库做素材匹配、项目事实表和 AI填写。
 5. 最后串起正文生成、格式处理和 Word/PDF 导出。
+
+### 2026-05-28 安博成任务 4.1/4.2
+
+已完成 `plan_for_Anbc.md` 中前两项：
+
+- 4.1 原始素材多标签：商务素材上传支持多个标签，编辑素材时可更新/清空标签，后端元数据返回 `tags` 数组。
+- 4.2 共用业绩库最小版：新增商务素材区“业绩库”页面和 `/api/business/materials/performance` 接口，支持列表、筛选、新增、编辑、删除、上传 Word、下载 Word。
+
+验证记录：
+
+- `npm run build` 通过；仍有既有的大 chunk 提示。
+- `python3 -m py_compile` 覆盖新增/改动后端模块通过。
+- 本地 Docker 服务重建后 `fastapi`、`worker`、`web` 正常；`/api/healthz` 返回 ok。
+- 原始素材上传冒烟返回 `tags: ["资质", "承诺函"]`，PATCH 更新返回 `tags: ["资质", "报价"]`。
+- 业绩库新增、标签/标类筛选、编辑、上传 Word、下载 Word 冒烟通过；冒烟数据已删除。
+- in-app browser 已打开 `/workspace/business/materials/performance`，页面和“新增业绩”弹窗可渲染。
+
+### 2026-05-28 安博成任务 4.3/4.4
+
+已继续完成 `plan_for_Anbc.md` 中后两项：
+
+- 4.3 商务素材清洗：`bid-material-format-cleaner` 输出 `cleaning_manifest.json` 结构化清单，后端清洗服务读取并保存清洗结果、来源相对路径、输出相对路径、是否可检索、是否需复核等元数据。
+- 4.4 商务 Wiki 生成：商务 Wiki 构建输入保留原始素材标签、固定/其他素材标记、清洗状态、原件 MinIO key 和清洗稿 MinIO key；证据卡片、素材总表和节点标签会写入这些字段，便于后续素材匹配按标签和清洗状态筛选。
+
+验证记录：
+
+- `python3 -m py_compile` 覆盖清洗服务、Wiki 生成服务、清洗 Skill driver、商务 Wiki builder 通过。
+- `git diff --check` 通过。
+- Docker `fastapi`/`worker` 使用 `--no-deps` 重建成功并健康；`/api/healthz` 返回 ok。
+- 在 `fastapi` 容器内用 Excel 冒烟跑 `bid-material-format-cleaner`，成功生成 Word 和 `cleaning_manifest.json`，清单记录 `status=OK`、相对输入/输出路径和 `isUsableForRetrieval=true`。
+- 用带 `tags`、`cleanResultStatus`、`sourceMinioKey`、`cleanedMinioKey` 的商务 Wiki manifest 跑 `bid-business-wiki-material-builder`，输出五个一级节点，证据卡片包含标签、原件对象 key、清洗稿对象 key 和清洗状态。
+- 一次完整 `docker compose up -d --build fastapi worker` 曾因 Docker Hub 拉取 onlyoffice 镜像鉴权 EOF 失败，随后用 `--no-deps` 成功重建目标服务。
 
 ### 2026-05-27 22:43:31 post-commit ec6e6ff
 

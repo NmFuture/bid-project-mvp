@@ -6,12 +6,14 @@ from app.services.bid_type import BUSINESS_BID_TYPE, GENERAL_BID_TYPE, TECHNICAL
 from app.services.identity import classify_material_path
 from app.services.material_taxonomy import (
     BUSINESS_CUSTOMIZED_SUBFOLDERS,
+    BUSINESS_PROJECT_SUBFOLDERS,
     BUSINESS_STANDARD_SUBFOLDERS,
     BUSINESS_TIER_FOLDERS,
     RAW_MATERIAL_ROOTS,
     TECHNICAL_TIER_FOLDERS,
     business_customized_child_tier_for_parent_path as _business_customized_child_tier_for_parent_path,
     business_customized_tier_from_path as _business_customized_tier_from_path,
+    is_raw_material_protected_folder_path,
     normalize_material_tier,
 )
 
@@ -75,7 +77,7 @@ def raw_material_tier_folder_specs(bid_type: str) -> tuple[dict[str, Any], ...]:
 
 def is_raw_folder_move_protected_path(folder_path: str) -> bool:
     normalized = str(folder_path or "").replace("\\", "/").strip("/")
-    return normalized in RAW_FOLDER_MOVE_PROTECTED_PATHS
+    return normalized in RAW_FOLDER_MOVE_PROTECTED_PATHS or is_raw_material_protected_folder_path(normalized)
 
 
 def is_raw_folder_move_descendant_target(source_path: str, target_parent_path: str) -> bool:
@@ -85,6 +87,21 @@ def is_raw_folder_move_descendant_target(source_path: str, target_parent_path: s
 
 
 def business_standard_subfolder_specs(customer_name: str | None = None) -> tuple[dict[str, Any], ...]:
+    def build_child_specs(children: Any, inherited_category: str = "") -> tuple[dict[str, Any], ...]:
+        return tuple(
+            {
+                "name": str(child["name"]),
+                "tier": str(child["tier"]),
+                "bidType": BUSINESS_MATERIAL_BID_TYPE,
+                "projectId": None,
+                "customerName": customer_name,
+                "sortOrder": int(child["sort_order"]),
+                "materialCategory": str(child.get("material_category") or inherited_category or ""),
+                "children": build_child_specs(child.get("children") or (), str(child.get("material_category") or inherited_category or "")),
+            }
+            for child in children or ()
+        )
+
     specs: list[dict[str, Any]] = []
     for spec in BUSINESS_STANDARD_SUBFOLDERS:
         specs.append(
@@ -95,17 +112,8 @@ def business_standard_subfolder_specs(customer_name: str | None = None) -> tuple
                 "projectId": None,
                 "customerName": customer_name,
                 "sortOrder": int(spec["sort_order"]),
-                "children": tuple(
-                    {
-                        "name": str(child["name"]),
-                        "tier": str(child["tier"]),
-                        "bidType": BUSINESS_MATERIAL_BID_TYPE,
-                        "projectId": None,
-                        "customerName": customer_name,
-                        "sortOrder": int(child["sort_order"]),
-                    }
-                    for child in spec.get("children") or ()
-                ),
+                "materialCategory": str(spec.get("material_category") or ""),
+                "children": build_child_specs(spec.get("children") or (), str(spec.get("material_category") or "")),
             }
         )
     return tuple(specs)
@@ -118,6 +126,7 @@ def business_customized_subfolder_specs(
     customer_name: str | None = None,
 ) -> tuple[dict[str, Any], ...]:
     material_tier = normalize_material_tier(tier) or "customer"
+    source = BUSINESS_PROJECT_SUBFOLDERS if material_tier == "project" else BUSINESS_CUSTOMIZED_SUBFOLDERS
     return tuple(
         {
             "name": str(spec["name"]),
@@ -126,8 +135,9 @@ def business_customized_subfolder_specs(
             "projectId": project_id,
             "customerName": customer_name,
             "sortOrder": int(spec["sort_order"]),
+            "materialCategory": str(spec.get("material_category") or ""),
         }
-        for spec in BUSINESS_CUSTOMIZED_SUBFOLDERS
+        for spec in source
     )
 
 

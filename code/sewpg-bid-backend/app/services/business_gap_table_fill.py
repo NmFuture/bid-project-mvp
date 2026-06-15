@@ -54,6 +54,14 @@ def prepare_business_table_fill_target(target: dict[str, Any], work_dir: Path) -
         value = str(item.get(key) or "").strip()
         if value and Path(value).exists():
             return item
+    file_name = str(item.get("fileName") or "").strip()
+    if file_name and len(work_dir.parents) >= 3:
+        workspace_root = work_dir.parents[2]
+        for subdir in ("appendices", "commitment-letters"):
+            candidate = workspace_root / subdir / file_name
+            if candidate.exists():
+                item.update({"filePath": str(candidate), "path": str(candidate), "fileName": candidate.name})
+                return item
     material_id = str(item.get("materialId") or item.get("id") or "").strip()
     if not material_id:
         return item

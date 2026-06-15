@@ -8,8 +8,11 @@ from unittest.mock import AsyncMock, patch
 from docx import Document
 from docx.shared import Inches
 
+from app.api.routes import business as business_routes
 from app.models.materials import RawFile
+from app.services.business_material_store import business_material_store
 from app.services.business_material_splitter import confirm_business_material_split, preview_business_material_split, _send_openai_compatible_prompt
+from app.services.peripheral import PeripheralError
 
 
 def _sample_docx_bytes() -> bytes:
@@ -139,7 +142,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0001",
                     "name": "商务附件合集.docx",
-                    "folderPath": "商务标/通用素材/06-通用模板底稿库",
+                    "folderPath": "商务标/通用素材/通用模板底稿库",
                     "materialTier": "standard",
                     "content": _sample_docx_bytes(),
                 }
@@ -161,7 +164,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0002",
                     "name": "订单汇总.docx",
-                    "folderPath": "商务标/通用素材/03-业绩资产池",
+                    "folderPath": "商务标/通用素材/企业能力与供货业绩",
                     "materialTier": "standard",
                     "content": _order_summary_docx_bytes(),
                 }
@@ -173,7 +176,9 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(order_fragments), 2)
         self.assertTrue(any("华能某风电项目" in item["title"] for item in order_fragments))
         self.assertTrue(any("国家能源某风电项目" in item["title"] for item in order_fragments))
-        self.assertTrue(all(item["suggestedPath"] == "商务标/通用素材/03-业绩资产池" for item in order_fragments))
+        self.assertTrue(all(item["suggestedPath"] == "" for item in order_fragments))
+        self.assertTrue(all(item["selected"] is False for item in order_fragments))
+        self.assertTrue(all(any("业绩库导入" in tip for tip in item["riskTips"]) for item in order_fragments))
 
     async def test_preview_business_material_split_falls_back_to_local_semantic_fragments(self) -> None:
         with patch(
@@ -182,7 +187,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0003",
                     "name": "历史订单资料.docx",
-                    "folderPath": "商务标/通用素材/03-业绩资产池",
+                    "folderPath": "商务标/通用素材/企业能力与供货业绩",
                     "materialTier": "standard",
                     "content": _plain_order_docx_bytes(),
                 }
@@ -216,7 +221,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0004",
                     "name": "普通文本资料.docx",
-                    "folderPath": "商务标/通用素材/03-业绩资产池",
+                    "folderPath": "商务标/通用素材/企业能力与供货业绩",
                     "materialTier": "standard",
                     "content": _plain_order_docx_bytes(),
                 }
@@ -225,24 +230,24 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
             "app.services.business_material_splitter._upload_business_split_files",
             side_effect=fake_raw_upload,
         ):
-            result = await confirm_business_material_split(
-                "RAW-0004",
-                fragments=[
-                    {
-                        "id": "frag-ai-001",
-                        "selected": True,
-                        "title": "AI识别订单片段",
-                        "materialType": "业绩订单",
-                        "fileName": "AI识别订单片段.docx",
-                        "targetPath": "商务标/通用素材/03-业绩资产池",
-                        "sourceLocation": {"mode": "aiSemantic", "blockStart": 1, "blockEnd": 3},
-                    }
-                ],
-            )
+            with self.assertRaises(PeripheralError) as context:
+                await confirm_business_material_split(
+                    "RAW-0004",
+                    fragments=[
+                        {
+                            "id": "frag-ai-001",
+                            "selected": True,
+                            "title": "AI识别订单片段",
+                            "materialType": "业绩订单",
+                            "fileName": "AI识别订单片段.docx",
+                            "targetPath": "",
+                            "sourceLocation": {"mode": "aiSemantic", "blockStart": 1, "blockEnd": 3},
+                        }
+                    ],
+                )
 
-        self.assertEqual(len(uploaded_calls), 1)
-        self.assertEqual(uploaded_calls[0]["files"][0]["extFields"]["splitMethod"], "business_docx_ai_semantic_v1")
-        self.assertEqual(result["items"][0]["splitParentMaterialId"], "RAW-0004")
+        self.assertEqual(context.exception.code, "BUSINESS_SPLIT_PERFORMANCE_REQUIRES_LIBRARY")
+        self.assertEqual(uploaded_calls, [])
 
     async def test_preview_business_material_split_can_use_ai_quote_fragments_inside_one_block(self) -> None:
         fake_reply = {
@@ -261,7 +266,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0005",
                     "name": "订单汇总资料.docx",
-                    "folderPath": "商务标/通用素材/03-业绩资产池",
+                    "folderPath": "商务标/通用素材/企业能力与供货业绩",
                     "materialTier": "standard",
                     "content": _single_paragraph_many_orders_docx_bytes(),
                 }
@@ -292,7 +297,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0007",
                     "name": "历史订单台账.docx",
-                    "folderPath": "商务标/通用素材/03-业绩资产池",
+                    "folderPath": "商务标/通用素材/企业能力与供货业绩",
                     "materialTier": "standard",
                     "content": _long_single_paragraph_many_orders_docx_bytes(count=24),
                 }
@@ -329,7 +334,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0006",
                     "name": "订单汇总资料.docx",
-                    "folderPath": "商务标/通用素材/03-业绩资产池",
+                    "folderPath": "商务标/通用素材/企业能力与供货业绩",
                     "materialTier": "standard",
                     "content": _single_paragraph_many_orders_docx_bytes(),
                 }
@@ -338,24 +343,24 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
             "app.services.business_material_splitter._upload_business_split_files",
             side_effect=fake_raw_upload,
         ):
-            result = await confirm_business_material_split(
-                "RAW-0006",
-                fragments=[
-                    {
-                        "id": "frag-ai-001",
-                        "selected": True,
-                        "title": "华能山东某风电项目",
-                        "materialType": "业绩订单",
-                        "fileName": "华能山东某风电项目.docx",
-                        "targetPath": "商务标/通用素材/03-业绩资产池",
-                        "sourceLocation": {"mode": "aiSemantic", "blockStart": 1, "blockEnd": 2, "quote": quote},
-                    }
-                ],
-            )
+            with self.assertRaises(PeripheralError) as context:
+                await confirm_business_material_split(
+                    "RAW-0006",
+                    fragments=[
+                        {
+                            "id": "frag-ai-001",
+                            "selected": True,
+                            "title": "华能山东某风电项目",
+                            "materialType": "业绩订单",
+                            "fileName": "华能山东某风电项目.docx",
+                            "targetPath": "",
+                            "sourceLocation": {"mode": "aiSemantic", "blockStart": 1, "blockEnd": 2, "quote": quote},
+                        }
+                    ],
+                )
 
-        self.assertEqual(len(uploaded_calls), 1)
-        self.assertEqual(uploaded_calls[0]["files"][0]["extFields"]["splitMethod"], "business_docx_ai_semantic_v1")
-        self.assertEqual(result["items"][0]["splitParentMaterialId"], "RAW-0006")
+        self.assertEqual(context.exception.code, "BUSINESS_SPLIT_PERFORMANCE_REQUIRES_LIBRARY")
+        self.assertEqual(uploaded_calls, [])
 
     async def test_confirm_business_material_split_uploads_selected_fragments_with_metadata(self) -> None:
         uploaded_calls = []
@@ -378,7 +383,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0001",
                     "name": "商务附件合集.docx",
-                    "folderPath": "商务标/通用素材/06-通用模板底稿库",
+                    "folderPath": "商务标/通用素材/通用模板底稿库",
                     "materialTier": "standard",
                     "content": _sample_docx_bytes(),
                 }
@@ -395,13 +400,13 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                         "selected": True,
                         "title": "投标函",
                         "fileName": "投标函.docx",
-                        "targetPath": "商务标/通用素材/06-通用模板底稿库",
+                        "targetPath": "商务标/通用素材/通用模板底稿库",
                     }
                 ],
             )
 
         self.assertEqual(len(uploaded_calls), 1)
-        self.assertEqual(uploaded_calls[0]["target_path"], "商务标/通用素材/06-通用模板底稿库")
+        self.assertEqual(uploaded_calls[0]["target_path"], "商务标/通用素材/通用模板底稿库")
         self.assertNotIn("bid_type", uploaded_calls[0])
         self.assertEqual(uploaded_calls[0]["files"][0]["extFields"]["splitParentMaterialId"], "RAW-0001")
         self.assertEqual(result["items"][0]["splitParentMaterialId"], "RAW-0001")
@@ -419,7 +424,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "id": "RAW-0008",
                     "name": "证书合集.docx",
-                    "folderPath": "商务标/通用素材/05-专题证书库/01-机型认证证书",
+                    "folderPath": "商务标/通用素材/专题证书库/机型认证证书",
                     "materialTier": "standard",
                     "content": _docx_with_embedded_image_bytes(),
                 }
@@ -436,7 +441,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
                         "selected": True,
                         "title": "EW10.0-220 设计认证证书",
                         "fileName": "EW10.0-220 设计认证证书.docx",
-                        "targetPath": "商务标/通用素材/05-专题证书库/01-机型认证证书",
+                        "targetPath": "商务标/通用素材/专题证书库/机型认证证书",
                     }
                 ],
             )
@@ -447,6 +452,63 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
             media_files = [name for name in zf.namelist() if name.startswith("word/media/")]
         self.assertGreaterEqual(len(output_doc.part._package.image_parts), 1)
         self.assertGreaterEqual(len(media_files), 1)
+
+    async def test_business_split_confirm_route_accepts_frontend_fragments_payload(self) -> None:
+        fragment = {
+            "id": "frag-001",
+            "selected": True,
+            "title": "投标函",
+            "targetPath": "商务标/通用素材/通用模板底稿库",
+        }
+
+        with patch.object(
+            business_routes.business_material_store,
+            "confirm_business_split",
+            new=AsyncMock(return_value={"ok": True}),
+        ) as confirm_business_split:
+            result = await business_routes.business_raw_confirm_split(
+                "RAW-0001",
+                {
+                    "fragments": [fragment],
+                    "targetPath": "商务标/通用素材/通用模板底稿库",
+                    "onConflict": "rename",
+                },
+            )
+
+        self.assertEqual(result, {"ok": True})
+        confirm_business_split.assert_awaited_once()
+        self.assertEqual(confirm_business_split.call_args.kwargs["fragments"], [fragment])
+        self.assertEqual(confirm_business_split.call_args.kwargs["target_path"], "商务标/通用素材/通用模板底稿库")
+        self.assertEqual(confirm_business_split.call_args.kwargs["on_conflict"], "rename")
+
+    async def test_business_material_store_forwards_split_contract_to_service(self) -> None:
+        fragment = {
+            "id": "frag-001",
+            "selected": True,
+            "title": "投标函",
+            "targetPath": "商务标/通用素材/通用模板底稿库",
+        }
+
+        with patch.object(business_material_store, "ensure_raw_file", new=AsyncMock()) as ensure_raw_file, patch(
+            "app.services.business_material_store.confirm_business_material_split",
+            new=AsyncMock(return_value={"ok": True}),
+        ) as confirm_material_split:
+            result = await business_material_store.confirm_business_split(
+                "RAW-0001",
+                fragments=[fragment],
+                target_path="商务标/通用素材/通用模板底稿库",
+                on_conflict="rename",
+            )
+
+        self.assertEqual(result, {"ok": True})
+        ensure_raw_file.assert_awaited_once_with("RAW-0001")
+        confirm_material_split.assert_awaited_once()
+        self.assertEqual(confirm_material_split.call_args.kwargs["fragments"], [fragment])
+        self.assertEqual(
+            confirm_material_split.call_args.kwargs["default_target_path"],
+            "商务标/通用素材/通用模板底稿库",
+        )
+        self.assertEqual(confirm_material_split.call_args.kwargs["on_conflict"], "rename")
 
     def test_openai_compatible_prompt_clamps_extreme_max_tokens(self) -> None:
         captured = {}

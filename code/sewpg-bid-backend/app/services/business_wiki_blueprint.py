@@ -9,7 +9,7 @@ CURRENT = Path(__file__).resolve()
 SOURCE = (
     CURRENT.parents[2]
     / "opencode"
-    / "skill"
+    / "skills"
     / "bid-business-wiki-material-builder"
     / "scripts"
     / "business_wiki_blueprint.py"

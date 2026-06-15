@@ -58,6 +58,7 @@ async def upload_raw_files(
     business_material_kind: str = "",
     customer_id: str = "",
     customer_name: str = "",
+    tags: Any = None,
     on_conflict: str = "",
     files: list[dict[str, Any]] | None = None,
     ensure_runtime_tables: EnsureRuntimeTables,
@@ -204,6 +205,7 @@ async def upload_raw_files(
                 source_minio_key=minio_key,
                 source_relative_path=source_relative_path or file_name,
                 source_root_folder=source_root_folder,
+                tags=item.get("tags", tags),
             )
             extra_ext_fields = item.get("extFields") if isinstance(item.get("extFields"), dict) else {}
             if extra_ext_fields:

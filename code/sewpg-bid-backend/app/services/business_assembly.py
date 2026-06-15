@@ -16,6 +16,7 @@ from app.services.bid_type import BUSINESS_BID_TYPE
 from app.services.business_gap_fact_table import build_project_fact_table
 from app.services.business_gap_planning import _business_template_index, _resolve_business_toc_json, _run_async
 from app.services.business_material_store import business_material_store
+from app.services.business_s1_handoff import business_s1_parse_result
 from app.services.identity import build_project_material_scope
 from app.services.minio_client import minio_client
 from app.services.onlyoffice_documents import document_path
@@ -31,11 +32,11 @@ from app.services.workspace_artifacts import business_workspace_dir
 
 BUSINESS_ASSEMBLER_SKILL_NAME = "bid-business-assembler"
 BUSINESS_ASSEMBLER_SKILL_COMMAND = "businessassemble"
-BUSINESS_ASSEMBLER_SKILL_DIR = BASE_DIR / "opencode" / "skill" / BUSINESS_ASSEMBLER_SKILL_NAME
+BUSINESS_ASSEMBLER_SKILL_DIR = BASE_DIR / "opencode" / "skills" / BUSINESS_ASSEMBLER_SKILL_NAME
 BUSINESS_ASSEMBLER_RUNNER = BUSINESS_ASSEMBLER_SKILL_DIR / "scripts" / "run_from_manifest.py"
 BUSINESS_FORMAT_CLEANER_SKILL_NAME = "bid-business-format-cleaner"
 BUSINESS_FORMAT_CLEANER_SKILL_COMMAND = "businessformat"
-BUSINESS_FORMAT_CLEANER_SKILL_DIR = BASE_DIR / "opencode" / "skill" / BUSINESS_FORMAT_CLEANER_SKILL_NAME
+BUSINESS_FORMAT_CLEANER_SKILL_DIR = BASE_DIR / "opencode" / "skills" / BUSINESS_FORMAT_CLEANER_SKILL_NAME
 BUSINESS_FORMAT_CLEANER_RUNNER = BUSINESS_FORMAT_CLEANER_SKILL_DIR / "scripts" / "run_from_manifest.py"
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 BUSINESS_FORMAT_PRESETS = {
@@ -324,7 +325,7 @@ def _prepare_project_fact_table(project: dict[str, Any], business_gap_state: dic
 
 def _prepare_parse_result(project: dict[str, Any], work_dir: Path) -> Path:
     target = work_dir / "parse_result.json"
-    target.write_text(json.dumps(project.get("parse_result") or {}, ensure_ascii=False, indent=2), encoding="utf-8")
+    target.write_text(json.dumps(business_s1_parse_result(project), ensure_ascii=False, indent=2), encoding="utf-8")
     return target
 
 

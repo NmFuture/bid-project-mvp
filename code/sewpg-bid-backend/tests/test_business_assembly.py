@@ -86,10 +86,10 @@ def _confirm_outline_for_tests(store, project_id: str) -> dict:
 class BusinessAssemblyRunnerTests(unittest.TestCase):
     def test_business_assembler_runner_generates_docx_and_review_outputs(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            materials = root / "materials" / "商务标" / "项目素材" / "03-模板底稿与过程文件"
+            materials = root / "materials" / "商务标" / "项目素材" / "项目模板底稿与过程文件"
             materials.mkdir(parents=True)
             template_path = materials / "投标函空白模板.docx"
             doc = Document()
@@ -211,7 +211,7 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
 
     def test_business_assembler_runner_writes_scoring_table_from_structured_json(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             materials = root / "materials"
@@ -297,7 +297,7 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
 
     def test_business_assembler_dedupes_scoring_asset_from_task_and_parse_result(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             scoring_path = root / "商务评分标准.docx"
@@ -393,10 +393,10 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
 
     def test_business_assembler_fills_adjacent_blank_cells_in_template_tables(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            materials = root / "materials" / "商务标" / "项目素材" / "03-模板底稿与过程文件"
+            materials = root / "materials" / "商务标" / "项目素材" / "项目模板底稿与过程文件"
             materials.mkdir(parents=True)
             template_path = materials / "投标函格式模板.docx"
             doc = Document()
@@ -481,7 +481,7 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
 
     def test_business_assembler_extracts_only_matching_fragment_from_large_template(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             materials = root / "materials"
@@ -583,10 +583,10 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
 
     def test_business_assembler_skips_ignored_and_unconfirmed_tasks_without_template_fallback(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            materials = root / "materials" / "商务标" / "项目素材" / "03-模板底稿与过程文件"
+            materials = root / "materials" / "商务标" / "项目素材" / "项目模板底稿与过程文件"
             materials.mkdir(parents=True)
             template_path = materials / "商务响应文件模板.docx"
             doc = Document()
@@ -691,7 +691,7 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
 
     def test_business_assembler_uses_extract_segment_intent_without_merging_whole_docx(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             materials = root / "materials"
@@ -805,7 +805,7 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
 
     def test_business_assembler_embeds_certificate_images_without_wiki_locator_text(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             materials = root / "materials"
@@ -868,7 +868,7 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
                                         "rawFileName": raw_docx.name,
                                         "rawFilePath": str(raw_docx),
                                         "materialName": "机型认证证书.docx",
-                                        "folderPath": "商务标/通用素材/05-专题证书库/01-机型认证证书",
+                                        "folderPath": "商务标/通用素材/专题证书库/机型认证证书",
                                         "sourceMode": "selected_from_business_material_library",
                                         "assemblyMode": "extract_and_summarize",
                                         "materialUsage": "extract_and_summarize",
@@ -932,7 +932,7 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
 
     def test_business_assembler_extract_summary_prefers_raw_docx_over_cleaned_locator_segments(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             materials = root / "materials"
@@ -1044,7 +1044,7 @@ class BusinessAssemblyRunnerTests(unittest.TestCase):
 
     def test_business_assembler_does_not_emit_table_summary_prefix(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
-        script_path = backend_root / "opencode" / "skill" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
+        script_path = backend_root / "opencode" / "skills" / "bid-business-assembler" / "scripts" / "run_from_manifest.py"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source_docx = root / "企业获奖情况.docx"

@@ -7,11 +7,16 @@ from app.services.bid_type import BUSINESS_BID_TYPE, GENERAL_BID_TYPE
 from app.services.identity import classify_material_path, material_identity
 from app.services.material_taxonomy import (
     BUSINESS_MATERIAL_KIND_LABELS,
+    BUSINESS_MATERIAL_CATEGORY_LABELS,
+    BUSINESS_MATERIAL_CATEGORY_SORT_ORDERS,
     MATERIAL_TIER_LABELS,
     clean_status_for_new_file,
+    infer_business_material_category,
+    infer_business_material_subcategory,
     normalize_business_material_kind,
     normalize_material_tier,
 )
+from app.services.material_tags import normalize_material_tags
 from app.services.turbine_models import turbine_model_from_material_name
 
 
@@ -42,6 +47,7 @@ def build_raw_upload_ext_fields(
     source_relative_path: str = "",
     source_root_folder: str = "",
     clean_updated_at: str = "",
+    tags: Any = None,
 ) -> tuple[dict[str, Any], str]:
     location = classify_material_path(folder_path, requested_bid_type or GENERAL_BID_TYPE)
     material_tier = (
@@ -91,13 +97,20 @@ def build_raw_upload_ext_fields(
         "cleanStatus": clean_status,
         "cleanMessage": clean_message,
         "cleanUpdatedAt": clean_updated_at or _now_utc_iso(),
+        "tags": normalize_material_tags(tags),
     }
     if bid_type == BUSINESS_BID_TYPE:
         business_kind = normalize_business_material_kind(business_material_kind) or "other"
+        material_category = infer_business_material_category(folder_path, file_name, material_tier)
+        material_subcategory = infer_business_material_subcategory(folder_path, file_name)
         ext_fields.update(
             {
                 "businessMaterialKind": business_kind,
                 "businessMaterialKindLabel": BUSINESS_MATERIAL_KIND_LABELS.get(business_kind, ""),
+                "materialCategory": material_category,
+                "materialCategoryLabel": BUSINESS_MATERIAL_CATEGORY_LABELS.get(material_category, ""),
+                "materialSubcategory": material_subcategory,
+                "sortOrder": BUSINESS_MATERIAL_CATEGORY_SORT_ORDERS.get(material_category, 999),
             }
         )
     if turbine_hint:

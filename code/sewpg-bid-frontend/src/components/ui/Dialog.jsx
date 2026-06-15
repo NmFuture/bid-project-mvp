@@ -21,7 +21,7 @@ export function Dialog({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6" onClick={onClose}>
       <div
-        className={cx('flex max-h-[88vh] w-full flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface shadow-2xl', SIZES[size] || SIZES.md, className)}
+        className={cx('flex max-h-[88vh] w-full flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface shadow-[0_12px_28px_-16px_rgba(0,62,111,0.2)]', SIZES[size] || SIZES.md, className)}
         onClick={(event) => event.stopPropagation()}
       >
         {children}

@@ -254,6 +254,7 @@ services:
       - "80"
     volumes:
       - ./sewpg-bid-backend/onlyoffice/docker-entrypoint.sh:/usr/local/bin/sewpg-onlyoffice-entrypoint:ro
+      - ${ONLYOFFICE_CUSTOM_FONTS_HOST_DIR:-./sewpg-bid-backend/onlyoffice/fonts}:/usr/share/fonts/truetype/custom:ro
       - onlyoffice_logs:/var/log/onlyoffice
       - onlyoffice_data:/var/www/onlyoffice/Data
       - onlyoffice_lib:/var/lib/onlyoffice
