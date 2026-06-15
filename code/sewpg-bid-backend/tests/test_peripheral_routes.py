@@ -85,9 +85,16 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tree_response.status_code, 200)
         self.assertGreater(len(tree_response.json()["tree"]), 0)
 
+        project_id = f"PRJ-TEST-{self.run_id}"
+        bootstrap = await self.client.post(
+            "/api/technical/materials/raw/folders/bootstrap",
+            json={"projectId": project_id},
+        )
+        self.assertEqual(bootstrap.status_code, 200)
+
         create_folder = await self.client.post(
             "/api/technical/materials/raw/folders",
-            json={"parentPath": f"技术标/项目素材/PRJ-TEST-{self.run_id}", "folderName": f"补充资料-{self.run_id}"},
+            json={"parentPath": f"技术标/项目素材/{project_id}", "folderName": f"补充资料-{self.run_id}"},
         )
         self.assertEqual(create_folder.status_code, 200)
         folder_path = create_folder.json()["folderPath"]
