@@ -7,6 +7,7 @@ import { PageLoading, PageEmpty, PageError } from '../../../components/states/Pa
 import FilterBar from '../../../components/shared/FilterBar'
 import { parseRouteFromBidType, projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
 import { getTechnicalCompactStageLabel, getTechnicalStageRoute } from '../technicalStageFlow'
+import { technicalProjectParseResultMenuRoute } from '../technicalProjectRoutes'
 
 export default function TechnicalProjectList({ showToast, viewMode = 'projects', workspaceKind = 'tech' }) {
   const navigate = useNavigate()
@@ -113,6 +114,11 @@ export default function TechnicalProjectList({ showToast, viewMode = 'projects',
 
   const openProject = (project) => {
     navigate(getProjectEntryRoute(project))
+  }
+
+  const openParseResult = (projectId, event = null) => {
+    setActiveMenuId('')
+    navigate(technicalProjectParseResultMenuRoute(projectId, event))
   }
 
   const stageLabelForProject = (project) => {
@@ -282,10 +288,18 @@ export default function TechnicalProjectList({ showToast, viewMode = 'projects',
                         </button>
                         {menuOpen && (
                           <div
-                            className="absolute right-2 top-10 w-32 bg-surface-container-lowest border border-surface-container-high z-20 py-1 shadow-[0_1px_2px_rgba(11,27,44,0.08)]"
+                            className="absolute right-2 top-10 w-36 bg-surface-container-lowest border border-surface-container-high z-20 py-1 shadow-[0_1px_2px_rgba(11,27,44,0.08)]"
                             role="menu"
                             onClick={(event) => event.stopPropagation()}
                           >
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="w-full text-left px-3 py-1.5 text-sm text-on-surface hover:bg-surface-container-low transition-colors"
+                              onClick={(event) => openParseResult(project.id, event)}
+                            >
+                              查看解析结果
+                            </button>
                             <button
                               type="button"
                               role="menuitem"

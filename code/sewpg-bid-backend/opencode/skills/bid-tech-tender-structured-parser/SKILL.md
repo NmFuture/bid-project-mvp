@@ -1,41 +1,189 @@
 ---
 name: bid-tech-tender-structured-parser
-description: Parse one or more tender documents into structured bid requirements, scoring tables, fixed project and wind turbine fields, requirement presence, source evidence, and project dates.
+description: Parse technical tender documents against the fixed owner-provided technical interpretation checklist with semantic evidence retrieval.
 ---
 
-# Bid Tender Structured Parser
+# 技术标 S1 结构化解读
 
-Use this skill for S0 tender parsing when the backend provides an `s1_parse_manifest.json`.
+## 角色
 
-`s1_parse_manifest.json` is a historical manifest filename kept for backend compatibility; the user-facing workflow step is now `S0 解析`.
+你是招投标技术标专家，不是关键词匹配器。你要像真实审阅招标文件一样，围绕下方固定清单逐条检索招标文件，判断当前文件能否支撑该条解读，并提交可回查的结论和证据。
 
-Run exactly:
+`s1_parse_manifest.json` 是历史文件名，用户侧阶段仍是 `S0/S1 解析`。后端会提供 manifest，里面只包含招标文件，不再提供外部 Excel 清单。本 skill 的清单就是解析范围。
+
+## 工作方式
+
+先运行：
 
 ```bash
-s1parse <manifest>
+s1parse prepare <manifest>
 ```
 
-The command reads extracted tender text from the manifest, writes the full JSON result to `structuredResultPath`, and prints a compact summary JSON to stdout.
+用小输出命令探索文档，不要读取或打印大 JSON：
 
-Parse every document in `manifest.documents`; do not assume the user uploaded a single file. Treat first/third volume evaluation documents and second-volume technical specifications as complementary sources, then merge them into one JSON result.
+```bash
+s1parse overview <manifest> --page 1 --page-size 30
+s1parse search <manifest> "<query>" --limit 20
+s1parse read <manifest> <evidenceId> --mode summary --max-chars 2000
+s1parse window <manifest> <evidenceId> --before 4 --after 6
+s1parse table <manifest> <tableId> --rows 1-12 --max-chars 4000
+```
 
-The full output JSON must preserve:
+提交、校验并收口：
 
-- `structured.sourceDocuments[]` with `id`, `name`, `role` (`evaluation`, `technical_spec`, `commercial_volume`, or `unknown`), and text length.
-- `structured.scoringCriteria` split into `technical`, `business`, `price`, `lcoe`, and `compliance`. Each row must include `order`, `scoringItem`, `score`, `scorePoint`, `proofRequirement`, `sourceFile`, `sourceDocumentId`, `section`, `evidence`, and `evidenceLocation`.
-- `structured.fieldGroups.projectBasics` for project name, tender number, tenderer, management unit, bid section scale, delivery period, warranty period, and technical commitment.
-- `structured.fieldGroups.turbineCoreParameters` for single capacity, rotor diameter, hub height, blade tip clearance, tower type, box transformer type, safety class, air density, wind speed, and turbulence intensity.
-- `structured.fieldGroups.performanceGuarantees` for power curve, availability, generation, and grid performance.
-- `structured.fieldGroups.environmentAdaptation` for low temperature, icing/condensation, humidity, lightning, sandstorm, and high temperature.
-- `structured.requirementPresence` for topic plans, supply scope, and assessment terms, each with present/missing status, summary, evidence, and sources.
-- `structured.coverage[]` summarizing whether each target area is present, partial, complete, or missing.
-- `structured.projectDates.startDate` and `structured.projectDates.endDate` only for bidding-stage dates, such as tender document acquisition/registration start and bid submission deadline/opening date.
-- `sourceFile`, `sourceDocumentId`, `evidence`, and `evidenceLocation` for every extracted item, fixed field, and scoring row.
+```bash
+s1parse submit <manifest> technicalInterpretation '<json>'
+s1parse validate <manifest>
+s1parse status <manifest>
+s1parse finalize <manifest>
+```
 
-Important parsing rules:
+提交的 `technicalInterpretation` 是数组。每条只提交你已经判断过的清单行，字段为：
 
-- Prefer actual Word tables and body sections over table-of-contents entries.
-- Classify scoring tables only when the section title is a scoring/evaluation title such as `附表2：技术评分标准表`, `附表3：商务评分标准表`, `附表4：投标报价评分标准`, `附表5：投标度电成本评分标准`, or `附表1：符合性审查标准表`.
-- Do not treat supply scope, brand lists, appendix templates, or quotation/supply tables as scoring criteria merely because their cells mention “报价” or “评分”.
-- Preserve section/title evidence for fields extracted from technical specification tables such as `招标机型要求`, `风资源情况`, `特殊防护要求`, `交货进度`, and `质保期`.
-- Do not write delivery, supply, service-period, construction-period, completion, installation, commissioning, warranty, grid-connection, or production dates into `structured.projectDates`.
+- `rowNo`：下方清单的行号。
+- `status`：只能是 `found`、`partial`、`missing`、`needs_spec`。
+- `conclusion`：给前端展示的解读结论。
+- `evidenceSummary`：一句话概括原文依据。
+- `evidenceIds`：来自 `search/read/window/table` 的 evidence id 数组。`found` 和 `partial` 必须有证据。
+- `neededSourceName`：当 `status=needs_spec` 时必填，且必须使用招标文件原文里的叫法，例如“第三卷 技术规范书和技术规范专用部分”“附表C 技术参数表”等，不要固定写“第二卷技术规范书”。
+
+`validate` 暴露缺口时，继续用导航命令回查证据并重新 `submit`。最终必须执行 `finalize`，完整 JSON 由 finalize 写入 manifest 的 `structuredResultPath`，最后只返回 finalize stdout 的小型 JSON。
+
+## 状态判断
+
+- `found`：当前已上传招标文件中有明确、直接的原文依据，可以形成结论。
+- `partial`：当前文件找到部分依据，但还有参数、数量、报告、验收方式等细节需要其他卷册/附件补充。
+- `missing`：已在当前文件中检索，未找到直接依据，也未发现当前文件指向应核对的具体卷册/附件。
+- `needs_spec`：当前文件明确把该要求指向其他卷册、技术规范、专用部分、附件或附表，当前文件无法直接确认。必须填写 `neededSourceName`，并尽量引用当前文件中指向该来源的句子作为证据。
+
+## 解读规则
+
+`s1parse prepare` 已经完成 DOCX 预处理和结构化原文索引，后续不要重新手工构建全文索引。你的工作重点是用 `overview/search/read/window/table` 在既有索引中审阅、核对和判断。
+
+### 子要求逐项判断
+
+清单中的“具体内容”通常由多个子要求组成，分隔符可能是 `；`、`、`、`/`、括号说明或并列短语。每一行提交前，先把它拆成若干子要求逐个判断，再合并成一条结论：
+
+- 子要求是不同对象时要分开判断，例如“主轴承、齿轮箱、发电机测点配置”和“传感器/数采器防爆认证”不能用同一条传感器配置证据一并判定。
+- 子要求是不同责任时要分开判断，例如“供货、安装、调试”“第三方检测、电网验收、备案”“检测不通过费用承担”需要分别找依据。
+- 子要求是不同指标时要分开判断，例如 `98%/95%`、`±5%/97%/95%`、`MTBF/MTTR` 不得相互替代。
+- `found` 只用于该行主要子要求都能由当前文件直接支撑的情况；核心要求找到但个别数量、频次、认证、费用、人员资质或报告细节未找到时，用 `partial`，并在 `conclusion` 里写清“已找到什么、未明确什么”。
+- 如果某个子要求只在清单问题中出现，原文没有直接说法，不要把相邻概念扩写成明确要求。可以写“未检索到……明确条款”，保持结论可审计。
+
+### 招投标阅读优先级
+
+不同招标文件章节名会变化，不要死记固定标题；按语义进入相近章节。一般优先级是：项目专用/专用部分/技术规范专用条款 > 招标机型要求、供货范围、设备范围、特殊防护条件等项目表格 > 附表/附件中的参数表和承诺表 > 通用技术规范正文 > 目录或模板性说明。
+
+按清单主题优先阅读这些语义位置：
+
+- 设备选型：先看“招标机型要求、总体技术参数、风资源/场址条件、特殊防护条件、塔筒型式、箱变型式、附表C”。特殊环境要优先看项目专用勾选表；通用章节只说明可能适用的技术要求，不能直接覆盖专用表未勾选项。
+- 供货范围：先看“供货范围、设备范围、附表B供货清单、甲供/无需报价、投标人负责/招标人负责、电缆或通信分界”。中央监控、CMS、箱变、环网柜等要先判断供货主体，再写责任结论。
+- 设计制造与认证：先看“机型及大部件认证、IEC安全等级、设计认证/型式认证、待解决项、场址载荷适应性、附表F/G”。没有出现的认证名称（如特定缩写认证）不要用第三方复核、载荷报告等相近表述代替。
+- 技术资料交付：先看“投标技术资料、专题方案要求、设计文件技术资料表、发电量计算文件、风资源评估、路勘/运输方案、附表D/E/F/G/H”。区分投标阶段提交、合同签订后提交、制造下料前提交。
+- 质保与考核：先看“质保期、可利用率、发电量考核、功率曲线考核、维护服务、系统升级”。注意考核周期和口径，年考核、月度统计、试运行验收不是同一个要求。
+- 涉网性能：先看“并网性能、电网要求、高/低电压穿越、一次调频、AGC/AVC、仿真建模、电网适应性测试、并网检测报告”。满足标准、免费升级、检测通过、费用承担要分开判断。
+- CMS/SCADA/二次安防/国产化：先看“中央监控系统、远程监测终端、状态监测/CMS、二次安防、纵向加密、国产化软硬件、操作系统/数据库/CPU”。要区分 SCADA 与 CMS，区分甲供设备、投标人配合接口、投标人实际供货。
+- 环境适应性：先看“项目特殊防护条件、场址环境、低温/覆冰/凝露/潮湿/雷暴/风沙/高温/盐雾/台风”等专用要求，再看通用环境适应性章节。通用章节出现盐雾、台风，不等于本项目专用表已要求盐雾、台风。
+- 配置类要求：遇到“若配备、如有、可选、按需、模板不用填写、不接受”等条件性语句时，结论要保留条件，不要写成强制标配。
+
+## 输出契约
+
+完整 JSON 必须包含：
+
+- `structured.sourceDocuments[]`
+- `structured.technicalInterpretation`
+- `structured.workflow`
+
+`structured.technicalInterpretation` 必须包含：
+
+- `schemaVersion`: `technical-interpretation-v1`
+- `checklistVersion`: `excel-technical-2026-06-16`
+- `categories[]`: 按展示大类分组后的结果
+- `items[]`: 58 条清单全量结果
+- `summary`: `total/found/partial/missing/needs_spec`
+
+每条 item 必须包含：
+
+`id,rowNo,displayGroup,primaryCategory,secondaryCategory,specificContent,status,conclusion,evidenceSummary,neededSourceName,evidenceRefs`
+
+`evidenceRefs[]` 中每条必须包含：
+
+`id,sourceDocumentId,sourceFile,section,evidenceLocation,text`
+
+## 展示大类映射
+
+前端按以下展示大类阅读：
+
+- 设备选型适配
+- 供货范围界定
+- 设计与制造标准
+- 施工与验收规范
+- 技术资料交付
+- 全生命周期质保
+- 涉网性能合规
+- CMS / 一次调频 / 国产化 / 二次安防等
+
+清单中的原始一级类别必须保留在 `primaryCategory`。若原始一级类别不属于上述展示大类，按语义归入最接近的展示大类，同时保留原始一级类别标签。
+
+## 技术标解读清单
+
+| rowNo | 一级类别 | 二级类别 | 具体内容 |
+| --- | --- | --- | --- |
+| 3 | 设备选型适配 | 风电机组 | 极限风速、盐雾、台风、高海拔等特殊环境适配；单机容量、总装机容量合规性；机型降容限制 |
+| 4 | 设备选型适配 | 支撑结构 | 常规钢塔、分片式钢塔、混塔、桁架塔选型适配；塔筒底部直径规格适配 |
+| 5 | 设备选型适配 | 箱变系统 | 上置、下置于塔筒内、下置于塔筒外布置选型；电缆走线方案适配；箱变下置方案的控制柜、变流器塔筒底部安装要求 |
+| 6 | 供货范围界定 | 风电机组整机 | 整套风力发电机组及塔筒内所有必要设备；主控柜、通讯电缆、电力电缆等配套 |
+| 7 | 供货范围界定 | 塔筒及基础部件 | 塔筒本体及附件；锚栓组合件、基础环、钢绞线、锚具、坐浆料/灌浆料等基础部件 |
+| 8 | 供货范围界定 | 上置箱变配套 | 环网柜（含箱变保护测控）、环网柜和干式变压器至环网柜的电缆 |
+| 9 | 设计与制造标准 | 风电机组 | 权威机构颁发的不含待解决项的设计认证要求；IEC安全等级设计标准 |
+| 10 | 设计与制造标准 | 塔架 | 各工况下塔架截面、门洞及法兰、螺栓的最小安全裕度要求；整体安全裕度不低于5%的载荷报告要求 |
+| 11 | 设计与制造标准 | 混凝土塔筒 | GB 50666、GB 50204等国家标准施工及验收要求；表面气泡、裂缝修补与评定标准 |
+| 12 | 设计与制造标准 | 传感器系统 | 主轴承、齿轮箱、发电机、叶片振动监测测点配置要求；传感器和数采器防爆认证要求；防爆认证要求；极端天气下监测系统可靠性保障 |
+| 13 | 施工与验收规范 | 塔筒制造 | 塔筒防腐、包装、运输、调试全流程责任；缺陷返工、报废重新制造责任界定 |
+| 14 | 施工与验收规范 | 混凝土塔筒施工 | 预应力工程施工及验收标准；缺陷处理责任与流程 |
+| 15 | 技术资料交付 | 发电量计算文件 | 建模基础参数、输入文件、折减系数、中尺度/地形图补充数据、计算原始文件；综合折减系数、年等效运行满负荷小时数要求 |
+| 16 | 投标技术资料要求 | 资质认证文件 | 机型设计认证全文、塔架载荷报告、安全裕度证明文件、SSDA认证承诺等资质文件要求等 |
+| 17 | 资格与资质要求 | 投标主体 | 全标段投标要求；机型资质、设计认证、载荷报告等专项资格条件 |
+| 18 | 全生命周期质保 | 风电机组整机 | 20年设计寿命；大部件全寿命周期质保；变流器专项质保年限要求；设计/制造/材料缺陷导致的设备损坏无偿更换责任 |
+| 19 | 全生命周期质保 | 核心大部件 | 叶片、轮毂、变桨轴承、发电机、齿轮箱、主轴、主轴承、偏航轴承、机舱铸件、塔筒等大部件定义与质保责任 |
+| 20 | 全生命周期质保 | 系统升级服务 | 使用寿命期内免费系统升级和维护；电网公司改造、接入、升级要求的免费适配 |
+| 21 | 涉网性能合规 | 风电机组控制系统 | 高电压穿越、低电压穿越、一次调频、仿真建模、频率/电压/功率/无功调节能力要求；国家标准/电网公司新要求的升级适配与型式试验报告提供 |
+| 22 | 涉网性能合规 | 次同步振荡控制系统 | 软件+硬件结合的振荡抑制方案；电网电压采样板、独立控制通道谐波电流算法要求；电网标准适配 |
+| 23 | 核心部件功能与可靠性 | 变桨系统 | 超级电容后备电源配置；模块化设计；电压、温度、健康度实时监测；定期自检功能；顺桨能量保障要求 |
+| 24 | 核心部件功能与可靠性 | 机舱系统 | 舱内外空气循环流通设计；发热部件独立散热系统进风口温度控制要求；机舱罩防覆冰设计（流线型外形、疏水性涂料、通风设计） |
+| 25 | 核心部件功能与可靠性 | 传动链系统 | 主轴轴承密封性要求；废弃油脂收集装置配置；齿轮箱油渗漏责任界定；齿轮箱底部集油盘配置；散热系统自动清理能力要求 |
+| 26 | 核心部件功能与可靠性 | 防雷系统 | 风电机组整机防雷电保护措施；叶片、发电机绝缘、强电/弱电系统过电压/过电流保护设计；防雷击和防操作过电压保护设计方案要求；避雷器/浪涌保护器参数提供要求 |
+| 27 | 环境适应性设计 | 风电机组整机 | 雨季湿度防凝露、防结冰设计；雷暴区防雷保护；丘陵地形运输吊装适配；强紫外线环境叶片寿命适配 |
+| 28 | 环境适应性设计 | 机舱罩 | 防覆冰、防凝露、疏水性表面设计；通风散热适配 |
+| 29 | 安全与防护要求 | 风电机组整机 | IEC安全等级设计认证要求；SSDA认证配合承诺；场址安全等级适配的载荷报告要求 |
+| 30 | 机组可靠性考核 | 整机可靠性 | 质保期内平均MTBF≥3000h，MTTR不超过5.5h的指标要求 |
+| 31 | 机组可靠性考核 | 设备可利用率 | 风电场年平均可利用率≥98%，单台机组年可利用率≥95%的考核指标；质保期内低于指标的考核规则 |
+| 32 | 发电量担保与考核 | 年利用小时数 | 担保期内年利用小时数发电量风速段担保要求；5年担保期规则；担保期内平均电量考核规则 |
+| 33 | 发电量担保与考核 | 发电量差值考核 | 实际发电量未达承诺值的考核规则；电价核算标准；考核金额上不封顶要求 |
+| 34 | 发电量担保与考核 | 机位点适配 | 机位点布置范围限制；机位点变更的发电量承诺方案调整规则 |
+| 35 | 功率曲线精度考核 | 功率曲线误差 | 现场空气密度下理论功率曲线与实测功率曲线误差≤5%的要求 |
+| 36 | 功率曲线精度考核 | 月度功率曲线保证 | 月度风电场平均功率曲线保证值≥95％的考核要求 |
+| 37 | 功率曲线精度考核 | 功率曲线提供 | 标准空气密度和场址空气密度下的静态及动态功率曲线提供要求；投标保证功率曲线明确要求 |
+| 38 | 安全认证要求 | 设计认证 | IEC ⅢB/ⅡIC类安全等级设计认证要求；投标前未取得认证的载荷报告提供与SSDA认证配合承诺要求 |
+| 39 | 环境适应性要求 | 特殊环境适配 | 噪声、冰冻、高湿、雷暴、低温、沙尘、台风等特殊环境的特殊设计与解决方案要求 |
+| 40 | 环境适应性要求 | 地形与地质适配 | 丘陵风电场运输吊装条件适配；Ⅷ度地震烈度环境适配要求 |
+| 41 | 环境适应性要求 | 环境防护 | 防结冰、防凝露、防雷电、防紫外线、防沙尘设计要求 |
+| 42 | 设备配置要求 | 叶片 | 出厂标配涡流发生器及锯齿尾缘要求 |
+| 43 | 设备配置要求 | 智能门锁 | 智能门锁安装点、通信接口和电源配套要求 |
+| 44 | 投标技术资料要求 | 项目配套文件 | 路勘报告和运输方案提供要求 |
+| 45 | 投标技术资料要求 | 技术方案文件 | 环境适应性设计方案、防雷保护方案、功率曲线保证方案等投标技术文件要求 |
+| 46 | 中央监控与远程监测系统 | 系统配置 | 2套中央监控系统（1主1备双机热备）、2套远程监测系统配置要求 |
+| 47 | 中央监控与远程监测系统 | 终端设备 | 2台监控台式电脑、2台监控笔记本电脑配置要求；25寸LCD显示器、主流硬件配置要求 |
+| 48 | 中央监控与远程监测系统 | 配套设备 | 物理隔离和认证加密装置、2小时UPS电源配置要求；现地调试接口与2台便携式计算机配置要求 |
+| 49 | CMS振动监测系统 | 测点配置 | 双馈传动链11/12测点、叶片振动3测点的标配要求；主轴承、齿轮箱、发电机监测全覆盖要求 |
+| 50 | CMS振动监测系统 | 设备认证 | 传感器和数采器防爆认证要求；极端天气下监测系统可靠性保障 |
+| 51 | CMS振动监测系统 | 配套服务 | 质保期内免费CMS振动监测分析服务要求；每月至少1次分析频次；分析人员资质与同机型分析经历要求 |
+| 52 | 一次调频与惯量响应系统 | 设备品牌 | 行业一线品牌要求 |
+| 53 | 一次调频与惯量响应系统 | 全流程责任 | 供货、安装、调试全流程责任；第三方机构检测、电网公司验收、备案保障要求；一次检测不通过的后续费用承担责任 |
+| 54 | 一次调频与惯量响应系统 | 电网适配 | 电网公司接入和运行各项要求适配；站区光伏、储能等其他电源形式的共同配合适配要求 |
+| 55 | 国产自主可控软硬件 | 核心系统 | 风机监控系统、就地控制单元（LCU）、风机能量管理平台、功率控制（AGC/AVC）系统、视频安防系统、集控系统的国产自主可控要求 |
+| 56 | 国产自主可控软硬件 | 核心部件 | 中央处理器、中间件、操作系统、数据库等核心软硬件国产要求 |
+| 57 | 国产自主可控软硬件 | 合规性要求 | 产品品牌、型号、版本必须在中国信息安全测评中心公布的名录内；相关产品查询证明截图提供要求 |
+| 58 | 二次安防系统 | 加密设备 | 微型纵向加密、千兆纵向加密认证装置配置要求；主站与终端间双向身份认证及传输加密保护要求 |
+| 59 | 二次安防系统 | 网络设备 | 环网交换机、交换机、升压站站控接口防火墙等设备配置要求 |
+| 60 | 二次安防系统 | 合规性要求 | 二次安防相关设备及配置满足国家规范及当地电网要求 |

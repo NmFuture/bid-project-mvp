@@ -4970,34 +4970,37 @@ s1parse finalize {skill_manifest_path}
     return f"""
 Use the {profile.skill_name} skill.
 
-你现在在做 S1 招标文件结构化解析。请调用解析 Skill 读取 manifest 中的多份招标文件文本，输出可直接给后端使用的结构化 JSON。
+你在做 S1 技术标解读。业务任务书、内置 58 条技术标解读清单、状态定义和证据要求以 skill 内的 `SKILL.md` 为准；本提示只约束执行链路。
 
 manifest：{skill_manifest_path}
 
-请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 600000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径。命令会把完整结构化 JSON 写入 manifest.structuredResultPath，并只在 stdout 打印小型摘要 JSON：
+必须用 Bash 按顺序执行 `s1parse` 小输出链路，timeout 设置为 600000 毫秒或更高：
 
-s1parse {skill_manifest_path}
+s1parse prepare {skill_manifest_path}
+s1parse overview {skill_manifest_path} --page 1 --page-size 30
+s1parse search {skill_manifest_path} "<query>" --limit 20
+s1parse read {skill_manifest_path} <evidenceId> --mode summary --max-chars 2000
+s1parse window {skill_manifest_path} <evidenceId> --before 4 --after 6
+s1parse table {skill_manifest_path} <tableId> --rows 1-12 --max-chars 4000
+s1parse submit {skill_manifest_path} technicalInterpretation '<json>'
+s1parse validate {skill_manifest_path}
+s1parse status {skill_manifest_path}
+s1parse finalize {skill_manifest_path}
 
-只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
+禁止用 opencode 的 read 工具读取或打印解析中间产物的大 JSON；证据定位必须通过 s1parse 小输出导航命令完成。禁止调用 Task/subagent/子代理/任务委派工具。
+
+只使用 s1parse 返回过的 evidenceId，不要编造证据。`found` 和 `partial` 必须有证据；`needs_spec` 必须写 `neededSourceName`，且使用招标文件原文里的卷册、附件或附表叫法，不要固定写“第二卷技术规范书”。validate 失败时继续回查并重新 submit；必须执行 finalize，最终结构化 JSON 必须由 finalize 写入 manifest.structuredResultPath。
+
+最后只返回 finalize 命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
 返回格式必须是：
 {{
   "schemaVersion": "{profile.schema_version}",
   "targetSkill": "{profile.skill_name}",
   "outputFile": "manifest 中的 structuredResultPath",
-  "summary": {{"itemCount": 0, "categoryCounts": {{}}, "scoringCounts": {{"technical": 0, "business": 0, "price": 0, "lcoe": 0, "compliance": 0}}, "projectDates": {{"startDate": "", "endDate": ""}}}}
+  "summary": {{"itemCount": 58, "checklistCount": 58, "statusCounts": {{"found": 0, "partial": 0, "missing": 0, "needs_spec": 0}}, "workflowStage": "finalized", "projectDates": {{"startDate": "", "endDate": ""}}}}
 }}
 
-解析目标必须覆盖：
-1. 评分细则：评分项、得分点、证明材料要求。
-2. 项目基础信息：项目名称、招标编号、招标人/管理单位、规模、交货周期、质保期、技术承诺。
-3. 风机核心参数：单机容量、叶轮直径、轮毂高度、叶片最低点距地、塔筒型式、箱变型式、安全等级、空气密度、风速、湍流强度。
-4. 性能保证指标：功率曲线、可利用率、发电量、涉网性能。
-5. 环境适应性要求：低温、覆冰防凝露、潮湿、防雷暴、防风沙、高温。
-6. 专题方案要求：叶片、变桨系统、主轴、齿轮箱等专题。
-7. 附表、供货范围和考核条款。
-8. 投标相关日期：招标文件获取/报名起始日期、投标文件递交截止日期或开标日期。不要把交货、供货、服务期、工期、竣工、安装调试等履约日期写入 projectDates。
-
-完整 JSON 必须包含 structured.sourceDocuments、structured.scoringCriteria、structured.fieldGroups、structured.requirementPresence、structured.coverage。每条 item、评分行和字段必须保留 sourceFile、sourceDocumentId、section、evidence、evidenceLocation。
+完整 JSON 必须包含 structured.sourceDocuments、structured.technicalInterpretation、structured.workflow，且 workflow.mode 为 opencode-agentic-navigation。
 """.strip()
 
 
@@ -5006,9 +5009,36 @@ def _build_tender_parse_retry_prompt(
     profile: ParseProfile,
     first_error: RuntimeError,
 ) -> str:
-    if profile.key != "business":
-        return _build_tender_parse_prompt(skill_manifest_path, profile)
     failure = str(first_error)
+    if profile.key != "business":
+        return f"""
+Use the {profile.skill_name} skill.
+
+这是同一个 S1 技术标解读任务的一次恢复重试。第一次 opencode 会话没有完成 finalize，失败原因如下：
+{failure}
+
+manifest：{skill_manifest_path}
+
+不要重新发散式探索，不要读取或打印大 JSON，不要调用 Task/subagent/子代理/任务委派工具。必须使用 Bash 继续完成同一条 `s1parse` 工作流，timeout 设置为 600000 毫秒或更高。
+
+按下面顺序执行：
+
+s1parse status {skill_manifest_path}
+s1parse submit {skill_manifest_path} technicalInterpretation '<json>'
+s1parse validate {skill_manifest_path}
+s1parse status {skill_manifest_path}
+s1parse finalize {skill_manifest_path}
+
+如果 status 显示已有提交项，只补缺失或校验失败项；如果证据不足，只用 s1parse search/read/window/table 做最小回查。`needs_spec` 必须写招标文件原文里的 `neededSourceName`。必须执行 finalize，最终结构化 JSON 必须由 finalize 写入 manifest.structuredResultPath。
+
+最后只返回 finalize 命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。返回格式必须是：
+{{
+  "schemaVersion": "{profile.schema_version}",
+  "targetSkill": "{profile.skill_name}",
+  "outputFile": "manifest 中的 structuredResultPath",
+  "summary": {{"itemCount": 58, "checklistCount": 58, "statusCounts": {{"found": 0, "partial": 0, "missing": 0, "needs_spec": 0}}, "workflowStage": "finalized", "projectDates": {{"startDate": "", "endDate": ""}}}}
+}}
+""".strip()
     return f"""
 Use the {profile.skill_name} skill.
 
