@@ -89,22 +89,8 @@ const bidTypeTabMeta = (value) =>
 const materialTierMeta = (value) =>
   MATERIAL_TIER_OPTIONS.find((item) => item.value === value) || MATERIAL_TIER_OPTIONS[0]
 
-const cleanStatusMeta = (status) => {
-  if (status === 'cleaned') return { label: '已清洗', className: 'bg-secondary-container text-on-secondary-container' }
-  if (status === 'original_only') return { label: '仅保留原件', className: 'bg-tertiary-container text-on-tertiary-container' }
-  if (status === 'failed') return { label: '清洗失败', className: 'bg-error-container text-on-error-container' }
-  if (status === 'cleaning') return { label: '清洗中', className: 'bg-primary/10 text-primary' }
-  return { label: '待清洗', className: 'bg-surface-container-high text-on-surface-variant' }
-}
-
 const businessMaterialKindMeta = (value) =>
   BUSINESS_MATERIAL_KIND_OPTIONS.find((item) => item.value === value) || BUSINESS_MATERIAL_KIND_OPTIONS[2]
-
-const businessMaterialKindClassName = (value) => {
-  if (value === 'fixed') return 'bg-secondary-container text-on-secondary-container'
-  if (value === 'ai_fill') return 'bg-tertiary-container text-on-tertiary-container'
-  return 'bg-surface-container-high text-on-surface-variant'
-}
 
 const normalizeTagList = (value) => {
   const source = Array.isArray(value)
@@ -905,8 +891,6 @@ function TreeNode({
                 {directFiles.map((item) => {
                   const fileSelected = selectedFileId === item.id
                   const previewable = canPreviewCleaned(item)
-                  const meta = cleanStatusMeta(item.cleanStatus)
-                  const kindMeta = businessMaterialKindMeta(item.businessMaterialKind)
                   const canSplit = item.bidType === '商务标' && extOf(item.name) === 'docx'
                   const itemTags = normalizeTagList(item.tags)
                   return (
@@ -943,14 +927,6 @@ function TreeNode({
                         {previewable ? 'description' : 'draft'}
                       </span>
                       <span className="min-w-0 flex-1 basis-32 truncate">{item.name || '-'}</span>
-                      <span className={`hidden shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex ${meta.className}`}>
-                        {meta.label}
-                      </span>
-                      {item.bidType === '商务标' && (
-                        <span className={`hidden shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex ${businessMaterialKindClassName(item.businessMaterialKind)}`}>
-                          {item.businessMaterialKindLabel || kindMeta.label}
-                        </span>
-                      )}
                       {!!itemTags.length && (
                         <span
                           className="hidden min-w-0 max-w-[10rem] shrink items-center gap-1 overflow-hidden sm:inline-flex"

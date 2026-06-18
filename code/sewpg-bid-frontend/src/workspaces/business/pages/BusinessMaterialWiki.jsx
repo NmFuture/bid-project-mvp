@@ -28,22 +28,31 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
   const materialsBasePath = workspaceRoute(BUSINESS_WORKSPACE, '/materials')
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
 
   const [refreshingWiki, setRefreshingWiki] = useState(false)
   const [rebuildingWiki, setRebuildingWiki] = useState(false)
   const [collapsedMap, setCollapsedMap] = useState({})
 
-  const applyPayload = useCallback((payload) => {
-    setData(payload)
+  const applyPayload = useCallback((payload, options = {}) => {
+    // 选中节点（preserveTree）时只更新 selectedNode，保留现有 tree 引用，
+    // 避免整棵树被新响应替换导致全部 key 重挂载 → 目录树闪烁。
+    if (options.preserveTree) {
+      setData((prev) => {
+        if (!prev) return payload
+        return { ...prev, selectedNode: payload?.selectedNode ?? prev.selectedNode }
+      })
+    } else {
+      setData(payload)
+    }
     setError('')
   }, [])
 
   const loadData = useCallback(async (params = {}, options = {}) => {
-    if (options.silent) {
-      setRefreshing(true)
-    } else {
+    // preserveTree：仅切换选中节点内容，不动树结构，也不展示任何加载提示，
+    // 避免左栏「正在同步目录树」提示条闪现导致目录树闪烁 / 高度跳动。
+    // 非 preserveTree（首屏 / 刷新 / 重建）才展示全屏 loading。
+    if (!options.preserveTree) {
       setLoading(true)
     }
 
@@ -52,18 +61,18 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
         ...params,
         bidType: activeBidType,
       })
-      applyPayload(response)
+      applyPayload(response, { preserveTree: options.preserveTree })
     } catch (e) {
       console.error(e)
       const message = safeMessage(e, 'Wiki 数据加载失败，请稍后重试。')
-      setError(message)
-      if (options.silent) {
+      // preserveTree 下首屏树已在，静默失败时用 toast 提示，不打断当前视图。
+      if (options.preserveTree) {
         showToast(message, 'error')
+      } else {
+        setError(message)
       }
     } finally {
-      if (options.silent) {
-        setRefreshing(false)
-      } else {
+      if (!options.preserveTree) {
         setLoading(false)
       }
     }
@@ -98,7 +107,16 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
 
   const handleSelectNode = async (nodeId) => {
     if (!nodeId || nodeId === selectedNodeId) return
-    await loadData({ nodeId }, { silent: true })
+    await loadData({ nodeId }, { preserveTree: true })
+  }
+
+  // 点击整行：叶子节点仅选中；文件夹节点选中的同时切换展开/收起，
+  // 与原始素材库的目录树交互对齐（不必精准点中三角即可展开）。
+  const handleRowClick = (node) => {
+    handleSelectNode(node.id)
+    if (Array.isArray(node.children)) {
+      toggleExpand(node)
+    }
   }
 
   const handleRefreshWiki = async () => {
@@ -153,7 +171,7 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
                 ? 'bg-primary/10 border-primary/20 text-primary'
                 : 'border-transparent hover:bg-surface-container-low text-on-surface-variant'
             }`}
-            onClick={() => handleSelectNode(node.id)}
+            onClick={() => handleRowClick(node)}
           >
             {folder ? (
               <button
@@ -240,12 +258,6 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
                 <h3 className="text-[14px] leading-[1.6] font-semibold text-on-surface">目录树</h3>
               </div>
             </div>
-            {refreshing && (
-              <p className="mt-3 flex items-center gap-2 rounded-lg bg-surface-container-high px-3 py-2 text-[13px] leading-[1.6] text-on-surface">
-                <span className="h-3.5 w-3.5 rounded-full border-2 border-outline-variant border-t-primary animate-spin" />
-                <span>正在同步最新树结构...</span>
-              </p>
-            )}
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-1">{renderTree(tree)}</div>
         </div>

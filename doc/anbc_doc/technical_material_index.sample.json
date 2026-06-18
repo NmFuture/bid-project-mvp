@@ -1,0 +1,3830 @@
+{
+  "bidType": "技术标",
+  "schemaVersion": 1,
+  "generatedAt": "2026-06-18 04:57:22",
+  "stats": {
+    "tierCount": 3,
+    "thirdLevelFolderCount": 8,
+    "fileCount": 526
+  },
+  "tiers": [
+    {
+      "name": "项目定制",
+      "tier": "project",
+      "path": "技术标/项目定制",
+      "fileCount": 45,
+      "folders": [
+        {
+          "name": "华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）",
+          "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）",
+          "tier": "project",
+          "customerName": "",
+          "customerId": "",
+          "projectId": "华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）",
+          "projectCode": "",
+          "description": "",
+          "fileCount": 28,
+          "updatedAt": "2026-06-18 04:57:22",
+          "files": [
+            {
+              "id": "RAW-0182",
+              "name": "待填写-供货范围概述.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/待填写-供货范围概述.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0221",
+              "name": "项目投标设备综合技术参数与性能指标.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/项目投标设备综合技术参数与性能指标.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0203",
+              "name": "发电小时数承诺函（承诺考核值）.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/发电小时数承诺函/发电小时数承诺函（承诺考核值）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0202",
+              "name": "发电小时数承诺函（承诺保证值）.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/发电小时数承诺函/发电小时数承诺函（承诺保证值）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0201",
+              "name": "塔架与基础工程量.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/塔架与基础工程量/塔架与基础工程量.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0200",
+              "name": "W10.0-220_空气密度1.225_湍流强度0.1_风剪切0.1_2026-01-21 16-11-38.xlsx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/功率曲线/W10.0-220_空气密度1.225_湍流强度0.1_风剪切0.1_2026-01-21 16-11-38.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0199",
+              "name": "W10.0-220_空气密度1.16_湍流强度0.1_风剪切0.1_2026-01-21 16-10-56.xlsx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/功率曲线/W10.0-220_空气密度1.16_湍流强度0.1_风剪切0.1_2026-01-21 16-10-56.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0198",
+              "name": "华能集团2025年第5批集采投标项目大部件品牌.xlsx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/短名单/华能集团2025年第5批集采投标项目大部件品牌.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0197",
+              "name": "采购部短名单(常规版）20260108.xlsx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/短名单/采购部短名单(常规版）20260108.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0196",
+              "name": "基础弯矩表.xlsx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/基础弯矩表/基础弯矩表.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0195",
+              "name": "业绩情况.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/业绩情况-AI抓取/业绩情况.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0194",
+              "name": "生产制造基地专题_锡盟基地.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/项目生产制造基地专题/生产制造基地专题_锡盟基地.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0193",
+              "name": "本项目叶片供货制造基地.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/项目生产制造基地专题/本项目叶片供货制造基地.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0192",
+              "name": "物流解决方案.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/物流解决方案/物流解决方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0191",
+              "name": "风资源评估报告.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/风资源评估报告/风资源评估报告.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0190",
+              "name": "载荷安全性评估报告.pdf",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/载荷安全性评估报告/载荷安全性评估报告.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0189",
+              "name": "偏航驱动与制动能力校核报告.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/部件校核报告/偏航驱动与制动能力校核报告.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0188",
+              "name": "齿轮箱场址校核报告.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/部件校核报告/齿轮箱场址校核报告.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0187",
+              "name": "主轴强度复核报告.pdf",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/部件校核报告/主轴强度复核报告.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0186",
+              "name": "变桨轴承场址校核报告.pdf",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/部件校核报告/变桨轴承场址校核报告.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0185",
+              "name": "叶片场址校核报告.pdf",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/部件校核报告/叶片场址校核报告.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0184",
+              "name": "主轴轴承场址校核报告.pdf",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/部件校核报告/主轴轴承场址校核报告.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0183",
+              "name": "无价格-标段一：华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）报价文件.xlsx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/商务报价文件/无价格-标段一：华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）报价文件.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0181",
+              "name": "风电机组自主可控推广应用的承诺.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/风电机组自主可控推广应用的承诺.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0180",
+              "name": "项目技术承诺函.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/项目技术承诺函.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0179",
+              "name": "待填写-投标项目设备交货进度.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/待填写-投标项目设备交货进度.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0178",
+              "name": "投标说明函.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/投标说明函.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0177",
+              "name": "待填写-项目投标设备综合技术参数与性能指标.docx",
+              "path": "技术标/项目定制/华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）/待填写-项目投标设备综合技术参数与性能指标.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            }
+          ]
+        },
+        {
+          "name": "国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目",
+          "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目",
+          "tier": "project",
+          "customerName": "",
+          "customerId": "",
+          "projectId": "国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目",
+          "projectCode": "",
+          "description": "",
+          "fileCount": 17,
+          "updatedAt": "2026-06-18 04:57:22",
+          "files": [
+            {
+              "id": "RAW-0220",
+              "name": "混塔计算结果简要说明-国电投26年第一批河北邢台-6.25-160-20260428.docx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/塔架与基础工程量/混塔计算结果简要说明-国电投26年第一批河北邢台-6.25-160-20260428.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0219",
+              "name": "国电投26年第一批河北邢台6.25-160m混塔工程量-20260428.docx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/塔架与基础工程量/国电投26年第一批河北邢台6.25-160m混塔工程量-20260428.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0218",
+              "name": "【2026-4-30 发布版（机型范围修订）】国电投2026第1批集采-标准化部件投标品牌.xlsx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/短名单/【2026-4-30 发布版（机型范围修订）】国电投2026第1批集采-标准化部件投标品牌.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0217",
+              "name": "【国电投2026年第1次集采】业绩及技术成熟性格式.docx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/业绩（AI抓取）/【国电投2026年第1次集采】业绩及技术成熟性格式.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0216",
+              "name": "业绩.xlsx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/业绩（AI抓取）/业绩.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0215",
+              "name": "国电投标段15-河北省邢台市卓希经开区50MW风电项目EW6.25-220-160_基础弯矩表_260428.xlsx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/基础弯矩表/国电投标段15-河北省邢台市卓希经开区50MW风电项目EW6.25-220-160_基础弯矩表_260428.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0214",
+              "name": "河北省邢台市卓希经开区50MW风电项目运输方案.docx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/物流解决方案/河北省邢台市卓希经开区50MW风电项目运输方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0213",
+              "name": "标段15-河北省邢台市卓希经开区50MW风电项目风资源报告及担保.docx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/风资源评估报告/标段15-河北省邢台市卓希经开区50MW风电项目风资源报告及担保.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0212",
+              "name": "(附件)附件3：发电量计算文件要求-可编辑版以附件形式提交xlsx.xlsx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/风资源评估报告/(附件)附件3：发电量计算文件要求-可编辑版以附件形式提交xlsx.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0211",
+              "name": "国电投标段15-河北省邢台市卓希经开区50MW风电项目载荷安全性评估报告20260428.pdf",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/载荷安全性评估报告/国电投标段15-河北省邢台市卓希经开区50MW风电项目载荷安全性评估报告20260428.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0210",
+              "name": "标段15-河北省邢台市卓希经开区50MW风电项目噪声报告.docx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/噪声报告/标段15-河北省邢台市卓希经开区50MW风电项目噪声报告.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0209",
+              "name": "实际功率曲线的保证值、设备可利用率.docx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/实际功率曲线的保证值、设备可利用率.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0208",
+              "name": "投标方案技术指标一览表.docx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/投标方案技术指标一览表.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0207",
+              "name": "技术偏差表.docx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/技术偏差表.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0206",
+              "name": "运输方案.docx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/运输方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0205",
+              "name": "第五章“供货要求”中的实质性要求和条件响应承诺.docx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/第五章“供货要求”中的实质性要求和条件响应承诺.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0204",
+              "name": "国家电投与电气风电合作情况说明函.docx",
+              "path": "技术标/项目定制/国电投2026年第一批集采标段15-河北省邢台市卓希经开区50MW风电项目/国家电投与电气风电合作情况说明函.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "客户定制",
+      "tier": "customer",
+      "path": "技术标/客户定制",
+      "fileCount": 39,
+      "folders": [
+        {
+          "name": "华能",
+          "path": "技术标/客户定制/华能",
+          "tier": "customer",
+          "customerName": "华能",
+          "customerId": "",
+          "projectId": "",
+          "projectCode": "",
+          "description": "",
+          "fileCount": 27,
+          "updatedAt": "2026-06-18 04:57:22",
+          "files": [
+            {
+              "id": "RAW-0248",
+              "name": "概述.docx",
+              "path": "技术标/客户定制/华能/数字化智慧风场专题/智能风机部件监控系统/概述.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0247",
+              "name": "用户价值.docx",
+              "path": "技术标/客户定制/华能/数字化智慧风场专题/智能风机部件监控系统/用户价值.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0246",
+              "name": "技术方案及优势.docx",
+              "path": "技术标/客户定制/华能/数字化智慧风场专题/智能风机部件监控系统/技术方案及优势.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0245",
+              "name": "叶片净空监测系统.docx",
+              "path": "技术标/客户定制/华能/数字化智慧风场专题/智能风机部件监控系统/叶片净空监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0244",
+              "name": "齿轮箱油液在线监测系统（甲供）.docx",
+              "path": "技术标/客户定制/华能/数字化智慧风场专题/智能风机部件监控系统/齿轮箱油液在线监测系统（甲供）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0243",
+              "name": "风机视频监控系统.docx",
+              "path": "技术标/客户定制/华能/数字化智慧风场专题/智能风机部件监控系统/风机视频监控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0242",
+              "name": "智能终端和远程听诊系统.docx",
+              "path": "技术标/客户定制/华能/数字化智慧风场专题/智能风机部件监控系统/智能终端和远程听诊系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0241",
+              "name": "叶片健康监测系统（甲供）.docx",
+              "path": "技术标/客户定制/华能/数字化智慧风场专题/智能风机部件监控系统/叶片健康监测系统（甲供）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0240",
+              "name": "发电机位移监测系统（选配）.docx",
+              "path": "技术标/客户定制/华能/数字化智慧风场专题/智能风机部件监控系统/发电机位移监测系统（选配）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0239",
+              "name": "功能介绍.docx",
+              "path": "技术标/客户定制/华能/数字化智慧风场专题/智能风机部件监控系统/功能介绍.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0238",
+              "name": "在线振动监测分析系统（甲供）.docx",
+              "path": "技术标/客户定制/华能/数字化智慧风场专题/智能风机部件监控系统/在线振动监测分析系统（甲供）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0237",
+              "name": "在线塔筒晃动检测&基础沉降检测系统（甲供）.docx",
+              "path": "技术标/客户定制/华能/数字化智慧风场专题/智能风机部件监控系统/在线塔筒晃动检测&基础沉降检测系统（甲供）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0236",
+              "name": "IPC叶片健康监测系统.docx",
+              "path": "技术标/客户定制/华能/数字化智慧风场专题/智能风机部件监控系统/IPC叶片健康监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0235",
+              "name": "智能自动消防系统.docx",
+              "path": "技术标/客户定制/华能/数字化智慧风场专题/智能风机部件监控系统/智能自动消防系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0234",
+              "name": "定制-变桨系统专题.docx",
+              "path": "技术标/客户定制/华能/部件/定制-变桨系统专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0233",
+              "name": "定制-主轴承专题.docx",
+              "path": "技术标/客户定制/华能/部件/定制-主轴承专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0232",
+              "name": "定制-主轴专题.docx",
+              "path": "技术标/客户定制/华能/部件/定制-主轴专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0231",
+              "name": "定制-偏航系统专题.docx",
+              "path": "技术标/客户定制/华能/部件/定制-偏航系统专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0230",
+              "name": "定制-齿轮箱专题.docx",
+              "path": "技术标/客户定制/华能/部件/定制-齿轮箱专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0229",
+              "name": "定制-叶片专题.docx",
+              "path": "技术标/客户定制/华能/部件/定制-叶片专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0228",
+              "name": "待填写-投标总体方案概述.docx",
+              "path": "技术标/客户定制/华能/待填写-投标总体方案概述.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0227",
+              "name": "与华能集团签署的战略合作协议.docx",
+              "path": "技术标/客户定制/华能/与华能集团签署的战略合作协议.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0226",
+              "name": "投标项目塔筒专题.docx",
+              "path": "技术标/客户定制/华能/投标项目塔筒专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0225",
+              "name": "待填写-技术附表.docx",
+              "path": "技术标/客户定制/华能/待填写-技术附表.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0224",
+              "name": "与华能集团新能源项目合作.docx",
+              "path": "技术标/客户定制/华能/与华能集团新能源项目合作.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0223",
+              "name": "我司与华能集团合作自主可控技术的研发与应用.docx",
+              "path": "技术标/客户定制/华能/我司与华能集团合作自主可控技术的研发与应用.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0222",
+              "name": "待填写-技术评分标准索引表.docx",
+              "path": "技术标/客户定制/华能/待填写-技术评分标准索引表.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            }
+          ]
+        },
+        {
+          "name": "国电投",
+          "path": "技术标/客户定制/国电投",
+          "tier": "customer",
+          "customerName": "国电投",
+          "customerId": "",
+          "projectId": "",
+          "projectCode": "",
+          "description": "",
+          "fileCount": 12,
+          "updatedAt": "2026-06-18 04:57:22",
+          "files": [
+            {
+              "id": "RAW-0260",
+              "name": "技术评审因素内容摘要.docx",
+              "path": "技术标/客户定制/国电投/技术评审因素内容摘要.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0259",
+              "name": "投标文件中与技术部分有关审查项索引.docx",
+              "path": "技术标/客户定制/国电投/投标文件中与技术部分有关审查项索引.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0258",
+              "name": "大件部件运输情况.docx",
+              "path": "技术标/客户定制/国电投/大件部件运输情况.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0257",
+              "name": "变电设备布置合理性.docx",
+              "path": "技术标/客户定制/国电投/变电设备布置合理性.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0256",
+              "name": "绿色制造.docx",
+              "path": "技术标/客户定制/国电投/绿色制造.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0255",
+              "name": "待填写-保供能力.docx",
+              "path": "技术标/客户定制/国电投/待填写-保供能力.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0254",
+              "name": "待填写-投标机组技术参数表.docx",
+              "path": "技术标/客户定制/国电投/待填写-投标机组技术参数表.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0253",
+              "name": "待填写-塔架设计.docx",
+              "path": "技术标/客户定制/国电投/待填写-塔架设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0252",
+              "name": "待填写-结构特点及配置.docx",
+              "path": "技术标/客户定制/国电投/待填写-结构特点及配置.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0251",
+              "name": "运行特性.docx",
+              "path": "技术标/客户定制/国电投/运行特性.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0250",
+              "name": "备件及服务保障.docx",
+              "path": "技术标/客户定制/国电投/备件及服务保障.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0249",
+              "name": "投标方案.docx",
+              "path": "技术标/客户定制/国电投/投标方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "标准文件",
+      "tier": "standard",
+      "path": "技术标/标准文件",
+      "fileCount": 442,
+      "folders": [
+        {
+          "name": "EW5.0-220",
+          "path": "技术标/标准文件/EW5.0-220",
+          "tier": "standard",
+          "customerName": "",
+          "customerId": "",
+          "projectId": "",
+          "projectCode": "",
+          "description": "",
+          "fileCount": 108,
+          "updatedAt": "2026-06-18 04:57:22",
+          "files": [
+            {
+              "id": "RAW-0369",
+              "name": "发电机位移监测分析系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能传感系统/发电机位移监测分析系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0368",
+              "name": "视频监控系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能传感系统/视频监控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0367",
+              "name": "螺栓在线监测分析系统（混塔）.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能传感系统/螺栓在线监测分析系统（混塔）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0366",
+              "name": "叶片净空监测系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能传感系统/叶片净空监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0365",
+              "name": "混塔锚索索力监测系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能传感系统/混塔锚索索力监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0364",
+              "name": "螺栓在线监测分析系统（钢塔）.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能传感系统/螺栓在线监测分析系统（钢塔）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0363",
+              "name": "激光雷达前馈测风解决方案.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能传感系统/激光雷达前馈测风解决方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0362",
+              "name": "叶片健康在线监测系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能传感系统/叶片健康在线监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0361",
+              "name": "齿轮箱油液在线监测.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能传感系统/齿轮箱油液在线监测.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0360",
+              "name": "塔筒晃度与基础沉降监测分析系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能传感系统/塔筒晃度与基础沉降监测分析系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0359",
+              "name": "变桨轴承开裂在线监测系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能传感系统/变桨轴承开裂在线监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0358",
+              "name": "在线振动监测分析系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能传感系统/在线振动监测分析系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0357",
+              "name": "自动消防系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能传感系统/自动消防系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0356",
+              "name": "场控产品GridAgent.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/场控产品GridAgent.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0355",
+              "name": "Iwind企业数据中心.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/Iwind企业数据中心.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0354",
+              "name": "智能监控系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能监控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0353",
+              "name": "智能运维系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能运维系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0352",
+              "name": "前言.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/前言.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0351",
+              "name": "智能控制系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能控制系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0350",
+              "name": "智能风功率预测系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能风功率预测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0349",
+              "name": "智能终端系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能终端系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0348",
+              "name": "智能场控系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/数字化智慧风场专题/智能场控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0347",
+              "name": "防雷保护设计.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/项目风机环境适应性专题/防雷保护设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0346",
+              "name": "抗潮湿防腐蚀设计.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/项目风机环境适应性专题/抗潮湿防腐蚀设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0345",
+              "name": "抗高温设计.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/项目风机环境适应性专题/抗高温设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0344",
+              "name": "抗覆冰防凝露设计.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/项目风机环境适应性专题/抗覆冰防凝露设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0343",
+              "name": "抗低温设计.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/项目风机环境适应性专题/抗低温设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0342",
+              "name": "防紫外线、抗老化、电离辐射设计.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/项目风机环境适应性专题/防紫外线、抗老化、电离辐射设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0341",
+              "name": "防风沙设计.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/项目风机环境适应性专题/防风沙设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0340",
+              "name": "电气绝缘方案.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/项目风机环境适应性专题/电气绝缘方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0339",
+              "name": "调试解决方案.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/设备安装与调试方案/调试解决方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0338",
+              "name": "风电场道路及安装要求.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/设备安装与调试方案/风电场道路及安装要求.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0337",
+              "name": "运输方案.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/设备安装与调试方案/运输方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0336",
+              "name": "机组运输及吊装方案末页.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/设备安装与调试方案/机组运输及吊装方案末页.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0335",
+              "name": "电网友好性专题.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/电网友好性专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0334",
+              "name": "低功率X3平台机组整机抗涡激方案.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/低功率X3平台机组整机抗涡激方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0333",
+              "name": "钢塔塔筒制造单位要求.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/钢塔塔筒制造单位要求.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0332",
+              "name": "项目技术支持及服务专题.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/项目技术支持及服务专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0331",
+              "name": "碳排放强度（tCO2e万元营业收入）.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/碳排放强度（tCO2e万元营业收入）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0330",
+              "name": "待填写-标方案优势说明（单TRB+全碳叶片）.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/待填写-标方案优势说明（单TRB+全碳叶片）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0329",
+              "name": "混塔解决方案专题.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/混塔解决方案专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0328",
+              "name": "全生命周期质量保证.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/全生命周期质量保证.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0327",
+              "name": "待填写-产品交付、考核及验收.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/待填写-产品交付、考核及验收.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0326",
+              "name": "全过程质量保障体系.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/全过程质量保障体系.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0325",
+              "name": "待填写-设备运行和维护专题.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/待填写-设备运行和维护专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0324",
+              "name": "上海电气优势简介.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/上海电气优势简介.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0323",
+              "name": "混塔塔筒制造单位要求.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/混塔塔筒制造单位要求.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0322",
+              "name": "上海电气风电试验检测能力专题.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/上海电气风电试验检测能力专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0321",
+              "name": "技术服务及售后服务.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/技术服务及售后服务.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0320",
+              "name": "上海电气生产能力介绍.docx",
+              "path": "技术标/标准文件/EW5.0-220/专题/上海电气生产能力介绍.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0319",
+              "name": "FD24C3018 -00524TA0161R0-南高齿-SMG392ADT195-0452_5.0-202机型.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/齿轮箱/FD24C3018 -00524TA0161R0-南高齿-SMG392ADT195-0452_5.0-202机型.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0318",
+              "name": "X3S-CQC25030458017-EW-GBH7K齿轮箱（太原重工）型式A-20250108.PDF",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/齿轮箱/X3S-CQC25030458017-EW-GBH7K齿轮箱（太原重工）型式A-20250108.PDF",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0317",
+              "name": "X3S-CGC2025461310022+30.主附页-齿轮箱+SMG434ADT222-0508.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/齿轮箱/X3S-CGC2025461310022+30.主附页-齿轮箱+SMG434ADT222-0508.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0316",
+              "name": "X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/齿轮箱/X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0315",
+              "name": "X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389 -.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/齿轮箱/X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389 -.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0314",
+              "name": "上电6.25MW大连重工主齿轮箱型式认证证书-FD24C3025.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/齿轮箱/上电6.25MW大连重工主齿轮箱型式认证证书-FD24C3025.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0313",
+              "name": "X3阳光双馈变流器认证证书--证书编号CGC2022461310083--型号WG6000KDF-1140.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/变流器/X3阳光双馈变流器认证证书--证书编号CGC2022461310083--型号WG6000KDF-1140.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0312",
+              "name": "X3S-部件证书-CGC2025461310033--电气风电双馈变流器EW-CNVDL1146250(HW).pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/变流器/X3S-部件证书-CGC2025461310033--电气风电双馈变流器EW-CNVDL1146250(HW).pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0311",
+              "name": "X3D阳光变流器型式试验报告--阳光Logo版.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/变流器/X3D阳光变流器型式试验报告--阳光Logo版.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0308",
+              "name": "部件证书-CGC2025461310034上电全双馈式EW-CNVDL1146250.pdf.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/变流器/部件证书-CGC2025461310034上电全双馈式EW-CNVDL1146250.pdf.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0307",
+              "name": "X3D-6.25-202部件型式认证_ CGC2022461310083(WG6000KDF-1140)X3 YG 双馈变流器认证证书.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/变流器/X3D-6.25-202部件型式认证_ CGC2022461310083(WG6000KDF-1140)X3 YG 双馈变流器认证证书.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0306",
+              "name": "X3D-6.25-202部件型式认证_ CGC2022461310101 禾望电气 变流器HWDFT1146X00系列 主页+附页.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/变流器/X3D-6.25-202部件型式认证_ CGC2022461310101 禾望电气 变流器HWDFT1146X00系列 主页+附页.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0304",
+              "name": "SH23C1019-_CCSC23DA0147R0-上海电气研砼（木垒）建筑科技有限公司-X1B-6.25-202-160混塔设计认证-CCS中国船级社质量认证.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/混塔认证/SH23C1019-_CCSC23DA0147R0-上海电气研砼（木垒）建筑科技有限公司-X1B-6.25-202-160混塔设计认证-CCS中国船级社质量认证.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0303",
+              "name": "00525DA0078R0-上海电气风电集团股份有限公司185m混塔-2025CRFD00240(盖章版).pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/混塔认证/00525DA0078R0-上海电气风电集团股份有限公司185m混塔-2025CRFD00240(盖章版).pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0302",
+              "name": "SEWP（H160m）电气风电混塔_型式认证.PDF",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/混塔认证/SEWP（H160m）电气风电混塔_型式认证.PDF",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0301",
+              "name": "20240424型式试验报告Z-1500W0630F242371 已盖章.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/发电机/20240424型式试验报告Z-1500W0630F242371 已盖章.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0300",
+              "name": "CGC202546131004630 部件证书主附页-上海电气EW-DFIG30双馈发电机.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/发电机/CGC202546131004630 部件证书主附页-上海电气EW-DFIG30双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0299",
+              "name": "X3C-5.0-202发电机型式认证_部件证书-CGC2023461310216上海电气YFSKY630-4双馈发电机.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/发电机/X3C-5.0-202发电机型式认证_部件证书-CGC2023461310216上海电气YFSKY630-4双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0298",
+              "name": "X3D、X3S-6.25-220-30 部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/发电机/X3D、X3S-6.25-220-30 部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0297",
+              "name": "X3D-6.25-202发电机型式认证_部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/发电机/X3D-6.25-202发电机型式认证_部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0296",
+              "name": "X3D-6.25-202部件型式认证_CQC230311141190-S98V1A(中复)型式认证-202310.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/叶片/S98/X3D-6.25-202部件型式认证_CQC230311141190-S98V1A(中复)型式认证-202310.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0295",
+              "name": "482 CQC25030465899 -S98V2A(贵州珂立)型式认证A -20250328.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/叶片/S98/482 CQC25030465899 -S98V2A(贵州珂立)型式认证A -20250328.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0294",
+              "name": "电气风电S98V2A 型式认证-已过期.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/叶片/S98/电气风电S98V2A 型式认证-已过期.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0293",
+              "name": "486 CQC25030467453-S98V2A 型式认证A（洮南）-20250409.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/叶片/S98/486 CQC25030467453-S98V2A 型式认证A（洮南）-20250409.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0292",
+              "name": "367 CQC24030446050-S98V2A型式认证（天顺常熟）-20241016.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/叶片/S98/367 CQC24030446050-S98V2A型式认证（天顺常熟）-20241016.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0291",
+              "name": "481 CQC25030465898 -S98V2A(中复连众)型式认证A -20250328.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/叶片/S98/481 CQC25030465898 -S98V2A(中复连众)型式认证A -20250328.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0290",
+              "name": "CQC24031111828320 电气风电S98V2叶片（天顺）型式认证B-已过期.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/叶片/S98/CQC24031111828320 电气风电S98V2叶片（天顺）型式认证B-已过期.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0289",
+              "name": "471 CQC25030464004- S98V2A型式认证A（上玻院）-20250313.PDF",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/叶片/S98/471 CQC25030464004- S98V2A型式认证A（上玻院）-20250313.PDF",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0288",
+              "name": "X3S时代叶片 CGC202543150032 上海电气 S108V2A叶片型式认证 时代全本.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/叶片/X3S时代叶片 CGC202543150032 上海电气 S108V2A叶片型式认证 时代全本.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0287",
+              "name": "X3SCGC202543150032 上海电气S108V2A风轮叶片型式认证证书 中英文 2025.07.08.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/叶片/X3SCGC202543150032 上海电气S108V2A风轮叶片型式认证证书 中英文 2025.07.08.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0286",
+              "name": "EW6.25-220上海电气S108V2A风轮叶片型式认证证书首附页 中英文 2026.01.06.pdf(1).pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/叶片/EW6.25-220上海电气S108V2A风轮叶片型式认证证书首附页 中英文 2026.01.06.pdf(1).pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0285",
+              "name": "WTC-SD-V4主控柜型式试验报告_22TAS07P22D31-10014.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/主控柜/WTC-SD-V4主控柜型式试验报告_22TAS07P22D31-10014.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0284",
+              "name": "更新-上海电气 SKF 单SRB_认证电子证书- 更新.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/主轴承/更新-上海电气 SKF 单SRB_认证电子证书- 更新.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0283",
+              "name": "X3D、X3S-6.25-202部件型式认证_FAG主轴承 240 950 型式认证 F-623429证书.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/主轴承/X3D、X3S-6.25-202部件型式认证_FAG主轴承 240 950 型式认证 F-623429证书.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0282",
+              "name": "已过期-X3D、X3S-6.25-202部件型式认证_SKF 主轴承 240 950 型式认证 认证证书封皮.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/主轴承/已过期-X3D、X3S-6.25-202部件型式认证_SKF 主轴承 240 950 型式认证 认证证书封皮.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0281",
+              "name": "X3S-0106 洛阳LYC 主轴轴承338R1550-A等 主页+附页.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/主轴承/X3S-0106 洛阳LYC 主轴轴承338R1550-A等 主页+附页.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0280",
+              "name": "技术支持服务框架合同JS2023150233115.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/S98V2叶片防雷测试/技术支持服务框架合同JS2023150233115.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0279",
+              "name": "AP1-采购需求清单V3.6_S98V2A叶片防雷测试.xlsx",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/S98V2叶片防雷测试/AP1-采购需求清单V3.6_S98V2A叶片防雷测试.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0278",
+              "name": "CQC250304413272200-EW5.0-220设计D-20250410 更新.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/CQC250304413272200-EW5.0-220设计D-20250410 更新.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0277",
+              "name": "EW5.0-220-125上海电气型式认证B-20260506.pdf",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/EW5.0-220-125上海电气型式认证B-20260506.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0276",
+              "name": "制动及安全系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/部件/制动及安全系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0275",
+              "name": "概述.docx",
+              "path": "技术标/标准文件/EW5.0-220/部件/概述.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0274",
+              "name": "叶片（碳纤维增强环氧树脂复合材料CFRP）.docx",
+              "path": "技术标/标准文件/EW5.0-220/部件/叶片（碳纤维增强环氧树脂复合材料CFRP）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0273",
+              "name": "机舱.docx",
+              "path": "技术标/标准文件/EW5.0-220/部件/机舱.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0272",
+              "name": "主控系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/部件/主控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0271",
+              "name": "变桨系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/部件/变桨系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0270",
+              "name": "液压系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/部件/液压系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0269",
+              "name": "偏航系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/部件/偏航系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0268",
+              "name": "润滑系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/部件/润滑系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0267",
+              "name": "动力电缆（常规方案）.docx",
+              "path": "技术标/标准文件/EW5.0-220/部件/动力电缆（常规方案）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0266",
+              "name": "冷却系统.docx",
+              "path": "技术标/标准文件/EW5.0-220/部件/冷却系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0265",
+              "name": "发电系统（常规方案）.docx",
+              "path": "技术标/标准文件/EW5.0-220/部件/发电系统（常规方案）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0264",
+              "name": "驱动链（齿轮箱采用三级行星+一级平行轴）.docx",
+              "path": "技术标/标准文件/EW5.0-220/部件/驱动链（齿轮箱采用三级行星+一级平行轴）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0263",
+              "name": "轮毂.docx",
+              "path": "技术标/标准文件/EW5.0-220/部件/轮毂.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0262",
+              "name": "EW5.0-220.xlsx",
+              "path": "技术标/标准文件/EW5.0-220/机型参数表/EW5.0-220.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0305",
+              "name": "实物照片.jpg",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/变流器/实物照片.jpg",
+              "ext": "jpg",
+              "cleanStatus": "original_only"
+            },
+            {
+              "id": "RAW-0309",
+              "name": "铭牌.jpg",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/变流器/铭牌.jpg",
+              "ext": "jpg",
+              "cleanStatus": "original_only"
+            },
+            {
+              "id": "RAW-0310",
+              "name": "实物照片1.png",
+              "path": "技术标/标准文件/EW5.0-220/认证证书/X3部件认证/变流器/实物照片1.png",
+              "ext": "png",
+              "cleanStatus": "original_only"
+            }
+          ]
+        },
+        {
+          "name": "EW5.6-202",
+          "path": "技术标/标准文件/EW5.6-202",
+          "tier": "standard",
+          "customerName": "",
+          "customerId": "",
+          "projectId": "",
+          "projectCode": "",
+          "description": "",
+          "fileCount": 108,
+          "updatedAt": "2026-06-18 04:57:22",
+          "files": [
+            {
+              "id": "RAW-0477",
+              "name": "发电机位移监测分析系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能传感系统/发电机位移监测分析系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0476",
+              "name": "视频监控系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能传感系统/视频监控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0475",
+              "name": "螺栓在线监测分析系统（混塔）.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能传感系统/螺栓在线监测分析系统（混塔）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0474",
+              "name": "叶片净空监测系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能传感系统/叶片净空监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0473",
+              "name": "混塔锚索索力监测系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能传感系统/混塔锚索索力监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0472",
+              "name": "螺栓在线监测分析系统（钢塔）.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能传感系统/螺栓在线监测分析系统（钢塔）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0471",
+              "name": "激光雷达前馈测风解决方案.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能传感系统/激光雷达前馈测风解决方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0470",
+              "name": "叶片健康在线监测系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能传感系统/叶片健康在线监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0469",
+              "name": "齿轮箱油液在线监测.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能传感系统/齿轮箱油液在线监测.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0468",
+              "name": "塔筒晃度与基础沉降监测分析系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能传感系统/塔筒晃度与基础沉降监测分析系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0467",
+              "name": "变桨轴承开裂在线监测系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能传感系统/变桨轴承开裂在线监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0466",
+              "name": "在线振动监测分析系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能传感系统/在线振动监测分析系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0465",
+              "name": "自动消防系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能传感系统/自动消防系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0464",
+              "name": "场控产品GridAgent.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/场控产品GridAgent.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0463",
+              "name": "Iwind企业数据中心.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/Iwind企业数据中心.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0462",
+              "name": "智能监控系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能监控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0461",
+              "name": "智能运维系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能运维系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0460",
+              "name": "前言.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/前言.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0459",
+              "name": "智能控制系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能控制系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0458",
+              "name": "智能风功率预测系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能风功率预测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0457",
+              "name": "智能终端系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能终端系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0456",
+              "name": "智能场控系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/数字化智慧风场专题/智能场控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0455",
+              "name": "防雷保护设计.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/项目风机环境适应性专题/防雷保护设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0454",
+              "name": "抗潮湿防腐蚀设计.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/项目风机环境适应性专题/抗潮湿防腐蚀设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0453",
+              "name": "抗高温设计.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/项目风机环境适应性专题/抗高温设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0452",
+              "name": "抗覆冰防凝露设计.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/项目风机环境适应性专题/抗覆冰防凝露设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0451",
+              "name": "抗低温设计.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/项目风机环境适应性专题/抗低温设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0450",
+              "name": "防紫外线、抗老化、电离辐射设计.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/项目风机环境适应性专题/防紫外线、抗老化、电离辐射设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0449",
+              "name": "防风沙设计.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/项目风机环境适应性专题/防风沙设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0448",
+              "name": "电气绝缘方案.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/项目风机环境适应性专题/电气绝缘方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0447",
+              "name": "调试解决方案.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/设备安装与调试方案/调试解决方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0446",
+              "name": "风电场道路及安装要求.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/设备安装与调试方案/风电场道路及安装要求.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0445",
+              "name": "运输方案.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/设备安装与调试方案/运输方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0444",
+              "name": "机组运输及吊装方案末页.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/设备安装与调试方案/机组运输及吊装方案末页.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0443",
+              "name": "电网友好性专题.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/电网友好性专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0442",
+              "name": "低功率X3平台机组整机抗涡激方案.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/低功率X3平台机组整机抗涡激方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0441",
+              "name": "钢塔塔筒制造单位要求.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/钢塔塔筒制造单位要求.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0440",
+              "name": "项目技术支持及服务专题.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/项目技术支持及服务专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0439",
+              "name": "碳排放强度（tCO2e万元营业收入）.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/碳排放强度（tCO2e万元营业收入）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0438",
+              "name": "混塔解决方案专题.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/混塔解决方案专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0437",
+              "name": "全生命周期质量保证.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/全生命周期质量保证.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0436",
+              "name": "待填写-产品交付、考核及验收.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/待填写-产品交付、考核及验收.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0435",
+              "name": "全过程质量保障体系.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/全过程质量保障体系.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0434",
+              "name": "待填写-设备运行和维护专题.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/待填写-设备运行和维护专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0433",
+              "name": "上海电气优势简介.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/上海电气优势简介.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0432",
+              "name": "混塔塔筒制造单位要求.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/混塔塔筒制造单位要求.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0431",
+              "name": "上海电气风电试验检测能力专题.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/上海电气风电试验检测能力专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0430",
+              "name": "技术服务及售后服务.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/技术服务及售后服务.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0429",
+              "name": "上海电气生产能力介绍.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/上海电气生产能力介绍.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0428",
+              "name": "待填写-标方案优势说明（单TRB+玻纤叶片）.docx",
+              "path": "技术标/标准文件/EW5.6-202/专题/待填写-标方案优势说明（单TRB+玻纤叶片）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0427",
+              "name": "FD24C3018 -00524TA0161R0-南高齿-SMG392ADT195-0452_5.0-202机型.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/齿轮箱/FD24C3018 -00524TA0161R0-南高齿-SMG392ADT195-0452_5.0-202机型.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0426",
+              "name": "X3S-CQC25030458017-EW-GBH7K齿轮箱（太原重工）型式A-20250108.PDF",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/齿轮箱/X3S-CQC25030458017-EW-GBH7K齿轮箱（太原重工）型式A-20250108.PDF",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0425",
+              "name": "X3S-CGC2025461310022+30.主附页-齿轮箱+SMG434ADT222-0508.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/齿轮箱/X3S-CGC2025461310022+30.主附页-齿轮箱+SMG434ADT222-0508.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0424",
+              "name": "X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/齿轮箱/X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0423",
+              "name": "X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389 -.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/齿轮箱/X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389 -.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0422",
+              "name": "上电6.25MW大连重工主齿轮箱型式认证证书-FD24C3025.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/齿轮箱/上电6.25MW大连重工主齿轮箱型式认证证书-FD24C3025.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0421",
+              "name": "X3阳光双馈变流器认证证书--证书编号CGC2022461310083--型号WG6000KDF-1140.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/变流器/X3阳光双馈变流器认证证书--证书编号CGC2022461310083--型号WG6000KDF-1140.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0420",
+              "name": "X3S-部件证书-CGC2025461310033--电气风电双馈变流器EW-CNVDL1146250(HW).pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/变流器/X3S-部件证书-CGC2025461310033--电气风电双馈变流器EW-CNVDL1146250(HW).pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0419",
+              "name": "X3D阳光变流器型式试验报告--阳光Logo版.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/变流器/X3D阳光变流器型式试验报告--阳光Logo版.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0416",
+              "name": "部件证书-CGC2025461310034上电全双馈式EW-CNVDL1146250.pdf.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/变流器/部件证书-CGC2025461310034上电全双馈式EW-CNVDL1146250.pdf.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0415",
+              "name": "X3D-6.25-202部件型式认证_ CGC2022461310083(WG6000KDF-1140)X3 YG 双馈变流器认证证书.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/变流器/X3D-6.25-202部件型式认证_ CGC2022461310083(WG6000KDF-1140)X3 YG 双馈变流器认证证书.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0414",
+              "name": "X3D-6.25-202部件型式认证_ CGC2022461310101 禾望电气 变流器HWDFT1146X00系列 主页+附页.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/变流器/X3D-6.25-202部件型式认证_ CGC2022461310101 禾望电气 变流器HWDFT1146X00系列 主页+附页.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0412",
+              "name": "SH23C1019-_CCSC23DA0147R0-上海电气研砼（木垒）建筑科技有限公司-X1B-6.25-202-160混塔设计认证-CCS中国船级社质量认证.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/混塔认证/SH23C1019-_CCSC23DA0147R0-上海电气研砼（木垒）建筑科技有限公司-X1B-6.25-202-160混塔设计认证-CCS中国船级社质量认证.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0411",
+              "name": "00525DA0078R0-上海电气风电集团股份有限公司185m混塔-2025CRFD00240(盖章版).pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/混塔认证/00525DA0078R0-上海电气风电集团股份有限公司185m混塔-2025CRFD00240(盖章版).pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0410",
+              "name": "SEWP（H160m）电气风电混塔_型式认证.PDF",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/混塔认证/SEWP（H160m）电气风电混塔_型式认证.PDF",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0409",
+              "name": "20240424型式试验报告Z-1500W0630F242371 已盖章.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/发电机/20240424型式试验报告Z-1500W0630F242371 已盖章.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0408",
+              "name": "CGC202546131004630 部件证书主附页-上海电气EW-DFIG30双馈发电机.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/发电机/CGC202546131004630 部件证书主附页-上海电气EW-DFIG30双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0407",
+              "name": "X3C-5.0-202发电机型式认证_部件证书-CGC2023461310216上海电气YFSKY630-4双馈发电机.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/发电机/X3C-5.0-202发电机型式认证_部件证书-CGC2023461310216上海电气YFSKY630-4双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0406",
+              "name": "X3D、X3S-6.25-220-30 部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/发电机/X3D、X3S-6.25-220-30 部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0405",
+              "name": "X3D-6.25-202发电机型式认证_部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/发电机/X3D-6.25-202发电机型式认证_部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0404",
+              "name": "X3D-6.25-202部件型式认证_CQC230311141190-S98V1A(中复)型式认证-202310.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/叶片/S98/X3D-6.25-202部件型式认证_CQC230311141190-S98V1A(中复)型式认证-202310.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0403",
+              "name": "482 CQC25030465899 -S98V2A(贵州珂立)型式认证A -20250328.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/叶片/S98/482 CQC25030465899 -S98V2A(贵州珂立)型式认证A -20250328.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0402",
+              "name": "电气风电S98V2A 型式认证-已过期.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/叶片/S98/电气风电S98V2A 型式认证-已过期.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0401",
+              "name": "486 CQC25030467453-S98V2A 型式认证A（洮南）-20250409.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/叶片/S98/486 CQC25030467453-S98V2A 型式认证A（洮南）-20250409.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0400",
+              "name": "367 CQC24030446050-S98V2A型式认证（天顺常熟）-20241016.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/叶片/S98/367 CQC24030446050-S98V2A型式认证（天顺常熟）-20241016.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0399",
+              "name": "481 CQC25030465898 -S98V2A(中复连众)型式认证A -20250328.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/叶片/S98/481 CQC25030465898 -S98V2A(中复连众)型式认证A -20250328.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0398",
+              "name": "CQC24031111828320 电气风电S98V2叶片（天顺）型式认证B-已过期.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/叶片/S98/CQC24031111828320 电气风电S98V2叶片（天顺）型式认证B-已过期.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0397",
+              "name": "471 CQC25030464004- S98V2A型式认证A（上玻院）-20250313.PDF",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/叶片/S98/471 CQC25030464004- S98V2A型式认证A（上玻院）-20250313.PDF",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0396",
+              "name": "X3S时代叶片 CGC202543150032 上海电气 S108V2A叶片型式认证 时代全本.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/叶片/X3S时代叶片 CGC202543150032 上海电气 S108V2A叶片型式认证 时代全本.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0395",
+              "name": "X3SCGC202543150032 上海电气S108V2A风轮叶片型式认证证书 中英文 2025.07.08.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/叶片/X3SCGC202543150032 上海电气S108V2A风轮叶片型式认证证书 中英文 2025.07.08.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0394",
+              "name": "EW6.25-220上海电气S108V2A风轮叶片型式认证证书首附页 中英文 2026.01.06.pdf(1).pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/叶片/EW6.25-220上海电气S108V2A风轮叶片型式认证证书首附页 中英文 2026.01.06.pdf(1).pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0393",
+              "name": "WTC-SD-V4主控柜型式试验报告_22TAS07P22D31-10014.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/主控柜/WTC-SD-V4主控柜型式试验报告_22TAS07P22D31-10014.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0392",
+              "name": "更新-上海电气 SKF 单SRB_认证电子证书- 更新.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/主轴承/更新-上海电气 SKF 单SRB_认证电子证书- 更新.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0391",
+              "name": "X3D、X3S-6.25-202部件型式认证_FAG主轴承 240 950 型式认证 F-623429证书.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/主轴承/X3D、X3S-6.25-202部件型式认证_FAG主轴承 240 950 型式认证 F-623429证书.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0390",
+              "name": "已过期-X3D、X3S-6.25-202部件型式认证_SKF 主轴承 240 950 型式认证 认证证书封皮.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/主轴承/已过期-X3D、X3S-6.25-202部件型式认证_SKF 主轴承 240 950 型式认证 认证证书封皮.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0389",
+              "name": "X3S-0106 洛阳LYC 主轴轴承338R1550-A等 主页+附页.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/主轴承/X3S-0106 洛阳LYC 主轴轴承338R1550-A等 主页+附页.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0388",
+              "name": "技术支持服务框架合同JS2023150233115.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/S98V2叶片防雷测试/技术支持服务框架合同JS2023150233115.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0387",
+              "name": "AP1-采购需求清单V3.6_S98V2A叶片防雷测试.xlsx",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/S98V2叶片防雷测试/AP1-采购需求清单V3.6_S98V2A叶片防雷测试.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0386",
+              "name": "EW5.6-202-115上海电气型式认证A20250805.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/EW5.6-202-115上海电气型式认证A20250805.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0385",
+              "name": "EW5.6-202-115上海电气设计认证A-20250805.pdf",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/EW5.6-202-115上海电气设计认证A-20250805.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0384",
+              "name": "制动及安全系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/部件/制动及安全系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0383",
+              "name": "概述.docx",
+              "path": "技术标/标准文件/EW5.6-202/部件/概述.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0382",
+              "name": "机舱.docx",
+              "path": "技术标/标准文件/EW5.6-202/部件/机舱.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0381",
+              "name": "主控系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/部件/主控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0380",
+              "name": "变桨系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/部件/变桨系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0379",
+              "name": "液压系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/部件/液压系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0378",
+              "name": "偏航系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/部件/偏航系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0377",
+              "name": "润滑系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/部件/润滑系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0376",
+              "name": "叶片（玻璃纤维增强树脂基复合材料GFRP）.docx",
+              "path": "技术标/标准文件/EW5.6-202/部件/叶片（玻璃纤维增强树脂基复合材料GFRP）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0375",
+              "name": "动力电缆（常规方案）.docx",
+              "path": "技术标/标准文件/EW5.6-202/部件/动力电缆（常规方案）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0374",
+              "name": "冷却系统.docx",
+              "path": "技术标/标准文件/EW5.6-202/部件/冷却系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0373",
+              "name": "驱动链（齿轮箱采用二级行星+一级平行轴）.docx",
+              "path": "技术标/标准文件/EW5.6-202/部件/驱动链（齿轮箱采用二级行星+一级平行轴）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0372",
+              "name": "发电系统（常规方案）.docx",
+              "path": "技术标/标准文件/EW5.6-202/部件/发电系统（常规方案）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0371",
+              "name": "轮毂.docx",
+              "path": "技术标/标准文件/EW5.6-202/部件/轮毂.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0370",
+              "name": "EW5.6-202.xlsx",
+              "path": "技术标/标准文件/EW5.6-202/机型参数表/EW5.6-202.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0413",
+              "name": "实物照片.jpg",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/变流器/实物照片.jpg",
+              "ext": "jpg",
+              "cleanStatus": "original_only"
+            },
+            {
+              "id": "RAW-0417",
+              "name": "铭牌.jpg",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/变流器/铭牌.jpg",
+              "ext": "jpg",
+              "cleanStatus": "original_only"
+            },
+            {
+              "id": "RAW-0418",
+              "name": "实物照片1.png",
+              "path": "技术标/标准文件/EW5.6-202/认证证书/X3部件认证/变流器/实物照片1.png",
+              "ext": "png",
+              "cleanStatus": "original_only"
+            }
+          ]
+        },
+        {
+          "name": "EW5.0-202",
+          "path": "技术标/标准文件/EW5.0-202",
+          "tier": "standard",
+          "customerName": "",
+          "customerId": "",
+          "projectId": "",
+          "projectCode": "",
+          "description": "",
+          "fileCount": 111,
+          "updatedAt": "2026-06-18 04:57:22",
+          "files": [
+            {
+              "id": "RAW-0588",
+              "name": "发电机位移监测分析系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能传感系统/发电机位移监测分析系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0587",
+              "name": "视频监控系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能传感系统/视频监控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0586",
+              "name": "螺栓在线监测分析系统（混塔）.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能传感系统/螺栓在线监测分析系统（混塔）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0585",
+              "name": "叶片净空监测系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能传感系统/叶片净空监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0584",
+              "name": "混塔锚索索力监测系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能传感系统/混塔锚索索力监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0583",
+              "name": "螺栓在线监测分析系统（钢塔）.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能传感系统/螺栓在线监测分析系统（钢塔）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0582",
+              "name": "激光雷达前馈测风解决方案.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能传感系统/激光雷达前馈测风解决方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0581",
+              "name": "叶片健康在线监测系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能传感系统/叶片健康在线监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0580",
+              "name": "齿轮箱油液在线监测.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能传感系统/齿轮箱油液在线监测.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0579",
+              "name": "塔筒晃度与基础沉降监测分析系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能传感系统/塔筒晃度与基础沉降监测分析系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0578",
+              "name": "变桨轴承开裂在线监测系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能传感系统/变桨轴承开裂在线监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0577",
+              "name": "在线振动监测分析系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能传感系统/在线振动监测分析系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0576",
+              "name": "自动消防系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能传感系统/自动消防系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0575",
+              "name": "场控产品GridAgent.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/场控产品GridAgent.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0574",
+              "name": "Iwind企业数据中心.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/Iwind企业数据中心.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0573",
+              "name": "智能监控系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能监控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0572",
+              "name": "智能运维系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能运维系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0571",
+              "name": "前言.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/前言.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0570",
+              "name": "智能控制系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能控制系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0569",
+              "name": "智能风功率预测系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能风功率预测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0568",
+              "name": "智能终端系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能终端系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0567",
+              "name": "智能场控系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/数字化智慧风场专题/智能场控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0566",
+              "name": "防雷保护设计.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/项目风机环境适应性专题/防雷保护设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0565",
+              "name": "抗潮湿防腐蚀设计.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/项目风机环境适应性专题/抗潮湿防腐蚀设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0564",
+              "name": "抗高温设计.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/项目风机环境适应性专题/抗高温设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0563",
+              "name": "抗覆冰防凝露设计.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/项目风机环境适应性专题/抗覆冰防凝露设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0562",
+              "name": "抗低温设计.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/项目风机环境适应性专题/抗低温设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0561",
+              "name": "防紫外线、抗老化、电离辐射设计.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/项目风机环境适应性专题/防紫外线、抗老化、电离辐射设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0560",
+              "name": "防风沙设计.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/项目风机环境适应性专题/防风沙设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0559",
+              "name": "电气绝缘方案.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/项目风机环境适应性专题/电气绝缘方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0558",
+              "name": "调试解决方案.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/设备安装与调试方案/调试解决方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0557",
+              "name": "风电场道路及安装要求.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/设备安装与调试方案/风电场道路及安装要求.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0556",
+              "name": "运输方案.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/设备安装与调试方案/运输方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0555",
+              "name": "机组运输及吊装方案末页.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/设备安装与调试方案/机组运输及吊装方案末页.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0554",
+              "name": "电网友好性专题.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/电网友好性专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0553",
+              "name": "低功率X3平台机组整机抗涡激方案.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/低功率X3平台机组整机抗涡激方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0552",
+              "name": "钢塔塔筒制造单位要求.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/钢塔塔筒制造单位要求.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0551",
+              "name": "项目技术支持及服务专题.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/项目技术支持及服务专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0550",
+              "name": "碳排放强度（tCO2e万元营业收入）.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/碳排放强度（tCO2e万元营业收入）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0549",
+              "name": "混塔解决方案专题.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/混塔解决方案专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0548",
+              "name": "全生命周期质量保证.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/全生命周期质量保证.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0547",
+              "name": "待填写-产品交付、考核及验收.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/待填写-产品交付、考核及验收.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0546",
+              "name": "全过程质量保障体系.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/全过程质量保障体系.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0545",
+              "name": "待填写-设备运行和维护专题.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/待填写-设备运行和维护专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0544",
+              "name": "上海电气优势简介.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/上海电气优势简介.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0543",
+              "name": "混塔塔筒制造单位要求.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/混塔塔筒制造单位要求.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0542",
+              "name": "上海电气风电试验检测能力专题.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/上海电气风电试验检测能力专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0541",
+              "name": "技术服务及售后服务.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/技术服务及售后服务.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0540",
+              "name": "上海电气生产能力介绍.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/上海电气生产能力介绍.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0539",
+              "name": "待填写-标方案优势说明（单TRB+玻纤叶片）.docx",
+              "path": "技术标/标准文件/EW5.0-202/专题/待填写-标方案优势说明（单TRB+玻纤叶片）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0538",
+              "name": "FD24C3018 -00524TA0161R0-南高齿-SMG392ADT195-0452_5.0-202机型.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/齿轮箱/FD24C3018 -00524TA0161R0-南高齿-SMG392ADT195-0452_5.0-202机型.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0537",
+              "name": "X3S-CQC25030458017-EW-GBH7K齿轮箱（太原重工）型式A-20250108.PDF",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/齿轮箱/X3S-CQC25030458017-EW-GBH7K齿轮箱（太原重工）型式A-20250108.PDF",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0536",
+              "name": "X3S-CGC2025461310022+30.主附页-齿轮箱+SMG434ADT222-0508.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/齿轮箱/X3S-CGC2025461310022+30.主附页-齿轮箱+SMG434ADT222-0508.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0535",
+              "name": "X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/齿轮箱/X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0534",
+              "name": "X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389 -.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/齿轮箱/X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389 -.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0533",
+              "name": "上电6.25MW大连重工主齿轮箱型式认证证书-FD24C3025.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/齿轮箱/上电6.25MW大连重工主齿轮箱型式认证证书-FD24C3025.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0532",
+              "name": "X3阳光双馈变流器认证证书--证书编号CGC2022461310083--型号WG6000KDF-1140.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/变流器/X3阳光双馈变流器认证证书--证书编号CGC2022461310083--型号WG6000KDF-1140.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0531",
+              "name": "X3S-部件证书-CGC2025461310033--电气风电双馈变流器EW-CNVDL1146250(HW).pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/变流器/X3S-部件证书-CGC2025461310033--电气风电双馈变流器EW-CNVDL1146250(HW).pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0530",
+              "name": "X3D阳光变流器型式试验报告--阳光Logo版.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/变流器/X3D阳光变流器型式试验报告--阳光Logo版.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0527",
+              "name": "部件证书-CGC2025461310034上电全双馈式EW-CNVDL1146250.pdf.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/变流器/部件证书-CGC2025461310034上电全双馈式EW-CNVDL1146250.pdf.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0526",
+              "name": "X3D-6.25-202部件型式认证_ CGC2022461310083(WG6000KDF-1140)X3 YG 双馈变流器认证证书.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/变流器/X3D-6.25-202部件型式认证_ CGC2022461310083(WG6000KDF-1140)X3 YG 双馈变流器认证证书.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0525",
+              "name": "X3D-6.25-202部件型式认证_ CGC2022461310101 禾望电气 变流器HWDFT1146X00系列 主页+附页.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/变流器/X3D-6.25-202部件型式认证_ CGC2022461310101 禾望电气 变流器HWDFT1146X00系列 主页+附页.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0523",
+              "name": "SH23C1019-_CCSC23DA0147R0-上海电气研砼（木垒）建筑科技有限公司-X1B-6.25-202-160混塔设计认证-CCS中国船级社质量认证.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/混塔认证/SH23C1019-_CCSC23DA0147R0-上海电气研砼（木垒）建筑科技有限公司-X1B-6.25-202-160混塔设计认证-CCS中国船级社质量认证.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0522",
+              "name": "00525DA0078R0-上海电气风电集团股份有限公司185m混塔-2025CRFD00240(盖章版).pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/混塔认证/00525DA0078R0-上海电气风电集团股份有限公司185m混塔-2025CRFD00240(盖章版).pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0521",
+              "name": "SEWP（H160m）电气风电混塔_型式认证.PDF",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/混塔认证/SEWP（H160m）电气风电混塔_型式认证.PDF",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0520",
+              "name": "20240424型式试验报告Z-1500W0630F242371 已盖章.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/发电机/20240424型式试验报告Z-1500W0630F242371 已盖章.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0519",
+              "name": "CGC202546131004630 部件证书主附页-上海电气EW-DFIG30双馈发电机.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/发电机/CGC202546131004630 部件证书主附页-上海电气EW-DFIG30双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0518",
+              "name": "X3C-5.0-202发电机型式认证_部件证书-CGC2023461310216上海电气YFSKY630-4双馈发电机.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/发电机/X3C-5.0-202发电机型式认证_部件证书-CGC2023461310216上海电气YFSKY630-4双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0517",
+              "name": "X3D、X3S-6.25-220-30 部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/发电机/X3D、X3S-6.25-220-30 部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0516",
+              "name": "X3D-6.25-202发电机型式认证_部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/发电机/X3D-6.25-202发电机型式认证_部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0515",
+              "name": "X3D-6.25-202部件型式认证_CQC230311141190-S98V1A(中复)型式认证-202310.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/叶片/S98/X3D-6.25-202部件型式认证_CQC230311141190-S98V1A(中复)型式认证-202310.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0514",
+              "name": "482 CQC25030465899 -S98V2A(贵州珂立)型式认证A -20250328.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/叶片/S98/482 CQC25030465899 -S98V2A(贵州珂立)型式认证A -20250328.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0513",
+              "name": "电气风电S98V2A 型式认证-已过期.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/叶片/S98/电气风电S98V2A 型式认证-已过期.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0512",
+              "name": "486 CQC25030467453-S98V2A 型式认证A（洮南）-20250409.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/叶片/S98/486 CQC25030467453-S98V2A 型式认证A（洮南）-20250409.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0511",
+              "name": "367 CQC24030446050-S98V2A型式认证（天顺常熟）-20241016.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/叶片/S98/367 CQC24030446050-S98V2A型式认证（天顺常熟）-20241016.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0510",
+              "name": "481 CQC25030465898 -S98V2A(中复连众)型式认证A -20250328.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/叶片/S98/481 CQC25030465898 -S98V2A(中复连众)型式认证A -20250328.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0509",
+              "name": "CQC24031111828320 电气风电S98V2叶片（天顺）型式认证B-已过期.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/叶片/S98/CQC24031111828320 电气风电S98V2叶片（天顺）型式认证B-已过期.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0508",
+              "name": "471 CQC25030464004- S98V2A型式认证A（上玻院）-20250313.PDF",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/叶片/S98/471 CQC25030464004- S98V2A型式认证A（上玻院）-20250313.PDF",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0507",
+              "name": "X3S时代叶片 CGC202543150032 上海电气 S108V2A叶片型式认证 时代全本.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/叶片/X3S时代叶片 CGC202543150032 上海电气 S108V2A叶片型式认证 时代全本.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0506",
+              "name": "X3SCGC202543150032 上海电气S108V2A风轮叶片型式认证证书 中英文 2025.07.08.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/叶片/X3SCGC202543150032 上海电气S108V2A风轮叶片型式认证证书 中英文 2025.07.08.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0505",
+              "name": "EW6.25-220上海电气S108V2A风轮叶片型式认证证书首附页 中英文 2026.01.06.pdf(1).pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/叶片/EW6.25-220上海电气S108V2A风轮叶片型式认证证书首附页 中英文 2026.01.06.pdf(1).pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0504",
+              "name": "WTC-SD-V4主控柜型式试验报告_22TAS07P22D31-10014.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/主控柜/WTC-SD-V4主控柜型式试验报告_22TAS07P22D31-10014.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0503",
+              "name": "更新-上海电气 SKF 单SRB_认证电子证书- 更新.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/主轴承/更新-上海电气 SKF 单SRB_认证电子证书- 更新.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0502",
+              "name": "X3D、X3S-6.25-202部件型式认证_FAG主轴承 240 950 型式认证 F-623429证书.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/主轴承/X3D、X3S-6.25-202部件型式认证_FAG主轴承 240 950 型式认证 F-623429证书.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0501",
+              "name": "已过期-X3D、X3S-6.25-202部件型式认证_SKF 主轴承 240 950 型式认证 认证证书封皮.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/主轴承/已过期-X3D、X3S-6.25-202部件型式认证_SKF 主轴承 240 950 型式认证 认证证书封皮.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0500",
+              "name": "X3S-0106 洛阳LYC 主轴轴承338R1550-A等 主页+附页.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/主轴承/X3S-0106 洛阳LYC 主轴轴承338R1550-A等 主页+附页.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0499",
+              "name": "技术支持服务框架合同JS2023150233115.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/S98V2叶片防雷测试/技术支持服务框架合同JS2023150233115.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0498",
+              "name": "AP1-采购需求清单V3.6_S98V2A叶片防雷测试.xlsx",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/S98V2叶片防雷测试/AP1-采购需求清单V3.6_S98V2A叶片防雷测试.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0496",
+              "name": "EW5.0-202-115上海电气型式认证A20250813.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/EW5.0-202-115上海电气型式认证A20250813.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0495",
+              "name": "EW5.0-202-115上海电气设计符合证明A-20250813.pdf",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/EW5.0-202-115上海电气设计符合证明A-20250813.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0493",
+              "name": "制动及安全系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/部件/制动及安全系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0492",
+              "name": "概述.docx",
+              "path": "技术标/标准文件/EW5.0-202/部件/概述.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0491",
+              "name": "机舱.docx",
+              "path": "技术标/标准文件/EW5.0-202/部件/机舱.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0490",
+              "name": "主控系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/部件/主控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0489",
+              "name": "变桨系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/部件/变桨系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0488",
+              "name": "液压系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/部件/液压系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0487",
+              "name": "偏航系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/部件/偏航系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0486",
+              "name": "润滑系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/部件/润滑系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0485",
+              "name": "叶片（玻璃纤维增强树脂基复合材料GFRP）.docx",
+              "path": "技术标/标准文件/EW5.0-202/部件/叶片（玻璃纤维增强树脂基复合材料GFRP）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0484",
+              "name": "动力电缆（常规方案）.docx",
+              "path": "技术标/标准文件/EW5.0-202/部件/动力电缆（常规方案）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0483",
+              "name": "冷却系统.docx",
+              "path": "技术标/标准文件/EW5.0-202/部件/冷却系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0482",
+              "name": "驱动链（齿轮箱采用二级行星+一级平行轴）.docx",
+              "path": "技术标/标准文件/EW5.0-202/部件/驱动链（齿轮箱采用二级行星+一级平行轴）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0481",
+              "name": "发电系统（常规方案）.docx",
+              "path": "技术标/标准文件/EW5.0-202/部件/发电系统（常规方案）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0480",
+              "name": "轮毂.docx",
+              "path": "技术标/标准文件/EW5.0-202/部件/轮毂.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0479",
+              "name": "EW5.0-202.xlsx",
+              "path": "技术标/标准文件/EW5.0-202/机型参数表/EW5.0-202.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0529",
+              "name": "实物照片1.png",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/变流器/实物照片1.png",
+              "ext": "png",
+              "cleanStatus": "original_only"
+            },
+            {
+              "id": "RAW-0528",
+              "name": "铭牌.jpg",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/变流器/铭牌.jpg",
+              "ext": "jpg",
+              "cleanStatus": "original_only"
+            },
+            {
+              "id": "RAW-0494",
+              "name": ".DS_Store",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/.DS_Store",
+              "ext": "ds_store",
+              "cleanStatus": "original_only"
+            },
+            {
+              "id": "RAW-0524",
+              "name": "实物照片.jpg",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/变流器/实物照片.jpg",
+              "ext": "jpg",
+              "cleanStatus": "original_only"
+            },
+            {
+              "id": "RAW-0497",
+              "name": ".DS_Store",
+              "path": "技术标/标准文件/EW5.0-202/认证证书/X3部件认证/.DS_Store",
+              "ext": "ds_store",
+              "cleanStatus": "original_only"
+            },
+            {
+              "id": "RAW-0478",
+              "name": ".DS_Store",
+              "path": "技术标/标准文件/EW5.0-202/.DS_Store",
+              "ext": "ds_store",
+              "cleanStatus": "original_only"
+            }
+          ]
+        },
+        {
+          "name": "EW6.25-220",
+          "path": "技术标/标准文件/EW6.25-220",
+          "tier": "standard",
+          "customerName": "",
+          "customerId": "",
+          "projectId": "",
+          "projectCode": "",
+          "description": "",
+          "fileCount": 115,
+          "updatedAt": "2026-06-18 04:57:22",
+          "files": [
+            {
+              "id": "RAW-0601",
+              "name": "叶片（碳纤维增强环氧树脂复合材料CFRP）.docx",
+              "path": "技术标/标准文件/EW6.25-220/部件/叶片（碳纤维增强环氧树脂复合材料CFRP）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0591",
+              "name": "驱动链（齿轮箱采用三级行星+一级平行轴）.docx",
+              "path": "技术标/标准文件/EW6.25-220/部件/驱动链（齿轮箱采用三级行星+一级平行轴）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0589",
+              "name": "EW6.25-220.xlsx",
+              "path": "技术标/标准文件/EW6.25-220/机型参数表/EW6.25-220.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0666",
+              "name": "项目技术支持及服务专题.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/项目技术支持及服务专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0665",
+              "name": "碳排放强度（tCO2e万元营业收入）.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/碳排放强度（tCO2e万元营业收入）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0658",
+              "name": "上海电气优势简介.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/上海电气优势简介.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0654",
+              "name": "上海电气生产能力介绍.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/上海电气生产能力介绍.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0656",
+              "name": "上海电气风电试验检测能力专题.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/上海电气风电试验检测能力专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0662",
+              "name": "全生命周期质量保证.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/全生命周期质量保证.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0660",
+              "name": "全过程质量保障体系.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/全过程质量保障体系.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0655",
+              "name": "技术服务及售后服务.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/技术服务及售后服务.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0657",
+              "name": "混塔塔筒制造单位要求.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/混塔塔筒制造单位要求.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0663",
+              "name": "混塔解决方案专题.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/混塔解决方案专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0667",
+              "name": "钢塔塔筒制造单位要求.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/钢塔塔筒制造单位要求.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0669",
+              "name": "电网友好性专题.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/电网友好性专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0668",
+              "name": "低功率X3平台机组整机抗涡激方案.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/低功率X3平台机组整机抗涡激方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0679",
+              "name": "抗高温设计.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/项目风机环境适应性专题/抗高温设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0678",
+              "name": "抗覆冰防凝露设计.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/项目风机环境适应性专题/抗覆冰防凝露设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0677",
+              "name": "抗低温设计.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/项目风机环境适应性专题/抗低温设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0680",
+              "name": "抗潮湿防腐蚀设计.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/项目风机环境适应性专题/抗潮湿防腐蚀设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0676",
+              "name": "防紫外线、抗老化、电离辐射设计.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/项目风机环境适应性专题/防紫外线、抗老化、电离辐射设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0681",
+              "name": "防雷保护设计.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/项目风机环境适应性专题/防雷保护设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0675",
+              "name": "防风沙设计.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/项目风机环境适应性专题/防风沙设计.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0674",
+              "name": "电气绝缘方案.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/项目风机环境适应性专题/电气绝缘方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0683",
+              "name": "智能终端系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能终端系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0687",
+              "name": "智能运维系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能运维系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0685",
+              "name": "智能控制系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能控制系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0688",
+              "name": "智能监控系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能监控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0684",
+              "name": "智能风功率预测系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能风功率预测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0682",
+              "name": "智能场控系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能场控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0686",
+              "name": "前言.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/前言.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0690",
+              "name": "场控产品GridAgent.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/场控产品GridAgent.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0689",
+              "name": "Iwind企业数据中心.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/Iwind企业数据中心.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0691",
+              "name": "自动消防系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能传感系统/自动消防系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0692",
+              "name": "在线振动监测分析系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能传感系统/在线振动监测分析系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0700",
+              "name": "叶片净空监测系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能传感系统/叶片净空监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0696",
+              "name": "叶片健康在线监测系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能传感系统/叶片健康在线监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0694",
+              "name": "塔筒晃度与基础沉降监测分析系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能传感系统/塔筒晃度与基础沉降监测分析系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0702",
+              "name": "视频监控系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能传感系统/视频监控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0701",
+              "name": "螺栓在线监测分析系统（混塔）.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能传感系统/螺栓在线监测分析系统（混塔）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0698",
+              "name": "螺栓在线监测分析系统（钢塔）.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能传感系统/螺栓在线监测分析系统（钢塔）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0697",
+              "name": "激光雷达前馈测风解决方案.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能传感系统/激光雷达前馈测风解决方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0699",
+              "name": "混塔锚索索力监测系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能传感系统/混塔锚索索力监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0703",
+              "name": "发电机位移监测分析系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能传感系统/发电机位移监测分析系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0695",
+              "name": "齿轮箱油液在线监测.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能传感系统/齿轮箱油液在线监测.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0693",
+              "name": "变桨轴承开裂在线监测系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/数字化智慧风场专题/智能传感系统/变桨轴承开裂在线监测系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0671",
+              "name": "运输方案.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/设备安装与调试方案/运输方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0673",
+              "name": "调试解决方案.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/设备安装与调试方案/调试解决方案.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0670",
+              "name": "机组运输及吊装方案末页.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/设备安装与调试方案/机组运输及吊装方案末页.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0672",
+              "name": "风电场道路及安装要求.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/设备安装与调试方案/风电场道路及安装要求.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0604",
+              "name": "EW6.25-220上海电气高压穿越评估20241125（上海电气）CEPRI24WT6093R01.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/EW6.25-220上海电气高压穿越评估20241125（上海电气）CEPRI24WT6093R01.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0609",
+              "name": "EW6.25-220上海电气电网适应性仿真评估报告（上海电气） CEPRI24WT4064R05.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/EW6.25-220上海电气电网适应性仿真评估报告（上海电气） CEPRI24WT4064R05.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0611",
+              "name": "EW6.25-220上海电气电能质量测试报告 T202506003818张北（上海电气）.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/EW6.25-220上海电气电能质量测试报告 T202506003818张北（上海电气）.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0612",
+              "name": "EW6.25-220上海电气低压穿越评估20241125（上海电气）CEPRI24WT1108R01.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/EW6.25-220上海电气低压穿越评估20241125（上海电气）CEPRI24WT1108R01.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0608",
+              "name": "EW6.25-220-125上海电气型式认证A-20260108.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/EW6.25-220-125上海电气型式认证A-20260108.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0610",
+              "name": "EW6.25-220-125 上海电气设计符合证明Ａ-20250604(碳纤).pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/EW6.25-220-125 上海电气设计符合证明Ａ-20250604(碳纤).pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0607",
+              "name": "187 CEPRI24WT5073R04-上海电气EW6.25-220（上海电气变流器）型风电机组PSD模型验证及参数整定报告.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/187 CEPRI24WT5073R04-上海电气EW6.25-220（上海电气变流器）型风电机组PSD模型验证及参数整定报告.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0599",
+              "name": "主控系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/部件/主控系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0603",
+              "name": "制动及安全系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/部件/制动及安全系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0597",
+              "name": "液压系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/部件/液压系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0595",
+              "name": "润滑系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/部件/润滑系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0596",
+              "name": "偏航系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/部件/偏航系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0590",
+              "name": "轮毂.docx",
+              "path": "技术标/标准文件/EW6.25-220/部件/轮毂.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0593",
+              "name": "冷却系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/部件/冷却系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0600",
+              "name": "机舱.docx",
+              "path": "技术标/标准文件/EW6.25-220/部件/机舱.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0602",
+              "name": "概述.docx",
+              "path": "技术标/标准文件/EW6.25-220/部件/概述.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0592",
+              "name": "发电系统（常规方案）.docx",
+              "path": "技术标/标准文件/EW6.25-220/部件/发电系统（常规方案）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0594",
+              "name": "动力电缆（常规方案）.docx",
+              "path": "技术标/标准文件/EW6.25-220/部件/动力电缆（常规方案）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0598",
+              "name": "变桨系统.docx",
+              "path": "技术标/标准文件/EW6.25-220/部件/变桨系统.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0664",
+              "name": "待填写-标方案优势说明（单TRB+全碳叶片）.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/待填写-标方案优势说明（单TRB+全碳叶片）.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0661",
+              "name": "待填写-产品交付、考核及验收.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/待填写-产品交付、考核及验收.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0659",
+              "name": "待填写-设备运行和维护专题.docx",
+              "path": "技术标/标准文件/EW6.25-220/专题/待填写-设备运行和维护专题.docx",
+              "ext": "docx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0653",
+              "name": "FD24C3018 -00524TA0161R0-南高齿-SMG392ADT195-0452_5.0-202机型.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/齿轮箱/FD24C3018 -00524TA0161R0-南高齿-SMG392ADT195-0452_5.0-202机型.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0652",
+              "name": "X3S-CQC25030458017-EW-GBH7K齿轮箱（太原重工）型式A-20250108.PDF",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/齿轮箱/X3S-CQC25030458017-EW-GBH7K齿轮箱（太原重工）型式A-20250108.PDF",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0651",
+              "name": "X3S-CGC2025461310022+30.主附页-齿轮箱+SMG434ADT222-0508.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/齿轮箱/X3S-CGC2025461310022+30.主附页-齿轮箱+SMG434ADT222-0508.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0650",
+              "name": "X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/齿轮箱/X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0649",
+              "name": "X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389 -.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/齿轮箱/X3D-6.25-202部件型式认证_ 主附页-齿轮箱SMG422DDT198-0389 -.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0648",
+              "name": "上电6.25MW大连重工主齿轮箱型式认证证书-FD24C3025.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/齿轮箱/上电6.25MW大连重工主齿轮箱型式认证证书-FD24C3025.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0647",
+              "name": "X3阳光双馈变流器认证证书--证书编号CGC2022461310083--型号WG6000KDF-1140.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/变流器/X3阳光双馈变流器认证证书--证书编号CGC2022461310083--型号WG6000KDF-1140.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0646",
+              "name": "X3S-部件证书-CGC2025461310033--电气风电双馈变流器EW-CNVDL1146250(HW).pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/变流器/X3S-部件证书-CGC2025461310033--电气风电双馈变流器EW-CNVDL1146250(HW).pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0645",
+              "name": "X3D阳光变流器型式试验报告--阳光Logo版.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/变流器/X3D阳光变流器型式试验报告--阳光Logo版.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0642",
+              "name": "部件证书-CGC2025461310034上电全双馈式EW-CNVDL1146250.pdf.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/变流器/部件证书-CGC2025461310034上电全双馈式EW-CNVDL1146250.pdf.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0641",
+              "name": "X3D-6.25-202部件型式认证_ CGC2022461310083(WG6000KDF-1140)X3 YG 双馈变流器认证证书.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/变流器/X3D-6.25-202部件型式认证_ CGC2022461310083(WG6000KDF-1140)X3 YG 双馈变流器认证证书.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0640",
+              "name": "X3D-6.25-202部件型式认证_ CGC2022461310101 禾望电气 变流器HWDFT1146X00系列 主页+附页.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/变流器/X3D-6.25-202部件型式认证_ CGC2022461310101 禾望电气 变流器HWDFT1146X00系列 主页+附页.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0638",
+              "name": "SH23C1019-_CCSC23DA0147R0-上海电气研砼（木垒）建筑科技有限公司-X1B-6.25-202-160混塔设计认证-CCS中国船级社质量认证.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/混塔认证/SH23C1019-_CCSC23DA0147R0-上海电气研砼（木垒）建筑科技有限公司-X1B-6.25-202-160混塔设计认证-CCS中国船级社质量认证.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0637",
+              "name": "00525DA0078R0-上海电气风电集团股份有限公司185m混塔-2025CRFD00240(盖章版).pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/混塔认证/00525DA0078R0-上海电气风电集团股份有限公司185m混塔-2025CRFD00240(盖章版).pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0636",
+              "name": "SEWP（H160m）电气风电混塔_型式认证.PDF",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/混塔认证/SEWP（H160m）电气风电混塔_型式认证.PDF",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0635",
+              "name": "20240424型式试验报告Z-1500W0630F242371 已盖章.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/发电机/20240424型式试验报告Z-1500W0630F242371 已盖章.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0634",
+              "name": "CGC202546131004630 部件证书主附页-上海电气EW-DFIG30双馈发电机.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/发电机/CGC202546131004630 部件证书主附页-上海电气EW-DFIG30双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0633",
+              "name": "X3C-5.0-202发电机型式认证_部件证书-CGC2023461310216上海电气YFSKY630-4双馈发电机.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/发电机/X3C-5.0-202发电机型式认证_部件证书-CGC2023461310216上海电气YFSKY630-4双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0632",
+              "name": "X3D、X3S-6.25-220-30 部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/发电机/X3D、X3S-6.25-220-30 部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0631",
+              "name": "X3D-6.25-202发电机型式认证_部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/发电机/X3D-6.25-202发电机型式认证_部件证书-CGC2023461310217上海电气YFSKY630-4双馈发电机.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0630",
+              "name": "X3D-6.25-202部件型式认证_CQC230311141190-S98V1A(中复)型式认证-202310.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/叶片/S98/X3D-6.25-202部件型式认证_CQC230311141190-S98V1A(中复)型式认证-202310.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0629",
+              "name": "482 CQC25030465899 -S98V2A(贵州珂立)型式认证A -20250328.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/叶片/S98/482 CQC25030465899 -S98V2A(贵州珂立)型式认证A -20250328.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0628",
+              "name": "电气风电S98V2A 型式认证-已过期.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/叶片/S98/电气风电S98V2A 型式认证-已过期.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0627",
+              "name": "486 CQC25030467453-S98V2A 型式认证A（洮南）-20250409.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/叶片/S98/486 CQC25030467453-S98V2A 型式认证A（洮南）-20250409.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0626",
+              "name": "367 CQC24030446050-S98V2A型式认证（天顺常熟）-20241016.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/叶片/S98/367 CQC24030446050-S98V2A型式认证（天顺常熟）-20241016.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0625",
+              "name": "481 CQC25030465898 -S98V2A(中复连众)型式认证A -20250328.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/叶片/S98/481 CQC25030465898 -S98V2A(中复连众)型式认证A -20250328.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0624",
+              "name": "CQC24031111828320 电气风电S98V2叶片（天顺）型式认证B-已过期.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/叶片/S98/CQC24031111828320 电气风电S98V2叶片（天顺）型式认证B-已过期.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0623",
+              "name": "471 CQC25030464004- S98V2A型式认证A（上玻院）-20250313.PDF",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/叶片/S98/471 CQC25030464004- S98V2A型式认证A（上玻院）-20250313.PDF",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0622",
+              "name": "X3S时代叶片 CGC202543150032 上海电气 S108V2A叶片型式认证 时代全本.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/叶片/X3S时代叶片 CGC202543150032 上海电气 S108V2A叶片型式认证 时代全本.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0621",
+              "name": "X3SCGC202543150032 上海电气S108V2A风轮叶片型式认证证书 中英文 2025.07.08.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/叶片/X3SCGC202543150032 上海电气S108V2A风轮叶片型式认证证书 中英文 2025.07.08.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0620",
+              "name": "EW6.25-220上海电气S108V2A风轮叶片型式认证证书首附页 中英文 2026.01.06.pdf(1).pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/叶片/EW6.25-220上海电气S108V2A风轮叶片型式认证证书首附页 中英文 2026.01.06.pdf(1).pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0619",
+              "name": "WTC-SD-V4主控柜型式试验报告_22TAS07P22D31-10014.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/主控柜/WTC-SD-V4主控柜型式试验报告_22TAS07P22D31-10014.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0618",
+              "name": "更新-上海电气 SKF 单SRB_认证电子证书- 更新.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/主轴承/更新-上海电气 SKF 单SRB_认证电子证书- 更新.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0617",
+              "name": "X3D、X3S-6.25-202部件型式认证_FAG主轴承 240 950 型式认证 F-623429证书.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/主轴承/X3D、X3S-6.25-202部件型式认证_FAG主轴承 240 950 型式认证 F-623429证书.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0616",
+              "name": "已过期-X3D、X3S-6.25-202部件型式认证_SKF 主轴承 240 950 型式认证 认证证书封皮.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/主轴承/已过期-X3D、X3S-6.25-202部件型式认证_SKF 主轴承 240 950 型式认证 认证证书封皮.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0615",
+              "name": "X3S-0106 洛阳LYC 主轴轴承338R1550-A等 主页+附页.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/主轴承/X3S-0106 洛阳LYC 主轴轴承338R1550-A等 主页+附页.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0614",
+              "name": "技术支持服务框架合同JS2023150233115.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/S98V2叶片防雷测试/技术支持服务框架合同JS2023150233115.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0613",
+              "name": "AP1-采购需求清单V3.6_S98V2A叶片防雷测试.xlsx",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/S98V2叶片防雷测试/AP1-采购需求清单V3.6_S98V2A叶片防雷测试.xlsx",
+              "ext": "xlsx",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0606",
+              "name": "188 CEPRI24WT5074R04-上海电气EW6.25-220（上海电气变流器）型风电机组PSASP机电暂态模型验证及参数整定报告.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/188 CEPRI24WT5074R04-上海电气EW6.25-220（上海电气变流器）型风电机组PSASP机电暂态模型验证及参数整定报告.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0605",
+              "name": "189 CEPRI24WT5075R04-上海电气EW6.25-220（上海电气变流器）型风电机组ADPSS电磁暂态模型验证报告.pdf",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/189 CEPRI24WT5075R04-上海电气EW6.25-220（上海电气变流器）型风电机组ADPSS电磁暂态模型验证报告.pdf",
+              "ext": "pdf",
+              "cleanStatus": "cleaned"
+            },
+            {
+              "id": "RAW-0639",
+              "name": "实物照片.jpg",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/变流器/实物照片.jpg",
+              "ext": "jpg",
+              "cleanStatus": "original_only"
+            },
+            {
+              "id": "RAW-0644",
+              "name": "实物照片1.png",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/变流器/实物照片1.png",
+              "ext": "png",
+              "cleanStatus": "original_only"
+            },
+            {
+              "id": "RAW-0643",
+              "name": "铭牌.jpg",
+              "path": "技术标/标准文件/EW6.25-220/认证证书/X3部件认证/变流器/铭牌.jpg",
+              "ext": "jpg",
+              "cleanStatus": "original_only"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -32,6 +32,10 @@ from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.opencode_client import OpencodeClient
 from app.services.peripheral import PeripheralError
 from app.services.technical_material_store import technical_material_store
+from app.services.technical_material_index import (
+    load_technical_material_index,
+    rebuild_technical_material_index,
+)
 
 DEFAULT_REFERENCE_WIKI_PATH = Path(
     "/Users/anbocheng/Desktop/20260412_技术标/20260413_技术标_组织优化/素材库-20260413-wlb-clean-wiki/wiki"
@@ -1906,6 +1910,82 @@ def _run_local_wiki_skill(manifest_path: Path, bid_type: str) -> dict[str, Any]:
     return result
 
 
+def _write_technical_index_manifest(index_payload: dict[str, Any]) -> Path:
+    """把三级目录 JSON 索引写到共享构建目录，供 wikibuild 脚本镜像成 Wiki。"""
+    shared_root = settings.parsed_dir / "_wiki_build"
+    shared_root.mkdir(parents=True, exist_ok=True)
+    target_dir = Path(tempfile.mkdtemp(prefix="bid-tech-wiki-", dir=shared_root))
+    manifest_path = target_dir / "technical_material_index.json"
+    manifest = {
+        **index_payload,
+        "rootTitle": _wiki_root_title(TECHNICAL_BID_TYPE),
+        "workDir": str(target_dir),
+        "outputFile": str(target_dir / "wiki_blueprint.json"),
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest_path
+
+
+async def _mirror_technical_index_to_wiki(
+    index_payload: dict[str, Any],
+    *,
+    mode: str,
+) -> dict[str, Any]:
+    """把技术标三级目录索引 payload 确定性镜像成 Wiki blueprint 并导入（不走 LLM）。
+
+    供「重建 Wiki」主流程与后台预览任务复用：后台任务补齐预览后用 mode="replace"
+    重镜像一次，让带 AI 预览的文件卡片落到 Wiki 树上。
+    """
+    if not isinstance(index_payload, dict):
+        index_payload = {}
+    index_payload.setdefault("bidType", TECHNICAL_BID_TYPE)
+
+    manifest_path = _write_technical_index_manifest(index_payload)
+    skill_result = await asyncio.to_thread(_run_local_wiki_skill, manifest_path, TECHNICAL_BID_TYPE)
+    blueprint = _normalize_blueprint(_load_wiki_blueprint_result(skill_result))
+    blueprint["rootTitle"] = _wiki_root_title(TECHNICAL_BID_TYPE)
+    opencode_output = skill_result.get("opencodeOutput") or {}
+
+    imported = await _import_generated_wiki_blueprint(
+        TECHNICAL_BID_TYPE,
+        root_title=blueprint["rootTitle"],
+        root_markdown_content=blueprint.get("rootMarkdownContent") or "",
+        nodes=blueprint["nodes"],
+        mode=mode,
+    )
+    stats = index_payload.get("stats") if isinstance(index_payload.get("stats"), dict) else {}
+    imported["generation"] = {
+        "summary": blueprint["summary"],
+        "bidType": TECHNICAL_BID_TYPE,
+        "skill": _wiki_skill_name(TECHNICAL_BID_TYPE),
+        "generator": "technical_index_mirror",
+        "fallbackUsed": False,
+        "materialIndex": {
+            "tierCount": stats.get("tierCount"),
+            "thirdLevelFolderCount": stats.get("thirdLevelFolderCount"),
+            "fileCount": stats.get("fileCount"),
+            "generatedAt": index_payload.get("generatedAt"),
+        },
+        "opencodeOutput": opencode_output,
+    }
+    return imported
+
+
+async def _generate_technical_wiki(*, mode: str) -> dict[str, Any]:
+    """技术标 Wiki：确定性镜像三级目录 JSON 索引（tier→folder→file），不走 LLM。
+
+    技术标的目录树就该严格等于素材库三级结构，无需语义精修；因此独立于商务标
+    的 LLM/确定性回退链路，直接用 wikibuild 脚本把索引镜像成 blueprint 再导入。
+    """
+    # 先实时重建索引拿最新结构；失败/为空时回退到已落盘的快照。
+    # preview_mode="cached"：秒级注入已生成的 AI 预览，不调 LLM —— 重建 Wiki 立即返回。
+    # 缺失预览的 docx 先降级为纯目录卡片，由后台 technical_wiki_preview 任务异步补齐。
+    index_payload = await rebuild_technical_material_index(preview_mode="cached")
+    if not isinstance(index_payload, dict) or not index_payload.get("tiers"):
+        index_payload = load_technical_material_index()
+    return await _mirror_technical_index_to_wiki(index_payload, mode=mode)
+
+
 async def generate_platform_wiki(
     *,
     reference_path: str = "",
@@ -1914,6 +1994,9 @@ async def generate_platform_wiki(
     fallback_to_deterministic: bool = False,
 ) -> dict[str, Any]:
     normalized_bid_type = _normalize_wiki_bid_type(bid_type)
+    # 技术标：确定性镜像三级目录索引，独立于商务标的 LLM 链路。
+    if normalized_bid_type == TECHNICAL_BID_TYPE:
+        return await _generate_technical_wiki(mode=mode)
     skill_name = _wiki_skill_name(normalized_bid_type)
     reference_root = Path(reference_path).expanduser().resolve() if reference_path else DEFAULT_REFERENCE_WIKI_PATH
     reference = _summarize_reference_wiki(reference_root)

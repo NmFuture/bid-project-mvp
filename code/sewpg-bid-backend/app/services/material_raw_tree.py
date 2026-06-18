@@ -34,6 +34,7 @@ def build_raw_tree_payload(
         direct_file_count = len(files_by_folder.get(folder_id, []))
         return {
             "id": getattr(folder, "path"),
+            "folderId": folder_id,
             "name": getattr(folder, "name"),
             "path": getattr(folder, "path"),
             "directFileCount": direct_file_count,

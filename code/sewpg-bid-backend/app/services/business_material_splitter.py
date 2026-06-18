@@ -23,7 +23,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.models import async_session
 from app.models.materials import RawFile
-from app.services.bid_type import BUSINESS_BID_TYPE
+from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.file_utils import safe_segment
 from app.services.minio_client import minio_client
 from app.services.opencode_client import OpencodeClient
@@ -85,8 +85,10 @@ BUSINESS_SECTION_RE = re.compile(
 )
 
 
-async def preview_business_material_split(file_id: str, *, target_path: str = "", ai_mode: str = "auto") -> dict[str, Any]:
-    source = await _load_business_source_file(file_id)
+async def preview_business_material_split(
+    file_id: str, *, target_path: str = "", ai_mode: str = "auto", bid_type: str = BUSINESS_BID_TYPE
+) -> dict[str, Any]:
+    source = await _load_business_source_file(file_id, bid_type=bid_type)
     fragments = [] if ai_mode == "force" else _build_split_plan(source, target_path=target_path)
     diagnostics: dict[str, Any] = {"strategy": "deterministic", "aiAttempted": False, "aiError": "", "aiMode": ai_mode}
     if ai_mode != "force" and (not fragments or _looks_like_single_collection_fragment(fragments)):
@@ -138,8 +140,9 @@ async def confirm_business_material_split(
     fragments: list[dict[str, Any]],
     default_target_path: str = "",
     on_conflict: str = "",
+    bid_type: str = BUSINESS_BID_TYPE,
 ) -> dict[str, Any]:
-    source = await _load_business_source_file(file_id)
+    source = await _load_business_source_file(file_id, bid_type=bid_type)
     plan_items = _build_split_plan(source, target_path=default_target_path)
     if not plan_items:
         plan_items = _build_local_semantic_split_plan(source, target_path=default_target_path)
@@ -200,6 +203,7 @@ async def confirm_business_material_split(
             target_path=target_path,
             on_conflict=on_conflict,
             files=files,
+            bid_type=_source_bid_type(source),
         )
         uploaded_items.extend(result.get("items") or [])
 
@@ -217,7 +221,17 @@ async def _upload_business_split_files(
     target_path: str,
     on_conflict: str,
     files: list[dict[str, Any]],
+    bid_type: str = BUSINESS_BID_TYPE,
 ) -> dict[str, Any]:
+    if bid_type == TECHNICAL_BID_TYPE:
+        from app.services.technical_material_store import technical_material_store
+
+        return await technical_material_store.raw_upload(
+            target_path=target_path,
+            on_conflict=on_conflict,
+            files=files,
+        )
+
     from app.services.business_material_store import business_material_store
 
     return await business_material_store.raw_upload(
@@ -227,7 +241,7 @@ async def _upload_business_split_files(
     )
 
 
-async def _load_business_source_file(file_id: str) -> dict[str, Any]:
+async def _load_business_source_file(file_id: str, *, bid_type: str = BUSINESS_BID_TYPE) -> dict[str, Any]:
     numeric_id = _numeric_raw_id(file_id)
     async with async_session() as session:
         result = await session.execute(
@@ -240,8 +254,8 @@ async def _load_business_source_file(file_id: str) -> dict[str, Any]:
             raise PeripheralError(400, "素材目录信息缺失。", "RAW_FILE_FOLDER_MISSING")
         payload = item.to_dict()
         ext = item.ext_fields or {}
-        if str(ext.get("bidType") or payload.get("bidType") or "") != BUSINESS_BID_TYPE:
-            raise PeripheralError(400, "素材切分入口当前仅支持商务标素材。", "BUSINESS_SPLIT_BID_TYPE_ONLY")
+        if str(ext.get("bidType") or payload.get("bidType") or "") != bid_type:
+            raise PeripheralError(400, f"素材切分入口当前仅支持{bid_type}素材。", "BUSINESS_SPLIT_BID_TYPE_ONLY")
         if PurePosixPath(item.name).suffix.lower() != ".docx":
             raise PeripheralError(400, "第一版切分仅支持 .docx 文件；PDF/扫描件请先人工拆分或后续 OCR 增强。", "BUSINESS_SPLIT_DOCX_ONLY")
         if not item.minio_key:
@@ -250,6 +264,7 @@ async def _load_business_source_file(file_id: str) -> dict[str, Any]:
         return {
             "id": f"RAW-{item.id:04d}",
             "name": item.name,
+            "bidType": bid_type,
             "folderPath": item.folder.path,
             "materialTier": payload.get("materialTier") or "",
             "materialTierLabel": payload.get("materialTierLabel") or "",
@@ -1034,13 +1049,18 @@ def _classify_fragment(title: str) -> str:
     return "商务素材片段"
 
 
+def _source_bid_type(source: dict[str, Any]) -> str:
+    return str(source.get("bidType") or "").strip() or BUSINESS_BID_TYPE
+
+
 def _suggest_target_path(source: dict[str, Any], material_type: str, title: str, target_path: str) -> str:
     if target_path:
         return target_path.strip().strip("/")
+    bid_type = _source_bid_type(source)
     folder_path = str(source.get("folderPath") or "").strip().strip("/")
-    tier_path = _tier_root_path(source) or f"{BUSINESS_BID_TYPE}/通用素材"
+    tier_path = _tier_root_path(source) or f"{bid_type}/通用素材"
     if material_type == "证书":
-        return f"{BUSINESS_BID_TYPE}/通用素材/机型认证与测试报告"
+        return f"{bid_type}/通用素材/机型认证与测试报告"
     if material_type == "业绩订单":
         return ""
     if material_type in {"承诺书模板", "商务附件模板"}:
@@ -1048,17 +1068,18 @@ def _suggest_target_path(source: dict[str, Any], material_type: str, title: str,
             return f"{tier_path}/项目过程稿与澄清文件"
         if "/客户素材/" in folder_path:
             return f"{tier_path}/客户模板与历史文件"
-        return f"{BUSINESS_BID_TYPE}/通用素材/表单模板与过程稿"
+        return f"{bid_type}/通用素材/表单模板与过程稿"
     return folder_path or tier_path
 
 
 def _tier_root_path(source: dict[str, Any]) -> str:
+    bid_type = _source_bid_type(source)
     folder_path = str(source.get("folderPath") or "")
     parts = [part for part in folder_path.split("/") if part]
-    if len(parts) >= 3 and parts[0] == BUSINESS_BID_TYPE and parts[1] in {"客户素材", "项目素材"}:
+    if len(parts) >= 3 and parts[0] == bid_type and parts[1] in {"客户素材", "项目素材"}:
         return "/".join(parts[:3])
-    if len(parts) >= 2 and parts[0] == BUSINESS_BID_TYPE and parts[1] == "通用素材":
-        return f"{BUSINESS_BID_TYPE}/通用素材"
+    if len(parts) >= 2 and parts[0] == bid_type and parts[1] == "通用素材":
+        return f"{bid_type}/通用素材"
     return ""
 
 

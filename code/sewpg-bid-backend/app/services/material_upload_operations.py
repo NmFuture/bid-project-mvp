@@ -42,8 +42,13 @@ CleaningJobEnqueuer = Callable[[int], dict[str, Any]]
 
 
 def _safe_segment(value: str, fallback: str) -> str:
-    text = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
+    raw = str(value or "").strip()
+    # 记录是否以 '.' 开头（隐藏文件如 .DS_Store）
+    leading_dot = raw.startswith(".") and len(raw) > 1
+    text = re.sub(r"[\\/:*?\"<>|]+", "-", raw)
     text = re.sub(r"\s+", " ", text).strip(" .")
+    if leading_dot and text and not text.startswith("."):
+        text = "." + text
     return text or fallback
 
 

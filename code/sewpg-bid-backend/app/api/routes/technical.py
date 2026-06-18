@@ -17,6 +17,7 @@ from app.services.technical_document_service import technical_document_service
 from app.services.technical_generation_service import technical_generation_service
 from app.services.technical_gap_service import technical_gap_service
 from app.services.technical_audit_service import technical_audit_service
+from app.services.peripheral import PeripheralError
 from app.services.technical_material_store import TECHNICAL_BID_TYPE, technical_material_store
 from app.services.wiki_generation import generate_platform_wiki
 
@@ -532,6 +533,43 @@ async def technical_raw_tree() -> dict[str, Any]:
     return await technical_material_store.raw_tree()
 
 
+@router.get("/api/technical/materials/index")
+async def technical_material_index() -> dict[str, Any]:
+    """技术标三级目录结构 JSON 索引（供 Wiki 构建/项目解析参考）。
+
+    若索引尚未生成（首次访问或被清空），即时重建一次再返回。
+    """
+    from app.services.technical_material_index import (
+        load_technical_material_index,
+        rebuild_technical_material_index,
+    )
+
+    payload = load_technical_material_index()
+    if not payload:
+        payload = await rebuild_technical_material_index()
+    return payload
+
+
+@router.put("/api/technical/materials/index/tags")
+async def set_technical_material_index_tags(
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    """对索引中某节点设置 tag（tag 真值落 JSON 索引自身）。
+
+    入参：{ "targetId": "RAW-0012" | "<folderId>" | "<目录path>", "tags": [...] }
+    - targetId 以 RAW- 开头 → 文件；否则按 folderId 或目录 path 定位 tier/3 级目录。
+    - tags 经 normalize_material_tags 规整（与文件 tag 同一套规则）。
+    """
+    from app.services.technical_material_index import set_tags_for_node
+
+    target_id = str(data.get("targetId") or "").strip()
+    try:
+        node = await set_tags_for_node(target_id=target_id, tags=data.get("tags"))
+    except (ValueError, LookupError) as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "node": node}
+
+
 @router.get("/api/technical/materials/raw/files")
 async def technical_raw_files(
     folderPath: str = "",
@@ -625,9 +663,58 @@ async def technical_raw_upload(request: Request) -> dict[str, Any]:
     )
 
 
+@router.post("/api/technical/materials/raw/tag-import/preview")
+async def technical_raw_tag_import_preview(request: Request) -> dict[str, Any]:
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        raise PeripheralError(400, "请上传标签清单 Excel 文件。", "TAG_IMPORT_FILE_REQUIRED")
+    file_bytes = await upload.read()
+    use_fuzzy = str(form.get("useFuzzy") or "").strip().lower() in {"1", "true", "yes", "on"}
+    return await technical_material_store.raw_tag_import_preview(
+        target_path=str(form.get("targetPath") or ""),
+        file_bytes=file_bytes,
+        use_fuzzy=use_fuzzy,
+    )
+
+
+@router.post("/api/technical/materials/raw/tag-import/commit")
+async def technical_raw_tag_import_commit(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    items = data.get("items")
+    if not isinstance(items, list) or not items:
+        raise PeripheralError(400, "没有可导入的标签条目。", "TAG_IMPORT_EMPTY_ITEMS")
+    return await technical_material_store.raw_tag_import_commit(items=items)
+
+
 @router.patch("/api/technical/materials/raw/{file_id}")
 async def technical_raw_update_file(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await technical_material_store.raw_update_file(file_id=file_id, name=str(data.get("name") or ""))
+    return await technical_material_store.raw_update_file(
+        file_id=file_id,
+        name=str(data.get("name") or ""),
+        business_material_kind=str(data.get("businessMaterialKind") or ""),
+        tags=data.get("tags"),
+        update_tags="tags" in data,
+    )
+
+
+@router.post("/api/technical/materials/raw/{file_id}/business-split/preview")
+async def technical_raw_preview_split(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await technical_material_store.preview_business_split(
+        file_id=file_id,
+        target_path=str(data.get("targetPath") or ""),
+        ai_mode=str(data.get("aiMode") or data.get("mode") or "auto"),
+    )
+
+
+@router.post("/api/technical/materials/raw/{file_id}/business-split/confirm")
+async def technical_raw_confirm_split(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    fragments = data.get("fragments") if "fragments" in data else data.get("items")
+    return await technical_material_store.confirm_business_split(
+        file_id=file_id,
+        fragments=list(fragments or []),
+        target_path=str(data.get("targetPath") or ""),
+        on_conflict=str(data.get("onConflict") or ""),
+    )
 
 
 @router.post("/api/technical/materials/raw/move")
@@ -708,6 +795,22 @@ async def technical_wiki_bootstrap(data: dict[str, Any] = Body(default_factory=d
         bid_type=TECHNICAL_BID_TYPE,
         fallback_to_deterministic=bool(data.get("fallbackToDeterministic")),
     )
+
+
+@router.post("/api/technical/materials/wiki/previews/generate")
+async def technical_wiki_previews_generate() -> dict[str, Any]:
+    """触发后台异步生成文件卡片 AI 预览（不阻塞，立即返回 jobId/状态）。"""
+    from app.services.technical_wiki_preview import enqueue_preview_job
+
+    return enqueue_preview_job()
+
+
+@router.get("/api/technical/materials/wiki/previews/status")
+async def technical_wiki_previews_status() -> dict[str, Any]:
+    """查询预览生成任务进度，供前端轮询。"""
+    from app.services.technical_wiki_preview import get_preview_status
+
+    return get_preview_status()
 
 
 @router.post("/api/technical/materials/wiki")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,17 @@ def read_json_file(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def write_json_file_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """原子写 JSON：先写同目录临时文件再 os.replace 换名，避免半截文件/并发读到坏数据。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.replace(tmp_path, path)
 
 
 def empty_parse_result(project: dict[str, Any]) -> dict[str, Any]:

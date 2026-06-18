@@ -6,18 +6,18 @@ const DEFAULT_ITEMS = [
   { key: 'performance', label: '业绩库', absolutePath: '/workspace/shared/materials/performance' },
 ]
 
-export default function TechnicalMaterialsViewSwitch({
+export default function SharedMaterialsViewSwitch({
   active = 'raw',
   title = '',
   subtitle = '',
   actions = null,
   meta = null,
-  basePath = '/workspace/tech/materials',
-  workspaceLabel = '技术标',
-  workspaceIcon = 'engineering',
+  basePath = '/workspace/business/materials',
+  workspaceLabel = '商务标',
+  workspaceIcon = 'request_quote',
   items = DEFAULT_ITEMS,
 }) {
-  const normalizedBasePath = String(basePath || '/workspace/tech/materials').replace(/\/+$/, '')
+  const normalizedBasePath = String(basePath || '/workspace/business/materials').replace(/\/+$/, '')
 
   return (
     <div className="overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest">
@@ -26,7 +26,7 @@ export default function TechnicalMaterialsViewSwitch({
           <div className="min-w-0 lg:w-[240px] xl:w-[260px]">
             <div className="flex min-w-0 items-center gap-2">
               <span aria-hidden="true" className="h-4 w-1 shrink-0 rounded-full bg-primary/80" />
-              <h1 className="truncate text-base font-headline font-bold text-on-surface">{title || '技术标素材库'}</h1>
+              <h1 className="truncate text-base font-headline font-bold text-on-surface">{title || '商务标素材库'}</h1>
             </div>
             {subtitle ? (
               <p className="mt-1 truncate pl-3 text-xs text-outline" title={typeof subtitle === 'string' ? subtitle : undefined}>

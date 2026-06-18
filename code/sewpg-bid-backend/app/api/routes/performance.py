@@ -6,9 +6,29 @@ from fastapi import APIRouter, Body, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.api.utils import minio_streaming_response
+from app.services.performance_library_service import performance_library_service
 from app.services.performance_package_service import performance_package_service
 
 router = APIRouter()
+
+
+@router.get("/api/materials/performance")
+async def list_performance_records(
+    keyword: str = "",
+    customerName: str = "",
+    bidType: str = "",
+    tag: str = "",
+    page: int = 1,
+    pageSize: int = 20,
+) -> dict[str, Any]:
+    return await performance_library_service.list_records(
+        keyword=keyword,
+        customer_name=customerName,
+        bid_type=bidType,
+        tag=tag,
+        page=page,
+        page_size=pageSize,
+    )
 
 
 @router.get("/api/materials/performance/categories")
@@ -119,3 +139,36 @@ async def download_performance_category_attachment(category_id: str, attachment_
 async def download_performance_item_attachment(category_id: str, item_id: str, attachment_id: str) -> StreamingResponse:
     payload = await performance_package_service.download_item_attachment(category_id, item_id, attachment_id)
     return minio_streaming_response(payload)
+
+
+@router.post("/api/materials/performance")
+async def create_performance_record(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await performance_library_service.create_record(data)
+
+
+@router.put("/api/materials/performance/{record_id}")
+async def update_performance_record(
+    record_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    return await performance_library_service.update_record(record_id, data)
+
+
+@router.delete("/api/materials/performance/{record_id}")
+async def delete_performance_record(record_id: str) -> dict[str, Any]:
+    return await performance_library_service.delete_record(record_id)
+
+
+@router.post("/api/materials/performance/{record_id}/word")
+async def upload_performance_word(record_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+    try:
+        return await performance_library_service.upload_word(record_id, file)
+    finally:
+        await file.close()
+
+
+@router.get("/api/materials/performance/{record_id}/word")
+async def download_performance_word(record_id: str) -> StreamingResponse:
+    payload = await performance_library_service.download_word(record_id)
+    return minio_streaming_response(payload)
+

@@ -9,7 +9,7 @@ import { AUTH_EXPIRED_EVENT, AUTH_STORAGE_KEY, authAPI } from './api'
 import { workspaceFromSlug, workspaceRoute } from './utils/workspace'
 import { renderTechnicalRoutes } from './workspaces/technical/routes'
 import { renderBusinessRoutes } from './workspaces/business/routes'
-import BusinessPerformanceLibrary from './workspaces/business/pages/BusinessPerformanceLibrary'
+import { renderSharedRoutes } from './workspaces/shared/routes'
 
 const readStoredSession = () => {
   if (typeof window === 'undefined') return null
@@ -155,11 +155,7 @@ export default function App() {
           <Route path="/dashboard" element={<Dashboard currentUser={session?.user} />} />
           {renderTechnicalRoutes({ user: session?.user, showToast })}
           {renderBusinessRoutes({ user: session?.user, showToast })}
-          <Route
-            path="/workspace/shared/materials/performance"
-            element={<BusinessPerformanceLibrary showToast={showToast} currentUser={session?.user} />}
-          />
-
+          {renderSharedRoutes({ user: session?.user, showToast })}
           <Route path="/workspace/:workspace" element={<WorkspaceRedirect />} />
           <Route path="/settings" element={<Settings showToast={showToast} />} />
         </Routes>

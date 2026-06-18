@@ -481,6 +481,7 @@ export const technicalDocumentAPI = {
 export const technicalMaterialsAPI = {
   identityOptions: () => request('/technical/materials/identity-options'),
   turbineModelOptions: () => request('/technical/materials/turbine-model-options'),
+  index: () => request('/technical/materials/index'),
   raw: {
     tree: () => request('/technical/materials/raw/tree'),
     files: (params = {}) => {
@@ -500,8 +501,16 @@ export const technicalMaterialsAPI = {
       return request(`/technical/materials/raw/folders${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
     },
     updateFile: (id, data) => request(`/technical/materials/raw/${id}`, { method: 'PATCH', body: data }),
+    tagImportPreview: (data) =>
+      request('/technical/materials/raw/tag-import/preview', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    tagImportCommit: (data) =>
+      request('/technical/materials/raw/tag-import/commit', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     moveFile: (data) => request('/technical/materials/raw/move', { method: 'POST', body: data }),
     deleteFile: (id) => request(`/technical/materials/raw/${id}`, { method: 'DELETE' }),
+    previewBusinessSplit: (id, data) =>
+      request(`/technical/materials/raw/${id}/business-split/preview`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
+    confirmBusinessSplit: (id, data) =>
+      request(`/technical/materials/raw/${id}/business-split/confirm`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     previewCleanedFile: (id) => request(`/technical/materials/raw/${id}/cleaned/preview`),
     parseStatus: (projectId) => request(`/technical/projects/${projectId}/materials/parse-status`),
   },
@@ -511,7 +520,11 @@ export const technicalMaterialsAPI = {
       return request(`/technical/materials/wiki${qs ? `?${qs}` : ''}`)
     },
     bootstrap: (data = {}) =>
-      request('/technical/materials/wiki/bootstrap', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+      request('/technical/materials/wiki/bootstrap', { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
+    generatePreviews: () =>
+      request('/technical/materials/wiki/previews/generate', { method: 'POST', body: {} }),
+    previewsStatus: () =>
+      request('/technical/materials/wiki/previews/status'),
     create: (data) => request('/technical/materials/wiki', { method: 'POST', body: data }),
     update: (id, data) => request(`/technical/materials/wiki/${id}`, { method: 'PUT', body: data }),
     delete: (id, params = {}) => {
@@ -666,37 +679,39 @@ export const businessDocumentAPI = {
   finalPdf: (projectId) => request(`/business/projects/${projectId}/final-document/pdf`, { timeoutMs: 5 * 60 * 1000, retryCount: 0 }),
 }
 
+// 业绩库（业绩 / Performance）为商务标、技术标共享的公共模块，使用中性路径 /materials/performance
+export const performanceAPI = {
+  list: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/materials/performance${qs ? `?${qs}` : ''}`)
+  },
+  categories: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/materials/performance/categories${qs ? `?${qs}` : ''}`)
+  },
+  previewCategory: (data) =>
+    request('/materials/performance/categories/preview', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+  importCategory: (data) =>
+    request('/materials/performance/categories/import', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+  category: (id) => request(`/materials/performance/categories/${id}`),
+  deleteCategory: (id, data = {}) => request(`/materials/performance/categories/${id}`, { method: 'DELETE', body: data }),
+  updateCategoryStatus: (id, data) => request(`/materials/performance/categories/${id}/status`, { method: 'PATCH', body: data }),
+  uploadCategoryAttachment: (id, data) =>
+    request(`/materials/performance/categories/${id}/attachments`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+  categoryAttachmentUrl: (categoryId, attachmentId) =>
+    joinUrl(ENV.API_BASE_URL, `/materials/performance/categories/${categoryId}/attachments/${attachmentId}`),
+  itemAttachmentUrl: (categoryId, itemId, attachmentId) =>
+    joinUrl(ENV.API_BASE_URL, `/materials/performance/categories/${categoryId}/items/${itemId}/attachments/${attachmentId}`),
+  create: (data) => request('/materials/performance', { method: 'POST', body: data }),
+  update: (id, data) => request(`/materials/performance/${id}`, { method: 'PUT', body: data }),
+  delete: (id) => request(`/materials/performance/${id}`, { method: 'DELETE' }),
+  uploadWord: (id, data) =>
+    request(`/materials/performance/${id}/word`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+  wordUrl: (id) => joinUrl(ENV.API_BASE_URL, `/materials/performance/${id}/word`),
+}
+
 export const businessMaterialsAPI = {
   identityOptions: () => request('/business/materials/identity-options'),
-  performance: {
-    list: (params = {}) => {
-      const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/business/materials/performance${qs ? `?${qs}` : ''}`)
-    },
-    categories: (params = {}) => {
-      const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/materials/performance/categories${qs ? `?${qs}` : ''}`)
-    },
-    previewCategory: (data) =>
-      request('/materials/performance/categories/preview', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
-    importCategory: (data) =>
-      request('/materials/performance/categories/import', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
-    category: (id) => request(`/materials/performance/categories/${id}`),
-    deleteCategory: (id, data = {}) => request(`/materials/performance/categories/${id}`, { method: 'DELETE', body: data }),
-    updateCategoryStatus: (id, data) => request(`/materials/performance/categories/${id}/status`, { method: 'PATCH', body: data }),
-    uploadCategoryAttachment: (id, data) =>
-      request(`/materials/performance/categories/${id}/attachments`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
-    categoryAttachmentUrl: (categoryId, attachmentId) =>
-      joinUrl(ENV.API_BASE_URL, `/materials/performance/categories/${categoryId}/attachments/${attachmentId}`),
-    itemAttachmentUrl: (categoryId, itemId, attachmentId) =>
-      joinUrl(ENV.API_BASE_URL, `/materials/performance/categories/${categoryId}/items/${itemId}/attachments/${attachmentId}`),
-    create: (data) => request('/business/materials/performance', { method: 'POST', body: data }),
-    update: (id, data) => request(`/business/materials/performance/${id}`, { method: 'PUT', body: data }),
-    delete: (id) => request(`/business/materials/performance/${id}`, { method: 'DELETE' }),
-    uploadWord: (id, data) =>
-      request(`/business/materials/performance/${id}/word`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
-    wordUrl: (id) => joinUrl(ENV.API_BASE_URL, `/business/materials/performance/${id}/word`),
-  },
   raw: {
     tree: () => request('/business/materials/raw/tree'),
     files: (params = {}) => {

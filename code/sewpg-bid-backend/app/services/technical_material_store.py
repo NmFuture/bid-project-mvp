@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sqlalchemy import select
@@ -8,11 +9,19 @@ from sqlalchemy.orm import selectinload
 from app.models import async_session
 from app.models.materials import WikiAttachment
 from app.services.bid_type import TECHNICAL_BID_TYPE
+from app.services.business_material_splitter import (
+    confirm_business_material_split,
+    preview_business_material_split,
+)
 from app.services.material_store import material_store
+from app.services.material_tag_import import build_preview, parse_tag_excel
+from app.services.material_tag_import_fuzzy import run_tag_import_fuzzy_match
 from app.services.peripheral import PeripheralError
 from app.services.scoped_material_urls import rewrite_material_urls
 from app.services.technical_turbine_material_options import list_technical_turbine_model_options
 from app.services.turbine_models import material_model_fit, normalize_project_turbine_model
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_technical_material_path(path: str) -> str:
@@ -67,6 +76,19 @@ class TechnicalMaterialStore:
             raw_prefix="/api/technical/materials/raw",
             wiki_prefix="/api/technical/materials/wiki",
         )
+
+    async def _refresh_index(self, payload: Any) -> Any:
+        """改结构操作后 best-effort 重建技术标三级目录 JSON 索引。
+
+        延迟导入避免循环引用；rebuild 内部已做异常隔离，这里再兜底一层。
+        """
+        from app.services.technical_material_index import rebuild_technical_material_index
+
+        try:
+            await rebuild_technical_material_index()
+        except Exception:  # noqa: BLE001 - 钩子不得阻断主素材操作
+            logger.warning("technical material index refresh failed", exc_info=True)
+        return payload
 
     def ensure_path(self, path: str, label: str = "路径") -> str:
         return ensure_technical_material_path(path, label)
@@ -169,10 +191,10 @@ class TechnicalMaterialStore:
         )
 
     async def raw_bootstrap_folders(self, project_id: str) -> dict[str, Any]:
-        return self._with_urls(await material_store.raw_bootstrap_folders(
+        return await self._refresh_index(self._with_urls(await material_store.raw_bootstrap_folders(
             project_id=project_id,
             bid_type=TECHNICAL_BID_TYPE,
-        ))
+        )))
 
     async def raw_create_folder(self, parent_path: str, folder_name: str) -> dict[str, Any]:
         payload = await material_store.raw_create_folder(
@@ -180,14 +202,14 @@ class TechnicalMaterialStore:
             folder_name=folder_name,
             bid_type=TECHNICAL_BID_TYPE,
         )
-        return self._with_urls(_force_technical_tree(payload))
+        return await self._refresh_index(self._with_urls(_force_technical_tree(payload)))
 
     async def raw_delete_folder(self, path: str) -> dict[str, Any]:
         payload = await material_store.raw_delete_folder(
             self.ensure_path(path, "目标目录"),
             bid_type=TECHNICAL_BID_TYPE,
         )
-        return self._with_urls(_force_technical_tree(payload))
+        return await self._refresh_index(self._with_urls(_force_technical_tree(payload)))
 
     async def raw_cleanup_project_folder(self, path: str) -> dict[str, Any]:
         normalized = self.ensure_path(path, "项目素材目录")
@@ -198,7 +220,7 @@ class TechnicalMaterialStore:
             normalized,
             bid_type=TECHNICAL_BID_TYPE,
         )
-        return self._with_urls(_force_technical_tree(payload))
+        return await self._refresh_index(self._with_urls(_force_technical_tree(payload)))
 
     async def raw_upload(
         self,
@@ -213,7 +235,7 @@ class TechnicalMaterialStore:
         on_conflict: str = "",
         files: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        return self._with_urls(await material_store.raw_upload(
+        return await self._refresh_index(self._with_urls(await material_store.raw_upload(
             target_path=self.ensure_path(target_path, "目标目录"),
             project_id=project_id,
             project_code=project_code,
@@ -224,24 +246,137 @@ class TechnicalMaterialStore:
             customer_name=customer_name,
             on_conflict=on_conflict,
             files=list(files or []),
-        ))
+        )))
 
-    async def raw_update_file(self, file_id: str, *, name: str = "") -> dict[str, Any]:
+    async def raw_update_file(
+        self,
+        file_id: str,
+        *,
+        name: str = "",
+        business_material_kind: str = "",
+        tags: Any = None,
+        update_tags: bool = False,
+    ) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)
-        return self._with_urls(await material_store.raw_update_file(
+        return await self._refresh_index(self._with_urls(await material_store.raw_update_file(
             file_id=file_id,
             bid_type=TECHNICAL_BID_TYPE,
             name=name,
+            business_material_kind=business_material_kind,
+            tags=tags,
+            update_tags=update_tags,
+        )))
+
+    async def _raw_subtree_files(self, target_path: str) -> list[dict[str, Any]]:
+        payload = await material_store.raw_files(
+            bid_type=TECHNICAL_BID_TYPE,
+            folder_path=target_path or TECHNICAL_BID_TYPE,
+            recursive=True,
+            page=1,
+            page_size=100000,
+        )
+        return list(payload.get("items") or [])
+
+    async def raw_tag_import_preview(
+        self,
+        *,
+        target_path: str,
+        file_bytes: bytes,
+        use_fuzzy: bool = False,
+    ) -> dict[str, Any]:
+        normalized_target = self.ensure_root_path(target_path, "目标目录")
+        rows = parse_tag_excel(file_bytes)
+        files = await self._raw_subtree_files(normalized_target)
+        preview = build_preview(rows, files)
+        preview["targetPath"] = normalized_target
+        preview["fuzzyAvailable"] = False
+        if use_fuzzy and preview.get("unmatched"):
+            preview = await self._augment_with_fuzzy(preview, files)
+        return preview
+
+    async def _augment_with_fuzzy(
+        self,
+        preview: dict[str, Any],
+        files: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """对 unmatched 行调用 opencode 模糊匹配 skill；失败则降级不阻断。"""
+
+        try:
+            fuzzy = await run_tag_import_fuzzy_match(
+                unmatched=preview.get("unmatched") or [],
+                candidates=files,
+            )
+        except Exception as exc:  # pragma: no cover - 降级路径
+            preview["fuzzyAvailable"] = False
+            preview["fuzzyError"] = str(exc)
+            return preview
+
+        preview["fuzzy"] = fuzzy or []
+        preview["fuzzyAvailable"] = True
+        return preview
+
+    async def raw_tag_import_commit(self, *, items: list[dict[str, Any]]) -> dict[str, Any]:
+        succeeded: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+        for item in items or []:
+            file_id = str(item.get("fileId") or "")
+            tags = item.get("tags")
+            if not file_id:
+                failed.append({"fileId": file_id, "message": "缺少文件 ID。"})
+                continue
+            try:
+                result = await self.raw_update_file(file_id, tags=tags, update_tags=True)
+                updated = result.get("item") or {}
+                succeeded.append(
+                    {
+                        "fileId": file_id,
+                        "name": str(updated.get("name") or ""),
+                        "tags": updated.get("tags") or [],
+                    }
+                )
+            except PeripheralError as exc:
+                failed.append({"fileId": file_id, "message": exc.detail})
+            except Exception as exc:  # pragma: no cover - 兜底
+                failed.append({"fileId": file_id, "message": str(exc)})
+        message = f"标签导入完成：成功 {len(succeeded)} 个" + (
+            f"，失败 {len(failed)} 个" if failed else ""
+        )
+        return {"message": message, "succeeded": succeeded, "failed": failed}
+
+    async def preview_business_split(self, file_id: str, *, target_path: str, ai_mode: str) -> dict[str, Any]:
+        await self.ensure_raw_file(file_id)
+        return await preview_business_material_split(
+            file_id=file_id,
+            target_path=self.ensure_path(target_path, "目标目录"),
+            ai_mode=ai_mode,
+            bid_type=TECHNICAL_BID_TYPE,
+        )
+
+    async def confirm_business_split(
+        self,
+        file_id: str,
+        *,
+        fragments: list[dict[str, Any]],
+        target_path: str = "",
+        on_conflict: str = "",
+    ) -> dict[str, Any]:
+        await self.ensure_raw_file(file_id)
+        return await self._refresh_index(await confirm_business_material_split(
+            file_id=file_id,
+            fragments=fragments,
+            default_target_path=self.ensure_path(target_path, "目标目录"),
+            on_conflict=on_conflict,
+            bid_type=TECHNICAL_BID_TYPE,
         ))
 
     async def raw_move_file(self, *, file_id: str, target_path: str, on_conflict: str = "") -> dict[str, Any]:
         await self.ensure_raw_file(file_id)
-        return self._with_urls(await material_store.raw_move_file(
+        return await self._refresh_index(self._with_urls(await material_store.raw_move_file(
             file_id=file_id,
             target_path=self.ensure_path(target_path, "目标目录"),
             bid_type=TECHNICAL_BID_TYPE,
             on_conflict=on_conflict,
-        ))
+        )))
 
     async def raw_move_folder(self, *, source_path: str, target_parent_path: str) -> dict[str, Any]:
         payload = await material_store.raw_move_folder(
@@ -249,11 +384,11 @@ class TechnicalMaterialStore:
             target_parent_path=self.ensure_parent_path(target_parent_path, "目标父级目录"),
             bid_type=TECHNICAL_BID_TYPE,
         )
-        return self._with_urls(_force_technical_tree(payload))
+        return await self._refresh_index(self._with_urls(_force_technical_tree(payload)))
 
     async def raw_delete_file(self, file_id: str) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)
-        return self._with_urls(await material_store.raw_delete_file(file_id, bid_type=TECHNICAL_BID_TYPE))
+        return await self._refresh_index(self._with_urls(await material_store.raw_delete_file(file_id, bid_type=TECHNICAL_BID_TYPE)))
 
     async def raw_download_file(self, file_id: str) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)

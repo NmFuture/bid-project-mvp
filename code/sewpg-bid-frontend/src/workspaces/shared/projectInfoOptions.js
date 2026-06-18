@@ -124,3 +124,30 @@ export const loadProjectInfoOptions = async (api, options = {}) => {
     return STATIC_PROJECT_INFO_OPTIONS
   }
 }
+
+// "其他" 兜底选项：客户与风机机型下拉都需要在派生候选末尾追加一个手动输入入口。
+export const OTHER_OPTION_LABEL = '其他'
+
+const appendOtherOption = (items = []) => {
+  const list = normalizeStringOptions(items).filter((item) => item !== OTHER_OPTION_LABEL)
+  return [...list, OTHER_OPTION_LABEL]
+}
+
+// 从技术标三级目录 JSON 索引派生「客户」候选：取 tier==='customer'（客户定制）下
+// 各 3 级目录的 customerName（回退 name），末尾追加「其他」。
+// 见 doc/anbc_doc/20260618-技术标三级目录JSON索引-下游使用Handoff.md
+export const deriveCustomerOptionsFromIndex = (indexPayload = {}) => {
+  const tiers = Array.isArray(indexPayload?.tiers) ? indexPayload.tiers : []
+  const customerTier = tiers.find((tier) => tier?.tier === 'customer')
+  const names = (customerTier?.folders || []).map((folder) => folder?.customerName || folder?.name)
+  return appendOtherOption(names)
+}
+
+// 从 JSON 索引派生「风机机型」候选：取 tier==='standard'（标准文件）下各 3 级目录的
+// 目录名（即机型号），末尾追加「其他」。
+export const deriveTurbineModelOptionsFromIndex = (indexPayload = {}) => {
+  const tiers = Array.isArray(indexPayload?.tiers) ? indexPayload.tiers : []
+  const standardTier = tiers.find((tier) => tier?.tier === 'standard')
+  const names = (standardTier?.folders || []).map((folder) => folder?.name)
+  return appendOtherOption(names)
+}

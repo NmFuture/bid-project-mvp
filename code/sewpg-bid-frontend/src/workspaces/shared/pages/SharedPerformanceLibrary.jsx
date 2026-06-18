@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { businessMaterialsAPI } from '../../../api'
-import MaterialsViewSwitch from '../components/BusinessMaterialsViewSwitch'
+import { performanceAPI } from '../../../api'
+import MaterialsViewSwitch from '../components/SharedMaterialsViewSwitch'
 import { availableWorkspacesFor, defaultWorkspaceFor } from '../../../utils/permissions'
 import { workspaceRoute } from '../../../utils/workspace'
 
@@ -113,7 +113,7 @@ function SortHeader({ columnKey, label, sortBy, sortOrder, onSort, align = 'left
   )
 }
 
-export default function BusinessPerformanceLibrary({ showToast = () => {}, currentUser = null }) {
+export default function SharedPerformanceLibrary({ showToast = () => {}, currentUser = null }) {
   const summaryInputRef = useRef(null)
   const attachmentInputRef = useRef(null)
   const [items, setItems] = useState([])
@@ -166,7 +166,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
       setRefreshing(true)
     }
     try {
-      const payload = await businessMaterialsAPI.performance.categories(query)
+      const payload = await performanceAPI.categories(query)
       setItems(payload?.items || [])
       setTotal(Number(payload?.total || 0))
     } catch (error) {
@@ -212,7 +212,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
     data.append('file', file, file.name)
     setPreviewing(true)
     try {
-      const result = await businessMaterialsAPI.performance.previewCategory(data)
+      const result = await performanceAPI.previewCategory(data)
       const nextPreview = result?.preview || null
       setPreviewFile(file)
       setPreview(nextPreview)
@@ -255,7 +255,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
     data.append('reviewStatus', 'draft')
     setImporting(true)
     try {
-      const result = await businessMaterialsAPI.performance.importCategory(data)
+      const result = await performanceAPI.importCategory(data)
       showToast(result?.message || '业绩包已导入')
       closePreview()
       await loadCategories()
@@ -271,7 +271,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
     setDetail(null)
     setDetailLoading(true)
     try {
-      const payload = await businessMaterialsAPI.performance.category(item.id)
+      const payload = await performanceAPI.category(item.id)
       setDetail(payload || { item, attachments: [], rows: [] })
     } catch (error) {
       showToast(error?.message || '业绩明细加载失败', 'error')
@@ -303,11 +303,11 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
     data.append('attachmentType', 'contract_bundle')
     setUploadingAttachment(true)
     try {
-      const result = await businessMaterialsAPI.performance.uploadCategoryAttachment(uploadingCategoryId, data)
+      const result = await performanceAPI.uploadCategoryAttachment(uploadingCategoryId, data)
       showToast(result?.message || '合同附件已上传')
       await loadCategories()
       if (detail?.item?.id === uploadingCategoryId) {
-        const payload = await businessMaterialsAPI.performance.category(uploadingCategoryId)
+        const payload = await performanceAPI.category(uploadingCategoryId)
         setDetail(payload || null)
       }
     } catch (error) {
@@ -323,11 +323,11 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
     const nextLabel = CATEGORY_STATUS_LABELS[nextStatus]
     if (!window.confirm(`确认${nextLabel}业绩类别：${item.name || item.id}？`)) return
     try {
-      const result = await businessMaterialsAPI.performance.updateCategoryStatus(item.id, { status: nextStatus })
+      const result = await performanceAPI.updateCategoryStatus(item.id, { status: nextStatus })
       showToast(result?.message || `业绩类别已${nextLabel}`)
       await loadCategories()
       if (detail?.item?.id === item.id) {
-        const payload = await businessMaterialsAPI.performance.category(item.id)
+        const payload = await performanceAPI.category(item.id)
         setDetail(payload || null)
       }
     } catch (error) {
@@ -355,7 +355,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
     }
     setDeleting(true)
     try {
-      const result = await businessMaterialsAPI.performance.deleteCategory(deleteTarget.id, { confirmName: deleteConfirmName.trim() })
+      const result = await performanceAPI.deleteCategory(deleteTarget.id, { confirmName: deleteConfirmName.trim() })
       showToast(result?.message || '业绩类别已删除')
       await loadCategories()
       if (detail?.item?.id === deleteTarget.id) closeDetail()
@@ -648,7 +648,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
                     {(detail.attachments || []).length ? detail.attachments.map((attachment) => (
                       <a
                         key={attachment.id}
-                        href={businessMaterialsAPI.performance.categoryAttachmentUrl(attachment.categoryId, attachment.id)}
+                        href={performanceAPI.categoryAttachmentUrl(attachment.categoryId, attachment.id)}
                         target="_blank"
                         rel="noreferrer"
                         className="rounded-lg border border-surface-container-high bg-white px-3 py-2 text-sm hover:border-primary"
@@ -685,7 +685,7 @@ export default function BusinessPerformanceLibrary({ showToast = () => {}, curre
                                 {row.attachments.map((attachment) => (
                                   <a
                                     key={attachment.id}
-                                    href={businessMaterialsAPI.performance.itemAttachmentUrl(row.categoryId, row.id, attachment.id)}
+                                    href={performanceAPI.itemAttachmentUrl(row.categoryId, row.id, attachment.id)}
                                     target="_blank"
                                     rel="noreferrer"
                                     title={attachment.sourceTitle || attachment.fileName}

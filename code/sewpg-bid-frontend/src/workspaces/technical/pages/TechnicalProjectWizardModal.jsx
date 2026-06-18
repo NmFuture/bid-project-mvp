@@ -4,6 +4,9 @@ import Button from '../../../components/ui/Button'
 import {
   STATIC_FOUNDATION_TYPE_OPTIONS,
   STATIC_PROJECT_INFO_OPTIONS,
+  OTHER_OPTION_LABEL,
+  deriveCustomerOptionsFromIndex,
+  deriveTurbineModelOptionsFromIndex,
   loadProjectInfoOptions,
 } from '../../shared/projectInfoOptions'
 import {
@@ -126,6 +129,13 @@ export default function TechnicalProjectWizardModal({
     draft?.selectedMaterialProjectId || String(project?.materialProjectId || ''),
   )
   const [projectInfoOptions, setProjectInfoOptions] = useState(STATIC_PROJECT_INFO_OPTIONS)
+  // 客户 / 风机机型候选改为从技术标三级目录 JSON 索引派生（客户定制 / 标准文件），
+  // 末尾固定带「其他」。见 doc/anbc_doc/20260618-技术标三级目录JSON索引-下游使用Handoff.md
+  const [indexCustomerOptions, setIndexCustomerOptions] = useState([])
+  const [indexTurbineModelOptions, setIndexTurbineModelOptions] = useState([])
+  // 处于「其他」手动输入态的字段：客户用布尔，机型按行 id 记录。
+  const [customerIsOther, setCustomerIsOther] = useState(false)
+  const [otherTurbineRowIds, setOtherTurbineRowIds] = useState(() => new Set())
   const [loadingIdentities, setLoadingIdentities] = useState(false)
   const [identityError, setIdentityError] = useState('')
   const [creating, setCreating] = useState(false)
@@ -137,11 +147,21 @@ export default function TechnicalProjectWizardModal({
     return [...new Set((items || []).map((item) => String(item || '').trim()).filter(Boolean))]
   }, [bidTypeOptions, form.bidType, lockBidType])
   const selectedMaterialProject = materialProjects.find((item) => item.id === selectedMaterialProjectId)
-  const customerOptions = mergeOptionValues(projectInfoOptions.customers, [form.customerName])
-  const turbineModelOptions = mergeOptionValues(
-    projectInfoOptions.turbineModels,
-    form.turbineModels.map((row) => row.model),
-  )
+  // 「其他」恒为最后一项，合并 form 现值时要避免把它当成真实候选重复插入。
+  const customerOptions = useMemo(() => {
+    const base = indexCustomerOptions.length ? indexCustomerOptions : projectInfoOptions.customers
+    const extra = customerIsOther ? [] : [form.customerName]
+    const merged = mergeOptionValues(base.filter((item) => item !== OTHER_OPTION_LABEL), extra)
+    return [...merged, OTHER_OPTION_LABEL]
+  }, [indexCustomerOptions, projectInfoOptions.customers, customerIsOther, form.customerName])
+  const turbineModelOptions = useMemo(() => {
+    const base = indexTurbineModelOptions.length ? indexTurbineModelOptions : projectInfoOptions.turbineModels
+    const formModels = form.turbineModels
+      .filter((row) => !otherTurbineRowIds.has(row.id))
+      .map((row) => row.model)
+    const merged = mergeOptionValues(base.filter((item) => item !== OTHER_OPTION_LABEL), formModels)
+    return [...merged, OTHER_OPTION_LABEL]
+  }, [indexTurbineModelOptions, projectInfoOptions.turbineModels, form.turbineModels, otherTurbineRowIds])
 
   const updateTurbineRow = (rowId, key, value) => {
     setForm((prev) => ({
@@ -160,6 +180,12 @@ export default function TechnicalProjectWizardModal({
   }
 
   const removeTurbineRow = (rowId) => {
+    setOtherTurbineRowIds((prev) => {
+      if (!prev.has(rowId)) return prev
+      const next = new Set(prev)
+      next.delete(rowId)
+      return next
+    })
     setForm((prev) => {
       const nextRows = prev.turbineModels.filter((row) => row.id !== rowId)
       return {
@@ -201,23 +227,53 @@ export default function TechnicalProjectWizardModal({
     const loadOptions = async () => {
       const options = await loadProjectInfoOptions(technicalProjectInfoOptionsAPI)
       if (!mounted) return
+      // 仅作静态兜底；客户/机型默认值不再自动注入，候选以 JSON 索引派生为准，留空待用户选。
       setProjectInfoOptions(options)
-      setForm((prev) => {
-        if (prev.customerName) return prev
-        const firstCustomer = options.customers[0] || ''
-        return {
-          ...prev,
-          customerName: firstCustomer,
-          customerId: '',
-          customerCanonicalName: firstCustomer,
-        }
-      })
     }
     loadOptions()
     return () => {
       mounted = false
     }
   }, [])
+
+  useEffect(() => {
+    let mounted = true
+    const loadIndexOptions = async () => {
+      if (!materialsApi?.index) return
+      try {
+        const payload = await materialsApi.index()
+        if (!mounted) return
+        const customers = deriveCustomerOptionsFromIndex(payload)
+        const turbines = deriveTurbineModelOptionsFromIndex(payload)
+        setIndexCustomerOptions(customers)
+        setIndexTurbineModelOptions(turbines)
+        // 依据派生候选初始化「其他」手动态：现值非空且不在候选内 → 视为手动输入。
+        const customerSet = new Set(customers.filter((item) => item !== OTHER_OPTION_LABEL))
+        setCustomerIsOther((prev) => {
+          const name = form.customerName.trim()
+          return prev || Boolean(name && !customerSet.has(name))
+        })
+        const turbineSet = new Set(turbines.filter((item) => item !== OTHER_OPTION_LABEL))
+        setOtherTurbineRowIds((prev) => {
+          const next = new Set(prev)
+          form.turbineModels.forEach((row) => {
+            const model = String(row.model || '').trim()
+            if (model && !turbineSet.has(model)) next.add(row.id)
+          })
+          return next
+        })
+      } catch {
+        if (!mounted) return
+        setIndexCustomerOptions([])
+        setIndexTurbineModelOptions([])
+      }
+    }
+    loadIndexOptions()
+    return () => {
+      mounted = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [materialsApi])
 
   useEffect(() => {
     let mounted = true
@@ -412,24 +468,59 @@ export default function TechnicalProjectWizardModal({
               </div>
               <div>
                 <label className="block text-sm font-semibold text-on-surface mb-2">客户 *</label>
-                <select
-                  className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
-                  value={form.customerName}
-                  onChange={(e) => {
-                    const customerName = e.target.value
-                    setForm((prev) => ({
-                      ...prev,
-                      customerName,
-                      customerId: '',
-                      customerCanonicalName: customerName,
-                    }))
-                  }}
-                >
-                  <option value="">选择客户</option>
-                  {customerOptions.map((item) => (
-                    <option key={item} value={item}>{item}</option>
-                  ))}
-                </select>
+                {customerIsOther ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                      placeholder="输入客户名称"
+                      autoFocus
+                      value={form.customerName}
+                      onChange={(e) => {
+                        const customerName = e.target.value
+                        setForm((prev) => ({
+                          ...prev,
+                          customerName,
+                          customerId: '',
+                          customerCanonicalName: customerName,
+                        }))
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCustomerIsOther(false)
+                        setForm((prev) => ({ ...prev, customerName: '', customerId: '', customerCanonicalName: '' }))
+                      }}
+                      className="h-9 px-3 shrink-0 border border-[#b8c7d8] bg-white text-xs font-semibold text-primary hover:bg-[#eef5fb] transition-colors"
+                    >
+                      选候选
+                    </button>
+                  </div>
+                ) : (
+                  <select
+                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                    value={form.customerName}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      if (value === OTHER_OPTION_LABEL) {
+                        setCustomerIsOther(true)
+                        setForm((prev) => ({ ...prev, customerName: '', customerId: '', customerCanonicalName: '' }))
+                        return
+                      }
+                      setForm((prev) => ({
+                        ...prev,
+                        customerName: value,
+                        customerId: '',
+                        customerCanonicalName: value,
+                      }))
+                    }}
+                  >
+                    <option value="">选择客户</option>
+                    {customerOptions.map((item) => (
+                      <option key={item} value={item}>{item}</option>
+                    ))}
+                  </select>
+                )}
                 {(identityError || loadingIdentities) && (
                   <p className={`text-xs mt-2 ${identityError ? 'text-error' : 'text-outline'}`}>
                     {identityError || '正在加载技术标项目...'}
@@ -516,16 +607,51 @@ export default function TechnicalProjectWizardModal({
                       <div key={row.id} className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.5fr)_110px_minmax(0,1fr)_40px] gap-3 items-end">
                         <div>
                           <label className="block text-xs font-semibold text-outline mb-1">风机机型</label>
-                          <select
-                            className="w-full min-h-0 h-9 px-3 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
-                            value={row.model}
-                            onChange={(e) => updateTurbineRow(row.id, 'model', e.target.value)}
-                          >
-                            <option value="">选择风机机型</option>
-                            {turbineModelOptions.map((item) => (
-                              <option key={item} value={item}>{item}</option>
-                            ))}
-                          </select>
+                          {otherTurbineRowIds.has(row.id) ? (
+                            <div className="flex items-center gap-2">
+                              <input
+                                className="w-full min-h-0 h-9 px-3 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                                placeholder="输入风机机型"
+                                autoFocus
+                                value={row.model}
+                                onChange={(e) => updateTurbineRow(row.id, 'model', e.target.value)}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOtherTurbineRowIds((prev) => {
+                                    const next = new Set(prev)
+                                    next.delete(row.id)
+                                    return next
+                                  })
+                                  updateTurbineRow(row.id, 'model', '')
+                                }}
+                                className="h-9 px-2 shrink-0 border border-[#b8c7d8] bg-white text-xs font-semibold text-primary hover:bg-[#eef5fb] transition-colors"
+                                title="返回候选选择"
+                              >
+                                候选
+                              </button>
+                            </div>
+                          ) : (
+                            <select
+                              className="w-full min-h-0 h-9 px-3 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                              value={row.model}
+                              onChange={(e) => {
+                                const value = e.target.value
+                                if (value === OTHER_OPTION_LABEL) {
+                                  setOtherTurbineRowIds((prev) => new Set(prev).add(row.id))
+                                  updateTurbineRow(row.id, 'model', '')
+                                  return
+                                }
+                                updateTurbineRow(row.id, 'model', value)
+                              }}
+                            >
+                              <option value="">选择风机机型</option>
+                              {turbineModelOptions.map((item) => (
+                                <option key={item} value={item}>{item}</option>
+                              ))}
+                            </select>
+                          )}
                         </div>
                         <div>
                           <label className="block text-xs font-semibold text-outline mb-1">风机台数</label>
