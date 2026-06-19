@@ -11,7 +11,15 @@
 .qoder/
 .understand-anything/
 
+CLAUDE.local.md
+*.local.md
+.claude/settings.local.json
+.env.local
+.env.*.local
+
 code/.env
+code/.env.local
+code/.env.*.local
 code/opencode-auth/auth.json
 
 code/sewpg-bid-frontend/node_modules/
