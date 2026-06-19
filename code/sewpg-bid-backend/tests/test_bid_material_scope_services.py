@@ -1376,7 +1376,7 @@ def test_bid_type_rules_have_single_source_of_truth() -> None:
             encoding="utf-8"
         ),
         "dashboard_service": Path("app/services/dashboard_service.py").read_text(encoding="utf-8"),
-        "wiki_generation": Path("app/services/wiki_generation.py").read_text(encoding="utf-8"),
+        "wiki_generation": Path("app/services/business_wiki_generation.py").read_text(encoding="utf-8"),
     }
 
     assert normalize_bid_type("商务响应文件") == BUSINESS_BID_TYPE
@@ -1650,12 +1650,15 @@ def test_business_material_splitter_upload_uses_business_material_store() -> Non
 
 
 def test_wiki_generation_import_uses_workspace_material_stores() -> None:
-    source = Path("app/services/wiki_generation.py").read_text(encoding="utf-8")
+    business_source = Path("app/services/business_wiki_generation.py").read_text(encoding="utf-8")
+    technical_source = Path("app/services/technical_wiki_generation.py").read_text(encoding="utf-8")
 
-    assert "from app.services.material_store import material_store" not in source
-    assert "business_material_store.import_generated_wiki_blueprint" in source
-    assert "technical_material_store" in source
-    assert not re.search(r"(?<![A-Za-z_])material_store\.import_generated_wiki_blueprint", source)
+    for source in (business_source, technical_source):
+        assert "from app.services.material_store import material_store" not in source
+        assert not re.search(r"(?<![A-Za-z_])material_store\.import_generated_wiki_blueprint", source)
+
+    assert "business_material_store.import_generated_wiki_blueprint" in business_source
+    assert "technical_material_store.import_generated_wiki_blueprint" in technical_source
 
 
 def test_wiki_scope_rules_are_outside_material_store() -> None:

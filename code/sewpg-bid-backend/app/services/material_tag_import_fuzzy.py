@@ -120,7 +120,11 @@ def _build_prompt(unmatched: list[dict[str, Any]], candidates: list[dict[str, An
     )
 
 
-def _run_sync(unmatched: list[dict[str, Any]], candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _run_sync(
+    unmatched: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    mode: str = "merge",
+) -> list[dict[str, Any]]:
     # 延迟导入，避免在无 opencode 配置的环境（如纯单测）下加载 httpx/settings 失败
     from app.services.opencode_client import OpencodeClient
 
@@ -150,7 +154,11 @@ def _run_sync(unmatched: list[dict[str, Any]], candidates: list[dict[str, Any]])
         candidate = by_id.get(suggested, {})
         existing = normalize_material_tags(candidate.get("tags"))
         incoming = normalize_material_tags(row.get("tags"))
-        merged = normalize_material_tags([*existing, *incoming])
+        if mode == "overwrite":
+            # 覆盖模式:Excel 有标签整条替换;留空则保留原标签(防误删),与 matched 行一致。
+            merged = incoming if incoming else existing
+        else:
+            merged = normalize_material_tags([*existing, *incoming])
         try:
             confidence = float(match.get("confidence"))
         except (TypeError, ValueError):
@@ -168,6 +176,7 @@ def _run_sync(unmatched: list[dict[str, Any]], candidates: list[dict[str, Any]])
                 "existingTags": existing,
                 "mergedTags": merged,
                 "addedTags": [tag for tag in merged if tag not in existing],
+                "removedTags": [tag for tag in existing if tag not in merged],
                 "confidence": confidence,
                 "reason": str(match.get("reason") or ""),
             }
@@ -181,9 +190,10 @@ async def run_tag_import_fuzzy_match(
     *,
     unmatched: list[dict[str, Any]],
     candidates: list[dict[str, Any]],
+    mode: str = "merge",
 ) -> list[dict[str, Any]]:
     """异步入口：在线程池里跑同步的 opencode 调用。"""
 
     if not unmatched or not candidates:
         return []
-    return await asyncio.to_thread(_run_sync, unmatched, candidates)
+    return await asyncio.to_thread(_run_sync, unmatched, candidates, mode)

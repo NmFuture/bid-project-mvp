@@ -1,22 +1,22 @@
 ---
 name: bid-tech-wiki-material-builder
-description: Use when rebuilding the technical-bid material Wiki from the three-tier directory JSON index for gap handling, source selection, or bid assembly
+description: 当需要根据技术标三级目录 JSON 索引重建素材 Wiki（用于缺口处理、来源选择或标书组装）时使用
 allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
 ---
 
-# Technical Bid Material Wiki Builder
+# 技术标素材 Wiki 构建器
 
-## Overview
+## 概述
 
-Build a technical-bid Wiki that **mirrors the three-tier directory JSON index one-to-one**, so later agents can navigate the material library exactly as it is stored. The Wiki is an AI-facing retrieval and assembly index, not a prose knowledge base or a duplicate file browser. The directory structure is the source of truth; the Wiki must not invent grouping, mapping, or rules that the index does not express.
+构建一个与技术标三级目录 JSON 索引**一一对应**的 Wiki，让后续 agent 能完全按照素材库的真实存储方式来检索导航。该 Wiki 是面向 AI 的检索与组装索引，不是散文式知识库，也不是文件浏览器的副本。目录结构是唯一事实来源；Wiki 不得臆造索引未表达的分组、映射或规则。
 
-## When to Use
+## 适用场景
 
-Use for technical-bid Wiki creation or rebuilds after raw materials change. Use when downstream tasks include S3 gap handling, selecting sources for generated blank tables, or assembling the technical proposal.
+用于技术标 Wiki 的首次创建或在原始素材变更后重建。当下游任务涉及 S3 缺口处理、为生成的空白表格选择素材来源、或组装技术方案时使用。
 
-Do not use for business-bid-only materials, general document summarization, or inventing missing project facts.
+不要用于：仅业务标的素材、通用文档摘要、或编造缺失的项目事实。
 
-## Source of Truth: Three-Tier Directory JSON Index (必读)
+## 唯一事实来源：技术标三级目录 JSON 索引（必读）
 
 后端自动维护一份技术标三级目录结构索引，**它是本 Wiki 的唯一数据来源**：
 
@@ -63,7 +63,7 @@ Do not use for business-bid-only materials, general document summarization, or i
 
 已知约束：`description`/`customerId`/`projectCode` 恒为空，不要依赖；需要身份用 `customerName`/`projectId`。深层（4 级及更深）文件归并到其 3 级祖先目录的 `files[]`，但 `file.path` 保留完整原始路径。
 
-## Core Pattern：镜像三级结构
+## 核心模式：镜像三级结构
 
 Wiki 结构严格按 JSON 三级**一一映射**，不增减层级：
 
@@ -80,19 +80,19 @@ root（技术标Wiki）
 
 身份信息写入 `tags`：tier 节点带档位中文名；customer/project 目录节点把 `customerName`/`projectId` 加入 tags，便于下游按身份过滤。
 
-## Build Steps
+## 构建步骤
 
 1. 取索引：优先 `GET /api/technical/materials/index`（保证最新）；否则读容器内 `technical_material_index.json`。JSON 不存在或 `tiers` 为空时，产出空但结构合法的 blueprint，并在 summary 中标注无素材。
 2. 跑构建脚本：`python3 scripts/run_from_manifest.py <index.json>`。脚本接受原始 index JSON，或包裹了它的 manifest（`materialIndex` / `technicalMaterialIndex` / `index` 键）。
 3. 脚本输出 `wiki_blueprint.json`（`schema_version = bid-wiki-blueprint-v2`），含 `summary` / `rootTitle` / `nodes`，可直接交给 Wiki import。
 
-## Output Contract
+## 输出契约
 
-Output JSON only（脚本已保证此格式，无需手写）。Schema：
+仅输出 JSON（脚本已保证此格式，无需手写）。结构如下：
 
 ```json
 {
-  "summary": "short result summary",
+  "summary": "简短结果摘要",
   "rootTitle": "技术标Wiki（自动生成）",
   "nodes": [
     {
@@ -108,7 +108,7 @@ Output JSON only（脚本已保证此格式，无需手写）。Schema：
 
 一级节点固定为按档位的 `01-标准文件` / `02-客户定制` / `03-项目定制`（仅出现索引中存在的档位，顺序固定 standard→customer→project）。不要再生成旧版的 `01-素材总表`/`02-章节映射表`/`03-素材卡片`/`04-待填写清单`/`05-使用规则` 聚合结构——新架构以目录树为骨架，映射与规则由下游消费时按目录身份处理。
 
-## Quality Rules
+## 质量准则
 
 - 严格镜像索引：节点的存在、归属、身份、文件数必须与 JSON 一致，不增删、不重排（档位顺序除外，固定 standard→customer→project）。
 - 判档只看 `tier` 字段，不靠目录中文名。
@@ -116,3 +116,34 @@ Output JSON only（脚本已保证此格式，无需手写）。Schema：
 - `description`/`customerId`/`projectCode` 恒空，不要在卡片里臆造其值。
 - 文件卡片保留完整 `path`，深层层级信息不得丢失。
 - 索引为空时仍输出结构合法的 blueprint，并在 summary 标注。
+
+## 文件卡片 AI 内容预览（preview）
+
+镜像脚本只负责把三级目录镜像成 Wiki 树「骨架」（确定性、不调 LLM）。文件卡片上那张
+**AI 内容预览**（一句话导读 + 要点 + 关键参数 + 检索关键词）是另一条线，由 LLM 生成。
+
+本 skill 把预览的 **prompt 模板 / 输出 schema / 回复解析**沉淀在
+`scripts/technical_wiki_preview.py`（纯 stdlib，零 `app.*` 依赖），由后端经
+`app/services/technical_wiki_preview_prompt.py` 用 importlib 桥接 import 复用 —— 后端
+不再裸写 prompt。导出：
+
+- `PREVIEW_SCHEMA_VERSION`：预览缓存结构版本；prompt 或 preview 字段结构变化时升此版本，
+  让所有文件缓存指纹失效、触发重算。
+- `PREVIEW_BATCH_SIZE`：批量合并粒度（一次 LLM 调用喂多少份文件摘要）。
+- `build_preview_prompt(name, path, tier_label, profile)` / `parse_preview_reply(reply, json_loader)`：单文件版（fallback / BATCH_SIZE=1）。
+- `build_batch_preview_prompt(items)` / `parse_batch_preview_reply(reply, json_loader)`：批量版。
+
+单张预览对象 schema：
+```json
+{"lead":"一句话导读 ≤80字","points":["3-5条要点"],"keyParams":[{"label":"","value":""}],"retrievalHints":["2-6个检索词"]}
+```
+批量回复 schema（按 fileId 回填）：
+```json
+{"previews":{"RAW-XXXX":<预览对象>, "RAW-YYYY":<预览对象>}}
+```
+
+约定：**后端发请求、控制缓存与并发**，本模块只提供「怎么问、怎么读」；预览**不挂 opencode
+agent 逐文件编排**（几百文件起 agent 开销过大）。JSON 解析用依赖注入（后端把
+`OpencodeClient._parse_json_payload` 作为 `json_loader` 传入），保持本模块独立。
+减压两招：批量合并请求（请求数从「文件数」降到「文件数/BATCH」）+ per-file 指纹增量缓存
+（内容/文件名/版本不变不重算，failed 下次重试）。

@@ -8,6 +8,7 @@ import openpyxl
 from app.services.material_tag_import import (
     build_preview,
     parse_tag_excel,
+    _merge_preview,
 )
 
 
@@ -165,6 +166,101 @@ class BuildPreviewTests(unittest.TestCase):
         self.assertEqual(len(preview["ambiguous"]), 1)
         candidate_ids = {c["fileId"] for c in preview["ambiguous"][0]["candidates"]}
         self.assertEqual(candidate_ids, {"RAW-0010", "RAW-0011"})
+
+
+class RecognitionRobustnessTests(unittest.TestCase):
+    """识别完善：全角折叠、占位符过滤、属性列同义识别、标签值清洗。"""
+
+    def test_fullwidth_dot_matches_halfwidth_model(self) -> None:
+        # Excel 用全角点 EW6．25-220，库里是半角 EW6.25-220 —— 应精确命中
+        excel = _make_excel(
+            [["标准文件", "EW6.25-220", "机型参数表", None, None,
+              "EW6．25-220机型参数", "EW6.25-220", "机型参数表", None]]
+        )
+        rows = parse_tag_excel(excel)
+        files = [_file("RAW-0100", "EW6.25-220机型参数.docx", "技术标/标准文件/EW6.25-220")]
+        preview = build_preview(rows, files)
+        self.assertEqual(preview["unmatched"], [])
+        self.assertEqual(preview["matched"][0]["fileId"], "RAW-0100")
+
+    def test_fullwidth_parens_match_halfwidth(self) -> None:
+        excel = _make_excel(
+            [["标准文件", "EW6.25-220", "部件", None, None, "变桨系统（一）", "部件", None, None]]
+        )
+        rows = parse_tag_excel(excel)
+        files = [_file("RAW-0101", "变桨系统(一).pdf", "技术标/标准文件/EW6.25-220/部件")]
+        preview = build_preview(rows, files)
+        self.assertEqual(preview["matched"][0]["fileId"], "RAW-0101")
+
+    def test_skips_extra_placeholder_rows(self) -> None:
+        excel = _make_excel(
+            [
+                ["标准文件", "EW6.25-220", "专题", None, None, "待补充-X", "专题", None, None],
+                ["标准文件", "EW6.25-220", "专题", None, None, "无", "专题", None, None],
+                ["标准文件", "EW6.25-220", "专题", None, None, "/", "专题", None, None],
+                ["标准文件", "EW6.25-220", "专题", None, None, "电网友好性专题", "专题", None, None],
+            ]
+        )
+        rows = parse_tag_excel(excel)
+        self.assertEqual([r.file_name for r in rows], ["电网友好性专题"])
+
+    def test_recognizes_alias_tag_headers(self) -> None:
+        workbook = openpyxl.Workbook()
+        ws = workbook.active
+        ws.append(["一级", "二级", "文件名称", "标签1", "分类", "关键词"])
+        ws.append(["标准文件", "EW6.25-220", "机舱", "部件", "EW6.25-220", "机舱"])
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        rows = parse_tag_excel(buffer.getvalue())
+        self.assertEqual(rows[0].file_name, "机舱")
+        self.assertEqual(rows[0].tags, ["部件", "EW6.25-220", "机舱"])
+
+    def test_cleans_numbered_and_split_tag_values(self) -> None:
+        # 单元格内含序号前缀与顿号分隔，应拆分并去前缀
+        excel = _make_excel(
+            [["标准文件", "EW6.25-220", "部件", None, None, "机舱",
+              "1. 部件、变桨系统", "（2）EW6.25-220", "-"]]
+        )
+        rows = parse_tag_excel(excel)
+        self.assertEqual(rows[0].tags, ["部件", "变桨系统", "EW6.25-220"])
+
+
+class OverwriteModeTests(unittest.TestCase):
+    """覆盖模式:Excel 总表为标签唯一真相,有标签整条替换、留空保留原标签。"""
+
+    def test_overwrite_replaces_existing_tags(self) -> None:
+        rows = parse_tag_excel(
+            _make_excel(
+                [["标准文件", "EW6.25-220", "部件", None, None, "机舱", "新标签A", "新标签B", None]]
+            )
+        )
+        files = [_file("RAW-0002", "机舱.pdf", "技术标/通用素材/部件", tags=["旧标签1", "旧标签2"])]
+        preview = build_preview(rows, files, mode="overwrite")
+        matched = preview["matched"][0]
+        # 原标签被整条替换为 Excel 标签
+        self.assertEqual(matched["existingTags"], ["旧标签1", "旧标签2"])
+        self.assertEqual(matched["incomingTags"], ["新标签A", "新标签B"])
+        self.assertEqual(matched["mergedTags"], ["新标签A", "新标签B"])
+        self.assertEqual(matched["removedTags"], ["旧标签1", "旧标签2"])
+
+    def test_overwrite_keeps_existing_when_excel_tags_empty(self) -> None:
+        # 防误删保险:incoming 为空时,覆盖模式保留原标签(整条不动)。
+        # 注:parse_tag_excel 会直接跳过无标签的行(material_tag_import.py:229),
+        # 所以这种情况在真实 Excel 流程里不会发生;此处直接对 _merge_preview 验证该保险分支。
+        merge = _merge_preview(["旧标签1", "旧标签2"], [], mode="overwrite")
+        self.assertEqual(merge["mergedTags"], ["旧标签1", "旧标签2"])
+        self.assertEqual(merge["removedTags"], [])
+
+    def test_merge_mode_still_unions(self) -> None:
+        # 合并模式(默认)行为不变:原标签 ∪ 新标签
+        rows = parse_tag_excel(
+            _make_excel(
+                [["标准文件", "EW6.25-220", "部件", None, None, "机舱", "新标签A", None, None]]
+            )
+        )
+        files = [_file("RAW-0002", "机舱.pdf", "技术标/通用素材/部件", tags=["旧标签1"])]
+        preview = build_preview(rows, files, mode="merge")
+        self.assertEqual(preview["matched"][0]["mergedTags"], ["旧标签1", "新标签A"])
 
 
 if __name__ == "__main__":

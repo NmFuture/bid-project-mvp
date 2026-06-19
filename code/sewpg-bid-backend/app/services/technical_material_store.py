@@ -283,21 +283,26 @@ class TechnicalMaterialStore:
         target_path: str,
         file_bytes: bytes,
         use_fuzzy: bool = False,
+        import_mode: str = "merge",
     ) -> dict[str, Any]:
+        mode = "overwrite" if import_mode == "overwrite" else "merge"
         normalized_target = self.ensure_root_path(target_path, "目标目录")
         rows = parse_tag_excel(file_bytes)
         files = await self._raw_subtree_files(normalized_target)
-        preview = build_preview(rows, files)
+        preview = build_preview(rows, files, mode=mode)
         preview["targetPath"] = normalized_target
+        preview["importMode"] = mode
         preview["fuzzyAvailable"] = False
         if use_fuzzy and preview.get("unmatched"):
-            preview = await self._augment_with_fuzzy(preview, files)
+            preview = await self._augment_with_fuzzy(preview, files, mode=mode)
         return preview
 
     async def _augment_with_fuzzy(
         self,
         preview: dict[str, Any],
         files: list[dict[str, Any]],
+        *,
+        mode: str = "merge",
     ) -> dict[str, Any]:
         """对 unmatched 行调用 opencode 模糊匹配 skill；失败则降级不阻断。"""
 
@@ -305,6 +310,7 @@ class TechnicalMaterialStore:
             fuzzy = await run_tag_import_fuzzy_match(
                 unmatched=preview.get("unmatched") or [],
                 candidates=files,
+                mode=mode,
             )
         except Exception as exc:  # pragma: no cover - 降级路径
             preview["fuzzyAvailable"] = False

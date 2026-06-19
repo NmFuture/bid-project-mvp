@@ -127,15 +127,13 @@ async def generate_technical_wiki_previews(
         )
 
         # 预览写进 DB + 索引后，重新镜像 Wiki，让带预览的文件卡片落到树上。
-        # 延迟导入，避免与 wiki_generation 形成循环引用。
-        from app.services.wiki_generation import (
-            _mirror_technical_index_to_wiki,
-            load_technical_material_index,
-        )
+        # 延迟导入，避免与 technical_wiki_generation 形成循环引用。
+        from app.services.technical_material_index import load_technical_material_index
+        from app.services.technical_wiki_generation import mirror_technical_index_to_wiki
 
         if not isinstance(index_payload, dict) or not index_payload.get("tiers"):
             index_payload = load_technical_material_index()
-        await _mirror_technical_index_to_wiki(index_payload, mode="replace")
+        await mirror_technical_index_to_wiki(index_payload, mode="replace")
 
         stats = index_payload.get("stats") if isinstance(index_payload.get("stats"), dict) else {}
         total = int(stats.get("fileCount") or 0)

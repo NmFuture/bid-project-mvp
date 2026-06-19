@@ -13,6 +13,14 @@ from app.services.bid_runtime_state import read_json_file, write_json_file_atomi
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.material_tags import normalize_material_tags
 from app.services.material_taxonomy import normalize_material_tier
+from app.services.technical_wiki_preview_prompt import (
+    PREVIEW_BATCH_SIZE,
+    PREVIEW_SCHEMA_VERSION,
+    build_batch_preview_prompt,
+    build_preview_prompt,
+    parse_batch_preview_reply,
+    parse_preview_reply,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +41,10 @@ TAGS_SOURCE_OF_TRUTH = "index"
 # ext_fields 缓存键。
 PREVIEW_EXT_FIELD = "techWikiPreview"
 
-# 预览缓存结构版本，与索引 SCHEMA_VERSION 解耦：仅当 prompt 或 preview 字段结构
-# 变化时升此版本，让所有文件缓存指纹失效、触发重算。
-PREVIEW_SCHEMA_VERSION = 1
+# PREVIEW_SCHEMA_VERSION / PREVIEW_BATCH_SIZE 由 skill 侧 prompt 模块定义，
+# 经 technical_wiki_preview_prompt 桥接 import（见上方 import）。
 
-# 首次全量重建时对未缓存 docx 并发调 LLM 的上限（opencode 同步 httpx，跑线程池）。
+# 后台批量生成时对未缓存 docx 调 LLM 的并发上限。批量合并后，限的是「批」而非「文件」。
 PREVIEW_CONCURRENCY = 4
 
 # 档位标签，仅用于 prompt 里给 LLM 的语境提示。
@@ -128,85 +135,6 @@ def _should_generate_preview(ext: str, profile: dict[str, Any]) -> tuple[bool, s
     return True, ""
 
 
-def _build_preview_prompt(name: str, path: str, tier_label: str, profile: dict[str, Any]) -> str:
-    """组单文件预览 prompt。复用 wiki_generation 的 heading 树格式化。"""
-    from app.services.wiki_generation import _format_heading_tree  # 延迟导入避免循环引用
-
-    headings = profile.get("headings") or []
-    paragraphs = profile.get("paragraphs") or []
-    heading_tree = _format_heading_tree(headings) if headings else "（无）"
-    paragraph_block = "\n".join(f"- {p}" for p in paragraphs) if paragraphs else "（无）"
-
-    return (
-        "你是投标素材库的资料员。下面是一份技术标素材文件的结构化摘要，"
-        "请生成一张「内容预览卡片」。\n\n"
-        f"文件名：{name}\n"
-        f"所在路径：{path}\n"
-        f"所属档位：{tier_label}\n"
-        f"检测到的标题：\n{heading_tree}\n"
-        f"正文摘录（最多10段）：\n{paragraph_block}\n\n"
-        "要求：\n"
-        "1. 只输出严格 JSON，不要解释、不要代码块。\n"
-        "2. 不要编造文中没有的事实；信息不足的字段给空数组/空串。\n"
-        "3. 结构严格满足：\n"
-        '{"lead":"一句话导读 ≤80字，说明这份材料是什么、能用于投标哪个环节",'
-        '"points":["3到5条要点，每条≤40字"],'
-        '"keyParams":[{"label":"参数名","value":"参数值"}],'
-        '"retrievalHints":["2到6个检索关键词或适用场景"]}'
-    )
-
-
-def _parse_preview_reply(reply: str) -> dict[str, Any] | None:
-    """把 LLM 回复解析成裁剪后的 preview 子对象；无有效内容返回 None。"""
-    from app.services.opencode_client import OpencodeClient  # 延迟导入避免循环引用
-
-    try:
-        parsed = OpencodeClient._parse_json_payload(str(reply or ""))
-    except Exception:  # noqa: BLE001 - 解析失败按降级处理
-        return None
-    if not isinstance(parsed, dict):
-        return None
-
-    lead = str(parsed.get("lead") or "").strip()[:120]
-
-    points: list[str] = []
-    for item in parsed.get("points") or []:
-        text = str(item or "").strip()
-        if text:
-            points.append(text[:80])
-        if len(points) >= 5:
-            break
-
-    key_params: list[dict[str, str]] = []
-    for kv in parsed.get("keyParams") or []:
-        if not isinstance(kv, dict):
-            continue
-        label = str(kv.get("label") or "").strip()[:40]
-        value = str(kv.get("value") or "").strip()[:120]
-        if label or value:
-            key_params.append({"label": label, "value": value})
-        if len(key_params) >= 8:
-            break
-
-    hints: list[str] = []
-    for item in parsed.get("retrievalHints") or []:
-        text = str(item or "").strip()
-        if text:
-            hints.append(text[:40])
-        if len(hints) >= 6:
-            break
-
-    if not lead and not points:
-        return None
-
-    return {
-        "lead": lead,
-        "points": points,
-        "keyParams": key_params,
-        "retrievalHints": hints,
-    }
-
-
 def _compute_preview_payload(
     *,
     name: str,
@@ -234,9 +162,9 @@ def _compute_preview_payload(
 
     try:
         client = OpencodeClient()
-        prompt = _build_preview_prompt(name, path, tier_label, profile)
+        prompt = build_preview_prompt(name, path, tier_label, profile)
         result = client.send_text_prompt("技术标素材预览", prompt)
-        preview = _parse_preview_reply(str(result.get("reply") or ""))
+        preview = parse_preview_reply(str(result.get("reply") or ""), OpencodeClient._parse_json_payload)
         if not preview:
             return {**base, "status": "failed", "skipReason": "LLM 回复无有效内容", "preview": {}}
         return {
@@ -257,7 +185,7 @@ def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
     parseError/空 profile，交由 _should_generate_preview 降级。同步函数，跑线程池。
     """
     from app.services.minio_client import minio_client  # 延迟导入避免循环引用
-    from app.services.wiki_generation import MAX_SYNC_DOCX_BYTES, _extract_docx_profile
+    from app.services.wiki_blueprint_common import MAX_SYNC_DOCX_BYTES, extract_docx_profile
 
     ext_fields = item.ext_fields or {}
     name = str(item.name or "")
@@ -292,17 +220,17 @@ def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
         data = minio_client.get_object(bucket, key)
     except Exception as exc:  # noqa: BLE001 - 取文件失败按降级
         return ext, {**empty, "parseError": f"docx 读取失败：{exc}"}
-    return ext, _extract_docx_profile(data)
+    return ext, extract_docx_profile(data)
 
 
-async def _ensure_preview_for_item(
-    item: Any,
-    sem: asyncio.Semaphore,
-) -> tuple[str, dict[str, Any]]:
-    """为单个 RawFile 生成/复用预览缓存。返回 (RAW-id, techWikiPreview payload)。
+async def _resolve_preview_plan(item: Any) -> dict[str, Any]:
+    """为单个 RawFile 算指纹并判缓存命中。返回一个 plan dict：
 
-    缓存命中（指纹一致且已完成/已跳过）则复用，不调 LLM；否则解析 docx + 调 LLM。
-    所有解析与 LLM 调用走线程池，ext_fields 写回与最终 commit 由调用方在主协程做。
+    - 命中（指纹一致且已是终态 completed/skipped）：{"fileId", "hit": True, "payload": <复用的缓存>}
+    - 未命中：{"fileId","hit":False,"name","path","tier_label","ext","signature","profile","base"}
+      —— 携带后续批量/单文件计算所需的全部上下文。
+
+    docx 解析跑线程池，不碰 session、不调 LLM。
     """
     file_id = f"RAW-{int(item.id):04d}"
     name = str(item.name or "")
@@ -323,23 +251,79 @@ async def _ensure_preview_for_item(
         and cached.get("signature") == signature
         and cached.get("status") in {"completed", "skipped"}
     ):
-        return file_id, cached
+        return {"fileId": file_id, "hit": True, "payload": cached}
 
-    async with sem:
-        payload = await asyncio.to_thread(
-            _compute_preview_payload,
-            name=name,
-            path=path,
-            tier_label=tier_label,
-            ext=ext,
-            signature=signature,
-            profile=profile,
+    return {
+        "fileId": file_id,
+        "hit": False,
+        "name": name,
+        "path": path,
+        "tier_label": tier_label,
+        "ext": ext,
+        "signature": signature,
+        "profile": profile,
+        "base": {
+            "schemaVersion": PREVIEW_SCHEMA_VERSION,
+            "signature": signature,
+            "generatedAt": _now_display(),
+        },
+    }
+
+
+def _compute_batch_preview_payloads(plans: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """批量计算一批未命中文件的预览 payload。返回 {fileId: payload}。
+
+    流程（纯计算，跑线程池）：
+    1. 先按 _should_generate_preview 把不值得调 LLM 的标 skipped，不进 LLM 请求。
+    2. 余下的合并成一次 batch prompt 调 LLM，按 fileId 拆回。
+    3. 拆回有 preview 的标 completed；缺失/无效的标 failed（下次重试）。
+    全程吞异常：整批 LLM 失败则该批所有待算文件标 failed，不抛出。
+    """
+    from app.services.opencode_client import OpencodeClient  # 延迟导入避免循环引用
+
+    out: dict[str, dict[str, Any]] = {}
+    to_llm: list[dict[str, Any]] = []
+    for plan in plans:
+        base = plan["base"]
+        should, skip_reason = _should_generate_preview(plan["ext"], plan["profile"])
+        if not should:
+            out[plan["fileId"]] = {**base, "status": "skipped", "skipReason": skip_reason, "preview": {}}
+        else:
+            to_llm.append(plan)
+
+    if not to_llm:
+        return out
+
+    try:
+        client = OpencodeClient()
+        prompt = build_batch_preview_prompt(
+            [
+                {
+                    "fileId": plan["fileId"],
+                    "name": plan["name"],
+                    "path": plan["path"],
+                    "tier_label": plan["tier_label"],
+                    "profile": plan["profile"],
+                }
+                for plan in to_llm
+            ]
         )
+        result = client.send_text_prompt("技术标素材预览", prompt)
+        previews = parse_batch_preview_reply(str(result.get("reply") or ""), OpencodeClient._parse_json_payload)
+        model = str(result.get("modelId") or "")
+    except Exception as exc:  # noqa: BLE001 - 整批 LLM 失败一律降级，该批文件下次重试
+        for plan in to_llm:
+            out[plan["fileId"]] = {**plan["base"], "status": "failed", "skipReason": str(exc)[:200], "preview": {}}
+        return out
 
-    # 写回 ext_fields（主协程，调用方统一 commit）。
-    ext_fields[PREVIEW_EXT_FIELD] = payload
-    item.ext_fields = ext_fields
-    return file_id, payload
+    for plan in to_llm:
+        base = plan["base"]
+        preview = previews.get(plan["fileId"])
+        if preview:
+            out[plan["fileId"]] = {**base, "status": "completed", "skipReason": "", "model": model, "preview": preview}
+        else:
+            out[plan["fileId"]] = {**base, "status": "failed", "skipReason": "LLM 批量回复缺该文件或无效", "preview": {}}
+    return out
 
 
 def _wanted_docx_ids(file_items: list[dict[str, Any]]) -> set[int]:
@@ -431,30 +415,68 @@ async def _enrich_previews(
         if callable(progress_cb):
             progress_cb(done, total)
 
-        sem = asyncio.Semaphore(PREVIEW_CONCURRENCY)
-        outcomes: list[Any] = []
-
-        async def _run_one(it: Any) -> Any:
-            nonlocal done
+        # 第一步：逐文件算指纹 + 判缓存命中（解析跑线程池，不调 LLM）。
+        # 命中的直接复用；未命中的进「待算列表」，稍后切批合并请求。
+        plans: list[dict[str, Any]] = []
+        pending: list[dict[str, Any]] = []
+        for it in items:
             try:
-                outcome = await _ensure_preview_for_item(it, sem)
-            except Exception as exc:  # noqa: BLE001 - 单文件失败不拖垮整批
-                outcome = exc
-            done += 1
-            if callable(progress_cb):
-                progress_cb(done, total)
-            return outcome
+                plan = await _resolve_preview_plan(it)
+            except Exception as exc:  # noqa: BLE001 - 单文件解析失败不拖垮整批
+                logger.warning("tech wiki preview plan failed for one file", exc_info=exc)
+                plan = None
+            plans.append(plan)
+            if plan is not None and not plan["hit"]:
+                pending.append(plan)
 
-        outcomes = await asyncio.gather(*[_run_one(it) for it in items])
+        # 第二步：把待算文件切成 PREVIEW_BATCH_SIZE 一批，每批一次 LLM 调用（限「批」并发）。
+        # payload_by_id 收集未命中文件计算出的 payload。
+        payload_by_id: dict[str, dict[str, Any]] = {}
+        sem = asyncio.Semaphore(PREVIEW_CONCURRENCY)
+        batches = [pending[i : i + PREVIEW_BATCH_SIZE] for i in range(0, len(pending), PREVIEW_BATCH_SIZE)]
+
+        async def _run_batch(batch: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+            nonlocal done
+            async with sem:
+                try:
+                    result_map = await asyncio.to_thread(_compute_batch_preview_payloads, batch)
+                except Exception as exc:  # noqa: BLE001 - 整批失败：该批全部标 failed，下次重试
+                    logger.warning("tech wiki preview batch failed", exc_info=exc)
+                    result_map = {
+                        plan["fileId"]: {**plan["base"], "status": "failed", "skipReason": str(exc)[:200], "preview": {}}
+                        for plan in batch
+                    }
+            done += len(batch)
+            if callable(progress_cb):
+                progress_cb(min(done, total), total)
+            return result_map
+
+        for result_map in await asyncio.gather(*[_run_batch(b) for b in batches]):
+            payload_by_id.update(result_map)
+
+        # 第三步：把未命中文件计算出的 payload 写回各自 ext_fields（主协程，统一 commit）。
+        id_to_item = {f"RAW-{int(it.id):04d}": it for it in items}
+        for file_id, payload in payload_by_id.items():
+            it = id_to_item.get(file_id)
+            if it is None:
+                continue
+            ext_fields = dict(it.ext_fields or {})
+            ext_fields[PREVIEW_EXT_FIELD] = payload
+            it.ext_fields = ext_fields
+
         await session.commit()
 
+    # 汇总：命中复用的 payload 与新算的 payload 合在一起，挑 completed 的回填预览。
     completed = skipped = failed = 0
-    for outcome in outcomes:
-        if isinstance(outcome, BaseException):
-            logger.warning("tech wiki preview generation failed for one file", exc_info=outcome)
+    for plan in plans:
+        if plan is None:
             failed += 1
             continue
-        file_id, payload = outcome
+        file_id = plan["fileId"]
+        payload = plan["payload"] if plan["hit"] else payload_by_id.get(file_id)
+        if not isinstance(payload, dict):
+            failed += 1
+            continue
         status = payload.get("status")
         if status == "completed" and payload.get("preview"):
             preview_by_id[file_id] = payload["preview"]
@@ -464,11 +486,12 @@ async def _enrich_previews(
         else:
             failed += 1
     logger.info(
-        "tech wiki preview enrich: %d completed, %d skipped, %d failed (of %d docx)",
+        "tech wiki preview enrich: %d completed, %d skipped, %d failed (of %d docx, %d batches)",
         completed,
         skipped,
         failed,
         len(items),
+        (len(pending) + PREVIEW_BATCH_SIZE - 1) // PREVIEW_BATCH_SIZE,
     )
     return preview_by_id
 

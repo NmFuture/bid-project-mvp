@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Build the technical-bid material Wiki blueprint by mirroring the
-three-tier directory JSON index (`technical_material_index.json`).
+"""按技术标三级目录 JSON 索引（`technical_material_index.json`）一一镜像，
+构建技术标素材 Wiki blueprint。
 
-The Wiki structure mirrors the JSON one-to-one:
+Wiki 结构与 JSON 一一对应：
 
-    root (技术标Wiki)
-      └─ 一级节点 = tier        (标准文件 / 客户定制 / 项目定制)
-           └─ 二级节点 = 3 级目录 (机型号 / 客户名 / 项目标识)
-                └─ 三级节点 = 文件卡片 (每个 file 一张卡片)
+    root（技术标Wiki）
+      └─ 一级节点 = tier        （标准文件 / 客户定制 / 项目定制）
+           └─ 二级节点 = 3 级目录 （机型号 / 客户名 / 项目标识）
+                └─ 三级节点 = 文件卡片 （每个 file 一张卡片）
 
-See doc/anbc_doc/20260618-技术标三级目录JSON索引-下游使用Handoff.md
-for the source JSON schema (schemaVersion = 1).
+源 JSON 结构（schemaVersion = 1）详见
+doc/anbc_doc/20260618-技术标三级目录JSON索引-下游使用Handoff.md。
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ TIER_FOLDER_MEANING = {
 def load_json(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
-        raise RuntimeError(f"input must be a JSON object: {path}")
+        raise RuntimeError(f"输入必须是 JSON 对象：{path}")
     return data
 
 
@@ -91,10 +91,10 @@ def render_preview_block(preview: dict[str, Any]) -> list[str]:
 
 
 def extract_index(manifest: dict[str, Any]) -> dict[str, Any]:
-    """Locate the three-tier index payload inside whatever was handed in.
+    """从传入的数据中定位三级目录索引负载。
 
-    Accepts either the raw index JSON (has top-level ``tiers``) or a manifest
-    wrapper that embeds it under ``materialIndex`` / ``technicalMaterialIndex``.
+    既接受原始 index JSON（顶层带 ``tiers``），也接受将其嵌在
+    ``materialIndex`` / ``technicalMaterialIndex`` 键下的 manifest 包裹。
     """
     if isinstance(manifest.get("tiers"), list):
         return manifest
@@ -102,8 +102,7 @@ def extract_index(manifest: dict[str, Any]) -> dict[str, Any]:
         candidate = manifest.get(key)
         if isinstance(candidate, dict) and isinstance(candidate.get("tiers"), list):
             return candidate
-    # Empty / unrecognised -> behave as an empty index so callers still get a
-    # well-formed (if barren) blueprint.
+    # 空 / 无法识别时按空索引处理，让调用方仍能拿到结构合法（虽空）的 blueprint。
     return {"bidType": BID_TYPE, "tiers": []}
 
 
@@ -327,9 +326,9 @@ def run_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build technical-bid Wiki blueprint from the three-tier material index JSON."
+        description="根据技术标三级目录素材索引 JSON 构建技术标 Wiki blueprint。"
     )
-    parser.add_argument("manifest", type=Path, help="path to technical_material_index.json or a manifest wrapping it")
+    parser.add_argument("manifest", type=Path, help="technical_material_index.json 路径，或包裹它的 manifest 路径")
     args = parser.parse_args()
     response = run_manifest(load_json(args.manifest), args.manifest)
     print(json.dumps(response, ensure_ascii=False, separators=(",", ":")))

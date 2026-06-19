@@ -217,5 +217,43 @@ class TechnicalMaterialIndexIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("tree", result)
 
 
+class PreviewSignatureTests(unittest.TestCase):
+    """预览指纹失效正确性：改名 / 内容变 / 升版本 都应让 signature 变化。"""
+
+    BASE_PROFILE = {
+        "headings": [{"level": 1, "title": "总体方案"}],
+        "paragraphs": ["额定功率 5.0MW。"],
+        "tableCount": 1,
+    }
+
+    def test_same_input_same_signature(self) -> None:
+        a = tmi._preview_signature("a.docx", self.BASE_PROFILE)
+        b = tmi._preview_signature("a.docx", dict(self.BASE_PROFILE))
+        self.assertEqual(a, b)
+
+    def test_rename_changes_signature(self) -> None:
+        a = tmi._preview_signature("a.docx", self.BASE_PROFILE)
+        b = tmi._preview_signature("b.docx", self.BASE_PROFILE)
+        self.assertNotEqual(a, b)
+
+    def test_content_change_changes_signature(self) -> None:
+        a = tmi._preview_signature("a.docx", self.BASE_PROFILE)
+        changed = {**self.BASE_PROFILE, "paragraphs": ["额定功率 6.25MW。"]}
+        b = tmi._preview_signature("a.docx", changed)
+        self.assertNotEqual(a, b)
+
+    def test_heading_change_changes_signature(self) -> None:
+        a = tmi._preview_signature("a.docx", self.BASE_PROFILE)
+        changed = {**self.BASE_PROFILE, "headings": [{"level": 1, "title": "供货范围"}]}
+        b = tmi._preview_signature("a.docx", changed)
+        self.assertNotEqual(a, b)
+
+    def test_schema_version_bump_changes_signature(self) -> None:
+        a = tmi._preview_signature("a.docx", self.BASE_PROFILE)
+        with patch.object(tmi, "PREVIEW_SCHEMA_VERSION", tmi.PREVIEW_SCHEMA_VERSION + 1):
+            b = tmi._preview_signature("a.docx", self.BASE_PROFILE)
+        self.assertNotEqual(a, b)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,8 +1,47 @@
+// 轻量 Markdown 渲染：支持标题、列表、引用、表格、分隔线，以及行内
+// **加粗** / *斜体* / `代码`。技术标 Wiki 文件卡片的 AI 内容预览（导读引用、
+// **要点** / **关键参数** 等加粗小标题、> 引用、--- 分隔线）都依赖这些规则。
+
+// 把单行文本拆成行内 token，渲染成带 <strong>/<em>/<code> 的 React 节点。
+// 处理 \\| 转义（表格单元格里的竖线）。规则简单但够用：不嵌套同类标记。
+function renderInline(text = '') {
+  const source = String(text).replace(/\\\|/g, '|')
+  const nodes = []
+  // 依次匹配 **bold** / *italic* / `code`，其余按纯文本切片。
+  const pattern = /(\*\*([^*]+)\*\*|\*([^*]+)\*|`([^`]+)`)/g
+  let lastIndex = 0
+  let match
+  let key = 0
+  while ((match = pattern.exec(source)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(source.slice(lastIndex, match.index))
+    }
+    if (match[2] !== undefined) {
+      nodes.push(<strong key={`b${key}`} className="font-semibold text-on-surface">{match[2]}</strong>)
+    } else if (match[3] !== undefined) {
+      nodes.push(<em key={`i${key}`}>{match[3]}</em>)
+    } else if (match[4] !== undefined) {
+      nodes.push(
+        <code key={`c${key}`} className="rounded bg-surface-container-high px-1 py-0.5 text-[0.92em]">
+          {match[4]}
+        </code>,
+      )
+    }
+    lastIndex = pattern.lastIndex
+    key += 1
+  }
+  if (lastIndex < source.length) {
+    nodes.push(source.slice(lastIndex))
+  }
+  return nodes.length ? nodes : source
+}
+
 function parseMarkdownLite(content = '') {
   const lines = String(content).split(/\r?\n/)
   const blocks = []
   let paragraph = []
   let listItems = []
+  let quoteLines = []
 
   const flushParagraph = () => {
     if (!paragraph.length) return
@@ -16,9 +55,16 @@ function parseMarkdownLite(content = '') {
     listItems = []
   }
 
+  const flushQuote = () => {
+    if (!quoteLines.length) return
+    blocks.push({ type: 'quote', text: quoteLines.join(' ') })
+    quoteLines = []
+  }
+
   const flushInlineBlocks = () => {
     flushParagraph()
     flushList()
+    flushQuote()
   }
 
   const parseTableRow = (line) => {
@@ -49,8 +95,14 @@ function parseMarkdownLite(content = '') {
     const trimmed = line.trim()
 
     if (!trimmed) {
-      flushParagraph()
-      flushList()
+      flushInlineBlocks()
+      continue
+    }
+
+    // 水平分隔线：--- / *** / ___（整行）。
+    if (/^([-*_])\1{2,}$/.test(trimmed.replace(/\s+/g, ''))) {
+      flushInlineBlocks()
+      blocks.push({ type: 'hr' })
       continue
     }
 
@@ -74,39 +126,45 @@ function parseMarkdownLite(content = '') {
       continue
     }
 
-    if (trimmed.startsWith('# ')) {
+    // 引用块：连续的 > 行合并成一个引用（中间不空行）。
+    if (trimmed.startsWith('>')) {
       flushParagraph()
       flushList()
+      quoteLines.push(trimmed.replace(/^>\s?/, '').trim())
+      continue
+    }
+
+    if (trimmed.startsWith('# ')) {
+      flushInlineBlocks()
       blocks.push({ type: 'h1', text: trimmed.slice(2).trim() })
       continue
     }
 
     if (trimmed.startsWith('## ')) {
-      flushParagraph()
-      flushList()
+      flushInlineBlocks()
       blocks.push({ type: 'h2', text: trimmed.slice(3).trim() })
       continue
     }
 
     if (trimmed.startsWith('### ')) {
-      flushParagraph()
-      flushList()
+      flushInlineBlocks()
       blocks.push({ type: 'h3', text: trimmed.slice(4).trim() })
       continue
     }
 
-    if (trimmed.startsWith('- ')) {
+    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
       flushParagraph()
+      flushQuote()
       listItems.push(trimmed.slice(2).trim())
       continue
     }
 
     flushList()
+    flushQuote()
     paragraph.push(trimmed)
   }
 
-  flushParagraph()
-  flushList()
+  flushInlineBlocks()
   return blocks
 }
 
@@ -140,29 +198,42 @@ export default function MarkdownLite({ content = '', compact = false }) {
         if (block.type === 'h1') {
           return (
             <h1 key={index} className={styles.h1}>
-              {block.text}
+              {renderInline(block.text)}
             </h1>
           )
         }
         if (block.type === 'h2') {
           return (
             <h2 key={index} className={styles.h2}>
-              {block.text}
+              {renderInline(block.text)}
             </h2>
           )
         }
         if (block.type === 'h3') {
           return (
             <h3 key={index} className={styles.h3}>
-              {block.text}
+              {renderInline(block.text)}
             </h3>
+          )
+        }
+        if (block.type === 'hr') {
+          return <hr key={index} className="border-0 border-t border-outline-variant/45 my-1" />
+        }
+        if (block.type === 'quote') {
+          return (
+            <blockquote
+              key={index}
+              className="border-l-2 border-primary/40 bg-primary/5 rounded-r px-3 py-2 text-on-surface-variant"
+            >
+              {renderInline(block.text)}
+            </blockquote>
           )
         }
         if (block.type === 'ul') {
           return (
             <ul key={index} className="list-disc pl-5 space-y-1">
               {block.items.map((item, itemIndex) => (
-                <li key={itemIndex}>{item}</li>
+                <li key={itemIndex}>{renderInline(item)}</li>
               ))}
             </ul>
           )
@@ -175,7 +246,7 @@ export default function MarkdownLite({ content = '', compact = false }) {
                   <tr>
                     {block.headers.map((header, headerIndex) => (
                       <th key={headerIndex} className="!h-auto !font-normal px-3 py-1.5 align-top leading-[1.6]">
-                        {header}
+                        {renderInline(header)}
                       </th>
                     ))}
                   </tr>
@@ -186,7 +257,7 @@ export default function MarkdownLite({ content = '', compact = false }) {
                       <tr key={rowIndex}>
                         {row.map((cell, cellIndex) => (
                           <td key={cellIndex} className="!h-auto px-3 py-1.5 align-top leading-[1.6]">
-                            {cell}
+                            {renderInline(cell)}
                           </td>
                         ))}
                       </tr>
@@ -203,7 +274,7 @@ export default function MarkdownLite({ content = '', compact = false }) {
             </div>
           )
         }
-        return <p key={index}>{block.text}</p>
+        return <p key={index}>{renderInline(block.text)}</p>
       })}
     </div>
   )

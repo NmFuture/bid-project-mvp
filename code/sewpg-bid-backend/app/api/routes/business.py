@@ -18,7 +18,7 @@ from app.services.bid_ocr_service import business_ocr_service
 from app.services.bid_parse_service import business_parse_service
 from app.services.bid_project_service import business_project_service
 from app.services.material_tags import normalize_material_tags
-from app.services.wiki_generation import generate_platform_wiki
+from app.services.business_wiki_generation import generate_business_wiki
 
 router = APIRouter()
 
@@ -652,10 +652,9 @@ async def business_wiki_list(nodeId: str = "", bidType: str = "") -> dict[str, A
 
 @router.post("/api/business/materials/wiki/bootstrap")
 async def business_wiki_bootstrap(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await generate_platform_wiki(
+    return await generate_business_wiki(
         reference_path=str(data.get("referencePath") or ""),
         mode=str(data.get("mode") or "create"),
-        bid_type=BUSINESS_BID_TYPE,
         fallback_to_deterministic=bool(data.get("fallbackToDeterministic")),
     )
 

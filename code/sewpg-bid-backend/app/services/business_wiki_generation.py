@@ -1,17 +1,25 @@
+"""商务标 Wiki 生成（LLM 精修主路径 + 多级确定性回退，独立于技术标）。
+
+本模块是从原 `wiki_generation.py` 中商务标这条线整体搬迁而来，**行为保持不变**：
+
+    LLM 精修（opencode 调 wikibuild 产骨架后语义精修）
+      → 失败回退：subprocess 跑 bid-business-wiki-material-builder 脚本（确定性骨架）
+      → 再失败回退（仅在显式允许时）：内联确定性蓝图
+
+依赖素材清单（_summarize_material_inventory）、OCR、docx 解析等商务标专属逻辑，
+与技术标的三级目录镜像链路完全解耦。
+"""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import mimetypes
 import re
-import subprocess
-import sys
 import tempfile
 import zipfile
 from collections import Counter
-from datetime import UTC, datetime
 from io import BytesIO
-from xml.etree import ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -21,20 +29,26 @@ from sqlalchemy.orm import selectinload
 from app.core.config import BASE_DIR, settings
 from app.models import async_session
 from app.models.materials import RawFile
-from app.services.bid_type import BUSINESS_BID_TYPE, GENERAL_BID_TYPE, TECHNICAL_BID_TYPE, require_bid_type
-from app.services.identity import canonical_customer, classify_material_path, material_identity
+from app.services.bid_type import BUSINESS_BID_TYPE, GENERAL_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.business_material_store import business_material_store
 from app.services.business_wiki_blueprint import build_business_wiki_blueprint
+from app.services.identity import canonical_customer, classify_material_path, material_identity
 from app.services.material_tags import normalize_material_tags
 from app.services.material_taxonomy import infer_business_material_category, infer_business_material_subcategory
 from app.services.minio_client import minio_client
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.opencode_client import OpencodeClient
 from app.services.peripheral import PeripheralError
-from app.services.technical_material_store import technical_material_store
-from app.services.technical_material_index import (
-    load_technical_material_index,
-    rebuild_technical_material_index,
+from app.services.wiki_blueprint_common import (
+    MAX_CARD_EXCERPT_PARAGRAPHS,
+    MAX_SYNC_DOCX_BYTES,
+    extract_docx_profile as _extract_docx_profile,
+    format_heading_tree as _format_heading_tree,
+    load_wiki_blueprint_result,
+    material_level_range as _material_level_range,
+    normalize_blueprint,
+    now_iso,
+    run_local_wiki_skill,
 )
 
 DEFAULT_REFERENCE_WIKI_PATH = Path(
@@ -47,6 +61,12 @@ BUSINESS_WIKI_DOCX_IMAGE_LIMIT = 12
 OCR_IMAGE_EXTS = {item.lstrip(".") for item in IMAGE_SUFFIXES}
 OCR_SOURCE_EXTS = OCR_IMAGE_EXTS | {"pdf"}
 
+BUSINESS_WIKI_SKILL_NAME = "bid-business-wiki-material-builder"
+BUSINESS_WIKI_RUNNER = (
+    BASE_DIR / "opencode" / "skills" / BUSINESS_WIKI_SKILL_NAME / "scripts" / "run_from_manifest.py"
+)
+BUSINESS_WIKI_ROOT_TITLE = f"{BUSINESS_BID_TYPE}Wiki（自动生成）"
+
 
 def _read_excerpt(path: Path, limit: int = MAX_EXCERPT_CHARS) -> str:
     if not path.exists():
@@ -55,29 +75,6 @@ def _read_excerpt(path: Path, limit: int = MAX_EXCERPT_CHARS) -> str:
     if len(text) <= limit:
         return text
     return f"{text[: limit - 3]}\n..."
-
-
-async def _import_generated_wiki_blueprint(
-    bid_type: str,
-    *,
-    root_title: str,
-    root_markdown_content: str,
-    nodes: list[dict[str, Any]],
-    mode: str,
-) -> dict[str, Any]:
-    if _normalize_wiki_bid_type(bid_type) == BUSINESS_BID_TYPE:
-        return await business_material_store.import_generated_wiki_blueprint(
-            root_title=root_title,
-            root_markdown_content=root_markdown_content,
-            nodes=nodes,
-            mode=mode,
-        )
-    return await technical_material_store.import_generated_wiki_blueprint(
-        root_title=root_title,
-        root_markdown_content=root_markdown_content,
-        nodes=nodes,
-        mode=mode,
-    )
 
 
 def _summarize_reference_wiki(reference_root: Path) -> dict[str, Any]:
@@ -150,20 +147,7 @@ def _classify_business_group(folder_path: str, file_name: str) -> str:
     return "商务通用"
 
 
-MAX_CARD_EXCERPT_PARAGRAPHS = 10
-MAX_CARD_HEADINGS = 80
 MAX_INDEX_ITEMS = 260
-MAX_SYNC_DOCX_BYTES = 30 * 1024 * 1024
-WIKI_BID_TYPES = {TECHNICAL_BID_TYPE, BUSINESS_BID_TYPE}
-WIKI_SKILL_NAMES = {
-    TECHNICAL_BID_TYPE: "bid-tech-wiki-material-builder",
-    BUSINESS_BID_TYPE: "bid-business-wiki-material-builder",
-}
-HEADING_STYLE_RE = re.compile(r"(?:Heading|标题)\s*([1-9])|Heading([1-9])", re.IGNORECASE)
-NUMBERED_HEADING_RE = re.compile(
-    r"^(?:(第[一二三四五六七八九十百]+[章节篇])|([一二三四五六七八九十]+[、.．])|((?:\d+[.．、]){1,5}))\s*\S+"
-)
-WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 TECH_CARD_GROUP_ORDER = [
     "标前概述",
     "投标函件",
@@ -223,144 +207,6 @@ def _material_bid_type(folder_path: str, file_name: str, folder_bid_type: str = 
     if "技术标" in text or "风资源" in text or "机组" in text or "风机" in text or "技术" in text:
         return TECHNICAL_BID_TYPE
     return GENERAL_BID_TYPE
-
-
-def _normalize_wiki_bid_type(value: str = "") -> str:
-    return require_bid_type(
-        value,
-        error_message="Wiki 生成必须显式传入技术标或商务标。",
-    )
-
-
-def _wiki_skill_name(bid_type: str) -> str:
-    normalized = _normalize_wiki_bid_type(bid_type)
-    return WIKI_SKILL_NAMES.get(normalized, WIKI_SKILL_NAMES[TECHNICAL_BID_TYPE])
-
-
-def _wiki_skill_runner(bid_type: str) -> Path:
-    skill_name = _wiki_skill_name(bid_type)
-    return BASE_DIR / "opencode" / "skills" / skill_name / "scripts" / "run_from_manifest.py"
-
-
-def _wiki_root_title(bid_type: str) -> str:
-    return f"{bid_type}Wiki（自动生成）"
-
-
-def _heading_level_from_paragraph(para: Any) -> int | None:
-    style = para.style
-    style_text = " ".join(
-        str(value or "")
-        for value in (
-            getattr(style, "name", ""),
-            getattr(style, "style_id", ""),
-        )
-    )
-    match = HEADING_STYLE_RE.search(style_text)
-    if match:
-        return int(match.group(1) or match.group(2))
-
-    text = para.text.strip()
-    numbered = NUMBERED_HEADING_RE.match(text)
-    if not numbered:
-        return None
-    numeric = numbered.group(3)
-    if numeric:
-        return max(1, min(6, len(re.findall(r"\d+", numeric))))
-    return 1
-
-
-def _clean_docx_text(text: str) -> str:
-    return re.sub(r"\s+", " ", str(text or "")).strip()
-
-
-def _xml_text(element: ET.Element) -> str:
-    parts: list[str] = []
-    for node in element.iter(f"{WORD_NS}t"):
-        if node.text:
-            parts.append(node.text)
-    return _clean_docx_text("".join(parts))
-
-
-def _xml_paragraph_style(element: ET.Element) -> str:
-    p_style = element.find(f"./{WORD_NS}pPr/{WORD_NS}pStyle")
-    if p_style is None:
-        return ""
-    return str(p_style.attrib.get(f"{WORD_NS}val") or p_style.attrib.get("val") or "")
-
-
-def _heading_level_from_style(style_id: str, text: str) -> int | None:
-    style = str(style_id or "")
-    match = HEADING_STYLE_RE.search(style)
-    if match:
-        return int(match.group(1) or match.group(2))
-    if style in {"1", "2", "3", "4", "5", "6", "7", "8", "9"}:
-        return int(style)
-    numbered = NUMBERED_HEADING_RE.match(text)
-    if not numbered:
-        return None
-    numeric = numbered.group(3)
-    if numeric:
-        return max(1, min(6, len(re.findall(r"\d+", numeric))))
-    return 1
-
-
-def _extract_docx_profile(data: bytes) -> dict[str, Any]:
-    try:
-        with zipfile.ZipFile(BytesIO(data)) as archive:
-            document_xml = archive.read("word/document.xml")
-    except Exception as exc:
-        return {"headings": [], "paragraphs": [], "tables": [], "tableCount": 0, "parseError": f"docx 读取失败：{exc}"}
-
-    headings: list[dict[str, Any]] = []
-    paragraphs: list[str] = []
-    table_previews: list[str] = []
-    seen_paragraphs: set[str] = set()
-    table_count = 0
-    try:
-        for event, element in ET.iterparse(BytesIO(document_xml), events=("end",)):
-            if element.tag == f"{WORD_NS}p":
-                text = _xml_text(element)
-                if text:
-                    level = _heading_level_from_style(_xml_paragraph_style(element), text)
-                    if level is not None and len(headings) < MAX_CARD_HEADINGS:
-                        headings.append({"level": level, "title": text[:180]})
-                    elif (
-                        len(paragraphs) < MAX_CARD_EXCERPT_PARAGRAPHS
-                        and len(text) >= 4
-                        and text not in seen_paragraphs
-                    ):
-                        seen_paragraphs.add(text)
-                        paragraphs.append(text[:260])
-                element.clear()
-            elif element.tag == f"{WORD_NS}tbl":
-                table_count += 1
-                if len(table_previews) < 6:
-                    text = _xml_text(element)
-                    if text:
-                        table_previews.append(text[:320])
-                element.clear()
-            if (
-                len(headings) >= MAX_CARD_HEADINGS
-                and len(paragraphs) >= MAX_CARD_EXCERPT_PARAGRAPHS
-                and len(table_previews) >= 6
-            ):
-                break
-    except Exception as exc:
-        return {
-            "headings": headings,
-            "paragraphs": paragraphs,
-            "tables": table_previews,
-            "tableCount": table_count,
-            "parseError": f"docx XML 解析部分失败：{exc}",
-        }
-
-    return {
-        "headings": headings[:MAX_CARD_HEADINGS],
-        "paragraphs": paragraphs[:MAX_CARD_EXCERPT_PARAGRAPHS],
-        "tables": table_previews,
-        "tableCount": table_count,
-        "parseError": "",
-    }
 
 
 def _docx_embedded_images(data: bytes, limit: int = BUSINESS_WIKI_DOCX_IMAGE_LIMIT) -> list[dict[str, Any]]:
@@ -461,7 +307,7 @@ def _successful_ocr_payload(text: str, *, source_type: str, page_count: Any = 1,
         "pageCount": page_count,
         "imageCount": image_count,
         "confidence": "0.80" if normalized else "0.00",
-        "updatedAt": _now_iso(),
+        "updatedAt": now_iso(),
     }
 
 
@@ -475,7 +321,7 @@ def _failed_ocr_payload(message: str, *, source_type: str) -> dict[str, Any]:
         "imageCount": 0,
         "confidence": "0.00",
         "message": message,
-        "updatedAt": _now_iso(),
+        "updatedAt": now_iso(),
     }
 
 
@@ -509,7 +355,7 @@ async def _recognize_docx_embedded_images_for_wiki(item: RawFile, profile: dict[
             "pageCount": 0,
             "imageCount": 0,
             "confidence": "n/a",
-            "updatedAt": _now_iso(),
+            "updatedAt": now_iso(),
         }
     texts: list[str] = []
     for index, image in enumerate(images, start=1):
@@ -551,7 +397,7 @@ async def _ensure_business_wiki_ocr_cache(item: RawFile, profile: dict[str, Any]
                 "pageCount": 0,
                 "imageCount": 0,
                 "confidence": "n/a",
-                "updatedAt": _now_iso(),
+                "updatedAt": now_iso(),
             }
     except PeripheralError as exc:
         payload = _failed_ocr_payload(str(exc.detail), source_type="source_file" if source_ext in OCR_SOURCE_EXTS else "docx_embedded_images")
@@ -594,27 +440,6 @@ def _apply_business_wiki_ocr_to_profile(profile: dict[str, Any], ocr_payload: di
         profile["expiryDate"] = str(fields.get("expiryDate") or "")
         profile["turbineModels"] = list(fields.get("turbineModels") or [])[:8]
         profile["components"] = list(fields.get("components") or [])[:8]
-
-
-def _material_level_range(headings: list[dict[str, Any]]) -> str:
-    levels = sorted({int(item.get("level") or 0) for item in headings if item.get("level")})
-    if not levels:
-        return "none"
-    return f"L{levels[0]}-L{levels[-1]}"
-
-
-def _format_heading_tree(headings: list[dict[str, Any]], limit: int = 60) -> str:
-    if not headings:
-        return "未检测到 Word Heading 样式；该素材会按整篇材料挂载，后续应补充 Heading 样式审计。"
-    min_level = min(int(item.get("level") or 1) for item in headings)
-    lines: list[str] = []
-    for item in headings[:limit]:
-        level = int(item.get("level") or 1)
-        indent = "  " * max(0, level - min_level)
-        lines.append(f"{indent}- L{level} {item.get('title')}")
-    if len(headings) > limit:
-        lines.append(f"- ... 另有 {len(headings) - limit} 条 Heading")
-    return "\n".join(lines)
 
 
 def _infer_skeleton_section(material: dict[str, Any]) -> str:
@@ -958,8 +783,8 @@ def _build_wiki_manifest(reference: dict[str, Any], material_inventory: dict[str
         },
         "materialInventory": compact_inventory,
         "targetBidType": bid_type,
-        "targetSkill": _wiki_skill_name(bid_type),
-        "rootTitle": _wiki_root_title(bid_type),
+        "targetSkill": BUSINESS_WIKI_SKILL_NAME,
+        "rootTitle": BUSINESS_WIKI_ROOT_TITLE,
         "workDir": "",
         "outputFile": "",
     }
@@ -1578,16 +1403,15 @@ def _build_material_wiki_blueprint(
     inventory: dict[str, Any],
     bid_type: str,
 ) -> dict[str, Any]:
-    bid_type = _normalize_wiki_bid_type(bid_type)
     if bid_type == BUSINESS_BID_TYPE:
-        return build_business_wiki_blueprint(inventory, root_title=_wiki_root_title(bid_type))
+        return build_business_wiki_blueprint(inventory, root_title=BUSINESS_WIKI_ROOT_TITLE)
 
     materials = list(inventory.get("items") or [])
     docx_materials = [item for item in materials if item.get("ext") == "docx"]
     parsed = [item for item in docx_materials if not item.get("parseError")]
     bid_count = len(_filtered_docx_materials(materials, bid_type))
-    root_title = _wiki_root_title(bid_type)
-    skill_name = _wiki_skill_name(bid_type)
+    root_title = f"{bid_type}Wiki（自动生成）"
+    skill_name = BUSINESS_WIKI_SKILL_NAME
     root_markdown = (
         f"# {root_title}\n\n"
         f"本 Wiki 由 `{skill_name}` 根据 `{bid_type}` 原始材料库中的真实 docx 和参考 Wiki 结构生成。"
@@ -1632,392 +1456,50 @@ def _build_material_wiki_blueprint(
     }
 
 
-def _fallback_card_node(name: str, group: str, scope: str) -> dict[str, Any]:
-    title = Path(name).stem
-    return {
-        "title": title,
-        "markdownContent": (
-            f"# {title}\n\n"
-            "## 该填进什么章节\n"
-            f"- 主关键词：{title}\n"
-            "- 同义词：待补充\n"
-            f"- 典型父章节：{group}\n\n"
-            "## 适用条件\n"
-            "- 机型：所有\n"
-            "- 场址：所有\n"
-            "- 业主：所有\n"
-            "- 地块：所有\n\n"
-            "## 必选 / 条件\n"
-            "待判定\n\n"
-            "## 关联素材\n"
-            "- 无\n\n"
-            "## 可替换字段\n"
-            "无\n\n"
-            "## Merge 信息\n"
-            f"- path: {name}\n"
-            "- skeleton_section: 未明确\n"
-            "- skeleton_level: unknown\n"
-            "- material_level_range: 待审计\n"
-            "- heading_count: 待审计\n"
-            "- shift: 0\n"
-            "- attach_mode: normal\n"
-        ),
-        "tags": ["素材卡片", scope],
-        "applicableTypes": ["通用"] if scope == "通用" else ["技术标", "商务标"],
-        "children": [],
-    }
-
-
-def _fallback_group_children(material_inventory: dict[str, Any], scope: str) -> list[dict[str, Any]]:
-    groups = material_inventory.get("groups") or {}
-    children: list[dict[str, Any]] = []
-    for key, names in groups.items():
-        prefix = f"{scope}/"
-        if not key.startswith(prefix):
-            continue
-        group = key[len(prefix):]
-        children.append(
-            {
-                "title": group,
-                "markdownContent": f"# {group}\n\n{scope}素材卡片分组，来自原始材料库文件清单。",
-                "tags": ["素材卡片", scope],
-                "applicableTypes": ["通用"] if scope == "通用" else ["技术标", "商务标"],
-                "children": [_fallback_card_node(name, group, scope) for name in names[:80]],
-            }
-        )
-    return children
-
-
-def _fallback_wiki_blueprint(reference: dict[str, Any], material_inventory: dict[str, Any] | None = None) -> dict[str, Any]:
-    inventory = material_inventory or {}
-    common_children = _fallback_group_children(inventory, "通用")
-    custom_children = _fallback_group_children(inventory, "定制")
-
-    common_sections = reference.get("commonCardGroups") or [
-        "标前概述",
-        "总体方案",
-        "专项技术",
-        "风资源评估",
-        "技术标准",
-    ]
-    if not common_children:
-        common_children = [
-            {
-                "title": section,
-                "markdownContent": f"# {section}\n\n这是平台级通用素材卡片分组，用于沉淀标准专题卡与章节挂载方式。",
-                "tags": ["通用素材"],
-                "applicableTypes": ["通用"],
-                "children": [],
-            }
-            for section in common_sections
-        ]
-
-    custom_sections = reference.get("customCardGroups") or ["项目数据"]
-    if not custom_children:
-        custom_children = [
-            {
-                "title": section,
-                "markdownContent": f"# {section}\n\n项目素材卡片分组，等待补料后生成卡片。",
-                "tags": ["项目素材"],
-                "applicableTypes": ["技术标", "商务标"],
-                "children": [],
-            }
-            for section in custom_sections
-        ]
-    custom_sections_text = "\n- ".join(custom_sections)
-    return {
-        "summary": "已按分标类 Wiki 生成工作流生成平台级 Wiki 起始结构。",
-        "rootTitle": "平台级Wiki（自动生成）",
-        "nodes": [
-            {
-                "title": "平台级Wiki说明",
-                "markdownContent": "# 平台级Wiki说明\n\n平台级 Wiki 是标书装配规则库，用于在 S1 前提供专题卡、规则、同义词和骨架映射。",
-                "tags": ["通用素材"],
-                "applicableTypes": ["通用"],
-                "children": [],
-            },
-            {
-                "title": "章节骨架",
-                "markdownContent": "# 章节骨架\n\n用来维护技术标/商务标的骨架章节，以及卡片与章节的 skeleton_section 映射。",
-                "tags": ["技术标", "商务标"],
-                "applicableTypes": ["技术标", "商务标", "通用"],
-                "children": [],
-            },
-            {
-                "title": "装配规则",
-                "markdownContent": "# 装配规则\n\n维护必选、条件触发、覆盖、叠加、fallback 等装配逻辑。",
-                "tags": ["通用素材"],
-                "applicableTypes": ["通用"],
-                "children": [],
-            },
-            {
-                "title": "同义词映射",
-                "markdownContent": "# 同义词映射\n\n维护章节关键词到素材关键词的匹配关系，用于目录匹配和缺口识别。",
-                "tags": ["通用素材"],
-                "applicableTypes": ["通用"],
-                "children": [],
-            },
-            {
-                "title": "通用卡片",
-                "markdownContent": "# 通用卡片\n\n按专题组织平台级标准卡片，卡片来自原始材料库文件清单。",
-                "tags": ["通用素材"],
-                "applicableTypes": ["通用"],
-                "children": common_children,
-            },
-            {
-                "title": "定制卡片",
-                "markdownContent": "# 定制卡片\n\n按项目数据组织定制素材卡片。",
-                "tags": ["项目材料"],
-                "applicableTypes": ["技术标", "商务标"],
-                "children": custom_children,
-            },
-            {
-                "title": "项目级Wiki模板",
-                "markdownContent": (
-                    "# 项目级Wiki模板\n\n"
-                    "项目级 Wiki 用于 S4-S6 阶段补充 case-specific 内容。\n\n"
-                    "## 补料方式\n"
-                    "- override：项目版覆盖平台版\n"
-                    "- append：在平台版后附加项目说明\n"
-                    "- reference：只挂证据和附件，不改正文\n\n"
-                    f"## 推荐目录\n- {custom_sections_text}"
-                ),
-                "tags": ["通用素材"],
-                "applicableTypes": ["技术标", "商务标", "通用"],
-                "children": [],
-            },
-        ],
-    }
-
-
-def _parse_json_payload(content: str) -> dict[str, Any]:
-    cleaned = str(content or "").strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", cleaned)
-        cleaned = re.sub(r"\n?```$", "", cleaned).strip()
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise RuntimeError("opencode 返回内容里没有可解析的 JSON。")
-        return json.loads(cleaned[start : end + 1])
-
-
-def _normalize_blueprint_node(node: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "title": str(node.get("title") or "未命名节点"),
-        "markdownContent": str(node.get("markdownContent") or f"# {str(node.get('title') or '未命名节点')}\n"),
-        "tags": [str(item) for item in (node.get("tags") or []) if str(item).strip()],
-        "applicableTypes": [str(item) for item in (node.get("applicableTypes") or []) if str(item).strip()] or ["通用"],
-        "children": [_normalize_blueprint_node(item) for item in (node.get("children") or []) if isinstance(item, dict)],
-    }
-
-
-def _normalize_blueprint(payload: dict[str, Any]) -> dict[str, Any]:
-    nodes = payload.get("nodes") or []
-    if not isinstance(nodes, list):
-        raise RuntimeError("Wiki 蓝图格式错误：nodes 必须为数组。")
-    return {
-        "summary": str(payload.get("summary") or "平台级 Wiki 已生成。"),
-        "rootTitle": str(payload.get("rootTitle") or "平台级Wiki（自动生成）"),
-        "rootMarkdownContent": str(payload.get("rootMarkdownContent") or ""),
-        "nodes": [_normalize_blueprint_node(item) for item in nodes if isinstance(item, dict)],
-    }
-
-
-def _load_wiki_blueprint_result(result: dict[str, Any]) -> dict[str, Any]:
-    output_file = Path(str(result.get("outputFile") or "")).expanduser()
-    if not output_file.exists() or not output_file.is_file():
-        return result
-    try:
-        payload = json.loads(output_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Wiki Skill 生成的 outputFile 不是有效 JSON：{output_file}") from exc
-    if not isinstance(payload, dict) or not isinstance(payload.get("nodes"), list):
-        raise RuntimeError(f"Wiki Skill 生成的 outputFile 缺少 nodes：{output_file}")
-    if isinstance(result.get("opencodeOutput"), dict):
-        payload["opencodeOutput"] = result["opencodeOutput"]
-    return payload
-
-
-def _failed_opencode_output(exc: Exception) -> dict[str, Any]:
-    return {
-        "status": "failed",
-        "parts": [
-            {
-                "type": "text",
-                "text": f"调用 opencode 生成 Wiki 失败：{exc}",
-            }
-        ],
-    }
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
 def _run_llm_wiki_skill(manifest_path: Path, bid_type: str) -> dict[str, Any]:
     """LLM 主路径：让 opencode 调 wikibuild 生成骨架，再在骨架上语义精修。"""
-    normalized_bid_type = _normalize_wiki_bid_type(bid_type)
-    skill_name = _wiki_skill_name(normalized_bid_type)
-    runner = _wiki_skill_runner(normalized_bid_type)
-    if not runner.exists():
-        raise RuntimeError(f"{normalized_bid_type} Wiki Skill runner 不存在：{runner}")
+    if not BUSINESS_WIKI_RUNNER.exists():
+        raise RuntimeError(f"{bid_type} Wiki Skill runner 不存在：{BUSINESS_WIKI_RUNNER}")
 
-    prompt = _build_wiki_refine_prompt(skill_name, manifest_path, normalized_bid_type)
+    prompt = _build_wiki_refine_prompt(BUSINESS_WIKI_SKILL_NAME, manifest_path, bid_type)
     result = OpencodeClient().generate_wiki_blueprint_with_trace(prompt)
     result.setdefault("schema_version", "bid-wiki-blueprint-v1")
     return result
 
 
-def _run_local_wiki_skill(manifest_path: Path, bid_type: str) -> dict[str, Any]:
-    normalized_bid_type = _normalize_wiki_bid_type(bid_type)
-    skill_name = _wiki_skill_name(normalized_bid_type)
-    runner = _wiki_skill_runner(normalized_bid_type)
-    if not runner.exists():
-        raise RuntimeError(f"{normalized_bid_type} Wiki Skill runner 不存在：{runner}")
-
-    completed = subprocess.run(
-        [sys.executable, str(runner), str(manifest_path)],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=max(30, int(settings.opencode_timeout_sec)),
-    )
-    stdout = (completed.stdout or "").strip()
-    stderr = (completed.stderr or "").strip()
-    if completed.returncode != 0:
-        detail = "\n".join(part for part in (stdout, stderr) if part)
-        raise RuntimeError(f"{normalized_bid_type} Wiki Skill runner 执行失败（{completed.returncode}）：{detail}")
-
-    try:
-        result = json.loads(stdout or "{}")
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"{normalized_bid_type} Wiki Skill runner 返回内容不是有效 JSON：{stdout}") from exc
-
-    result.setdefault("schema_version", "bid-wiki-blueprint-v1")
-    result["opencodeOutput"] = {
-        "status": "received",
-        "sessionId": str(manifest_path),
-        "providerId": "local-skill",
-        "modelId": skill_name,
-        "receivedAt": _now_iso(),
-        "parts": [{"type": "text", "text": stdout}],
-    }
-    return result
-
-
-def _write_technical_index_manifest(index_payload: dict[str, Any]) -> Path:
-    """把三级目录 JSON 索引写到共享构建目录，供 wikibuild 脚本镜像成 Wiki。"""
-    shared_root = settings.parsed_dir / "_wiki_build"
-    shared_root.mkdir(parents=True, exist_ok=True)
-    target_dir = Path(tempfile.mkdtemp(prefix="bid-tech-wiki-", dir=shared_root))
-    manifest_path = target_dir / "technical_material_index.json"
-    manifest = {
-        **index_payload,
-        "rootTitle": _wiki_root_title(TECHNICAL_BID_TYPE),
-        "workDir": str(target_dir),
-        "outputFile": str(target_dir / "wiki_blueprint.json"),
-    }
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    return manifest_path
-
-
-async def _mirror_technical_index_to_wiki(
-    index_payload: dict[str, Any],
-    *,
-    mode: str,
-) -> dict[str, Any]:
-    """把技术标三级目录索引 payload 确定性镜像成 Wiki blueprint 并导入（不走 LLM）。
-
-    供「重建 Wiki」主流程与后台预览任务复用：后台任务补齐预览后用 mode="replace"
-    重镜像一次，让带 AI 预览的文件卡片落到 Wiki 树上。
-    """
-    if not isinstance(index_payload, dict):
-        index_payload = {}
-    index_payload.setdefault("bidType", TECHNICAL_BID_TYPE)
-
-    manifest_path = _write_technical_index_manifest(index_payload)
-    skill_result = await asyncio.to_thread(_run_local_wiki_skill, manifest_path, TECHNICAL_BID_TYPE)
-    blueprint = _normalize_blueprint(_load_wiki_blueprint_result(skill_result))
-    blueprint["rootTitle"] = _wiki_root_title(TECHNICAL_BID_TYPE)
-    opencode_output = skill_result.get("opencodeOutput") or {}
-
-    imported = await _import_generated_wiki_blueprint(
-        TECHNICAL_BID_TYPE,
-        root_title=blueprint["rootTitle"],
-        root_markdown_content=blueprint.get("rootMarkdownContent") or "",
-        nodes=blueprint["nodes"],
-        mode=mode,
-    )
-    stats = index_payload.get("stats") if isinstance(index_payload.get("stats"), dict) else {}
-    imported["generation"] = {
-        "summary": blueprint["summary"],
-        "bidType": TECHNICAL_BID_TYPE,
-        "skill": _wiki_skill_name(TECHNICAL_BID_TYPE),
-        "generator": "technical_index_mirror",
-        "fallbackUsed": False,
-        "materialIndex": {
-            "tierCount": stats.get("tierCount"),
-            "thirdLevelFolderCount": stats.get("thirdLevelFolderCount"),
-            "fileCount": stats.get("fileCount"),
-            "generatedAt": index_payload.get("generatedAt"),
-        },
-        "opencodeOutput": opencode_output,
-    }
-    return imported
-
-
-async def _generate_technical_wiki(*, mode: str) -> dict[str, Any]:
-    """技术标 Wiki：确定性镜像三级目录 JSON 索引（tier→folder→file），不走 LLM。
-
-    技术标的目录树就该严格等于素材库三级结构，无需语义精修；因此独立于商务标
-    的 LLM/确定性回退链路，直接用 wikibuild 脚本把索引镜像成 blueprint 再导入。
-    """
-    # 先实时重建索引拿最新结构；失败/为空时回退到已落盘的快照。
-    # preview_mode="cached"：秒级注入已生成的 AI 预览，不调 LLM —— 重建 Wiki 立即返回。
-    # 缺失预览的 docx 先降级为纯目录卡片，由后台 technical_wiki_preview 任务异步补齐。
-    index_payload = await rebuild_technical_material_index(preview_mode="cached")
-    if not isinstance(index_payload, dict) or not index_payload.get("tiers"):
-        index_payload = load_technical_material_index()
-    return await _mirror_technical_index_to_wiki(index_payload, mode=mode)
-
-
-async def generate_platform_wiki(
+async def generate_business_wiki(
     *,
     reference_path: str = "",
     mode: str = "create",
-    bid_type: str,
     fallback_to_deterministic: bool = False,
 ) -> dict[str, Any]:
-    normalized_bid_type = _normalize_wiki_bid_type(bid_type)
-    # 技术标：确定性镜像三级目录索引，独立于商务标的 LLM 链路。
-    if normalized_bid_type == TECHNICAL_BID_TYPE:
-        return await _generate_technical_wiki(mode=mode)
-    skill_name = _wiki_skill_name(normalized_bid_type)
+    """商务标 Wiki：LLM 精修主路径 + local_skill 回退 + 内联确定性回退。"""
+    bid_type = BUSINESS_BID_TYPE
     reference_root = Path(reference_path).expanduser().resolve() if reference_path else DEFAULT_REFERENCE_WIKI_PATH
     reference = _summarize_reference_wiki(reference_root)
     full_inventory = await _summarize_material_inventory()
-    material_inventory = _filter_inventory_for_bid_type(full_inventory, normalized_bid_type)
-    manifest_path = _write_wiki_manifest(reference, material_inventory, normalized_bid_type)
+    material_inventory = _filter_inventory_for_bid_type(full_inventory, bid_type)
+    manifest_path = _write_wiki_manifest(reference, material_inventory, bid_type)
     generator = "llm_refine"
     fallback_used = False
 
     try:
         # 主路径：LLM 调 wikibuild 产骨架，再语义精修。
-        skill_result = await asyncio.to_thread(_run_llm_wiki_skill, manifest_path, normalized_bid_type)
-        blueprint = _normalize_blueprint(_load_wiki_blueprint_result(skill_result))
-        blueprint["rootTitle"] = _wiki_root_title(normalized_bid_type)
+        skill_result = await asyncio.to_thread(_run_llm_wiki_skill, manifest_path, bid_type)
+        blueprint = normalize_blueprint(load_wiki_blueprint_result(skill_result))
+        blueprint["rootTitle"] = BUSINESS_WIKI_ROOT_TITLE
         opencode_output: dict[str, Any] = skill_result.get("opencodeOutput") or {}
     except Exception as llm_exc:
         # 一级回退：opencode 不可用/精修失败时，直接用确定性脚本骨架。
         try:
-            skill_result = await asyncio.to_thread(_run_local_wiki_skill, manifest_path, normalized_bid_type)
-            blueprint = _normalize_blueprint(_load_wiki_blueprint_result(skill_result))
-            blueprint["rootTitle"] = _wiki_root_title(normalized_bid_type)
+            skill_result = await asyncio.to_thread(
+                run_local_wiki_skill,
+                manifest_path,
+                skill_name=BUSINESS_WIKI_SKILL_NAME,
+                runner=BUSINESS_WIKI_RUNNER,
+            )
+            blueprint = normalize_blueprint(load_wiki_blueprint_result(skill_result))
+            blueprint["rootTitle"] = BUSINESS_WIKI_ROOT_TITLE
             opencode_output = skill_result.get("opencodeOutput") or {}
             opencode_output = {
                 **opencode_output,
@@ -2031,8 +1513,8 @@ async def generate_platform_wiki(
                 "status": "failed",
                 "sessionId": str(manifest_path),
                 "providerId": "local-skill",
-                "modelId": skill_name,
-                "receivedAt": _now_iso(),
+                "modelId": BUSINESS_WIKI_SKILL_NAME,
+                "receivedAt": now_iso(),
                 "parts": [
                     {
                         "type": "text",
@@ -2043,13 +1525,13 @@ async def generate_platform_wiki(
             if not fallback_to_deterministic:
                 raise PeripheralError(
                     502,
-                    f"创建 {normalized_bid_type} Wiki 调用 {skill_name} 失败：{exc}",
+                    f"创建 {bid_type} Wiki 调用 {BUSINESS_WIKI_SKILL_NAME} 失败：{exc}",
                     "WIKI_SKILL_FAILED",
                     {"opencodeOutput": failed_output},
                 ) from exc
             # 二级回退：仅在显式允许时使用内联确定性蓝图。
-            blueprint = _normalize_blueprint(
-                _build_material_wiki_blueprint(reference, material_inventory, normalized_bid_type)
+            blueprint = normalize_blueprint(
+                _build_material_wiki_blueprint(reference, material_inventory, bid_type)
             )
             opencode_output = {
                 **failed_output,
@@ -2058,8 +1540,7 @@ async def generate_platform_wiki(
             generator = "deterministic_fallback"
             fallback_used = True
 
-    imported = await _import_generated_wiki_blueprint(
-        normalized_bid_type,
+    imported = await business_material_store.import_generated_wiki_blueprint(
         root_title=blueprint["rootTitle"],
         root_markdown_content=blueprint.get("rootMarkdownContent") or "",
         nodes=blueprint["nodes"],
@@ -2068,8 +1549,8 @@ async def generate_platform_wiki(
     imported["generation"] = {
         "summary": blueprint["summary"],
         "referencePath": str(reference_root),
-        "bidType": normalized_bid_type,
-        "skill": skill_name,
+        "bidType": bid_type,
+        "skill": BUSINESS_WIKI_SKILL_NAME,
         "generator": generator,
         "fallbackUsed": fallback_used,
         "materialInventory": {

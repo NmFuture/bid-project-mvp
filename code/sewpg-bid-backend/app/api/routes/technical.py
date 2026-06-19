@@ -18,8 +18,8 @@ from app.services.technical_generation_service import technical_generation_servi
 from app.services.technical_gap_service import technical_gap_service
 from app.services.technical_audit_service import technical_audit_service
 from app.services.peripheral import PeripheralError
-from app.services.technical_material_store import TECHNICAL_BID_TYPE, technical_material_store
-from app.services.wiki_generation import generate_platform_wiki
+from app.services.technical_material_store import technical_material_store
+from app.services.technical_wiki_generation import generate_technical_wiki
 
 router = APIRouter()
 
@@ -671,10 +671,12 @@ async def technical_raw_tag_import_preview(request: Request) -> dict[str, Any]:
         raise PeripheralError(400, "请上传标签清单 Excel 文件。", "TAG_IMPORT_FILE_REQUIRED")
     file_bytes = await upload.read()
     use_fuzzy = str(form.get("useFuzzy") or "").strip().lower() in {"1", "true", "yes", "on"}
+    import_mode = "overwrite" if str(form.get("importMode") or "").strip().lower() == "overwrite" else "merge"
     return await technical_material_store.raw_tag_import_preview(
         target_path=str(form.get("targetPath") or ""),
         file_bytes=file_bytes,
         use_fuzzy=use_fuzzy,
+        import_mode=import_mode,
     )
 
 
@@ -789,10 +791,9 @@ async def technical_wiki_list(nodeId: str = "", bidType: str = "") -> dict[str, 
 
 @router.post("/api/technical/materials/wiki/bootstrap")
 async def technical_wiki_bootstrap(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await generate_platform_wiki(
+    return await generate_technical_wiki(
         reference_path=str(data.get("referencePath") or ""),
         mode=str(data.get("mode") or "create"),
-        bid_type=TECHNICAL_BID_TYPE,
         fallback_to_deterministic=bool(data.get("fallbackToDeterministic")),
     )
 

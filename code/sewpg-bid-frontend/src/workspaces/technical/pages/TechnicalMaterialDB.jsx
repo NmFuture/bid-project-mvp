@@ -1103,6 +1103,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   const [tagImportTargetPath, setTagImportTargetPath] = useState('')
   const [tagImportFile, setTagImportFile] = useState(null)
   const [tagImportUseFuzzy, setTagImportUseFuzzy] = useState(false)
+  const [tagImportMode, setTagImportMode] = useState('merge') // 'merge' | 'overwrite'
   const [tagImportPreview, setTagImportPreview] = useState(null)
   const [tagImportLoading, setTagImportLoading] = useState(false)
   const [tagImportError, setTagImportError] = useState('')
@@ -1594,6 +1595,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     setTagImportTargetPath(selectedFolderPath || activeBidType)
     setTagImportFile(null)
     setTagImportUseFuzzy(false)
+    setTagImportMode('merge')
     setTagImportPreview(null)
     setTagImportStep('pick')
     setTagImportError('')
@@ -1625,6 +1627,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
       payload.append('file', tagImportFile, tagImportFile.name)
       payload.append('targetPath', tagImportTargetPath)
       payload.append('useFuzzy', tagImportUseFuzzy ? 'true' : 'false')
+      payload.append('importMode', tagImportMode)
       const result = await technicalMaterialsAPI.raw.tagImportPreview(payload)
       setTagImportPreview(result)
       // 默认全选 matched，不选 fuzzy
@@ -1663,13 +1666,23 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
       if (!pickedId) return
       const candidate = (row.candidates || []).find((c) => c.fileId === pickedId)
       if (!candidate) return
-      const merged = normalizeTagList([...(candidate.tags || []), ...(row.tags || [])])
+      const incoming = normalizeTagList(row.tags || [])
+      // 覆盖模式:Excel 有标签整条替换;留空则保留原候选标签(防误删),与后端 matched/fuzzy 一致。
+      const merged = tagImportMode === 'overwrite'
+        ? (incoming.length ? incoming : normalizeTagList(candidate.tags || []))
+        : normalizeTagList([...(candidate.tags || []), ...incoming])
       items.push({ fileId: pickedId, tags: merged })
     })
 
     if (!items.length) {
       setTagImportError('没有勾选任何要导入的条目。')
       return
+    }
+    if (tagImportMode === 'overwrite') {
+      const confirmed = window.confirm(
+        `将以本次清单覆盖 ${items.length} 个文件的标签，原标签将被替换（Excel 未填标签的文件保持原样）。是否继续？`
+      )
+      if (!confirmed) return
     }
     setTagImportLoading(true)
     setTagImportError('')
@@ -2539,6 +2552,38 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                     )}
                   </label>
 
+                  <fieldset className="block text-sm text-on-surface-variant">
+                    <legend className="mb-1.5 block">导入方式</legend>
+                    <div className="space-y-1.5">
+                      <label className="flex items-start gap-2">
+                        <input
+                          type="radio"
+                          name="tagImportMode"
+                          checked={tagImportMode === 'merge'}
+                          onChange={() => setTagImportMode('merge')}
+                          className="mt-0.5 h-4 w-4 accent-primary"
+                        />
+                        <span className="min-w-0">
+                          <span className="font-medium text-on-surface">合并已有标签（默认）</span>
+                          <span className="block text-xs text-outline">在文件原有标签基础上追加，不删除已有标签。</span>
+                        </span>
+                      </label>
+                      <label className="flex items-start gap-2">
+                        <input
+                          type="radio"
+                          name="tagImportMode"
+                          checked={tagImportMode === 'overwrite'}
+                          onChange={() => setTagImportMode('overwrite')}
+                          className="mt-0.5 h-4 w-4 accent-primary"
+                        />
+                        <span className="min-w-0">
+                          <span className="font-medium text-on-surface">覆盖为本次清单</span>
+                          <span className="block text-xs text-outline">以 Excel 为准替换文件标签；Excel 未填标签的文件保持原样。</span>
+                        </span>
+                      </label>
+                    </div>
+                  </fieldset>
+
                   <label className="flex items-center gap-2 text-sm text-on-surface-variant">
                     <input
                       type="checkbox"
@@ -2553,6 +2598,11 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                 <>
                   {tagImportPreview?.stats && (
                     <div className="flex flex-wrap gap-2 text-xs">
+                      {tagImportMode === 'overwrite' ? (
+                        <span className="rounded-full bg-error-container/50 px-3 py-1 font-medium text-error">覆盖模式：以清单为准替换标签</span>
+                      ) : (
+                        <span className="rounded-full bg-secondary-container px-3 py-1 font-medium text-on-secondary-container">合并模式：追加标签</span>
+                      )}
                       <span className="rounded-full bg-primary/10 px-3 py-1 font-medium text-primary">将导入 {tagImportPreview.stats.matched}</span>
                       <span className="rounded-full bg-surface-container-high px-3 py-1 text-on-surface-variant">AI 建议 {(tagImportPreview.fuzzy || []).length}</span>
                       <span className="rounded-full bg-surface-container-high px-3 py-1 text-on-surface-variant">歧义 {tagImportPreview.stats.ambiguous}</span>

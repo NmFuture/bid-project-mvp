@@ -24,9 +24,23 @@ from app.services.peripheral import PeripheralError
 
 # Excel 表头识别用的关键词
 _FILE_NAME_HEADERS = ("文件名称", "文件名", "名称")
+# 属性列表头：以「属性」开头（属性1/属性2…）或命中这些同义词
 _TAG_HEADER_PREFIX = "属性"
-# file_name 以这些前缀开头的占位行直接跳过
-_PLACEHOLDER_PREFIXES = ("待填写",)
+_TAG_HEADER_ALIASES = ("标签", "分类", "关键词", "tag", "tags")
+# file_name 等于/开头是这些占位文本的行直接跳过（不当成真实文件名去匹配）
+_PLACEHOLDER_PREFIXES = ("待填写", "待补充", "待定", "暂无")
+_PLACEHOLDER_EXACT = {"无", "无.", "/", "\\", "-", "—", "n/a", "na", "null", "none", "暂无", "/无"}
+# 全角→半角的常见标点/数字映射，用于把 Excel 与库里「语义同名」的差异抹平。
+# 例：EW6．25-220（全角点）↔ EW6.25-220，变桨系统（一）↔ 变桨系统(一)。
+_FULLWIDTH_MAP = {
+    "（": "(", "）": ")", "［": "[", "］": "]", "｛": "{", "｝": "}",
+    "．": ".", "，": ",", "、": ",", "：": ":", "；": ";",
+    "－": "-", "—": "-", "～": "~", "／": "/", "＼": "\\",
+    "　": " ",
+}
+# 全角 ＡＺ ａｚ ０９ → 半角（U+FF01..U+FF5E 段，统一减 0xFEE0）
+for _cp in range(0xFF01, 0xFF5F):
+    _FULLWIDTH_MAP.setdefault(chr(_cp), chr(_cp - 0xFEE0))
 # 仅当文件名以这些「真实扩展名」结尾时才剥离；避免把机型号里的小数点
 # （如 EW6.25-220）误判成扩展名而截断文件名。
 _KNOWN_EXTENSIONS = {
@@ -61,6 +75,15 @@ def _cell_text(value: Any) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _fold(text: str) -> str:
+    """把全角标点/数字/字母折叠成半角，便于「语义同名」比对。
+
+    只做字符映射，不删任何字符——保留原长度语义，避免误把不同名字折成同名。
+    """
+
+    return "".join(_FULLWIDTH_MAP.get(ch, ch) for ch in str(text or ""))
+
+
 def _file_stem(name: str) -> str:
     """去掉「真实扩展名」并归一，用作匹配键。
 
@@ -79,9 +102,60 @@ def _file_stem(name: str) -> str:
 
 
 def _match_key(name: str) -> str:
-    """匹配用的归一键：去扩展名 + casefold（中文不受影响，兼容英文大小写）。"""
+    """匹配用的归一键：去扩展名 + 全角折半角 + casefold。
 
-    return _file_stem(name).casefold()
+    全角折叠让 ``EW6．25-220``（全角点）能与 ``EW6.25-220`` 精确命中，
+    ``变桨系统（一）`` 能与 ``变桨系统(一)`` 命中，而不必掉进模糊匹配。
+    """
+
+    return _fold(_file_stem(name)).casefold()
+
+
+def _is_placeholder(file_name: str) -> bool:
+    """判断文件名是否是占位/空值，不应作为真实文件去匹配。"""
+
+    if any(file_name.startswith(prefix) for prefix in _PLACEHOLDER_PREFIXES):
+        return True
+    return _fold(file_name).strip().casefold() in _PLACEHOLDER_EXACT
+
+
+def _is_tag_header(text: str) -> bool:
+    """判断某列表头是否是「属性/标签」列。
+
+    主格式是「属性1/属性2…」；同时兼容标签N/分类/关键词等同义列名。
+    需注意避免把文件名列本身吃进来（调用方已用 ``i != file_col`` 排除）。
+    """
+
+    if not text:
+        return False
+    if text.startswith(_TAG_HEADER_PREFIX):
+        return True
+    folded = _fold(text).casefold()
+    # 允许「标签」「标签1」「分类」「关键词」「tag」「tags」等，及其带序号变体
+    base = re.sub(r"[\s\d]+$", "", folded)
+    return base in _TAG_HEADER_ALIASES
+
+
+# 标签值里需要剥掉的序号前缀：1. / 1、/ 1) / （1）/ 一、 等
+_TAG_PREFIX_RE = re.compile(r"^\s*(?:[（(]?\d+[)）.．、:：]|[一二三四五六七八九十]+[、.．:：])\s*")
+
+
+def _clean_tag_value(text: str) -> list[str]:
+    """对单个属性单元格做更强清洗：拆顿号/斜杠、去序号前缀、丢纯符号。
+
+    返回该单元格里拆出的若干 tag 候选（未做全局去重，交 normalize 收尾）。
+    """
+
+    folded = _fold(text)
+    parts = re.split(r"[、,；;/\n\r\t]+", folded)
+    out: list[str] = []
+    for part in parts:
+        item = _TAG_PREFIX_RE.sub("", _cell_text(part))
+        # 丢掉清洗后只剩标点/符号的碎片（如 "-"、"()"、"."）
+        if not item or not re.search(r"[\w一-鿿]", item):
+            continue
+        out.append(item)
+    return out
 
 
 def _locate_header(rows: list[tuple[Any, ...]]) -> tuple[int, dict[str, int]]:
@@ -96,11 +170,16 @@ def _locate_header(rows: list[tuple[Any, ...]]) -> tuple[int, dict[str, int]]:
             (i for i, text in enumerate(cells) if text in _FILE_NAME_HEADERS),
             None,
         )
-        tag_cols = [i for i, text in enumerate(cells) if text.startswith(_TAG_HEADER_PREFIX)]
+        tag_cols = [
+            i
+            for i, text in enumerate(cells)
+            if i != file_col and _is_tag_header(text)
+        ]
         if file_col is not None and tag_cols:
             mapping = {"file": file_col, "tags": tag_cols}
-            # 目录层级列 = 文件名列之前的所有列
-            mapping["levels"] = list(range(0, file_col))
+            # 目录层级列 = 文件名列之前、且不是属性列的所有列
+            tag_set = set(tag_cols)
+            mapping["levels"] = [i for i in range(0, file_col) if i not in tag_set]
             return idx, mapping
     raise PeripheralError(
         400,
@@ -140,11 +219,12 @@ def parse_tag_excel(file_bytes: bytes) -> list[TagImportRow]:
         file_name = _cell_text(row[file_col]) if file_col < len(row) else ""
         if not file_name:
             continue
-        if any(file_name.startswith(prefix) for prefix in _PLACEHOLDER_PREFIXES):
+        if _is_placeholder(file_name):
             continue
-        tag_values = [
-            _cell_text(row[col]) for col in tag_cols if col < len(row) and _cell_text(row[col])
-        ]
+        tag_values: list[str] = []
+        for col in tag_cols:
+            if col < len(row):
+                tag_values.extend(_clean_tag_value(_cell_text(row[col])))
         tags = normalize_material_tags(tag_values)
         if not tags:
             continue
@@ -179,34 +259,45 @@ def _disambiguate(candidates: list[dict[str, Any]], level_path: list[str]) -> di
         return None
     # 从最深一级目录词往上找，取第一个能唯一命中的层级词
     for level in reversed(level_path):
-        level_key = _cell_text(level).casefold()
+        level_key = _fold(_cell_text(level)).casefold()
         if not level_key:
             continue
         hits = [
             item
             for item in candidates
             if level_key
-            in {seg.casefold() for seg in str(item.get("folderPath") or "").split("/") if seg}
+            in {
+                _fold(seg).casefold()
+                for seg in str(item.get("folderPath") or "").split("/")
+                if seg
+            }
         ]
         if len(hits) == 1:
             return hits[0]
     return None
 
 
-def _merge_preview(existing: Any, incoming: list[str]) -> dict[str, Any]:
+def _merge_preview(existing: Any, incoming: list[str], *, mode: str = "merge") -> dict[str, Any]:
     existing_tags = normalize_material_tags(existing)
-    merged = normalize_material_tags([*existing_tags, *incoming])
+    incoming_tags = normalize_material_tags(incoming)
+    if mode == "overwrite":
+        # 覆盖模式:Excel 写了标签的行整条替换;留空的行保留原标签(防止空格误删)。
+        merged = incoming_tags if incoming_tags else existing_tags
+    else:
+        merged = normalize_material_tags([*existing_tags, *incoming_tags])
     added = [tag for tag in merged if tag not in existing_tags]
+    removed = [tag for tag in existing_tags if tag not in merged]
     return {
         "existingTags": existing_tags,
-        "incomingTags": normalize_material_tags(incoming),
+        "incomingTags": incoming_tags,
         "mergedTags": merged,
         "addedTags": added,
+        "removedTags": removed,
     }
 
 
-def _matched_entry(row: TagImportRow, item: dict[str, Any]) -> dict[str, Any]:
-    merge = _merge_preview(item.get("tags"), row.tags)
+def _matched_entry(row: TagImportRow, item: dict[str, Any], *, mode: str = "merge") -> dict[str, Any]:
+    merge = _merge_preview(item.get("tags"), row.tags, mode=mode)
     return {
         **row.to_dict(),
         "fileId": str(item.get("id") or ""),
@@ -225,7 +316,7 @@ def _candidate_brief(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_preview(rows: list[TagImportRow], files: list[dict[str, Any]]) -> dict[str, Any]:
+def build_preview(rows: list[TagImportRow], files: list[dict[str, Any]], *, mode: str = "merge") -> dict[str, Any]:
     """把解析行与目标子树文件做匹配，返回分区预览。"""
 
     index = _index_files_by_match_key(files)
@@ -236,11 +327,11 @@ def build_preview(rows: list[TagImportRow], files: list[dict[str, Any]]) -> dict
     for row in rows:
         candidates = index.get(_match_key(row.file_name), [])
         if len(candidates) == 1:
-            matched.append(_matched_entry(row, candidates[0]))
+            matched.append(_matched_entry(row, candidates[0], mode=mode))
         elif len(candidates) > 1:
             picked = _disambiguate(candidates, row.level_path)
             if picked is not None:
-                matched.append(_matched_entry(row, picked))
+                matched.append(_matched_entry(row, picked, mode=mode))
             else:
                 ambiguous.append(
                     {

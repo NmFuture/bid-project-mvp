@@ -293,21 +293,11 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const previewBusy = previewRunning || refreshingWiki || rebuildingWiki
   const previewTotal = Number(previewStatus?.total || 0)
   const previewDone = Number(previewStatus?.done || 0)
-  const previewPct = previewTotal > 0 ? Math.min(100, Math.round((previewDone / previewTotal) * 100)) : 0
   const previewBanner = previewRunning ? (
     <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
       <div className="flex items-center justify-between text-[13px] leading-[1.6] text-on-surface-variant">
-        <span className="flex items-center gap-2">
-          <span className="material-symbols-outlined animate-spin text-[16px] text-primary">progressbar</span>
-          {previewStatus?.message || '正在后台生成文件卡片内容预览…'}
-        </span>
+        <span>{previewStatus?.message || '正在后台生成文件卡片内容预览…'}</span>
         {previewTotal > 0 ? <span className="font-medium text-primary">{previewDone}/{previewTotal}</span> : null}
-      </div>
-      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-surface-container-high">
-        <div
-          className="h-full rounded-full bg-primary transition-all duration-500"
-          style={{ width: `${previewTotal > 0 ? previewPct : 15}%` }}
-        />
       </div>
     </div>
   ) : null
@@ -368,20 +358,20 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         basePath={materialsBasePath}
       />
       {previewBanner}
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-12 xl:items-stretch">
-        <div className="xl:col-span-3 bg-surface-container-lowest rounded-lg border border-outline-variant/45 flex flex-col max-h-[420px] xl:min-h-[720px] xl:max-h-[720px] overflow-hidden">
-          <div className="px-4 py-4 border-b border-surface-container-high">
+      <div className="grid grid-cols-1 gap-6 xl:h-[calc(100dvh-12rem)] xl:grid-cols-12 xl:items-stretch">
+        <div className="xl:col-span-3 bg-surface-container-lowest rounded-lg border border-outline-variant/45 flex min-h-[320px] max-h-[60vh] flex-col overflow-hidden xl:min-h-0 xl:max-h-none">
+          <div className="shrink-0 px-4 py-4 border-b border-surface-container-high">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 <h3 className="text-[14px] leading-[1.6] font-semibold text-on-surface">目录树</h3>
               </div>
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-1">{renderTree(tree)}</div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-3 space-y-1">{renderTree(tree)}</div>
         </div>
 
         <div className="xl:col-span-9 flex min-w-0 flex-col">
-          <div className="flex min-h-[520px] max-h-[720px] flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest">
+          <div className="flex min-h-[520px] max-h-[75vh] flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest xl:max-h-none">
             <div className="min-h-0 flex-1 overflow-y-auto bg-white p-6">
               {selectedNode?.markdownContent ? (
                 <MarkdownLite content={selectedNode.markdownContent} compact />
