@@ -104,7 +104,7 @@ def build_business_template_navigation_prompt(
     return f"""
 Use the {SKILL_NAME} skill.
 
-你是招投标专家和模板识别者。脚本只提供文档浏览器、Word 切片器和结构校验器；不要等待脚本给候选标题，也不要让脚本替你判断“投标文件格式”章节在哪里。
+你是招投标专家、模板提取者和边界裁决者。脚本只提供 DOCX 导航阅读器、块号尺子、Word 切片器和结构校验器；不要等待脚本给候选标题，也不要让脚本替你判断“投标文件格式”章节在哪里。
 
 请用 Bash 执行 `btplnav` 小输出工作流，timeout 设置为 600000 毫秒或更高：
 
@@ -119,10 +119,12 @@ btplnav status {manifest_path}
 btplnav finalize {manifest_path}
 
 工作要求：
-- 遵循 skill 中的总体原则，自主浏览全文，按语义找到投标/响应文件格式相关区域以及其中需要填写、粘贴材料或签章的模板。
-- 自主识别模板并裁决边界，提交每个模板的 sourceDocumentId、title、templateType、startBlockId、endBlockId、confidence、reason。
-- 不要额外套用未写在 skill 里的排除清单；只根据 skill 原则和原文上下文判断。
-- validate 失败时用 overview/search/window/read 回查后重新 submit；不要编造块号。
+- 遵循 skill 中的执行流程，自主浏览全文，按语义找到商务标投标/响应文件格式相关区域；该区域可能会划分商务部分和技术部分，只提取商务部分；再建立粗章节地图；不要依赖固定标题或固定搜索词。
+- 必须逐个粗章节内部下钻；遇到层级子项、表格标题、独立文件标题、签章/填写区、证明材料位置时，用“是否能成为独立编制任务”裁决是否独立成模板。
+- finalize 前必须做父级集合回查；父级范围若包含多个子项、多张表、多个文件格式或多项证明材料，继续回查并细拆。
+- 自主识别模板并裁决边界，提交每个模板的 sourceDocumentId、title、templateType、startBlockId、endBlockId、confidence、reason；reason 要说明独立编制价值。
+- 不要额外套用未写在 skill 里的排除清单；只根据 skill 流程、裁决准则和原文上下文判断。
+- validate 只做结构校验，不代表业务粒度正确；validate 失败时用 overview/search/window/read 回查后重新 submit；不要编造块号。
 - 必须执行 btplnav finalize，最终只返回 finalize stdout 的 JSON。
 
 项目：{project_id}

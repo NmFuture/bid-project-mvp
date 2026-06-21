@@ -117,6 +117,31 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
             self.assertFalse((document_output / "candidate_templates.json").exists())
             self.assertFalse((document_output / "regions.json").exists())
 
+    def test_btplnav_navigation_exposes_structure_not_script_heading_judgment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.docx"
+            manifest = root / "manifest.json"
+            output_dir = root / "out"
+            build_business_format_docx(source)
+            write_manifest(manifest, source=source, output_dir=output_dir)
+
+            prepared = stdout_json(run_btplnav("prepare", manifest))
+            document_output = Path(prepared["documents"][0]["outputDir"])
+            stored_blocks = json.loads((document_output / "blocks.json").read_text(encoding="utf-8"))
+            overview = stdout_json(run_btplnav("overview", manifest, "--page", "1", "--page-size", "20"))
+
+            preview_block = prepared["documents"][0]["blocksPreview"][0]
+            stored_block = stored_blocks[0]
+            overview_block = overview["blocks"][0]
+
+            for block in (preview_block, stored_block, overview_block):
+                self.assertIn("blockId", block)
+                self.assertIn("bodyIndex", block)
+                self.assertIn("styleName", block)
+                self.assertIn("isPageFirstNonEmpty", block)
+                self.assertNotIn("isLikelyHeading", block)
+
     def test_btplnav_submit_validate_and_finalize_slice_ai_ranges(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -267,24 +292,45 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
         skill_text = SKILL_MD.read_text(encoding="utf-8")
 
         self.assertIn("招投标专家", skill_text)
-        self.assertIn("AI 负责业务判断", skill_text)
-        self.assertIn("文档浏览器", skill_text)
+        self.assertIn("AI 负责判断", skill_text)
+        self.assertIn("DOCX 导航阅读器", skill_text)
         self.assertIn("Word 切片器", skill_text)
         self.assertIn("结构校验器", skill_text)
-        self.assertIn("需要填写、粘贴材料或签章的完整模板单元", skill_text)
-        self.assertIn("总体原则", skill_text)
+        self.assertIn("执行流程", skill_text)
+        self.assertIn("逐个粗章节内部下钻", skill_text)
+        self.assertIn("独立编制任务", skill_text)
+        self.assertIn("父级集合回查", skill_text)
+        self.assertIn("证明材料类章节不能简单排除", skill_text)
+        self.assertIn("按语义寻找", skill_text)
+        self.assertIn("不要依赖固定标题或固定搜索词", skill_text)
+        self.assertIn("只提取商务部分", skill_text)
+        self.assertIn("技术部分", skill_text)
         self.assertIn("封面", skill_text)
         self.assertIn("第一个有意义标题", skill_text)
-        self.assertIn("有明确标题", skill_text)
-        self.assertIn("尽可能细", skill_text)
-        self.assertIn("没有明确标题", skill_text)
-        self.assertIn("归入父标题", skill_text)
+        self.assertIn("明确子标题优先细拆", skill_text)
+        self.assertIn("层级编号或同级子项标题", skill_text)
+        self.assertIn("独立文件标题", skill_text)
+        self.assertIn("材料占位章节", skill_text)
         self.assertIn("btplnav prepare", skill_text)
         self.assertIn("btplnav submit", skill_text)
         self.assertIn("btplnav finalize", skill_text)
-        self.assertIn("目录页、目录清单、普通说明、纯噪声不作为模板输出", skill_text)
+        self.assertIn("目录页、附件总清单、普通说明、纯噪声", skill_text)
         self.assertNotIn("合同附件", skill_text)
         self.assertNotIn("履约保证金格式", skill_text)
+        for overfit_example in (
+            "附件 1",
+            "附件 2",
+            "附件 7",
+            "7A",
+            "7B",
+            "7D-1",
+            "7I-2",
+            "表2 B",
+            "资产负债表",
+            "附件7D-2表",
+            "附件7C",
+        ):
+            self.assertNotIn(overfit_example, skill_text)
         for overfit_rule in (
             "candidate-batch",
             "boundary-batch",

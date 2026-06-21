@@ -189,7 +189,7 @@ class BusinessTemplateExtractorAgenticTests(unittest.TestCase):
     def test_skill_document_keeps_agentic_flow_and_drops_candidate_batches(self) -> None:
         text = SKILL_MD.read_text(encoding="utf-8")
 
-        self.assertIn("文档浏览器", text)
+        self.assertIn("DOCX 导航阅读器", text)
         self.assertIn("Word 切片器", text)
         self.assertIn("结构校验器", text)
         self.assertIn("AI", text)
@@ -207,7 +207,13 @@ class BusinessTemplateExtractorAgenticTests(unittest.TestCase):
         self.assertIn("btplnav prepare", prompt)
         self.assertIn("btplnav submit", prompt)
         self.assertIn("自主", prompt)
-        self.assertIn("遵循 skill 中的总体原则", prompt)
+        self.assertIn("遵循 skill 中的执行流程", prompt)
+        self.assertIn("逐个粗章节内部下钻", prompt)
+        self.assertIn("独立编制任务", prompt)
+        self.assertIn("父级集合回查", prompt)
+        self.assertIn("只提取商务部分", prompt)
+        self.assertIn("技术部分", prompt)
+        self.assertIn("validate 只做结构校验", prompt)
         self.assertIn("不要额外套用未写在 skill 里的排除清单", prompt)
         self.assertNotIn("合同附件", prompt)
         self.assertNotIn("履约保证金格式", prompt)
