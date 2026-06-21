@@ -77,3 +77,39 @@ export const groupTechnicalInterpretationItems = (items = []) => {
       }, {}),
     }))
 }
+
+export const TECHNICAL_INTERPRETATION_TABLE_COLUMN_COUNT = 5
+
+export const technicalInterpretationItemKey = (item = {}, index = 0, groupName = '') =>
+  [groupName, item.id || item.rowNo || `item-${index}`]
+    .filter(Boolean)
+    .join('::')
+
+export const technicalInterpretationEvidenceRowKey = (itemKey = '') =>
+  itemKey ? `${itemKey}::evidence` : 'evidence'
+
+export const nextTechnicalInterpretationEvidenceKey = (currentKey = '', targetKey = '') =>
+  currentKey === targetKey ? '' : targetKey
+
+export const buildTechnicalInterpretationTableRows = (items = [], expandedEvidenceKey = '', groupName = '') =>
+  (Array.isArray(items) ? items : []).flatMap((item, index) => {
+    const itemKey = technicalInterpretationItemKey(item, index, groupName)
+    const rows = [
+      {
+        type: 'item',
+        key: itemKey,
+        item,
+      },
+    ]
+
+    if (expandedEvidenceKey === itemKey) {
+      rows.push({
+        type: 'evidence',
+        key: technicalInterpretationEvidenceRowKey(itemKey),
+        item,
+        colSpan: TECHNICAL_INTERPRETATION_TABLE_COLUMN_COUNT,
+      })
+    }
+
+    return rows
+  })

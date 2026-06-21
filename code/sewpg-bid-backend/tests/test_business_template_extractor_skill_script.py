@@ -275,20 +275,23 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
         self.assertIn("总体原则", skill_text)
         self.assertIn("封面", skill_text)
         self.assertIn("第一个有意义标题", skill_text)
+        self.assertIn("有明确标题", skill_text)
+        self.assertIn("尽可能细", skill_text)
+        self.assertIn("没有明确标题", skill_text)
+        self.assertIn("归入父标题", skill_text)
         self.assertIn("btplnav prepare", skill_text)
         self.assertIn("btplnav submit", skill_text)
         self.assertIn("btplnav finalize", skill_text)
-        self.assertIn("父标题若承载一组需要整体编制或提交的子表、材料或附件，优先作为一个模板", skill_text)
-        self.assertIn("子项只有在脱离父级也必须单独填写、签章或交付时，才拆成独立模板", skill_text)
-        self.assertIn("目录页、目录清单、普通说明、合同附件、履约保证金格式、纯噪声不作为模板输出", skill_text)
+        self.assertIn("目录页、目录清单、普通说明、纯噪声不作为模板输出", skill_text)
+        self.assertNotIn("合同附件", skill_text)
+        self.assertNotIn("履约保证金格式", skill_text)
         for overfit_rule in (
             "candidate-batch",
             "boundary-batch",
             "candidate_templates.json",
             "sub_table_code + near_following_table",
-            "表2 E",
-            "表3 A",
-            "表1 A-1",
+            "标段一",
+            "标段二",
             "7D-1表",
             "承诺书/声明函/保密承诺书/保证函格式",
             "裁决规则",

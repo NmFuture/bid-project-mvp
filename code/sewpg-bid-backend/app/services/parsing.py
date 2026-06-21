@@ -4938,11 +4938,11 @@ manifest：{skill_manifest_path}
 必须用 Bash 按顺序执行 `s1parse` 小输出链路，timeout 设置为 600000 毫秒或更高：
 
 s1parse prepare {skill_manifest_path}
-s1parse overview {skill_manifest_path} --page 1 --page-size 30
-s1parse search {skill_manifest_path} "<query>" --limit 20
-s1parse read {skill_manifest_path} <evidenceId> --mode summary --max-chars 2000
+s1parse overview {skill_manifest_path} --page 1 --page-size 60
+s1parse search {skill_manifest_path} "<query>" --limit 40
+s1parse read {skill_manifest_path} <evidenceId> --mode summary --max-chars 4000
 s1parse window {skill_manifest_path} <evidenceId> --before 4 --after 6
-s1parse table {skill_manifest_path} <tableId> --rows 1-12 --max-chars 4000
+s1parse table {skill_manifest_path} <tableId> --rows 1-24 --max-chars 8000
 s1parse submit {skill_manifest_path} projectBasics '<json>'
 s1parse submit {skill_manifest_path} qualificationRequirements '<json>'
 s1parse submit {skill_manifest_path} bidderInstructions '<json>'
@@ -4953,6 +4953,8 @@ s1parse status {skill_manifest_path}
 s1parse finalize {skill_manifest_path}
 
 禁止用 opencode 的 read 工具读取或打印解析中间产物的大 JSON；证据定位必须通过 s1parse 小输出导航命令完成。禁止调用 Task/subagent/子代理/任务委派工具。
+
+表格类内容必须完整读取后再提交：遇到投标人须知前附表、商务评分表、否决/符合性审查表等目标表格时，先确认表格总行数，再连续读取完整表格；如输出提示仍有剩余行或内容被截断，必须继续读取剩余行/完整行。提交时不得基于预览、summary 或局部行推断，不得摘要改写原表格编列内容。
 
 只使用 s1parse 返回过的 evidenceId，不要编造证据。提交值必须能被对应证据文本直接支撑，项目基础信息至少为项目名称、招标人、递交截止时间提交字段级 evidenceIds。validate 失败时继续回查并重新 submit；若仍失败，必须让 workflow 暴露 missingTargets 或 validationErrors，不能把失败结果说成成功。必须执行 finalize，最终结构化 JSON 必须由 finalize 写入 manifest.structuredResultPath。
 

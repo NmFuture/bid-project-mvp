@@ -119,12 +119,9 @@ btplnav status {manifest_path}
 btplnav finalize {manifest_path}
 
 工作要求：
-- 自主浏览全文，按语义找到投标/响应文件格式相关区域以及其中需要填写、粘贴材料或签章的模板。
+- 遵循 skill 中的总体原则，自主浏览全文，按语义找到投标/响应文件格式相关区域以及其中需要填写、粘贴材料或签章的模板。
 - 自主识别模板并裁决边界，提交每个模板的 sourceDocumentId、title、templateType、startBlockId、endBlockId、confidence、reason。
-- 投标/响应文件封面或扉页若包含投标人、法定代表人、日期、签字盖章等填写项，也属于模板判断对象。
-- 父标题若承载一组需要整体编制或提交的子表/材料，优先作为一个模板；“表1 标段一”这类明细子表通常归入父模板，不单独拆。
-- 模板 title 应对应 startBlockId 范围内的第一个有意义标题；若从更早的独立标题开始，应调整 title 或边界，避免标题与切片内容错位。
-- 目录页、目录清单、普通说明、合同附件、履约保证金格式等非投标文件模板不要提交。
+- 不要额外套用未写在 skill 里的排除清单；只根据 skill 原则和原文上下文判断。
 - validate 失败时用 overview/search/window/read 回查后重新 submit；不要编造块号。
 - 必须执行 btplnav finalize，最终只返回 finalize stdout 的 JSON。
 

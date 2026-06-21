@@ -22,7 +22,10 @@ import {
   technicalProjectParseResultNavigation,
 } from '../technicalProjectRoutes'
 import {
+  TECHNICAL_INTERPRETATION_TABLE_COLUMN_COUNT,
+  buildTechnicalInterpretationTableRows,
   groupTechnicalInterpretationItems,
+  nextTechnicalInterpretationEvidenceKey,
   technicalInterpretationEvidenceSummary,
   technicalInterpretationStatusLabel,
 } from './technicalInterpretation'
@@ -369,75 +372,107 @@ function TechnicalEvidenceDetails({ item }) {
 }
 
 function TechnicalInterpretationView({ groups = [] }) {
+  const [expandedEvidenceKey, setExpandedEvidenceKey] = useState('')
   if (!groups.length) return null
   return (
     <div className="flex flex-col gap-4">
-      {groups.map((group) => (
-        <section key={group.groupName} className="border border-surface-container-high rounded-md overflow-hidden bg-white">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
-            <h4 className="text-sm font-semibold text-on-surface">{group.groupName}</h4>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-outline">
-              <span>{group.items.length} 条</span>
-              {Object.entries(group.counts || {}).map(([status, count]) => (
-                <span key={status} className={`rounded-md px-2 py-0.5 font-semibold ${interpretationStatusClass(status)}`}>
-                  {technicalInterpretationStatusLabel(status)} {count}
-                </span>
-              ))}
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full table-fixed text-sm min-w-[1180px]">
-              <colgroup>
-                <col className="w-40" />
-                <col className="w-[22rem]" />
-                <col className="w-[28rem]" />
-                <col className="w-[22rem]" />
-                <col className="w-32" />
-              </colgroup>
-              <thead>
-                <tr className="border-b border-surface-container-high">
-                  <th className="px-4 py-2 text-center font-semibold text-on-surface">二级类别</th>
-                  <th className="px-4 py-2 text-center font-semibold text-on-surface">具体内容</th>
-                  <th className="px-4 py-2 text-center font-semibold text-on-surface">解读结论</th>
-                  <th className="px-4 py-2 text-center font-semibold text-on-surface">原文依据</th>
-                  <th className="px-4 py-2 text-center font-semibold text-on-surface">查看证据</th>
-                </tr>
-              </thead>
-              <tbody>
-                {group.items.map((item) => (
-                  <tr key={item.id || item.rowNo} className="border-b border-surface-container-high align-top last:border-b-0">
-                    <td className="px-4 py-3 text-on-surface">
-                      <div className="font-semibold">{item.secondaryCategory || '-'}</div>
-                      {item.primaryCategory && item.primaryCategory !== group.groupName ? (
-                        <div className="mt-1 text-xs text-outline">{item.primaryCategory}</div>
-                      ) : null}
-                    </td>
-                    <td className="px-4 py-3 leading-6 text-on-surface-variant">{item.specificContent || '-'}</td>
-                    <td className="px-4 py-3">
-                      <span className={`mb-2 inline-flex rounded-md px-2 py-0.5 text-xs font-semibold ${interpretationStatusClass(item.status)}`}>
-                        {technicalInterpretationStatusLabel(item.status)}
-                      </span>
-                      <div className="leading-6 text-on-surface">{item.conclusion || '-'}</div>
-                      {item.status === 'needs_spec' && item.neededSourceName ? (
-                        <div className="mt-1 text-xs font-semibold text-primary">需补充/核对：{item.neededSourceName}</div>
-                      ) : null}
-                    </td>
-                    <td className="px-4 py-3 leading-6 text-on-surface-variant">{technicalInterpretationEvidenceSummary(item)}</td>
-                    <td className="px-4 py-3 text-center">
-                      <details className="text-left">
-                        <summary className="inline-flex cursor-pointer items-center rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim">
-                          查看证据
-                        </summary>
-                        <TechnicalEvidenceDetails item={item} />
-                      </details>
-                    </td>
-                  </tr>
+      {groups.map((group) => {
+        const rows = buildTechnicalInterpretationTableRows(group.items, expandedEvidenceKey, group.groupName)
+        return (
+          <section key={group.groupName} className="border border-surface-container-high rounded-md overflow-hidden bg-white">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
+              <h4 className="text-sm font-semibold text-on-surface">{group.groupName}</h4>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-outline">
+                <span>{group.items.length} 条</span>
+                {Object.entries(group.counts || {}).map(([status, count]) => (
+                  <span key={status} className={`rounded-md px-2 py-0.5 font-semibold ${interpretationStatusClass(status)}`}>
+                    {technicalInterpretationStatusLabel(status)} {count}
+                  </span>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      ))}
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full table-fixed text-sm min-w-[1180px]">
+                <colgroup>
+                  <col className="w-40" />
+                  <col className="w-[22rem]" />
+                  <col className="w-[28rem]" />
+                  <col className="w-[22rem]" />
+                  <col className="w-32" />
+                </colgroup>
+                <thead>
+                  <tr className="border-b border-surface-container-high">
+                    <th className="px-4 py-2 text-center font-semibold text-on-surface">二级类别</th>
+                    <th className="px-4 py-2 text-center font-semibold text-on-surface">具体内容</th>
+                    <th className="px-4 py-2 text-center font-semibold text-on-surface">解读结论</th>
+                    <th className="px-4 py-2 text-center font-semibold text-on-surface">原文依据</th>
+                    <th className="px-4 py-2 text-center font-semibold text-on-surface">查看证据</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => {
+                    const item = row.item
+                    if (row.type === 'evidence') {
+                      return (
+                        <tr key={row.key} className="border-b border-surface-container-high align-top last:border-b-0">
+                          <td colSpan={row.colSpan || TECHNICAL_INTERPRETATION_TABLE_COLUMN_COUNT} className="bg-surface-container-low px-4 py-3">
+                            <div className="rounded-md border border-surface-container-high bg-white px-4 py-3">
+                              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                <div className="text-xs font-semibold text-on-surface">证据详情</div>
+                                <button
+                                  type="button"
+                                  className="inline-flex cursor-pointer items-center rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim"
+                                  onClick={() => setExpandedEvidenceKey('')}
+                                >
+                                  收起
+                                </button>
+                              </div>
+                              <TechnicalEvidenceDetails item={item} />
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    }
+
+                    const isExpanded = expandedEvidenceKey === row.key
+                    return (
+                      <tr key={row.key} className="border-b border-surface-container-high align-top last:border-b-0">
+                        <td className="px-4 py-3 text-on-surface">
+                          <div className="font-semibold">{item.secondaryCategory || '-'}</div>
+                          {item.primaryCategory && item.primaryCategory !== group.groupName ? (
+                            <div className="mt-1 text-xs text-outline">{item.primaryCategory}</div>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3 leading-6 text-on-surface-variant">{item.specificContent || '-'}</td>
+                        <td className="px-4 py-3">
+                          <span className={`mb-2 inline-flex rounded-md px-2 py-0.5 text-xs font-semibold ${interpretationStatusClass(item.status)}`}>
+                            {technicalInterpretationStatusLabel(item.status)}
+                          </span>
+                          <div className="leading-6 text-on-surface">{item.conclusion || '-'}</div>
+                          {item.status === 'needs_spec' && item.neededSourceName ? (
+                            <div className="mt-1 text-xs font-semibold text-primary">需补充/核对：{item.neededSourceName}</div>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3 leading-6 text-on-surface-variant">{technicalInterpretationEvidenceSummary(item)}</td>
+                        <td className="px-4 py-3 text-center">
+                          <button
+                            type="button"
+                            className="inline-flex cursor-pointer items-center rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim"
+                            aria-expanded={isExpanded}
+                            onClick={() => setExpandedEvidenceKey((currentKey) => nextTechnicalInterpretationEvidenceKey(currentKey, row.key))}
+                          >
+                            {isExpanded ? '收起' : '查看证据'}
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )
+      })}
     </div>
   )
 }

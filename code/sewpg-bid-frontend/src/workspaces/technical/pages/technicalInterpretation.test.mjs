@@ -2,9 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  TECHNICAL_INTERPRETATION_TABLE_COLUMN_COUNT,
+  buildTechnicalInterpretationTableRows,
   groupTechnicalInterpretationItems,
+  nextTechnicalInterpretationEvidenceKey,
   technicalInterpretationDisplayGroup,
   technicalInterpretationEvidenceSummary,
+  technicalInterpretationItemKey,
   technicalInterpretationStatusLabel,
 } from './technicalInterpretation.js'
 
@@ -67,4 +71,33 @@ test('summarizes evidence and dynamic needed source names', () => {
     }),
     '招标文件.docx / 第一章 招标公告 / 正文第3段',
   )
+})
+
+test('builds a separate full-width evidence row after the expanded interpretation row', () => {
+  const items = [
+    { id: 'FIT-1', rowNo: 1, secondaryCategory: '供货范围' },
+    { id: 'FIT-2', rowNo: 2, secondaryCategory: '验收要求' },
+  ]
+  const expandedKey = technicalInterpretationItemKey(items[0], 0, '设备选型适配')
+
+  assert.equal(TECHNICAL_INTERPRETATION_TABLE_COLUMN_COUNT, 5)
+  assert.deepEqual(
+    buildTechnicalInterpretationTableRows(items, expandedKey, '设备选型适配').map((row) => ({
+      type: row.type,
+      key: row.key,
+      colSpan: row.colSpan,
+      itemId: row.item.id,
+    })),
+    [
+      { type: 'item', key: '设备选型适配::FIT-1', colSpan: undefined, itemId: 'FIT-1' },
+      { type: 'evidence', key: '设备选型适配::FIT-1::evidence', colSpan: 5, itemId: 'FIT-1' },
+      { type: 'item', key: '设备选型适配::FIT-2', colSpan: undefined, itemId: 'FIT-2' },
+    ],
+  )
+})
+
+test('toggles technical interpretation evidence expansion by row key', () => {
+  assert.equal(nextTechnicalInterpretationEvidenceKey('', 'ROW-1'), 'ROW-1')
+  assert.equal(nextTechnicalInterpretationEvidenceKey('ROW-1', 'ROW-1'), '')
+  assert.equal(nextTechnicalInterpretationEvidenceKey('ROW-1', 'ROW-2'), 'ROW-2')
 })
