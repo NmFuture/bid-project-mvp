@@ -25,6 +25,8 @@ def normalize_project_turbine_model(value: Any) -> dict[str, Any]:
         return {}
     if isinstance(value, str):
         model = value.strip()
+        if not model:
+            return {}
         raw: dict[str, Any] = {"model": model} if model else {}
     elif isinstance(value, dict):
         raw = dict(value)

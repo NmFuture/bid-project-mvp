@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from . import docx_indexer, navigator_cli
-from .finalizer import SCHEMA_VERSION, SKILL_NAME, finalize, summary
+from .checklist import load_checklist
+from .finalizer import SKILL_NAME, finalize, summary
 from .paths import (
     document_map_path,
     load_manifest,
@@ -31,6 +32,7 @@ def prepare(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     payload.update(
         {
             "targetSkill": SKILL_NAME,
+            "checklistCount": len(load_checklist()),
             "structuredResultPath": str(structured_result_path(manifest_path, manifest)),
             "submissionPath": str(submission_path(manifest_path, manifest)),
             "validationReportPath": str(validation_report_path(manifest_path, manifest)),
@@ -57,12 +59,13 @@ def status(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             validation = {}
     return {
-        "schemaVersion": "bid-business-agentic-status-v1",
+        "schemaVersion": "bid-tech-agentic-status-v1",
         "targetSkill": SKILL_NAME,
         "navStorePath": str(nav_path),
         "documentMapPath": str(map_path),
         "submissionPath": str(sub_path),
         "validationReportPath": str(val_path),
+        "checklistCount": len(load_checklist()),
         "prepared": nav_path.is_file() and map_path.is_file(),
         "submittedTargets": sorted(submitted.keys()),
         "submittedTargetCount": len(submitted),
@@ -89,24 +92,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_overview = sub.add_parser("overview")
     p_overview.add_argument("manifest")
     p_overview.add_argument("--page", type=int, default=1)
-    p_overview.add_argument("--page-size", type=int, default=60)
+    p_overview.add_argument("--page-size", type=int, default=30)
 
     p_search = sub.add_parser("search")
     p_search.add_argument("manifest")
     p_search.add_argument("query")
-    p_search.add_argument("--limit", type=int, default=40)
+    p_search.add_argument("--limit", type=int, default=20)
 
     p_read = sub.add_parser("read")
     p_read.add_argument("manifest")
     p_read.add_argument("id")
     p_read.add_argument("--mode", choices=["summary", "full"], default="summary")
-    p_read.add_argument("--max-chars", type=int, default=4000)
+    p_read.add_argument("--max-chars", type=int, default=2000)
 
     p_table = sub.add_parser("table")
     p_table.add_argument("manifest")
     p_table.add_argument("table_id")
-    p_table.add_argument("--rows", default="1-24")
-    p_table.add_argument("--max-chars", type=int, default=8000)
+    p_table.add_argument("--rows", default="1-12")
+    p_table.add_argument("--max-chars", type=int, default=4000)
 
     p_window = sub.add_parser("window")
     p_window.add_argument("manifest")
@@ -128,9 +131,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_finalize = sub.add_parser("finalize")
     p_finalize.add_argument("manifest")
 
-    p_legacy = sub.add_parser("offline-fallback")
-    p_legacy.add_argument("manifest")
-
     return parser
 
 
@@ -143,12 +143,8 @@ def main(argv: list[str] | None = None) -> int:
     manifest_path = Path(args.manifest).expanduser().resolve()
     manifest = load_manifest(manifest_path)
     command = args.command
-    if command in {"prepare", "offline-fallback"}:
-        payload = prepare(manifest_path, manifest)
-        if command == "offline-fallback":
-            result = finalize(manifest_path, manifest)
-            return print_json(summary(result, structured_result_path(manifest_path, manifest)))
-        return print_json(payload)
+    if command == "prepare":
+        return print_json(prepare(manifest_path, manifest))
     if command == "overview":
         return print_json(navigator_cli.overview(manifest_path, manifest, page=args.page, page_size=args.page_size))
     if command == "search":

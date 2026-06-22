@@ -20,7 +20,7 @@ RUNNERS = {
     BUSINESS_BID_TYPE: SKILL_ROOT / "bid-business-tender-structured-parser" / "scripts" / "run_from_manifest.py",
 }
 
-BUSINESS_COMMANDS = {
+AGENTIC_COMMANDS = {
     "prepare",
     "overview",
     "search",
@@ -76,7 +76,7 @@ def _split_args(argv: list[str]) -> tuple[str, Path, list[str]]:
         return "", Path(argv[1]).expanduser().resolve(), []
     if len(argv) >= 3:
         command = str(argv[1]).strip().lower()
-        if command not in BUSINESS_COMMANDS:
+        if command not in AGENTIC_COMMANDS:
             print(USAGE, file=sys.stderr)
             raise SystemExit(64)
         return command, Path(argv[2]).expanduser().resolve(), argv[3:]
@@ -87,9 +87,6 @@ def _split_args(argv: list[str]) -> tuple[str, Path, list[str]]:
 def main() -> None:
     command, manifest_path, extra_args = _split_args(sys.argv)
     bid_type = resolve_bid_type(manifest_path)
-    if command and bid_type != BUSINESS_BID_TYPE:
-        print("stage argument is only supported for business s1parse manifests", file=sys.stderr)
-        raise SystemExit(64)
     runner = resolve_runner(manifest_path)
     if command:
         sys.argv = [str(runner), command, str(manifest_path), *extra_args]

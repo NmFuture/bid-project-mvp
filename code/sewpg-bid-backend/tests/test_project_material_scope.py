@@ -91,6 +91,24 @@ class ProjectMaterialScopeRouteTests(unittest.TestCase):
         self.assertEqual(payload["identity"]["customerId"], "CUST-HUANENG")
         self.assertEqual(payload["identity"]["projectId"], "MAT-BIZ-HN-001")
 
+    def test_business_project_payload_clears_turbine_model_fields(self) -> None:
+        response = self.client.post(
+            "/api/business/projects",
+            json={
+                "name": "商务标不应携带风机字段",
+                "customerName": "测试业主",
+                "turbineModel": {"model": "EW10.0-220"},
+                "turbineModels": [{"model": "EW10.0-220", "turbineCount": "10"}],
+            },
+        )
+        response.raise_for_status()
+
+        payload = response.json()
+        self.assertEqual(payload["turbineModel"], {})
+        self.assertEqual(payload["selectedTurbineModel"], {})
+        self.assertEqual(payload["turbineModels"], [])
+        self.assertEqual(payload["turbineModelLabel"], "")
+
     def test_legacy_project_materials_path_endpoint_is_not_registered(self) -> None:
         response = self.client.get("/api/projects/PRJ-LEGACY/materials-path")
 

@@ -25,7 +25,6 @@ def _block_preview(block: dict[str, Any], *, limit: int = TEXT_LIMIT) -> dict[st
         "type": str(block.get("type") or ""),
         "text": _short(block.get("text"), limit),
         "styleName": str(block.get("styleName") or ""),
-        "isLikelyHeading": bool(block.get("isLikelyHeading")),
         "pageSegment": int(block.get("pageSegment") or 0),
         "isPageFirstNonEmpty": bool(block.get("isPageFirstNonEmpty")),
     }

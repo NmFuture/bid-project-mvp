@@ -19,7 +19,6 @@ class Block:
     rows: list[list[str]]
     style_name: str
     is_centered: bool
-    is_likely_heading: bool
     has_page_break_before: bool
     has_page_break_after: bool
     page_segment: int
@@ -35,7 +34,6 @@ class Block:
             "rows": self.rows,
             "styleName": self.style_name,
             "isCentered": self.is_centered,
-            "isLikelyHeading": self.is_likely_heading,
             "hasPageBreakBefore": self.has_page_break_before,
             "hasPageBreakAfter": self.has_page_break_after,
             "pageSegment": self.page_segment,
@@ -81,28 +79,6 @@ def _paragraph_style_name(paragraph: Any) -> str:
     return str(getattr(getattr(paragraph, "style", None), "name", "") or "")
 
 
-def _paragraph_is_likely_heading(element: Any, paragraph: Any, text: str) -> bool:
-    normalized = "".join(str(text or "").split())
-    if not normalized or len(normalized) > 60:
-        return False
-    style_name = _paragraph_style_name(paragraph)
-    if "标题" in style_name or style_name.lower().startswith("heading"):
-        return True
-    alignment = _paragraph_alignment(element, paragraph)
-    if alignment == "center":
-        return True
-    runs = list(getattr(paragraph, "runs", []) or []) if paragraph is not None else []
-    non_empty_runs = [run for run in runs if str(getattr(run, "text", "") or "").strip()]
-    if not non_empty_runs:
-        return False
-    bold_runs = [
-        run
-        for run in non_empty_runs
-        if bool(getattr(run, "bold", False) or getattr(getattr(run, "font", None), "bold", False))
-    ]
-    return len(bold_runs) / len(non_empty_runs) >= 0.6
-
-
 def _table_rows(table: Any) -> list[list[str]]:
     return [[cell.text.strip() for cell in row.cells] for row in table.rows]
 
@@ -145,7 +121,6 @@ def extract_blocks(path: Path) -> list[dict[str, Any]]:
                 rows=[],
                 style_name=_paragraph_style_name(paragraph),
                 is_centered=_paragraph_alignment(child, paragraph) == "center",
-                is_likely_heading=_paragraph_is_likely_heading(child, paragraph, text),
                 has_page_break_before=has_break_before,
                 has_page_break_after=has_break_after,
                 page_segment=page_segment,
@@ -172,7 +147,6 @@ def extract_blocks(path: Path) -> list[dict[str, Any]]:
                     rows=rows,
                     style_name="",
                     is_centered=False,
-                    is_likely_heading=False,
                     has_page_break_before=has_break_before,
                     has_page_break_after=has_break_after,
                     page_segment=page_segment,

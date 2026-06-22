@@ -35,7 +35,7 @@ from app.services.business_parse_assets import (
 from app.services.business_template_extractor import convert_extractor_appendices
 from app.services.file_utils import format_size_mb
 from app.services.onlyoffice_documents import WORD_MEDIA_TYPE, build_editor_session_key
-from app.services.parse_profiles import BUSINESS_PARSE_PROFILE
+from app.services.parse_profiles import BUSINESS_PARSE_PROFILE, TECHNICAL_PARSE_PROFILE
 from app.services.url_utils import absolute_url, onlyoffice_backend_base_url
 from app.services.parsing import (
     IMAGE_SUFFIXES,
@@ -731,6 +731,196 @@ def _materialize_business_readable_sources(
     return materialized
 
 
+def _resolve_technical_nav_store_path(structured: dict[str, Any], structured_path: Path | None = None) -> Path | None:
+    workflow = structured.get("workflow") if isinstance(structured, dict) else {}
+    raw_path = str(workflow.get("navStorePath") or "").strip() if isinstance(workflow, dict) else ""
+    if raw_path:
+        return Path(raw_path)
+    if structured_path is not None:
+        return structured_path.parent / "s1_nav.sqlite"
+    return None
+
+
+def _technical_evidence_ids(item: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    raw_ids = item.get("evidenceIds")
+    if isinstance(raw_ids, str):
+        raw_ids = [raw_ids]
+    if isinstance(raw_ids, list):
+        ids.extend(str(value).strip() for value in raw_ids if str(value or "").strip())
+    raw_refs = item.get("evidenceRefs")
+    if isinstance(raw_refs, list):
+        for ref in raw_refs:
+            if isinstance(ref, dict):
+                value = str(ref.get("id") or ref.get("evidenceId") or "").strip()
+                if value:
+                    ids.append(value)
+            elif str(ref or "").strip():
+                ids.append(str(ref).strip())
+    return list(dict.fromkeys(ids))
+
+
+def _technical_heading_path_for_record(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
+    table_id = str(record.get("table_id") or "").strip()
+    if table_id:
+        table_row = conn.execute("SELECT heading_path, title FROM tables WHERE id = ?", (table_id,)).fetchone()
+        if table_row is not None:
+            table_record = dict(table_row)
+            return str(table_record.get("heading_path") or table_record.get("title") or "").strip()
+    block_row = conn.execute(
+        "SELECT heading_path FROM blocks WHERE document_id = ? AND body_index = ? LIMIT 1",
+        (record.get("document_id"), record.get("body_index")),
+    ).fetchone()
+    if block_row is not None:
+        return str(dict(block_row).get("heading_path") or "").strip()
+    return ""
+
+
+def _technical_evidence_location(record: dict[str, Any]) -> str:
+    kind = str(record.get("kind") or "").strip()
+    body_index = record.get("body_index")
+    row_index = record.get("row_index")
+    col_index = record.get("col_index")
+    if kind == "table_cell" and row_index is not None and col_index is not None:
+        return f"表格第{row_index}行第{col_index}列"
+    if kind == "table_row" and row_index is not None:
+        return f"表格第{row_index}行"
+    if kind == "table":
+        return "表格"
+    if body_index is not None:
+        return f"正文第{body_index}段"
+    return "正文内容"
+
+
+def _fetch_technical_evidence_records(
+    conn: sqlite3.Connection,
+    evidence_ids: list[str],
+    documents_by_id: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for evidence_id in evidence_ids:
+        evidence_row = conn.execute("SELECT * FROM evidence WHERE id = ?", (evidence_id,)).fetchone()
+        if evidence_row is None:
+            continue
+        record = dict(evidence_row)
+        document_id = str(record.get("document_id") or "").strip()
+        document = documents_by_id.get(document_id) or {}
+        records.append(
+            {
+                "id": evidence_id,
+                "sourceDocumentId": document_id,
+                "sourceFile": str(document.get("name") or document_id or "招标文件"),
+                "section": _technical_heading_path_for_record(conn, record),
+                "evidenceLocation": _technical_evidence_location(record),
+                "text": str(record.get("text") or ""),
+            }
+        )
+    return records
+
+
+def _merge_technical_evidence_refs(existing_refs: Any, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    existing_by_id: dict[str, dict[str, Any]] = {}
+    if isinstance(existing_refs, list):
+        for ref in existing_refs:
+            if not isinstance(ref, dict):
+                continue
+            ref_id = str(ref.get("id") or ref.get("evidenceId") or "").strip()
+            copied = copy.deepcopy(ref)
+            if ref_id:
+                copied["id"] = ref_id
+                existing_by_id[ref_id] = copied
+            merged.append(copied)
+
+    seen_ids = {str(ref.get("id") or "").strip() for ref in merged if isinstance(ref, dict)}
+    for record in records:
+        record_id = str(record.get("id") or "").strip()
+        if not record_id:
+            continue
+        current = existing_by_id.get(record_id)
+        if current is None:
+            merged.append(copy.deepcopy(record))
+            seen_ids.add(record_id)
+            continue
+        for key, value in record.items():
+            if str(value or "").strip() and not str(current.get(key) or "").strip():
+                current[key] = value
+        if record_id not in seen_ids:
+            merged.append(current)
+            seen_ids.add(record_id)
+    return merged
+
+
+def _sync_technical_categories_from_items(interpretation: dict[str, Any]) -> None:
+    items = interpretation.get("items") if isinstance(interpretation.get("items"), list) else []
+    categories = interpretation.get("categories") if isinstance(interpretation.get("categories"), list) else []
+    if not items or not categories:
+        return
+    by_id = {str(item.get("id") or ""): item for item in items if isinstance(item, dict) and str(item.get("id") or "")}
+    by_row = {str(item.get("rowNo") or ""): item for item in items if isinstance(item, dict) and str(item.get("rowNo") or "")}
+    for category in categories:
+        if not isinstance(category, dict) or not isinstance(category.get("items"), list):
+            continue
+        synced_items = []
+        for item in category["items"]:
+            if not isinstance(item, dict):
+                synced_items.append(item)
+                continue
+            replacement = by_id.get(str(item.get("id") or "")) or by_row.get(str(item.get("rowNo") or ""))
+            synced_items.append(copy.deepcopy(replacement or item))
+        category["items"] = synced_items
+
+
+def _materialize_technical_evidence_refs(
+    structured: dict[str, Any],
+    *,
+    structured_path: Path | None = None,
+) -> dict[str, Any]:
+    if not isinstance(structured, dict):
+        return structured
+    interpretation = structured.get("technicalInterpretation")
+    if not isinstance(interpretation, dict) or not isinstance(interpretation.get("items"), list):
+        return structured
+    nav_path = _resolve_technical_nav_store_path(structured, structured_path)
+    if nav_path is None or not nav_path.is_file():
+        return structured
+
+    materialized = copy.deepcopy(structured)
+    materialized_interpretation = materialized.get("technicalInterpretation")
+    if not isinstance(materialized_interpretation, dict):
+        return structured
+    items = materialized_interpretation.get("items")
+    if not isinstance(items, list):
+        return structured
+    documents_by_id = _source_documents_by_id(materialized)
+    try:
+        conn = sqlite3.connect(str(nav_path))
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return structured
+    try:
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            evidence_ids = _technical_evidence_ids(item)
+            if not evidence_ids:
+                continue
+            records = _fetch_technical_evidence_records(conn, evidence_ids, documents_by_id)
+            if not records:
+                continue
+            item["evidenceRefs"] = _merge_technical_evidence_refs(item.get("evidenceRefs"), records)
+            if not str(item.get("evidenceSummary") or "").strip():
+                first_text = str(records[0].get("text") or "").strip()
+                if first_text:
+                    item["evidenceSummary"] = first_text[:180]
+        _sync_technical_categories_from_items(materialized_interpretation)
+    except sqlite3.Error:
+        return structured
+    finally:
+        conn.close()
+    return materialized
+
+
 class BidParseService:
     def __init__(self, project_service: BidProjectService, api_prefix: str) -> None:
         self.project_service = project_service
@@ -790,9 +980,42 @@ class BidParseService:
         persist_workspace_project_state(project)
         return payload
 
+    def _refresh_technical_parse_result_from_structured_file(self, project_id: str) -> dict[str, Any]:
+        project = self.require_project_for_update(project_id)
+        parse_result = project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {}
+        if self.project_service.bid_type != TECHNICAL_PARSE_PROFILE.bid_type or parse_result.get("status") != "completed":
+            return copy.deepcopy(parse_result)
+
+        parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
+        structured_path = Path(str(parse_storage.get("structuredResultPath") or ""))
+        loaded = _load_structured_result_file(structured_path)
+        if loaded is None:
+            return copy.deepcopy(parse_result)
+
+        items, structured = loaded
+        structured = _materialize_technical_evidence_refs(structured, structured_path=structured_path)
+        interpretation = structured.get("technicalInterpretation") if isinstance(structured, dict) else {}
+        materialized_items = interpretation.get("items") if isinstance(interpretation, dict) else None
+        if isinstance(materialized_items, list):
+            items = copy.deepcopy(materialized_items)
+        if parse_result.get("items") == items and parse_result.get("structured") == structured:
+            return copy.deepcopy(parse_result)
+
+        refreshed = copy.deepcopy(parse_result)
+        refreshed["items"] = items
+        refreshed["structured"] = structured
+        updated_storage = copy.deepcopy(parse_storage)
+        updated_storage["items"] = items
+        updated_storage["structured"] = structured
+        payload = update_parse_result_state(project, refreshed, parse_storage=updated_storage)
+        persist_workspace_project_state(project)
+        return payload
+
     def _materialize_completed_parse_result(self, project_id: str, parse_result: dict[str, Any]) -> dict[str, Any]:
         if self.project_service.bid_type == BUSINESS_PARSE_PROFILE.bid_type:
             return self._refresh_business_parse_result_from_structured_file(project_id)
+        if self.project_service.bid_type == TECHNICAL_PARSE_PROFILE.bid_type:
+            return self._refresh_technical_parse_result_from_structured_file(project_id)
         return parse_result
 
     def parse_inputs(
@@ -893,11 +1116,7 @@ class BidParseService:
         return payload
 
     async def results(self, project_id: str) -> dict[str, Any]:
-        parse_result = (
-            self._refresh_business_parse_result_from_structured_file(project_id)
-            if self.project_service.bid_type == BUSINESS_PARSE_PROFILE.bid_type
-            else self.parse_result(project_id)
-        )
+        parse_result = self._materialize_completed_parse_result(project_id, self.parse_result(project_id))
         payload = materialize_parse_appendix_docx_assets(
             project_id,
             parse_result,

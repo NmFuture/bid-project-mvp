@@ -73,6 +73,47 @@ class BusinessAgenticParserTests(unittest.TestCase):
         )
         return source_path, manifest_path, output_path
 
+    def write_long_instruction_table_docx(self, root: Path) -> tuple[Path, Path, Path]:
+        source_path = root / "long_business_tender.docx"
+        output_path = root / "s1_structured_result.json"
+        manifest_path = root / "s1_parse_manifest.json"
+        doc = Document()
+        doc.add_paragraph("Bidder instructions appendix")
+        table = doc.add_table(rows=45, cols=3)
+        for row_index in range(45):
+            if row_index == 0:
+                values = ["Clause no.", "Clause name", "Compiled content"]
+            else:
+                values = [
+                    str(row_index),
+                    f"Clause {row_index}",
+                    f"Complete row {row_index}: " + ("read this row continuously. " * 8),
+                ]
+            for col, text in enumerate(values):
+                table.cell(row_index, col).text = text
+        doc.save(source_path)
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "projectId": "PRJ-LONG-TABLE-UNIT",
+                    "bidType": "business",
+                    "parseProfile": "business",
+                    "structuredResultPath": str(output_path),
+                    "documents": [
+                        {
+                            "id": "DOC-1",
+                            "name": source_path.name,
+                            "sourcePath": str(source_path),
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return source_path, manifest_path, output_path
+
     def run_s1parse(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
@@ -131,6 +172,46 @@ class BusinessAgenticParserTests(unittest.TestCase):
             self.assertEqual([row["bodyIndex"] for row in window["blocks"]], [4, 5, 6])
             self.assertEqual(table["table"]["rowCount"], 3)
             self.assertEqual(len(table["rows"]), 3)
+
+    def test_table_navigation_defaults_read_more_rows_and_signal_continuation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, manifest_path, _ = self.write_long_instruction_table_docx(root)
+            self.run_s1parse("prepare", str(manifest_path))
+
+            table = json.loads(self.run_s1parse("table", str(manifest_path), "DOC-1:T0001").stdout)
+
+            self.assertEqual(table["table"]["rowCount"], 45)
+            self.assertEqual(len(table["rows"]), 24)
+            self.assertEqual(table["returnedRange"], {"start": 1, "end": 24})
+            self.assertTrue(table["hasMore"])
+            self.assertEqual(table["nextRange"], "25-45")
+            self.assertFalse(table["truncated"])
+            self.assertEqual(table["truncatedRows"], [])
+
+    def test_table_navigation_reports_truncated_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, manifest_path, _ = self.write_long_instruction_table_docx(root)
+            self.run_s1parse("prepare", str(manifest_path))
+
+            table = json.loads(
+                self.run_s1parse(
+                    "table",
+                    str(manifest_path),
+                    "DOC-1:T0001",
+                    "--rows",
+                    "1-2",
+                    "--max-chars",
+                    "100",
+                ).stdout
+            )
+
+            self.assertEqual(table["returnedRange"], {"start": 1, "end": 2})
+            self.assertTrue(table["hasMore"])
+            self.assertEqual(table["nextRange"], "3-4")
+            self.assertTrue(table["truncated"])
+            self.assertEqual(table["truncatedRows"], [2])
 
     def test_navigation_stdout_is_utf8_even_when_console_code_page_is_legacy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -87,7 +87,7 @@ def _ranked_search(conn, query: str, limit: int) -> list[dict[str, Any]]:
     return [row for _, row in ranked[: max(1, min(80, limit))]]
 
 
-def overview(manifest_path: Path, manifest: dict[str, Any], *, page: int = 1, page_size: int = 60) -> dict[str, Any]:
+def overview(manifest_path: Path, manifest: dict[str, Any], *, page: int = 1, page_size: int = 30) -> dict[str, Any]:
     conn = _connect(manifest_path, manifest)
     page = max(1, page)
     page_size = max(1, min(80, page_size))
@@ -126,7 +126,7 @@ def overview(manifest_path: Path, manifest: dict[str, Any], *, page: int = 1, pa
     }
 
 
-def search(manifest_path: Path, manifest: dict[str, Any], query: str, *, limit: int = 40) -> dict[str, Any]:
+def search(manifest_path: Path, manifest: dict[str, Any], query: str, *, limit: int = 20) -> dict[str, Any]:
     conn = _connect(manifest_path, manifest)
     tokens = _query_tokens(query)
     if not tokens:
@@ -149,7 +149,7 @@ def search(manifest_path: Path, manifest: dict[str, Any], query: str, *, limit: 
     return {"schemaVersion": nav_store.SCHEMA_VERSION, "query": query, "matchCount": len(rows), "matches": rows}
 
 
-def read(manifest_path: Path, manifest: dict[str, Any], evidence_id: str, *, mode: str = "summary", max_chars: int = 4000) -> dict[str, Any]:
+def read(manifest_path: Path, manifest: dict[str, Any], evidence_id: str, *, mode: str = "summary", max_chars: int = 2000) -> dict[str, Any]:
     conn = _connect(manifest_path, manifest)
     row = nav_store.row_to_dict(conn.execute("SELECT * FROM evidence WHERE id = ?", (evidence_id,)).fetchone())
     if row is None:
@@ -192,17 +192,16 @@ def window(manifest_path: Path, manifest: dict[str, Any], evidence_id: str, *, b
     return {"schemaVersion": nav_store.SCHEMA_VERSION, "center": evidence_id, "blocks": rows}
 
 
-def table(manifest_path: Path, manifest: dict[str, Any], table_id: str, *, rows_range: str = "1-24", max_chars: int = 8000) -> dict[str, Any]:
+def table(manifest_path: Path, manifest: dict[str, Any], table_id: str, *, rows_range: str = "1-12", max_chars: int = 4000) -> dict[str, Any]:
     conn = _connect(manifest_path, manifest)
     table_row = nav_store.row_to_dict(conn.execute("SELECT * FROM tables WHERE id = ?", (table_id,)).fetchone())
     if table_row is None:
         raise RuntimeError(f"table id not found: {table_id}")
-    row_count = int(table_row["row_count"])
     match = re.fullmatch(r"\s*(\d+)(?:-(\d+))?\s*", rows_range or "")
     start = int(match.group(1)) if match else 1
-    end = int(match.group(2) or start) if match else min(row_count, 24)
+    end = int(match.group(2) or start) if match else min(int(table_row["row_count"]), 12)
     start = max(1, start)
-    end = max(start, min(end, row_count))
+    end = max(start, min(end, int(table_row["row_count"])))
     rows = nav_store.fetch_all(
         conn,
         "SELECT id, row_index AS rowIndex, text FROM table_rows WHERE table_id = ? AND row_index BETWEEN ? AND ? ORDER BY row_index",
@@ -210,23 +209,10 @@ def table(manifest_path: Path, manifest: dict[str, Any], table_id: str, *, rows_
     )
     text_budget = max_chars
     compact_rows = []
-    truncated_rows: list[int] = []
-    per_row_limit = max(80, text_budget // max(1, len(rows)))
     for item in rows:
         text = item.get("text") or ""
-        limited = _limit_text(text, per_row_limit)
-        if limited != text:
-            truncated_rows.append(int(item["rowIndex"]))
+        limited = _limit_text(text, max(80, text_budget // max(1, len(rows))))
         compact_rows.append({**item, "text": limited})
-    returned_start = int(rows[0]["rowIndex"]) if rows else start
-    returned_end = int(rows[-1]["rowIndex"]) if rows else min(end, row_count)
-    has_more = returned_end < row_count
-    requested_span = max(1, end - start + 1)
-    next_range = ""
-    if has_more:
-        next_start = returned_end + 1
-        next_end = min(row_count, returned_end + requested_span)
-        next_range = f"{next_start}-{next_end}"
     return {
         "schemaVersion": nav_store.SCHEMA_VERSION,
         "table": {
@@ -235,14 +221,9 @@ def table(manifest_path: Path, manifest: dict[str, Any], table_id: str, *, rows_
             "bodyIndex": table_row["body_index"],
             "title": table_row["title"],
             "headingPath": table_row["heading_path"],
-            "rowCount": row_count,
+            "rowCount": table_row["row_count"],
             "colCount": table_row["col_count"],
             "headerText": table_row["header_text"],
         },
-        "returnedRange": {"start": returned_start, "end": returned_end},
-        "hasMore": has_more,
-        "nextRange": next_range,
-        "truncated": bool(truncated_rows),
-        "truncatedRows": truncated_rows,
         "rows": compact_rows,
     }

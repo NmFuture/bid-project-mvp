@@ -10,6 +10,7 @@ SCRIPT_DIR = CURRENT.parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from agentic.run_agentic import main
 from parser_core import SKILL_NAME, parse_manifest
 
 
@@ -36,12 +37,7 @@ def _summary(result: dict[str, Any], output_path: Path) -> dict[str, Any]:
     }
 
 
-def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: s1parse <manifest>", file=sys.stderr)
-        return 64
-
-    manifest_path = Path(sys.argv[1])
+def _run_legacy_manifest(manifest_path: Path) -> int:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     output_path = Path(str(manifest.get("structuredResultPath") or manifest_path.with_name("s1_structured_result.json")))
     result = parse_manifest(manifest, mode="opencode-skill")
@@ -52,4 +48,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    args = sys.argv[1:]
+    if len(args) == 1:
+        raise SystemExit(_run_legacy_manifest(Path(args[0]).expanduser().resolve()))
+    raise SystemExit(main(args))

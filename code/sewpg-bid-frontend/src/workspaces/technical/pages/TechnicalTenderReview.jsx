@@ -9,6 +9,26 @@ import PageHeader from '../../../components/shared/PageHeader'
 import TechnicalProjectWizardModal from './TechnicalProjectWizardModal'
 import Button from '../../../components/ui/Button'
 import { normalizeBidType, projectRoute } from '../../../utils/workspace'
+import {
+  isParseProgressFailed,
+  isUploadAndRunTimeout,
+  pollParseProgressOnce,
+  recoverUploadAndRunTimeout,
+  shouldPollParseProgress,
+} from '../technicalParseUploadRecovery'
+import {
+  selectTechnicalParseProjectId,
+  shouldSyncTechnicalProjectParseResultRoute,
+  technicalProjectParseResultNavigation,
+} from '../technicalProjectRoutes'
+import {
+  TECHNICAL_INTERPRETATION_TABLE_COLUMN_COUNT,
+  buildTechnicalInterpretationTableRows,
+  groupTechnicalInterpretationItems,
+  nextTechnicalInterpretationEvidenceKey,
+  technicalInterpretationEvidenceSummary,
+  technicalInterpretationStatusLabel,
+} from './technicalInterpretation'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -72,6 +92,14 @@ const presenceLabel = (status) => (status === 'present' ? '有明确要求' : '�
 
 const appendixKey = (appendix, index = 0) =>
   String(appendix?.id || appendix?.title || `appendix-${index}`)
+
+const interpretationStatusClass = (status = '') => {
+  if (status === 'found') return 'bg-secondary-container text-on-secondary-container'
+  if (status === 'partial') return 'bg-primary/10 text-primary'
+  if (status === 'needs_spec') return 'bg-tertiary-container text-on-tertiary-container'
+  if (status === 'missing') return 'bg-error-container/30 text-error'
+  return 'bg-surface-container-high text-on-surface-variant'
+}
 
 const TECHNICAL_REVIEW_CONFIG = {
   bidType: '技术标',
@@ -316,6 +344,139 @@ function PresenceTable({ title = '专题方案 / 供货范围 / 考核条款', r
   )
 }
 
+function TechnicalEvidenceDetails({ item }) {
+  const refs = Array.isArray(item?.evidenceRefs) ? item.evidenceRefs : []
+  if (!refs.length) {
+    return (
+      <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-xs text-outline">
+        {item?.status === 'needs_spec' && item?.neededSourceName
+          ? `需补充/核对：${item.neededSourceName}`
+          : '暂无可展示原文证据。'}
+      </div>
+    )
+  }
+  return (
+    <div className="mt-2 flex flex-col gap-2">
+      {refs.map((ref, index) => (
+        <div key={ref.id || index} className="rounded-md border border-surface-container-high bg-surface-container-low px-3 py-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-on-surface">
+            <span>{ref.sourceFile || '招标文件'}</span>
+            {ref.section ? <span className="text-outline">/ {ref.section}</span> : null}
+            {ref.evidenceLocation ? <span className="text-outline">/ {ref.evidenceLocation}</span> : null}
+          </div>
+          <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-on-surface-variant">{ref.text || '-'}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function TechnicalInterpretationView({ groups = [] }) {
+  const [expandedEvidenceKey, setExpandedEvidenceKey] = useState('')
+  if (!groups.length) return null
+  return (
+    <div className="flex flex-col gap-4">
+      {groups.map((group) => {
+        const rows = buildTechnicalInterpretationTableRows(group.items, expandedEvidenceKey, group.groupName)
+        return (
+          <section key={group.groupName} className="border border-surface-container-high rounded-md overflow-hidden bg-white">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
+              <h4 className="text-sm font-semibold text-on-surface">{group.groupName}</h4>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-outline">
+                <span>{group.items.length} 条</span>
+                {Object.entries(group.counts || {}).map(([status, count]) => (
+                  <span key={status} className={`rounded-md px-2 py-0.5 font-semibold ${interpretationStatusClass(status)}`}>
+                    {technicalInterpretationStatusLabel(status)} {count}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full table-fixed text-sm min-w-[1180px]">
+                <colgroup>
+                  <col className="w-40" />
+                  <col className="w-[22rem]" />
+                  <col className="w-[28rem]" />
+                  <col className="w-[22rem]" />
+                  <col className="w-32" />
+                </colgroup>
+                <thead>
+                  <tr className="border-b border-surface-container-high">
+                    <th className="px-4 py-2 text-center font-semibold text-on-surface">二级类别</th>
+                    <th className="px-4 py-2 text-center font-semibold text-on-surface">具体内容</th>
+                    <th className="px-4 py-2 text-center font-semibold text-on-surface">解读结论</th>
+                    <th className="px-4 py-2 text-center font-semibold text-on-surface">原文依据</th>
+                    <th className="px-4 py-2 text-center font-semibold text-on-surface">查看证据</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => {
+                    const item = row.item
+                    if (row.type === 'evidence') {
+                      return (
+                        <tr key={row.key} className="border-b border-surface-container-high align-top last:border-b-0">
+                          <td colSpan={row.colSpan || TECHNICAL_INTERPRETATION_TABLE_COLUMN_COUNT} className="bg-surface-container-low px-4 py-3">
+                            <div className="rounded-md border border-surface-container-high bg-white px-4 py-3">
+                              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                <div className="text-xs font-semibold text-on-surface">证据详情</div>
+                                <button
+                                  type="button"
+                                  className="inline-flex cursor-pointer items-center rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim"
+                                  onClick={() => setExpandedEvidenceKey('')}
+                                >
+                                  收起
+                                </button>
+                              </div>
+                              <TechnicalEvidenceDetails item={item} />
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    }
+
+                    const isExpanded = expandedEvidenceKey === row.key
+                    return (
+                      <tr key={row.key} className="border-b border-surface-container-high align-top last:border-b-0">
+                        <td className="px-4 py-3 text-on-surface">
+                          <div className="font-semibold">{item.secondaryCategory || '-'}</div>
+                          {item.primaryCategory && item.primaryCategory !== group.groupName ? (
+                            <div className="mt-1 text-xs text-outline">{item.primaryCategory}</div>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3 leading-6 text-on-surface-variant">{item.specificContent || '-'}</td>
+                        <td className="px-4 py-3">
+                          <span className={`mb-2 inline-flex rounded-md px-2 py-0.5 text-xs font-semibold ${interpretationStatusClass(item.status)}`}>
+                            {technicalInterpretationStatusLabel(item.status)}
+                          </span>
+                          <div className="leading-6 text-on-surface">{item.conclusion || '-'}</div>
+                          {item.status === 'needs_spec' && item.neededSourceName ? (
+                            <div className="mt-1 text-xs font-semibold text-primary">需补充/核对：{item.neededSourceName}</div>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3 leading-6 text-on-surface-variant">{technicalInterpretationEvidenceSummary(item)}</td>
+                        <td className="px-4 py-3 text-center">
+                          <button
+                            type="button"
+                            className="inline-flex cursor-pointer items-center rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim"
+                            aria-expanded={isExpanded}
+                            onClick={() => setExpandedEvidenceKey((currentKey) => nextTechnicalInterpretationEvidenceKey(currentKey, row.key))}
+                          >
+                            {isExpanded ? '收起' : '查看证据'}
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function TechnicalTenderReview({ showToast }) {
   const reviewConfig = TECHNICAL_REVIEW_CONFIG
   const navigate = useNavigate()
@@ -350,6 +511,24 @@ export default function TechnicalTenderReview({ showToast }) {
     return data
   }, [selectedProjectId])
 
+  const syncParsedProject = useCallback(async (targetProjectId) => {
+    const latestProgress = await technicalParseAPI.progress(targetProjectId).catch(() => null)
+    if (latestProgress) setParseProgress(latestProgress)
+    const latestProject = await technicalProjectsAPI.get(targetProjectId)
+    setSelectedProjectId(targetProjectId)
+    setProject(latestProject)
+    setProjects((prev) => {
+      const next = prev.map((item) => (item.id === latestProject.id ? { ...item, ...latestProject } : item))
+      return next.some((item) => item.id === latestProject.id) ? next : [latestProject, ...prev]
+    })
+    return latestProject
+  }, [])
+
+  const navigateToParseResult = useCallback((targetProjectId) => {
+    const { to, options } = technicalProjectParseResultNavigation(targetProjectId)
+    if (to) navigate(to, options)
+  }, [navigate])
+
   const loadProjects = useCallback(async () => {
     setLoadingProjects(true)
     setError('')
@@ -365,9 +544,11 @@ export default function TechnicalTenderReview({ showToast }) {
         : reviewItemsBase
       setProjects(items)
       setSelectedProjectId((current) => {
-        if (queryProjectId && reviewItems.some((item) => item.id === queryProjectId)) return queryProjectId
-        if (current && reviewItems.some((item) => item.id === current)) return current
-        return reviewItems[0]?.id || ''
+        return selectTechnicalParseProjectId({
+          queryProjectId,
+          currentProjectId: current,
+          reviewItems,
+        })
       })
     } catch (e) {
       setError(e?.message || '解析列表加载失败')
@@ -448,13 +629,34 @@ export default function TechnicalTenderReview({ showToast }) {
     return () => clearTimeout(timer)
   }, [loadCurrentProject])
 
+  const parseProgressStatus = parseProgress?.status
+  const parseProgressPercentage = parseProgress?.percentage
+  const parseResultStatus = parseData?.status
+
   useEffect(() => {
-    if (!uploading || !selectedProjectId) return undefined
+    if (!selectedProjectId || !shouldPollParseProgress({
+      uploading,
+      progress: { status: parseProgressStatus, percentage: parseProgressPercentage },
+      result: { status: parseResultStatus },
+    })) return undefined
     let stopped = false
     const loadProgress = async () => {
       try {
-        const progress = await technicalParseAPI.progress(selectedProjectId)
-        if (!stopped) setParseProgress(progress)
+        const snapshot = await pollParseProgressOnce({
+          projectId: selectedProjectId,
+          parseClient: technicalParseAPI,
+        })
+        if (stopped) return
+        const progress = snapshot.progress
+        setParseProgress(progress)
+        if (snapshot.completed) {
+          setParseData(snapshot.result)
+          navigateToParseResult(selectedProjectId)
+          return
+        }
+        if (snapshot.failed || isParseProgressFailed(progress)) {
+          setUploadError(progress?.summary || '上传并解析失败')
+        }
       } catch {
         // Keep the previous progress snapshot while the upload request owns the main path.
       }
@@ -465,12 +667,41 @@ export default function TechnicalTenderReview({ showToast }) {
       stopped = true
       clearInterval(timer)
     }
-  }, [selectedProjectId, uploading])
+  }, [
+    navigateToParseResult,
+    parseProgressPercentage,
+    parseProgressStatus,
+    parseResultStatus,
+    selectedProjectId,
+    uploading,
+  ])
+
+  useEffect(() => {
+    if (shouldSyncTechnicalProjectParseResultRoute({
+      projectId: selectedProjectId,
+      queryProjectId,
+      parseCompleted: parseResultStatus === 'completed',
+    })) {
+      navigateToParseResult(selectedProjectId)
+    }
+  }, [navigateToParseResult, parseResultStatus, queryProjectId, selectedProjectId])
 
   const sourceFiles = Array.isArray(parseData?.sourceFiles) && parseData.sourceFiles.length
     ? parseData.sourceFiles
     : buildFallbackSourceFiles(project?.files || [])
   const parsedItems = useMemo(() => parseData?.items || [], [parseData?.items])
+  const technicalInterpretationItems = useMemo(
+    () => {
+      const interpretation = parseData?.structured?.technicalInterpretation
+      return Array.isArray(interpretation?.items) ? interpretation.items : []
+    },
+    [parseData?.structured?.technicalInterpretation],
+  )
+  const technicalInterpretationGroups = useMemo(
+    () => groupTechnicalInterpretationItems(technicalInterpretationItems),
+    [technicalInterpretationItems],
+  )
+  const hasTechnicalInterpretation = technicalInterpretationGroups.length > 0
   const fieldGroups = parseData?.structured?.fieldGroups || {}
   const structuredScoring = useMemo(
     () => parseData?.structured?.scoringCriteria || {},
@@ -633,18 +864,37 @@ export default function TechnicalTenderReview({ showToast }) {
       tenderFiles.forEach((file) => formData.append('tenderFiles', file))
       const response = await technicalParseAPI.uploadAndRun(targetProjectId, { formData })
       setParseData(response)
-      const latestProgress = await technicalParseAPI.progress(targetProjectId).catch(() => null)
-      if (latestProgress) setParseProgress(latestProgress)
-      const latestProject = await technicalProjectsAPI.get(targetProjectId)
-      setSelectedProjectId(targetProjectId)
-      setProject(latestProject)
-      setProjects((prev) => {
-        const next = prev.map((item) => (item.id === latestProject.id ? { ...item, ...latestProject } : item))
-        return next.some((item) => item.id === latestProject.id) ? next : [latestProject, ...prev]
-      })
+      await syncParsedProject(targetProjectId)
+      navigateToParseResult(targetProjectId)
       setTenderFiles([])
       showToast?.(response?.message || `${reviewConfig.bidType}招标文件解析完成。`)
     } catch (e) {
+      if (isUploadAndRunTimeout(e) && targetProjectId) {
+        setUploadError('')
+        showToast?.('解析仍在后台继续，正在同步最新进度。')
+        const recovered = await recoverUploadAndRunTimeout({
+          projectId: targetProjectId,
+          parseClient: technicalParseAPI,
+          onProgress: (progress) => setParseProgress(progress),
+        })
+        if (recovered.completed) {
+          setParseData(recovered.result)
+          await syncParsedProject(targetProjectId)
+          navigateToParseResult(targetProjectId)
+          setTenderFiles([])
+          showToast?.(`${reviewConfig.bidType}招标文件解析完成。`)
+          return
+        }
+        if (recovered.failed) {
+          const message = recovered.progress?.summary || '上传并解析失败'
+          setUploadError(message)
+          showToast?.(message, 'error')
+          return
+        }
+        setUploadError('')
+        showToast?.('解析仍在后台运行，可继续查看进度或稍后刷新结果。')
+        return
+      }
       const message = e?.message || '上传并解析失败'
       setUploadError(message)
       showToast?.(message, 'error')
@@ -885,42 +1135,48 @@ export default function TechnicalTenderReview({ showToast }) {
           <div className="p-6 text-sm text-on-surface-variant">{reviewConfig.pendingParseHint}</div>
         ) : (
           <div className="flex flex-col gap-5">
-            <div className="flex flex-col gap-4">
-              {scoringGroups.map((group) => (
-                <ScoringCriteriaTable
-                  key={group.key}
-                  title={group.title}
-                  rows={group.rows}
-                  showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false && group.key !== 'compliance'}
-                  showSourceColumns={group.key !== 'compliance'}
-                  showCount={!['price', 'compliance'].includes(group.key)}
-                  showScoreColumn={group.key !== 'compliance'}
-                  showRequirementColumn={group.key !== 'compliance'}
-                  showProofRequirementColumn={!['price', 'compliance'].includes(group.key)}
-                  scoringItemAlign={group.key === 'compliance' ? 'left' : 'center'}
-                />
-              ))}
-            </div>
+            {hasTechnicalInterpretation ? (
+              <TechnicalInterpretationView groups={technicalInterpretationGroups} />
+            ) : (
+              <>
+                <div className="flex flex-col gap-4">
+                  {scoringGroups.map((group) => (
+                    <ScoringCriteriaTable
+                      key={group.key}
+                      title={group.title}
+                      rows={group.rows}
+                      showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false && group.key !== 'compliance'}
+                      showSourceColumns={group.key !== 'compliance'}
+                      showCount={!['price', 'compliance'].includes(group.key)}
+                      showScoreColumn={group.key !== 'compliance'}
+                      showRequirementColumn={group.key !== 'compliance'}
+                      showProofRequirementColumn={!['price', 'compliance'].includes(group.key)}
+                      scoringItemAlign={group.key === 'compliance' ? 'left' : 'center'}
+                    />
+                  ))}
+                </div>
 
-            {reviewConfig.fieldGroupSections.length ? (
-              <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
-                {reviewConfig.fieldGroupSections.map(([key, title]) => (
-                  <FieldGroupTable
-                    key={key}
-                    title={title}
-                    fields={fieldGroups[key] || []}
+                {reviewConfig.fieldGroupSections.length ? (
+                  <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
+                    {reviewConfig.fieldGroupSections.map(([key, title]) => (
+                      <FieldGroupTable
+                        key={key}
+                        title={title}
+                        fields={fieldGroups[key] || []}
+                        showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+
+                {reviewConfig.showPresence !== false && (
+                  <PresenceTable
+                    title={reviewConfig.presenceTitle}
+                    rows={presenceRows}
                     showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
                   />
-                ))}
-              </div>
-            ) : null}
-
-            {reviewConfig.showPresence !== false && (
-              <PresenceTable
-                title={reviewConfig.presenceTitle}
-                rows={presenceRows}
-                showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
-              />
+                )}
+              </>
             )}
 
             <section className="border border-surface-container-high rounded-md overflow-hidden">
@@ -1069,7 +1325,7 @@ export default function TechnicalTenderReview({ showToast }) {
               )}
             </section>
 
-            {reviewConfig.showEvidenceDetails !== false && (
+            {!hasTechnicalInterpretation && reviewConfig.showEvidenceDetails !== false && (
               <details className="rounded-md border border-surface-container-high bg-white">
                 <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-on-surface">
                   <span className="mr-2 align-middle material-symbols-outlined text-[18px] text-primary">travel_explore</span>

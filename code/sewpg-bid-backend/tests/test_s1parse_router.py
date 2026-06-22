@@ -161,20 +161,21 @@ class S1ParseRouterTests(unittest.TestCase):
         resolve_runner.assert_called_once_with(manifest_path.resolve())
         run_path.assert_called_once_with(str(resolved_runner), run_name="__main__")
 
-    def test_main_rejects_stage_for_technical_runner_with_clear_error(self) -> None:
+    def test_main_dispatches_technical_agentic_command_to_resolved_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             manifest_path = self.write_manifest(Path(tmp), {"parseProfile": "technical", "documents": []})
-            stderr = io.StringIO()
+            resolved_runner = Path("/tmp/fake-technical-runner.py")
 
             with (
+                patch.object(ROUTER, "resolve_runner", return_value=resolved_runner) as resolve_runner,
+                patch.object(ROUTER.runpy, "run_path") as run_path,
                 patch.object(sys, "argv", ["s1parse_router.py", "finalize", str(manifest_path)]),
-                redirect_stderr(stderr),
-                self.assertRaises(SystemExit) as raised,
             ):
                 ROUTER.main()
+                self.assertEqual(sys.argv, [str(resolved_runner), "finalize", str(manifest_path.resolve())])
 
-        self.assertEqual(raised.exception.code, 64)
-        self.assertIn("stage argument is only supported for business s1parse", stderr.getvalue())
+        resolve_runner.assert_called_once_with(manifest_path.resolve())
+        run_path.assert_called_once_with(str(resolved_runner), run_name="__main__")
 
     def test_docker_s1parse_wrapper_forwards_agentic_commands(self) -> None:
         dockerfile = ROUTER_PATH.parents[1] / "Dockerfile"
