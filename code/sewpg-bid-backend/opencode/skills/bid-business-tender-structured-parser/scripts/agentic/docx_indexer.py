@@ -293,6 +293,106 @@ def _fill_neighbors(blocks: list[dict[str, Any]]) -> None:
         block["nextText"] = snippet(blocks[index + 1].get("text") or "", 160) if index + 1 < len(blocks) else ""
 
 
+def _index_document_nav(document_meta: dict[str, Any], nav_path: Path) -> IndexedDocument:
+    payload = json.loads(nav_path.read_text(encoding="utf-8"))
+    document_id = str(document_meta.get("id") or "DOC-1")
+    nav_documents = payload.get("documents") if isinstance(payload.get("documents"), list) else []
+    nav_document = next((item for item in nav_documents if isinstance(item, dict) and str(item.get("id") or "") == document_id), {})
+    blocks: list[dict[str, Any]] = []
+    tables: list[dict[str, Any]] = []
+    headings: list[dict[str, Any]] = []
+    heading_stack: list[tuple[int, str]] = []
+    body_index = 0
+    table_by_id = {
+        str(table.get("id") or ""): table
+        for table in (payload.get("tables") if isinstance(payload.get("tables"), list) else [])
+        if isinstance(table, dict)
+    }
+    emitted_tables: set[str] = set()
+
+    def add_table(raw_table: dict[str, Any], *, title_hint: str = "", source_block: dict[str, Any] | None = None) -> None:
+        nonlocal body_index
+        table_id = str(raw_table.get("id") or f"{document_id}:T{len(tables) + 1:04d}")
+        if table_id in emitted_tables:
+            return
+        emitted_tables.add(table_id)
+        body_index += 1
+        rows = raw_table.get("rows") if isinstance(raw_table.get("rows"), list) else []
+        normalized_rows = [[clean(cell) for cell in row] for row in rows if isinstance(row, list)]
+        title = clean(raw_table.get("title") or title_hint)
+        preview_text = _table_preview(normalized_rows)
+        table = {
+            "id": table_id,
+            "documentId": document_id,
+            "bodyIndex": body_index,
+            "title": title,
+            "headingPath": _heading_path(heading_stack),
+            "rowCount": len(normalized_rows),
+            "colCount": max((len(row) for row in normalized_rows), default=0),
+            "headerText": " | ".join(normalized_rows[0]) if normalized_rows else "",
+            "previewText": preview_text,
+            "rows": normalized_rows,
+        }
+        tables.append(table)
+        blocks.append(
+            {
+                "id": table_id,
+                "documentId": document_id,
+                "bodyIndex": body_index,
+                "type": "table",
+                "text": preview_text or title,
+                "headingLevel": 0,
+                "headingPath": _heading_path(heading_stack),
+                "tableId": table_id,
+                "evidenceId": str((source_block or raw_table).get("evidenceId") or raw_table.get("evidenceId") or table_id),
+            }
+        )
+
+    for raw_block in payload.get("blocks") if isinstance(payload.get("blocks"), list) else []:
+        if not isinstance(raw_block, dict):
+            continue
+        block_type = str(raw_block.get("type") or "paragraph")
+        table_id = str(raw_block.get("tableId") or "")
+        if block_type == "table" and table_id and table_id in table_by_id:
+            add_table(table_by_id[table_id], title_hint=str(raw_block.get("text") or ""), source_block=raw_block)
+            continue
+        body_index += 1
+        text = clean(raw_block.get("text") or "")
+        level = int(raw_block.get("headingLevel") or (1 if block_type == "heading" else 0))
+        block_id = str(raw_block.get("id") or raw_block.get("evidenceId") or f"{document_id}:B{body_index:06d}")
+        if level:
+            heading_stack = _update_heading_stack(heading_stack, level, text)
+            headings.append({"id": block_id, "level": level, "title": text, "bodyIndex": body_index})
+        blocks.append(
+            {
+                "id": block_id,
+                "documentId": document_id,
+                "bodyIndex": body_index,
+                "type": block_type,
+                "text": text,
+                "headingLevel": level,
+                "headingPath": _heading_path(heading_stack),
+                "tableId": "",
+                "evidenceId": str(raw_block.get("evidenceId") or block_id),
+            }
+        )
+
+    for raw_table in table_by_id.values():
+        add_table(raw_table)
+
+    _fill_neighbors(blocks)
+    document = {
+        **document_meta,
+        "id": document_id,
+        "name": str(document_meta.get("name") or nav_document.get("name") or document_id),
+        "sourcePath": str(document_meta.get("sourcePath") or nav_document.get("sourcePath") or ""),
+        "documentNavPath": str(nav_path),
+        "blockCount": len(blocks),
+        "tableCount": len(tables),
+    }
+    return IndexedDocument(document=document, blocks=blocks, tables=tables, headings=headings)
+
+
 def _extract_pdf_text(path: Path) -> str:
     if fitz is None:
         return ""
@@ -304,6 +404,9 @@ def _extract_pdf_text(path: Path) -> str:
 
 
 def _read_document(document_meta: dict[str, Any]) -> IndexedDocument:
+    nav_path = Path(str(document_meta.get("documentNavPath") or ""))
+    if nav_path.is_file():
+        return _index_document_nav(document_meta, nav_path)
     source_path = Path(str(document_meta.get("sourcePath") or document_meta.get("textPath") or ""))
     if source_path.suffix.lower() == ".docx" and source_path.is_file():
         return _index_docx(document_meta, source_path)

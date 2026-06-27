@@ -33,16 +33,23 @@ def build_business_template_extractor_manifest(
     manifest_documents: list[dict[str, Any]] = []
     for document in documents:
         source_path = Path(str(document.get("sourcePath") or ""))
-        if source_path.suffix.lower() != ".docx":
+        document_nav_path = str(document.get("documentNavPath") or "").strip()
+        is_docx = source_path.suffix.lower() == ".docx"
+        is_mineru_pdf = source_path.suffix.lower() == ".pdf" and document_nav_path
+        if not is_docx and not is_mineru_pdf:
             continue
-        manifest_documents.append(
-            {
-                "id": str(document.get("id") or ""),
-                "name": str(document.get("name") or source_path.name),
-                "sourcePath": str(source_path),
-                "textPath": str(document.get("textPath") or ""),
-            }
-        )
+        item = {
+            "id": str(document.get("id") or ""),
+            "name": str(document.get("name") or source_path.name),
+            "sourcePath": str(source_path),
+            "textPath": str(document.get("textPath") or ""),
+        }
+        if document_nav_path:
+            item["documentNavPath"] = document_nav_path
+        document_parse_engine = str(document.get("documentParseEngine") or "").strip()
+        if document_parse_engine:
+            item["documentParseEngine"] = document_parse_engine
+        manifest_documents.append(item)
     manifest: dict[str, Any] = {
         "schemaVersion": SCHEMA_VERSION,
         "skillName": SKILL_NAME,
@@ -94,6 +101,75 @@ def _load_extraction_payload(output_dir: Path) -> dict[str, Any] | None:
     if not result_path.is_file():
         return None
     return json.loads(result_path.read_text(encoding="utf-8"))
+
+
+def _hydrate_payload_source_engines(payload: dict[str, Any], documents: list[dict[str, Any]]) -> bool:
+    engines_by_document = {
+        str(document.get("id") or "").strip(): str(
+            document.get("documentParseEngine") or document.get("sourceEngine") or ""
+        ).strip()
+        for document in documents
+        if str(document.get("id") or "").strip()
+    }
+    changed = False
+    for raw in payload.get("appendices") or []:
+        if not isinstance(raw, dict):
+            continue
+        document_id = str(raw.get("sourceDocumentId") or "").strip()
+        source_engine = str(raw.get("sourceEngine") or "").strip() or engines_by_document.get(document_id, "")
+        if not source_engine:
+            continue
+        if not str(raw.get("sourceEngine") or "").strip():
+            raw["sourceEngine"] = source_engine
+            changed = True
+        quality = raw.setdefault("quality", {})
+        if isinstance(quality, dict) and not str(quality.get("sourceEngine") or "").strip():
+            quality["sourceEngine"] = source_engine
+            changed = True
+    quality = payload.setdefault("quality", {})
+    payload_source_engine = ""
+    if isinstance(quality, dict):
+        payload_source_engine = str(quality.get("sourceEngine") or "").strip()
+    appendix_engines = {
+        str(raw.get("sourceEngine") or "").strip()
+        for raw in payload.get("appendices") or []
+        if isinstance(raw, dict) and str(raw.get("sourceEngine") or "").strip()
+    }
+    if isinstance(quality, dict) and not payload_source_engine and len(appendix_engines) == 1:
+        quality["sourceEngine"] = next(iter(appendix_engines))
+        changed = True
+    return changed
+
+
+def _existing_finalized_payload(
+    output_dir: Path,
+    documents: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    payload = _load_extraction_payload(output_dir)
+    if not payload or str(payload.get("stage") or "") != "finalize":
+        return None
+    changed = _hydrate_payload_source_engines(payload, documents)
+    appendices = convert_extractor_appendices(payload)
+    if not appendices:
+        return None
+
+    document_ids = {str(document.get("id") or "").strip() for document in documents}
+    document_ids.discard("")
+    if not document_ids:
+        return None
+    appendix_document_ids = {
+        str(appendix.get("sourceDocumentId") or "").strip()
+        for appendix in appendices
+        if str(appendix.get("sourceDocumentId") or "").strip()
+    }
+    if appendix_document_ids and not appendix_document_ids.issubset(document_ids):
+        return None
+    if any(not Path(str(appendix.get("docxPath") or "")).is_file() for appendix in appendices):
+        return None
+    if changed:
+        result_path = output_dir / "business_template_extraction.json"
+        result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return appendices, payload
 
 
 def build_business_template_navigation_prompt(
@@ -204,6 +280,11 @@ def run_business_template_extractor(
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, str]:
     output_dir = project_dir / "business_template_extraction"
     manifest_path = project_dir / "business_template_extraction_manifest.json"
+    existing = _existing_finalized_payload(output_dir, documents)
+    if existing is not None:
+        appendices, payload = existing
+        return appendices, payload, ""
+
     manifest = build_business_template_extractor_manifest(
         project_id=project_id,
         documents=documents,

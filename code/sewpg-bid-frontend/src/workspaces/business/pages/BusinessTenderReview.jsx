@@ -21,6 +21,10 @@ import {
   selectBusinessParseProjectId,
   shouldSyncBusinessProjectParseResultRoute,
 } from '../businessProjectRoutes'
+import {
+  BUSINESS_PARSE_RESULT_DISPLAY,
+  businessParseResultDisplayState,
+} from '../businessParseResultDisplay'
 import { businessRiskLevelLabel } from '../businessRiskLevel'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
@@ -940,6 +944,10 @@ export default function BusinessTenderReview({ showToast }) {
 
   const rows = structuredRows.length ? structuredRows : fallbackRows
   const isParseCompleted = parseData?.status === 'completed'
+  const parseResultDisplayState = businessParseResultDisplayState({
+    isParseCompleted,
+    sourceFiles,
+  })
   const reviewDecision = String(project?.reviewDecision || 'pending')
   const reviewDecisionLabel = REVIEW_DECISION_LABELS[reviewDecision] || REVIEW_DECISION_LABELS.pending
   const showBusinessCompactUpload = !isParseCompleted
@@ -1611,9 +1619,9 @@ export default function BusinessTenderReview({ showToast }) {
       {!isParseCompleted ? renderParseProgress() : null}
 
       <DataCard className={isParseCompleted ? '!border-0 !bg-transparent !p-0 !shadow-none overflow-visible' : '!p-0 overflow-hidden'}>
-        {!sourceFiles.length ? (
+        {parseResultDisplayState === BUSINESS_PARSE_RESULT_DISPLAY.NO_SOURCE ? (
           <div className="p-6 text-sm text-on-surface-variant">{reviewConfig.noSourceHint}</div>
-        ) : !isParseCompleted ? (
+        ) : parseResultDisplayState === BUSINESS_PARSE_RESULT_DISPLAY.PENDING ? (
           <div className="p-6 text-sm text-on-surface-variant">{reviewConfig.pendingParseHint}</div>
         ) : (
           <div className="flex flex-col gap-5">

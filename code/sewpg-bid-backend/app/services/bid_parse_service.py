@@ -22,6 +22,7 @@ from app.services.bid_parse_state import (
     update_parse_progress_state,
     update_template_files_state,
 )
+from app.services.bid_runtime_state import now_iso, read_json_file
 from app.services.bid_project_state import project_parse_input_records
 from app.services.bid_project_service import BidProjectService, business_project_service, technical_project_service
 from app.services.business_parse_assets import (
@@ -415,6 +416,90 @@ def _load_json_file(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _strip_nul_chars(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, list):
+        return [_strip_nul_chars(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _strip_nul_chars(item) for key, item in value.items()}
+    return value
+
+
+def _business_recoverable_parse_dirs(project_id: str, parse_storage: dict[str, Any]) -> list[Path]:
+    candidates: list[Path] = []
+    for raw in (
+        parse_storage.get("parseDir"),
+        Path(str(parse_storage.get("structuredResultPath") or "")).parent if parse_storage.get("structuredResultPath") else "",
+        settings.parsed_dir / project_id,
+        settings.documents_dir / project_id / BUSINESS_PARSE_PROFILE.workspace_dirname / "parse",
+    ):
+        if not raw:
+            continue
+        candidates.append(Path(str(raw)))
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def _recover_business_parse_artifact(
+    project_id: str,
+    parse_storage: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    for parse_dir in _business_recoverable_parse_dirs(project_id, parse_storage):
+        structured_path = parse_dir / "s1_structured_result.json"
+        loaded = _load_structured_result_file(structured_path)
+        if loaded is None:
+            continue
+        structured_payload = read_json_file(structured_path)
+        items, structured = loaded
+        items = _strip_nul_chars(items)
+        structured = _strip_nul_chars(structured)
+        summary = structured_payload.get("summary") if isinstance(structured_payload.get("summary"), dict) else {}
+        summary = _strip_nul_chars(summary)
+        manifest = read_json_file(parse_dir / "manifest.json")
+        recovered_result = {
+            "status": "completed",
+            "parsedAt": now_iso(),
+            "sourceFiles": [],
+            "items": items,
+            "structured": structured,
+            "summary": summary
+            or {
+                "fileCount": 0,
+                "extractedCount": len(items),
+                "textLength": 0,
+                "textPreview": "",
+                "warnings": ["解析结果已从 S1 产物自动恢复。"],
+            },
+        }
+        recovered_storage = copy.deepcopy(parse_storage)
+        recovered_storage.update(
+            {
+                "projectDir": str(parse_dir.parent) if parse_dir.exists() else "",
+                "parseDir": str(parse_dir),
+                "combinedTextPath": str(parse_dir / "combined.txt") if (parse_dir / "combined.txt").exists() else "",
+                "manifestPath": str(parse_dir / "manifest.json") if (parse_dir / "manifest.json").exists() else "",
+                "structuredResultPath": str(structured_path),
+                "skillManifestPath": str(parse_dir / "s1_parse_manifest.json") if (parse_dir / "s1_parse_manifest.json").exists() else "",
+                "documents": _strip_nul_chars(list(manifest.get("documents") or [])) if isinstance(manifest.get("documents"), list) else [],
+                "items": copy.deepcopy(items),
+                "structured": copy.deepcopy(structured),
+            }
+        )
+        recovered_result = _strip_nul_chars(recovered_result)
+        recovered_storage = _strip_nul_chars(recovered_storage)
+        return recovered_result, recovered_storage
+    return None
 
 
 def _business_template_extraction_candidates(parse_storage: dict[str, Any], structured_path: Path) -> list[Path]:
@@ -949,22 +1034,32 @@ class BidParseService:
     def _refresh_business_parse_result_from_structured_file(self, project_id: str) -> dict[str, Any]:
         project = self.require_project_for_update(project_id)
         parse_result = project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {}
-        if self.project_service.bid_type != BUSINESS_PARSE_PROFILE.bid_type or parse_result.get("status") != "completed":
+        if self.project_service.bid_type != BUSINESS_PARSE_PROFILE.bid_type:
             return copy.deepcopy(parse_result)
-
         parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
+        if parse_result.get("status") != "completed":
+            recovered = _recover_business_parse_artifact(project_id, parse_storage)
+            if recovered is None:
+                return copy.deepcopy(parse_result)
+            recovered_result, recovered_storage = recovered
+            parse_result = update_parse_result_state(project, recovered_result, parse_storage=recovered_storage)
+            persist_workspace_project_state(project)
+            parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
+
         structured_path = Path(str(parse_storage.get("structuredResultPath") or ""))
         loaded = _load_structured_result_file(structured_path)
         if loaded is None:
             return copy.deepcopy(parse_result)
 
         items, structured = loaded
+        items = _strip_nul_chars(items)
+        structured = _strip_nul_chars(structured)
         structured, template_extraction_path = _hydrate_business_template_appendices(
             structured,
             parse_storage,
             structured_path,
         )
-        structured = _materialize_business_readable_sources(structured, structured_path=structured_path)
+        structured = _strip_nul_chars(_materialize_business_readable_sources(structured, structured_path=structured_path))
         if parse_result.get("items") == items and parse_result.get("structured") == structured:
             return copy.deepcopy(parse_result)
 
@@ -1076,6 +1171,9 @@ class BidParseService:
         summary: dict[str, Any] | None = None,
         parse_storage: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if self.project_service.bid_type == BUSINESS_PARSE_PROFILE.bid_type:
+            summary = _strip_nul_chars(summary) if summary is not None else None
+            parse_storage = _strip_nul_chars(parse_storage) if parse_storage is not None else None
         project = self.require_project_for_update(project_id)
         parse_result = complete_parse_state(
             project,

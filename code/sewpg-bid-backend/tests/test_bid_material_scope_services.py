@@ -1305,6 +1305,37 @@ def test_workspace_project_access_owns_bid_type_guards() -> None:
     assert "get_any_workspace_project_runtime_state(" in redis_worker_source
 
 
+def test_project_parse_input_records_recovers_tender_uploads_from_disk(tmp_path) -> None:
+    from app.core.config import settings
+
+    original_uploads_dir = settings.uploads_dir
+    try:
+        settings.uploads_dir = tmp_path / "uploads"
+        project_id = "PRJ-RECOVER-UPLOADS"
+        tender_dir = settings.uploads_dir / project_id / "tender"
+        tender_dir.mkdir(parents=True)
+        source = tender_dir / "tender-1-deadbeef.pdf"
+        source.write_bytes(b"%PDF-1.4\n")
+        project = create_project_state(
+            project_id,
+            {"name": "恢复上传记录项目", "customerName": "测试业主", "bidType": "商务标"},
+        )
+        project["fileRecords"] = []
+
+        tender_records, template_records = project_parse_input_records(project_id, project, include_fallback=False)
+
+        assert template_records == []
+        assert len(tender_records) == 1
+        assert tender_records[0]["id"] == "TEN-1"
+        assert tender_records[0]["name"] == source.name
+        assert tender_records[0]["stored_name"] == source.name
+        assert tender_records[0]["path"] == str(source)
+        assert tender_records[0]["size_bytes"] == source.stat().st_size
+        assert tender_records[0]["content_type"] == "application/pdf"
+    finally:
+        settings.uploads_dir = original_uploads_dir
+
+
 def test_bid_type_rules_have_single_source_of_truth() -> None:
     from app.services.bid_type import (
         BUSINESS_BID_TYPE,

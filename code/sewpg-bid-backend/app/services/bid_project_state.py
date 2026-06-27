@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import mimetypes
 from collections.abc import Iterable
 from typing import Any
 
@@ -8,7 +9,7 @@ from app.services.bid_fill_state import default_fill_state
 from app.services.bid_parse_state import default_parse_progress
 from app.services.bid_runtime_state import build_directory_opencode_output, now_iso
 from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE, require_bid_type
-from app.services.file_utils import run_awaitable_sync
+from app.services.file_utils import format_size_mb, run_awaitable_sync
 from app.services.identity import build_project_identity, build_project_material_scope
 from app.services.peripheral import PeripheralError
 from app.services.project_stage_flow import (
@@ -178,13 +179,47 @@ def project_bid_type(project: dict[str, Any]) -> str:
     )
 
 
+def _recover_upload_records_from_disk(project_id: str, folder: str) -> list[dict[str, Any]]:
+    from app.core.config import settings
+
+    upload_dir = settings.uploads_dir / project_id / folder
+    if not upload_dir.is_dir():
+        return []
+    prefix = folder[:3].upper()
+    records: list[dict[str, Any]] = []
+    candidates = sorted(
+        item
+        for item in upload_dir.iterdir()
+        if item.is_file() and not item.name.startswith(".") and item.suffix != ".part"
+    )
+    for index, path in enumerate(candidates, start=1):
+        size = path.stat().st_size
+        records.append(
+            {
+                "id": f"{prefix}-{index}",
+                "name": path.name,
+                "stored_name": path.name,
+                "size_bytes": size,
+                "size_label": format_size_mb(size),
+                "content_type": mimetypes.guess_type(path.name)[0] or "",
+                "path": str(path),
+            }
+        )
+    return records
+
+
 def project_parse_input_records(
     project_id: str,
     project: dict[str, Any],
     *,
     include_fallback: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    file_records = copy.deepcopy(project.get("fileRecords") or [])
+    if not file_records:
+        file_records = _recover_upload_records_from_disk(project_id, "tender")
     template_file_records = copy.deepcopy(project.get("templateFileRecords") or [])
+    if not template_file_records:
+        template_file_records = _recover_upload_records_from_disk(project_id, "template")
     if include_fallback and not template_file_records and normalize_template_fallback_state(project)["enabled"]:
         from app.services import template_store as template_store_module
 
@@ -195,7 +230,7 @@ def project_parse_input_records(
         if fallback_record is not None:
             template_file_records = [fallback_record]
     return (
-        copy.deepcopy(project.get("fileRecords") or []),
+        file_records,
         template_file_records,
     )
 

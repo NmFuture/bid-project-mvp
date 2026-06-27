@@ -11,6 +11,12 @@
 .qoder/
 .understand-anything/
 
+/.venv/
+/node_modules/
+/tmp/
+/output/
+/_tmp_extract_bid/
+
 code/.env
 code/opencode-auth/auth.json
 

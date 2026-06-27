@@ -666,6 +666,198 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(len(appendices), 1)
         self.assertEqual(appendices[0]["extractionMode"], "business_template_extractor_skill")
 
+    def test_business_pdf_uses_mineru_document_nav_first(self) -> None:
+        project_id = self.create_business_project()
+        pdf_path = settings.uploads_dir / project_id / "business.pdf"
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        pdf_path.write_bytes(b"%PDF-1.4\n")
+        nav_payload = {
+            "schemaVersion": "business-document-nav-v1",
+            "sourceEngine": "mineru",
+            "documents": [{"id": "DOC-1", "sourcePath": str(pdf_path)}],
+            "pages": [{"pageNo": 1, "textDensity": 0.8}],
+            "blocks": [{"id": "DOC-1:B000001", "type": "heading", "text": "第六章 投标文件格式"}],
+            "tables": [],
+            "images": [],
+            "evidence": [],
+            "quality": {"status": "completed"},
+        }
+
+        def fake_parse_pdf(self, *, project_id: str, document: dict, output_dir: Path):
+            nav_path = output_dir / "document_nav.json"
+            quality_path = output_dir / "parse_quality.json"
+            nav_path.write_text(json.dumps(nav_payload, ensure_ascii=False), encoding="utf-8")
+            quality_path.write_text(json.dumps({"status": "completed"}, ensure_ascii=False), encoding="utf-8")
+            return {
+                "documentParseEngine": "mineru",
+                "status": "completed",
+                "documentNavPath": str(nav_path),
+                "parseQualityPath": str(quality_path),
+            }
+
+        def fake_structured_parser(skill_manifest_path: Path, **kwargs):
+            manifest = json.loads(skill_manifest_path.read_text(encoding="utf-8"))
+            document = manifest["documents"][0]
+            self.assertEqual(document["documentParseEngine"], "mineru")
+            self.assertTrue(Path(document["documentNavPath"]).is_file())
+            self.assertTrue(Path(document["parseQualityPath"]).is_file())
+            text_path = Path(document["textPath"])
+            self.assertIn("第六章 投标文件格式", text_path.read_text(encoding="utf-8"))
+            return {
+                "items": [],
+                "structured": {
+                    "schemaVersion": "bid-business-tender-structured-v1",
+                    "targetSkill": "bid-business-tender-structured-parser",
+                    "mode": "opencode-skill",
+                    "sourceDocuments": [],
+                    "scoringCriteria": {"business": []},
+                    "fieldGroups": {},
+                    "requirementPresence": {},
+                    "coverage": [],
+                    "projectDates": {"endDate": ""},
+                    "appendices": [],
+                    "commitmentLetters": [],
+                    "commitmentClues": [],
+                    "projectFactFields": [],
+                    "categoryCounts": {},
+                },
+            }, ""
+
+        with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+            "app.services.parsing.settings.business_pdf_mineru_enabled",
+            True,
+            create=True,
+        ), patch(
+            "app.services.parsing.MineruParseEngine.parse_pdf",
+            new=fake_parse_pdf,
+        ), patch(
+            "app.services.parsing.extract_pdf_text",
+            side_effect=AssertionError("business PDF should use DocumentParseEngine first"),
+        ), patch(
+            "app.services.parsing.run_business_template_extractor",
+            return_value=([], {"schemaVersion": "bid-business-template-extractor-v1", "summary": {"templateCount": 0}}, ""),
+        ), patch(
+            "app.services.parsing._run_parse_skill",
+            side_effect=fake_structured_parser,
+        ), patch(
+            "app.services.parsing._needs_business_s1_finalize_guard",
+            return_value=False,
+        ):
+            summary, storage = parsing_service.parse_tender_documents(
+                project_id,
+                [
+                    {
+                        "id": "DOC-1",
+                        "name": "business.pdf",
+                        "path": str(pdf_path),
+                        "content_type": "application/pdf",
+                    }
+                ],
+                bid_type="商务标",
+            )
+
+        self.assertIn("第六章 投标文件格式", summary["textPreview"])
+        self.assertEqual(storage["documents"][0]["documentParseEngine"], "mineru")
+        self.assertEqual(storage["documents"][0]["textLength"], len("第六章 投标文件格式"))
+        self.assertTrue(Path(storage["documents"][0]["documentNavPath"]).is_file())
+
+    def test_business_pdf_low_quality_pages_append_ocr_blocks(self) -> None:
+        project_id = self.create_business_project()
+        pdf_path = settings.uploads_dir / project_id / "business-low-quality.pdf"
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        pdf_path.write_bytes(b"%PDF-1.4\n")
+        nav_payload = {
+            "schemaVersion": "business-document-nav-v1",
+            "sourceEngine": "mineru",
+            "documents": [{"id": "DOC-1", "sourcePath": str(pdf_path)}],
+            "pages": [{"pageNo": 1, "textDensity": 0.01}],
+            "blocks": [{"id": "DOC-1:B000001", "type": "paragraph", "text": "MinerU 原始文本", "pageNo": 1}],
+            "tables": [],
+            "images": [],
+            "evidence": [],
+            "quality": {"status": "completed"},
+        }
+
+        def fake_parse_pdf(self, *, project_id: str, document: dict, output_dir: Path):
+            nav_path = output_dir / "document_nav.json"
+            quality_path = output_dir / "parse_quality.json"
+            nav_path.write_text(json.dumps(nav_payload, ensure_ascii=False), encoding="utf-8")
+            quality_path.write_text(json.dumps({"status": "completed"}, ensure_ascii=False), encoding="utf-8")
+            return {
+                "documentParseEngine": "mineru",
+                "status": "completed",
+                "documentNavPath": str(nav_path),
+                "parseQualityPath": str(quality_path),
+            }
+
+        def fake_ocr_pages(*, project_id: str, document: dict, file_path: Path, page_numbers: list[int]):
+            self.assertEqual(page_numbers, [1])
+            return {1: {"text": "OCR 补充文本", "meta": {"status": "completed", "pageCount": 1}}}
+
+        with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+            "app.services.parsing.settings.business_pdf_mineru_enabled",
+            True,
+            create=True,
+        ), patch(
+            "app.services.parsing.MineruParseEngine.parse_pdf",
+            new=fake_parse_pdf,
+        ), patch(
+            "app.services.parsing._ocr_business_pdf_pages",
+            side_effect=fake_ocr_pages,
+        ), patch(
+            "app.services.parsing.run_business_template_extractor",
+            return_value=([], {"schemaVersion": "bid-business-template-extractor-v1", "summary": {"templateCount": 0}}, ""),
+        ), patch(
+            "app.services.parsing._run_parse_skill",
+            return_value=(
+                {
+                    "items": [],
+                    "structured": {
+                        "schemaVersion": "bid-business-tender-structured-v1",
+                        "targetSkill": "bid-business-tender-structured-parser",
+                        "mode": "opencode-skill",
+                        "sourceDocuments": [],
+                        "scoringCriteria": {"business": []},
+                        "fieldGroups": {},
+                        "requirementPresence": {},
+                        "coverage": [],
+                        "projectDates": {"endDate": ""},
+                        "appendices": [],
+                        "commitmentLetters": [],
+                        "commitmentClues": [],
+                        "projectFactFields": [],
+                        "categoryCounts": {},
+                    },
+                },
+                "",
+            ),
+        ), patch(
+            "app.services.parsing._needs_business_s1_finalize_guard",
+            return_value=False,
+        ):
+            _, storage = parsing_service.parse_tender_documents(
+                project_id,
+                [
+                    {
+                        "id": "DOC-1",
+                        "name": "business-low-quality.pdf",
+                        "path": str(pdf_path),
+                        "content_type": "application/pdf",
+                    }
+                ],
+                bid_type="商务标",
+            )
+
+        document = storage["documents"][0]
+        nav = json.loads(Path(document["documentNavPath"]).read_text(encoding="utf-8"))
+        texts = [block["text"] for block in nav["blocks"]]
+        quality = json.loads(Path(document["parseQualityPath"]).read_text(encoding="utf-8"))
+        self.assertIn("MinerU 原始文本", texts)
+        self.assertIn("OCR 补充文本", texts)
+        self.assertTrue(any(block["type"] == "ocr_text" for block in nav["blocks"]))
+        self.assertEqual(document["pageOcr"]["appliedPages"], [1])
+        self.assertEqual(quality["ocrAppliedPages"], [1])
+
     def test_business_section_tree_is_ready_before_structured_parser(self) -> None:
         project_id = self.create_business_project()
         calls: list[str] = []
@@ -1289,15 +1481,53 @@ class ParsePipelineTests(unittest.TestCase):
         )
         self.assertTrue(structured["workflow"]["backendFinalizeGuardApplied"])
 
-    def test_run_parse_skill_preserves_stalled_opencode_trace_on_fallback(self) -> None:
+    def test_business_run_parse_skill_raises_when_opencode_never_produces_skill_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "s1_parse_manifest.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+            local_result = {
+                "items": [{"id": "LOCAL-1", "title": "local fallback should not be returned"}],
+                "structured": {
+                    "schemaVersion": "bid-business-tender-structured-v1",
+                    "targetSkill": "bid-business-tender-structured-parser",
+                    "mode": "local-structured-parser",
+                    "sourceDocuments": [],
+                    "fieldGroups": {},
+                    "scoringCriteria": {},
+                    "coverage": [],
+                    "projectDates": {"startDate": "", "endDate": ""},
+                },
+            }
+            error = RuntimeError("unit-test opencode failed before finalize")
+            error.opencode_trace = {
+                "status": "stalled",
+                "sessionId": "ses-business-no-finalize",
+                "agentStatus": "stalled",
+                "lastTool": "bash",
+                "lastToolStatus": "running",
+                "failureReason": "s1parse finalize did not complete",
+            }
+
+            with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+                "app.services.parsing.OpencodeClient.generate_tender_parse_with_trace",
+                side_effect=error,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "S1 商务解析 Skill 调用失败"):
+                    parsing_service._run_parse_skill(
+                        manifest_path,
+                        local_result=local_result,
+                        profile=parsing_service.BUSINESS_PARSE_PROFILE,
+                    )
+
+    def test_technical_run_parse_skill_preserves_stalled_opencode_trace_on_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             manifest_path = Path(tmp) / "s1_parse_manifest.json"
             manifest_path.write_text("{}", encoding="utf-8")
             local_result = {
                 "items": [],
                 "structured": {
-                    "schemaVersion": "bid-business-tender-structured-v1",
-                    "targetSkill": "bid-business-tender-structured-parser",
+                    "schemaVersion": "bid-tender-structured-v1",
+                    "targetSkill": "bid-tech-tender-structured-parser",
                     "mode": "local-structured-parser",
                     "sourceDocuments": [],
                     "fieldGroups": {},
@@ -1325,7 +1555,7 @@ class ParsePipelineTests(unittest.TestCase):
                 result, warning = parsing_service._run_parse_skill(
                     manifest_path,
                     local_result=local_result,
-                    profile=parsing_service.BUSINESS_PARSE_PROFILE,
+                    profile=parsing_service.TECHNICAL_PARSE_PROFILE,
                     progress_callback=lambda event, details: progress_events.append((event, details)),
                 )
 
@@ -2450,6 +2680,159 @@ class ParsePipelineTests(unittest.TestCase):
         )
         self.assertEqual(preview.status_code, 200)
         self.assertIn(str(workspace_commitment_dir), preview.json()["docxPath"])
+
+    def test_business_parse_results_recovers_completed_structured_file_after_idle_state(self) -> None:
+        project_id = self.create_business_project()
+        parse_dir = settings.parsed_dir / project_id
+        parse_dir.mkdir(parents=True, exist_ok=True)
+        structured_payload = {
+            "items": [
+                {
+                    "id": "REQ-1",
+                    "fieldKey": "projectName",
+                    "title": "项目名称",
+                    "value": "后台\x00恢复测试项目",
+                    "sourceFile": "商务招标文件.pdf",
+                }
+            ],
+            "structured": {
+                "schemaVersion": "bid-business-tender-structured-v1",
+                "fieldGroups": {
+                    "projectBasics": [
+                        {
+                            "key": "projectName",
+                            "label": "项目名称",
+                            "value": "后台\x00恢复测试项目",
+                        }
+                    ]
+                },
+                "appendices": [],
+                "commitmentLetters": [],
+                "workflow": {
+                    "documentParseEngine": "mineru",
+                    "documentParseStatus": "completed",
+                    "fallbackUsed": False,
+                },
+            },
+            "summary": {
+                "fileCount": 1,
+                "extractedCount": 1,
+                "textLength": 12,
+                "textPreview": "后台\x00恢复测试项目",
+                "warnings": [],
+            },
+        }
+        (parse_dir / "s1_structured_result.json").write_text(
+            json.dumps(structured_payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (parse_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "documents": [
+                        {
+                            "id": "TEN-1",
+                            "name": "商务招标文件.pdf",
+                            "documentParseEngine": "mineru",
+                            "documentParseStatus": "completed",
+                            "fallbackUsed": False,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (parse_dir / "combined.txt").write_text("后台\x00恢复测试项目", encoding="utf-8")
+
+        project = store._require(project_id)
+        project["parse_result"] = {
+            "status": "idle",
+            "parsedAt": "",
+            "sourceFiles": [],
+            "items": [],
+            "structured": {},
+            "summary": {"fileCount": 0, "extractedCount": 0, "textLength": 0, "textPreview": "", "warnings": []},
+        }
+        project["parse_storage"] = {
+            "projectDir": "",
+            "parseDir": "",
+            "combinedTextPath": "",
+            "manifestPath": "",
+            "documents": [],
+        }
+        project["parse_progress"] = {
+            "status": "completed",
+            "percentage": 100,
+            "summary": "解析完成",
+            "startedAt": "",
+            "completedAt": "",
+            "events": [],
+        }
+        store.persist_project_state(project)
+
+        response = self.client.get(self.parse_results_url(project_id))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(len(payload["items"]), 1)
+        self.assertEqual(payload["items"][0]["value"], "后台恢复测试项目")
+        self.assertNotIn("\x00", json.dumps(payload, ensure_ascii=False))
+        self.assertEqual(payload["structured"]["workflow"]["documentParseEngine"], "mineru")
+        self.assertFalse(payload["structured"]["workflow"]["fallbackUsed"])
+
+        project = store._require(project_id)
+        self.assertEqual(project["parse_result"]["status"], "completed")
+        self.assertEqual(len(project["parse_result"]["items"]), 1)
+        self.assertNotIn("\x00", json.dumps(project["parse_result"], ensure_ascii=False))
+        self.assertNotIn("\x00", json.dumps(project["parse_storage"], ensure_ascii=False))
+        self.assertEqual(Path(project["parse_storage"]["structuredResultPath"]), parse_dir / "s1_structured_result.json")
+        self.assertEqual(Path(project["parse_storage"]["combinedTextPath"]), parse_dir / "combined.txt")
+
+    def test_business_complete_parse_strips_nul_chars_before_persisting(self) -> None:
+        project_id = self.create_business_project()
+        parse_dir = settings.parsed_dir / project_id
+        parse_dir.mkdir(parents=True, exist_ok=True)
+        structured_path = parse_dir / "s1_structured_result.json"
+        structured_path.write_text("{}", encoding="utf-8")
+
+        from app.services.bid_parse_service import business_parse_service
+
+        parse_result = business_parse_service.complete_parse(
+            project_id,
+            [
+                {
+                    "id": "TEN-1",
+                    "name": "商务招标文件.pdf",
+                    "size_label": "1 MB",
+                    "path": str(settings.uploads_dir / project_id / "商务招标文件.pdf"),
+                }
+            ],
+            [],
+            summary={
+                "fileCount": 1,
+                "extractedCount": 1,
+                "textLength": 10,
+                "textPreview": "预览\x00文本",
+                "warnings": ["警告\x00内容"],
+            },
+            parse_storage={
+                "projectDir": str(parse_dir),
+                "combinedTextPath": str(parse_dir / "combined.txt"),
+                "manifestPath": str(parse_dir / "manifest.json"),
+                "structuredResultPath": str(structured_path),
+                "documents": [{"id": "TEN-1", "name": "商务\x00招标文件.pdf"}],
+                "items": [{"id": "REQ-1", "value": "字段\x00值"}],
+                "structured": {"fieldGroups": {"projectBasics": [{"key": "projectName", "value": "项目\x00名称"}]}},
+            },
+        )
+
+        self.assertEqual(parse_result["items"][0]["value"], "字段值")
+        self.assertEqual(parse_result["structured"]["fieldGroups"]["projectBasics"][0]["value"], "项目名称")
+        project = store._require(project_id)
+        self.assertNotIn("\x00", json.dumps(project["parse_result"], ensure_ascii=False))
+        self.assertNotIn("\x00", json.dumps(project["parse_storage"], ensure_ascii=False))
 
     def test_business_bid_text_attachment_template_docx_keeps_template_body(self) -> None:
         project_id = self.create_business_project()

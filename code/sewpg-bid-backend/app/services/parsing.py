@@ -22,6 +22,11 @@ from app.core.config import settings
 from app.services.business_section_tree import write_business_section_tree
 from app.services.business_template_extractor import run_business_template_extractor
 from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
+from app.services.document_nav import nav_to_text
+from app.services.document_parse_engine import create_document_parse_engine
+from app.services.document_parse_quality import evaluate_document_nav_quality
+from app.services.mineru_engine import MineruParseEngine
+from app.services.mineru_nav_adapter import convert_mineru_output_to_document_nav
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.opencode_client import OpencodeClient
 from app.services.parse_profiles import (
@@ -438,6 +443,215 @@ def _ocr_fallback_text(project_id: str, file_record: dict[str, Any], file_path: 
             "code": "OCR_PARSE_FALLBACK_FAILED",
             "message": str(exc),
         }
+
+
+def _ocr_business_pdf_pages(
+    *,
+    project_id: str,
+    document: dict[str, Any],
+    file_path: Path,
+    page_numbers: list[int],
+) -> dict[int, dict[str, Any]]:
+    if not page_numbers:
+        return {}
+    try:
+        import fitz  # type: ignore
+    except Exception as exc:
+        return {page_no: {"text": "", "meta": {"status": "failed", "message": str(exc)}} for page_no in page_numbers}
+
+    results: dict[int, dict[str, Any]] = {}
+    try:
+        pdf = fitz.open(str(file_path))
+    except Exception as exc:
+        return {page_no: {"text": "", "meta": {"status": "failed", "message": str(exc)}} for page_no in page_numbers}
+    with pdf:
+        for page_no in page_numbers:
+            if page_no < 1 or page_no > len(pdf):
+                results[page_no] = {"text": "", "meta": {"status": "failed", "message": "page out of range"}}
+                continue
+            try:
+                page = pdf.load_page(page_no - 1)
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                text, raw = _run_async_ocr(
+                    ocr_service.recognize_text_for_parse(
+                        file_name=f"{document.get('name') or file_path.stem}-page-{page_no}.png",
+                        content=pix.tobytes("png"),
+                        mime_type="image/png",
+                    )
+                )
+                results[page_no] = {"text": _normalize_text(text), "meta": raw}
+            except Exception as exc:
+                results[page_no] = {"text": "", "meta": {"status": "failed", "message": str(exc)}}
+    return results
+
+
+def _append_ocr_blocks_to_document_nav(
+    document_nav: dict[str, Any],
+    *,
+    document_id: str,
+    ocr_results: dict[int, dict[str, Any]],
+) -> tuple[list[int], list[str]]:
+    applied_pages: list[int] = []
+    warnings: list[str] = []
+    blocks = document_nav.setdefault("blocks", [])
+    evidence = document_nav.setdefault("evidence", [])
+    if not isinstance(blocks, list) or not isinstance(evidence, list):
+        return applied_pages, ["DocumentNav 结构异常，无法追加 OCR 补充文本。"]
+    next_index = len([block for block in blocks if isinstance(block, dict)]) + 1
+    for page_no in sorted(ocr_results):
+        result = ocr_results[page_no]
+        text = str((result or {}).get("text") or "").strip()
+        meta = (result or {}).get("meta") if isinstance((result or {}).get("meta"), dict) else {}
+        if not text:
+            warnings.append(f"第 {page_no} 页 OCR 兜底未产生文本：{meta.get('message') or meta.get('status') or '未知错误'}")
+            continue
+        block_id = f"{document_id}:B{next_index:06d}"
+        evidence_id = f"{document_id}:P{page_no:04d}:O{next_index:06d}"
+        block = {
+            "id": block_id,
+            "documentId": document_id,
+            "pageNo": page_no,
+            "type": "ocr_text",
+            "text": text,
+            "evidenceId": evidence_id,
+            "sourceEngine": "deepseek-ocr",
+        }
+        blocks.append(block)
+        evidence.append(
+            {
+                "id": evidence_id,
+                "documentId": document_id,
+                "pageNo": page_no,
+                "kind": "ocr_text",
+                "blockId": block_id,
+                "tableId": "",
+                "imageId": "",
+                "bbox": [],
+                "sourceText": text,
+                "sourceEngine": "deepseek-ocr",
+            }
+        )
+        applied_pages.append(page_no)
+        next_index += 1
+    return applied_pages, warnings
+
+
+def _parse_business_pdf_with_document_engine(
+    *,
+    project_id: str,
+    document: dict[str, Any],
+    file_path: Path,
+    project_dir: Path,
+) -> tuple[str, dict[str, Any], list[str]]:
+    document_id = str(document.get("id") or "DOC-1")
+    existing_document_nav_path = project_dir / f"{document_id}_document_nav.json"
+    existing_quality_path = project_dir / "document_parse" / "mineru" / document_id / "parse_quality.json"
+    if existing_document_nav_path.is_file() and existing_quality_path.is_file():
+        try:
+            existing_quality = json.loads(existing_quality_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing_quality = {}
+        if (
+            isinstance(existing_quality, dict)
+            and str(existing_quality.get("status") or "").lower() == "completed"
+            and not bool(existing_quality.get("fallbackUsed"))
+        ):
+            document_nav = json.loads(existing_document_nav_path.read_text(encoding="utf-8"))
+            metadata = {
+                "documentParseEngine": "mineru",
+                "documentNavPath": str(existing_document_nav_path),
+                "parseQualityPath": str(existing_quality_path),
+            }
+            quality = evaluate_document_nav_quality(document_nav)
+            existing_warnings = existing_quality.get("warnings") if isinstance(existing_quality.get("warnings"), list) else []
+            quality.setdefault("warnings", [])
+            if isinstance(quality["warnings"], list):
+                quality["warnings"] = [*existing_warnings, *quality["warnings"]]
+            existing_quality_path.write_text(json.dumps(quality, ensure_ascii=False, indent=2), encoding="utf-8")
+            text = nav_to_text(document_nav)
+            page_count = len(document_nav.get("pages") or []) or "-"
+            metadata["pageCount"] = page_count
+            return text, metadata, list(quality.get("warnings") or [])
+
+    engine = create_document_parse_engine(
+        parse_engine=settings.business_pdf_parse_engine,
+        mineru_enabled=settings.business_pdf_mineru_enabled,
+        fallback=settings.business_pdf_engine_fallback,
+    )
+    if isinstance(engine, MineruParseEngine):
+        engine.mode = settings.business_pdf_mineru_mode
+        engine.backend = settings.business_pdf_mineru_backend
+        engine.executable = settings.business_pdf_mineru_executable
+        engine.timeout_sec = settings.business_pdf_mineru_timeout_sec
+    result = engine.parse_pdf(project_id=project_id, document=document, output_dir=project_dir)
+    metadata = {
+        "documentParseEngine": str(result.get("documentParseEngine") or settings.business_pdf_parse_engine),
+        "parseQualityPath": str(result.get("parseQualityPath") or ""),
+    }
+    warnings: list[str] = []
+    status = str(result.get("status") or "").lower()
+    document_nav: dict[str, Any] | None = None
+    document_nav_path = Path(str(result.get("documentNavPath") or ""))
+    mineru_output_dir = Path(str(result.get("mineruOutputDir") or ""))
+
+    if status == "completed":
+        if document_nav_path.is_file():
+            document_nav = json.loads(document_nav_path.read_text(encoding="utf-8"))
+        elif mineru_output_dir.is_dir():
+            document_nav = convert_mineru_output_to_document_nav(
+                document_id=str(document.get("id") or "DOC-1"),
+                source_path=file_path,
+                mineru_output_dir=mineru_output_dir,
+            )
+            document_nav_path = project_dir / f"{document['id']}_document_nav.json"
+            document_nav_path.write_text(json.dumps(document_nav, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if document_nav:
+        metadata["documentNavPath"] = str(document_nav_path)
+        quality = evaluate_document_nav_quality(document_nav)
+        if settings.business_pdf_ocr_fallback_enabled and quality.get("ocrPages"):
+            ocr_results = _ocr_business_pdf_pages(
+                project_id=project_id,
+                document=document,
+                file_path=file_path,
+                page_numbers=[int(page) for page in quality.get("ocrPages") or []],
+            )
+            applied_pages, ocr_warnings = _append_ocr_blocks_to_document_nav(
+                document_nav,
+                document_id=str(document.get("id") or "DOC-1"),
+                ocr_results=ocr_results,
+            )
+            if applied_pages:
+                metadata["pageOcr"] = {"appliedPages": applied_pages}
+                quality["ocrAppliedPages"] = applied_pages
+                document_nav_path.write_text(json.dumps(document_nav, ensure_ascii=False, indent=2), encoding="utf-8")
+            warnings.extend(ocr_warnings)
+            quality.setdefault("warnings", [])
+            if isinstance(quality["warnings"], list):
+                quality["warnings"].extend(ocr_warnings)
+        raw_quality_path = str(metadata.get("parseQualityPath") or "").strip()
+        if raw_quality_path:
+            quality_path = Path(raw_quality_path)
+        else:
+            quality_path = project_dir / f"{document['id']}_parse_quality.json"
+            metadata["parseQualityPath"] = str(quality_path)
+        quality_path.parent.mkdir(parents=True, exist_ok=True)
+        quality_path.write_text(json.dumps(quality, ensure_ascii=False, indent=2), encoding="utf-8")
+        warnings.extend(quality.get("warnings") or [])
+        text = nav_to_text(document_nav)
+        page_count = len(document_nav.get("pages") or []) or "-"
+        metadata["pageCount"] = page_count
+        return text, metadata, warnings
+
+    fallback_reason = str(result.get("fallbackReason") or "MinerU 解析未生成 DocumentNav")
+    metadata["fallbackReason"] = fallback_reason
+    if settings.business_pdf_engine_fallback != "lightweight":
+        metadata["documentParseStatus"] = "failed"
+        warnings.append(f"MinerU 解析失败，未启用 PDF 解析兜底：{fallback_reason}")
+        return "", metadata, warnings
+    metadata["documentParseStatus"] = "fallback"
+    warnings.append(f"MinerU 解析失败，已回退到轻量 PDF 文本解析：{fallback_reason}")
+    return "", metadata, warnings
 
 
 def _normalize_date_match(match: re.Match[str]) -> str:
@@ -5250,6 +5464,10 @@ def _run_parse_skill(
             return _attach_opencode_attempts(resolved, attempts), ""
         except RuntimeError as retry_exc:
             attempts.append(_opencode_attempt_from_error(retry_exc, 2))
+            if profile.key == "business":
+                raise RuntimeError(
+                    f"S1 商务解析 Skill 调用失败，未生成基于 MinerU/Opencode 的结构化结果：{retry_exc}"
+                ) from retry_exc
             return _fallback_parse_skill_result(
                 retry_exc,
                 local_result=local_result,
@@ -5441,6 +5659,7 @@ def parse_tender_documents(
         page_count: int | str = "-"
         file_warnings: list[str] = []
         ocr_meta: dict[str, Any] | None = None
+        parse_metadata: dict[str, Any] = {}
         if progress_callback:
             progress_callback("extracting_file", {"fileName": file_record.get("name") or file_path.name})
 
@@ -5451,10 +5670,37 @@ def parse_tender_documents(
         elif extension == ".txt":
             text = file_path.read_text(encoding="utf-8", errors="replace")
         elif extension == ".pdf":
-            text, pdf_meta = extract_pdf_text(file_path)
+            pdf_text_fallback_enabled = True
+            if (
+                profile.key == "business"
+                and settings.business_pdf_parse_engine == "mineru"
+                and settings.business_pdf_mineru_enabled
+            ):
+                text, parse_metadata, engine_warnings = _parse_business_pdf_with_document_engine(
+                    project_id=project_id,
+                    document={
+                        "id": file_record["id"],
+                        "name": file_record.get("name") or file_path.name,
+                        "path": str(file_path),
+                        "sourcePath": str(file_path),
+                    },
+                    file_path=file_path,
+                    project_dir=project_dir,
+                )
+                page_count = parse_metadata.get("pageCount") or page_count
+                file_warnings.extend(engine_warnings)
+                pdf_meta = {"pageCount": page_count, "warnings": [], "requiresOcr": False}
+                pdf_text_fallback_enabled = settings.business_pdf_engine_fallback == "lightweight"
+            else:
+                text = ""
+                pdf_meta = {"pageCount": page_count, "warnings": [], "requiresOcr": False}
+            if not text and pdf_text_fallback_enabled:
+                text, pdf_meta = extract_pdf_text(file_path)
             page_count = pdf_meta["pageCount"]
             file_warnings.extend(pdf_meta["warnings"])
-            if pdf_meta.get("requiresOcr"):
+            if pdf_meta.get("requiresOcr") and (
+                profile.key != "business" or settings.business_pdf_ocr_fallback_enabled
+            ):
                 ocr_text, ocr_meta = _ocr_fallback_text(project_id, file_record, file_path)
                 if ocr_text:
                     text = ocr_text
@@ -5496,6 +5742,8 @@ def parse_tender_documents(
         }
         if ocr_meta:
             metadata["ocr"] = ocr_meta
+        if parse_metadata:
+            metadata.update(parse_metadata)
         documents.append(metadata)
         texts_by_id[str(file_record["id"])] = text
         warnings.extend(file_warnings)
