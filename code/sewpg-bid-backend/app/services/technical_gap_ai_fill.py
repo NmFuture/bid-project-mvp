@@ -183,6 +183,25 @@ def _selected_reference_material_ids(
     if requested:
         return requested
 
+    has_source_routing = (
+        isinstance(appendix_task.get("sourceRouting"), dict)
+        and appendix_task["sourceRouting"].get("source") == "appendix_source_matrix"
+    ) or (
+        isinstance(item.get("sourceRouting"), dict)
+        and item["sourceRouting"].get("source") == "appendix_source_matrix"
+    )
+    if has_source_routing:
+        routed = [
+            _material_key(material)
+            for material in (
+                _object_items(appendix_task.get("recommendedMaterials"))
+                + _object_items(item.get("sourceRoutedMaterials"))
+            )
+        ]
+        routed = [material_id for material_id in routed if material_id]
+        if routed:
+            return routed[:1]
+
     matched = [_material_key(material) for material in _object_items(item.get("matchedMaterials"))]
     matched = [item for item in matched if item]
     if matched:
@@ -205,6 +224,7 @@ def _reference_materials_for_fill(
         _object_items(data.get("referenceMaterials"))
         + _object_items(item.get("matchedMaterials"))
         + _object_items(item.get("candidateMaterials"))
+        + _object_items(item.get("sourceRoutedMaterials"))
         + _object_items(appendix_task.get("recommendedMaterials"))
         + [
             material
@@ -901,6 +921,7 @@ def run_technical_ai_fill_for_gap(
             "docxPath": str(appendix_task.get("docxPath") or ""),
             "workspacePath": str(appendix_task.get("workspacePath") or ""),
             "rowCount": appendix_task.get("rowCount") or 0,
+            "sourceRouting": appendix_task.get("sourceRouting") if isinstance(appendix_task.get("sourceRouting"), dict) else {},
             "availableParseFields": parse_fields,
         },
         "blankSource": blank_source,

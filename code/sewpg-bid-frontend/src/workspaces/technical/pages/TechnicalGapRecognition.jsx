@@ -14,6 +14,7 @@ import { projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
 import {
   asArray,
   asObjectArray,
+  appendixTaskForFillTask,
   defaultAiFillParseFieldIds,
   defaultAiFillReferenceMaterialIds,
   latestResolvedArtifact,
@@ -51,6 +52,33 @@ const compactList = (items, limit = 4) => {
     overflow: Math.max(0, list.length - limit),
     total: list.length,
   }
+}
+
+const sourceRoutingForAppendixTasks = (tasks, item = null) => {
+  const routing = asObjectArray(tasks)
+    .map((task) => task?.sourceRouting)
+    .find((item) => item && typeof item === 'object' && item.source === 'appendix_source_matrix')
+  if (routing) return routing
+  return item?.sourceRouting?.source === 'appendix_source_matrix' ? item.sourceRouting : null
+}
+
+const sourceRoutedMaterials = (tasks, item = null) => [
+  ...asObjectArray(item?.sourceRoutedMaterials),
+  ...asObjectArray(tasks)
+    .filter((task) => task?.sourceRouting?.source === 'appendix_source_matrix')
+    .flatMap((task) => asObjectArray(task?.recommendedMaterials)),
+]
+
+const sourceRoutingText = (routing) => {
+  if (!routing) return ''
+  const parts = []
+  const projectSources = uniqueStrings(routing.projectSources)
+  const standardSources = uniqueStrings(routing.standardSources)
+  const otherSources = uniqueStrings(routing.otherSources)
+  if (projectSources.length) parts.push(`项目定制：${projectSources.join('、')}`)
+  if (standardSources.length) parts.push(`标准文件：${standardSources.join('、')}`)
+  if (otherSources.length) parts.push(`其他：${otherSources.join('、')}`)
+  return parts.join('；')
 }
 
 const decisionOf = (item) => {
@@ -561,14 +589,21 @@ export default function TechnicalGapRecognition({ showToast }) {
   }, [manualPreviewActive, selectedPreviewChoices])
   const selectedFillTasks = asObjectArray(selected?.fillTasks)
   const selectedFillTask = selectedFillTasks[0] || null
+  const selectedAppendixTask = appendixTaskForFillTask(selected, selectedFillTask)
+  const activeAppendixTasks = selectedAppendixTask ? [selectedAppendixTask] : selectedAppendixTasks
+  const selectedSourceRouting = sourceRoutingForAppendixTasks(activeAppendixTasks, selected)
+  const selectedSourceRoutingSummary = sourceRoutingText(selectedSourceRouting)
   const selectedReferenceCandidates = (() => {
     const seen = new Set()
-    const candidates = [
-      selectedMaterialMatch?.material,
-      ...asObjectArray(selected?.matchedMaterials),
-      ...selectedCandidateMaterials,
-      ...selectedAppendixTasks.flatMap((task) => asObjectArray(task?.recommendedMaterials)),
-    ].filter(Boolean)
+    const routed = sourceRoutedMaterials(activeAppendixTasks, selected)
+    const candidates = selectedSourceRouting
+      ? routed
+      : [
+          ...activeAppendixTasks.flatMap((task) => asObjectArray(task?.recommendedMaterials)),
+          selectedMaterialMatch?.material,
+          ...asObjectArray(selected?.matchedMaterials),
+          ...selectedCandidateMaterials,
+        ].filter(Boolean)
     return candidates.filter((item) => {
       const key = String(item?.id || item?.materialId || item?.name || '').trim()
       if (!key || seen.has(key)) return false
@@ -576,14 +611,8 @@ export default function TechnicalGapRecognition({ showToast }) {
       return true
     }).slice(0, 10)
   })()
-  const selectedAiFillReferenceIds = useMemo(
-    () => defaultAiFillReferenceMaterialIds(selected),
-    [selected],
-  )
-  const selectedAiFillParseFieldIds = useMemo(
-    () => defaultAiFillParseFieldIds(selected, selectedFillTask),
-    [selected, selectedFillTask],
-  )
+  const selectedAiFillReferenceIds = defaultAiFillReferenceMaterialIds(selected, [], selectedFillTask)
+  const selectedAiFillParseFieldIds = defaultAiFillParseFieldIds(selected, selectedFillTask)
   const selectedResolvedArtifact = latestResolvedArtifact(selected)
   const selectedAiFillCompleted = Boolean(
     selectedResolvedArtifact?.source === 'ai_fill'
@@ -1106,6 +1135,47 @@ export default function TechnicalGapRecognition({ showToast }) {
                           </section>
                         ) : null}
 
+                        {selectedSourceRouting && selectedDecision !== 'fill_required' ? (
+                          <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="text-xs font-semibold text-on-surface">填写来源素材</div>
+                              <span className="rounded bg-tertiary-fixed px-2 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed">
+                                规则规定
+                              </span>
+                            </div>
+                            {selectedSourceRoutingSummary ? (
+                              <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-[11px] leading-relaxed text-on-surface-variant">
+                                {selectedSourceRoutingSummary}
+                              </div>
+                            ) : null}
+                            {selectedReferenceCandidates.length ? (
+                              <div className="mt-2 space-y-2">
+                                {selectedReferenceCandidates.map((material) => (
+                                  <button
+                                    key={material.id || material.materialId || material.name}
+                                    type="button"
+                                    onClick={() => handlePreviewMaterial(material)}
+                                    className="block w-full rounded-md bg-surface-container-low px-3 py-2 text-left text-xs hover:bg-surface-container-high"
+                                    title={material.path || material.folderPath || material.id}
+                                  >
+                                    <span className="block font-medium text-on-surface">{material.name || material.cleanedFileName || material.id}</span>
+                                    <span className="mt-1 block truncate text-outline">{material.folderPath || material.path || material.id}</span>
+                                    {material.sourceRouting?.reasons?.length || material.matchReason ? (
+                                      <span className="mt-1 block truncate text-[11px] text-primary">
+                                        {material.sourceRouting?.reasons?.[0] || material.matchReason}
+                                      </span>
+                                    ) : null}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-[11px] text-outline">
+                                暂未在素材库中找到对应来源。
+                              </div>
+                            )}
+                          </section>
+                        ) : null}
+
                         {selectedDecision === 'fill_required' ? (
                           <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
                             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1166,10 +1236,22 @@ export default function TechnicalGapRecognition({ showToast }) {
                                 </div>
                               </div>
                             ) : null}
-                            {selectedReferenceCandidates.length ? (
+                            {selectedSourceRoutingSummary || selectedReferenceCandidates.length ? (
                               <div className="mt-3 space-y-2">
-                                <div className="text-[11px] font-semibold text-on-surface">填写来源素材</div>
-                                {selectedReferenceCandidates.map((material) => (
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div className="text-[11px] font-semibold text-on-surface">填写来源素材</div>
+                                  {selectedSourceRouting ? (
+                                    <span className="rounded bg-tertiary-fixed px-2 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed">
+                                      规则规定
+                                    </span>
+                                  ) : null}
+                                </div>
+                                {selectedSourceRoutingSummary ? (
+                                  <div className="rounded-md bg-surface-container-low px-3 py-2 text-[11px] leading-relaxed text-on-surface-variant">
+                                    {selectedSourceRoutingSummary}
+                                  </div>
+                                ) : null}
+                                {selectedReferenceCandidates.length ? selectedReferenceCandidates.map((material) => (
                                   <button
                                     key={material.id || material.materialId || material.name}
                                     type="button"
@@ -1186,8 +1268,17 @@ export default function TechnicalGapRecognition({ showToast }) {
                                       ) : null}
                                     </span>
                                     <span className="mt-1 block truncate text-outline">{material.folderPath || material.path || material.id}</span>
+                                    {material.sourceRouting?.reasons?.length || material.matchReason ? (
+                                      <span className="mt-1 block truncate text-[11px] text-primary">
+                                        {material.sourceRouting?.reasons?.[0] || material.matchReason}
+                                      </span>
+                                    ) : null}
                                   </button>
-                                ))}
+                                )) : (
+                                  <div className="rounded-md bg-surface-container-low px-3 py-2 text-[11px] text-outline">
+                                    暂未在素材库中找到对应来源。
+                                  </div>
+                                )}
                               </div>
                             ) : null}
                           </section>

@@ -446,6 +446,19 @@ class GapReviewFlowTests(unittest.TestCase):
                 "usage": "table_source",
             }
         ]
+        fill_item["appendixTasks"][0]["sourceRouting"] = {
+            "status": "matched",
+            "source": "appendix_source_matrix",
+            "ruleId": "Sheet1!R12",
+            "customer": "测试业主",
+            "tableTitle": "性能保证附表",
+            "projectSources": [],
+            "standardSources": ["性能保证基准素材"],
+            "otherSources": [],
+            "matchedMaterials": [{"id": "RAW-0001", "name": "性能保证基准素材.docx"}],
+            "manualRequired": False,
+            "useTenderParseFields": False,
+        }
         project = store._require(project_id)
         project["gap_state"]["plan"] = gap_plan
         store._persist_project(project)
@@ -485,6 +498,8 @@ class GapReviewFlowTests(unittest.TestCase):
         manifest = manifests[0]
         self.assertEqual(manifest["gapItem"]["id"], gap_id)
         self.assertEqual(manifest["appendixTask"]["id"], "APP-PERF")
+        self.assertEqual(manifest["appendixTask"]["sourceRouting"]["source"], "appendix_source_matrix")
+        self.assertEqual(manifest["appendixTask"]["sourceRouting"]["standardSources"], ["性能保证基准素材"])
         self.assertEqual(manifest["recommendedMaterials"][0]["id"], "RAW-0001")
         self.assertEqual(manifest["referenceMaterials"][0]["id"], "RAW-0001")
         self.assertTrue(manifest["materialIndex"])
@@ -1765,6 +1780,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         manifest = manifests[0]
+        self.assertEqual(manifest["customerName"], "华能集团")
         self.assertEqual(
             manifest["materialScope"]["paths"],
             [

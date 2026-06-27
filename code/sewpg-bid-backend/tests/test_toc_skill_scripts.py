@@ -1592,6 +1592,133 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertEqual(rows[2].cells[2].text, "包含配套钢塔筒")
             self.assertEqual(rows[3].cells[2].text, "提供安装维护专用工具一套")
 
+    def test_bid_gap_planner_routes_appendix_sources_by_customer_matrix(self) -> None:
+        gap_runner = load_gap_planner_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse.json"
+            output_path = root / "gap_plan.json"
+            toc_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {"number": "附表C.1", "title": "附表C.1 总体技术参数与规格", "level": 2},
+                            {"number": "附表D.3", "title": "附表D.3 功率曲线", "level": 2},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            blank = root / "附表C.1 总体技术参数与规格.docx"
+            doc = Document()
+            table = doc.add_table(rows=1, cols=4)
+            table.cell(0, 0).text = "序号"
+            table.cell(0, 1).text = "参数名称"
+            table.cell(0, 2).text = "投标人响应值"
+            table.cell(0, 3).text = "单位"
+            doc.save(blank)
+            range_blank = root / "附表D.3 功率曲线.docx"
+            doc.save(range_blank)
+            parse_path.write_text(
+                json.dumps(
+                    {
+                        "structured": {
+                            "appendices": [
+                                {
+                                    "id": "APPX-C1",
+                                    "title": "附表C.1 总体技术参数与规格",
+                                    "docxPath": str(blank),
+                                },
+                                {
+                                    "id": "APPX-D3",
+                                    "title": "附表D.3 功率曲线",
+                                    "docxPath": str(range_blank),
+                                }
+                            ]
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-HN",
+                        "projectName": "华能项目",
+                        "bidType": "技术标",
+                        "customerName": "华能",
+                        "tocJsonPath": str(toc_path),
+                        "parseResultPath": str(parse_path),
+                        "materialScope": {"paths": ["技术标/标准文件", "技术标/项目定制"]},
+                        "appendixSourceMatrix": {
+                            "rows": [
+                                {
+                                    "id": "Sheet1!R35",
+                                    "customer": "华能",
+                                    "tableTitle": "附表C.1 总体技术参数与规格",
+                                    "projectSources": [],
+                                    "standardSources": ["机型参数表"],
+                                    "otherSources": [],
+                                },
+                                {
+                                    "id": "Sheet1!R40",
+                                    "customer": "华能",
+                                    "tableTitle": "附表D.1-D.6",
+                                    "projectSources": ["功率曲线"],
+                                    "standardSources": [],
+                                    "otherSources": [],
+                                }
+                            ]
+                        },
+                        "materialIndex": [
+                            {
+                                "id": "RAW-WIND",
+                                "name": "风资源评估报告.docx",
+                                "folderPath": "技术标/项目定制/风资源评估报告",
+                                "materialTier": "project",
+                            },
+                            {
+                                "id": "RAW-PARAM",
+                                "name": "X2平台机型投标参数_20250106.xlsx",
+                                "folderPath": "技术标/标准文件/机型参数表",
+                                "materialTier": "standard",
+                            },
+                            {
+                                "id": "RAW-POWER",
+                                "name": "项目功率曲线.xlsx",
+                                "folderPath": "技术标/项目定制/功率曲线",
+                                "materialTier": "project",
+                            },
+                        ],
+                        "outputFile": str(output_path),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = gap_runner.build_gap_plan(json_load(manifest_path))
+
+            c_item = result["items"][0]
+            c_task = c_item["appendixTasks"][0]
+            self.assertEqual(c_item["usage"], "appendix_fill")
+            self.assertEqual(c_task["sourceRouting"]["source"], "appendix_source_matrix")
+            self.assertEqual(c_task["sourceRouting"]["standardSources"], ["机型参数表"])
+            self.assertEqual(c_task["recommendedMaterials"][0]["id"], "RAW-PARAM")
+            self.assertIn("standard 来源规定命中", c_task["recommendedMaterials"][0]["matchReason"])
+
+            d_item = result["items"][1]
+            d_task = d_item["appendixTasks"][0]
+            self.assertEqual(d_task["sourceRouting"]["ruleId"], "Sheet1!R40")
+            self.assertEqual(d_task["sourceRouting"]["projectSources"], ["功率曲线"])
+            self.assertEqual(d_task["recommendedMaterials"][0]["id"], "RAW-POWER")
+            self.assertIn("project 来源规定命中", d_task["recommendedMaterials"][0]["matchReason"])
+
     def test_bid_table_filler_fills_same_shape_response_table_from_reference_docx(self) -> None:
         table_filler = load_table_filler_script("run_from_manifest")
 

@@ -15,6 +15,7 @@ from app.core.config import BASE_DIR, settings
 from app.services.bid_type import TECHNICAL_BID_TYPE, require_bid_type
 from app.services.identity import build_project_material_scope
 from app.services.opencode_client import OpencodeClient
+from app.services.technical_appendix_source_matrix import load_appendix_source_matrix_for_project
 from app.services.technical_gap_domain import summarize_technical_gap_plan
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
@@ -327,6 +328,7 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
     turbine_model = project_turbine_model(project)
     material_scope = build_project_material_scope(project)
     material_index = _allowed_technical_material_index(material_scope, turbine_model)
+    appendix_source_matrix = load_appendix_source_matrix_for_project(project)
     bid_type = require_bid_type(
         project.get("bidType"),
         error_message="技术标缺口规划必须显式传入技术标项目。",
@@ -335,6 +337,7 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
         "projectId": project_id,
         "projectName": str(project.get("name") or project_id),
         "bidType": bid_type,
+        "customerName": str(project.get("customerName") or ""),
         "workDir": str(work_dir),
         "tocJsonPath": str(toc_json_path),
         "wikiDir": str(wiki_dir) if wiki_dir else "",
@@ -343,6 +346,8 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
         "materialScope": material_scope,
         "materialIndex": material_index,
         "projectTurbineModel": turbine_model,
+        "appendixSourceMatrixPath": str(appendix_source_matrix.get("path") or ""),
+        "appendixSourceMatrix": appendix_source_matrix,
         "outputFile": str(output_file),
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")

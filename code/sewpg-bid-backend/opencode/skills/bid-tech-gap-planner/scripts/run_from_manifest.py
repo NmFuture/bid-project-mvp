@@ -13,6 +13,10 @@ from typing import Any
 
 
 SCHEMA_VERSION = "bid-tech-gap-plan-v1"
+APPENDIX_CODE_RE = re.compile(
+    r"附表\s*([A-Za-z]?\s*\.?\s*\d+(?:\.\d+)*)(?:\s*[-—~～至到]\s*([A-Za-z]?\s*\.?\s*\d+(?:\.\d+)*))?",
+    re.IGNORECASE,
+)
 
 
 def now_iso() -> str:
@@ -164,8 +168,44 @@ def clean_value(value: str) -> str:
     return text
 
 
+def clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return re.sub(r"\s+", " ", str(value).replace("\n", " / ")).strip()
+
+
 def normalize_key(value: Any) -> str:
     return re.sub(r"[\s　,，、.。:：;；()（）\[\]【】{}<>《》\"'`·_\-—/\\|]+", "", str(value or "").lower())
+
+
+def source_terms(value: Any) -> list[str]:
+    if isinstance(value, list):
+        terms: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            for term in source_terms(item):
+                if term and term not in seen:
+                    seen.add(term)
+                    terms.append(term)
+        return terms
+    text = clean_text(value)
+    if not text:
+        return []
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw in re.split(r"[&＆,，、;；/／\n]+", text):
+        term = clean_text(raw).strip(" ：:")
+        if not term or term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+    return terms
+
+
+def normalize_appendix_code(value: Any) -> str:
+    return re.sub(r"\s+", "", clean_text(value).upper()).lstrip(".")
 
 
 def toc_number_key(number: Any) -> str:
@@ -195,11 +235,49 @@ def chinese_number_to_int(value: str) -> int | None:
 
 
 def appendix_code(value: Any) -> str:
-    text = str(value or "").strip()
-    match = re.search(r"附表\s*([A-Za-z]?\s*\.?\s*\d+(?:\.\d+)*)", text)
+    match = APPENDIX_CODE_RE.search(str(value or "").strip())
+    return normalize_appendix_code(match.group(1)) if match else ""
+
+
+def _appendix_code_parts(value: Any) -> tuple[str, tuple[int, ...]] | None:
+    code = normalize_appendix_code(value)
+    match = re.fullmatch(r"([A-Z]+)?\.?([0-9]+(?:\.[0-9]+)*)", code)
     if not match:
-        return ""
-    return re.sub(r"\s+", "", match.group(1)).upper().lstrip(".")
+        return None
+    prefix = match.group(1) or ""
+    numbers = tuple(int(part) for part in match.group(2).split("."))
+    return prefix, numbers
+
+
+def appendix_rule_code_score(table_title: Any, rule_title: Any) -> float:
+    table_code = appendix_code(table_title)
+    if not table_code:
+        return 0.0
+    rule_match = APPENDIX_CODE_RE.search(clean_text(rule_title))
+    if not rule_match:
+        return 0.0
+    start_code = normalize_appendix_code(rule_match.group(1))
+    end_code = normalize_appendix_code(rule_match.group(2) or "")
+    if not end_code:
+        return 0.96 if table_code == start_code else 0.0
+
+    table_parts = _appendix_code_parts(table_code)
+    start_parts = _appendix_code_parts(start_code)
+    end_parts = _appendix_code_parts(end_code)
+    if not table_parts or not start_parts or not end_parts:
+        return 0.0
+    table_prefix, table_numbers = table_parts
+    start_prefix, start_numbers = start_parts
+    end_prefix, end_numbers = end_parts
+    if not end_prefix:
+        end_prefix = start_prefix
+    if table_prefix and start_prefix and table_prefix != start_prefix:
+        return 0.0
+    if table_prefix and end_prefix and table_prefix != end_prefix:
+        return 0.0
+    if start_numbers <= table_numbers <= end_numbers:
+        return 0.94
+    return 0.0
 
 
 def is_structural(item: dict[str, Any], all_items: list[dict[str, Any]]) -> bool:
@@ -679,13 +757,190 @@ def appendix_material_score(material: dict[str, Any], appendix: dict[str, Any]) 
     return score
 
 
+def project_customer_name(manifest: dict[str, Any]) -> str:
+    identity = manifest.get("projectIdentity") if isinstance(manifest.get("projectIdentity"), dict) else {}
+    return clean_text(
+        manifest.get("customerName")
+        or identity.get("customerCanonicalName")
+        or identity.get("customerName")
+        or identity.get("owner")
+        or ""
+    )
+
+
+def customer_rule_matches(project_customer: str, rule_customer: Any) -> bool:
+    if not project_customer:
+        return True
+    project_key = normalize_key(project_customer)
+    rule_key = normalize_key(rule_customer)
+    return bool(project_key and rule_key and (project_key == rule_key or project_key in rule_key or rule_key in project_key))
+
+
+def table_rule_score(table_title: Any, rule_title: Any) -> float:
+    code_score = appendix_rule_code_score(table_title, rule_title)
+    if code_score:
+        return code_score
+    left = normalize_key(table_title)
+    right = normalize_key(rule_title)
+    if not left or not right:
+        return 0.0
+    if left == right:
+        return 1.0
+    if left in right or right in left:
+        return 0.88
+    shared = len(set(left) & set(right))
+    total = len(set(left) | set(right))
+    return shared / total if total else 0.0
+
+
+def find_source_matrix_rule(manifest: dict[str, Any], appendix: dict[str, Any]) -> dict[str, Any]:
+    matrix = manifest.get("appendixSourceMatrix") if isinstance(manifest.get("appendixSourceMatrix"), dict) else {}
+    rows = matrix.get("rows") if isinstance(matrix.get("rows"), list) else []
+    customer_name = project_customer_name(manifest)
+    title = appendix.get("title") or appendix.get("id") or ""
+    best: tuple[float, dict[str, Any]] | None = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if not customer_rule_matches(customer_name, row.get("customer")):
+            continue
+        score = table_rule_score(title, row.get("tableTitle"))
+        if score < 0.82:
+            continue
+        customer_bonus = 0.3 if customer_rule_matches(customer_name, row.get("customer")) else 0
+        rank = score + customer_bonus
+        if best is None or rank > best[0]:
+            best = (rank, row)
+    return dict(best[1]) if best else {}
+
+
+def source_matrix_rule_terms(rule: dict[str, Any]) -> dict[str, list[str]]:
+    return {
+        "project": source_terms(rule.get("projectSources")),
+        "standard": source_terms(rule.get("standardSources")),
+        "other": source_terms(rule.get("otherSources")),
+    }
+
+
+def matrix_material_score(material: dict[str, Any], rule: dict[str, Any]) -> tuple[float, list[str]]:
+    terms = source_matrix_rule_terms(rule)
+    if not any(terms.values()):
+        return 0.0, []
+    text = normalize_key(material_text(material))
+    tier = normalize_key(material.get("materialTier") or material.get("materialScope") or "")
+    score = 0.0
+    reasons: list[str] = []
+    for scope, scope_terms in (("project", terms["project"]), ("standard", terms["standard"])):
+        scope_hit = False
+        if scope == "project":
+            scope_hit = "project" in tier or "项目" in tier
+        elif scope == "standard":
+            scope_hit = "standard" in tier or "标准" in tier or "通用" in tier
+        for term in scope_terms:
+            term_key = normalize_key(term)
+            if not term_key:
+                continue
+            if term_key in text:
+                score += 420 if scope_hit else 260
+                reasons.append(f"{scope} 来源规定命中：{term}")
+            elif any(part and part in text for part in source_terms(term) if len(normalize_key(part)) >= 2):
+                score += 180 if scope_hit else 120
+                reasons.append(f"{scope} 来源规定部分命中：{term}")
+    if score and "project" in tier:
+        score += 30
+    elif score and ("standard" in tier or "标准" in tier or "通用" in tier):
+        score += 20
+    return score, reasons[:6]
+
+
+def source_routing_payload(rule: dict[str, Any], materials: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rule:
+        return {}
+    terms = source_matrix_rule_terms(rule)
+    matched = [
+        {
+            "id": str(material.get("id") or material.get("materialId") or ""),
+            "name": str(material.get("name") or material.get("cleanedFileName") or ""),
+            "folderPath": str(material.get("folderPath") or ""),
+            "materialTier": str(material.get("materialTier") or ""),
+            "matchReason": str(material.get("matchReason") or ""),
+        }
+        for material in materials[:8]
+        if material.get("sourceRouting")
+    ]
+    manual_terms = [term for term in terms["other"] if any(token in term for token in ("人工", "收集", "项目定制收集"))]
+    tender_terms = [term for term in terms["other"] if any(token in term for token in ("招标", "响应招标"))]
+    status = "matched" if matched else ("manual_required" if manual_terms else ("tender_parse_fields" if tender_terms else "missing_source"))
+    return {
+        "status": status,
+        "source": "appendix_source_matrix",
+        "ruleId": str(rule.get("id") or ""),
+        "customer": str(rule.get("customer") or ""),
+        "tableTitle": str(rule.get("tableTitle") or ""),
+        "projectSources": terms["project"],
+        "standardSources": terms["standard"],
+        "otherSources": terms["other"],
+        "matchedMaterials": matched,
+        "manualRequired": bool(manual_terms),
+        "useTenderParseFields": bool(tender_terms),
+    }
+
+
+def item_source_rule_title(number: str, title: str) -> str:
+    title_text = clean_text(title)
+    number_text = clean_text(number)
+    if number_text.startswith("附表") and number_text not in title_text:
+        return " ".join(part for part in (number_text, title_text) if part)
+    return title_text or number_text
+
+
+def source_routing_for_item(
+    manifest: dict[str, Any],
+    *,
+    number: str,
+    title: str,
+    materials: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    rule_probe = {
+        "id": item_source_rule_title(number, title) or title,
+        "title": item_source_rule_title(number, title) or title,
+    }
+    source_rule = find_source_matrix_rule(manifest, rule_probe)
+    if not source_rule:
+        return {}, []
+    routed_materials = recommended_materials_for_appendix(
+        rule_probe,
+        materials,
+        source_rule=source_rule,
+    )
+    return source_routing_payload(source_rule, routed_materials), routed_materials[:5]
+
+
 def recommended_materials_for_appendix(
     appendix: dict[str, Any],
     materials: list[dict[str, Any]],
+    *,
+    source_rule: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    ranked: list[dict[str, Any]] = []
+    has_source_rule = bool(source_rule and any(source_matrix_rule_terms(source_rule).values()))
+    for material in dedupe_materials(materials):
+        item = dict(material)
+        rule_score, reasons = matrix_material_score(item, source_rule or {})
+        if has_source_rule and not rule_score:
+            continue
+        if rule_score:
+            item["matchReason"] = "；".join([*(reasons or []), str(item.get("matchReason") or "")]).strip("；")
+            item["sourceRouting"] = {
+                "source": "appendix_source_matrix",
+                "ruleId": str((source_rule or {}).get("id") or ""),
+                "reasons": reasons,
+            }
+        item["_sourceMatrixScore"] = rule_score
+        ranked.append(item)
     return sorted(
-        dedupe_materials(materials),
-        key=lambda material: appendix_material_score(material, appendix),
+        ranked,
+        key=lambda material: (float(material.get("_sourceMatrixScore") or 0), appendix_material_score(material, appendix)),
         reverse=True,
     )
 
@@ -694,6 +949,7 @@ def build_appendix_task(
     appendix: dict[str, Any],
     recommended_materials: list[dict[str, Any]],
     parse_fields: list[dict[str, Any]] | None = None,
+    source_routing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     fields = appendix.get("availableParseFields") or appendix.get("fields") or []
     if not isinstance(fields, list):
@@ -716,8 +972,9 @@ def build_appendix_task(
         "workspacePath": str(appendix.get("workspacePath") or appendix.get("workspace_path") or ""),
         "rowCount": appendix.get("rowCount") or appendix.get("row_count") or 0,
         "availableParseFields": merged_fields,
+        "sourceRouting": dict(source_routing or {}),
         "recommendedMaterials": [
-            {**dict(material), "usage": "table_source"}
+            {k: v for k, v in {**dict(material), "usage": "table_source"}.items() if k != "_sourceMatrixScore"}
             for material in recommended_materials[:5]
         ],
     }
@@ -847,6 +1104,13 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         wiki_materials = resolve_material_hints(list(wiki_index.get(number) or []), indexed_materials, allowed_paths)
         index_materials = matching_materials_for_title(indexed_materials, title)
         candidate_materials = dedupe_materials(toc_materials + wiki_materials + index_materials)
+        source_rule_pool = dedupe_materials(candidate_materials + indexed_materials + toc_materials_all)
+        item_source_routing, item_source_materials = source_routing_for_item(
+            manifest,
+            number=number,
+            title=title,
+            materials=source_rule_pool,
+        )
         matched_material: dict[str, Any] | None = None
         alternative_materials: list[dict[str, Any]] = []
         structural = is_structural(item, items)
@@ -874,10 +1138,22 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
             next_actions = ["ai_fill_word"] if parent_decision == "fill_required" else ["s4_merge_material"]
         elif appendix_matches:
             recommended_pool = dedupe_materials(candidate_materials + indexed_materials + toc_materials_all)
-            appendix_tasks = [
-                build_appendix_task(appendix, recommended_materials_for_appendix(appendix, recommended_pool), parse_fields)
-                for appendix in appendix_matches
-            ]
+            appendix_tasks = []
+            for appendix in appendix_matches:
+                source_rule = find_source_matrix_rule(manifest, appendix)
+                recommended = recommended_materials_for_appendix(
+                    appendix,
+                    recommended_pool,
+                    source_rule=source_rule,
+                )
+                appendix_tasks.append(
+                    build_appendix_task(
+                        appendix,
+                        recommended,
+                        parse_fields,
+                        source_routing=source_routing_payload(source_rule, recommended),
+                    )
+                )
             fill_tasks = [build_fill_task(item, appendix, gap_id) for appendix in appendix_matches]
             required_inputs.append({"type": "ai_fill", "label": "选择参考素材并填写空表"})
             status = "needs_input"
@@ -888,7 +1164,11 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 [
                     material
                     for appendix in appendix_matches
-                    for material in recommended_materials_for_appendix(appendix, recommended_pool)[:5]
+                    for material in recommended_materials_for_appendix(
+                        appendix,
+                        recommended_pool,
+                        source_rule=find_source_matrix_rule(manifest, appendix),
+                    )[:5]
                 ]
             )
             gap_reason = "解析阶段已生成空副表/Word，需要进入 S3 发起填写任务。"
@@ -984,6 +1264,11 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 "priority": "high" if status in {"needs_input", "missing"} else "medium",
                 "matchedMaterials": matched_materials,
                 "candidateMaterials": alternative_materials,
+                "sourceRouting": item_source_routing,
+                "sourceRoutedMaterials": [
+                    {k: v for k, v in {**dict(material), "usage": "table_source"}.items() if k != "_sourceMatrixScore"}
+                    for material in item_source_materials
+                ],
                 "appendixTasks": appendix_tasks,
                 "requiredInputs": required_inputs,
                 "fillTasks": fill_tasks,
@@ -1010,6 +1295,8 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         "projectId": str(manifest.get("projectId") or ""),
         "projectName": str(manifest.get("projectName") or ""),
         "bidType": str(manifest.get("bidType") or "技术标"),
+        "customerName": project_customer_name(manifest),
+        "appendixSourceMatrixPath": str(manifest.get("appendixSourceMatrixPath") or ""),
         "projectTurbineModel": project_turbine_model,
         "status": "ready",
         "createdAt": now_iso(),
