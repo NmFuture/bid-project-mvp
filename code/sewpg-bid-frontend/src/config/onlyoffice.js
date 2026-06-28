@@ -49,6 +49,7 @@ export const ONLYOFFICE_CONFIG = {
     userName,
     fileType = 'docx',
     documentType,
+    enableSearchPlugin = true,
   }) => {
     const normalizedFileType = String(fileType || 'docx').toLowerCase()
     const resolvedDocumentType = documentType
@@ -101,7 +102,7 @@ export const ONLYOFFICE_CONFIG = {
         toolbarNoTabs: false,
         uiTheme: 'theme-light',
       },
-      plugins: resolvedDocumentType === 'word'
+      plugins: enableSearchPlugin && resolvedDocumentType === 'word'
         ? {
             autostart: [SEARCH_PLUGIN_GUID],
             pluginsData: [`${window.location.origin}/onlyoffice-search-plugin/config.json`],

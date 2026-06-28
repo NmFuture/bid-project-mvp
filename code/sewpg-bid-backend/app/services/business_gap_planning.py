@@ -29,7 +29,6 @@ from app.services.opencode_client import OpencodeClient
 from app.services.parse_profiles import BUSINESS_PARSE_PROFILE
 from app.services.business_bidder_profile import load_business_bidder_facts
 from app.services.business_gap_fact_table import PROJECT_FACT_TABLE_SCHEMA_VERSION, build_project_fact_table
-from app.services.performance_library_service import performance_library_service
 from app.services.performance_package_service import performance_package_service
 from app.services.template_store import resolve_fallback_bid_template_file_sync
 from app.services.turbine_models import project_turbine_model
@@ -1105,25 +1104,33 @@ def _business_material_index(material_scope: dict[str, Any], selected_model: dic
                     "updatedAt": str(raw.get("updatedAt") or ""),
                 }
             )
-    try:
-        performance_candidates = _run_async(performance_library_service.list_match_candidates(material_scope, limit=300))
-    except Exception:
-        performance_candidates = []
-    for candidate in performance_candidates:
-        if not isinstance(candidate, dict):
-            continue
-        material_id = str(candidate.get("id") or candidate.get("materialId") or "")
-        if not material_id or material_id in seen:
-            continue
-        seen.add(material_id)
-        items.append(candidate)
     for candidate in _performance_package_candidates(limit=300):
         material_id = str(candidate.get("id") or "")
         if not material_id or material_id in seen:
             continue
         seen.add(material_id)
         items.append(candidate)
+    if _include_legacy_performance_records(material_scope):
+        for candidate in _legacy_performance_record_candidates(material_scope, limit=300):
+            material_id = str(candidate.get("id") or candidate.get("materialId") or "")
+            if not material_id or material_id in seen:
+                continue
+            seen.add(material_id)
+            items.append(candidate)
     return items
+
+
+def _include_legacy_performance_records(material_scope: dict[str, Any]) -> bool:
+    return bool((material_scope or {}).get("includeLegacyPerformanceRecords"))
+
+
+def _legacy_performance_record_candidates(material_scope: dict[str, Any], limit: int = 300) -> list[dict[str, Any]]:
+    try:
+        from app.services.performance_library_service import performance_library_service
+
+        return _run_async(performance_library_service.list_match_candidates(material_scope, limit=limit))
+    except Exception:
+        return []
 
 
 def _is_raw_performance_material_candidate(raw: dict[str, Any]) -> bool:

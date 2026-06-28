@@ -68,7 +68,7 @@ def generated_wiki_import_message(root_title: str, outcome: str) -> str:
     root_bid_type = wiki_root_bid_type(root_title)
     messages = {
         "replaced": f"{root_bid_type} Wiki 已重新生成并覆盖。",
-        "refreshed": f"{root_bid_type} Wiki 已刷新，并已替换自动生成节点。",
+        "refreshed": f"{root_bid_type} Wiki 已按索引增量刷新。",
         "updated": f"{root_bid_type} Wiki 已更新，并已清理重复根节点。",
         "kept": f"{root_bid_type} Wiki 已存在，已保留现有版本并清理重复根节点。",
         "created": f"{root_bid_type} Wiki 创建成功。",

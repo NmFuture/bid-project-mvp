@@ -763,6 +763,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
             ref={onlyofficeEmbedRef}
             session={tenderPreview?.onlyoffice}
             mode="view"
+            enableSearchPlugin
             className="h-full min-h-0 w-full rounded-md border border-surface-container-high bg-white"
             onReady={() => {
               setOnlyofficeError('')

@@ -18,6 +18,7 @@ export default defineConfig(({ mode }) => {
       target: onlyofficeTarget,
       changeOrigin: true,
       ws: true,
+      rewrite: (path) => path.replace(/^\/ds/, ''),
     },
   }
 

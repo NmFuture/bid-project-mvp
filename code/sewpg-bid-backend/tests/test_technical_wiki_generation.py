@@ -12,6 +12,7 @@ from app.services.technical_wiki_generation import (
     generate_technical_wiki,
     mirror_technical_index_to_wiki,
 )
+from app.services.technical_wiki_preview_generation import enrich_technical_wiki_previews
 
 
 def _skill_payload() -> dict:
@@ -21,7 +22,7 @@ def _skill_payload() -> dict:
         "skill": TECHNICAL_WIKI_SKILL_NAME,
         "nodes": [
             {
-                "title": "01-标准文件",
+                "title": "标准文件",
                 "markdownContent": "# 标准文件",
                 "tags": ["技术标", "标准文件", "档位"],
                 "applicableTypes": ["技术标"],
@@ -49,7 +50,7 @@ class TechnicalWikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         settings.parsed_dir = self.original_parsed_dir
         self.temp_dir.cleanup()
 
-    async def test_generate_technical_wiki_mirrors_index_without_llm(self) -> None:
+    async def test_generate_technical_wiki_mirrors_existing_index_without_llm(self) -> None:
         index_payload = {
             "bidType": "技术标",
             "stats": {"tierCount": 1, "thirdLevelFolderCount": 2, "fileCount": 3},
@@ -58,10 +59,24 @@ class TechnicalWikiGenerationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "app.services.technical_wiki_generation.rebuild_technical_material_index",
-                new_callable=AsyncMock,
+                "app.services.technical_wiki_generation.load_technical_material_index",
                 return_value=index_payload,
-            ) as rebuild,
+            ) as load_index,
+            patch(
+                "app.services.technical_wiki_generation.enrich_technical_wiki_previews",
+                new_callable=AsyncMock,
+                return_value={
+                    "enabled": True,
+                    "total": 3,
+                    "completed": 2,
+                    "cached": 1,
+                    "skipped": 0,
+                    "failed": 1,
+                    "errors": [{"fileId": "RAW-0003", "message": "LLM 批量回复缺该文件或无效"}],
+                    "batchCount": 1,
+                },
+            ) as enrich_previews,
+            patch("app.services.technical_wiki_generation.write_json_file_atomic") as write_index,
             patch(
                 "app.services.technical_wiki_generation.run_local_wiki_skill",
                 return_value=_skill_payload(),
@@ -74,8 +89,9 @@ class TechnicalWikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await generate_technical_wiki(mode="replace")
 
-        rebuild.assert_awaited_once()
-        self.assertEqual(rebuild.await_args.kwargs["preview_mode"], "cached")
+        load_index.assert_called_once()
+        enrich_previews.assert_awaited_once_with(index_payload)
+        write_index.assert_called_once()
         # 走确定性脚本，不调 LLM。
         run_skill.assert_called_once()
         self.assertEqual(run_skill.call_args.kwargs["skill_name"], TECHNICAL_WIKI_SKILL_NAME)
@@ -85,45 +101,27 @@ class TechnicalWikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         import_blueprint.assert_awaited_once()
         self.assertEqual(import_blueprint.call_args.kwargs["root_title"], TECHNICAL_WIKI_ROOT_TITLE)
         self.assertEqual(import_blueprint.call_args.kwargs["mode"], "replace")
-        self.assertEqual(import_blueprint.call_args.kwargs["nodes"][0]["title"], "01-标准文件")
+        self.assertEqual(import_blueprint.call_args.kwargs["nodes"][0]["title"], "标准文件")
 
         self.assertEqual(result["generation"]["generator"], "technical_index_mirror")
         self.assertEqual(result["generation"]["bidType"], "技术标")
         self.assertEqual(result["generation"]["skill"], TECHNICAL_WIKI_SKILL_NAME)
         self.assertFalse(result["generation"]["fallbackUsed"])
         self.assertEqual(result["generation"]["materialIndex"]["fileCount"], 3)
+        self.assertEqual(result["generation"]["preview"]["failed"], 1)
+        self.assertIn("失败 1 个", result["generation"]["summary"])
 
-    async def test_generate_technical_wiki_falls_back_to_snapshot_when_rebuild_empty(self) -> None:
-        snapshot = {
-            "bidType": "技术标",
-            "stats": {"tierCount": 1, "thirdLevelFolderCount": 0, "fileCount": 0},
-            "tiers": [{"name": "标准文件", "tier": "standard", "folders": []}],
-        }
-
-        with (
-            patch(
-                "app.services.technical_wiki_generation.rebuild_technical_material_index",
-                new_callable=AsyncMock,
-                return_value={"tiers": []},
-            ),
-            patch(
-                "app.services.technical_wiki_generation.load_technical_material_index",
-                return_value=snapshot,
-            ) as load_snapshot,
-            patch(
-                "app.services.technical_wiki_generation.run_local_wiki_skill",
-                return_value=_skill_payload(),
-            ),
-            patch(
-                "app.services.technical_wiki_generation.technical_material_store.import_generated_wiki_blueprint",
-                new_callable=AsyncMock,
-                return_value={"message": "ok", "tree": [], "selectedNode": None},
-            ),
-        ):
-            result = await generate_technical_wiki(mode="create")
-
-        load_snapshot.assert_called_once()
-        self.assertEqual(result["generation"]["generator"], "technical_index_mirror")
+    async def test_generate_technical_wiki_rejects_missing_index(self) -> None:
+        with patch(
+            "app.services.technical_wiki_generation.load_technical_material_index",
+            return_value={},
+        ), patch(
+            "app.services.technical_wiki_generation.enrich_technical_wiki_previews",
+            new_callable=AsyncMock,
+        ) as enrich_previews:
+            with self.assertRaisesRegex(RuntimeError, "technical_material_index.json"):
+                await generate_technical_wiki(mode="create")
+        enrich_previews.assert_not_awaited()
 
     async def test_mirror_loads_full_blueprint_from_output_file(self) -> None:
         output_file = settings.parsed_dir / "wiki_blueprint.json"
@@ -175,6 +173,84 @@ class TechnicalWikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["generation"]["summary"], "完整技术标 Wiki。")
         self.assertEqual(imported_nodes[0]["title"], "02-客户定制")
         self.assertEqual(imported_nodes[0]["children"][0]["title"], "华能")
+
+    async def test_enrich_previews_applies_success_and_fallbacks(self) -> None:
+        index_payload = {
+            "tiers": [
+                {
+                    "name": "标准文件",
+                    "tier": "standard",
+                    "folders": [
+                        {
+                            "name": "EW5.0",
+                            "files": [
+                                {"id": "RAW-0001", "name": "总体方案.docx", "cleanStatus": "cleaning"},
+                                {"id": "RAW-0002", "name": "载荷报告.docx", "cleanStatus": "cleaning", "preview": {"lead": "旧预览"}},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        completed_payload = {
+            "schemaVersion": 1,
+            "signature": "sig-1",
+            "status": "completed",
+            "metadata": {"cleanStatus": "cleaned"},
+            "preview": {
+                "lead": "总体方案导读",
+                "points": ["包含设计依据"],
+                "keyParams": [],
+                "retrievalHints": ["总体方案"],
+            },
+        }
+        failed_payload = {
+            "schemaVersion": 1,
+            "signature": "sig-2",
+            "status": "fallback",
+            "skipReason": "LLM 批量回复缺该文件或无效",
+            "metadata": {"cleanStatus": "cleaned"},
+            "preview": {
+                "lead": "载荷报告本地 TLDR",
+                "points": ["AI 预览未完成，当前为本地 TLDR"],
+                "keyParams": [{"label": "文件类型", "value": "docx"}],
+                "retrievalHints": ["载荷报告"],
+                "source": "local",
+            },
+        }
+
+        with (
+            patch(
+                "app.services.technical_wiki_preview_generation._build_preview_plans",
+                new_callable=AsyncMock,
+                return_value=(
+                    [
+                        {"fileId": "RAW-0001", "payload": completed_payload},
+                        {"fileId": "RAW-0002", "payload": failed_payload},
+                    ],
+                    {"total": 2, "completed": 0, "cached": 0, "skipped": 0, "failed": 0, "errors": []},
+                ),
+            ),
+            patch(
+                "app.services.technical_wiki_preview_generation._persist_preview_payloads",
+                new_callable=AsyncMock,
+            ) as persist_payloads,
+        ):
+            stats = await enrich_technical_wiki_previews(index_payload)
+
+        files = index_payload["tiers"][0]["folders"][0]["files"]
+        self.assertEqual(files[0]["preview"]["lead"], "总体方案导读")
+        self.assertEqual(files[0]["cleanStatus"], "cleaned")
+        self.assertEqual(files[1]["preview"]["lead"], "载荷报告本地 TLDR")
+        self.assertEqual(files[1]["cleanStatus"], "cleaned")
+        persist_payloads.assert_awaited_once()
+        self.assertEqual(persist_payloads.await_args.args[0]["RAW-0001"], completed_payload)
+        self.assertEqual(persist_payloads.await_args.args[0]["RAW-0002"], failed_payload)
+        self.assertTrue(stats["enabled"])
+        self.assertEqual(stats["completed"], 1)
+        self.assertEqual(stats["fallback"], 1)
+        self.assertEqual(stats["failed"], 0)
+        self.assertEqual(stats["errors"][0]["fileId"], "RAW-0002")
 
 
 if __name__ == "__main__":

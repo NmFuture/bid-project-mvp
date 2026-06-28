@@ -20,6 +20,13 @@ PERFORMANCE_BID_TYPES = {BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE}
 
 
 class PerformanceLibraryService:
+    """Legacy single-record performance library.
+
+    The current primary model is performance package/category + item + attachment
+    in ``performance_package_service``. This service remains for historical API
+    compatibility and explicit migration reads only.
+    """
+
     async def list_records(
         self,
         *,
@@ -66,6 +73,8 @@ class PerformanceLibraryService:
             "total": total,
             "page": current_page,
             "pageSize": current_page_size,
+            "legacy": True,
+            "model": "performance_records",
         }
 
     async def create_record(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -389,6 +398,7 @@ class PerformanceLibraryService:
             "businessMaterialKindLabel": "共用业绩",
             "sourceType": "performance_library",
             "candidateType": "performance_record",
+            "legacy": True,
             "cleanStatus": "original_only" if item.get("wordObjectKey") else "metadata_only",
             "hasCleanedWord": False,
             "tags": tags,

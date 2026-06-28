@@ -5,54 +5,54 @@ import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import { workspaceRoute } from '../../../utils/workspace'
 
-const MAX_FILE_SIZE = 1024 * 1024 * 1024
-const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.DS_Store'
+const MAX_FILE_SIZE = 30 * 1024 * 1024 * 1024
+const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
 const UPLOAD_KIND_STORAGE_KEY = 'materials.raw.upload.kind'
 const MATERIAL_TIER_OPTIONS = [
   {
     value: 'standard',
-    label: '通用素材',
+    label: '标准文件',
     description: '大部分标书都会复用的基础资料。',
   },
   {
     value: 'customer',
-    label: '客户素材',
+    label: '客户定制',
     description: '只面向某个客户复用的专属资料。',
   },
   {
     value: 'project',
-    label: '项目素材',
+    label: '项目定制',
     description: '只在当前项目使用的补充资料。',
   },
 ]
-const BUSINESS_MATERIAL_KIND_OPTIONS = [
+const TECHNICAL_MATERIAL_USAGE_OPTIONS = [
   {
     value: 'fixed',
-    label: '固定素材',
+    label: '可复用素材',
   },
   {
     value: 'ai_fill',
-    label: 'AI填写',
+    label: '待填写模板',
   },
   {
     value: 'other',
-    label: '其他',
+    label: '补充素材',
   },
 ]
-const BUSINESS_BID_TYPE = '技术标'
-const BUSINESS_WORKSPACE = 'tech'
-const BUSINESS_ROOT_PATH = '技术标/通用素材'
+const TECHNICAL_BID_TYPE = '技术标'
+const TECHNICAL_WORKSPACE = 'tech'
+const TECHNICAL_ROOT_PATH = '技术标/标准文件'
 const ALLOWED_EXTENSIONS = new Set([
-  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff', 'ds_store',
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
 ])
 const MATERIAL_ROOT_PATHS = ['技术标']
 const PROTECTED_DELETE_FOLDER_PATHS = new Set([
   '技术标',
-  '技术标/通用素材',
-  '技术标/客户素材',
-  '技术标/项目素材',
+  '技术标/标准文件',
+  '技术标/客户定制',
+  '技术标/项目定制',
 ])
-const BUSINESS_STANDARD_PROTECTED_FOLDER_PATHS = new Set([
+const TECHNICAL_STANDARD_PROTECTED_FOLDER_PATHS = new Set([
   '技术标/通用素材/资格审查与基础证明',
   '技术标/通用素材/财务信用与合规声明',
   '技术标/通用素材/制造商与供应链材料',
@@ -60,12 +60,12 @@ const BUSINESS_STANDARD_PROTECTED_FOLDER_PATHS = new Set([
   '技术标/通用素材/企业能力与供货业绩',
   '技术标/通用素材/表单模板与过程稿',
 ])
-const BUSINESS_CUSTOMER_PROTECTED_FOLDER_NAMES = new Set([
+const TECHNICAL_CUSTOMER_PROTECTED_FOLDER_NAMES = new Set([
   '客户准入与专项证明',
   '客户专用响应口径',
   '客户模板与历史文件',
 ])
-const BUSINESS_PROJECT_PROTECTED_FOLDER_NAMES = new Set([
+const TECHNICAL_PROJECT_PROTECTED_FOLDER_NAMES = new Set([
   '招标要求与专项证明',
   '资格审查与商务响应成册',
   '项目过程稿与澄清文件',
@@ -74,23 +74,24 @@ const BUSINESS_PROJECT_PROTECTED_FOLDER_NAMES = new Set([
 const MATERIAL_ROOT_LABELS = {
   技术标: '技术标',
   通用素材: '通用素材',
+  标准文件: '标准文件',
   客户素材: '客户素材',
+  客户定制: '客户定制',
   项目素材: '项目素材',
+  项目定制: '项目定制',
   标准模板: '通用素材',
-  客户定制: '客户素材',
-  项目定制: '项目素材',
 }
 
 const bidTypeTabMeta = (value) =>
-  value === BUSINESS_BID_TYPE
-    ? { value: BUSINESS_BID_TYPE, label: BUSINESS_BID_TYPE, icon: 'engineering', rootPath: BUSINESS_ROOT_PATH }
-    : { value: BUSINESS_BID_TYPE, label: BUSINESS_BID_TYPE, icon: 'engineering', rootPath: BUSINESS_ROOT_PATH }
+  value === TECHNICAL_BID_TYPE
+    ? { value: TECHNICAL_BID_TYPE, label: TECHNICAL_BID_TYPE, icon: 'engineering', rootPath: TECHNICAL_ROOT_PATH }
+    : { value: TECHNICAL_BID_TYPE, label: TECHNICAL_BID_TYPE, icon: 'engineering', rootPath: TECHNICAL_ROOT_PATH }
 
 const materialTierMeta = (value) =>
   MATERIAL_TIER_OPTIONS.find((item) => item.value === value) || MATERIAL_TIER_OPTIONS[0]
 
-const businessMaterialKindMeta = (value) =>
-  BUSINESS_MATERIAL_KIND_OPTIONS.find((item) => item.value === value) || BUSINESS_MATERIAL_KIND_OPTIONS[2]
+const materialUsageMeta = (value) =>
+  TECHNICAL_MATERIAL_USAGE_OPTIONS.find((item) => item.value === value) || TECHNICAL_MATERIAL_USAGE_OPTIONS[2]
 
 const normalizeTagList = (value) => {
   const source = Array.isArray(value)
@@ -138,6 +139,8 @@ const cleanedPreviewBlockedMessage = (item) => {
   if (item.cleanStatus === 'original_only') return '该素材仅保留原件。'
   if (item.cleanStatus === 'failed') return '清洗失败，暂无预览。'
   if (item.cleanStatus === 'cleaning') return '清洗中，完成后可预览。'
+  if (item.cleanStatus === 'pending') return '等待清洗，完成后可预览。'
+  if (item.cleanStatus === 'cleaned' && !item.hasCleanedWord) return '清洗文件丢失，请联系管理员重新处理。'
   return '暂无清洗稿。'
 }
 
@@ -178,7 +181,6 @@ const toSizeLabel = (bytes) => {
 }
 
 const extOf = (name) => {
-  if (String(name || '').toLowerCase() === '.ds_store') return 'ds_store'
   const parts = String(name || '').split('.')
   if (parts.length < 2) return ''
   return String(parts.pop() || '').toLowerCase()
@@ -188,10 +190,16 @@ const materialTierFromRootPath = (path) => {
   const normalized = String(path || '').replace(/^\/+|\/+$/g, '')
   const parts = normalized.split('/').filter(Boolean)
   const tierName = MATERIAL_ROOT_PATHS.includes(parts[0]) ? parts[1] : parts[0]
-  if (tierName === '通用素材') return 'standard'
-  if (tierName === '客户素材') return 'customer'
-  if (tierName === '项目素材') return 'project'
+  if (tierName === '标准文件' || tierName === '通用素材') return 'standard'
+  if (tierName === '客户定制' || tierName === '客户素材') return 'customer'
+  if (tierName === '项目定制' || tierName === '项目素材') return 'project'
   return ''
+}
+
+const isTechnicalWritablePath = (path) => {
+  const normalized = String(path || '').replace(/^\/+|\/+$/g, '')
+  const parts = normalized.split('/').filter(Boolean)
+  return parts[0] === TECHNICAL_BID_TYPE && ['标准文件', '客户定制', '项目定制', '客户素材', '项目素材'].includes(parts[1])
 }
 
 const normalizeTreeNodes = (nodes = []) =>
@@ -281,16 +289,16 @@ const normalizePath = (path) => String(path || '').replace(/^\/+|\/+$/g, '')
 
 const isProtectedDeleteFolderPath = (path) => {
   const normalized = normalizePath(path)
-  if (PROTECTED_DELETE_FOLDER_PATHS.has(normalized) || BUSINESS_STANDARD_PROTECTED_FOLDER_PATHS.has(normalized)) {
+  if (PROTECTED_DELETE_FOLDER_PATHS.has(normalized) || TECHNICAL_STANDARD_PROTECTED_FOLDER_PATHS.has(normalized)) {
     return true
   }
   const parts = normalized.split('/').filter(Boolean)
-  if (parts.length === 3 && parts[0] === '技术标' && (parts[1] === '客户素材' || parts[1] === '项目素材')) {
+  if (parts.length === 3 && parts[0] === '技术标' && ['客户定制', '项目定制', '客户素材', '项目素材'].includes(parts[1])) {
     return true
   }
   if (parts.length !== 4 || parts[0] !== '技术标') return false
-  if (parts[1] === '客户素材') return BUSINESS_CUSTOMER_PROTECTED_FOLDER_NAMES.has(parts[3])
-  if (parts[1] === '项目素材') return BUSINESS_PROJECT_PROTECTED_FOLDER_NAMES.has(parts[3])
+  if (parts[1] === '客户定制' || parts[1] === '客户素材') return TECHNICAL_CUSTOMER_PROTECTED_FOLDER_NAMES.has(parts[3])
+  if (parts[1] === '项目定制' || parts[1] === '项目素材') return TECHNICAL_PROJECT_PROTECTED_FOLDER_NAMES.has(parts[3])
   return false
 }
 
@@ -302,7 +310,7 @@ const parentPath = (path) => {
   return parts.slice(0, -1).join('/')
 }
 
-const pickDefaultFolder = (nodes = [], bidType = BUSINESS_BID_TYPE) => {
+const pickDefaultFolder = (nodes = [], bidType = TECHNICAL_BID_TYPE) => {
   const paths = flattenTreePaths(nodes)
   if (!paths.length) return ''
   const preferred = bidTypeTabMeta(bidType).rootPath
@@ -677,9 +685,10 @@ function TreeNode({
   selectedFileId,
   onSelect,
   onFileSelect,
+  onFileDownload,
   onRenameFile,
   onDeleteFile,
-  onUpdateBusinessMaterialKind,
+  onUpdateMaterialUsageKind,
   onEditTags,
   onSplitFile,
   onDeleteFolder,
@@ -691,6 +700,10 @@ function TreeNode({
   onToggle,
   filesByFolderPath,
   forceExpanded = false,
+  bulkMode = false,
+  selectedFileIds = new Set(),
+  onToggleFileSelection,
+  onSelectAllInFolder,
 }) {
   const hasChildren = Array.isArray(node.children) && node.children.length > 0
   const directFileCount = Number(node.directFileCount || 0)
@@ -854,12 +867,26 @@ function TreeNode({
         </span>
         <span className="relative flex w-[4.25rem] shrink-0 items-center justify-end">
           <span
-            className={`text-xs text-outline transition-opacity duration-150 ${canDeleteThisFolder ? 'group-hover:opacity-0 group-focus-within:opacity-0' : ''}`}
+            className={`text-xs text-outline transition-opacity duration-150 ${canDeleteThisFolder || (bulkMode && directFiles.length > 0) ? 'group-hover:opacity-0 group-focus-within:opacity-0' : ''}`}
             title={displayFileCount ? `当前显示 ${displayFileCount} 个，目录总计 ${node.fileCount || 0} 个` : '空目录'}
           >
             {displayFileCount ? `${displayFileCount}/${node.fileCount || displayFileCount}` : '-'}
           </span>
-          {canDeleteThisFolder && (
+          {bulkMode && directFiles.length > 0 && (
+            <button
+              type="button"
+              title="全选当前目录文件"
+              aria-label={`全选目录 ${node.name} 下的文件`}
+              onClick={(event) => {
+                event.stopPropagation()
+                onSelectAllInFolder?.(normalizedNodePath)
+              }}
+              className="absolute right-0 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-outline opacity-0 transition-opacity hover:bg-primary/10 hover:text-primary group-hover:opacity-100 focus:opacity-100"
+            >
+              <span aria-hidden="true" className="material-symbols-outlined text-[16px]">select_all</span>
+            </button>
+          )}
+          {!bulkMode && canDeleteThisFolder && (
             <button
               type="button"
               title="删除此文件夹"
@@ -890,6 +917,7 @@ function TreeNode({
               <div className="mt-0.5 space-y-0.5">
                 {directFiles.map((item) => {
                   const fileSelected = selectedFileId === item.id
+                  const bulkChecked = selectedFileIds.has(item.id)
                   const previewable = canPreviewCleaned(item)
                   const canSplit = item.bidType === '技术标' && extOf(item.name) === 'docx'
                   const itemTags = normalizeTagList(item.tags)
@@ -900,32 +928,47 @@ function TreeNode({
                       tabIndex={0}
                       data-file-id={item.id}
                       data-file-folder-path={normalizePath(item.folderPath || '')}
-                      draggable
+                      draggable={!bulkMode}
                       onDragStart={(event) => {
+                        if (bulkMode) { event.preventDefault(); return }
                         event.dataTransfer.effectAllowed = 'move'
                         event.dataTransfer.setData('application/x-raw-file', JSON.stringify({ id: item.id, folderPath: item.folderPath || '' }))
                         event.dataTransfer.setData('text/plain', item.id)
                       }}
-                      onClick={() => onFileSelect(item)}
+                      onClick={() => bulkMode ? onToggleFileSelection?.(item.id) : onFileSelect(item)}
                       onKeyDown={(event) => {
                         if (event.key === 'Enter' || event.key === ' ') {
                           event.preventDefault()
-                          onFileSelect(item)
+                          bulkMode ? onToggleFileSelection?.(item.id) : onFileSelect(item)
                         }
                       }}
-                      title={previewable ? item.name || '' : cleanedPreviewBlockedMessage(item)}
+                      title={bulkMode ? (bulkChecked ? '取消选择' : '点击选择') : previewable ? `${item.name || ''}，悬停可预览或下载` : cleanedPreviewBlockedMessage(item)}
                       style={{
-                        paddingLeft: `${fileIndent}px`,
+                        paddingLeft: bulkMode ? `${fileIndent - 20}px` : `${fileIndent}px`,
                       }}
                       className={`group flex w-full items-center gap-2 rounded-lg py-1.5 pr-2 text-left text-sm transition-[background-color,color] duration-150 ease-out ${
-                        fileSelected
-                          ? 'bg-secondary-container text-on-secondary-container'
-                          : 'text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface'
+                        bulkMode && bulkChecked
+                          ? 'bg-primary/10 text-primary'
+                          : fileSelected && !bulkMode
+                            ? 'bg-secondary-container text-on-secondary-container'
+                            : 'text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface'
                       }`}
                     >
-                      <span className={`material-symbols-outlined shrink-0 text-[17px] ${previewable ? 'text-secondary' : 'text-outline'}`}>
-                        {previewable ? 'description' : 'draft'}
-                      </span>
+                      {bulkMode && (
+                        <input
+                          type="checkbox"
+                          checked={bulkChecked}
+                          onChange={() => onToggleFileSelection?.(item.id)}
+                          onClick={(e) => e.stopPropagation()}
+                          aria-label={`选择文件 ${item.name || item.id}`}
+                          className="h-4 w-4 shrink-0 accent-primary"
+                        />
+                      )}
+                      {!bulkMode && (
+                        <span className={`material-symbols-outlined shrink-0 text-[17px] ${previewable ? 'text-secondary' : 'text-outline'}`}>
+                          {previewable ? 'description' : 'draft'}
+                        </span>
+                      )}
                       <span className="min-w-0 flex-1 basis-32 truncate">{item.name || '-'}</span>
                       {!!itemTags.length && (
                         <span
@@ -944,7 +987,33 @@ function TreeNode({
                           )}
                         </span>
                       )}
-                      <span className="flex min-w-[6rem] shrink-0 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                      <span className={`flex min-w-[8rem] shrink-0 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 ${bulkMode ? 'hidden' : ''}`}>
+                        {previewable && (
+                          <button
+                            type="button"
+                            title="OnlyOffice 预览"
+                            aria-label={`OnlyOffice 预览 ${item.name || item.id}`}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              onFileSelect?.(item)
+                            }}
+                            className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-primary/10 hover:text-primary"
+                          >
+                            <span aria-hidden="true" className="material-symbols-outlined text-[15px]">visibility</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          title="下载原件"
+                          aria-label={`下载原件 ${item.name || item.id}`}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            onFileDownload?.(item)
+                          }}
+                          className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-primary/10 hover:text-primary"
+                        >
+                          <span aria-hidden="true" className="material-symbols-outlined text-[15px]">download</span>
+                        </button>
                         <button
                           type="button"
                           title="重命名文件"
@@ -974,8 +1043,8 @@ function TreeNode({
                         {canSplit && (
                           <button
                             type="button"
-                            title="切分商务素材"
-                            aria-label={`切分商务素材 ${item.name || item.id}`}
+                            title="切分技术素材"
+                            aria-label={`切分技术素材 ${item.name || item.id}`}
                             onClick={(event) => {
                               event.stopPropagation()
                               onSplitFile?.(item)
@@ -1013,9 +1082,10 @@ function TreeNode({
                     selectedFileId={selectedFileId}
                     onSelect={onSelect}
                     onFileSelect={onFileSelect}
+                    onFileDownload={onFileDownload}
                     onRenameFile={onRenameFile}
                     onDeleteFile={onDeleteFile}
-                    onUpdateBusinessMaterialKind={onUpdateBusinessMaterialKind}
+                    onUpdateMaterialUsageKind={onUpdateMaterialUsageKind}
                     onEditTags={onEditTags}
                     onSplitFile={onSplitFile}
                     onDeleteFolder={onDeleteFolder}
@@ -1027,6 +1097,10 @@ function TreeNode({
                     onToggle={onToggle}
                     filesByFolderPath={filesByFolderPath}
                     forceExpanded={forceExpanded}
+                    bulkMode={bulkMode}
+                    selectedFileIds={selectedFileIds}
+                    onToggleFileSelection={onToggleFileSelection}
+                    onSelectAllInFolder={onSelectAllInFolder}
                   />
                 ))}
               </div>
@@ -1039,9 +1113,9 @@ function TreeNode({
 }
 
 export default function TechnicalMaterialDB({ showToast = () => {} }) {
-  const activeBidType = BUSINESS_BID_TYPE
-  const uploadBidType = BUSINESS_BID_TYPE
-  const materialsBasePath = workspaceRoute(BUSINESS_WORKSPACE, '/materials')
+  const activeBidType = TECHNICAL_BID_TYPE
+  const uploadBidType = TECHNICAL_BID_TYPE
+  const materialsBasePath = workspaceRoute(TECHNICAL_WORKSPACE, '/materials')
   const uploadPickerRef = useRef(null)
   const libraryLoadedRef = useRef(false)
   const selectedFolderPathRef = useRef('')
@@ -1055,6 +1129,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     title: '',
     tags: [],
   })
+  const [titleInput, setTitleInput] = useState('')
   const [tagFilterSearch, setTagFilterSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -1075,7 +1150,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   const [uploadTags, setUploadTags] = useState([])
   const [uploadTagsInput, setUploadTagsInput] = useState('')
   const [uploadFiles, setUploadFiles] = useState([])
-  const [uploadAfterSplit, setUploadAfterSplit] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
   const [previewItem, setPreviewItem] = useState(null)
@@ -1112,6 +1186,15 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   const [tagImportSelectedFuzzy, setTagImportSelectedFuzzy] = useState({})
   const [tagImportAmbiguousPick, setTagImportAmbiguousPick] = useState({})
   const tagImportFileInputRef = useRef(null)
+
+  // 多选框架
+  const [bulkMode, setBulkMode] = useState(false)
+  const [selectedFileIds, setSelectedFileIds] = useState(new Set())
+  const [bulkTagEditorOpen, setBulkTagEditorOpen] = useState(false)
+  const [bulkTagEditorTags, setBulkTagEditorTags] = useState([])
+  const [bulkTagEditorInput, setBulkTagEditorInput] = useState('')
+  const [bulkTagEditorMode, setBulkTagEditorMode] = useState('append')
+  const [bulkOperating, setBulkOperating] = useState(false)
 
   const canManageCurrentFolder = Boolean(selectedFolderPath)
   const canCreateFolder = Boolean(selectedFolderPath) && canManageCurrentFolder
@@ -1221,6 +1304,13 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
 
   useEffect(() => {
     const timer = setTimeout(() => {
+      setFilters((prev) => ({ ...prev, title: titleInput }))
+    }, 400)
+    return () => clearTimeout(timer)
+  }, [titleInput])
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
       loadLibrary()
     }, 0)
     return () => clearTimeout(timer)
@@ -1302,7 +1392,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     setUploadTags([])
     setUploadTagsInput('')
     setUploadFiles([])
-    setUploadAfterSplit(false)
     setUploadError('')
   }
 
@@ -1341,23 +1430,29 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   const onUploadFilesChanged = (event) => {
     const files = Array.from(event.target.files || [])
     if (!files.length) return
+    const oversized = []
+    const accepted = []
     for (const file of files) {
+      const name = file.name
+      if (/^\._/.test(name) || name === '.DS_Store') continue
+      if (!ALLOWED_EXTENSIONS.has(extOf(name))) continue
       if (Number(file.size || 0) > MAX_FILE_SIZE) {
-        setUploadError(`文件 ${file.name} 超过 1024MB 上限。`)
-        return
+        oversized.push(name)
+        continue
       }
-      if (!ALLOWED_EXTENSIONS.has(extOf(file.name))) {
-        setUploadError(`文件 ${file.name} 类型不在白名单内。`)
-        return
-      }
+      accepted.push(file)
     }
-    setUploadError('')
+    setUploadError(oversized.length ? `以下文件超过 30GB 上限：${oversized.join('、')}` : '')
+    if (!accepted.length) {
+      event.target.value = ''
+      return
+    }
     setUploadFiles((prev) => {
       const next = [...prev]
       const signatures = new Set(
         prev.map((file) => `${file.webkitRelativePath || file.name}::${file.size}::${file.lastModified}`)
       )
-      files.forEach((file) => {
+      accepted.forEach((file) => {
         const signature = `${file.webkitRelativePath || file.name}::${file.size}::${file.lastModified}`
         if (!signatures.has(signature)) {
           signatures.add(signature)
@@ -1411,6 +1506,11 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
         setUploading(false)
         return
       }
+      if (uploadMode === 'path' && !isTechnicalWritablePath(targetPath)) {
+        setUploadError('目标目录只能位于 技术标/标准文件、技术标/客户定制、技术标/项目定制 之一。')
+        setUploading(false)
+        return
+      }
       if (uploadMode === 'tier' && uploadMaterialTier === 'customer' && !customerId) {
         setUploadError('请选择客户。')
         setUploading(false)
@@ -1446,13 +1546,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
       setConflictContext(null)
       closeUploadModal()
       await loadLibrary({ silent: true })
-      const uploadedDocx = (result?.items || []).find((item) => item?.bidType === '技术标' && extOf(item?.name) === 'docx')
-      if (uploadAfterSplit && uploadedDocx) {
-        showToast('上传完成，正在打开商务素材切分审核。')
-        await openBusinessSplitModal(uploadedDocx)
-      } else if (uploadAfterSplit) {
-        showToast('上传完成，但未找到可切分的商务 docx 文件。', 'warning')
-      }
     } catch (e) {
       if (e?.status === 409 && e?.code === 'MATERIAL_CONFLICT') {
         setConflictContext({ type: 'upload', payload: null, detail: e?.payload?.conflict || null })
@@ -1526,9 +1619,9 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     }
   }
 
-  const updateBusinessMaterialKind = async (item) => {
+  const updateMaterialUsageKind = async (item) => {
     if (!item?.id || item.bidType !== '技术标') return
-    const current = BUSINESS_MATERIAL_KIND_OPTIONS.some((option) => option.value === item.businessMaterialKind)
+    const current = TECHNICAL_MATERIAL_USAGE_OPTIONS.some((option) => option.value === item.businessMaterialKind)
       ? item.businessMaterialKind
       : 'other'
     const nextKind = current === 'other' ? 'fixed' : current === 'fixed' ? 'ai_fill' : 'other'
@@ -1536,12 +1629,12 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
       const result = await technicalMaterialsAPI.raw.updateFile(item.id, {
         businessMaterialKind: nextKind,
       })
-      showToast(result?.message || `已标记为${businessMaterialKindMeta(nextKind).label}`)
+      showToast(result?.message || `已标记为${materialUsageMeta(nextKind).label}`)
       if (previewItem?.id === item.id) {
         setPreviewItem((prev) => ({
           ...(prev || {}),
           businessMaterialKind: nextKind,
-          businessMaterialKindLabel: businessMaterialKindMeta(nextKind).label,
+          businessMaterialKindLabel: materialUsageMeta(nextKind).label,
         }))
       }
       await loadLibrary({ silent: true })
@@ -1718,20 +1811,20 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     }
   }
 
-  const loadBusinessSplitPlan = async (item, { aiMode = 'auto' } = {}) => {
-    const payload = await technicalMaterialsAPI.raw.previewBusinessSplit(item.id, { targetPath: item.folderPath || selectedFolderPath, aiMode })
+  const loadTechnicalSplitPlan = async (item, { aiMode = 'auto' } = {}) => {
+    const payload = await technicalMaterialsAPI.raw.previewTechnicalSplit(item.id, { targetPath: item.folderPath || selectedFolderPath, aiMode })
     setSplitPlan({
       ...payload,
       fragments: (payload?.fragments || []).map((fragment) => ({
         ...fragment,
         selected: fragment.selected !== false,
         targetPath: fragment.suggestedPath || item.folderPath || selectedFolderPath,
-        fileName: fragment.suggestedFileName || `${fragment.title || '商务素材片段'}.docx`,
+        fileName: fragment.suggestedFileName || `${fragment.title || '技术素材片段'}.docx`,
       })),
     })
   }
 
-  const openBusinessSplitModal = async (item) => {
+  const openTechnicalSplitModal = async (item) => {
     if (!item?.id) return
     if (activeBidType !== '技术标' || item.bidType !== '技术标') {
       showToast('素材切分入口当前仅支持技术标素材。', 'error')
@@ -1747,7 +1840,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     setSplitError('')
     setSplitPlan(null)
     try {
-      await loadBusinessSplitPlan(item, { aiMode: 'auto' })
+      await loadTechnicalSplitPlan(item, { aiMode: 'auto' })
     } catch (e) {
       setSplitError(safeMessage(e, '生成切分建议失败。'))
     } finally {
@@ -1755,12 +1848,12 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     }
   }
 
-  const rerunBusinessSplitWithAi = async () => {
+  const rerunTechnicalSplitWithAi = async () => {
     if (!splitSourceItem?.id) return
     setSplitLoading(true)
     setSplitError('')
     try {
-      await loadBusinessSplitPlan(splitSourceItem, { aiMode: 'force' })
+      await loadTechnicalSplitPlan(splitSourceItem, { aiMode: 'force' })
       showToast('AI 增强识别完成，请审核切分片段。')
     } catch (e) {
       setSplitError(safeMessage(e, 'AI 增强识别失败。'))
@@ -1769,7 +1862,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     }
   }
 
-  const closeBusinessSplitModal = () => {
+  const closeTechnicalSplitModal = () => {
     setSplitModalOpen(false)
     setSplitLoading(false)
     setSplitConfirming(false)
@@ -1787,7 +1880,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     }))
   }
 
-  const confirmBusinessSplit = async () => {
+  const confirmTechnicalSplit = async () => {
     const fragments = (splitPlan?.fragments || []).filter((fragment) => fragment.selected)
     if (!splitSourceItem?.id || !fragments.length) {
       setSplitError('请至少勾选一个切分片段。')
@@ -1796,7 +1889,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     setSplitConfirming(true)
     setSplitError('')
     try {
-      const result = await technicalMaterialsAPI.raw.confirmBusinessSplit(splitSourceItem.id, {
+      const result = await technicalMaterialsAPI.raw.confirmTechnicalSplit(splitSourceItem.id, {
         fragments: fragments.map((fragment) => ({
           id: fragment.id,
           selected: true,
@@ -1813,7 +1906,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
         })),
       })
       showToast(result?.message || `已生成 ${fragments.length} 个子素材`)
-      closeBusinessSplitModal()
+      closeTechnicalSplitModal()
       await loadLibrary({ silent: true })
     } catch (e) {
       setSplitError(safeMessage(e, '确认切分入库失败。'))
@@ -1844,6 +1937,11 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     } finally {
       setPreviewLoading(false)
     }
+  }
+
+  const handleDownloadFile = (item) => {
+    if (!item?.id) return
+    window.open(technicalMaterialsAPI.raw.contentUrl(item.id), '_blank', 'noopener')
   }
 
   const parseDragPayload = (event, mimeType) => {
@@ -1934,13 +2032,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     }
   }
 
-  const updateFilter = (key, value) => {
-    setFilters((prev) => ({
-      ...prev,
-      [key]: value,
-    }))
-  }
-
   const toggleFilterTag = (tag) => {
     setFilters((prev) => {
       const currentTags = normalizeTagList(prev.tags || [])
@@ -1957,6 +2048,95 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     setFilters((prev) => ({ ...prev, tags: [] }))
   }
 
+  const toggleFileSelection = (id) => {
+    setSelectedFileIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const selectAllInFolder = (folderPath) => {
+    const files = filesByFolderPath.get(normalizePath(folderPath)) || []
+    setSelectedFileIds((prev) => {
+      const next = new Set(prev)
+      files.forEach((f) => next.add(f.id))
+      return next
+    })
+  }
+
+  const clearSelection = () => {
+    setSelectedFileIds(new Set())
+  }
+
+  const exitBulkMode = () => {
+    setBulkMode(false)
+    clearSelection()
+  }
+
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selectedFileIds)
+    if (!ids.length) return
+    const fileItems_ = fileItems.filter((f) => selectedFileIds.has(f.id))
+    const nameList = fileItems_.slice(0, 5).map((f) => `  · ${f.name || f.id}`).join('\n')
+    const extra = fileItems_.length > 5 ? `\n  · …等 ${fileItems_.length - 5} 个` : ''
+    const ok = window.confirm(
+      `确认删除以下 ${ids.length} 个文件？\n${nameList}${extra}\n\n原始文件及清洗稿会一起删除，不可恢复。`
+    )
+    if (!ok) return
+    setBulkOperating(true)
+    try {
+      const result = await technicalMaterialsAPI.raw.batchDelete({ fileIds: ids })
+      const failedCount = (result?.failed || []).length
+      showToast(result?.message || `批量删除完成`, failedCount ? 'warning' : 'success')
+      exitBulkMode()
+      await loadLibrary({ silent: true })
+    } catch (e) {
+      showToast(safeMessage(e, '批量删除失败'), 'error')
+    } finally {
+      setBulkOperating(false)
+    }
+  }
+
+  const openBulkTagEditor = () => {
+    setBulkTagEditorTags([])
+    setBulkTagEditorInput('')
+    setBulkTagEditorMode('append')
+    setBulkTagEditorOpen(true)
+  }
+
+  const closeBulkTagEditor = () => {
+    setBulkTagEditorOpen(false)
+  }
+
+  const saveBulkTags = async () => {
+    const ids = Array.from(selectedFileIds)
+    if (!ids.length) return
+    const nextTags = tagInputPreview(bulkTagEditorTags, bulkTagEditorInput)
+    if (!nextTags.length) {
+      showToast('请至少输入一个标签', 'error')
+      return
+    }
+    setBulkOperating(true)
+    try {
+      const result = await technicalMaterialsAPI.raw.batchTags({
+        fileIds: ids,
+        tags: nextTags,
+        tagMode: bulkTagEditorMode,
+      })
+      const failedCount = (result?.failed || []).length
+      showToast(result?.message || `批量打标签完成`, failedCount ? 'warning' : 'success')
+      closeBulkTagEditor()
+      exitBulkMode()
+      await loadLibrary({ silent: true })
+    } catch (e) {
+      showToast(safeMessage(e, '批量打标签失败'), 'error')
+    } finally {
+      setBulkOperating(false)
+    }
+  }
+
   const materialToolbar = (
     <div className="rounded-lg border border-outline-variant/45 bg-surface-container-lowest px-3 py-3">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
@@ -1964,8 +2144,8 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
           <label>
             <span className="sr-only">文件标题</span>
             <input
-              value={filters.title}
-              onChange={(e) => updateFilter('title', e.target.value)}
+              value={titleInput}
+              onChange={(e) => setTitleInput(e.target.value)}
               placeholder="文件标题"
               className="h-9 w-full rounded-lg border border-transparent bg-surface-container-highest px-3 text-xs"
             />
@@ -1986,6 +2166,14 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
           </button>
           <button type="button" onClick={() => setCollapseForAll(true)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim">
             收起
+          </button>
+          <button
+            type="button"
+            title={bulkMode ? '退出多选模式' : '进入多选模式，可批量删除或打标签'}
+            onClick={() => (bulkMode ? exitBulkMode() : setBulkMode(true))}
+            className={`rounded-lg px-3 py-2 text-xs font-semibold ring-1 ring-inset ring-outline-variant/60 ${bulkMode ? 'bg-primary text-on-primary' : 'bg-surface-container-high text-on-surface hover:bg-surface-dim'}`}
+          >
+            {bulkMode ? '退出多选' : '多选'}
           </button>
           <button type="button" onClick={handleCreateFolder} disabled={!canCreateFolder} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-45">
             新建文件夹
@@ -2123,11 +2311,12 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                       setSelectedFolderPath(item.folderPath || selectedFolderPath)
                       handlePreviewCleaned(item)
                     }}
+                    onFileDownload={handleDownloadFile}
                     onRenameFile={handleRenameFile}
                     onDeleteFile={handleDeleteFile}
-                    onUpdateBusinessMaterialKind={updateBusinessMaterialKind}
+                    onUpdateMaterialUsageKind={updateMaterialUsageKind}
                     onEditTags={openTagEditor}
-                    onSplitFile={openBusinessSplitModal}
+                    onSplitFile={openTechnicalSplitModal}
                     onDeleteFolder={handleDeleteFolder}
                     onMoveDrop={handleMoveDrop}
                     dragTargetPath={dragTargetPath}
@@ -2136,6 +2325,10 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                     onToggle={toggleNode}
                     filesByFolderPath={filesByFolderPath}
                     forceExpanded={hasActiveFilters}
+                    bulkMode={bulkMode}
+                    selectedFileIds={selectedFileIds}
+                    onToggleFileSelection={toggleFileSelection}
+                    onSelectAllInFolder={selectAllInFolder}
                   />
                 ))
               ) : (
@@ -2145,6 +2338,36 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
               )}
             </div>
           </div>
+          {bulkMode && selectedFileIds.size > 0 && (
+            <div className="flex items-center justify-between gap-2 border-t border-primary/20 bg-primary/5 px-4 py-3">
+              <span className="text-sm font-semibold text-primary">已选 {selectedFileIds.size} 个文件</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={bulkOperating}
+                  onClick={openBulkTagEditor}
+                  className="rounded-lg bg-surface-container-high px-3 py-1.5 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  批量打标签
+                </button>
+                <button
+                  type="button"
+                  disabled={bulkOperating}
+                  onClick={handleBulkDelete}
+                  className="rounded-lg bg-error-container/45 px-3 py-1.5 text-xs font-semibold text-error hover:bg-error-container disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {bulkOperating ? '处理中…' : '批量删除'}
+                </button>
+                <button
+                  type="button"
+                  onClick={exitBulkMode}
+                  className="rounded-lg px-3 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          )}
         </section>
 
         <section className={[
@@ -2232,7 +2455,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                     value={uploadPath}
                     onChange={(e) => setUploadPath(e.target.value)}
                     className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                    placeholder={`例如：${activeBidType}/通用素材/01-示例目录`}
+                    placeholder={`例如：${activeBidType}/标准文件/EW6.25`}
                   />
                 </label>
               ) : (
@@ -2360,22 +2583,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                     })}
                   </div>
                 </div>
-                {uploadBidType === '技术标' && (
-                  <label className="rounded-lg bg-primary/5 px-3 py-2 text-sm text-on-surface-variant">
-                    <span className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={uploadAfterSplit}
-                        onChange={(event) => setUploadAfterSplit(event.target.checked)}
-                        className="h-4 w-4 accent-primary"
-                      />
-                      上传后打开切分审核
-                    </span>
-                    <span className="mt-1 block text-xs text-outline">
-                      仅对技术标 docx 生效；原文件保留，审核后生成子素材。
-                    </span>
-                  </label>
-                )}
               </div>
 
               <input
@@ -2448,11 +2655,11 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
               )}
 
               <p className="text-xs text-outline">
-                白名单：pdf/doc/docx/xls/xlsx/xlsm/png/jpg/jpeg/webp/bmp/tif/tiff/DS_Store；单文件 1024MB。图片类素材仅保留原件，不触发自动清洗。
+                白名单：pdf/doc/docx/xls/xlsx/xlsm/png/jpg/jpeg/webp/bmp/tif/tiff；单文件 30GB。图片类素材仅保留原件，不触发自动清洗。其他格式及系统隐藏文件自动忽略。
               </p>
 
               {uploadError && (
-                <div className="text-sm text-error bg-error-container/30 border border-error/30 rounded-lg px-3 py-2">
+                <div className="text-sm text-error bg-error-container/30 border border-error/30 rounded-lg px-3 py-2 whitespace-pre-line">
                   {uploadError}
                 </div>
               )}
@@ -2799,25 +3006,101 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
         </div>
       )}
 
+      {bulkTagEditorOpen && (
+        <div className="dialog-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="wizard-modal-surface w-full max-w-lg animate-float-in rounded-xl border border-surface-container-high bg-surface-container-lowest">
+            <div className="flex items-center justify-between border-b border-surface-container-high px-6 py-4">
+              <div>
+                <h3 className="text-lg font-semibold text-on-surface">批量设置标签</h3>
+                <p className="mt-1 text-xs text-outline">已选 {selectedFileIds.size} 个文件</p>
+              </div>
+              <button
+                onClick={closeBulkTagEditor}
+                disabled={bulkOperating}
+                className="close-plain text-on-surface-variant transition-colors hover:text-primary disabled:opacity-50"
+                aria-label="关闭"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div className="space-y-4 p-6">
+              <div className="flex gap-4">
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-on-surface-variant">
+                  <input
+                    type="radio"
+                    name="bulkTagMode"
+                    value="append"
+                    checked={bulkTagEditorMode === 'append'}
+                    onChange={() => setBulkTagEditorMode('append')}
+                    className="accent-primary"
+                  />
+                  追加标签（保留原有）
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-on-surface-variant">
+                  <input
+                    type="radio"
+                    name="bulkTagMode"
+                    value="overwrite"
+                    checked={bulkTagEditorMode === 'overwrite'}
+                    onChange={() => setBulkTagEditorMode('overwrite')}
+                    className="accent-primary"
+                  />
+                  覆盖标签（替换全部）
+                </label>
+              </div>
+              <div>
+                <span className="mb-1 block text-sm text-on-surface-variant">标签</span>
+                <TagInput
+                  value={bulkTagEditorTags}
+                  inputValue={bulkTagEditorInput}
+                  onChange={setBulkTagEditorTags}
+                  onInputChange={setBulkTagEditorInput}
+                  disabled={bulkOperating}
+                  autoFocus
+                  placeholder="资质，承诺函，商务附件"
+                />
+                <span className="mt-1 block text-xs text-outline">支持粘贴整串标签，系统会按中英文逗号和分号自动拆分。</span>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 rounded-b-xl border-t border-surface-container-high bg-surface-container-low px-6 py-4">
+              <button
+                onClick={closeBulkTagEditor}
+                disabled={bulkOperating}
+                className="rounded-lg px-4 py-2 text-sm text-on-surface-variant hover:bg-surface-container-high disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={saveBulkTags}
+                disabled={bulkOperating}
+                className="rounded-lg bg-primary px-4 py-2 text-sm text-on-primary hover:bg-primary-container disabled:opacity-50"
+              >
+                {bulkOperating ? '处理中...' : '确认'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {splitModalOpen && (
         <div className="dialog-overlay fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">
           <div className="wizard-modal-surface w-full max-w-5xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high flex flex-col overflow-hidden animate-float-in">
             <div className="px-5 sm:px-6 py-4 border-b border-surface-container-high flex items-center justify-between shrink-0">
               <div className="min-w-0">
-                <h2 className="text-lg font-headline font-bold text-on-surface">商务素材切分审核</h2>
+                <h2 className="text-lg font-headline font-bold text-on-surface">技术素材切分审核</h2>
                 <p className="mt-1 truncate text-xs text-outline">
                   母文件：{splitSourceItem?.name || '-'}；确认后将生成子素材并进入技术标原始素材库。
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={rerunBusinessSplitWithAi}
+                  onClick={rerunTechnicalSplitWithAi}
                   disabled={splitLoading || splitConfirming}
                   className="rounded-lg bg-primary/10 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/15 disabled:opacity-50"
                 >
                   {splitLoading ? '识别中...' : 'AI增强识别'}
                 </button>
-                <button onClick={closeBusinessSplitModal} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
+                <button onClick={closeTechnicalSplitModal} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
                   <span className="material-symbols-outlined">close</span>
                 </button>
               </div>
@@ -2862,7 +3145,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                               <span className="min-w-0">
                                 <span className="block text-sm font-semibold text-on-surface">{fragment.title || `片段 ${index + 1}`}</span>
                                 <span className="mt-1 block text-xs text-outline">
-                                  {fragment.materialType || '商务素材片段'} · 置信度 {Math.round(Number(fragment.confidence || 0) * 100)}%
+                                  {fragment.materialType || '技术素材片段'} · 置信度 {Math.round(Number(fragment.confidence || 0) * 100)}%
                                 </span>
                               </span>
                             </label>
@@ -2921,11 +3204,11 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                 已勾选 {(splitPlan?.fragments || []).filter((fragment) => fragment.selected).length} / {(splitPlan?.fragments || []).length} 个片段
               </div>
               <div className="flex justify-end gap-3">
-                <button onClick={closeBusinessSplitModal} className="px-4 py-2 text-sm text-on-surface-variant hover:bg-surface-container-high rounded-lg">
+                <button onClick={closeTechnicalSplitModal} className="px-4 py-2 text-sm text-on-surface-variant hover:bg-surface-container-high rounded-lg">
                   取消
                 </button>
                 <button
-                  onClick={confirmBusinessSplit}
+                  onClick={confirmTechnicalSplit}
                   disabled={splitLoading || splitConfirming || !(splitPlan?.fragments || []).some((fragment) => fragment.selected)}
                   className="px-4 py-2 text-sm bg-primary text-on-primary rounded-lg hover:bg-primary-container disabled:opacity-50"
                 >

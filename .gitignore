@@ -35,3 +35,6 @@ code/sewpg-bid-backend/onlyoffice/data/*.key
 code/offline-dist/
 
 code/测试文档/
+
+qa/logs/
+code/qa/logs/

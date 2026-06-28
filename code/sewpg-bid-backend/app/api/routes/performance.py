@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, File, Form, UploadFile
+from fastapi import APIRouter, Body, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
-from app.api.utils import minio_streaming_response
+from app.api.utils import minio_streaming_response, onlyoffice_backend_base_url
 from app.services.performance_library_service import performance_library_service
 from app.services.performance_package_service import performance_package_service
 
@@ -135,10 +135,31 @@ async def download_performance_category_attachment(category_id: str, attachment_
     return minio_streaming_response(payload)
 
 
+@router.get("/api/materials/performance/categories/{category_id}/attachments/{attachment_id}/preview")
+async def preview_performance_category_attachment(category_id: str, attachment_id: str, request: Request) -> dict[str, Any]:
+    return await performance_package_service.preview_attachment(
+        category_id,
+        attachment_id,
+        browser_base_url=str(request.base_url).rstrip("/"),
+        onlyoffice_base_url=onlyoffice_backend_base_url(request),
+    )
+
+
 @router.get("/api/materials/performance/categories/{category_id}/items/{item_id}/attachments/{attachment_id}")
 async def download_performance_item_attachment(category_id: str, item_id: str, attachment_id: str) -> StreamingResponse:
     payload = await performance_package_service.download_item_attachment(category_id, item_id, attachment_id)
     return minio_streaming_response(payload)
+
+
+@router.get("/api/materials/performance/categories/{category_id}/items/{item_id}/attachments/{attachment_id}/preview")
+async def preview_performance_item_attachment(category_id: str, item_id: str, attachment_id: str, request: Request) -> dict[str, Any]:
+    return await performance_package_service.preview_item_attachment(
+        category_id,
+        item_id,
+        attachment_id,
+        browser_base_url=str(request.base_url).rstrip("/"),
+        onlyoffice_base_url=onlyoffice_backend_base_url(request),
+    )
 
 
 @router.post("/api/materials/performance")
@@ -171,4 +192,3 @@ async def upload_performance_word(record_id: str, file: UploadFile = File(...)) 
 async def download_performance_word(record_id: str) -> StreamingResponse:
     payload = await performance_library_service.download_word(record_id)
     return minio_streaming_response(payload)
-

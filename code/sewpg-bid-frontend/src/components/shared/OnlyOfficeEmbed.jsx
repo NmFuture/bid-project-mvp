@@ -26,6 +26,7 @@ const OnlyOfficeEmbed = forwardRef(function OnlyOfficeEmbed({
   session,
   mode = 'edit',
   className = '',
+  enableSearchPlugin = false,
   onReady,
   onError,
 }, ref) {
@@ -35,8 +36,12 @@ const OnlyOfficeEmbed = forwardRef(function OnlyOfficeEmbed({
   const iframeSrc = useMemo(() => {
     const fileUrl = session?.documentServerFileUrl || session?.fileUrl || session?.browserFileUrl
     const probeUrl = session?.browserFileUrl || session?.fileUrl
+    const documentKey = buildDocumentKey(
+      `${session?.documentKey || ''}-${mode}-${enableSearchPlugin ? 'search' : 'plain'}-v3`,
+      fileUrl,
+    )
     const config = ONLYOFFICE_CONFIG.getEditorConfig({
-      documentKey: buildDocumentKey(session?.documentKey, fileUrl),
+      documentKey,
       title: session?.title,
       // OnlyOffice Document Server resolves document URLs server-side,
       // so prefer the container-reachable internal URL here.
@@ -46,14 +51,25 @@ const OnlyOfficeEmbed = forwardRef(function OnlyOfficeEmbed({
       userName: session?.user?.name,
       fileType: session?.fileType,
       documentType: session?.documentType,
+      enableSearchPlugin,
     })
 
     if (mode === 'view') {
       config.editorConfig.mode = 'view'
+      delete config.editorConfig.callbackUrl
+      config.editorConfig.customization = {
+        ...(config.editorConfig.customization || {}),
+        autosave: false,
+        comments: false,
+        forcesave: false,
+        reviewDisplay: 'final',
+      }
       if (config.document?.permissions) {
         config.document.permissions.edit = false
         config.document.permissions.review = false
         config.document.permissions.comment = false
+        config.document.permissions.download = false
+        config.document.permissions.print = false
       }
     }
 
@@ -64,7 +80,7 @@ const OnlyOfficeEmbed = forwardRef(function OnlyOfficeEmbed({
       probeDocumentUrl: probeUrl,
     }
     return `${buildHostPath()}#${encodeURIComponent(JSON.stringify(payload))}`
-  }, [mode, requestId, session])
+  }, [enableSearchPlugin, mode, requestId, session])
 
   useImperativeHandle(ref, () => ({
     postMessage: (payload) => {

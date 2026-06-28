@@ -134,6 +134,15 @@ const materialPreviewKey = (item) => isProjectFactSource(item) ? PROJECT_FACT_SO
 const materialPreviewTitle = (item) =>
   item?.materialName || item?.name || item?.fileName || item?.evidenceSegmentTitle || item?.id || item?.materialId || '候选素材'
 
+const materialDownloadFileName = (item) =>
+  item?.fileName || item?.cleanedFileName || item?.materialName || item?.name || item?.id || item?.materialId || 'material.bin'
+
+const materialDownloadUrl = (projectId, item) => {
+  const materialId = materialPreviewKey(item)
+  if (!projectId || !materialId || materialId === PROJECT_FACT_SOURCE_KEY) return ''
+  return businessGapsAPI.materialContentUrl(projectId, materialId, materialDownloadFileName(item))
+}
+
 const candidateMaterialKey = (material) =>
   material?.materialId || material?.id || material?.path || material?.folderPath || material?.materialName || material?.evidenceSegmentId || material?.wikiCardId || ''
 
@@ -762,8 +771,51 @@ function BusinessMaterialPreviewDrawer({
   )
 }
 
+function HoverPreviewDownloadActions({
+  canPreview = true,
+  downloadUrl = '',
+  disabled = false,
+  onPreview,
+  previewLabel = 'OnlyOffice 预览',
+  downloadLabel = '下载原件',
+  className = '',
+}) {
+  return (
+    <div className={`flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 ${className}`}>
+      {canPreview && (
+        <IconButton
+          aria-label={previewLabel}
+          icon="visibility"
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onPreview?.()
+          }}
+          disabled={disabled}
+          size="xs"
+          variant="ghost"
+        />
+      )}
+      {downloadUrl && (
+        <a
+          href={downloadUrl}
+          target="_blank"
+          rel="noreferrer"
+          title={downloadLabel}
+          aria-label={downloadLabel}
+          onClick={(event) => event.stopPropagation()}
+          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-outline transition-colors hover:bg-primary/10 hover:text-primary focus-visible:ring-2 focus-visible:ring-primary/35"
+        >
+          <span aria-hidden="true" className="material-symbols-outlined text-[15px]">download</span>
+        </a>
+      )}
+    </div>
+  )
+}
+
 function BusinessMaterialPickerModal({
   open,
+  projectId,
   task,
   payload,
   loading,
@@ -884,8 +936,10 @@ function BusinessMaterialPickerModal({
               {materials.map((material) => {
                 const key = material.materialId || material.id
                 const evidenceSegments = asArray(material.evidenceSegments)
+                const previewKey = materialPreviewKey(material)
+                const downloadUrl = materialDownloadUrl(projectId, material)
                 return (
-                  <label key={key} className={`block cursor-pointer rounded-md border p-3 transition-colors ${normalizedSelectedKeys.includes(key) ? 'border-primary bg-primary/5' : 'border-surface-container-high bg-surface-container-lowest hover:bg-surface-container-low'}`}>
+                  <label key={key} className={`group block cursor-pointer rounded-md border p-3 transition-colors ${normalizedSelectedKeys.includes(key) ? 'border-primary bg-primary/5' : 'border-surface-container-high bg-surface-container-lowest hover:bg-surface-container-low'}`}>
                     <div className="flex items-start gap-3">
                       <input
                         type="checkbox"
@@ -899,19 +953,12 @@ function BusinessMaterialPickerModal({
                             <div className="font-semibold text-on-surface">{material.materialName}</div>
                             <div className="mt-1 truncate text-xs text-outline">{material.folderPath}</div>
                           </div>
-                          {materialPreviewKey(material) && (
-                            <Button
-                              type="button"
-                              onClick={(event) => {
-                                event.preventDefault()
-                                event.stopPropagation()
-                                onPreview?.(material)
-                              }}
-                              size="xs"
-                              variant="quiet"
-                            >
-                              预览
-                            </Button>
+                          {(previewKey || downloadUrl) && (
+                            <HoverPreviewDownloadActions
+                              canPreview={Boolean(previewKey)}
+                              downloadUrl={downloadUrl}
+                              onPreview={() => onPreview?.(material, 'office')}
+                            />
                           )}
                         </div>
                         <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-on-surface-variant">
@@ -961,6 +1008,7 @@ function BusinessMaterialPickerModal({
 
 function BusinessTableFillModal({
   open,
+  projectId,
   task,
   payload,
   loading,
@@ -1085,8 +1133,9 @@ function BusinessTableFillModal({
                   const checked = normalizedSourceKeys.includes(key)
                   const evidenceSegments = asArray(material.evidenceSegments)
                   const projectFact = isProjectFactSource(material)
+                  const downloadUrl = materialDownloadUrl(projectId, material)
                   return (
-                    <label key={key} className={`block cursor-pointer rounded-md border p-3 transition-colors ${checked ? 'border-primary bg-primary/5' : 'border-surface-container-high bg-surface-container-lowest hover:bg-surface-container-low'}`}>
+                    <label key={key} className={`group block cursor-pointer rounded-md border p-3 transition-colors ${checked ? 'border-primary bg-primary/5' : 'border-surface-container-high bg-surface-container-lowest hover:bg-surface-container-low'}`}>
                       <div className="flex items-start gap-3">
                         <input
                           type="checkbox"
@@ -1105,19 +1154,12 @@ function BusinessTableFillModal({
                               </div>
                               <div className="mt-1 truncate text-xs text-outline">{material.folderPath || material.path || '-'}</div>
                             </div>
-                            {materialPreviewKey(material) && !projectFact && (
-                              <Button
-                                type="button"
-                                onClick={(event) => {
-                                  event.preventDefault()
-                                  event.stopPropagation()
-                                  onPreview?.(material)
-                                }}
-                                size="xs"
-                                variant="quiet"
-                              >
-                                预览
-                              </Button>
+                            {(key || downloadUrl) && !projectFact && (
+                              <HoverPreviewDownloadActions
+                                canPreview={Boolean(key)}
+                                downloadUrl={downloadUrl}
+                                onPreview={() => onPreview?.(material, 'office')}
+                              />
                             )}
                           </div>
                           {!projectFact && <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-on-surface-variant">
@@ -1368,6 +1410,25 @@ export default function BusinessGapRecognition({ showToast }) {
     const artifactId = String(artifact?.artifactId || '')
     if (!artifactId) {
       showToast?.('该产物缺少 ID，暂不能预览。', 'error')
+      return
+    }
+    if (artifact?.onlyoffice) {
+      setMaterialPreviewOpen(true)
+      setMaterialPreviewLoading(false)
+      setMaterialPreviewSource({
+        materialName: artifact?.fileName || artifactId,
+        folderPath: taskArtifactTypeLabel(artifact),
+      })
+      setMaterialPreviewPayload({
+        materialName: artifact?.fileName || artifactId,
+        fileName: artifact?.fileName || artifactId,
+        folderPath: taskArtifactTypeLabel(artifact),
+        previewMode: 'onlyoffice',
+        renderer: 'word',
+        browserFileUrl: artifact?.browserFileUrl || artifact?.fileUrl || artifact?.onlyoffice?.browserFileUrl || '',
+        officeAvailable: true,
+        onlyoffice: artifact.onlyoffice,
+      })
       return
     }
     window.open(businessGapsAPI.artifactContentUrl(id, artifactId, artifact?.fileName), '_blank', 'noopener')
@@ -1974,7 +2035,7 @@ export default function BusinessGapRecognition({ showToast }) {
                             const artifactTime = String(artifact?.confirmedAt || artifact?.createdAt || artifact?.uploadedAt || '')
                             const artifactKey = String(artifact?.artifactId || `${artifact?.fileName || 'artifact'}-${artifactIndex}`)
                             return (
-                              <div key={artifactKey} className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2">
+                              <div key={artifactKey} className="group mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2">
                                 <div className="min-w-0 flex-1">
                                   <div className="flex flex-wrap items-center gap-2">
                                     <Badge size="xs" variant="info">{taskArtifactTypeLabel(artifact)}</Badge>
@@ -1985,17 +2046,14 @@ export default function BusinessGapRecognition({ showToast }) {
                                   </div>
                                   {artifactTime && <div className="mt-0.5 text-[11px] text-outline">{artifactTime.replace('T', ' ').slice(0, 19)}</div>}
                                 </div>
-                                <div className="flex shrink-0 items-center gap-2">
+                                <div className="group flex shrink-0 items-center gap-2">
                                   {artifact?.artifactId && (
-                                    <Button
-                                      type="button"
-                                      onClick={() => previewTaskArtifact(artifact)}
+                                    <HoverPreviewDownloadActions
+                                      canPreview={Boolean(artifact?.onlyoffice)}
+                                      downloadUrl={businessGapsAPI.artifactContentUrl(id, artifact.artifactId, artifact?.fileName)}
                                       disabled={!!actionLoading}
-                                      size="sm"
-                                      variant="quiet"
-                                    >
-                                      预览
-                                    </Button>
+                                      onPreview={() => previewTaskArtifact(artifact)}
+                                    />
                                   )}
                                   {!confirmedArtifact && artifact?.artifactId && (
                                     <Button
@@ -2030,7 +2088,7 @@ export default function BusinessGapRecognition({ showToast }) {
                           {referenceArtifacts.map((artifact, referenceIndex) => (
                             <div
                               key={String(artifact?.artifactId || `${artifact?.fileName || 'reference'}-${referenceIndex}`)}
-                              className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest/60 px-3 py-2"
+                              className="group mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest/60 px-3 py-2"
                             >
                               <div className="min-w-0 flex-1">
                                 <div className="flex flex-wrap items-center gap-2">
@@ -2039,15 +2097,12 @@ export default function BusinessGapRecognition({ showToast }) {
                                 </div>
                               </div>
                               {artifact?.artifactId && (
-                                <Button
-                                  type="button"
-                                  onClick={() => previewTaskArtifact(artifact)}
+                                <HoverPreviewDownloadActions
+                                  canPreview={Boolean(artifact?.onlyoffice)}
+                                  downloadUrl={businessGapsAPI.artifactContentUrl(id, artifact.artifactId, artifact?.fileName)}
                                   disabled={!!actionLoading}
-                                  size="sm"
-                                  variant="quiet"
-                                >
-                                  预览
-                                </Button>
+                                  onPreview={() => previewTaskArtifact(artifact)}
+                                />
                               )}
                             </div>
                           ))}
@@ -2072,10 +2127,11 @@ export default function BusinessGapRecognition({ showToast }) {
                           const isSelectedCandidate = selectedMaterialIds.has(material.materialId || material.id)
                           const kindLabel = businessMaterialKindLabel(material)
                           const matchScore = Math.round(numericMatchScore(material) * 100)
+                          const downloadUrl = materialDownloadUrl(id, material)
                           return (
                             <div
                               key={materialKey}
-                              className={`mt-2 rounded-md border px-3 py-2 ${
+                              className={`group mt-2 rounded-md border px-3 py-2 ${
                                 isSelectedCandidate
                                   ? 'border-secondary bg-secondary-container/50'
                                   : 'border-surface-container-high bg-surface-container-lowest'
@@ -2113,16 +2169,14 @@ export default function BusinessGapRecognition({ showToast }) {
                                   </div>
                                 </div>
                                 <div className="flex shrink-0 flex-col gap-2">
-                                  {materialPreviewKey(material) && (
-                                    <Button
-                                      type="button"
-                                      onClick={() => openMaterialPreview(material)}
+                                  {(materialPreviewKey(material) || downloadUrl) && (
+                                    <HoverPreviewDownloadActions
+                                      canPreview={Boolean(materialPreviewKey(material))}
+                                      downloadUrl={downloadUrl}
                                       disabled={!!actionLoading}
-                                      size="sm"
-                                      variant="quiet"
-                                    >
-                                      预览
-                                    </Button>
+                                      onPreview={() => openMaterialPreview(material, 'office')}
+                                      className="justify-end"
+                                    />
                                   )}
                                   <Button
                                     type="button"
@@ -2162,6 +2216,7 @@ export default function BusinessGapRecognition({ showToast }) {
       />
       <BusinessMaterialPickerModal
         open={materialPickerOpen}
+        projectId={id}
         task={materialPickerTask}
         payload={materialPickerPayload}
         loading={materialPickerLoading}
@@ -2180,6 +2235,7 @@ export default function BusinessGapRecognition({ showToast }) {
       />
       <BusinessTableFillModal
         open={tableFillOpen}
+        projectId={id}
         task={tableFillTask}
         payload={tableFillPayload}
         loading={tableFillLoading}

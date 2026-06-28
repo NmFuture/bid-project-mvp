@@ -30,9 +30,6 @@ TIER_LABELS = {
     "project": "项目定制",
 }
 
-# 一级节点固定顺序：标准 → 客户 → 项目
-TIER_ORDER = ["standard", "customer", "project"]
-
 # 3 级目录名在每档下的语义（来自 handoff 文档第 4 节）
 TIER_FOLDER_MEANING = {
     "standard": "机型号或分类",
@@ -53,39 +50,35 @@ def md_escape(value: Any) -> str:
 
 
 def md_inline(value: Any) -> str:
-    """单行内联文本：换行折成空格，转义表格分隔符。用于预览区导读/要点/提示。"""
     return str(value or "").replace("\n", " ").replace("|", "\\|").strip()
 
 
 def render_preview_block(preview: dict[str, Any]) -> list[str]:
-    """把 file entry 的 AI 预览子对象渲染成 Markdown 区块；无有效内容返回 []。"""
     lead = md_inline(preview.get("lead"))
-    points = [md_inline(p) for p in (preview.get("points") or []) if str(p).strip()]
-    if not lead and not points:
+    points = [md_inline(item) for item in (preview.get("points") or []) if str(item).strip()]
+    key_params = [item for item in (preview.get("keyParams") or []) if isinstance(item, dict)]
+    hints = [md_inline(item) for item in (preview.get("retrievalHints") or []) if str(item).strip()]
+    if not lead and not points and not key_params and not hints:
         return []
 
-    lines: list[str] = ["## 内容预览（AI 生成）", ""]
+    source = str(preview.get("source") or "").strip()
+    source_label = "本地 TLDR" if source == "local" else "AI 生成"
+    lines: list[str] = ["## TLDR 文件信息卡片", "", f"> 来源：{source_label}", ""]
     if lead:
         lines += [f"> {lead}", ""]
     if points:
-        lines.append("**要点**")
-        lines += [f"- {p}" for p in points[:5]]
+        lines += ["### 核心要点", ""]
+        lines += [f"- {point}" for point in points[:6]]
         lines.append("")
-
-    params = [kv for kv in (preview.get("keyParams") or []) if isinstance(kv, dict)]
-    params = [kv for kv in params if str(kv.get("label") or "").strip() or str(kv.get("value") or "").strip()]
-    if params:
-        lines += ["**关键参数**", "", "| 参数 | 值 |", "|---|---|"]
-        lines += [
-            f"| {md_escape(kv.get('label'))} | {md_escape(kv.get('value'))} |"
-            for kv in params[:8]
-        ]
+    if key_params:
+        lines += ["### 关键参数", "", "| 参数 | 值 |", "|---|---|"]
+        for item in key_params[:8]:
+            lines.append(f"| {md_escape(item.get('label'))} | {md_escape(item.get('value'))} |")
         lines.append("")
-
-    hints = [md_inline(h) for h in (preview.get("retrievalHints") or []) if str(h).strip()]
     if hints:
-        lines += ["**检索提示**: " + " · ".join(hints[:6]), ""]
-
+        lines += ["### 检索提示", ""]
+        lines += [f"- {hint}" for hint in hints[:6]]
+        lines.append("")
     lines += ["---", ""]
     return lines
 
@@ -150,15 +143,11 @@ def build_file_card(file: dict[str, Any], tier_code: str, folder: dict[str, Any]
     path = str(file.get("path") or "")
     ext = str(file.get("ext") or "")
     status = str(file.get("cleanStatus") or "")
-    preview = file.get("preview") if isinstance(file.get("preview"), dict) else None
 
     lines = [f"# {name}", ""]
-
-    # AI 内容预览（若有）置于卡片顶部；缺失则降级为原纯目录索引卡片。
+    preview = file.get("preview") if isinstance(file.get("preview"), dict) else {}
     preview_lines = render_preview_block(preview) if preview else []
-    has_preview = bool(preview_lines)
     lines.extend(preview_lines)
-
     lines.extend([
         "## 文件定位",
         f"- material_id: {file_id}",
@@ -176,14 +165,15 @@ def build_file_card(file: dict[str, Any], tier_code: str, folder: dict[str, Any]
     elif tier_code == "project":
         lines.append(f"- project_id: {identity}")
     lines.append("")
-    lines.append("> 本卡片仅为三级目录结构索引，不承载文件正文。")
+    if not preview_lines:
+        lines.append("> 本卡片仅为三级目录结构索引，不承载文件正文。")
     lines.append("> 深层（4 级及更深）文件已归并到此 3 级目录下，原始层级见上方完整路径。")
 
     tags = [BID_TYPE, "文件卡片", TIER_LABELS.get(tier_code, tier_code)]
+    if preview:
+        tags.append("内容预览")
     if ext:
         tags.append(ext)
-    if has_preview:
-        tags.append("AI预览")
     return node(name, "\n".join(lines) + "\n", tags=tags)
 
 
@@ -269,10 +259,7 @@ def build_tier_node(tier: dict[str, Any]) -> dict[str, Any]:
         )
 
     children = [build_folder_node(f, tier_code) for f in folders]
-    # 一级节点标题带序号，固定顺序便于下游/人工浏览
-    order_index = TIER_ORDER.index(tier_code) + 1 if tier_code in TIER_ORDER else 9
-    title = f"{order_index:02d}-{label}"
-    return node(title, "\n".join(lines) + "\n", tags=[BID_TYPE, label, "档位"], children=children)
+    return node(raw_name, "\n".join(lines) + "\n", tags=[BID_TYPE, label, "档位"], children=children)
 
 
 def build_blueprint(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -281,8 +268,6 @@ def build_blueprint(manifest: dict[str, Any]) -> dict[str, Any]:
     root_title = str(manifest.get("rootTitle") or f"{bid_type}Wiki（自动生成）")
 
     tiers = [t for t in (index.get("tiers") or []) if isinstance(t, dict)]
-    # 固定 标准 → 客户 → 项目 顺序，未知 tier 排末尾
-    tiers.sort(key=lambda t: TIER_ORDER.index(str(t.get("tier") or "")) if str(t.get("tier") or "") in TIER_ORDER else 99)
 
     stats = index.get("stats") if isinstance(index.get("stats"), dict) else {}
     nodes = [build_tier_node(t) for t in tiers]

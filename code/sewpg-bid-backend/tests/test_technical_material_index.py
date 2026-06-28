@@ -8,6 +8,14 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from app.services import technical_material_index as tmi
+from app.services.bid_type import TECHNICAL_BID_TYPE
+from app.services.material_folder_scope import material_tier_root_path
+from app.services.technical_material_paths import (
+    canonical_technical_material_child_name,
+    ensure_technical_material_new_child_path,
+    ensure_technical_material_write_path,
+)
+from app.services.peripheral import PeripheralError
 
 
 def _tree() -> dict:
@@ -69,6 +77,20 @@ class BuildPayloadTests(unittest.TestCase):
         self.assertEqual(tmi._resolve_tier("项目素材"), "project")
         # 未知名兜底为 standard（技术标 2 级目录非客户/项目即标准）。
         self.assertEqual(tmi._resolve_tier("其他随便什么"), "standard")
+
+    def test_material_folder_key_excludes_unknown_second_level_folder(self) -> None:
+        self.assertEqual(
+            tmi._material_folder_key("技术标/国电投"),
+            "",
+        )
+        self.assertEqual(
+            tmi._material_folder_key("技术标/国电投/子目录"),
+            "",
+        )
+        self.assertEqual(
+            tmi._material_folder_key("技术标/标准文件/EW6.25/专题"),
+            "技术标/标准文件/EW6.25",
+        )
 
     def test_real_world_folder_names_backfill_identity(self) -> None:
         # 用实际库的命名（标准文件/客户定制/项目定制）验证 tier 与身份回填。
@@ -161,6 +183,91 @@ class BuildPayloadTests(unittest.TestCase):
         all_ids = {f["id"] for folder in general["folders"] for f in folder["files"]}
         self.assertNotIn("RAW-0009", all_ids)
 
+    def test_unknown_second_level_folder_is_excluded_from_wiki_index(self) -> None:
+        tree = {
+            "tree": [
+                {
+                    "name": "技术标",
+                    "path": "技术标",
+                    "children": [
+                        {
+                            "name": "国电投",
+                            "path": "技术标/国电投",
+                            "folderId": 100,
+                            "children": [],
+                        },
+                        {
+                            "name": "标准文件",
+                            "path": "技术标/标准文件",
+                            "folderId": 200,
+                            "children": [
+                                {"name": "EW6.25", "path": "技术标/标准文件/EW6.25", "folderId": 201, "children": []},
+                            ],
+                        },
+                    ],
+                }
+            ]
+        }
+        files = [
+            {"id": "RAW-0751", "name": "技术评审因素内容摘要.docx", "folderPath": "技术标/国电投", "ext": "docx"},
+            {"id": "RAW-0752", "name": "深层资料.docx", "folderPath": "技术标/国电投/审查项", "ext": "docx"},
+            {"id": "RAW-0753", "name": "总体方案.docx", "folderPath": "技术标/标准文件/EW6.25", "ext": "docx"},
+        ]
+
+        payload = tmi._build_payload(tree, files)
+
+        self.assertEqual(payload["stats"]["tierCount"], 1)
+        self.assertEqual(payload["stats"]["thirdLevelFolderCount"], 1)
+        self.assertEqual(payload["stats"]["fileCount"], 1)
+        standard = payload["tiers"][0]
+        self.assertEqual(standard["name"], "标准文件")
+        self.assertEqual(standard["tier"], "standard")
+        folder_names = [folder["name"] for folder in standard["folders"]]
+        self.assertEqual(folder_names, ["EW6.25"])
+        all_ids = {file["id"] for folder in standard["folders"] for file in folder["files"]}
+        self.assertEqual(all_ids, {"RAW-0753"})
+
+
+class TechnicalMaterialWritePathTests(unittest.TestCase):
+    def test_write_path_allows_only_three_technical_roots(self) -> None:
+        self.assertEqual(
+            ensure_technical_material_write_path("技术标/标准文件/EW6.25"),
+            "技术标/标准文件/EW6.25",
+        )
+        self.assertEqual(
+            ensure_technical_material_write_path("技术标/客户定制/华能"),
+            "技术标/客户定制/华能",
+        )
+        self.assertEqual(
+            ensure_technical_material_write_path("技术标/项目定制/MAT-001"),
+            "技术标/项目定制/MAT-001",
+        )
+        self.assertEqual(
+            ensure_technical_material_write_path("技术标/项目素材/MAT-001"),
+            "技术标/项目定制/MAT-001",
+        )
+        with self.assertRaises(PeripheralError):
+            ensure_technical_material_write_path("技术标/国电投")
+        with self.assertRaises(PeripheralError):
+            ensure_technical_material_write_path("技术标/通用素材")
+
+    def test_root_child_creation_only_allows_three_technical_roots(self) -> None:
+        self.assertEqual(
+            ensure_technical_material_new_child_path("技术标", "标准文件"),
+            "技术标",
+        )
+        self.assertEqual(
+            canonical_technical_material_child_name("技术标", "项目素材"),
+            "项目定制",
+        )
+        with self.assertRaises(PeripheralError):
+            ensure_technical_material_new_child_path("技术标", "国电投")
+
+    def test_technical_material_tier_roots_use_customized_names(self) -> None:
+        self.assertEqual(material_tier_root_path(TECHNICAL_BID_TYPE, "standard"), "技术标/标准文件")
+        self.assertEqual(material_tier_root_path(TECHNICAL_BID_TYPE, "customer"), "技术标/客户定制")
+        self.assertEqual(material_tier_root_path(TECHNICAL_BID_TYPE, "project"), "技术标/项目定制")
+
 
 class WriteAndLoadTests(unittest.TestCase):
     def test_write_then_load_roundtrip(self) -> None:
@@ -215,44 +322,6 @@ class TechnicalMaterialIndexIntegrationTests(unittest.IsolatedAsyncioTestCase):
             # 即便索引重建抛错，建目录主流程也应正常返回。
             result = await technical_material_store.raw_create_folder("技术标/通用素材", "容错测试目录")
             self.assertIn("tree", result)
-
-
-class PreviewSignatureTests(unittest.TestCase):
-    """预览指纹失效正确性：改名 / 内容变 / 升版本 都应让 signature 变化。"""
-
-    BASE_PROFILE = {
-        "headings": [{"level": 1, "title": "总体方案"}],
-        "paragraphs": ["额定功率 5.0MW。"],
-        "tableCount": 1,
-    }
-
-    def test_same_input_same_signature(self) -> None:
-        a = tmi._preview_signature("a.docx", self.BASE_PROFILE)
-        b = tmi._preview_signature("a.docx", dict(self.BASE_PROFILE))
-        self.assertEqual(a, b)
-
-    def test_rename_changes_signature(self) -> None:
-        a = tmi._preview_signature("a.docx", self.BASE_PROFILE)
-        b = tmi._preview_signature("b.docx", self.BASE_PROFILE)
-        self.assertNotEqual(a, b)
-
-    def test_content_change_changes_signature(self) -> None:
-        a = tmi._preview_signature("a.docx", self.BASE_PROFILE)
-        changed = {**self.BASE_PROFILE, "paragraphs": ["额定功率 6.25MW。"]}
-        b = tmi._preview_signature("a.docx", changed)
-        self.assertNotEqual(a, b)
-
-    def test_heading_change_changes_signature(self) -> None:
-        a = tmi._preview_signature("a.docx", self.BASE_PROFILE)
-        changed = {**self.BASE_PROFILE, "headings": [{"level": 1, "title": "供货范围"}]}
-        b = tmi._preview_signature("a.docx", changed)
-        self.assertNotEqual(a, b)
-
-    def test_schema_version_bump_changes_signature(self) -> None:
-        a = tmi._preview_signature("a.docx", self.BASE_PROFILE)
-        with patch.object(tmi, "PREVIEW_SCHEMA_VERSION", tmi.PREVIEW_SCHEMA_VERSION + 1):
-            b = tmi._preview_signature("a.docx", self.BASE_PROFILE)
-        self.assertNotEqual(a, b)
 
 
 if __name__ == "__main__":

@@ -987,7 +987,7 @@ class BusinessPerformanceLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("业绩证明", items[1]["keywords"])
         self.assertIn("review_status <> 'disabled'", session.statements[0])
 
-    async def test_business_material_index_includes_performance_candidates(self) -> None:
+    async def test_business_material_index_includes_performance_package_candidates_by_default(self) -> None:
         from app.services import business_gap_planning
 
         material_scope = {
@@ -995,14 +995,14 @@ class BusinessPerformanceLibraryTests(unittest.IsolatedAsyncioTestCase):
             "identity": {"customerCanonicalName": "华能集团", "projectId": "MAT-001"},
             "readableScopes": [{"path": "商务标/通用素材", "materialTier": "standard"}],
         }
-        performance_candidate = {
-            "id": "PERF-0008",
-            "materialId": "PERF-0008",
+        package_candidate = {
+            "id": "PERCAT-0008",
+            "materialId": "PERCAT-0008",
             "name": "华能风电供货业绩",
-            "folderPath": "商务标/共用业绩库/华能集团",
+            "folderPath": "业绩库",
             "materialTier": "customer",
-            "sourceType": "performance_library",
-            "candidateType": "performance_record",
+            "sourceType": "performance_package",
+            "candidateType": "performance_category",
             "businessMaterialKind": "performance",
             "businessMaterialKindLabel": "共用业绩",
             "cleanStatus": "original_only",
@@ -1039,21 +1039,54 @@ class BusinessPerformanceLibraryTests(unittest.IsolatedAsyncioTestCase):
                 ]
             }
 
-        async def fake_performance_candidates(scope, *, limit=300):
-            self.assertEqual(scope, material_scope)
-            self.assertEqual(limit, 300)
-            return [performance_candidate]
-
         with patch.object(business_gap_planning.business_material_store, "raw_files", side_effect=fake_raw_files), patch.object(
-            business_gap_planning.performance_library_service,
-            "list_match_candidates",
-            side_effect=fake_performance_candidates,
-        ):
+            business_gap_planning,
+            "_performance_package_candidates",
+            return_value=[package_candidate],
+        ), patch.object(business_gap_planning, "_legacy_performance_record_candidates") as legacy_candidates:
             items = business_gap_planning._business_material_index(material_scope, {})
 
-        self.assertEqual([item["id"] for item in items], ["RAW-0001", "RAW-0003", "PERF-0008"])
-        self.assertEqual(items[2]["sourceType"], "performance_library")
+        legacy_candidates.assert_not_called()
+        self.assertEqual([item["id"] for item in items], ["RAW-0001", "RAW-0003", "PERCAT-0008"])
+        self.assertEqual(items[2]["sourceType"], "performance_package")
         self.assertEqual(items[2]["businessMaterialKindLabel"], "共用业绩")
+
+    async def test_business_material_index_reads_legacy_performance_records_only_when_requested(self) -> None:
+        from app.services import business_gap_planning
+
+        material_scope = {
+            "bidType": "商务标",
+            "includeLegacyPerformanceRecords": True,
+            "readableScopes": [{"path": "商务标/通用素材", "materialTier": "standard"}],
+        }
+        legacy_candidate = {
+            "id": "PERF-0008",
+            "materialId": "PERF-0008",
+            "name": "旧业绩记录",
+            "sourceType": "performance_library",
+            "candidateType": "performance_record",
+            "businessMaterialKind": "performance",
+            "businessMaterialKindLabel": "共用业绩",
+            "legacy": True,
+        }
+
+        async def fake_raw_files(**_kwargs):
+            return {"items": []}
+
+        with patch.object(business_gap_planning.business_material_store, "raw_files", side_effect=fake_raw_files), patch.object(
+            business_gap_planning,
+            "_performance_package_candidates",
+            return_value=[],
+        ), patch.object(
+            business_gap_planning,
+            "_legacy_performance_record_candidates",
+            return_value=[legacy_candidate],
+        ) as legacy_candidates:
+            items = business_gap_planning._business_material_index(material_scope, {})
+
+        legacy_candidates.assert_called_once_with(material_scope, limit=300)
+        self.assertEqual([item["id"] for item in items], ["PERF-0008"])
+        self.assertTrue(items[0]["legacy"])
 
 
 if __name__ == "__main__":

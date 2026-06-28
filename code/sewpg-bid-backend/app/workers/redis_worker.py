@@ -63,14 +63,6 @@ def _run_job(job: dict[str, Any]) -> None:
                 "status": "failed" if result.get("cleanStatus") == "failed" else "success",
                 "summary": result.get("cleanMessage") or "",
             }
-        elif job_type == "technical_wiki_preview":
-            from app.services.technical_wiki_preview import generate_technical_wiki_previews_sync
-
-            result = generate_technical_wiki_previews_sync(project_id, data)
-            final_state = {
-                "status": "failed" if result.get("status") == "failed" else "success",
-                "summary": result.get("summary") or "",
-            }
         else:
             raise RuntimeError(f"Unknown job type: {job_type}")
     except Exception as exc:  # pragma: no cover - route job functions handle expected failures

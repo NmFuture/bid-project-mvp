@@ -15,6 +15,7 @@ from app.services.material_folder_scope import (
     canonical_raw_folder_metadata,
     material_bid_type_sort_order,
     material_tier_folder_name,
+    material_tier_folder_name_for_bid_type,
     material_tier_folder_sort_order,
     material_tier_root_path,
     normalize_material_bid_type,
@@ -85,7 +86,7 @@ async def ensure_material_target_folder(
         await clear_default_folder_deletion(session, material_tier_root_path(normalized_bid_type, "standard"))
         base_folder = await ensure_folder_path(
             session,
-            material_tier_folder_name("standard"),
+            material_tier_folder_name_for_bid_type(normalized_bid_type, "standard"),
             root_folder.id,
             "standard",
             normalized_bid_type,
