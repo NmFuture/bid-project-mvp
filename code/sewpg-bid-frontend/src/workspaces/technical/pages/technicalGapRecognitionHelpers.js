@@ -62,6 +62,20 @@ export const latestResolvedArtifact = (selected) => {
   return artifacts.length ? artifacts[artifacts.length - 1] : null
 }
 
+// 取素材上的证据片段：优先 planner 召回的 recalledSegments（带 matchScore，已按相关度排序），
+// 否则回退到该素材切分出的全部 evidenceSegments。返回归一化的片段数组（最多 limit 条）。
+export const evidenceSegmentsForMaterial = (material, limit = 3) => {
+  const recalled = asObjectArray(material?.recalledSegments)
+  const source = recalled.length ? recalled : asObjectArray(material?.evidenceSegments)
+  return source.slice(0, limit).map((segment) => ({
+    id: String(segment?.segmentId || segment?.id || '').trim(),
+    title: String(segment?.title || '').trim(),
+    summary: String(segment?.summary || '').trim(),
+    sourcePages: String(segment?.sourcePages || '').trim(),
+    matchScore: typeof segment?.matchScore === 'number' ? segment.matchScore : null,
+  })).filter((segment) => segment.title || segment.summary)
+}
+
 export const matchedMaterialForItem = (selected, allItems = []) => {
   const directMaterial = asObjectArray(selected?.matchedMaterials)[0]
   if (directMaterial) {
@@ -210,8 +224,15 @@ export const resultSummaryForItem = (selected, allItems = []) => {
     }
   }
 
-  if (asObjectArray(selected?.fillTasks).length || String(selected?.decision || '') === 'fill_required') {
+  if (asObjectArray(selected?.fillTasks).length || (
+    String(selected?.decision || '') === 'fill_required'
+    && asObjectArray(selected?.appendixTasks).length > 0
+  )) {
     return { label: '等待 AI 填写', tone: 'fill' }
+  }
+
+  if (String(selected?.decision || '') === 'fill_required') {
+    return { label: '等待选择匹配素材', tone: 'missing' }
   }
 
   if (String(selected?.decision || '') === 'material_required') {

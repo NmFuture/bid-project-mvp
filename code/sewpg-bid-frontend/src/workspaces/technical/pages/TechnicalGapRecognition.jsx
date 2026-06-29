@@ -17,6 +17,7 @@ import {
   appendixTaskForFillTask,
   defaultAiFillParseFieldIds,
   defaultAiFillReferenceMaterialIds,
+  evidenceSegmentsForMaterial,
   latestResolvedArtifact,
   matchedMaterialForItem,
   previewChoicesForItem,
@@ -105,6 +106,7 @@ const normalizeItems = (payload) => {
 
 const taskActionLabels = {
   fixed_material: '固定素材',
+  material_match: '素材匹配',
   manual_select: '人工指定',
   manual_upload: '人工补料',
   ignored: '忽略',
@@ -114,6 +116,7 @@ const taskActionLabels = {
 const taskActionVariant = (mode) => {
   if (mode === 'ignored') return 'pending'
   if (mode === 'ai_table_fill') return 'info'
+  if (mode === 'material_match') return 'warn'
   if (mode === 'manual_upload') return 'error'
   if (mode === 'manual_select') return 'warn'
   return 'done'
@@ -125,10 +128,15 @@ const isStructuralItem = (item) => (
     || asArray(item?.usages).includes('structural')
 )
 
+const isAppendixFillItem = (item) => (
+  decisionOf(item) === 'fill_required'
+    && asObjectArray(item?.appendixTasks).length > 0
+)
+
 const technicalActionMode = (item) => {
   if (!item || isStructuralItem(item)) return ''
   const decision = decisionOf(item)
-  if (decision === 'fill_required') return 'ai_table_fill'
+  if (decision === 'fill_required') return isAppendixFillItem(item) ? 'ai_table_fill' : 'material_match'
   if (decision === 'material_required') return 'manual_upload'
   if (decision === 'review_required') return 'manual_select'
   if (decision === 'ready') return 'fixed_material'
@@ -156,6 +164,36 @@ function StatCard({ label, value }) {
         <div className="min-w-0 truncate text-xs font-semibold text-on-surface-variant">{label}</div>
         <div className="shrink-0 text-lg font-headline font-bold tabular-nums text-primary">{value || 0}</div>
       </div>
+    </div>
+  )
+}
+
+// 素材证据片段：非附表正文缺口的素材召回时，展示素材内匹配到的段落（标题/摘要/页码/匹配分），
+// 让用户在选用前就能看到「为什么这份素材相关、相关在哪一段」。无片段则不渲染。
+function EvidenceSegments({ material }) {
+  const segments = evidenceSegmentsForMaterial(material)
+  if (!segments.length) return null
+  return (
+    <div className="mt-2 space-y-1.5 border-t border-surface-container-high pt-2">
+      <div className="text-[10px] font-semibold text-on-surface-variant">匹配证据片段</div>
+      {segments.map((segment) => (
+        <div key={segment.id || segment.title} className="rounded bg-surface-container px-2 py-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="min-w-0 truncate text-[11px] font-medium text-on-surface">{segment.title || '片段'}</span>
+            {segment.matchScore != null ? (
+              <span className="shrink-0 rounded bg-tertiary-fixed px-1.5 text-[10px] font-semibold tabular-nums text-on-tertiary-fixed">
+                {segment.matchScore}
+              </span>
+            ) : null}
+          </div>
+          {segment.summary ? (
+            <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-on-surface-variant">{segment.summary}</p>
+          ) : null}
+          {segment.sourcePages ? (
+            <span className="mt-0.5 inline-block text-[10px] text-outline">来源：{segment.sourcePages}</span>
+          ) : null}
+        </div>
+      ))}
     </div>
   )
 }
@@ -559,6 +597,7 @@ export default function TechnicalGapRecognition({ showToast }) {
   const projectTurbineModel = data?.gapPlan?.projectTurbineModel || data?.projectTurbineModel || materialScope?.turbineModel || null
   const selectedDecision = decisionOf(selected)
   const selectedActionMode = technicalActionMode(selected)
+  const selectedIsAppendixFill = isAppendixFillItem(selected)
   const selectedAppendixTasks = asArray(selected?.appendixTasks)
   const selectedCandidateMaterials = asObjectArray(selected?.candidateMaterials)
   const selectedMaterialMatch = matchedMaterialForItem(selected, items)
@@ -627,6 +666,7 @@ export default function TechnicalGapRecognition({ showToast }) {
   const selectedBlankPath = selectedBlankSource?.docxPath || selectedBlankSource?.workspacePath || selectedBlankSource?.path || ''
   const actionCounts = useMemo(() => ({
     fixed_material: items.filter((item) => technicalActionMode(item) === 'fixed_material').length,
+    material_match: items.filter((item) => technicalActionMode(item) === 'material_match').length,
     ai_table_fill: items.filter((item) => technicalActionMode(item) === 'ai_table_fill').length,
     manual_upload: items.filter((item) => technicalActionMode(item) === 'manual_upload').length,
     manual_select: items.filter((item) => technicalActionMode(item) === 'manual_select').length,
@@ -882,6 +922,21 @@ export default function TechnicalGapRecognition({ showToast }) {
     setPreviewOpen(true)
   }
 
+  const handleSelectMaterial = async (material) => {
+    const materialId = String(material?.id || material?.materialId || '').trim()
+    if (!selected || !materialId) return null
+    return runAction(
+      `select-material:${selected.id}:${materialId}`,
+      () => technicalGapsAPI.selectMaterial(id, selected.id, {
+        materials: [{ ...material, id: materialId, materialId }],
+        operator: '当前用户',
+      }),
+      (result) => result?.artifact?.fileName
+        ? `已选用素材：${result.artifact.fileName}`
+        : '已选用素材',
+    )
+  }
+
   const handleAiFill = async () => {
     if (!selected || !selectedFillTask) return null
     if (!factConfirmed && !(await ensureFactTableReady())) {
@@ -1005,15 +1060,16 @@ export default function TechnicalGapRecognition({ showToast }) {
           <div className="grid auto-rows-max gap-2 sm:grid-cols-2 lg:grid-cols-4">
             <StatCard label="目录节点" value={summary.totalTocItems ?? items.length} />
             <StatCard label="处理任务" value={items.length} />
-            <StatCard label="待处理" value={(actionCounts.manual_upload || 0) + (actionCounts.manual_select || 0)} />
+            <StatCard label="待处理" value={(actionCounts.material_match || 0) + (actionCounts.manual_upload || 0) + (actionCounts.manual_select || 0)} />
             <StatCard label="已就绪" value={actionCounts.fixed_material || 0} />
           </div>
           <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
             <div className="flex min-h-7 items-center gap-2">
               <div className="shrink-0 text-xs font-semibold text-on-surface-variant">处理方式统计</div>
-              <div className="grid min-w-0 flex-1 grid-cols-4 gap-1.5 text-center">
+              <div className="grid min-w-0 flex-1 grid-cols-5 gap-1.5 text-center">
                 {[
                   ['fixed_material', '固定素材'],
+                  ['material_match', '素材匹配'],
                   ['ai_table_fill', 'AI填写'],
                   ['manual_upload', '人工补充'],
                   ['manual_select', '人工指定'],
@@ -1135,10 +1191,10 @@ export default function TechnicalGapRecognition({ showToast }) {
                           </section>
                         ) : null}
 
-                        {selectedSourceRouting && selectedDecision !== 'fill_required' ? (
+                        {selectedSourceRouting && !selectedIsAppendixFill ? (
                           <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
                             <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="text-xs font-semibold text-on-surface">填写来源素材</div>
+                              <div className="text-xs font-semibold text-on-surface">目录来源素材</div>
                               <span className="rounded bg-tertiary-fixed px-2 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed">
                                 规则规定
                               </span>
@@ -1151,21 +1207,28 @@ export default function TechnicalGapRecognition({ showToast }) {
                             {selectedReferenceCandidates.length ? (
                               <div className="mt-2 space-y-2">
                                 {selectedReferenceCandidates.map((material) => (
-                                  <button
-                                    key={material.id || material.materialId || material.name}
-                                    type="button"
-                                    onClick={() => handlePreviewMaterial(material)}
-                                    className="block w-full rounded-md bg-surface-container-low px-3 py-2 text-left text-xs hover:bg-surface-container-high"
-                                    title={material.path || material.folderPath || material.id}
-                                  >
-                                    <span className="block font-medium text-on-surface">{material.name || material.cleanedFileName || material.id}</span>
-                                    <span className="mt-1 block truncate text-outline">{material.folderPath || material.path || material.id}</span>
-                                    {material.sourceRouting?.reasons?.length || material.matchReason ? (
-                                      <span className="mt-1 block truncate text-[11px] text-primary">
-                                        {material.sourceRouting?.reasons?.[0] || material.matchReason}
-                                      </span>
-                                    ) : null}
-                                  </button>
+                                  <div key={material.id || material.materialId || material.name} className="rounded-md bg-surface-container-low px-3 py-2 text-xs">
+                                    <button
+                                      type="button"
+                                      onClick={() => handlePreviewMaterial(material)}
+                                      className="block w-full text-left hover:opacity-80"
+                                      title={material.path || material.folderPath || material.id}
+                                    >
+                                      <span className="block font-medium text-on-surface">{material.name || material.cleanedFileName || material.id}</span>
+                                      <span className="mt-1 block truncate text-outline">{material.folderPath || material.path || material.id}</span>
+                                      {material.sourceRouting?.reasons?.length || material.matchReason ? (
+                                        <span className="mt-1 block truncate text-[11px] text-primary">
+                                          {material.sourceRouting?.reasons?.[0] || material.matchReason}
+                                        </span>
+                                      ) : null}
+                                      {selectedActionMode === 'material_match' ? (
+                                        <span className="mt-2 inline-flex rounded bg-secondary-container px-2 py-0.5 text-[10px] font-semibold text-on-secondary-container">
+                                          可选用
+                                        </span>
+                                      ) : null}
+                                    </button>
+                                    <EvidenceSegments material={material} />
+                                  </div>
                                 ))}
                               </div>
                             ) : (
@@ -1176,7 +1239,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                           </section>
                         ) : null}
 
-                        {selectedDecision === 'fill_required' ? (
+                        {selectedIsAppendixFill ? (
                           <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
                             <div className="flex flex-wrap items-start justify-between gap-3">
                               <div className="min-w-0">
@@ -1284,14 +1347,55 @@ export default function TechnicalGapRecognition({ showToast }) {
                           </section>
                         ) : null}
 
-                        {selectedDecision === 'material_required' || selectedDecision === 'review_required' ? (
+                        {selectedActionMode === 'material_match' || selectedDecision === 'material_required' || selectedDecision === 'review_required' ? (
                           <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
                             <div>
                               <div className="text-xs font-semibold text-on-surface">
-                                {selectedDecision === 'material_required' ? '素材库查询' : '复核素材查询'}
+                                {selectedActionMode === 'material_match' ? '候选素材匹配' : selectedDecision === 'material_required' ? '素材库查询' : '复核素材查询'}
                               </div>
-                              <div className="mt-1 text-[11px] text-outline">只在当前项目、客户和通用素材边界内查询。</div>
+                              <div className="mt-1 text-[11px] text-outline">
+                                {selectedActionMode === 'material_match'
+                                  ? '只在当前项目、客户和通用素材边界内查询，选用后作为该目录项的可合入素材。'
+                                  : '只在当前项目、客户和通用素材边界内查询。'}
+                              </div>
                             </div>
+                            {selectedActionMode === 'material_match' && selectedReferenceCandidates.length ? (
+                              <div className="mt-3 space-y-2">
+                                {selectedReferenceCandidates.map((material) => {
+                                  const materialId = String(material?.id || material?.materialId || '').trim()
+                                  const selecting = busyAction === `select-material:${selected.id}:${materialId}`
+                                  return (
+                                    <div key={materialId || material.name} className="rounded-md bg-surface-container-low px-3 py-2 text-xs">
+                                      <div className="flex items-start justify-between gap-3">
+                                        <button
+                                          type="button"
+                                          onClick={() => handlePreviewMaterial(material)}
+                                          className="min-w-0 flex-1 text-left"
+                                        >
+                                          <span className="block font-medium text-on-surface">{material.name || material.cleanedFileName || material.id}</span>
+                                          <span className="mt-1 block truncate text-outline">{material.folderPath || material.path || material.id}</span>
+                                          {material.sourceRouting?.reasons?.length || material.matchReason ? (
+                                            <span className="mt-1 block truncate text-[11px] text-primary">
+                                              {material.sourceRouting?.reasons?.[0] || material.matchReason}
+                                            </span>
+                                          ) : null}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleSelectMaterial(material)}
+                                          disabled={Boolean(busyAction) || !materialId}
+                                          className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-primary px-2.5 text-[11px] font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                          <span className="material-symbols-outlined text-[14px]">check</span>
+                                          {selecting ? '选用中' : '选用'}
+                                        </button>
+                                      </div>
+                                      <EvidenceSegments material={material} />
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            ) : null}
                             <div className="mt-3 flex gap-2">
                               <input
                                 value={materialKeyword}
@@ -1314,16 +1418,29 @@ export default function TechnicalGapRecognition({ showToast }) {
                               {materialSearch.items.length ? materialSearch.items.map((item) => {
                                 return (
                                   <div key={item.id} className="rounded-md bg-surface-container-low px-3 py-2 text-xs">
-                                    <button
-                                      type="button"
-                                      onClick={() => handlePreviewMaterial(item)}
-                                      className="min-w-0 flex-1 text-left"
-                                    >
-                                      <span className="block font-medium text-on-surface">{item.name}</span>
-                                      <span className="mt-1 block break-all text-outline">
-                                        {item.id} · {item.hasCleanedWord ? '清洗稿' : '原始 Word'} · {item.folderPath || '-'}
-                                      </span>
-                                    </button>
+                                    <div className="flex items-start justify-between gap-3">
+                                      <button
+                                        type="button"
+                                        onClick={() => handlePreviewMaterial(item)}
+                                        className="min-w-0 flex-1 text-left"
+                                      >
+                                        <span className="block font-medium text-on-surface">{item.name}</span>
+                                        <span className="mt-1 block break-all text-outline">
+                                          {item.id} · {item.hasCleanedWord ? '清洗稿' : '原始 Word'} · {item.folderPath || '-'}
+                                        </span>
+                                      </button>
+                                      {selectedActionMode === 'material_match' ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleSelectMaterial(item)}
+                                          disabled={Boolean(busyAction) || !item.id}
+                                          className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-primary px-2.5 text-[11px] font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                          <span className="material-symbols-outlined text-[14px]">check</span>
+                                          {busyAction === `select-material:${selected.id}:${item.id}` ? '选用中' : '选用'}
+                                        </button>
+                                      ) : null}
+                                    </div>
                                   </div>
                                 )
                               }) : (
