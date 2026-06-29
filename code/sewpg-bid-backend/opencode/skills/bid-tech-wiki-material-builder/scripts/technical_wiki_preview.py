@@ -21,11 +21,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from typing import Any, Callable
 
 # 预览缓存结构版本：仅当 prompt 或 preview 字段结构变化时升此版本，
 # 让所有文件缓存指纹失效、触发重算。后端从桥接 re-export，作为指纹的一部分。
-PREVIEW_SCHEMA_VERSION = 1
+# v2：预览对象新增 evidenceSegments（段落级证据片段），供非附表正文缺口召回。
+PREVIEW_SCHEMA_VERSION = 2
 
 # 批量合并：一次 LLM 调用喂多少份文件摘要。把请求数从「文件数」降到「文件数/BATCH」。
 PREVIEW_BATCH_SIZE = 8
@@ -53,6 +56,129 @@ def _profile_blocks(profile: dict[str, Any]) -> tuple[str, str]:
     heading_tree = format_heading_tree(headings) if headings else "（无）"
     paragraph_block = "\n".join(f"- {p}" for p in paragraphs) if paragraphs else "（无）"
     return heading_tree, paragraph_block
+
+
+# ---------------------------------------------------------------------------
+# 证据片段（evidenceSegments）确定性切分
+#
+# 镜像/预览这条线本就有每份 docx 的结构化 profile（headings + paragraphs，见
+# wiki_blueprint_common.extract_docx_profile）。这里**不额外调 LLM、不再下载文件**，
+# 直接把已抽出的 heading 树切成段落级证据片段，供 planner 的「非附表正文缺口」召回。
+#
+# 设计与商务标 business_gap_planning 的段落切分对齐（segmentId/title/sourcePages/
+# summary/keywords），但**在技术标线内独立实现、纯 stdlib**，不抽公共函数、不碰商务标。
+# 切分基于 profile，故只是「heading 级」粒度；更细的 OCR/页码后续可在此扩展。
+# ---------------------------------------------------------------------------
+
+# 技术标素材文件名/标题里的领域检索词（基于真实素材库高频词归纳，见方案 §2）。
+_TECH_SEGMENT_MARKERS = (
+    "型式认证", "部件证书", "部件型式认证", "螺栓在线监测", "在线振动监测",
+    "叶片净空监测", "自动消防系统", "质量保证", "质量保障", "产品交付",
+    "考核及验收", "标方案", "设备运行和维护", "技术服务", "售后服务",
+    "混塔", "钢塔", "塔筒", "电网友好性", "碳排放", "智能场控", "智能控制",
+    "智能监控", "智能运维", "智能终端", "风功率预测", "生产能力", "试验检测",
+    "整机抗涡激", "并网", "载荷", "传动链", "发电机", "变流器", "齿轮箱", "叶片",
+)
+
+# 单份素材最多切出的片段数（与商务标一致，控制 planner 候选规模）。
+_MAX_SEGMENTS_PER_MATERIAL = 24
+# 片段摘要上限字数。
+_SEGMENT_SUMMARY_LIMIT = 240
+
+# 关键词噪声词：路径骨架/扩展名/无区分度的词，不作为检索关键词。
+_SEGMENT_KEYWORD_STOPWORDS = frozenset({
+    "技术标", "通用素材", "客户素材", "项目素材", "标准文件", "客户定制", "项目定制",
+    "docx", "doc", "pdf", "xlsx", "xls", "上置", "下置", "待填写",
+})
+
+
+def _stable_short_id(value: str) -> str:
+    text = str(value or "").strip() or "segment"
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _segment_keywords(text: str) -> list[str]:
+    """从路径/标题里拆词 + 命中领域 marker，作为片段检索关键词。
+
+    过滤掉路径骨架/扩展名等无区分度的停用词；机型号（EW…）等具体标识保留。
+    """
+    raw = str(text or "")
+    candidates = [
+        item for item in re.split(r"[/_\-\s　.。；;，,、（）()【】\\]+", raw)
+        if len(item) >= 2 and item not in _SEGMENT_KEYWORD_STOPWORDS
+    ]
+    for marker in _TECH_SEGMENT_MARKERS:
+        if marker in raw:
+            candidates.append(marker)
+    return _dedupe_strings(candidates)[:24]
+
+
+def build_evidence_segments(material_id: str, name: str, path: str, profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """把一份 docx 的结构化 profile 切成段落级证据片段（确定性，不调 LLM）。
+
+    切分策略（由细到粗，逐级回退）：
+    1. 有 heading：按 heading 切，标题=heading 文本，摘要取其后正文摘录里最相关的几段。
+    2. 无 heading 但有正文摘录：整篇正文摘录合成一个 file_fallback 片段。
+    3. 都没有：返回空（上层不挂 evidenceSegments，仍可按文件名匹配）。
+
+    每个片段 schema：
+      {segmentId, materialId, title, segmentScope, sourcePages, summary, keywords}
+    """
+    mid = str(material_id or "").strip()
+    base_title = str(name or "").rsplit(".", 1)[0] or str(name or "") or mid
+    headings = [h for h in (profile.get("headings") or []) if isinstance(h, dict)]
+    paragraphs = [str(p or "").strip() for p in (profile.get("paragraphs") or []) if str(p or "").strip()]
+
+    segments: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    def _push(title: str, scope: str, source_pages: str, summary: str) -> None:
+        title = str(title or "").strip()[:80] or base_title
+        seg_id = f"tech-seg-{_stable_short_id(f'{mid}:{title}:{len(segments)}')}"
+        while seg_id in seen_ids:
+            seg_id = f"{seg_id}-{_stable_short_id(f'{seg_id}:{len(segments)}')[:4]}"
+        seen_ids.add(seg_id)
+        segments.append({
+            "segmentId": seg_id,
+            "materialId": mid,
+            "title": title,
+            "segmentScope": scope,
+            "sourcePages": source_pages,
+            "summary": re.sub(r"\s+", " ", str(summary or "")).strip()[:_SEGMENT_SUMMARY_LIMIT],
+            "keywords": _segment_keywords(f"{path}/{title}"),
+        })
+
+    if headings:
+        # heading 级切分：标题来自 heading，摘要用紧随其后的正文摘录（profile 已是摘录，
+        # 顺序近似原文），按出现顺序轮流分配，保证每个 heading 至少有一句导读。
+        para_pool = list(paragraphs)
+        for idx, head in enumerate(headings[:_MAX_SEGMENTS_PER_MATERIAL], start=1):
+            title = str(head.get("title") or "").strip()
+            if not title:
+                continue
+            summary = para_pool.pop(0) if para_pool else title
+            _push(title, "heading_section", f"标题段{idx}", summary)
+        # 正文摘录有剩余且 heading 较少时，把剩余摘录并成一个补充片段，避免信息丢失。
+        if para_pool and len(segments) < _MAX_SEGMENTS_PER_MATERIAL:
+            _push(base_title, "paragraph_overflow", "正文摘录", " ".join(para_pool))
+    elif paragraphs:
+        _push(base_title, "file_fallback", "整件/待定位", " ".join(paragraphs))
+
+    return segments[:_MAX_SEGMENTS_PER_MATERIAL]
 
 
 _PREVIEW_SCHEMA_LINE = (

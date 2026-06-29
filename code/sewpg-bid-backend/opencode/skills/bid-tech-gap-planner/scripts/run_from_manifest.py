@@ -343,6 +343,7 @@ def material_index_from_manifest(manifest: dict[str, Any]) -> list[dict[str, Any
             continue
         name = str(raw.get("name") or raw.get("fileName") or raw.get("cleanedFileName") or "")
         folder_path = str(raw.get("folderPath") or "")
+        evidence_segments = raw.get("evidenceSegments")
         output.append(
             {
                 "id": str(raw.get("id") or raw.get("materialId") or ""),
@@ -357,6 +358,7 @@ def material_index_from_manifest(manifest: dict[str, Any]) -> list[dict[str, Any
                 "placeholderLabels": list(raw.get("placeholderLabels") or []),
                 "placeholderSamples": list(raw.get("placeholderSamples") or []),
                 "fillProfile": raw.get("fillProfile") if isinstance(raw.get("fillProfile"), dict) else {},
+                "evidenceSegments": list(evidence_segments) if isinstance(evidence_segments, list) else [],
                 "usage": "section_merge",
                 "matchReason": "允许素材范围内的素材索引候选",
                 "confidence": 0.74,
@@ -555,6 +557,96 @@ def material_score(material: dict[str, Any], title: str) -> float:
     if str(material.get("hasCleanedWord") or "").lower() == "true" or material.get("cleanedFileName"):
         score += 6
     return score
+
+
+def _segment_text(segment: dict[str, Any]) -> str:
+    """证据片段的可匹配文本：标题 + 摘要 + 关键词。"""
+    keywords = segment.get("keywords") if isinstance(segment.get("keywords"), list) else []
+    return " ".join(
+        str(value or "")
+        for value in (segment.get("title"), segment.get("summary"), " ".join(str(k) for k in keywords))
+    )
+
+
+def segment_score(segment: dict[str, Any], title: str) -> float:
+    """单个证据片段相对目录标题的相关度打分（纯算法，无 LLM）。
+
+    维度（中文无空格分词，故同时用整串子串和片段自带 keywords 双向命中）：
+    - 标题整串命中片段标题/正文：强信号。
+    - title_terms 分词命中：词面信号。
+    - 片段 keywords 与标题的双向子串命中：中文场景的主力信号
+      （A 层已把领域词如「混塔」「电网友好性」切进 keywords，弥补 title_terms 不切中文词）。
+    返回非负分，0 表示无任何重合。
+    """
+    seg_title = normalize_key(segment.get("title"))
+    seg_text = normalize_key(_segment_text(segment))
+    title_key = normalize_key(title)
+    if not seg_text or not title_key:
+        return 0.0
+    score = 0.0
+    if title_key in seg_title:
+        score += 60
+    elif title_key in seg_text:
+        score += 30
+    for term in title_terms(title):
+        if term in seg_title:
+            score += 20
+        elif term in seg_text:
+            score += 8
+    # 片段关键词双向命中：keyword 出现在标题里，或标题里的关键词出现在 keyword 里。
+    keywords = segment.get("keywords") if isinstance(segment.get("keywords"), list) else []
+    for keyword in keywords:
+        key = normalize_key(keyword)
+        if len(key) < 2:
+            continue
+        if key in title_key or title_key in key:
+            score += 24
+    return score
+
+
+def recall_material_segments(material: dict[str, Any], title: str, *, limit: int = 3) -> list[dict[str, Any]]:
+    """从一份素材的 evidenceSegments 里召回与目录标题最相关的片段。
+
+    仅返回有正向相关度（score > 0）的片段，按分降序取前 limit 条；素材没有片段
+    或全不相关时返回空（调用方退化为文件级匹配）。每条附 matchScore 便于前端展示。
+    """
+    segments = material.get("evidenceSegments")
+    if not isinstance(segments, list) or not segments:
+        return []
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        score = segment_score(segment, title)
+        if score > 0:
+            enriched = dict(segment)
+            enriched["matchScore"] = round(score, 2)
+            scored.append((score, enriched))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [segment for _, segment in scored[:limit]]
+
+
+def attach_recalled_segments(materials: list[dict[str, Any]], title: str, *, limit: int = 3) -> list[dict[str, Any]]:
+    """给候选素材附上「与本目录标题相关的证据片段」+ 综合 matchScore。
+
+    用于非附表正文缺口：在文件级匹配之上叠加段落级证据，让下游 AI/人工能定位到
+    素材内具体段落。matchScore = 文件级 material_score + 最佳片段分，便于排序与展示。
+    不改动来源矩阵/附表路径。
+    """
+    enriched_list: list[dict[str, Any]] = []
+    for material in materials:
+        if not isinstance(material, dict):
+            continue
+        recalled = recall_material_segments(material, title, limit=limit)
+        item = dict(material)
+        base = material_score(material, title)
+        best_segment = recalled[0]["matchScore"] if recalled else 0.0
+        item["matchScore"] = round(base + best_segment, 2)
+        if recalled:
+            item["recalledSegments"] = recalled
+            item["matchReason"] = f"段落级证据召回（{len(recalled)} 段相关）"
+        enriched_list.append(item)
+    return enriched_list
 
 
 def title_terms(title: str) -> list[str]:
@@ -1227,6 +1319,9 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 usage = "section_fill"
                 matched_materials = []
                 alternative_materials = dedupe_materials(([matched_material] if matched_material else []) + alternative_materials)
+                # 非附表正文缺口：给候选附段落级证据召回（A 层 evidenceSegments），
+                # 让下游能定位素材内具体段落；无片段则退化为文件级（matchReason 不变）。
+                alternative_materials = attach_recalled_segments(alternative_materials, title)
                 gap_reason = "已匹配到待填写 Word 模板，需要先由 AI 填写后再进入 S4 合并。"
                 next_actions = ["ai_fill_word", "select_reference_material", "manual_upload"]
             else:
@@ -1234,6 +1329,9 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 decision = "ready"
                 usage = str((matched_material or {}).get("usage") or "section_merge")
                 matched_materials = [matched_material] if matched_material else []
+                # ready 态也召回片段，供 S4 合并/复核时定位证据；matched + 备选都附。
+                matched_materials = attach_recalled_segments(matched_materials, title)
+                alternative_materials = attach_recalled_segments(alternative_materials, title)
                 gap_reason = "允许范围内已有可用素材。"
                 next_actions = ["s4_merge_material"]
         else:

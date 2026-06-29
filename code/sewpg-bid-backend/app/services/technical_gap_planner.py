@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -21,6 +22,8 @@ from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
 from app.services.workspace_artifacts import legacy_workspace_roots, technical_workspace_dir, technical_workspace_stage_dir
 
+logger = logging.getLogger(__name__)
+
 
 TECHNICAL_GAP_PLAN_SCHEMA_VERSION = "bid-tech-gap-plan-v1"
 TECHNICAL_GAP_PLANNER_SKILL_NAME = "bid-tech-gap-planner"
@@ -35,6 +38,78 @@ def _now_iso() -> str:
 
 def _object_items(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _load_planner_segment_helpers() -> Any:
+    """importlib 加载 planner skill 脚本，复用其确定性片段召回函数。
+
+    与 run_from_manifest 同源（纯 stdlib），避免在 service 里重写一套打分逻辑。
+    加载失败时返回 None，后处理整体跳过（不阻断缺口识别）。
+    """
+    import importlib.util
+
+    try:
+        spec = importlib.util.spec_from_file_location("tech_gap_planner_runner", GAP_PLANNER_RUNNER)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # noqa: BLE001 - 加载失败不应阻断主流程
+        logger.warning("加载 planner 片段召回脚本失败，跳过证据片段后处理", exc_info=True)
+        return None
+
+
+def _attach_evidence_segments_to_plan(plan: dict[str, Any], material_index: list[dict[str, Any]]) -> int:
+    """给 plan 里「非附表正文缺口」的候选素材补段落级证据片段（确定性后处理）。
+
+    无论 plan 由 opencode agent 还是本地 fallback 脚本产出，都统一在此挂片段，
+    使生产主路径（agent）也能拿到 evidenceSegments。规则：
+    - 只处理 decision == fill_required 且无 appendixTasks 的项（正文类）。
+    - 附表项（有 appendixTasks）与来源矩阵路径完全不碰。
+    - 候选素材按 id 对齐 material_index 取回其 evidenceSegments，再调用 planner 的
+      attach_recalled_segments 做打分召回，回填进 candidateMaterials。
+    返回被增强的缺口项数。
+    """
+    helpers = _load_planner_segment_helpers()
+    if helpers is None or not hasattr(helpers, "attach_recalled_segments"):
+        return 0
+
+    segments_by_id: dict[str, list[dict[str, Any]]] = {}
+    for material in material_index:
+        if not isinstance(material, dict):
+            continue
+        mid = str(material.get("id") or "").strip()
+        segs = material.get("evidenceSegments")
+        if mid and isinstance(segs, list) and segs:
+            segments_by_id[mid] = segs
+
+    if not segments_by_id:
+        return 0
+
+    enriched = 0
+    for item in _object_items(plan.get("items")):
+        if str(item.get("decision") or "") != "fill_required":
+            continue
+        if _object_items(item.get("appendixTasks")):
+            continue  # 附表分支不动
+        candidates = _object_items(item.get("candidateMaterials"))
+        if not candidates:
+            continue
+        # 候选若本身未带片段，按 id 从 material_index 回填，再做召回。
+        for candidate in candidates:
+            if not candidate.get("evidenceSegments"):
+                mid = str(candidate.get("id") or candidate.get("materialId") or "").strip()
+                if mid in segments_by_id:
+                    candidate["evidenceSegments"] = segments_by_id[mid]
+        title = str(item.get("title") or "")
+        recalled = helpers.attach_recalled_segments(candidates, title)
+        if any(material.get("recalledSegments") for material in recalled):
+            item["candidateMaterials"] = recalled
+            enriched += 1
+    if enriched:
+        logger.info("技术标缺口识别：为 %d 个正文缺口补充了证据片段召回", enriched)
+    return enriched
 
 
 def _safe_filename(value: str, fallback: str) -> str:
@@ -80,9 +155,41 @@ def _run_async(awaitable: Any) -> Any:
     return result.get("value")
 
 
+def _evidence_segments_by_material_id() -> dict[str, list[dict[str, Any]]]:
+    """从已落盘的技术标索引 JSON 里收集 {material_id: evidenceSegments}。
+
+    片段由 A 层（technical_material_index 镜像/预览）确定性切分后挂在 file entry 上。
+    planner 走 raw_files 取素材（不读索引 JSON），故这里按 material_id 建映射，
+    供 _allowed_technical_material_index 回填。索引缺失/无片段时返回空映射，
+    planner 退化为原有的文件名/标题匹配，不报错。
+    """
+    from app.services.technical_material_index import load_technical_material_index
+
+    mapping: dict[str, list[dict[str, Any]]] = {}
+    try:
+        index = load_technical_material_index()
+    except Exception:  # noqa: BLE001 - 索引读不到不应阻断缺口识别
+        return mapping
+    for tier in index.get("tiers") or []:
+        if not isinstance(tier, dict):
+            continue
+        for folder in tier.get("folders") or []:
+            if not isinstance(folder, dict):
+                continue
+            for file_entry in folder.get("files") or []:
+                if not isinstance(file_entry, dict):
+                    continue
+                material_id = str(file_entry.get("id") or "").strip()
+                segments = file_entry.get("evidenceSegments")
+                if material_id and isinstance(segments, list) and segments:
+                    mapping[material_id] = segments
+    return mapping
+
+
 def _allowed_technical_material_index(material_scope: dict[str, Any], turbine_model: dict[str, Any]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
+    segments_by_id = _evidence_segments_by_material_id()
     for scope in material_scope.get("readableScopes") or []:
         if not isinstance(scope, dict):
             continue
@@ -106,19 +213,22 @@ def _allowed_technical_material_index(material_scope: dict[str, Any], turbine_mo
             if not material_id or material_id in seen:
                 continue
             seen.add(material_id)
-            items.append(
-                {
-                    "id": material_id,
-                    "name": str(raw.get("name") or ""),
-                    "folderPath": str(raw.get("folderPath") or ""),
-                    "materialTier": str(raw.get("materialTier") or scope.get("materialTier") or ""),
-                    "hasCleanedWord": bool(raw.get("hasCleanedWord")),
-                    "cleanedFileName": str(raw.get("cleanedFileName") or ""),
-                    "cleanStatus": str(raw.get("cleanStatus") or ""),
-                    "turbineModelLabel": str(raw.get("turbineModelLabel") or ""),
-                    "updatedAt": str(raw.get("updatedAt") or ""),
-                }
-            )
+            entry = {
+                "id": material_id,
+                "name": str(raw.get("name") or ""),
+                "folderPath": str(raw.get("folderPath") or ""),
+                "materialTier": str(raw.get("materialTier") or scope.get("materialTier") or ""),
+                "hasCleanedWord": bool(raw.get("hasCleanedWord")),
+                "cleanedFileName": str(raw.get("cleanedFileName") or ""),
+                "cleanStatus": str(raw.get("cleanStatus") or ""),
+                "turbineModelLabel": str(raw.get("turbineModelLabel") or ""),
+                "updatedAt": str(raw.get("updatedAt") or ""),
+            }
+            # 回填证据片段（A 层确定性切分），供 planner 非附表分支做段落级召回。
+            segments = segments_by_id.get(material_id)
+            if segments:
+                entry["evidenceSegments"] = segments
+            items.append(entry)
     return items
 
 
@@ -361,6 +471,10 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
     plan["manifestPath"] = str(manifest_path)
     plan["phase"] = "gap_detection"
     plan["scopeBoundary"] = material_scope
+    # 确定性后处理：无论 plan 由 opencode agent 还是本地 fallback 脚本产出，都在这里
+    # 给「非附表正文缺口」的候选素材补段落级证据片段（A 层 evidenceSegments）。
+    # agent 负责召回哪些素材，这一步只做确定性的「片段挂载 + 打分」，不改附表路径。
+    _attach_evidence_segments_to_plan(plan, material_index)
     normalize_technical_gap_plan_fill_task_skills(plan)
     plan["opencodeOutput"] = result.get("opencodeOutput") or {
         "status": "received",
