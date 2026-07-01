@@ -7,6 +7,7 @@ import unittest
 import os
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import pytest
 from unittest.mock import patch
@@ -407,6 +408,56 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
         business_audit = self.client.get("/api/business/audit", headers=self.headers)
         self.assertEqual(business_audit.status_code, 200)
         self.assertEqual([item for item in business_audit.json()["items"] if item["actionType"] == "ocr"], [])
+
+    def test_unlimited_ocr_image_uses_required_vllm_request_recipe(self) -> None:
+        project = self.client.post(
+            "/api/technical/projects",
+            headers=self.headers,
+            json={"name": "Unlimited OCR 测试项目", "customerName": "测试业主"},
+        )
+        self.assertEqual(project.status_code, 200)
+        project_id = project.json()["id"]
+        self.client.put(
+            "/api/settings/ocr",
+            headers=self.headers,
+            json={
+                "enabled": True,
+                "baseUrl": "http://unlimited-ocr:8000/v1",
+                "model": "baidu/Unlimited-OCR",
+                "timeoutMs": 60000,
+                "maxTokens": 8192,
+            },
+        )
+
+        captured: dict[str, Any] = {}
+
+        async def fake_post(*_args, **kwargs):
+            captured.update(kwargs)
+
+            class Response:
+                status_code = 200
+
+                @staticmethod
+                def json():
+                    return {"choices": [{"message": {"content": "<|ref|>Project: Wind Farm<|/ref|><|det|>[[1,2,3,4]]<|/det|>"}}]}
+
+            return Response()
+
+        with patch("httpx.AsyncClient.post", side_effect=fake_post):
+            run = self.client.post(
+                f"/api/technical/projects/{project_id}/ocr/tasks",
+                headers=self.headers,
+                files={"file": ("ocr.png", b"\x89PNG\r\n\x1a\nfake", "image/png")},
+            )
+
+        self.assertEqual(run.status_code, 200)
+        payload = captured["json"]
+        self.assertEqual(payload["model"], "baidu/Unlimited-OCR")
+        self.assertEqual(payload["messages"][0]["content"][0]["text"], "<image>document parsing.")
+        self.assertFalse(payload["skip_special_tokens"])
+        self.assertEqual(payload["vllm_xargs"], {"ngram_size": 35, "window_size": 128})
+        self.assertNotIn("<|det|>", run.text)
+        self.assertEqual(run.json()["candidates"][0]["fieldValue"], "Wind Farm")
 
 
 if __name__ == "__main__":

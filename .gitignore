@@ -14,6 +14,8 @@
 CLAUDE.local.md
 *.local.md
 .claude/settings.local.json
+start_checklist/*.local.json
+start_checklist/*.local.yaml
 .env.local
 .env.*.local
 

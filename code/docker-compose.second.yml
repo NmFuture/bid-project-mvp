@@ -22,3 +22,6 @@ services:
 
   minio:
     container_name: sewpg_bid_second_minio
+
+  ocr:
+    container_name: sewpg_bid_second_ocr

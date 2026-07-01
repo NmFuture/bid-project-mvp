@@ -51,6 +51,29 @@
 - AI/Skill 输出必须可验证，关键结论要保留来源、证据或可追踪中间结果。
 - 不能按单个样本硬编码文件名、字段值或答案。
 
+## 本地运行预检（必须）
+
+每次进入新的运行会话（启动项目、运行测试、运行 agent 工作流）之前，
+**必须先执行本地预检脚本**，确保核心代码版本与团队基准对齐、依赖与配置就绪。
+
+```bash
+./start_checklist/pre-run-check.sh        # 首次/缓存失效时做完整检查；命中缓存时静默放行
+./start_checklist/pre-run-check.sh --force   # 强制重检
+./start_checklist/pre-run-check.sh --status  # 查看打勾状态
+```
+
+设计见 `start_checklist/README.md`。
+
+**执行规范（人 + Agent 都适用）：**
+
+- 缓存命中且未过期 → 直接放行，不要重复输出清单。
+- 缓存未命中 → 列出各项结果，必检项（代码版本、.env 配置）未通过时先解决再运行；推荐项仅警告、不阻断。
+- 把预检结果作为本次会话的起点状态报告挂出来，不要默默吞掉警告。
+- 修改 `pre-run-checklist.yaml` 里的检查项要走 PR review；`.checked.local.json` 是本地私有文件，不要提交。
+
+hook 级联动：仓库的 `.git/hooks/post-merge` / `post-checkout` 已接入该脚本（warn-only），
+每次 `git pull` / 切分支后若代码或 .env 真正变更，脚本会自动重新触发。
+
 ## 验证建议
 
 - 后端相关改动优先在 `code/sewpg-bid-backend/` 下运行聚焦测试，再按风险扩大：

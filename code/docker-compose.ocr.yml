@@ -1,0 +1,61 @@
+services:
+  fastapi:
+    environment:
+      DEFAULT_OCR_BASE_URL: http://ocr:8000/v1
+      DEFAULT_OCR_API_KEY: ${DEFAULT_OCR_API_KEY:-}
+      DEFAULT_OCR_MODEL: ${OCR_MODEL:-baidu/Unlimited-OCR}
+    depends_on:
+      ocr:
+        condition: service_healthy
+
+  worker:
+    environment:
+      DEFAULT_OCR_BASE_URL: http://ocr:8000/v1
+      DEFAULT_OCR_API_KEY: ${DEFAULT_OCR_API_KEY:-}
+      DEFAULT_OCR_MODEL: ${OCR_MODEL:-baidu/Unlimited-OCR}
+    depends_on:
+      ocr:
+        condition: service_healthy
+
+  ocr:
+    image: ${OCR_IMAGE:-vllm/vllm-openai:unlimited-ocr}
+    container_name: sewpg_bid_ocr
+    command:
+      - ${OCR_MODEL:-baidu/Unlimited-OCR}
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --trust-remote-code
+      - --logits_processors
+      - vllm.model_executor.models.unlimited_ocr:NGramPerReqLogitsProcessor
+      - --no-enable-prefix-caching
+      - --mm-processor-cache-gb
+      - "0"
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+      HF_ENDPOINT: ${HF_ENDPOINT:-}
+      VLLM_USE_MODELSCOPE: ${VLLM_USE_MODELSCOPE:-false}
+    ports:
+      - "${OCR_HOST_PORT:-8000}:8000"
+    expose:
+      - "8000"
+    volumes:
+      - ${OCR_HF_CACHE_DIR:-./.localdata/ocr/huggingface}:/root/.cache/huggingface
+    gpus: all
+    ipc: host
+    shm_size: ${OCR_SHM_SIZE:-8g}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 60
+      start_period: ${OCR_HEALTHCHECK_START_PERIOD:-20m}
+    restart: unless-stopped

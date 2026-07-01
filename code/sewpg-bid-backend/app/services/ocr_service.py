@@ -24,6 +24,7 @@ from app.services.workspace_project_access import (
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+UNLIMITED_OCR_MODEL_MARKER = "unlimited-ocr"
 
 
 def _ocr_project_not_found(project_id: str) -> PeripheralError:
@@ -65,6 +66,32 @@ def _extract_candidates_from_text(text: str) -> list[dict[str, Any]]:
             }
         )
     return candidates
+
+
+def _is_unlimited_ocr_config(config: dict[str, Any]) -> bool:
+    return UNLIMITED_OCR_MODEL_MARKER in str(config.get("model") or "").lower()
+
+
+def _chat_completions_url(base_url: str) -> str:
+    url = str(base_url or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if url.endswith("/chat/completions"):
+        return url
+    if url.endswith("/v1"):
+        return f"{url}/chat/completions"
+    return f"{url}/chat/completions"
+
+
+def _clean_unlimited_ocr_text(text: str) -> str:
+    value = str(text or "")
+    value = re.sub(r"<\|det\|>.*?<\|/det\|>", "", value, flags=re.DOTALL)
+    value = value.replace("<|ref|>", "").replace("<|/ref|>", "")
+    return value.strip()
+
+
+def _extract_chat_content(raw: dict[str, Any]) -> str:
+    return str(((raw.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
 
 
 class OcrService:
@@ -208,28 +235,55 @@ class OcrService:
         return await self.detail(project_id, task_id)
 
     async def _ocr_image(self, content: bytes, mime_type: str, config: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        data_url = f"data:{mime_type or 'image/png'};base64,{base64.b64encode(content).decode('ascii')}"
+        raw = await self._ocr_chat_completion(
+            [
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+            config,
+            multi_page=False,
+        )
+        content_text = _extract_chat_content(raw)
+        if _is_unlimited_ocr_config(config):
+            content_text = _clean_unlimited_ocr_text(content_text)
+        return content_text, raw
+
+    async def _ocr_chat_completion(
+        self,
+        images: list[dict[str, Any]],
+        config: dict[str, Any],
+        *,
+        multi_page: bool,
+    ) -> dict[str, Any]:
         base_url = str(config.get("baseUrl") or "").strip()
         model = str(config.get("model") or "").strip()
         api_key = str(config.get("apiKey") or "").strip()
         timeout_ms = int(config.get("timeoutMs") or 60000)
         max_tokens = int(config.get("maxTokens") or 2048)
-        url = f"{base_url.rstrip('/')}/chat/completions" if base_url.rstrip("/").endswith("/v1") else base_url.rstrip("/")
-        data_url = f"data:{mime_type or 'image/png'};base64,{base64.b64encode(content).decode('ascii')}"
+        url = _chat_completions_url(base_url)
+        is_unlimited_ocr = _is_unlimited_ocr_config(config)
+        text_prompt = "<image>Multi page parsing." if is_unlimited_ocr and multi_page else (
+            "<image>document parsing." if is_unlimited_ocr else "Free OCR."
+        )
+        content = [{"type": "text", "text": text_prompt}] + images if is_unlimited_ocr else images + [{"type": "text", "text": text_prompt}]
         payload = {
             "model": model,
             "messages": [
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                        {"type": "text", "text": "Free OCR."},
-                    ],
+                    "content": content,
                 }
             ],
             "stream": False,
             "max_tokens": max_tokens,
             "temperature": 0,
         }
+        if is_unlimited_ocr:
+            payload["skip_special_tokens"] = False
+            payload["vllm_xargs"] = {
+                "ngram_size": 35,
+                "window_size": 1024 if multi_page else 128,
+            }
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -239,14 +293,23 @@ class OcrService:
         if response.status_code >= 400:
             raise PeripheralError(response.status_code, f"OCR 调用失败：HTTP {response.status_code}", "OCR_REQUEST_FAILED")
         raw = response.json()
-        content_text = str(((raw.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
         raw["_latencyMs"] = int((time.perf_counter() - start) * 1000)
-        return content_text, raw
+        return raw
 
     async def _ocr_pdf(self, content: bytes, config: dict[str, Any]) -> tuple[str, dict[str, Any], int]:
         import fitz
 
         document = fitz.open(stream=content, filetype="pdf")
+        if _is_unlimited_ocr_config(config):
+            images = []
+            for page_index in range(min(len(document), 10)):
+                page = document.load_page(page_index)
+                pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72), alpha=False)
+                data_url = f"data:image/png;base64,{base64.b64encode(pix.tobytes('png')).decode('ascii')}"
+                images.append({"type": "image_url", "image_url": {"url": data_url}})
+            raw = await self._ocr_chat_completion(images, config, multi_page=len(images) > 1)
+            return _clean_unlimited_ocr_text(_extract_chat_content(raw)), raw, len(document)
+
         texts = []
         raw_pages = []
         for page_index in range(min(len(document), 10)):

@@ -1,0 +1,4 @@
+services:
+  ocr:
+    image: ${OCR_IMAGE:-vllm/vllm-openai:unlimited-ocr}
+    pull_policy: never
