@@ -293,9 +293,6 @@ const isProtectedDeleteFolderPath = (path) => {
     return true
   }
   const parts = normalized.split('/').filter(Boolean)
-  if (parts.length === 3 && parts[0] === '技术标' && ['客户定制', '项目定制', '客户素材', '项目素材'].includes(parts[1])) {
-    return true
-  }
   if (parts.length !== 4 || parts[0] !== '技术标') return false
   if (parts[1] === '客户定制' || parts[1] === '客户素材') return TECHNICAL_CUSTOMER_PROTECTED_FOLDER_NAMES.has(parts[3])
   if (parts[1] === '项目定制' || parts[1] === '项目素材') return TECHNICAL_PROJECT_PROTECTED_FOLDER_NAMES.has(parts[3])
@@ -1198,7 +1195,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
 
   const canManageCurrentFolder = Boolean(selectedFolderPath)
   const canCreateFolder = Boolean(selectedFolderPath) && canManageCurrentFolder
-  const canDeleteFolder = Boolean(selectedFolderPath) && !isProtectedDeleteFolderPath(selectedFolderPath)
 
   const fileItems = useMemo(() => filesPayload?.items || [], [filesPayload?.items])
   const filesByFolderPath = useMemo(() => groupFilesByFolderPath(fileItems), [fileItems])
@@ -2177,15 +2173,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
           </button>
           <button type="button" onClick={handleCreateFolder} disabled={!canCreateFolder} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-45">
             新建文件夹
-          </button>
-          <button
-            type="button"
-            title={selectedFolderPath && isProtectedDeleteFolderPath(selectedFolderPath) ? '基础素材目录不可删除' : '删除文件夹'}
-            onClick={handleDeleteFolder}
-            disabled={!canDeleteFolder}
-            className="rounded-lg bg-error-container/45 px-3 py-2 text-xs font-semibold text-error hover:bg-error-container disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            删除文件夹
           </button>
           <button
             type="button"
