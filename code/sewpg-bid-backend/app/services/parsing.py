@@ -25,8 +25,7 @@ from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.document_nav import nav_to_text
 from app.services.document_parse_engine import create_document_parse_engine
 from app.services.document_parse_quality import evaluate_document_nav_quality
-from app.services.mineru_engine import MineruParseEngine
-from app.services.mineru_nav_adapter import convert_mineru_output_to_document_nav
+from app.services.docling_engine import DoclingParseEngine
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.opencode_client import OpencodeClient
 from app.services.parse_profiles import (
@@ -536,6 +535,40 @@ def _append_ocr_blocks_to_document_nav(
     return applied_pages, warnings
 
 
+def _merge_document_nav_quality(
+    document_nav: dict[str, Any],
+    *,
+    source_quality: dict[str, Any],
+    evaluated_quality: dict[str, Any],
+    engine: str,
+    docling_mode: str = "",
+) -> dict[str, Any]:
+    quality = dict(source_quality)
+    parse_status = str(quality.get("status") or "completed")
+    quality_status = str(evaluated_quality.get("status") or quality.get("qualityStatus") or parse_status)
+    warnings = [
+        str(warning)
+        for warning in [
+            *(quality.get("warnings") if isinstance(quality.get("warnings"), list) else []),
+            *(evaluated_quality.get("warnings") if isinstance(evaluated_quality.get("warnings"), list) else []),
+        ]
+        if str(warning).strip()
+    ]
+    for key, value in evaluated_quality.items():
+        if key in {"status", "warnings"}:
+            continue
+        quality[key] = value
+    quality["engine"] = str(quality.get("engine") or engine or "docling")
+    quality["sourceEngine"] = str(document_nav.get("sourceEngine") or quality.get("sourceEngine") or quality["engine"])
+    quality["status"] = parse_status
+    quality["qualityStatus"] = quality_status
+    quality["fallbackUsed"] = bool(source_quality.get("fallbackUsed")) or bool(evaluated_quality.get("fallbackUsed"))
+    if docling_mode:
+        quality["doclingMode"] = docling_mode
+    quality["warnings"] = list(dict.fromkeys(warnings))
+    return quality
+
+
 def _parse_business_pdf_with_document_engine(
     *,
     project_id: str,
@@ -545,7 +578,8 @@ def _parse_business_pdf_with_document_engine(
 ) -> tuple[str, dict[str, Any], list[str]]:
     document_id = str(document.get("id") or "DOC-1")
     existing_document_nav_path = project_dir / f"{document_id}_document_nav.json"
-    existing_quality_path = project_dir / "document_parse" / "mineru" / document_id / "parse_quality.json"
+    engine_name = settings.business_pdf_parse_engine.strip().lower() or "docling"
+    existing_quality_path = project_dir / "document_parse" / engine_name / document_id / "parse_quality.json"
     if existing_document_nav_path.is_file() and existing_quality_path.is_file():
         try:
             existing_quality = json.loads(existing_quality_path.read_text(encoding="utf-8"))
@@ -558,15 +592,19 @@ def _parse_business_pdf_with_document_engine(
         ):
             document_nav = json.loads(existing_document_nav_path.read_text(encoding="utf-8"))
             metadata = {
-                "documentParseEngine": "mineru",
+                "documentParseEngine": str(existing_quality.get("engine") or engine_name),
                 "documentNavPath": str(existing_document_nav_path),
                 "parseQualityPath": str(existing_quality_path),
             }
-            quality = evaluate_document_nav_quality(document_nav)
-            existing_warnings = existing_quality.get("warnings") if isinstance(existing_quality.get("warnings"), list) else []
-            quality.setdefault("warnings", [])
-            if isinstance(quality["warnings"], list):
-                quality["warnings"] = [*existing_warnings, *quality["warnings"]]
+            quality = _merge_document_nav_quality(
+                document_nav,
+                source_quality=existing_quality,
+                evaluated_quality=evaluate_document_nav_quality(document_nav),
+                engine=str(existing_quality.get("engine") or engine_name),
+                docling_mode=str(existing_quality.get("doclingMode") or ""),
+            )
+            if quality.get("doclingMode"):
+                metadata["doclingMode"] = str(quality.get("doclingMode") or "")
             existing_quality_path.write_text(json.dumps(quality, ensure_ascii=False, indent=2), encoding="utf-8")
             text = nav_to_text(document_nav)
             page_count = len(document_nav.get("pages") or []) or "-"
@@ -575,14 +613,8 @@ def _parse_business_pdf_with_document_engine(
 
     engine = create_document_parse_engine(
         parse_engine=settings.business_pdf_parse_engine,
-        mineru_enabled=settings.business_pdf_mineru_enabled,
         fallback=settings.business_pdf_engine_fallback,
     )
-    if isinstance(engine, MineruParseEngine):
-        engine.mode = settings.business_pdf_mineru_mode
-        engine.backend = settings.business_pdf_mineru_backend
-        engine.executable = settings.business_pdf_mineru_executable
-        engine.timeout_sec = settings.business_pdf_mineru_timeout_sec
     result = engine.parse_pdf(project_id=project_id, document=document, output_dir=project_dir)
     metadata = {
         "documentParseEngine": str(result.get("documentParseEngine") or settings.business_pdf_parse_engine),
@@ -592,23 +624,33 @@ def _parse_business_pdf_with_document_engine(
     status = str(result.get("status") or "").lower()
     document_nav: dict[str, Any] | None = None
     document_nav_path = Path(str(result.get("documentNavPath") or ""))
-    mineru_output_dir = Path(str(result.get("mineruOutputDir") or ""))
 
     if status == "completed":
         if document_nav_path.is_file():
             document_nav = json.loads(document_nav_path.read_text(encoding="utf-8"))
-        elif mineru_output_dir.is_dir():
-            document_nav = convert_mineru_output_to_document_nav(
-                document_id=str(document.get("id") or "DOC-1"),
-                source_path=file_path,
-                mineru_output_dir=mineru_output_dir,
-            )
-            document_nav_path = project_dir / f"{document['id']}_document_nav.json"
-            document_nav_path.write_text(json.dumps(document_nav, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if document_nav:
         metadata["documentNavPath"] = str(document_nav_path)
-        quality = evaluate_document_nav_quality(document_nav)
+        if result.get("doclingMode"):
+            metadata["doclingMode"] = str(result.get("doclingMode") or "")
+        source_quality = document_nav.get("quality") if isinstance(document_nav.get("quality"), dict) else {}
+        raw_quality_path = str(metadata.get("parseQualityPath") or "").strip()
+        if raw_quality_path:
+            previous_quality_path = Path(raw_quality_path)
+            if previous_quality_path.is_file():
+                try:
+                    previous_quality = json.loads(previous_quality_path.read_text(encoding="utf-8"))
+                    if isinstance(previous_quality, dict):
+                        source_quality = {**previous_quality, **source_quality}
+                except json.JSONDecodeError:
+                    pass
+        quality = _merge_document_nav_quality(
+            document_nav,
+            source_quality=source_quality,
+            evaluated_quality=evaluate_document_nav_quality(document_nav),
+            engine=str(metadata.get("documentParseEngine") or "docling"),
+            docling_mode=str(result.get("doclingMode") or source_quality.get("doclingMode") or ""),
+        )
         if settings.business_pdf_ocr_fallback_enabled and quality.get("ocrPages"):
             ocr_results = _ocr_business_pdf_pages(
                 project_id=project_id,
@@ -629,7 +671,6 @@ def _parse_business_pdf_with_document_engine(
             quality.setdefault("warnings", [])
             if isinstance(quality["warnings"], list):
                 quality["warnings"].extend(ocr_warnings)
-        raw_quality_path = str(metadata.get("parseQualityPath") or "").strip()
         if raw_quality_path:
             quality_path = Path(raw_quality_path)
         else:
@@ -639,18 +680,20 @@ def _parse_business_pdf_with_document_engine(
         quality_path.write_text(json.dumps(quality, ensure_ascii=False, indent=2), encoding="utf-8")
         warnings.extend(quality.get("warnings") or [])
         text = nav_to_text(document_nav)
+        if isinstance(result.get("text"), str) and str(result.get("text")).strip():
+            text = str(result.get("text") or "")
         page_count = len(document_nav.get("pages") or []) or "-"
         metadata["pageCount"] = page_count
         return text, metadata, warnings
 
-    fallback_reason = str(result.get("fallbackReason") or "MinerU 解析未生成 DocumentNav")
+    fallback_reason = str(result.get("fallbackReason") or "Docling 解析未生成 DocumentNav")
     metadata["fallbackReason"] = fallback_reason
     if settings.business_pdf_engine_fallback != "lightweight":
         metadata["documentParseStatus"] = "failed"
-        warnings.append(f"MinerU 解析失败，未启用 PDF 解析兜底：{fallback_reason}")
+        warnings.append(f"Docling 解析失败，未启用 PDF 解析兜底：{fallback_reason}")
         return "", metadata, warnings
     metadata["documentParseStatus"] = "fallback"
-    warnings.append(f"MinerU 解析失败，已回退到轻量 PDF 文本解析：{fallback_reason}")
+    warnings.append(f"Docling 解析失败，已回退到轻量 PDF 文本解析：{fallback_reason}")
     return "", metadata, warnings
 
 
@@ -5466,7 +5509,7 @@ def _run_parse_skill(
             attempts.append(_opencode_attempt_from_error(retry_exc, 2))
             if profile.key == "business":
                 raise RuntimeError(
-                    f"S1 商务解析 Skill 调用失败，未生成基于 MinerU/Opencode 的结构化结果：{retry_exc}"
+                    f"S1 商务解析 Skill 调用失败，未生成基于 Docling/Opencode 的结构化结果：{retry_exc}"
                 ) from retry_exc
             return _fallback_parse_skill_result(
                 retry_exc,
@@ -5673,8 +5716,7 @@ def parse_tender_documents(
             pdf_text_fallback_enabled = True
             if (
                 profile.key == "business"
-                and settings.business_pdf_parse_engine == "mineru"
-                and settings.business_pdf_mineru_enabled
+                and settings.business_pdf_parse_engine == "docling"
             ):
                 text, parse_metadata, engine_warnings = _parse_business_pdf_with_document_engine(
                     project_id=project_id,

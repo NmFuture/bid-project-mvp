@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -163,7 +163,7 @@ class BusinessAgenticParserTests(unittest.TestCase):
                 json.dumps(
                     {
                         "schemaVersion": "business-document-nav-v1",
-                        "sourceEngine": "mineru",
+                        "sourceEngine": "docling",
                         "documents": [{"id": "DOC-1", "name": "sample.pdf", "sourcePath": "sample.pdf"}],
                         "pages": [{"pageNo": 1, "textDensity": 0.9}],
                         "blocks": [

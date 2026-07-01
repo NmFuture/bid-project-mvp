@@ -94,7 +94,7 @@ def _appendix_from_rendered(
         "templateType": str(raw.get("templateType") or "business_template"),
         "templateSectionTitle": "",
         "status": "generated",
-        "rowCount": 0,
+        "rowCount": int(raw.get("rowCount") or 0),
         "docxPath": str(docx_path),
         "workspacePath": "",
         "sourceDocumentId": str(document.get("id") or ""),
@@ -187,8 +187,8 @@ def finalize(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
             warning_count=len(warnings),
         )
         | {
-            "sourceEngine": "mineru"
-            if any(str(item.get("sourceEngine") or "") == "mineru" for item in appendices)
+            "sourceEngine": "docling"
+            if any(str(item.get("sourceEngine") or "") == "docling" for item in appendices)
             else "",
         },
         "workflow": {

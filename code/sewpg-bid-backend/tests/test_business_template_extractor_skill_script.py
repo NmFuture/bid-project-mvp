@@ -152,7 +152,7 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
                 json.dumps(
                     {
                         "schemaVersion": "business-document-nav-v1",
-                        "sourceEngine": "mineru",
+                        "sourceEngine": "docling",
                         "documents": [{"id": "DOC-1", "name": "sample.pdf", "sourcePath": "sample.pdf"}],
                         "pages": [{"pageNo": 1, "textDensity": 0.9}],
                         "blocks": [
@@ -227,7 +227,7 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
             table_block = overview["blocks"][3]
             self.assertEqual(table_block["rows"][1], ["商务偏差表", "无偏差"])
             self.assertEqual(table_block["sourceEvidenceId"], "DOC-1:P0001:T000001")
-            self.assertEqual(table_block["sourceEngine"], "mineru")
+            self.assertEqual(table_block["sourceEngine"], "docling")
 
     def test_btplnav_submit_validate_and_finalize_slice_ai_ranges(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -313,7 +313,7 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
                 json.dumps(
                     {
                         "schemaVersion": "business-document-nav-v1",
-                        "sourceEngine": "mineru",
+                        "sourceEngine": "docling",
                         "documents": [{"id": "DOC-1", "name": "sample.pdf", "sourcePath": str(source)}],
                         "pages": [{"pageNo": 1, "textDensity": 0.9}],
                         "blocks": [
@@ -353,7 +353,7 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
                                 "name": "sample.pdf",
                                 "sourcePath": str(source),
                                 "documentNavPath": str(nav_path),
-                                "documentParseEngine": "mineru",
+                                "documentParseEngine": "docling",
                             }
                         ],
                     },
@@ -404,8 +404,8 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
             self.assertEqual(finalized["summary"]["templateCount"], 2)
             payload = json.loads((output_dir / "business_template_extraction.json").read_text(encoding="utf-8"))
             self.assertFalse(payload["quality"]["scriptFallbackUsed"])
-            self.assertEqual(payload["quality"]["sourceEngine"], "mineru")
-            self.assertEqual([item["sourceEngine"] for item in payload["appendices"]], ["mineru", "mineru"])
+            self.assertEqual(payload["quality"]["sourceEngine"], "docling")
+            self.assertEqual([item["sourceEngine"] for item in payload["appendices"]], ["docling", "docling"])
             self.assertEqual(
                 [(item["startBlockIndex"], item["endBlockIndex"]) for item in payload["appendices"]],
                 [(2, 4), (5, 5)],
@@ -415,6 +415,7 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
             self.assertIn("投标人（盖章）：", "\n".join(paragraph.text for paragraph in first_doc.paragraphs))
             self.assertEqual(second_doc.tables[0].rows[1].cells[0].text, "商务偏差")
             self.assertEqual(second_doc.tables[0].rows[1].cells[1].text, "无偏差")
+            self.assertEqual(payload["appendices"][1]["rowCount"], 2)
 
     def test_btplnav_validator_rejects_structurally_invalid_ranges_without_section_rules(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -467,7 +468,7 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
                     "sourcePath": "C:/tmp/business.pdf",
                     "textPath": "C:/tmp/DOC-2.txt",
                     "documentNavPath": "C:/tmp/DOC-2_document_nav.json",
-                    "documentParseEngine": "mineru",
+                    "documentParseEngine": "docling",
                 },
                 {"id": "DOC-3", "name": "说明.txt", "sourcePath": "C:/tmp/说明.txt"},
             ],
@@ -482,7 +483,7 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
         self.assertEqual(manifest["documents"][0]["id"], "DOC-1")
         self.assertEqual(manifest["documents"][1]["id"], "DOC-2")
         self.assertEqual(manifest["documents"][1]["documentNavPath"], "C:/tmp/DOC-2_document_nav.json")
-        self.assertEqual(manifest["documents"][1]["documentParseEngine"], "mineru")
+        self.assertEqual(manifest["documents"][1]["documentParseEngine"], "docling")
 
     def test_backend_service_does_not_expose_legacy_btplbound_orchestration(self) -> None:
         removed_names = {
@@ -685,9 +686,9 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
                 "quality": {"scriptFallbackUsed": False},
             }
             expected_payload = json.loads(json.dumps(existing_payload, ensure_ascii=False))
-            expected_payload["appendices"][0]["sourceEngine"] = "mineru"
-            expected_payload["appendices"][0]["quality"]["sourceEngine"] = "mineru"
-            expected_payload["quality"]["sourceEngine"] = "mineru"
+            expected_payload["appendices"][0]["sourceEngine"] = "docling"
+            expected_payload["appendices"][0]["quality"]["sourceEngine"] = "docling"
+            expected_payload["quality"]["sourceEngine"] = "docling"
             result_path = output_dir / "business_template_extraction.json"
             result_path.write_text(json.dumps(existing_payload, ensure_ascii=False), encoding="utf-8")
 
@@ -708,7 +709,7 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
                             "id": "DOC-1",
                             "name": "agent-success.pdf",
                             "sourcePath": str(project_dir / "agent-success.pdf"),
-                            "documentParseEngine": "mineru",
+                            "documentParseEngine": "docling",
                         }
                     ],
                     project_dir=project_dir,
@@ -719,7 +720,7 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
         self.assertEqual(len(appendices), 1)
         self.assertEqual(appendices[0]["title"], "Bid Letter")
         self.assertEqual(appendices[0]["sourceDocumentId"], "DOC-1")
-        self.assertEqual(appendices[0]["quality"]["sourceEngine"], "mineru")
+        self.assertEqual(appendices[0]["quality"]["sourceEngine"], "docling")
         self.assertEqual(payload, expected_payload)
         self.assertEqual(persisted, expected_payload)
 

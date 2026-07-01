@@ -4,9 +4,19 @@ services:
 
   fastapi:
     container_name: sewpg_bid_second_fastapi
+    environment:
+      BUSINESS_PDF_PARSE_ENGINE: docling
+      BUSINESS_PDF_ENGINE_FALLBACK: none
+      BUSINESS_PDF_OCR_FALLBACK_ENABLED: "false"
+      DOCLING_ARTIFACTS_PATH: /data/docling-models
 
   worker:
     container_name: sewpg_bid_second_worker
+    environment:
+      BUSINESS_PDF_PARSE_ENGINE: docling
+      BUSINESS_PDF_ENGINE_FALLBACK: none
+      BUSINESS_PDF_OCR_FALLBACK_ENABLED: "false"
+      DOCLING_ARTIFACTS_PATH: /data/docling-models
 
   opencode:
     container_name: sewpg_bid_second_opencode

@@ -35,8 +35,8 @@ def build_business_template_extractor_manifest(
         source_path = Path(str(document.get("sourcePath") or ""))
         document_nav_path = str(document.get("documentNavPath") or "").strip()
         is_docx = source_path.suffix.lower() == ".docx"
-        is_mineru_pdf = source_path.suffix.lower() == ".pdf" and document_nav_path
-        if not is_docx and not is_mineru_pdf:
+        is_pdf_with_nav = source_path.suffix.lower() == ".pdf" and document_nav_path
+        if not is_docx and not is_pdf_with_nav:
             continue
         item = {
             "id": str(document.get("id") or ""),

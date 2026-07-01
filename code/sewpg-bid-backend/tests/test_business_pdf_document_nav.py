@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 
@@ -9,7 +9,7 @@ def test_build_document_nav_serializes_pages_tables_quality_and_evidence() -> No
     nav = build_document_nav(
         document_id="DOC-1",
         source_path="C:/tmp/business.pdf",
-        source_engine="mineru",
+        source_engine="docling",
         pages=[{"pageNo": 1, "width": 595, "height": 842, "textDensity": 0.8}],
         blocks=[
             {
@@ -28,13 +28,13 @@ def test_build_document_nav_serializes_pages_tables_quality_and_evidence() -> No
             }
         ],
         images=[{"pageNo": 1, "path": "images/page-1.png", "bbox": [0, 0, 595, 842]}],
-        quality={"engine": "mineru", "status": "completed", "warnings": []},
+        quality={"engine": "docling", "status": "completed", "warnings": []},
     )
 
     json.dumps(nav, ensure_ascii=False)
 
     assert nav["schemaVersion"] == "business-document-nav-v1"
-    assert nav["sourceEngine"] == "mineru"
+    assert nav["sourceEngine"] == "docling"
     assert nav["documents"][0]["id"] == "DOC-1"
     assert nav["pages"][0]["pageNo"] == 1
     assert nav["blocks"][0]["evidenceId"] == "DOC-1:P0001:B000001"

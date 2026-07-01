@@ -38,7 +38,7 @@ def evaluate_document_nav_quality(document_nav: dict[str, Any]) -> dict[str, Any
     if not tables:
         for keyword in TABLE_KEYWORDS:
             if keyword in combined_text:
-                warnings.append(f"检测到“{keyword}”关键词但 MinerU 未输出表格，需要人工复核。")
+                warnings.append(f"检测到“{keyword}”关键词但 Docling 未输出表格，需要人工复核。")
                 break
 
     review_required = bool(ocr_pages) or any("人工复核" in warning for warning in warnings)
