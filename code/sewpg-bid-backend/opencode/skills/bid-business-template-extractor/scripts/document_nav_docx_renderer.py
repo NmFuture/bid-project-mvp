@@ -76,7 +76,7 @@ def render_document_nav_templates(
     templates_dir.mkdir(parents=True, exist_ok=True)
     blocks_by_id = _block_map(blocks)
     rendered: list[dict[str, Any]] = []
-    source_engine = str(source_document.get("documentParseEngine") or source_document.get("sourceEngine") or "mineru")
+    source_engine = str(source_document.get("documentParseEngine") or source_document.get("sourceEngine") or "docling")
     for template in boundaries.get("templates") or []:
         if not isinstance(template, dict):
             continue

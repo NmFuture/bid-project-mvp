@@ -43,12 +43,13 @@ class DisabledParseEngine(DocumentParseEngine):
 
 def create_document_parse_engine(
     *,
-    parse_engine: str = "mineru",
-    mineru_enabled: bool = True,
-    fallback: str = "lightweight",
+    parse_engine: str = "docling",
+    fallback: str = "none",
+    **_: Any,
 ) -> DocumentParseEngine:
-    if parse_engine.strip().lower() == "mineru" and mineru_enabled:
-        from app.services.mineru_engine import MineruParseEngine
+    _ = fallback
+    if parse_engine.strip().lower() == "docling":
+        from app.services.docling_engine import DoclingParseEngine
 
-        return MineruParseEngine(fallback=fallback)
-    return DisabledParseEngine("MinerU 解析未启用")
+        return DoclingParseEngine(fallback=fallback)
+    return DisabledParseEngine("Docling 解析未启用")

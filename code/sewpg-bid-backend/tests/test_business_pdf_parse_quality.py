@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from app.services.document_parse_quality import evaluate_document_nav_quality
 
@@ -37,16 +37,16 @@ def test_evaluate_document_nav_quality_requires_review_when_table_keywords_have_
     assert any("商务偏差表" in warning for warning in report["warnings"])
 
 
-def test_evaluate_document_nav_quality_marks_mineru_failure_as_fallback() -> None:
+def test_evaluate_document_nav_quality_marks_docling_failure_as_fallback() -> None:
     report = evaluate_document_nav_quality(
         {
             "pages": [],
             "blocks": [],
             "tables": [],
-            "quality": {"status": "failed", "fallbackUsed": True, "warnings": ["mineru missing"]},
+            "quality": {"status": "failed", "fallbackUsed": True, "warnings": ["docling missing"]},
         }
     )
 
     assert report["status"] == "fallback"
     assert report["fallbackUsed"] is True
-    assert "mineru missing" in report["warnings"]
+    assert "docling missing" in report["warnings"]

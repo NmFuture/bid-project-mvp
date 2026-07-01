@@ -98,13 +98,9 @@ class Settings:
     s1_parse_opencode_enabled: bool
     business_template_extractor_enabled: bool
     business_pdf_parse_engine: str
-    business_pdf_mineru_enabled: bool
-    business_pdf_mineru_mode: str
-    business_pdf_mineru_backend: str
-    business_pdf_mineru_executable: str
-    business_pdf_mineru_timeout_sec: int
     business_pdf_engine_fallback: str
     business_pdf_ocr_fallback_enabled: bool
+    docling_artifacts_path: Path
     bid_internal_api_base_url: str
     onlyoffice_internal_url: str
     onlyoffice_backend_base_url: str
@@ -169,14 +165,10 @@ settings = Settings(
         os.getenv("APP_ENV", "development") == "production",
     ),
     business_template_extractor_enabled=_bool_env("BUSINESS_TEMPLATE_EXTRACTOR_ENABLED", True),
-    business_pdf_parse_engine=os.getenv("BUSINESS_PDF_PARSE_ENGINE", "mineru").strip().lower() or "mineru",
-    business_pdf_mineru_enabled=_bool_env("BUSINESS_PDF_MINERU_ENABLED", True),
-    business_pdf_mineru_mode=os.getenv("BUSINESS_PDF_MINERU_MODE", "auto").strip() or "auto",
-    business_pdf_mineru_backend=os.getenv("BUSINESS_PDF_MINERU_BACKEND", "pipeline").strip() or "pipeline",
-    business_pdf_mineru_executable=os.getenv("BUSINESS_PDF_MINERU_EXECUTABLE", "").strip(),
-    business_pdf_mineru_timeout_sec=_int_env("BUSINESS_PDF_MINERU_TIMEOUT_SEC", 21600),
-    business_pdf_engine_fallback=os.getenv("BUSINESS_PDF_ENGINE_FALLBACK", "lightweight").strip().lower() or "lightweight",
+    business_pdf_parse_engine=os.getenv("BUSINESS_PDF_PARSE_ENGINE", "docling").strip().lower() or "docling",
+    business_pdf_engine_fallback=os.getenv("BUSINESS_PDF_ENGINE_FALLBACK", "none").strip().lower() or "none",
     business_pdf_ocr_fallback_enabled=_bool_env("BUSINESS_PDF_OCR_FALLBACK_ENABLED", True),
+    docling_artifacts_path=Path(os.getenv("DOCLING_ARTIFACTS_PATH", "/data/docling-models")),
     bid_internal_api_base_url=os.getenv("BID_INTERNAL_API_BASE_URL", "http://fastapi:8000").rstrip("/"),
     onlyoffice_internal_url=os.getenv("ONLYOFFICE_INTERNAL_URL", "http://127.0.0.1:8080"),
     onlyoffice_backend_base_url=os.getenv("ONLYOFFICE_BACKEND_BASE_URL", "").rstrip("/"),

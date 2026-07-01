@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import io
 import json
@@ -666,39 +666,65 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(len(appendices), 1)
         self.assertEqual(appendices[0]["extractionMode"], "business_template_extractor_skill")
 
-    def test_business_pdf_uses_mineru_document_nav_first(self) -> None:
+    def test_business_pdf_uses_docling_document_nav_without_lightweight_fallback(self) -> None:
         project_id = self.create_business_project()
         pdf_path = settings.uploads_dir / project_id / "business.pdf"
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
         pdf_path.write_bytes(b"%PDF-1.4\n")
         nav_payload = {
             "schemaVersion": "business-document-nav-v1",
-            "sourceEngine": "mineru",
+            "sourceEngine": "docling",
             "documents": [{"id": "DOC-1", "sourcePath": str(pdf_path)}],
             "pages": [{"pageNo": 1, "textDensity": 0.8}],
-            "blocks": [{"id": "DOC-1:B000001", "type": "heading", "text": "第六章 投标文件格式"}],
+            "blocks": [
+                {
+                    "id": "DOC-1:B000001",
+                    "type": "heading",
+                    "text": "第六章 投标文件格式",
+                    "sourceEngine": "docling",
+                },
+                {
+                    "id": "DOC-1:B000002",
+                    "type": "paragraph",
+                    "text": "本章包含商务偏差表，请投标人填写。",
+                    "sourceEngine": "docling",
+                }
+            ],
             "tables": [],
             "images": [],
             "evidence": [],
-            "quality": {"status": "completed"},
+            "quality": {"engine": "docling", "status": "completed", "fallbackUsed": False},
         }
 
         def fake_parse_pdf(self, *, project_id: str, document: dict, output_dir: Path):
             nav_path = output_dir / "document_nav.json"
             quality_path = output_dir / "parse_quality.json"
             nav_path.write_text(json.dumps(nav_payload, ensure_ascii=False), encoding="utf-8")
-            quality_path.write_text(json.dumps({"status": "completed"}, ensure_ascii=False), encoding="utf-8")
+            quality_path.write_text(
+                json.dumps(
+                    {
+                        "engine": "docling",
+                        "status": "completed",
+                        "fallbackUsed": False,
+                        "doclingMode": "local-text-layer",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
             return {
-                "documentParseEngine": "mineru",
+                "documentParseEngine": "docling",
                 "status": "completed",
                 "documentNavPath": str(nav_path),
                 "parseQualityPath": str(quality_path),
+                "doclingMode": "local-text-layer",
             }
 
         def fake_structured_parser(skill_manifest_path: Path, **kwargs):
             manifest = json.loads(skill_manifest_path.read_text(encoding="utf-8"))
             document = manifest["documents"][0]
-            self.assertEqual(document["documentParseEngine"], "mineru")
+            self.assertEqual(document["documentParseEngine"], "docling")
+            self.assertEqual(document["doclingMode"], "local-text-layer")
             self.assertTrue(Path(document["documentNavPath"]).is_file())
             self.assertTrue(Path(document["parseQualityPath"]).is_file())
             text_path = Path(document["textPath"])
@@ -724,15 +750,19 @@ class ParsePipelineTests(unittest.TestCase):
             }, ""
 
         with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
-            "app.services.parsing.settings.business_pdf_mineru_enabled",
-            True,
+            "app.services.parsing.settings.business_pdf_parse_engine",
+            "docling",
             create=True,
         ), patch(
-            "app.services.parsing.MineruParseEngine.parse_pdf",
+            "app.services.parsing.settings.business_pdf_engine_fallback",
+            "none",
+            create=True,
+        ), patch(
+            "app.services.parsing.DoclingParseEngine.parse_pdf",
             new=fake_parse_pdf,
         ), patch(
             "app.services.parsing.extract_pdf_text",
-            side_effect=AssertionError("business PDF should use DocumentParseEngine first"),
+            side_effect=AssertionError("Docling business PDF path must not call lightweight extract_pdf_text fallback"),
         ), patch(
             "app.services.parsing.run_business_template_extractor",
             return_value=([], {"schemaVersion": "bid-business-template-extractor-v1", "summary": {"templateCount": 0}}, ""),
@@ -757,9 +787,18 @@ class ParsePipelineTests(unittest.TestCase):
             )
 
         self.assertIn("第六章 投标文件格式", summary["textPreview"])
-        self.assertEqual(storage["documents"][0]["documentParseEngine"], "mineru")
-        self.assertEqual(storage["documents"][0]["textLength"], len("第六章 投标文件格式"))
+        self.assertEqual(storage["documents"][0]["documentParseEngine"], "docling")
+        self.assertEqual(storage["documents"][0]["textLength"], len("第六章 投标文件格式\n\n本章包含商务偏差表，请投标人填写。"))
         self.assertTrue(Path(storage["documents"][0]["documentNavPath"]).is_file())
+        self.assertIn("第六章 投标文件格式", Path(storage["documents"][0]["textPath"]).read_text(encoding="utf-8"))
+        quality = json.loads(Path(storage["documents"][0]["parseQualityPath"]).read_text(encoding="utf-8"))
+        self.assertEqual(quality["engine"], "docling")
+        self.assertEqual(quality["sourceEngine"], "docling")
+        self.assertEqual(quality["status"], "completed")
+        self.assertEqual(quality["qualityStatus"], "needs_review")
+        self.assertEqual(quality["doclingMode"], "local-text-layer")
+        self.assertFalse(quality["fallbackUsed"])
+        self.assertTrue(quality["reviewRequired"])
 
     def test_business_pdf_low_quality_pages_append_ocr_blocks(self) -> None:
         project_id = self.create_business_project()
@@ -768,23 +807,26 @@ class ParsePipelineTests(unittest.TestCase):
         pdf_path.write_bytes(b"%PDF-1.4\n")
         nav_payload = {
             "schemaVersion": "business-document-nav-v1",
-            "sourceEngine": "mineru",
+            "sourceEngine": "docling",
             "documents": [{"id": "DOC-1", "sourcePath": str(pdf_path)}],
             "pages": [{"pageNo": 1, "textDensity": 0.01}],
-            "blocks": [{"id": "DOC-1:B000001", "type": "paragraph", "text": "MinerU 原始文本", "pageNo": 1}],
+            "blocks": [{"id": "DOC-1:B000001", "type": "paragraph", "text": "Docling 原始文本", "pageNo": 1}],
             "tables": [],
             "images": [],
             "evidence": [],
-            "quality": {"status": "completed"},
+            "quality": {"engine": "docling", "status": "completed", "fallbackUsed": False},
         }
 
         def fake_parse_pdf(self, *, project_id: str, document: dict, output_dir: Path):
             nav_path = output_dir / "document_nav.json"
             quality_path = output_dir / "parse_quality.json"
             nav_path.write_text(json.dumps(nav_payload, ensure_ascii=False), encoding="utf-8")
-            quality_path.write_text(json.dumps({"status": "completed"}, ensure_ascii=False), encoding="utf-8")
+            quality_path.write_text(
+                json.dumps({"engine": "docling", "status": "completed", "fallbackUsed": False}, ensure_ascii=False),
+                encoding="utf-8",
+            )
             return {
-                "documentParseEngine": "mineru",
+                "documentParseEngine": "docling",
                 "status": "completed",
                 "documentNavPath": str(nav_path),
                 "parseQualityPath": str(quality_path),
@@ -795,11 +837,11 @@ class ParsePipelineTests(unittest.TestCase):
             return {1: {"text": "OCR 补充文本", "meta": {"status": "completed", "pageCount": 1}}}
 
         with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
-            "app.services.parsing.settings.business_pdf_mineru_enabled",
-            True,
+            "app.services.parsing.settings.business_pdf_parse_engine",
+            "docling",
             create=True,
         ), patch(
-            "app.services.parsing.MineruParseEngine.parse_pdf",
+            "app.services.parsing.DoclingParseEngine.parse_pdf",
             new=fake_parse_pdf,
         ), patch(
             "app.services.parsing._ocr_business_pdf_pages",
@@ -852,10 +894,12 @@ class ParsePipelineTests(unittest.TestCase):
         nav = json.loads(Path(document["documentNavPath"]).read_text(encoding="utf-8"))
         texts = [block["text"] for block in nav["blocks"]]
         quality = json.loads(Path(document["parseQualityPath"]).read_text(encoding="utf-8"))
-        self.assertIn("MinerU 原始文本", texts)
+        self.assertIn("Docling 原始文本", texts)
         self.assertIn("OCR 补充文本", texts)
         self.assertTrue(any(block["type"] == "ocr_text" for block in nav["blocks"]))
         self.assertEqual(document["pageOcr"]["appliedPages"], [1])
+        self.assertEqual(quality["engine"], "docling")
+        self.assertFalse(quality["fallbackUsed"])
         self.assertEqual(quality["ocrAppliedPages"], [1])
 
     def test_business_section_tree_is_ready_before_structured_parser(self) -> None:
@@ -2709,7 +2753,7 @@ class ParsePipelineTests(unittest.TestCase):
                 "appendices": [],
                 "commitmentLetters": [],
                 "workflow": {
-                    "documentParseEngine": "mineru",
+                    "documentParseEngine": "docling",
                     "documentParseStatus": "completed",
                     "fallbackUsed": False,
                 },
@@ -2733,7 +2777,7 @@ class ParsePipelineTests(unittest.TestCase):
                         {
                             "id": "TEN-1",
                             "name": "商务招标文件.pdf",
-                            "documentParseEngine": "mineru",
+                            "documentParseEngine": "docling",
                             "documentParseStatus": "completed",
                             "fallbackUsed": False,
                         }
@@ -2779,7 +2823,7 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(len(payload["items"]), 1)
         self.assertEqual(payload["items"][0]["value"], "后台恢复测试项目")
         self.assertNotIn("\x00", json.dumps(payload, ensure_ascii=False))
-        self.assertEqual(payload["structured"]["workflow"]["documentParseEngine"], "mineru")
+        self.assertEqual(payload["structured"]["workflow"]["documentParseEngine"], "docling")
         self.assertFalse(payload["structured"]["workflow"]["fallbackUsed"])
 
         project = store._require(project_id)
