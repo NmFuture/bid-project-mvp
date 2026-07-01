@@ -147,6 +147,26 @@ const technicalActionMode = (item) => {
   return 'manual_upload'
 }
 
+// 候选素材匹配度（0~1），口径与商务标 numericMatchScore 一致：
+// 优先 score/matchScore/similarity/confidence，兜底 topicRelevance；值 >1 视为百分制换算。
+const technicalMatchScore = (material) => {
+  const raw = material?.score
+    ?? material?.matchScore
+    ?? material?.similarity
+    ?? material?.confidence
+    ?? material?.topicRelevance
+    ?? 0
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return 0
+  return value > 1 ? value / 100 : value
+}
+
+const materialTierLabels = {
+  standard: '通用素材',
+  customer: '客户素材',
+  project: '项目素材',
+}
+
 function TechnicalTocActionBadge({ item }) {
   const mode = technicalActionMode(item)
   if (!mode) {
@@ -170,8 +190,9 @@ function StatCard({ label, value }) {
   )
 }
 
-// 素材证据片段：非附表正文缺口的素材召回时，展示素材内匹配到的段落（标题/摘要/页码/匹配分），
+// 素材证据片段：非附表正文缺口的素材召回时，展示素材内匹配到的段落（标题/摘要/页码），
 // 让用户在选用前就能看到「为什么这份素材相关、相关在哪一段」。无片段则不渲染。
+// 整体匹配度已在卡片头部展示，这里不再堆每段原始分（对齐商务标 Wiki依据 的呈现）。
 function EvidenceSegments({ material }) {
   const segments = evidenceSegmentsForMaterial(material)
   if (!segments.length) return null
@@ -180,14 +201,7 @@ function EvidenceSegments({ material }) {
       <div className="text-[10px] font-semibold text-on-surface-variant">匹配证据片段</div>
       {segments.map((segment) => (
         <div key={segment.id || segment.title} className="rounded bg-surface-container px-2 py-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="min-w-0 truncate text-[11px] font-medium text-on-surface">{segment.title || '片段'}</span>
-            {segment.matchScore != null ? (
-              <span className="shrink-0 rounded bg-tertiary-fixed px-1.5 text-[10px] font-semibold tabular-nums text-on-tertiary-fixed">
-                {segment.matchScore}
-              </span>
-            ) : null}
-          </div>
+          <span className="block min-w-0 truncate text-[11px] font-medium text-on-surface">{segment.title || '片段'}</span>
           {segment.summary ? (
             <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-on-surface-variant">{segment.summary}</p>
           ) : null}
@@ -200,12 +214,16 @@ function EvidenceSegments({ material }) {
   )
 }
 
-// 候选素材卡片：对齐商务标候选区版式（左信息+证据片段，右侧竖排预览/选择）。
+// 候选素材卡片：对齐商务标候选区版式（左侧匹配度打分+元数据+证据片段，右侧竖排预览/选择）。
 // material_match 系统召回与关键词搜索结果共用此卡片，统一交互。
 function MaterialCandidateCard({ material, isSelected, busy, selecting, onPreview, onSelect }) {
   const name = material.name || material.cleanedFileName || material.id || material.materialId
   const path = material.folderPath || material.path || material.id
   const reason = material.sourceRouting?.reasons?.[0] || material.matchReason
+  // matchScore 是无上界的原始排序分（全标题命中 +120 等），显示时钳到 100% 上限。
+  const matchPercent = Math.min(100, Math.round(technicalMatchScore(material) * 100))
+  const tierLabel = materialTierLabels[String(material.materialTier || '')] || ''
+  const cleanStatus = String(material.cleanStatus || '')
   return (
     <div
       className={`rounded-md border px-3 py-2 text-xs ${
@@ -217,9 +235,22 @@ function MaterialCandidateCard({ material, isSelected, busy, selecting, onPrevie
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate font-medium text-on-surface">{name}</span>
             {isSelected ? <Badge size="xs" variant="done">已选择素材</Badge> : null}
+            {tierLabel ? <Badge size="xs" variant="pending">{tierLabel}</Badge> : null}
           </div>
-          <span className="mt-1 block truncate text-outline">{path}</span>
-          {reason ? <span className="mt-1 block truncate text-[11px] text-primary">{reason}</span> : null}
+          {matchPercent > 0 || reason ? (
+            <div className="mt-1 text-[11px] text-outline">
+              {matchPercent > 0 ? <span className="font-semibold text-primary">匹配度 {matchPercent}%</span> : null}
+              {matchPercent > 0 && reason ? ' · ' : ''}
+              {reason || ''}
+            </div>
+          ) : null}
+          {cleanStatus || material.cleanedFileName ? (
+            <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-on-surface-variant">
+              {cleanStatus ? <span>清洗：{cleanStatus}</span> : null}
+              {material.cleanedFileName ? <span>清洗稿可用</span> : null}
+            </div>
+          ) : null}
+          <span className="mt-1 block truncate text-[11px] text-outline">{path}</span>
           <EvidenceSegments material={material} />
         </div>
         <div className="flex shrink-0 flex-col gap-2">
@@ -693,7 +724,7 @@ export default function TechnicalGapRecognition({ showToast }) {
       if (!key || seen.has(key)) return false
       seen.add(key)
       return true
-    }).slice(0, 10)
+    }).sort((a, b) => technicalMatchScore(b) - technicalMatchScore(a)).slice(0, 10)
   })()
   const selectedAiFillReferenceIds = defaultAiFillReferenceMaterialIds(selected, [], selectedFillTask)
   const selectedAiFillParseFieldIds = defaultAiFillParseFieldIds(selected, selectedFillTask)
@@ -1162,7 +1193,7 @@ export default function TechnicalGapRecognition({ showToast }) {
             </Button>
           </div>
         ) : (
-          <div className="grid min-h-[720px] gap-4 p-3 xl:grid-cols-[460px_minmax(0,1fr)] 2xl:grid-cols-[520px_minmax(0,1fr)]">
+          <div className="grid h-[min(78vh,900px)] min-h-[520px] gap-4 overflow-hidden p-3 xl:grid-cols-[460px_minmax(0,1fr)] 2xl:grid-cols-[520px_minmax(0,1fr)]">
             <div className="min-h-0 flex flex-col overflow-hidden">
               <div className="h-12 shrink-0 px-2 py-3">
                 <div className="text-xs font-semibold text-on-surface">
