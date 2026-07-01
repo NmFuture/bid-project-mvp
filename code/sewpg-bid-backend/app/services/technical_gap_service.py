@@ -33,6 +33,7 @@ from app.services.technical_gap_domain import (
     check_technical_gap_integrity,
     find_technical_gap_item,
     find_technical_gap_plan_item,
+    recompute_technical_gap_decisions,
     refresh_technical_gap_plan_artifact_urls,
     summarize_technical_gap_plan,
 )
@@ -76,6 +77,11 @@ class TechnicalGapService:
 
     @staticmethod
     def _refresh_gap_integrity(project: dict[str, Any], gap_state: dict[str, Any]) -> None:
+        plan = gap_state.get("plan")
+        if isinstance(plan, dict):
+            # 决策终审：选中/上传/AI填写完成后，decision 要跟着从「候选待定」翻成 ready，
+            # 而不是永远停在 fill_required/review_required——对齐商务标的两层架构。
+            recompute_technical_gap_decisions(plan)
         gap_state["integrity"] = check_technical_gap_integrity(gap_state.get("plan") or {})
         if isinstance(gap_state.get("plan"), dict):
             gap_state["plan"]["integrity"] = gap_state["integrity"]

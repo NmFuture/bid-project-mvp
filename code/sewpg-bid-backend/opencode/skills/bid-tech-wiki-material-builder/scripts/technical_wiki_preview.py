@@ -28,7 +28,8 @@ from typing import Any, Callable
 # 预览缓存结构版本：仅当 prompt 或 preview 字段结构变化时升此版本，
 # 让所有文件缓存指纹失效、触发重算。后端从桥接 re-export，作为指纹的一部分。
 # v2：预览对象新增 evidenceSegments（段落级证据片段），供非附表正文缺口召回。
-PREVIEW_SCHEMA_VERSION = 2
+# v3：片段新增 topicKeywords（文件名+目录+heading 抽的主题词），供主题级弱关联召回。
+PREVIEW_SCHEMA_VERSION = 3
 
 # 批量合并：一次 LLM 调用喂多少份文件摘要。把请求数从「文件数」降到「文件数/BATCH」。
 PREVIEW_BATCH_SIZE = 8
@@ -78,6 +79,9 @@ _TECH_SEGMENT_MARKERS = (
     "混塔", "钢塔", "塔筒", "电网友好性", "碳排放", "智能场控", "智能控制",
     "智能监控", "智能运维", "智能终端", "风功率预测", "生产能力", "试验检测",
     "整机抗涡激", "并网", "载荷", "传动链", "发电机", "变流器", "齿轮箱", "叶片",
+    "试验", "检验", "监造", "型式试验", "安装", "调试", "试运行", "吊装",
+    "运输", "交付进度", "技术资料", "验收", "质保", "可利用率", "功率曲线",
+    "发电量", "等效满负荷", "承诺函", "供货范围", "运维",
 )
 
 # 单份素材最多切出的片段数（与商务标一致，控制 planner 候选规模）。
@@ -136,12 +140,19 @@ def build_evidence_segments(material_id: str, name: str, path: str, profile: dic
     3. 都没有：返回空（上层不挂 evidenceSegments，仍可按文件名匹配）。
 
     每个片段 schema：
-      {segmentId, materialId, title, segmentScope, sourcePages, summary, keywords}
+      {segmentId, materialId, title, segmentScope, sourcePages, summary, keywords, topicKeywords}
+
+    topicKeywords：素材级主题词（文件名 + 三级目录名 + 全部 heading 抽词），供
+    planner 做「主题相关但文件名对不上」的弱关联召回；同一素材所有片段共享同一份。
     """
     mid = str(material_id or "").strip()
     base_title = str(name or "").rsplit(".", 1)[0] or str(name or "") or mid
     headings = [h for h in (profile.get("headings") or []) if isinstance(h, dict)]
     paragraphs = [str(p or "").strip() for p in (profile.get("paragraphs") or []) if str(p or "").strip()]
+
+    # 素材级主题词：文件名 + 路径（含机型/分类目录）+ 全部 heading 标题，统一抽词。
+    heading_text = " ".join(str(h.get("title") or "") for h in headings)
+    topic_keywords = _segment_keywords(f"{path}/{base_title}/{heading_text}")
 
     segments: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
@@ -160,6 +171,7 @@ def build_evidence_segments(material_id: str, name: str, path: str, profile: dic
             "sourcePages": source_pages,
             "summary": re.sub(r"\s+", " ", str(summary or "")).strip()[:_SEGMENT_SUMMARY_LIMIT],
             "keywords": _segment_keywords(f"{path}/{title}"),
+            "topicKeywords": topic_keywords,
         })
 
     if headings:

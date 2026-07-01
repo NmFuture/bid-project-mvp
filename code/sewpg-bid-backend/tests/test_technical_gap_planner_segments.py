@@ -97,5 +97,48 @@ class ManifestPassThroughTests(unittest.TestCase):
         self.assertEqual(idx[0]["evidenceSegments"], [])
 
 
+class TopicRecallTests(unittest.TestCase):
+    """主题级弱关联召回：文件名对不上但主题相关的素材也能召回。"""
+
+    def _lib(self):
+        # 一批文件名与「试验检验监造/考核指标」章节字面对不上、但主题相关的素材。
+        return [
+            {"id": "RAW-A", "name": "上海电气风电试验检测能力专题.docx", "folderPath": "技术标/通用素材/EW5.0-202", "materialTier": "standard",
+             "evidenceSegments": [{"title": "试验检测能力", "summary": "型式试验与检测实验室能力", "topicKeywords": ["试验检测", "型式试验", "检测能力"]}]},
+            {"id": "RAW-B", "name": "全过程质量保障体系.docx", "folderPath": "技术标/通用素材/EW5.0-202", "materialTier": "standard",
+             "evidenceSegments": [{"title": "质量保障体系", "summary": "全过程质量保障与监造", "topicKeywords": ["质量保障", "监造", "质量控制"]}]},
+            {"id": "RAW-C", "name": "发电小时数承诺函（承诺考核值）.docx", "folderPath": "技术标/通用素材/EW5.0-202", "materialTier": "standard",
+             "evidenceSegments": [{"title": "考核值承诺", "summary": "年等效满负荷小时数考核承诺", "topicKeywords": ["考核", "等效满负荷", "承诺值"]}]},
+            {"id": "RAW-D", "name": "混塔解决方案专题.docx", "folderPath": "技术标/通用素材/EW5.0-202", "materialTier": "standard",
+             "evidenceSegments": [{"title": "混塔方案", "summary": "混合塔架方案", "topicKeywords": ["混塔", "塔筒"]}]},
+        ]
+
+    def test_recall_inspection_supervision(self) -> None:
+        # 章节"试验、检验和监造"应召回到试验检测能力专题 / 质量保障体系（文件名不含该章节标题）。
+        out = planner.topic_match_materials(self._lib(), "试验、检验和监造")
+        ids = [m["id"] for m in out]
+        self.assertIn("RAW-A", ids)
+        self.assertIn("RAW-B", ids)
+        self.assertNotIn("RAW-D", ids)  # 混塔主题无关，不召回
+        self.assertTrue(all("topicRelevance" in m for m in out))
+
+    def test_recall_assessment_metrics(self) -> None:
+        out = planner.topic_match_materials(self._lib(), "考核指标")
+        self.assertIn("RAW-C", ids := [m["id"] for m in out])
+        self.assertNotIn("RAW-D", ids)
+
+    def test_irrelevant_title_recalls_nothing(self) -> None:
+        out = planner.topic_match_materials(self._lib(), "财务审计报告")
+        self.assertEqual(out, [])
+
+    def test_synonym_hit_count(self) -> None:
+        self.assertGreaterEqual(planner.tech_synonym_hit_count("试验、检验和监造", "本文介绍试验检测能力与监造安排"), 2)
+        self.assertEqual(planner.tech_synonym_hit_count("财务审计", "试验检测能力"), 0)
+
+    def test_similarity_substring(self) -> None:
+        self.assertGreater(planner._tech_similarity_score("供货范围", "供货范围概述说明"), 0.5)
+        self.assertEqual(planner._tech_similarity_score("", "x"), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

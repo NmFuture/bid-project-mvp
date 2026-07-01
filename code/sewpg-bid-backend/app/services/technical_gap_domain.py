@@ -6,6 +6,51 @@ from typing import Any
 from urllib.parse import quote
 
 
+def recompute_technical_gap_decisions(plan: dict[str, Any]) -> int:
+    """决策终审：候选素材不等于决策，对齐商务标 recompute_task_states 的两层架构。
+
+    build_gap_plan 产出的 decision 是「初判」；这里是每次都会重跑的「终审」，按优先级：
+    1. 有 resolvedArtifacts（已选中/已上传/AI填写已产出）→ decision=ready，无论初判是什么。
+    2. 初判就是 fill_required 且还有未完成的 fillTasks（附表或正文「待填写」模板）→ 保持
+       fill_required，不受候选是否存在影响——这类任务本来就需要 AI 处理完才算数。
+    3. 初判是 fill_required 但没有未完成 fillTasks、只有 candidateMaterials（字面候选/主题弱
+       关联召回，纯供人工挑选）→ 改判 review_required（此前只在 schema 占位、从未真正赋值）。
+    4. 其余（ready/structural/material_required 等）保持初判结果不变——尤其是「已经匹配到现成
+       素材」的 ready 态，就算带着 candidateMaterials 当备选，也不能被这条终审规则误伤。
+
+    返回被改写 decision 的条目数。
+    """
+    changed = 0
+    for item in plan.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        resolved_artifacts = [a for a in (item.get("resolvedArtifacts") or []) if isinstance(a, dict)]
+        if resolved_artifacts:
+            if item.get("decision") != "ready" or item.get("status") != "resolved":
+                item["decision"] = "ready"
+                item["status"] = "resolved"
+                changed += 1
+            continue
+
+        if str(item.get("decision") or "") != "fill_required":
+            continue  # ready/material_required/structural 等初判结果不参与终审改写
+
+        pending_fill_tasks = [
+            task for task in (item.get("fillTasks") or [])
+            if isinstance(task, dict) and str(task.get("status") or "pending") != "completed"
+        ]
+        if pending_fill_tasks:
+            continue  # 真正需要 AI 处理，终审不动
+
+        candidate_materials = [m for m in (item.get("candidateMaterials") or []) if isinstance(m, dict)]
+        if candidate_materials and item.get("decision") != "review_required":
+            item["decision"] = "review_required"
+            item["status"] = "needs_input"
+            changed += 1
+
+    return changed
+
+
 def summarize_technical_gap_plan(plan: dict[str, Any]) -> dict[str, Any]:
     items = [item for item in plan.get("items") or [] if isinstance(item, dict)]
     decision_counts: dict[str, int] = {}

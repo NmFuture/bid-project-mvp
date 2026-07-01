@@ -559,6 +559,94 @@ def material_score(material: dict[str, Any], title: str) -> float:
     return score
 
 
+# ---------------------------------------------------------------------------
+# 主题级弱关联召回（迁移自商务标 bid-business-gap-planner，技术标线内独立实现）
+#
+# 现有 material_match 的文件级匹配是「章节标题整串字面包含」，对「主题相关但文件名
+# 对不上」的素材（如章节"试验、检验和监造" vs 素材"试验检测能力专题"/"质量保障体系"）
+# 召不回。这里补一套同义词 + 中文分词相似度的弱关联召回，纯 stdlib、不调 LLM。
+# ---------------------------------------------------------------------------
+
+# 技术标领域同义词表：key 为章节主题的归一词，value 为可在素材文本里命中的近义/相关词。
+# 基于真实投标技术卷里「漏召回」章节归纳，不照搬商务标的投标函/业绩那套。
+TECH_TASK_SYNONYMS: dict[str, list[str]] = {
+    "试验检验监造": ["试验", "检验", "监造", "试验检测", "型式试验", "检测能力", "质量保障", "质量保证", "全过程质量", "质量控制"],
+    "安装调试试运行": ["安装", "调试", "试运行", "吊装", "安装要求", "调试解决方案"],
+    "考核指标": ["考核", "可利用率", "功率曲线", "等效满负荷", "满负荷小时", "承诺值", "保证值", "承诺函"],
+    "技术资料交付进度": ["技术资料", "交付", "交付进度", "图纸", "说明书", "保管", "包装"],
+    "项目验收": ["验收", "质保", "出质保", "最终验收", "质量保证期"],
+    "运行维护": ["运行维护", "运维", "售后", "技术服务"],
+}
+
+
+def _tech_normalize_text(value: Any) -> str:
+    """归一化：小写 + 去标点空白（与商务标 normalize_text 等价）。"""
+    return re.sub(r"[\s　,，、.。:：;；()（）\[\]【】{}<>《》\"'`·_\-—/\\|]+", "", str(value or "").lower())
+
+
+def _tech_tokenize_zh(value: str) -> list[str]:
+    """中文 n-gram 切分（2~6 gram），用于无空格中文的 token Jaccard。"""
+    text = _tech_normalize_text(value)
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for length in (6, 5, 4, 3, 2):
+        for start in range(0, max(0, len(text) - length + 1)):
+            tok = text[start : start + length]
+            if tok not in seen:
+                seen.add(tok)
+                tokens.append(tok)
+    return tokens
+
+
+def _tech_similarity_score(a: str, b: str) -> float:
+    """标题 a 与素材文本 b 的相似度（子串优先 + token Jaccard），迁移商务标算法。"""
+    a = _tech_normalize_text(a)
+    b = _tech_normalize_text(b)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    if a in b or b in a:
+        return min(len(a), len(b)) / max(len(a), len(b)) + 0.25
+    a_tokens = set(_tech_tokenize_zh(a))
+    b_tokens = set(_tech_tokenize_zh(b))
+    if not a_tokens or not b_tokens:
+        return 0.0
+    return len(a_tokens & b_tokens) / max(len(a_tokens | b_tokens), 1)
+
+
+def _tech_synonym_terms_for_title(title: str) -> list[str]:
+    """取章节标题命中的同义词组：标题里出现某主题 key 的任一词，则纳入该组全部近义词。"""
+    title_key = _tech_normalize_text(title)
+    terms: list[str] = []
+    seen: set[str] = set()
+    for topic, synonyms in TECH_TASK_SYNONYMS.items():
+        group = [topic, *synonyms]
+        # 标题命中该主题任一词，即认为属于该主题，纳入整组近义词供素材侧匹配。
+        if any(_tech_normalize_text(word) and _tech_normalize_text(word) in title_key for word in group):
+            for word in group:
+                key = _tech_normalize_text(word)
+                if len(key) >= 2 and key not in seen:
+                    seen.add(key)
+                    terms.append(word)
+    return terms
+
+
+def tech_synonym_hit_count(title: str, haystack: str) -> int:
+    """章节标题的同义词组在素材文本里的命中数（上限 4，迁移商务标 synonym_hit_count）。"""
+    normalized = _tech_normalize_text(haystack)
+    if not normalized:
+        return 0
+    hits = 0
+    for term in _tech_synonym_terms_for_title(title):
+        key = _tech_normalize_text(term)
+        if len(key) >= 2 and key in normalized:
+            hits += 1
+            if hits >= 4:
+                break
+    return hits
+
+
 def _segment_text(segment: dict[str, Any]) -> str:
     """证据片段的可匹配文本：标题 + 摘要 + 关键词。"""
     keywords = segment.get("keywords") if isinstance(segment.get("keywords"), list) else []
@@ -755,6 +843,74 @@ def matching_materials_for_title(materials: list[dict[str, Any]], title: str) ->
         for material in materials
         if title_key in normalize_key(material_text(material))
     ]
+
+
+def _material_topic_text(material: dict[str, Any]) -> str:
+    """素材的主题文本池：文件名 + 路径 + 片段 topicKeywords/keywords/title/summary。
+
+    用于主题级弱关联召回——把「主题相关但文件名对不上」的素材也纳入打分。
+    """
+    parts = [material_text(material)]
+    for segment in material.get("evidenceSegments") or []:
+        if not isinstance(segment, dict):
+            continue
+        parts.append(str(segment.get("title") or ""))
+        parts.append(str(segment.get("summary") or ""))
+        for key in ("topicKeywords", "keywords"):
+            value = segment.get(key)
+            if isinstance(value, list):
+                parts.append(" ".join(str(v) for v in value))
+    return " ".join(parts)
+
+
+def topic_match_score(material: dict[str, Any], title: str) -> float:
+    """章节标题与素材主题文本的弱关联相关度（0~1），迁移商务标 wiki_card_relevance 思路。
+
+    取「分词相似度」与「同义词命中折算」的较大者：
+    - similarity：标题 vs 素材主题池的子串/token Jaccard。
+    - 同义词：命中 >=2 个折 0.45，命中 1 个折 0.3（标题主题被素材覆盖的信号）。
+    返回 0 表示无主题关联。
+    """
+    pool = _material_topic_text(material)
+    if not pool or not normalize_key(title):
+        return 0.0
+    sim = _tech_similarity_score(title, pool)
+    syn_hits = tech_synonym_hit_count(title, pool)
+    syn_score = 0.0
+    if syn_hits >= 2:
+        syn_score = 0.45
+    elif syn_hits == 1:
+        syn_score = 0.3
+    return max(sim, syn_score)
+
+
+def topic_match_materials(
+    materials: list[dict[str, Any]],
+    title: str,
+    *,
+    threshold: float = 0.2,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """主题级弱关联召回：从允许范围素材里挑与章节标题主题相关的素材。
+
+    对每份素材算 topic_match_score，>= threshold 的纳入候选（附 topicRelevance），
+    按分降序取前 limit。用于补「文件名对不上但主题相关」的素材，救字面召回的漏网。
+    """
+    title_key = normalize_key(title)
+    if not title_key:
+        return []
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for material in materials:
+        if not isinstance(material, dict):
+            continue
+        score = topic_match_score(material, title)
+        if score >= threshold:
+            enriched = dict(material)
+            enriched["topicRelevance"] = round(score, 3)
+            enriched["matchReason"] = enriched.get("matchReason") or "主题相关素材（弱关联召回）"
+            scored.append((score, enriched))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [material for _, material in scored[:limit]]
 
 
 def chapter_children(item: dict[str, Any], all_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1335,13 +1491,31 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 gap_reason = "允许范围内已有可用素材。"
                 next_actions = ["s4_merge_material"]
         else:
-            status = "missing"
-            decision = "material_required"
-            usage = ""
-            matched_materials = []
-            gap_reason = "目录项未匹配到素材库 Wiki 或补料记录。"
-            required_inputs.append({"type": "upload", "label": "上传客户资料或选择已有素材"})
-            next_actions = ["manual_upload", "select_material", "ignore"]
+            # 字面候选为空：先用主题级弱关联召回兜底（迁移商务标「候选只供选用、
+            # 不反推 decision 为 ready」原则）。命中则归为 material_match（素材匹配，
+            # 人来选用），而非 ready（固定素材）；素材库确无主题相关料才判人工补料。
+            topic_materials = (
+                topic_match_materials(indexed_materials, title)
+                if not structural
+                else []
+            )
+            if topic_materials:
+                status = "needs_input"
+                decision = "fill_required"
+                usage = "section_fill"
+                matched_materials = []
+                alternative_materials = attach_recalled_segments(topic_materials, title)
+                gap_reason = "主题相关素材弱关联召回命中，可选用素材后合入或补充。"
+                required_inputs.append({"type": "material_match", "label": "从主题相关候选中选用素材"})
+                next_actions = ["select_reference_material", "manual_upload"]
+            else:
+                status = "missing"
+                decision = "material_required"
+                usage = ""
+                matched_materials = []
+                gap_reason = "目录项未匹配到素材库 Wiki 或补料记录。"
+                required_inputs.append({"type": "upload", "label": "上传客户资料或选择已有素材"})
+                next_actions = ["manual_upload", "select_material", "ignore"]
 
         plan_items.append(
             {

@@ -130,15 +130,17 @@ const isStructuralItem = (item) => (
 
 const isAppendixFillItem = (item) => (
   decisionOf(item) === 'fill_required'
-    && asObjectArray(item?.appendixTasks).length > 0
+    && asObjectArray(item?.fillTasks).some((task) => String(task?.status || 'pending') !== 'completed')
 )
 
 const technicalActionMode = (item) => {
   if (!item || isStructuralItem(item)) return ''
   const decision = decisionOf(item)
   if (decision === 'fill_required') return isAppendixFillItem(item) ? 'ai_table_fill' : 'material_match'
+  // review_required：候选素材已召回但用户还没选定（对齐商务标「候选≠决策」），
+  // 复用素材匹配的候选卡片交互，选中后由后端终审直接翻成 ready。
+  if (decision === 'review_required') return 'material_match'
   if (decision === 'material_required') return 'manual_upload'
-  if (decision === 'review_required') return 'manual_select'
   if (decision === 'ready') return 'fixed_material'
   if (String(item.status || '') === 'ignored') return 'ignored'
   if (String(item.status || '') === 'resolved' || String(item.status || '') === 'matched') return 'fixed_material'
@@ -194,6 +196,49 @@ function EvidenceSegments({ material }) {
           ) : null}
         </div>
       ))}
+    </div>
+  )
+}
+
+// 候选素材卡片：对齐商务标候选区版式（左信息+证据片段，右侧竖排预览/选择）。
+// material_match 系统召回与关键词搜索结果共用此卡片，统一交互。
+function MaterialCandidateCard({ material, isSelected, busy, selecting, onPreview, onSelect }) {
+  const name = material.name || material.cleanedFileName || material.id || material.materialId
+  const path = material.folderPath || material.path || material.id
+  const reason = material.sourceRouting?.reasons?.[0] || material.matchReason
+  return (
+    <div
+      className={`rounded-md border px-3 py-2 text-xs ${
+        isSelected ? 'border-secondary bg-secondary-container/50' : 'border-surface-container-high bg-surface-container-lowest'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="truncate font-medium text-on-surface">{name}</span>
+            {isSelected ? <Badge size="xs" variant="done">已选择素材</Badge> : null}
+          </div>
+          <span className="mt-1 block truncate text-outline">{path}</span>
+          {reason ? <span className="mt-1 block truncate text-[11px] text-primary">{reason}</span> : null}
+          <EvidenceSegments material={material} />
+        </div>
+        <div className="flex shrink-0 flex-col gap-2">
+          <Button type="button" onClick={() => onPreview(material)} disabled={busy} size="sm" variant="quiet">
+            预览
+          </Button>
+          {onSelect ? (
+            <Button
+              type="button"
+              onClick={() => onSelect(material)}
+              disabled={busy}
+              size="sm"
+              variant={isSelected ? 'secondary' : 'primary'}
+            >
+              {selecting ? '选择中...' : isSelected ? '已选择' : '选择'}
+            </Button>
+          ) : null}
+        </div>
+      </div>
     </div>
   )
 }
@@ -653,6 +698,13 @@ export default function TechnicalGapRecognition({ showToast }) {
   const selectedAiFillReferenceIds = defaultAiFillReferenceMaterialIds(selected, [], selectedFillTask)
   const selectedAiFillParseFieldIds = defaultAiFillParseFieldIds(selected, selectedFillTask)
   const selectedResolvedArtifact = latestResolvedArtifact(selected)
+  // 已选用素材 id 集合：选用产物 source=material_library，对齐商务标已选高亮。
+  const selectedMaterialIdSet = new Set(
+    asObjectArray(selected?.resolvedArtifacts)
+      .filter((artifact) => String(artifact?.source || '') === 'material_library')
+      .map((artifact) => String(artifact?.materialId || '').trim())
+      .filter(Boolean),
+  )
   const selectedAiFillCompleted = Boolean(
     selectedResolvedArtifact?.source === 'ai_fill'
     || selectedFillTask?.status === 'completed',
@@ -1363,35 +1415,16 @@ export default function TechnicalGapRecognition({ showToast }) {
                               <div className="mt-3 space-y-2">
                                 {selectedReferenceCandidates.map((material) => {
                                   const materialId = String(material?.id || material?.materialId || '').trim()
-                                  const selecting = busyAction === `select-material:${selected.id}:${materialId}`
                                   return (
-                                    <div key={materialId || material.name} className="rounded-md bg-surface-container-low px-3 py-2 text-xs">
-                                      <div className="flex items-start justify-between gap-3">
-                                        <button
-                                          type="button"
-                                          onClick={() => handlePreviewMaterial(material)}
-                                          className="min-w-0 flex-1 text-left"
-                                        >
-                                          <span className="block font-medium text-on-surface">{material.name || material.cleanedFileName || material.id}</span>
-                                          <span className="mt-1 block truncate text-outline">{material.folderPath || material.path || material.id}</span>
-                                          {material.sourceRouting?.reasons?.length || material.matchReason ? (
-                                            <span className="mt-1 block truncate text-[11px] text-primary">
-                                              {material.sourceRouting?.reasons?.[0] || material.matchReason}
-                                            </span>
-                                          ) : null}
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => handleSelectMaterial(material)}
-                                          disabled={Boolean(busyAction) || !materialId}
-                                          className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-primary px-2.5 text-[11px] font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-50"
-                                        >
-                                          <span className="material-symbols-outlined text-[14px]">check</span>
-                                          {selecting ? '选用中' : '选用'}
-                                        </button>
-                                      </div>
-                                      <EvidenceSegments material={material} />
-                                    </div>
+                                    <MaterialCandidateCard
+                                      key={materialId || material.name}
+                                      material={material}
+                                      isSelected={selectedMaterialIdSet.has(materialId)}
+                                      busy={Boolean(busyAction) || !materialId}
+                                      selecting={busyAction === `select-material:${selected.id}:${materialId}`}
+                                      onPreview={handlePreviewMaterial}
+                                      onSelect={handleSelectMaterial}
+                                    />
                                   )
                                 })}
                               </div>
@@ -1416,32 +1449,17 @@ export default function TechnicalGapRecognition({ showToast }) {
                             </div>
                             <div className="mt-3 max-h-48 space-y-2 overflow-y-auto">
                               {materialSearch.items.length ? materialSearch.items.map((item) => {
+                                const materialId = String(item?.id || item?.materialId || '').trim()
                                 return (
-                                  <div key={item.id} className="rounded-md bg-surface-container-low px-3 py-2 text-xs">
-                                    <div className="flex items-start justify-between gap-3">
-                                      <button
-                                        type="button"
-                                        onClick={() => handlePreviewMaterial(item)}
-                                        className="min-w-0 flex-1 text-left"
-                                      >
-                                        <span className="block font-medium text-on-surface">{item.name}</span>
-                                        <span className="mt-1 block break-all text-outline">
-                                          {item.id} · {item.hasCleanedWord ? '清洗稿' : '原始 Word'} · {item.folderPath || '-'}
-                                        </span>
-                                      </button>
-                                      {selectedActionMode === 'material_match' ? (
-                                        <button
-                                          type="button"
-                                          onClick={() => handleSelectMaterial(item)}
-                                          disabled={Boolean(busyAction) || !item.id}
-                                          className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-primary px-2.5 text-[11px] font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-50"
-                                        >
-                                          <span className="material-symbols-outlined text-[14px]">check</span>
-                                          {busyAction === `select-material:${selected.id}:${item.id}` ? '选用中' : '选用'}
-                                        </button>
-                                      ) : null}
-                                    </div>
-                                  </div>
+                                  <MaterialCandidateCard
+                                    key={item.id}
+                                    material={item}
+                                    isSelected={selectedMaterialIdSet.has(materialId)}
+                                    busy={Boolean(busyAction) || !materialId}
+                                    selecting={busyAction === `select-material:${selected.id}:${materialId}`}
+                                    onPreview={handlePreviewMaterial}
+                                    onSelect={selectedActionMode === 'material_match' ? handleSelectMaterial : null}
+                                  />
                                 )
                               }) : (
                                 <p className="text-xs text-outline">

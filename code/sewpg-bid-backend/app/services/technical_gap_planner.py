@@ -17,7 +17,7 @@ from app.services.bid_type import TECHNICAL_BID_TYPE, require_bid_type
 from app.services.identity import build_project_material_scope
 from app.services.opencode_client import OpencodeClient
 from app.services.technical_appendix_source_matrix import load_appendix_source_matrix_for_project
-from app.services.technical_gap_domain import summarize_technical_gap_plan
+from app.services.technical_gap_domain import recompute_technical_gap_decisions, summarize_technical_gap_plan
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
 from app.services.workspace_artifacts import legacy_workspace_roots, technical_workspace_dir, technical_workspace_stage_dir
@@ -109,6 +109,47 @@ def _attach_evidence_segments_to_plan(plan: dict[str, Any], material_index: list
             enriched += 1
     if enriched:
         logger.info("技术标缺口识别：为 %d 个正文缺口补充了证据片段召回", enriched)
+    return enriched
+
+
+def _attach_topic_recall_to_plan(plan: dict[str, Any], material_index: list[dict[str, Any]]) -> int:
+    """对「正文缺口但候选为空 → material_required」的项，用主题级弱关联召回兜底补候选。
+
+    覆盖 opencode agent 主路径：agent 产出的 plan 同样绕过本地 planner 的候选组装，
+    对「主题相关但文件名对不上」的章节（如试验/检验/监造、考核指标）会判 material_required。
+    这里用 planner 的 topic_match_materials 补候选，命中则改判为 fill_required（material_match），
+    并挂上片段召回。素材库确无对应料的项保持 material_required（人工补料），不硬塞。
+    """
+    helpers = _load_planner_segment_helpers()
+    if helpers is None or not hasattr(helpers, "topic_match_materials"):
+        return 0
+    if not material_index:
+        return 0
+
+    enriched = 0
+    for item in _object_items(plan.get("items")):
+        # 只兜底「正文类、候选为空、判了人工补料」的项；附表/已有候选/结构项不碰。
+        if str(item.get("decision") or "") != "material_required":
+            continue
+        if _object_items(item.get("appendixTasks")):
+            continue
+        if _object_items(item.get("candidateMaterials")):
+            continue
+        title = str(item.get("title") or "")
+        topic_materials = helpers.topic_match_materials(material_index, title)
+        if not topic_materials:
+            continue  # 素材库确无主题相关料 → 保持人工补料，不硬塞
+        recalled = helpers.attach_recalled_segments(topic_materials, title)
+        item["candidateMaterials"] = recalled
+        # 命中主题召回 → 从「人工补料」修正为「正文素材匹配」（material_match）。
+        item["decision"] = "fill_required"
+        item["status"] = "needs_input"
+        item["usage"] = "section_fill"
+        item["gapReason"] = "主题相关素材弱关联召回命中，可选用素材后合入或补充。"
+        item["nextActions"] = ["select_reference_material", "manual_upload"]
+        enriched += 1
+    if enriched:
+        logger.info("技术标缺口识别：为 %d 个正文缺口主题召回兜底补候选", enriched)
     return enriched
 
 
@@ -475,7 +516,13 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
     # 给「非附表正文缺口」的候选素材补段落级证据片段（A 层 evidenceSegments）。
     # agent 负责召回哪些素材，这一步只做确定性的「片段挂载 + 打分」，不改附表路径。
     _attach_evidence_segments_to_plan(plan, material_index)
+    # 主题级弱关联召回兜底：对「正文缺口候选为空 → 误判人工补料」的项补候选并修正决策。
+    _attach_topic_recall_to_plan(plan, material_index)
     normalize_technical_gap_plan_fill_task_skills(plan)
+    # 决策终审：候选素材不等于决策，对齐商务标「选定/处理完才算数」的两层架构；
+    # 未确认候选统一改判 review_required，不再等同于「已经可以走」。
+    recompute_technical_gap_decisions(plan)
+    plan["summary"] = summarize_technical_gap_plan(plan)
     plan["opencodeOutput"] = result.get("opencodeOutput") or {
         "status": "received",
         "sessionId": str(manifest_path),
