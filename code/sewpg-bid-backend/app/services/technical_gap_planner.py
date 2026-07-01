@@ -139,14 +139,24 @@ def _attach_topic_recall_to_plan(plan: dict[str, Any], material_index: list[dict
         topic_materials = helpers.topic_match_materials(material_index, title)
         if not topic_materials:
             continue  # 素材库确无主题相关料 → 保持人工补料，不硬塞
-        recalled = helpers.attach_recalled_segments(topic_materials, title)
-        item["candidateMaterials"] = recalled
-        # 命中主题召回 → 从「人工补料」修正为「正文素材匹配」（material_match）。
         item["decision"] = "fill_required"
         item["status"] = "needs_input"
         item["usage"] = "section_fill"
-        item["gapReason"] = "主题相关素材弱关联召回命中，可选用素材后合入或补充。"
-        item["nextActions"] = ["select_reference_material", "manual_upload"]
+        # 与字面候选一致：召回到「待填写」模板 → 走 AI 填写（生成 fillTask），而非当成可直接
+        # 选用合并的现成素材（对齐商务标 templateCandidates→模板填充）；现成素材才归 material_match。
+        primary_topic = topic_materials[0]
+        if helpers.material_requires_fill(primary_topic):
+            gap_id = str(item.get("id") or "")
+            item["candidateMaterials"] = helpers.attach_recalled_segments(topic_materials, title)
+            item["fillTasks"] = [helpers.build_material_fill_task(item, primary_topic, gap_id)]
+            item["gapReason"] = "主题相关待填写模板召回命中，需先由 AI 填写后再进入 S4 合并。"
+            item["nextActions"] = ["ai_fill_word", "select_reference_material", "manual_upload"]
+        else:
+            # material_match 候选是「选择即合并」列表，待填写模板不能直接选用，从可选列表剔除。
+            ready_topic = [m for m in topic_materials if not helpers.material_requires_fill(m)]
+            item["candidateMaterials"] = helpers.attach_recalled_segments(ready_topic, title)
+            item["gapReason"] = "主题相关素材弱关联召回命中，可选用素材后合入或补充。"
+            item["nextActions"] = ["select_reference_material", "manual_upload"]
         enriched += 1
     if enriched:
         logger.info("技术标缺口识别：为 %d 个正文缺口主题召回兜底补候选", enriched)
