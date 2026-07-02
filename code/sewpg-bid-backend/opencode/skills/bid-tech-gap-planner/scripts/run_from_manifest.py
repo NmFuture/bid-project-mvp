@@ -1553,6 +1553,32 @@ def build_material_fill_task(item: dict[str, Any], material: dict[str, Any], gap
     }
 
 
+def _fill_template_trusted(template: dict[str, Any], pool: list[dict[str, Any]], title: str) -> bool:
+    """弱召回主推的待填写模板是否可信到直接挂 AI 填写任务。
+
+    金标反评发现的错误路由（5.8 各子系统专题被挂上"优势说明"模板）：模板靠
+    同义词组蹭分登顶，但与章节主题无关——AI 拿错模板填出错误方向比漏召回更糟。
+    可信条件（满足其一）：
+    - 模板名称词干与章节标题字面相关（文件名命中或相似度 ≥0.3；比较前剥掉
+      「（双TRB+碳纤叶片）」这类括号修饰——模板按目标章节命名，括号是配置后缀）；
+    - 模板召回分明显领先现成素材（≥0.15），说明不是同义词蹭分的并列噪声。
+    否则降级为素材匹配候选，交人工判断。
+    """
+    if title_matches_file_name(template, title):
+        return True
+    stem = _material_name_stem(str(template.get("name") or ""))
+    stem_core = re.sub(r"[（(][^（）()]*[)）]", "", stem).strip()
+    if max(
+        _tech_similarity_score(title, stem),
+        _tech_similarity_score(title, stem_core) if stem_core else 0.0,
+    ) >= 0.3:
+        return True
+    ready_ranks = [_weak_recall_rank(m) for m in pool if not material_requires_fill(m)]
+    if not ready_ranks:
+        return False  # 名称不相关且无现成素材对照 → 不可信，宁判人工补料
+    return _weak_recall_rank(template) - max(ready_ranks) >= 0.15
+
+
 def route_weak_recall(
     item: dict[str, Any],
     indexed_materials: list[dict[str, Any]],
@@ -1568,7 +1594,7 @@ def route_weak_recall(
     if not pool:
         return None
     primary = pool[0]
-    if material_requires_fill(primary):
+    if material_requires_fill(primary) and _fill_template_trusted(primary, pool, title):
         candidates = attach_recalled_segments(pool, title)
         candidates.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
         return {
@@ -1584,6 +1610,8 @@ def route_weak_recall(
         }
     # material_match 候选是「选择即合并」列表，剔除待填写模板（它们只应走 AI 填写）。
     ready_pool = [m for m in pool if not material_requires_fill(m)]
+    if not ready_pool:
+        return None  # 池里只有不可信模板 → 宁判人工补料，不给错误方向
     candidates = attach_recalled_segments(ready_pool, title)
     candidates.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
     return {

@@ -237,7 +237,12 @@ function MaterialCandidateCard({ material, isSelected, busy, selecting, onPrevie
           </div>
           {matchPercent > 0 || reason ? (
             <div className="mt-1 text-[11px] text-outline">
-              {matchPercent > 0 ? <span className="font-semibold text-primary">匹配度 {matchPercent}%</span> : null}
+              {matchPercent > 0 ? (
+                // <50% 为弱关联召回的低置信候选（如纯同义词蹭分），弱化显示防误导。
+                <span className={`font-semibold ${matchPercent < 50 ? 'text-outline' : 'text-primary'}`}>
+                  匹配度 {matchPercent}%{matchPercent < 50 ? '（低置信）' : ''}
+                </span>
+              ) : null}
               {matchPercent > 0 && reason ? ' · ' : ''}
               {reason || ''}
             </div>

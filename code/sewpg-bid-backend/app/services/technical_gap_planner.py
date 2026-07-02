@@ -162,35 +162,91 @@ def _attach_topic_recall_to_plan(plan: dict[str, Any], material_index: list[dict
         if _object_items(item.get("candidateMaterials")):
             continue
         title = str(item.get("title") or "")
-        recalled_pool = recall(material_index, title)
-        if not recalled_pool:
-            continue  # 素材库三路召回全空 → 保持人工补料，不硬塞
-        item["decision"] = "fill_required"
-        item["status"] = "needs_input"
-        item["usage"] = "section_fill"
-        # 与字面候选一致：召回到「待填写」模板 → 走 AI 填写（生成 fillTask），而非当成可直接
-        # 选用合并的现成素材（对齐商务标 templateCandidates→模板填充）；现成素材才归 material_match。
-        primary_topic = recalled_pool[0]
-        if helpers.material_requires_fill(primary_topic):
-            gap_id = str(item.get("id") or "")
-            candidates = helpers.attach_recalled_segments(recalled_pool, title)
-            candidates.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
-            item["candidateMaterials"] = candidates[:4]
-            item["fillTasks"] = [helpers.build_material_fill_task(item, primary_topic, gap_id)]
-            item["gapReason"] = "召回命中待填写模板，需先由 AI 填写后再进入 S4 合并。"
-            item["nextActions"] = ["ai_fill_word", "select_reference_material", "manual_upload"]
-        else:
-            # material_match 候选是「选择即合并」列表，待填写模板不能直接选用，从可选列表剔除。
-            ready_pool = [m for m in recalled_pool if not helpers.material_requires_fill(m)]
-            candidates = helpers.attach_recalled_segments(ready_pool, title)
-            candidates.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
-            item["candidateMaterials"] = candidates[:4]
-            item["gapReason"] = "弱关联召回命中（主题/近名/片段），可选用素材后合入或补充。"
-            item["nextActions"] = ["select_reference_material", "manual_upload"]
+        gap_id = str(item.get("id") or "")
+        # 复用 skill 的统一路由（含模板可信度门槛：金标反评发现的错误模板路由防护）。
+        route = getattr(helpers, "route_weak_recall", None)
+        routed = route(item, material_index, title, gap_id) if route else None
+        if not routed:
+            if is_structural_leaf and str(item.get("number") or "").startswith(("附表", "技术附表")):
+                # 附表类空叶子：正式标书里通常需要填写（哪怕内容为「无」），不该静默判结构项。
+                item["decision"] = "material_required"
+                item["status"] = "needs_input"
+                item["gapReason"] = "附表类目录项在正式标书中通常需填写（哪怕为「无」），素材库无对应来源，请人工确认或上传。"
+                item["nextActions"] = ["manual_upload", "select_material", "ignore"]
+                enriched += 1
+            continue  # 其余召回全空 → 保持原判，不硬塞
+        item["decision"] = routed["decision"]
+        item["status"] = routed["status"]
+        item["usage"] = routed["usage"]
+        item["candidateMaterials"] = routed["alternatives"]
+        if routed["fill_tasks"]:
+            item["fillTasks"] = routed["fill_tasks"]
+        item["gapReason"] = routed["gap_reason"]
+        item["nextActions"] = routed["next_actions"]
         enriched += 1
     if enriched:
         logger.info("技术标缺口识别：为 %d 个正文缺口弱召回兜底补候选", enriched)
     return enriched
+
+
+def _link_duplicate_title_items(plan: dict[str, Any]) -> int:
+    """同名目录项互链（金标反评：同一张表在目录两处出现，如 附表3 与 附表G.1.2）。
+
+    无任务/素材的叶子一侧指向有解决路径的一侧（mirrorsGapId），转人工确认复用其
+    产出，不再静默判空章节。只处理叶子（容器章头的内容归子节，不参与互链）。
+    """
+    helpers = _load_planner_segment_helpers()
+    if helpers is None:
+        return 0
+    norm = helpers._tech_normalize_text
+    items = _object_items(plan.get("items"))
+
+    def _has_resolution(it: dict[str, Any]) -> bool:
+        return bool(
+            _object_items(it.get("appendixTasks"))
+            or _object_items(it.get("fillTasks"))
+            or _object_items(it.get("matchedMaterials"))
+            or _object_items(it.get("candidateMaterials"))
+        )
+
+    def _is_leaf(index: int) -> bool:
+        if index + 1 >= len(items):
+            return True
+        return int(items[index + 1].get("level") or 1) <= int(items[index].get("level") or 1)
+
+    by_title: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    for idx, it in enumerate(items):
+        key = norm(str(it.get("title") or ""))
+        if len(key) >= 4:
+            by_title.setdefault(key, []).append((idx, it))
+
+    linked = 0
+    for group in by_title.values():
+        if len(group) < 2:
+            continue
+        primaries = [it for _, it in group if _has_resolution(it)]
+        if not primaries:
+            continue
+        primary = primaries[0]
+        for idx, it in group:
+            if it is primary or _has_resolution(it):
+                continue
+            if str(it.get("decision") or "") not in ("ready", "material_required"):
+                continue
+            if _object_items(it.get("resolvedArtifacts")) or not _is_leaf(idx):
+                continue
+            it["mirrorsGapId"] = str(primary.get("id") or "")
+            it["decision"] = "material_required"
+            it["status"] = "needs_input"
+            it["gapReason"] = (
+                f"与「{primary.get('number')} {primary.get('title')}」为同一张表/同名章节，"
+                "请在其完成后复用产出，或上传同表。"
+            )
+            it["nextActions"] = ["manual_upload", "select_material"]
+            linked += 1
+    if linked:
+        logger.info("技术标缺口识别：%d 个同名目录项已互链（复用同表产出）", linked)
+    return linked
 
 
 def _cap_plan_candidates(plan: dict[str, Any], *, limit: int = 4) -> int:
@@ -648,6 +704,8 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
     _attach_topic_recall_to_plan(plan, material_index)
     # 固定素材通道收紧：自动定案只信文件名命中；目录名撞章节名转人工选用拼装。
     _normalize_literal_matches(plan, material_index)
+    # 同名目录项互链：同一张表在目录两处出现时，空的一侧指向有解决路径的一侧。
+    _link_duplicate_title_items(plan)
     # 非附表项候选统一 top-4（金标反评 D3；同名目录素材豁免）。
     _cap_plan_candidates(plan)
     normalize_technical_gap_plan_fill_task_skills(plan)

@@ -141,8 +141,29 @@ class RouteWeakRecallTests(unittest.TestCase):
         item = {"id": "g", "title": "投标方案优势说明"}
         routed = planner.route_weak_recall(item, _lib(), "投标方案优势说明", "GAP-X")
         self.assertIsNotNone(routed)
-        self.assertTrue(routed["fill_tasks"])  # 待填写模板 → AI 填写
+        self.assertTrue(routed["fill_tasks"])  # 模板名与章节名相关 → AI 填写
         self.assertLessEqual(len(routed["alternatives"]), 4)
+
+    def test_untrusted_template_demoted_to_material_match(self) -> None:
+        # 金标反评错误路由防护：模板与章节主题无关且分数与现成素材并列 → 不挂 AI 填写
+        template = {"id": "T", "name": "待填写-投标方案优势说明.docx", "folderPath": "x",
+                    "requiresFill": True, "topicRelevance": 0.6}
+        ready = {"id": "R", "name": "变桨系统专题.docx", "folderPath": "x", "topicRelevance": 0.6,
+                 "evidenceSegments": [{"title": "变桨系统专题"}]}
+        self.assertFalse(planner._fill_template_trusted(template, [template, ready], "项目风机各子系统专题"))
+        # 名称相关（章节名≈模板词干）→ 可信
+        self.assertTrue(planner._fill_template_trusted(template, [template, ready], "投标方案优势说明"))
+        # 分数明显领先（≥0.15）→ 可信
+        lead = dict(template, topicRelevance=0.8)
+        self.assertTrue(planner._fill_template_trusted(lead, [lead, dict(ready, topicRelevance=0.5)], "项目风机各子系统专题"))
+
+    def test_all_template_pool_untrusted_returns_none(self) -> None:
+        # 池里只有不可信模板 → 宁判人工补料，不给错误方向
+        template = {"id": "T", "name": "待填写-投标方案优势说明.docx", "folderPath": "x",
+                    "requiresFill": True,
+                    "evidenceSegments": [{"title": "叶片专题", "topicKeywords": ["叶片", "变桨", "齿轮箱"]}]}
+        routed = planner.route_weak_recall({"id": "g", "title": "项目风机各子系统专题"}, [template], "项目风机各子系统专题", "GAP-X")
+        self.assertIsNone(routed)
 
     def test_ready_primary_routes_to_material_match(self) -> None:
         item = {"id": "g", "title": "投标机型业绩情况"}
