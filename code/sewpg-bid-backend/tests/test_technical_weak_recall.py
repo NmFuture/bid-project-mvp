@@ -94,6 +94,44 @@ class TopicWeightingTests(unittest.TestCase):
         self.assertGreaterEqual(planner.tech_synonym_hit_count("投标机型项目场址设计安全性专题", "钢塔筒招标项目场址设计安全性"), 2)
 
 
+class FolderLiteralRouteTests(unittest.TestCase):
+    """目录名命中不自动定案：目录=章、目录下多份子素材，转人工选用拼装。"""
+
+    def _folder_lib(self) -> list[dict]:
+        folder = "技术标/客户素材/示例客户/数字化智慧风场专题"
+        return [
+            {"id": "F1", "name": "智能监控系统.docx", "folderPath": folder, "materialTier": "customer"},
+            {"id": "F2", "name": "智能运维系统.docx", "folderPath": f"{folder}/子系统", "materialTier": "customer"},
+            {"id": "F3", "name": "待填写-总结.docx", "folderPath": folder, "materialTier": "customer", "requiresFill": True},
+            {"id": "OUT", "name": "塔筒专题.docx", "folderPath": "技术标/通用素材/示例", "materialTier": "standard"},
+        ]
+
+    def test_folder_only_hit_routes_to_material_match(self) -> None:
+        lib = self._folder_lib()
+        # 字面候选=目录命中的子素材（文件名都不含章节名）
+        candidates = [lib[0], lib[1]]
+        routed = planner.route_folder_literal(candidates, lib, "数字化智慧风场专题")
+        self.assertIsNotNone(routed)
+        self.assertEqual(routed["matched"], [])  # 不自动定案
+        self.assertFalse(routed["fill_tasks"])
+        names = [m["name"] for m in routed["alternatives"]]
+        self.assertIn("智能监控系统.docx", names)
+        self.assertIn("智能运维系统.docx", names)  # 子目录成员也纳入
+        self.assertNotIn("待填写-总结.docx", names)  # 待填写模板剔除
+        self.assertTrue(all(m.get("literalFolderHit") for m in routed["alternatives"]))
+
+    def test_file_name_hit_keeps_fixed_material(self) -> None:
+        # 文件名命中（一份 doc = 一整章）不走目录路由，保留固定素材通道
+        mat = {"id": "W1", "name": "投标项目塔筒专题.docx", "folderPath": "技术标/通用素材/示例/专题", "materialTier": "standard"}
+        self.assertTrue(planner.title_matches_file_name(mat, "投标项目塔筒专题"))
+        self.assertIsNone(planner.route_folder_literal([mat], [mat], "投标项目塔筒专题"))
+
+    def test_short_folder_name_not_treated_as_hit(self) -> None:
+        # 「专题」这类 <4 字目录名不构成目录命中
+        mat = {"id": "S1", "name": "某某设计.docx", "folderPath": "技术标/通用素材/专题", "materialTier": "standard"}
+        self.assertEqual(planner.folder_prefix_for_title(mat, "数字化智慧风场专题"), "")
+
+
 class RouteWeakRecallTests(unittest.TestCase):
     def test_empty_library_returns_none(self) -> None:
         # D4：三路召回全空才判人工补料

@@ -197,7 +197,8 @@ def _cap_plan_candidates(plan: dict[str, Any], *, limit: int = 4) -> int:
     """非附表项候选统一 top-N 截断（金标反评 D3：每章最多 4 个候选人工勾选）。
 
     覆盖 agent 主路径产出的超长候选列表（如 Wiki 映射整目录 30+ 条）；
-    附表项的推荐来源列表（按附表逐个推荐）不在此截断。
+    附表项的推荐来源列表（按附表逐个推荐）与「章节同名目录素材」
+    （literalFolderHit，确定相关的拼装候选）不在此截断。
     """
     capped = 0
     for item in _object_items(plan.get("items")):
@@ -206,12 +207,78 @@ def _cap_plan_candidates(plan: dict[str, Any], *, limit: int = 4) -> int:
         candidates = _object_items(item.get("candidateMaterials"))
         if len(candidates) <= limit:
             continue
+        if any(bool(c.get("literalFolderHit")) for c in candidates):
+            continue
         candidates.sort(key=lambda m: float(m.get("matchScore") or m.get("confidence") or 0), reverse=True)
         item["candidateMaterials"] = candidates[:limit]
         capped += 1
     if capped:
         logger.info("技术标缺口识别：%d 个目录项候选截断至 top-%d", capped, limit)
     return capped
+
+
+def _normalize_literal_matches(plan: dict[str, Any], material_index: list[dict[str, Any]]) -> int:
+    """固定素材通道收紧（金标反评后续）：自动定案只信文件名命中。
+
+    覆盖 agent 主路径产出的 plan：
+    - 已选定素材的文件名命中章节标题 → 保留固定素材，并补同目录兄弟为备选（top-4）；
+    - 命中仅来自「目录名撞章节名」→ 撤销自动定案，转素材匹配，同名目录下全部
+      现成素材进候选（literalFolderHit 豁免截断），人工选用拼装。
+    已有人工产物（resolvedArtifacts）或父章覆盖的项不动。
+    """
+    helpers = _load_planner_segment_helpers()
+    if helpers is None or not hasattr(helpers, "title_matches_file_name"):
+        return 0
+    by_id = {
+        str(m.get("id") or ""): m
+        for m in material_index
+        if isinstance(m, dict) and str(m.get("id") or "")
+    }
+    changed = 0
+    for item in _object_items(plan.get("items")):
+        if str(item.get("decision") or "") != "ready":
+            continue
+        matched = _object_items(item.get("matchedMaterials"))
+        if not matched:
+            continue
+        if _object_items(item.get("resolvedArtifacts")) or str(item.get("coveredByParent") or ""):
+            continue
+        title = str(item.get("title") or "")
+        primary = by_id.get(str(matched[0].get("id") or matched[0].get("materialId") or "")) or matched[0]
+        if helpers.title_matches_file_name(primary, title):
+            # 真整章素材：备选并入同目录兄弟（一章多素材可加选），top-4。
+            siblings = helpers.sibling_folder_materials(primary, material_index, title)
+            if siblings:
+                merged = {str(c.get("id") or c.get("name") or ""): c for c in _object_items(item.get("candidateMaterials"))}
+                for sib in siblings:
+                    merged.setdefault(str(sib.get("id") or sib.get("name") or ""), sib)
+                candidates = helpers.attach_recalled_segments(list(merged.values()), title)
+                candidates.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+                item["candidateMaterials"] = candidates[:4]
+            continue
+        folder_prefix = helpers.folder_prefix_for_title(primary, title)
+        if not folder_prefix:
+            continue  # 命中来自其他文本特征，保守不动
+        members = helpers.folder_member_materials(material_index, folder_prefix, title)
+        if not members:
+            continue
+        candidates = helpers.attach_recalled_segments(members, title)
+        for candidate in candidates:
+            candidate["literalFolderHit"] = True
+        item["decision"] = "fill_required"
+        item["status"] = "needs_input"
+        item["usage"] = "section_fill"
+        item["matchedMaterials"] = []
+        item["candidateMaterials"] = candidates
+        item["gapReason"] = (
+            f"章节与素材目录「{folder_prefix.rsplit('/', 1)[-1]}」同名，"
+            f"目录下 {len(candidates)} 份素材需人工选用拼装，不自动定案。"
+        )
+        item["nextActions"] = ["select_reference_material", "manual_upload"]
+        changed += 1
+    if changed:
+        logger.info("技术标缺口识别：%d 个「目录名命中」项撤销自动定案，转人工选用拼装", changed)
+    return changed
 
 
 def _safe_filename(value: str, fallback: str) -> str:
@@ -579,7 +646,9 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
     _attach_evidence_segments_to_plan(plan, material_index)
     # 弱关联召回兜底：对「正文缺口候选为空 → 误判人工补料」和「无子节结构项」的项补候选并修正决策。
     _attach_topic_recall_to_plan(plan, material_index)
-    # 非附表项候选统一 top-4（金标反评 D3：每章最多 4 个候选人工勾选）。
+    # 固定素材通道收紧：自动定案只信文件名命中；目录名撞章节名转人工选用拼装。
+    _normalize_literal_matches(plan, material_index)
+    # 非附表项候选统一 top-4（金标反评 D3；同名目录素材豁免）。
     _cap_plan_candidates(plan)
     normalize_technical_gap_plan_fill_task_skills(plan)
     # 决策终审：候选素材不等于决策，对齐商务标「选定/处理完才算数」的两层架构；

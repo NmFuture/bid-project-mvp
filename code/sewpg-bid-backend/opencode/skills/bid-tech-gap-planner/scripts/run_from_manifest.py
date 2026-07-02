@@ -872,15 +872,22 @@ def sibling_folder_materials(
     if not folder:
         return []
     matched_id = str((matched or {}).get("id") or "")
-    siblings = [
-        material
-        for material in materials
-        if isinstance(material, dict)
-        and str(material.get("folderPath") or "").rstrip("/") == folder
-        and str(material.get("id") or "") != matched_id
-        and not material_requires_fill(material)
-    ]
-    siblings.sort(key=lambda m: material_score(m, title), reverse=True)
+    siblings = []
+    for material in materials:
+        if not isinstance(material, dict):
+            continue
+        if str(material.get("folderPath") or "").rstrip("/") != folder:
+            continue
+        if str(material.get("id") or "") == matched_id or material_requires_fill(material):
+            continue
+        sib = dict(material)
+        # 附名称相似度：项目根目录这类「非主题目录」下兄弟众多且 material_score
+        # 常平分，靠素材名与章节标题的相似度把真相关的（如 承诺函 系列）排上来。
+        name_sim = _tech_similarity_score(title, _material_name_stem(str(sib.get("name") or "")))
+        if name_sim >= 0.2:
+            sib["nameSimilarity"] = round(name_sim, 3)
+        siblings.append(sib)
+    siblings.sort(key=lambda m: material_score(m, title) + float(m.get("nameSimilarity") or 0), reverse=True)
     return [dict(m) for m in siblings[:limit]]
 
 
@@ -893,6 +900,97 @@ def matching_materials_for_title(materials: list[dict[str, Any]], title: str) ->
         for material in materials
         if title_key in normalize_key(material_text(material))
     ]
+
+
+def title_matches_file_name(material: dict[str, Any], title: str) -> bool:
+    """章节标题是否命中素材的文件级名称（文件名/清洗稿名，不含目录路径）。
+
+    只有文件名命中才允许固定素材自动定案（一份 doc = 一整章）；
+    目录名撞章节名不算（那是「目录 = 章、目录下多份子素材」的拼装结构）。
+    """
+    title_key = normalize_key(title)
+    return bool(title_key) and title_key in normalize_key(material_file_text(material))
+
+
+def folder_prefix_for_title(material: dict[str, Any], title: str) -> str:
+    """素材路径中与章节标题同名的目录前缀（无则空串）。
+
+    如章节"数字化智慧风场专题" vs 路径"技术标/客户素材/华能集团/数字化智慧风场专题/
+    智能风机部件监控系统"，返回到「数字化智慧风场专题」为止的前缀。
+    目录名需 ≥4 个归一化字符（防「专题」这类短词误判）。
+    """
+    title_key = normalize_key(title)
+    if not title_key:
+        return ""
+    parts = [p for p in str(material.get("folderPath") or "").split("/") if p]
+    acc: list[str] = []
+    for part in parts:
+        acc.append(part)
+        part_key = normalize_key(part)
+        if len(part_key) >= 4 and (part_key in title_key or title_key in part_key):
+            return "/".join(acc)
+    return ""
+
+
+def folder_member_materials(
+    materials: list[dict[str, Any]],
+    folder_prefix: str,
+    title: str,
+) -> list[dict[str, Any]]:
+    """同名目录（含子目录）下的全部现成素材，按匹配分排序。
+
+    这些素材是确定相关的（目录即章节），全部进候选供人工拼装，
+    带 literalFolderHit 标记以豁免 top-4 截断；待填写模板剔除（只能走 AI 填写）。
+    """
+    members = []
+    for material in materials:
+        if not isinstance(material, dict) or material_requires_fill(material):
+            continue
+        folder = str(material.get("folderPath") or "").rstrip("/")
+        if folder == folder_prefix or folder.startswith(folder_prefix + "/"):
+            member = dict(material)
+            member["literalFolderHit"] = True
+            member["matchReason"] = "章节同名目录素材（人工选用拼装）"
+            members.append(member)
+    members.sort(key=lambda m: material_score(m, title), reverse=True)
+    return members
+
+
+def route_folder_literal(
+    candidate_materials: list[dict[str, Any]],
+    indexed_materials: list[dict[str, Any]],
+    title: str,
+) -> dict[str, Any] | None:
+    """字面命中仅来自「目录名撞章节名」时的路由：不自动定案，转素材匹配。
+
+    返回 None 表示不适用（有文件名命中，或命中来自其他文本特征）。
+    """
+    if any(title_matches_file_name(m, title) for m in candidate_materials):
+        return None
+    folder_prefix = ""
+    for material in candidate_materials:
+        folder_prefix = folder_prefix_for_title(material, title)
+        if folder_prefix:
+            break
+    if not folder_prefix:
+        return None
+    members = folder_member_materials(indexed_materials, folder_prefix, title)
+    if not members:
+        return None
+    candidates = attach_recalled_segments(members, title)
+    for candidate in candidates:
+        candidate["literalFolderHit"] = True
+    return {
+        "status": "needs_input",
+        "decision": "fill_required",
+        "usage": "section_fill",
+        "matched": [],
+        "alternatives": candidates,
+        "fill_tasks": [],
+        "required_inputs": [{"type": "material_match", "label": "从章节同名目录素材中选用拼装"}],
+        "gap_reason": f"章节与素材目录「{folder_prefix.rsplit('/', 1)[-1]}」同名，目录下 {len(candidates)} 份素材需人工选用拼装，不自动定案。",
+        "next_actions": ["select_reference_material", "manual_upload"],
+    }
 
 
 def _material_topic_text(material: dict[str, Any]) -> str:
@@ -1709,8 +1807,27 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     matched_materials = []
                     gap_reason = "结构性目录项，不直接要求素材。"
                     next_actions = ["s4_merge_material"]
+        elif candidate_materials and (folder_routed := route_folder_literal(candidate_materials, indexed_materials, title)):
+            # 字面命中仅来自「目录名撞章节名」（如 数字化智慧风场专题/ 目录）：
+            # 目录=章、目录下多份子素材，随便挑一份自动定案是错的——转素材匹配，
+            # 目录成员全部进候选（豁免 top-4）供人工拼装。
+            status = folder_routed["status"]
+            decision = folder_routed["decision"]
+            usage = folder_routed["usage"]
+            matched_materials = folder_routed["matched"]
+            alternative_materials = folder_routed["alternatives"]
+            fill_tasks = folder_routed["fill_tasks"]
+            required_inputs.extend(folder_routed["required_inputs"])
+            gap_reason = folder_routed["gap_reason"]
+            next_actions = folder_routed["next_actions"]
         elif candidate_materials:
-            matched_material, alternative_materials = pick_material(candidate_materials, title)
+            # 固定素材自动定案只信文件名命中；有文件名命中时优先从中选主素材。
+            file_hits = [m for m in candidate_materials if title_matches_file_name(m, title)]
+            pick_pool = file_hits or candidate_materials
+            matched_material, alternative_materials = pick_material(pick_pool, title)
+            if file_hits and len(file_hits) < len(candidate_materials):
+                others = [m for m in candidate_materials if m not in file_hits]
+                alternative_materials = dedupe_materials(alternative_materials + others)
             if material_requires_fill(matched_material):
                 fill_tasks = [build_material_fill_task(item, matched_material, gap_id)] if matched_material else []
                 required_inputs.append({"type": "ai_fill", "label": "选择参考素材并填写待填写 Word"})

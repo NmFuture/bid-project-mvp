@@ -722,7 +722,8 @@ export default function TechnicalGapRecognition({ showToast }) {
       if (!key || seen.has(key)) return false
       seen.add(key)
       return true
-    }).sort((a, b) => technicalMatchScore(b) - technicalMatchScore(a)).slice(0, 10)
+    // 上限 20：兼顾「章节同名目录素材」拼装列表（可能 10+ 份，全部确定相关）与渲染开销。
+    }).sort((a, b) => technicalMatchScore(b) - technicalMatchScore(a)).slice(0, 20)
   })()
   const selectedAiFillReferenceIds = defaultAiFillReferenceMaterialIds(selected, [], selectedFillTask)
   const selectedAiFillParseFieldIds = defaultAiFillParseFieldIds(selected, selectedFillTask)
