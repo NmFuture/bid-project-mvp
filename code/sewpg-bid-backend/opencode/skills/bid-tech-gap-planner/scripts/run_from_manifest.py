@@ -538,24 +538,29 @@ def material_requires_fill(material: dict[str, Any] | None) -> bool:
 
 
 def material_score(material: dict[str, Any], title: str) -> float:
+    """文件级匹配分，0~1 口径（对齐商务标 material_match_score 的归一化语义）。
+
+    权重由旧版无界原始分整体 ÷200 等价缩放而来，排序行为与旧版严格一致；
+    强命中可略超 1，展示侧（attach_recalled_segments / recall_material_segments）统一封顶 0.99。
+    """
     text = normalize_key(material_text(material))
     title_key = normalize_key(title)
-    score = float(material.get("confidence") or 0) * 10
+    score = float(material.get("confidence") or 0) * 0.05
     if title_key and title_key in text:
-        score += 120
+        score += 0.6
     for token in re.split(r"[与及和、/\\（）()]+", str(title or "")):
         token_key = normalize_key(token)
         if len(token_key) >= 2 and token_key in text:
-            score += 16
+            score += 0.08
     tier = str(material.get("materialTier") or "").lower()
     if tier == "project":
-        score += 20
+        score += 0.1
     elif tier == "customer":
-        score += 12
+        score += 0.06
     elif tier == "standard":
-        score += 5
+        score += 0.025
     if str(material.get("hasCleanedWord") or "").lower() == "true" or material.get("cleanedFileName"):
-        score += 6
+        score += 0.03
     return score
 
 
@@ -671,16 +676,17 @@ def segment_score(segment: dict[str, Any], title: str) -> float:
     title_key = normalize_key(title)
     if not seg_text or not title_key:
         return 0.0
+    # 权重与 material_score 同一 0~1 口径（旧版原始分 ÷200 等价缩放）。
     score = 0.0
     if title_key in seg_title:
-        score += 60
+        score += 0.3
     elif title_key in seg_text:
-        score += 30
+        score += 0.15
     for term in title_terms(title):
         if term in seg_title:
-            score += 20
+            score += 0.1
         elif term in seg_text:
-            score += 8
+            score += 0.04
     # 片段关键词双向命中：keyword 出现在标题里，或标题里的关键词出现在 keyword 里。
     keywords = segment.get("keywords") if isinstance(segment.get("keywords"), list) else []
     for keyword in keywords:
@@ -688,7 +694,7 @@ def segment_score(segment: dict[str, Any], title: str) -> float:
         if len(key) < 2:
             continue
         if key in title_key or title_key in key:
-            score += 24
+            score += 0.12
     return score
 
 
@@ -708,18 +714,21 @@ def recall_material_segments(material: dict[str, Any], title: str, *, limit: int
         score = segment_score(segment, title)
         if score > 0:
             enriched = dict(segment)
-            enriched["matchScore"] = round(score, 2)
+            # 展示分封顶 0.99（多关键词命中可略超 1），排序仍用未封顶的原始分。
+            enriched["matchScore"] = round(min(score, 0.99), 2)
             scored.append((score, enriched))
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return [segment for _, segment in scored[:limit]]
 
 
 def attach_recalled_segments(materials: list[dict[str, Any]], title: str, *, limit: int = 3) -> list[dict[str, Any]]:
-    """给候选素材附上「与本目录标题相关的证据片段」+ 综合 matchScore。
+    """给候选素材附上「与本目录标题相关的证据片段」+ 综合 matchScore（0~1，封顶 0.99）。
 
     用于非附表正文缺口：在文件级匹配之上叠加段落级证据，让下游 AI/人工能定位到
-    素材内具体段落。matchScore = 文件级 material_score + 最佳片段分，便于排序与展示。
-    不改动来源矩阵/附表路径。
+    素材内具体段落。matchScore = max(文件级分, 主题召回 topicRelevance) + 最佳片段
+    加成（封顶 0.25），整体封顶 0.99，对齐商务标 0~1 打分口径。
+    取 topicRelevance 兜底是因为主题召回的素材文件名往往与标题字面对不上，
+    纯文件级分会把真实相关度显示得过低。不改动来源矩阵/附表路径。
     """
     enriched_list: list[dict[str, Any]] = []
     for material in materials:
@@ -727,9 +736,9 @@ def attach_recalled_segments(materials: list[dict[str, Any]], title: str, *, lim
             continue
         recalled = recall_material_segments(material, title, limit=limit)
         item = dict(material)
-        base = material_score(material, title)
-        best_segment = recalled[0]["matchScore"] if recalled else 0.0
-        item["matchScore"] = round(base + best_segment, 2)
+        base = max(material_score(material, title), float(material.get("topicRelevance") or 0))
+        segment_bonus = min(recalled[0]["matchScore"] if recalled else 0.0, 0.25)
+        item["matchScore"] = round(min(base + segment_bonus, 0.99), 2)
         if recalled:
             item["recalledSegments"] = recalled
             item["matchReason"] = f"段落级证据召回（{len(recalled)} 段相关）"
@@ -775,31 +784,32 @@ def chapter_title_matches_file(material: dict[str, Any], title: str) -> bool:
 
 
 def chapter_master_score(material: dict[str, Any], title: str, child_titles: list[str] | None = None) -> float:
+    # 仅内部排序用，不外泄前端；加成随 material_score 归一化同比例（÷200）缩放，保持排序等价。
     score = material_score(material, title)
     text = normalize_key(material_text(material))
     file_text = normalize_key(material_file_text(material))
     title_key = normalize_key(title)
     if title_key and title_key in file_text:
-        score += 520
+        score += 2.6
     elif chapter_title_matches_file(material, title):
-        score += 430
+        score += 2.15
     elif title_key and title_key in text:
-        score += 180
+        score += 0.9
     for term in title_terms(title):
         if term in file_text:
-            score += 58
+            score += 0.29
         elif term in text:
-            score += 22
+            score += 0.11
     child_matches = 0
     for child_title in child_titles or []:
         child_key = normalize_key(child_title)
         if child_key and len(child_key) >= 3 and child_key in text:
             child_matches += 1
-    score += child_matches * 70
+    score += child_matches * 0.35
     if str(material.get("materialTier") or "").lower() == "project":
-        score += 30
+        score += 0.15
     if str(material.get("materialTier") or "").lower() == "standard":
-        score += 12
+        score += 0.06
     return score
 
 
@@ -988,20 +998,21 @@ def matching_appendices(
 
 
 def appendix_material_score(material: dict[str, Any], appendix: dict[str, Any]) -> float:
+    # 仅内部排序用，不外泄前端；加成随 material_score 归一化同比例（÷200）缩放，保持排序等价。
     title = str(appendix.get("title") or "")
     score = material_score(material, title)
     title_key = normalize_key(title)
     text = normalize_key(material_text(material))
     file_text = normalize_key(material_file_text(material))
     if title_key and title_key in file_text:
-        score += 260
+        score += 1.3
     elif title_key and title_key in text:
-        score += 120
+        score += 0.6
     for term in title_terms(title):
         if term in file_text:
-            score += 85
+            score += 0.425
         elif term in text:
-            score += 45
+            score += 0.225
     return score
 
 

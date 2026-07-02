@@ -148,7 +148,8 @@ const technicalActionMode = (item) => {
 }
 
 // 候选素材匹配度（0~1），口径与商务标 numericMatchScore 一致：
-// 优先 score/matchScore/similarity/confidence，兜底 topicRelevance；值 >1 视为百分制换算。
+// 优先 score/matchScore/similarity/confidence，兜底 topicRelevance。
+// 后端已输出 0~1 归一化分（封顶 0.99）；值 >1 是旧版无界原始分（已入库的存量 plan），按百分制换算兼容。
 const technicalMatchScore = (material) => {
   const raw = material?.score
     ?? material?.matchScore
@@ -220,7 +221,7 @@ function MaterialCandidateCard({ material, isSelected, busy, selecting, onPrevie
   const name = material.name || material.cleanedFileName || material.id || material.materialId
   const path = material.folderPath || material.path || material.id
   const reason = material.sourceRouting?.reasons?.[0] || material.matchReason
-  // matchScore 是无上界的原始排序分（全标题命中 +120 等），显示时钳到 100% 上限。
+  // 新口径 matchScore 已是 0~1（封顶 0.99）；Math.min 仅为存量旧版无界分兜底。
   const matchPercent = Math.min(100, Math.round(technicalMatchScore(material) * 100))
   const tierLabel = materialTierLabels[String(material.materialTier || '')] || ''
   const cleanStatus = String(material.cleanStatus || '')

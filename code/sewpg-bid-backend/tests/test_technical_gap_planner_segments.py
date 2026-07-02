@@ -85,6 +85,26 @@ class AttachSegmentsTests(unittest.TestCase):
         # 综合分应 >= 纯文件分（叠加了最佳片段分）
         self.assertGreaterEqual(out[0]["matchScore"], file_only)
 
+    def test_match_score_normalized_capped(self) -> None:
+        # 归一化口径：强命中（标题整串命中 + 片段命中）也不超过 0.99（对齐商务标封顶）。
+        material = _material_with_segments()
+        material["name"] = "混塔塔筒制造单位要求.docx"  # 构造标题整串命中
+        material["materialTier"] = "project"
+        material["cleanedFileName"] = "clean.docx"
+        out = planner.attach_recalled_segments([material], "混塔塔筒制造单位要求")
+        self.assertLessEqual(out[0]["matchScore"], 0.99)
+        self.assertGreaterEqual(out[0]["matchScore"], 0.6)  # 整串命中至少 0.6
+        for segment in out[0].get("recalledSegments") or []:
+            self.assertLessEqual(segment["matchScore"], 0.99)
+
+    def test_attach_uses_topic_relevance_floor(self) -> None:
+        # 主题召回素材文件名与标题字面对不上时，matchScore 不应低于 topicRelevance。
+        material = _material_with_segments()
+        material["topicRelevance"] = 0.45
+        out = planner.attach_recalled_segments([material], "财务审计报告")  # 字面完全不命中
+        self.assertGreaterEqual(out[0]["matchScore"], 0.45)
+        self.assertLessEqual(out[0]["matchScore"], 0.99)
+
 
 class ManifestPassThroughTests(unittest.TestCase):
     def test_material_index_passes_evidence_segments(self) -> None:
