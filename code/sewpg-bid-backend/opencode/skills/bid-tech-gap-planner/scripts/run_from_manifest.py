@@ -581,6 +581,17 @@ TECH_TASK_SYNONYMS: dict[str, list[str]] = {
     "技术资料交付进度": ["技术资料", "交付", "交付进度", "图纸", "说明书", "保管", "包装"],
     "项目验收": ["验收", "质保", "出质保", "最终验收", "质量保证期"],
     "运行维护": ["运行维护", "运维", "售后", "技术服务"],
+    # 以下为金标反评（正式技术卷逐节对照）归纳的漏召回主题组，均为风电投标领域
+    # 通用词面，不绑定单一项目/客户。
+    "风资源机位排布": ["风资源", "测风塔", "机位排布", "机位", "发电量", "不确定性", "风切变", "机组选型", "风资源评估"],
+    "供货保障": ["供货保障", "生产能力", "生产基地", "制造基地", "供货制造", "产能", "物流", "运输保障"],
+    "风机子系统": ["子系统", "叶片", "变桨", "齿轮箱", "主轴承", "发电机", "变流器", "主控", "偏航"],
+    "场址设计安全性": ["场址设计安全性", "场址安全", "载荷", "极限载荷", "疲劳载荷", "净空", "塔筒安全", "变桨轴承"],
+    "认证测试": ["认证", "型式认证", "设计认证", "样机", "测试", "试验检测", "电网性能"],
+    "运输存储": ["运输", "物流", "运输路线", "存储", "堆场", "包装", "保管", "交货"],
+    "技术参数指标": ["技术参数", "技术指标", "性能指标", "关键数据", "参数一览", "指标一览"],
+    "投标业绩": ["业绩", "合同业绩", "供货业绩", "运行业绩", "投运"],
+    "方案优势": ["方案优势", "整体优势", "技术路线", "先进性", "优势说明"],
 }
 
 
@@ -638,7 +649,11 @@ def _tech_synonym_terms_for_title(title: str) -> list[str]:
 
 
 def tech_synonym_hit_count(title: str, haystack: str) -> int:
-    """章节标题的同义词组在素材文本里的命中数（上限 4，迁移商务标 synonym_hit_count）。"""
+    """章节标题的同义词组在素材文本里的加权命中数（长词×2，上限 8）。
+
+    ≥4 字的领域词（如"场址设计安全性"）比 2 字泛词（如"载荷"）指向性强得多，
+    加权后正确素材能与恰好蹭到两个泛词的噪声素材拉开排序差距。
+    """
     normalized = _tech_normalize_text(haystack)
     if not normalized:
         return 0
@@ -646,9 +661,9 @@ def tech_synonym_hit_count(title: str, haystack: str) -> int:
     for term in _tech_synonym_terms_for_title(title):
         key = _tech_normalize_text(term)
         if len(key) >= 2 and key in normalized:
-            hits += 1
-            if hits >= 4:
-                break
+            hits += 2 if len(key) >= 4 else 1
+            if hits >= 8:
+                return 8
     return hits
 
 
@@ -736,7 +751,7 @@ def attach_recalled_segments(materials: list[dict[str, Any]], title: str, *, lim
             continue
         recalled = recall_material_segments(material, title, limit=limit)
         item = dict(material)
-        base = max(material_score(material, title), float(material.get("topicRelevance") or 0))
+        base = max(material_score(material, title), _weak_recall_rank(material))
         segment_bonus = min(recalled[0]["matchScore"] if recalled else 0.0, 0.25)
         item["matchScore"] = round(min(base + segment_bonus, 0.99), 2)
         if recalled:
@@ -844,6 +859,31 @@ def pick_chapter_master_material(
     return selected, alternatives
 
 
+def sibling_folder_materials(
+    matched: dict[str, Any] | None,
+    materials: list[dict[str, Any]],
+    title: str,
+    *,
+    limit: int = 4,
+) -> list[dict[str, Any]]:
+    """同目录兄弟素材（金标反评 D3）：固定素材命中专题目录时，把同目录其余素材
+    作为候选露出，供人工加选拼装（一章=多素材场景，如环境适应性/数字化智慧风场）。"""
+    folder = str((matched or {}).get("folderPath") or "").rstrip("/")
+    if not folder:
+        return []
+    matched_id = str((matched or {}).get("id") or "")
+    siblings = [
+        material
+        for material in materials
+        if isinstance(material, dict)
+        and str(material.get("folderPath") or "").rstrip("/") == folder
+        and str(material.get("id") or "") != matched_id
+        and not material_requires_fill(material)
+    ]
+    siblings.sort(key=lambda m: material_score(m, title), reverse=True)
+    return [dict(m) for m in siblings[:limit]]
+
+
 def matching_materials_for_title(materials: list[dict[str, Any]], title: str) -> list[dict[str, Any]]:
     title_key = normalize_key(title)
     if not title_key:
@@ -888,7 +928,8 @@ def topic_match_score(material: dict[str, Any], title: str) -> float:
     syn_hits = tech_synonym_hit_count(title, pool)
     syn_score = 0.0
     if syn_hits >= 2:
-        syn_score = 0.45
+        # 命中数越多排序越靠前（0.45 起步、封顶 0.75），避免同组素材打平分后排序随机。
+        syn_score = min(0.45 + 0.05 * (syn_hits - 2), 0.75)
     elif syn_hits == 1:
         syn_score = 0.3
     return max(sim, syn_score)
@@ -921,6 +962,132 @@ def topic_match_materials(
             scored.append((score, enriched))
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return [material for _, material in scored[:limit]]
+
+
+def _material_name_stem(name: str) -> str:
+    """素材名词干：去扩展名、去「待填写-/定制-」等加工前缀、去尾部页码数字。"""
+    stem = re.sub(r"\.[A-Za-z0-9]+$", "", str(name or "")).strip()
+    stem = re.sub(r"^(?:待填写|待补充|定制|模板)\s*[-—_]\s*", "", stem)
+    return stem.strip()
+
+
+def approx_name_match_materials(
+    materials: list[dict[str, Any]],
+    title: str,
+    *,
+    threshold: float = 0.34,
+    limit: int = 6,
+) -> list[dict[str, Any]]:
+    """近似名称召回（金标反评 D1）：章节标题 vs 素材名/清洗稿名 的相似度召回。
+
+    补「整串包含」召不回的近名素材（如章节"投标机型项目场址设计安全性专题" vs
+    素材"钢塔筒招标项目场址设计安全性.docx"）。只产候选，不自动定案。
+    词干需 ≥4 个归一化字符（"专题"这类短目录词会把相似度打满，是噪声源）。
+    """
+    title_clean = str(title or "")
+    if not normalize_key(title_clean):
+        return []
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for material in materials:
+        if not isinstance(material, dict):
+            continue
+        best = 0.0
+        for name in (str(material.get("name") or ""), str(material.get("cleanedFileName") or "")):
+            stem = _material_name_stem(name)
+            if len(normalize_key(stem)) >= 4:
+                best = max(best, _tech_similarity_score(title_clean, stem))
+        if best >= threshold:
+            enriched = dict(material)
+            enriched["nameSimilarity"] = round(best, 3)
+            enriched["matchReason"] = enriched.get("matchReason") or "近似名称召回"
+            scored.append((best, enriched))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [material for _, material in scored[:limit]]
+
+
+def _segment_title_clean(segment: dict[str, Any]) -> str:
+    """片段标题清洗：去头部编号（1.1 / 一、）与尾部页码数字，留纯标题词面。"""
+    text = str(segment.get("title") or "").strip()
+    text = re.sub(r"^\s*(?:[0-9]+(?:\.[0-9]+)*|[一二三四五六七八九十]+)\s*[、.．\s]\s*", "", text)
+    return re.sub(r"[0-9]+\s*$", "", text).strip()
+
+
+def segment_recall_materials(
+    materials: list[dict[str, Any]],
+    title: str,
+    *,
+    threshold: float = 0.45,
+    limit: int = 6,
+) -> list[dict[str, Any]]:
+    """片段级召回（金标反评 D2）：章节标题与素材片段标题相似即召回该素材。
+
+    解决大报告章节复用——素材文件名对不上、但内部某片段正是本章内容
+    （如"风资源评估报告"内的"项目概况"章 vs 目录项"项目概况"）。
+    只用片段标题（真实文档章节头，信号干净）；不用 keywords——A 层关键词混有
+    项目号/目录碎屑（MATPRJ、"专题"等），双向包含会产生大量假命中。
+    """
+    if not normalize_key(title):
+        return []
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for material in materials:
+        if not isinstance(material, dict):
+            continue
+        best, best_seg = 0.0, ""
+        for segment in material.get("evidenceSegments") or []:
+            if not isinstance(segment, dict):
+                continue
+            seg_title = _segment_title_clean(segment)
+            if len(normalize_key(seg_title)) < 4:
+                continue
+            score = _tech_similarity_score(title, seg_title)
+            if score > best:
+                best, best_seg = score, seg_title
+        if best >= threshold:
+            enriched = dict(material)
+            enriched["segmentRecallScore"] = round(min(best, 0.99), 3)
+            enriched["matchReason"] = enriched.get("matchReason") or f"片段级召回：{best_seg or '相关片段'}"
+            scored.append((best, enriched))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [material for _, material in scored[:limit]]
+
+
+def _weak_recall_rank(material: dict[str, Any]) -> float:
+    # 三路求和：多路同时命中（名称+片段+主题一致指向）的素材优先于单路命中的。
+    return (
+        float(material.get("topicRelevance") or 0)
+        + float(material.get("nameSimilarity") or 0)
+        + float(material.get("segmentRecallScore") or 0)
+    )
+
+
+def weak_recall_materials(
+    materials: list[dict[str, Any]],
+    title: str,
+    *,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """弱关联召回统一入口：主题 + 近名 + 片段三路合并去重，按各路最高分排序取前 limit。
+
+    金标反评方针：召回优先、允许牺牲准确率；所有产出只进候选（人工终审），不自动定案。
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for pool in (
+        topic_match_materials(materials, title),
+        approx_name_match_materials(materials, title),
+        segment_recall_materials(materials, title),
+    ):
+        for material in pool:
+            key = str(material.get("id") or material.get("path") or material.get("name") or "")
+            if not key:
+                continue
+            if key in merged:
+                for field in ("topicRelevance", "nameSimilarity", "segmentRecallScore"):
+                    if material.get(field) is not None and merged[key].get(field) is None:
+                        merged[key][field] = material[field]
+            else:
+                merged[key] = dict(material)
+    ranked = sorted(merged.values(), key=_weak_recall_rank, reverse=True)
+    return ranked[:limit]
 
 
 def chapter_children(item: dict[str, Any], all_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1288,6 +1455,52 @@ def build_material_fill_task(item: dict[str, Any], material: dict[str, Any], gap
     }
 
 
+def route_weak_recall(
+    item: dict[str, Any],
+    indexed_materials: list[dict[str, Any]],
+    title: str,
+    gap_id: str,
+) -> dict[str, Any] | None:
+    """字面候选为空时的弱召回路由（金标反评 D1+D2+D4）。
+
+    主题+近名+片段三路统一召回；命中「待填写模板」走 AI 填写，命中现成素材给
+    top-4 候选人工勾选（候选≠决策）；三路全空返回 None（调用方判人工补料）。
+    """
+    pool = weak_recall_materials(indexed_materials, title)
+    if not pool:
+        return None
+    primary = pool[0]
+    if material_requires_fill(primary):
+        candidates = attach_recalled_segments(pool, title)
+        candidates.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+        return {
+            "status": "needs_input",
+            "decision": "fill_required",
+            "usage": "section_fill",
+            "matched": [],
+            "alternatives": candidates[:4],
+            "fill_tasks": [build_material_fill_task(item, primary, gap_id)],
+            "required_inputs": [{"type": "ai_fill", "label": "选择参考素材并填写待填写 Word"}],
+            "gap_reason": "召回命中待填写模板，需先由 AI 填写后再进入 S4 合并。",
+            "next_actions": ["ai_fill_word", "select_reference_material", "manual_upload"],
+        }
+    # material_match 候选是「选择即合并」列表，剔除待填写模板（它们只应走 AI 填写）。
+    ready_pool = [m for m in pool if not material_requires_fill(m)]
+    candidates = attach_recalled_segments(ready_pool, title)
+    candidates.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+    return {
+        "status": "needs_input",
+        "decision": "fill_required",
+        "usage": "section_fill",
+        "matched": [],
+        "alternatives": candidates[:4],
+        "fill_tasks": [],
+        "required_inputs": [{"type": "material_match", "label": "从召回候选中选用素材"}],
+        "gap_reason": "弱关联召回命中（主题/近名/片段），可选用素材后合入或补充。",
+        "next_actions": ["select_reference_material", "manual_upload"],
+    }
+
+
 def material_scope_payload(manifest: dict[str, Any], materials: list[dict[str, Any]]) -> dict[str, Any]:
     scope = manifest.get("materialScope") if isinstance(manifest.get("materialScope"), dict) else {}
     paths = scope.get("paths") or [
@@ -1455,12 +1668,18 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     status = "needs_input"
                     decision = "fill_required"
                     usage = "chapter_fill"
+                    alternative_materials = alternative_materials[:4]
                     gap_reason = "已匹配到整章待填写 Word，可填写后覆盖本章及其子节。"
                     next_actions = ["ai_fill_word", "select_reference_material", "manual_upload"]
                 else:
                     status = "matched"
                     decision = "ready"
                     usage = "chapter_master"
+                    # 金标反评 D3：整章素材的备选并入同目录兄弟素材（如承诺函章的
+                    # 电量承诺书），人工可加选拼装；top-4 截断。
+                    alternative_materials = dedupe_materials(
+                        alternative_materials + sibling_folder_materials(matched_material, indexed_materials, title)
+                    )[:4]
                     gap_reason = "允许范围内已有整章 Word，可覆盖本章及其子节。"
                     next_actions = ["s4_merge_material"]
                 parent_coverages[number_key] = {
@@ -1470,12 +1689,26 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     "decision": decision,
                 }
             else:
-                status = "structural"
-                decision = "ready"
-                usage = "structural"
-                matched_materials = []
-                gap_reason = "结构性目录项，不直接要求素材。"
-                next_actions = ["s4_merge_material"]
+                # 无子节的结构项（如附表1/2/3 成果表）正式标书里往往有实质内容：
+                # 也跑弱召回（金标反评 D5），命中给候选人工确认；全空才保持结构项。
+                routed = route_weak_recall(item, indexed_materials, title, gap_id) if not children else None
+                if routed:
+                    status = routed["status"]
+                    decision = routed["decision"]
+                    usage = routed["usage"]
+                    matched_materials = routed["matched"]
+                    alternative_materials = routed["alternatives"]
+                    fill_tasks = routed["fill_tasks"]
+                    required_inputs.extend(routed["required_inputs"])
+                    gap_reason = routed["gap_reason"]
+                    next_actions = routed["next_actions"]
+                else:
+                    status = "structural"
+                    decision = "ready"
+                    usage = "structural"
+                    matched_materials = []
+                    gap_reason = "结构性目录项，不直接要求素材。"
+                    next_actions = ["s4_merge_material"]
         elif candidate_materials:
             matched_material, alternative_materials = pick_material(candidate_materials, title)
             if material_requires_fill(matched_material):
@@ -1489,6 +1722,8 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 # 非附表正文缺口：给候选附段落级证据召回（A 层 evidenceSegments），
                 # 让下游能定位素材内具体段落；无片段则退化为文件级（matchReason 不变）。
                 alternative_materials = attach_recalled_segments(alternative_materials, title)
+                alternative_materials.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+                alternative_materials = alternative_materials[:4]
                 gap_reason = "已匹配到待填写 Word 模板，需要先由 AI 填写后再进入 S4 合并。"
                 next_actions = ["ai_fill_word", "select_reference_material", "manual_upload"]
             else:
@@ -1498,41 +1733,30 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 matched_materials = [matched_material] if matched_material else []
                 # ready 态也召回片段，供 S4 合并/复核时定位证据；matched + 备选都附。
                 matched_materials = attach_recalled_segments(matched_materials, title)
+                # 金标反评 D3：备选并入同目录兄弟素材（一章=多素材拼装场景，人工可加选），
+                # 统一按匹配分排序取 top-4。
+                alternative_materials = dedupe_materials(
+                    alternative_materials + sibling_folder_materials(matched_material, indexed_materials, title)
+                )
                 alternative_materials = attach_recalled_segments(alternative_materials, title)
+                alternative_materials.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+                alternative_materials = alternative_materials[:4]
                 gap_reason = "允许范围内已有可用素材。"
                 next_actions = ["s4_merge_material"]
         else:
-            # 字面候选为空：先用主题级弱关联召回兜底（迁移商务标「候选只供选用、
-            # 不反推 decision 为 ready」原则）。命中则归为 material_match（素材匹配，
-            # 人来选用），而非 ready（固定素材）；素材库确无主题相关料才判人工补料。
-            topic_materials = (
-                topic_match_materials(indexed_materials, title)
-                if not structural
-                else []
-            )
-            if topic_materials:
-                status = "needs_input"
-                decision = "fill_required"
-                usage = "section_fill"
-                matched_materials = []
-                # 与字面候选分支一致：召回到「待填写」模板 → 走 AI 填写（生成 fillTask），
-                # 而非当成可直接选用合并的现成素材（对齐商务标 templateCandidates→模板填充）；
-                # 召回到现成素材才归 material_match，选择即合并。
-                primary_topic = topic_materials[0]
-                if material_requires_fill(primary_topic):
-                    alternative_materials = attach_recalled_segments(topic_materials, title)
-                    fill_tasks = [build_material_fill_task(item, primary_topic, gap_id)]
-                    required_inputs.append({"type": "ai_fill", "label": "选择参考素材并填写待填写 Word"})
-                    gap_reason = "主题相关待填写模板召回命中，需先由 AI 填写后再进入 S4 合并。"
-                    next_actions = ["ai_fill_word", "select_reference_material", "manual_upload"]
-                else:
-                    # material_match 候选是「选择即合并」列表，只保留现成素材；待填写模板不能直接选用，
-                    # 从可选列表里剔除（它们只应通过 AI 填写处理）。
-                    ready_topic = [m for m in topic_materials if not material_requires_fill(m)]
-                    alternative_materials = attach_recalled_segments(ready_topic, title)
-                    gap_reason = "主题相关素材弱关联召回命中，可选用素材后合入或补充。"
-                    required_inputs.append({"type": "material_match", "label": "从主题相关候选中选用素材"})
-                    next_actions = ["select_reference_material", "manual_upload"]
+            # 字面候选为空：弱关联召回统一兜底（主题+近名+片段，金标反评 D1/D2）。
+            # 命中只进候选（人工终审），不自动定案；三路全空才判人工补料（D4）。
+            routed = route_weak_recall(item, indexed_materials, title, gap_id)
+            if routed:
+                status = routed["status"]
+                decision = routed["decision"]
+                usage = routed["usage"]
+                matched_materials = routed["matched"]
+                alternative_materials = routed["alternatives"]
+                fill_tasks = routed["fill_tasks"]
+                required_inputs.extend(routed["required_inputs"])
+                gap_reason = routed["gap_reason"]
+                next_actions = routed["next_actions"]
             else:
                 status = "missing"
                 decision = "material_required"

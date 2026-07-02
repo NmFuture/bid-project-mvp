@@ -113,54 +113,105 @@ def _attach_evidence_segments_to_plan(plan: dict[str, Any], material_index: list
 
 
 def _attach_topic_recall_to_plan(plan: dict[str, Any], material_index: list[dict[str, Any]]) -> int:
-    """对「正文缺口但候选为空 → material_required」的项，用主题级弱关联召回兜底补候选。
+    """对「正文缺口但候选为空 → material_required」的项，用弱关联召回兜底补候选。
 
     覆盖 opencode agent 主路径：agent 产出的 plan 同样绕过本地 planner 的候选组装，
-    对「主题相关但文件名对不上」的章节（如试验/检验/监造、考核指标）会判 material_required。
-    这里用 planner 的 topic_match_materials 补候选，命中则改判为 fill_required（material_match），
-    并挂上片段召回。素材库确无对应料的项保持 material_required（人工补料），不硬塞。
+    对「主题相关但文件名对不上」的章节会判 material_required。这里用 planner 的
+    weak_recall_materials（主题+近名+片段三路，金标反评 D1/D2）补 top-4 候选，
+    命中则改判为 fill_required（material_match / AI 填写），并挂上片段召回。
+    三路全空的项保持 material_required（人工补料），不硬塞。
     """
     helpers = _load_planner_segment_helpers()
     if helpers is None or not hasattr(helpers, "topic_match_materials"):
         return 0
     if not material_index:
         return 0
+    recall = getattr(helpers, "weak_recall_materials", None) or helpers.topic_match_materials
+
+    items = _object_items(plan.get("items"))
+
+    def _is_leaf(index: int) -> bool:
+        # toc 顺序 + level 判叶子：下一项层级更深即为容器。编号前缀判断不可靠
+        # （章号"第3章"与子节号"3.1"不构成前缀关系）。
+        if index + 1 >= len(items):
+            return True
+        current_level = int(items[index].get("level") or 1)
+        next_level = int(items[index + 1].get("level") or 1)
+        return next_level <= current_level
 
     enriched = 0
-    for item in _object_items(plan.get("items")):
-        # 只兜底「正文类、候选为空、判了人工补料」的项；附表/已有候选/结构项不碰。
-        if str(item.get("decision") or "") != "material_required":
+    for index, item in enumerate(items):
+        # 兜底两类项（附表/已有候选不碰）：
+        # 1) 判了人工补料的正文缺口；
+        # 2) 无子节的结构项（金标反评 D5：附表1/2/3 类成果表在正式标书里有实质内容，
+        #    不该直接跳过）——ready 且无 matched、非父章覆盖、是叶子。
+        decision = str(item.get("decision") or "")
+        is_missing = decision == "material_required"
+        is_structural_leaf = (
+            decision == "ready"
+            and not _object_items(item.get("matchedMaterials"))
+            and not _object_items(item.get("resolvedArtifacts"))
+            and not _object_items(item.get("fillTasks"))
+            and not str(item.get("coveredByParent") or "")
+            and _is_leaf(index)
+        )
+        if not (is_missing or is_structural_leaf):
             continue
         if _object_items(item.get("appendixTasks")):
             continue
         if _object_items(item.get("candidateMaterials")):
             continue
         title = str(item.get("title") or "")
-        topic_materials = helpers.topic_match_materials(material_index, title)
-        if not topic_materials:
-            continue  # 素材库确无主题相关料 → 保持人工补料，不硬塞
+        recalled_pool = recall(material_index, title)
+        if not recalled_pool:
+            continue  # 素材库三路召回全空 → 保持人工补料，不硬塞
         item["decision"] = "fill_required"
         item["status"] = "needs_input"
         item["usage"] = "section_fill"
         # 与字面候选一致：召回到「待填写」模板 → 走 AI 填写（生成 fillTask），而非当成可直接
         # 选用合并的现成素材（对齐商务标 templateCandidates→模板填充）；现成素材才归 material_match。
-        primary_topic = topic_materials[0]
+        primary_topic = recalled_pool[0]
         if helpers.material_requires_fill(primary_topic):
             gap_id = str(item.get("id") or "")
-            item["candidateMaterials"] = helpers.attach_recalled_segments(topic_materials, title)
+            candidates = helpers.attach_recalled_segments(recalled_pool, title)
+            candidates.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+            item["candidateMaterials"] = candidates[:4]
             item["fillTasks"] = [helpers.build_material_fill_task(item, primary_topic, gap_id)]
-            item["gapReason"] = "主题相关待填写模板召回命中，需先由 AI 填写后再进入 S4 合并。"
+            item["gapReason"] = "召回命中待填写模板，需先由 AI 填写后再进入 S4 合并。"
             item["nextActions"] = ["ai_fill_word", "select_reference_material", "manual_upload"]
         else:
             # material_match 候选是「选择即合并」列表，待填写模板不能直接选用，从可选列表剔除。
-            ready_topic = [m for m in topic_materials if not helpers.material_requires_fill(m)]
-            item["candidateMaterials"] = helpers.attach_recalled_segments(ready_topic, title)
-            item["gapReason"] = "主题相关素材弱关联召回命中，可选用素材后合入或补充。"
+            ready_pool = [m for m in recalled_pool if not helpers.material_requires_fill(m)]
+            candidates = helpers.attach_recalled_segments(ready_pool, title)
+            candidates.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+            item["candidateMaterials"] = candidates[:4]
+            item["gapReason"] = "弱关联召回命中（主题/近名/片段），可选用素材后合入或补充。"
             item["nextActions"] = ["select_reference_material", "manual_upload"]
         enriched += 1
     if enriched:
-        logger.info("技术标缺口识别：为 %d 个正文缺口主题召回兜底补候选", enriched)
+        logger.info("技术标缺口识别：为 %d 个正文缺口弱召回兜底补候选", enriched)
     return enriched
+
+
+def _cap_plan_candidates(plan: dict[str, Any], *, limit: int = 4) -> int:
+    """非附表项候选统一 top-N 截断（金标反评 D3：每章最多 4 个候选人工勾选）。
+
+    覆盖 agent 主路径产出的超长候选列表（如 Wiki 映射整目录 30+ 条）；
+    附表项的推荐来源列表（按附表逐个推荐）不在此截断。
+    """
+    capped = 0
+    for item in _object_items(plan.get("items")):
+        if _object_items(item.get("appendixTasks")):
+            continue
+        candidates = _object_items(item.get("candidateMaterials"))
+        if len(candidates) <= limit:
+            continue
+        candidates.sort(key=lambda m: float(m.get("matchScore") or m.get("confidence") or 0), reverse=True)
+        item["candidateMaterials"] = candidates[:limit]
+        capped += 1
+    if capped:
+        logger.info("技术标缺口识别：%d 个目录项候选截断至 top-%d", capped, limit)
+    return capped
 
 
 def _safe_filename(value: str, fallback: str) -> str:
@@ -526,8 +577,10 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
     # 给「非附表正文缺口」的候选素材补段落级证据片段（A 层 evidenceSegments）。
     # agent 负责召回哪些素材，这一步只做确定性的「片段挂载 + 打分」，不改附表路径。
     _attach_evidence_segments_to_plan(plan, material_index)
-    # 主题级弱关联召回兜底：对「正文缺口候选为空 → 误判人工补料」的项补候选并修正决策。
+    # 弱关联召回兜底：对「正文缺口候选为空 → 误判人工补料」和「无子节结构项」的项补候选并修正决策。
     _attach_topic_recall_to_plan(plan, material_index)
+    # 非附表项候选统一 top-4（金标反评 D3：每章最多 4 个候选人工勾选）。
+    _cap_plan_candidates(plan)
     normalize_technical_gap_plan_fill_task_skills(plan)
     # 决策终审：候选素材不等于决策，对齐商务标「选定/处理完才算数」的两层架构；
     # 未确认候选统一改判 review_required，不再等同于「已经可以走」。

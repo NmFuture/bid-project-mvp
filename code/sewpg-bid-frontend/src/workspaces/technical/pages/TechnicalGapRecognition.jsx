@@ -191,27 +191,24 @@ function StatCard({ label, value }) {
   )
 }
 
-// 素材证据片段：非附表正文缺口的素材召回时，展示素材内匹配到的段落（标题/摘要/页码），
-// 让用户在选用前就能看到「为什么这份素材相关、相关在哪一段」。无片段则不渲染。
-// 整体匹配度已在卡片头部展示，这里不再堆每段原始分（对齐商务标 Wiki依据 的呈现）。
+// 素材证据片段：对齐商务标「Wiki依据」的紧凑单行呈现——只展示最相关的一段
+// （标题加粗 + 页码 + 「另有 N 段」折叠计数）+ 最多两行摘要，不逐段堆块，
+// 避免 A 层片段噪声（标题段切分的碎句）占满卡片。无片段则不渲染。
 function EvidenceSegments({ material }) {
-  const segments = evidenceSegmentsForMaterial(material)
+  const segments = evidenceSegmentsForMaterial(material, 8)
   if (!segments.length) return null
+  const primary = segments[0]
   return (
-    <div className="mt-2 space-y-1.5 border-t border-surface-container-high pt-2">
-      <div className="text-[10px] font-semibold text-on-surface-variant">匹配证据片段</div>
-      {segments.map((segment) => (
-        <div key={segment.id || segment.title} className="rounded bg-surface-container px-2 py-1.5">
-          <span className="block min-w-0 truncate text-[11px] font-medium text-on-surface">{segment.title || '片段'}</span>
-          {segment.summary ? (
-            <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-on-surface-variant">{segment.summary}</p>
-          ) : null}
-          {segment.sourcePages ? (
-            <span className="mt-0.5 inline-block text-[10px] text-outline">来源：{segment.sourcePages}</span>
-          ) : null}
-        </div>
-      ))}
-    </div>
+    <>
+      <div className="mt-1 rounded bg-primary/5 px-2 py-1 text-[11px] text-on-surface-variant">
+        匹配依据：<span className="font-semibold text-primary">{primary.title || '相关片段'}</span>
+        {primary.sourcePages ? ` · ${primary.sourcePages}` : ''}
+        {segments.length > 1 ? ` · 另有 ${segments.length - 1} 段依据` : ''}
+      </div>
+      {primary.summary ? (
+        <div className="mt-1 line-clamp-2 text-[11px] text-on-surface-variant">{primary.summary}</div>
+      ) : null}
+    </>
   )
 }
 
@@ -1431,19 +1428,22 @@ export default function TechnicalGapRecognition({ showToast }) {
                           </section>
                         ) : null}
 
-                        {selectedActionMode === 'material_match' || selectedDecision === 'material_required' || selectedDecision === 'review_required' ? (
+                        {selectedActionMode === 'material_match' || selectedDecision === 'material_required' || selectedDecision === 'review_required'
+                          || (selectedActionMode === 'fixed_material' && selectedCandidateMaterials.length > 0) ? (
                           <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
                             <div>
                               <div className="text-xs font-semibold text-on-surface">
-                                {selectedActionMode === 'material_match' ? '候选素材匹配' : selectedDecision === 'material_required' ? '素材库查询' : '复核素材查询'}
+                                {selectedActionMode === 'fixed_material' ? '备选素材' : selectedActionMode === 'material_match' ? '候选素材匹配' : selectedDecision === 'material_required' ? '素材库查询' : '复核素材查询'}
                               </div>
                               <div className="mt-1 text-[11px] text-outline">
-                                {selectedActionMode === 'material_match'
+                                {selectedActionMode === 'fixed_material'
+                                  ? '已自动选定主素材；本章需要多份素材拼装或替换时，可从备选中加选，选用即并入合并列表。'
+                                  : selectedActionMode === 'material_match'
                                   ? '只在当前项目、客户和通用素材边界内查询，选用后作为该目录项的可合入素材。'
                                   : '只在当前项目、客户和通用素材边界内查询。'}
                               </div>
                             </div>
-                            {selectedActionMode === 'material_match' && selectedReferenceCandidates.length ? (
+                            {(selectedActionMode === 'material_match' || selectedActionMode === 'fixed_material') && selectedReferenceCandidates.length ? (
                               <div className="mt-3 space-y-2">
                                 {selectedReferenceCandidates.map((material) => {
                                   const materialId = String(material?.id || material?.materialId || '').trim()
@@ -1490,7 +1490,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                                     busy={Boolean(busyAction) || !materialId}
                                     selecting={busyAction === `select-material:${selected.id}:${materialId}`}
                                     onPreview={handlePreviewMaterial}
-                                    onSelect={selectedActionMode === 'material_match' ? handleSelectMaterial : null}
+                                    onSelect={selectedActionMode === 'material_match' || selectedActionMode === 'fixed_material' ? handleSelectMaterial : null}
                                   />
                                 )
                               }) : (
