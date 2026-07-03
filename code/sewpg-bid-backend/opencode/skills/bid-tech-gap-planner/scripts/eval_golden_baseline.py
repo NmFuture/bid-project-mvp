@@ -264,7 +264,8 @@ def main() -> int:
             "title": str(item.get("title") or ""),
             "decision": str(item.get("decision") or ""),
             "ourMatched": [_material_name(m) for m in item.get("matchedMaterials") or []],
-            "ourCandidates": [_material_name(m) for m in (item.get("candidateMaterials") or [])[:8]],
+            # 不截断：目录拼装类候选可达 20+，截断会造成"缺失"假阳性
+            "ourCandidates": [_material_name(m) for m in item.get("candidateMaterials") or []],
             "hasChildren": has_children,
             "coveredByParent": str(item.get("coveredByParent") or ""),
             "answer": aligned.get(gid),

@@ -584,9 +584,9 @@ TECH_TASK_SYNONYMS: dict[str, list[str]] = {
     # 以下为金标反评（正式技术卷逐节对照）归纳的漏召回主题组，均为风电投标领域
     # 通用词面，不绑定单一项目/客户。
     "风资源机位排布": ["风资源", "测风塔", "机位排布", "机位", "发电量", "不确定性", "风切变", "机组选型", "风资源评估"],
-    "供货保障": ["供货保障", "生产能力", "生产基地", "制造基地", "供货制造", "产能", "物流", "运输保障"],
+    "供货保障": ["供货保障", "生产能力", "生产基地", "制造基地", "供货制造", "设备制造", "生产制造", "产能", "物流", "运输保障"],
     "风机子系统": ["子系统", "叶片", "变桨", "齿轮箱", "主轴承", "发电机", "变流器", "主控", "偏航"],
-    "场址设计安全性": ["场址设计安全性", "场址安全", "载荷", "极限载荷", "疲劳载荷", "净空", "塔筒安全", "变桨轴承"],
+    "场址设计安全性": ["场址设计安全性", "场址安全", "载荷", "极限载荷", "疲劳载荷", "载荷评估", "载荷安全", "安全等级", "净空", "塔筒安全", "变桨轴承"],
     "认证测试": ["认证", "型式认证", "设计认证", "样机", "测试", "试验检测", "电网性能"],
     "运输存储": ["运输", "物流", "运输路线", "存储", "堆场", "包装", "保管", "交货"],
     "技术参数指标": ["技术参数", "技术指标", "性能指标", "关键数据", "参数一览", "指标一览"],
@@ -939,19 +939,25 @@ def folder_member_materials(
 ) -> list[dict[str, Any]]:
     """同名目录（含子目录）下的全部现成素材，按匹配分排序。
 
-    这些素材是确定相关的（目录即章节），全部进候选供人工拼装，
-    带 literalFolderHit 标记以豁免 top-4 截断；待填写模板剔除（只能走 AI 填写）。
+    按**目录名**跨分支收成员（金标反评：智慧风场专题在 通用素材/<机型> 与
+    客户定制/<客户> 各有一个同名目录，答案两个分支都用了——只收命中素材所在
+    分支会漏掉另一半骨架章节）。这些素材是确定相关的（目录即章节），全部进候选
+    供人工拼装，带 literalFolderHit 标记以豁免 top-4 截断；待填写模板剔除。
     """
+    dir_key = normalize_key(folder_prefix.rstrip("/").rsplit("/", 1)[-1])
+    if not dir_key:
+        return []
     members = []
     for material in materials:
         if not isinstance(material, dict) or material_requires_fill(material):
             continue
-        folder = str(material.get("folderPath") or "").rstrip("/")
-        if folder == folder_prefix or folder.startswith(folder_prefix + "/"):
-            member = dict(material)
-            member["literalFolderHit"] = True
-            member["matchReason"] = "章节同名目录素材（人工选用拼装）"
-            members.append(member)
+        segments_path = [p for p in str(material.get("folderPath") or "").split("/") if p]
+        if not any(normalize_key(part) == dir_key for part in segments_path):
+            continue
+        member = dict(material)
+        member["literalFolderHit"] = True
+        member["matchReason"] = "章节同名目录素材（人工选用拼装）"
+        members.append(member)
     members.sort(key=lambda m: material_score(m, title), reverse=True)
     return members
 
@@ -1038,7 +1044,7 @@ def topic_match_materials(
     title: str,
     *,
     threshold: float = 0.2,
-    limit: int = 5,
+    limit: int = 10,
 ) -> list[dict[str, Any]]:
     """主题级弱关联召回：从允许范围素材里挑与章节标题主题相关的素材。
 
@@ -1053,12 +1059,14 @@ def topic_match_materials(
         if not isinstance(material, dict):
             continue
         score = topic_match_score(material, title)
-        if score >= threshold:
+        # 项目素材阈值放宽 ×0.6（金标反评 B 类：项目定制素材漏召回代价远大于噪声）
+        if score >= (threshold * 0.6 if str(material.get("materialTier") or "").lower() == "project" else threshold):
             enriched = dict(material)
             enriched["topicRelevance"] = round(score, 3)
             enriched["matchReason"] = enriched.get("matchReason") or "主题相关素材（弱关联召回）"
             scored.append((score, enriched))
-    scored.sort(key=lambda pair: pair[0], reverse=True)
+    # 路内排序也加层级加成：平分时项目/客户素材优先，避免 tie-break 按插入序把它们挤出路内上限。
+    scored.sort(key=lambda pair: pair[0] + _tier_recall_bonus(pair[1]), reverse=True)
     return [material for _, material in scored[:limit]]
 
 
@@ -1074,7 +1082,7 @@ def approx_name_match_materials(
     title: str,
     *,
     threshold: float = 0.34,
-    limit: int = 6,
+    limit: int = 10,
 ) -> list[dict[str, Any]]:
     """近似名称召回（金标反评 D1）：章节标题 vs 素材名/清洗稿名 的相似度召回。
 
@@ -1094,12 +1102,14 @@ def approx_name_match_materials(
             stem = _material_name_stem(name)
             if len(normalize_key(stem)) >= 4:
                 best = max(best, _tech_similarity_score(title_clean, stem))
-        if best >= threshold:
+        # 项目素材阈值放宽 ×0.6（金标反评 B 类）
+        if best >= (threshold * 0.6 if str(material.get("materialTier") or "").lower() == "project" else threshold):
             enriched = dict(material)
             enriched["nameSimilarity"] = round(best, 3)
             enriched["matchReason"] = enriched.get("matchReason") or "近似名称召回"
             scored.append((best, enriched))
-    scored.sort(key=lambda pair: pair[0], reverse=True)
+    # 路内排序也加层级加成：平分时项目/客户素材优先，避免 tie-break 按插入序把它们挤出路内上限。
+    scored.sort(key=lambda pair: pair[0] + _tier_recall_bonus(pair[1]), reverse=True)
     return [material for _, material in scored[:limit]]
 
 
@@ -1115,7 +1125,7 @@ def segment_recall_materials(
     title: str,
     *,
     threshold: float = 0.45,
-    limit: int = 6,
+    limit: int = 10,
 ) -> list[dict[str, Any]]:
     """片段级召回（金标反评 D2）：章节标题与素材片段标题相似即召回该素材。
 
@@ -1130,31 +1140,52 @@ def segment_recall_materials(
     for material in materials:
         if not isinstance(material, dict):
             continue
+        segments = [s for s in material.get("evidenceSegments") or [] if isinstance(s, dict)]
+        if not segments:
+            # 金标反评 A 类：PDF/xlsx 等未切片素材以文件名词干做伪片段，
+            # 让片段路由对它们不失效（如 载荷安全性评估报告.pdf）。
+            stem = _material_name_stem(str(material.get("name") or ""))
+            if stem:
+                segments = [{"title": stem}]
         best, best_seg = 0.0, ""
-        for segment in material.get("evidenceSegments") or []:
-            if not isinstance(segment, dict):
-                continue
+        for segment in segments:
             seg_title = _segment_title_clean(segment)
             if len(normalize_key(seg_title)) < 4:
                 continue
             score = _tech_similarity_score(title, seg_title)
             if score > best:
                 best, best_seg = score, seg_title
-        if best >= threshold:
+        # 项目素材阈值放宽 ×0.6（金标反评 B 类）
+        if best >= (threshold * 0.6 if str(material.get("materialTier") or "").lower() == "project" else threshold):
             enriched = dict(material)
             enriched["segmentRecallScore"] = round(min(best, 0.99), 3)
             enriched["matchReason"] = enriched.get("matchReason") or f"片段级召回：{best_seg or '相关片段'}"
             scored.append((best, enriched))
-    scored.sort(key=lambda pair: pair[0], reverse=True)
+    # 路内排序也加层级加成：平分时项目/客户素材优先，避免 tie-break 按插入序把它们挤出路内上限。
+    scored.sort(key=lambda pair: pair[0] + _tier_recall_bonus(pair[1]), reverse=True)
     return [material for _, material in scored[:limit]]
 
 
+def _tier_recall_bonus(material: dict[str, Any]) -> float:
+    """召回排序的层级加成（金标反评 B 类）：项目素材是为本项目定制/收集的，
+    正式标书大量复用（锡盟基地/物流方案/电量承诺书跨多章出现），排序上
+    应压过靠同义词蹭分的通用素材。"""
+    tier = str(material.get("materialTier") or "").lower()
+    if tier == "project":
+        return 0.12
+    if tier == "customer":
+        return 0.06
+    return 0.0
+
+
 def _weak_recall_rank(material: dict[str, Any]) -> float:
-    # 三路求和：多路同时命中（名称+片段+主题一致指向）的素材优先于单路命中的。
+    # 三路求和：多路同时命中（名称+片段+主题一致指向）的素材优先于单路命中的；
+    # 项目/客户素材另有层级加成。
     return (
         float(material.get("topicRelevance") or 0)
         + float(material.get("nameSimilarity") or 0)
         + float(material.get("segmentRecallScore") or 0)
+        + _tier_recall_bonus(material)
     )
 
 
@@ -1162,7 +1193,7 @@ def weak_recall_materials(
     materials: list[dict[str, Any]],
     title: str,
     *,
-    limit: int = 8,
+    limit: int = 14,
 ) -> list[dict[str, Any]]:
     """弱关联召回统一入口：主题 + 近名 + 片段三路合并去重，按各路最高分排序取前 limit。
 
@@ -1614,12 +1645,18 @@ def route_weak_recall(
         return None  # 池里只有不可信模板 → 宁判人工补料，不给错误方向
     candidates = attach_recalled_segments(ready_pool, title)
     candidates.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+    # 金标反评 B 类：召回到的项目素材不占 top-4 名额（正式标书大量复用项目定制
+    # 素材，被通用素材挤出的代价最大），追加在后、另设上限防洪。
+    project_extras = [
+        m for m in candidates[4:]
+        if str(m.get("materialTier") or "").lower() == "project"
+    ][:4]
     return {
         "status": "needs_input",
         "decision": "fill_required",
         "usage": "section_fill",
         "matched": [],
-        "alternatives": candidates[:4],
+        "alternatives": candidates[:4] + project_extras,
         "fill_tasks": [],
         "required_inputs": [{"type": "material_match", "label": "从召回候选中选用素材"}],
         "gap_reason": "弱关联召回命中（主题/近名/片段），可选用素材后合入或补充。",

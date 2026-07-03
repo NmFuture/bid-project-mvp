@@ -131,6 +131,43 @@ class FolderLiteralRouteTests(unittest.TestCase):
         mat = {"id": "S1", "name": "某某设计.docx", "folderPath": "技术标/通用素材/专题", "materialTier": "standard"}
         self.assertEqual(planner.folder_prefix_for_title(mat, "数字化智慧风场专题"), "")
 
+    def test_folder_members_collected_across_branches(self) -> None:
+        # 同名目录在 通用素材/<机型> 与 客户素材/<客户> 两个分支各有一份 → 成员都收
+        lib = [
+            {"id": "STD1", "name": "前言.docx", "folderPath": "技术标/通用素材/机型X/专题/数字化智慧风场专题", "materialTier": "standard"},
+            {"id": "CUS1", "name": "功能介绍.docx", "folderPath": "技术标/客户素材/示例客户/数字化智慧风场专题/子系统", "materialTier": "customer"},
+            {"id": "OUT", "name": "塔筒专题.docx", "folderPath": "技术标/通用素材/机型X/专题", "materialTier": "standard"},
+        ]
+        members = planner.folder_member_materials(lib, "技术标/客户素材/示例客户/数字化智慧风场专题", "数字化智慧风场专题")
+        ids = {m["id"] for m in members}
+        self.assertEqual(ids, {"STD1", "CUS1"})
+
+
+class ProjectTierRecallTests(unittest.TestCase):
+    """金标反评 B/A 类：项目素材加成/阈值放宽、无片段素材伪片段召回。"""
+
+    def test_project_tier_ranks_above_standard_on_tie(self) -> None:
+        std = {"id": "S", "name": "通用方案.docx", "folderPath": "x", "materialTier": "standard", "topicRelevance": 0.5}
+        prj = {"id": "P", "name": "项目方案.docx", "folderPath": "x", "materialTier": "project", "topicRelevance": 0.5}
+        self.assertGreater(planner._weak_recall_rank(prj), planner._weak_recall_rank(std))
+
+    def test_segmentless_pdf_recalled_via_name_stem(self) -> None:
+        # PDF 无 evidenceSegments：以文件名词干做伪片段，片段路由不失效
+        pdf = {"id": "PDF1", "name": "载荷安全性评估报告.pdf", "folderPath": "技术标/项目素材/示例",
+               "materialTier": "project", "evidenceSegments": []}
+        out = planner.segment_recall_materials([pdf], "载荷安全性评估")
+        self.assertEqual([m["id"] for m in out], ["PDF1"])
+
+    def test_project_tier_relaxed_threshold(self) -> None:
+        # 同样的弱信号：standard 被阈值挡掉，project 放宽 ×0.6 后可入池
+        base = {"name": "生产制造基地专题_锡盟基地.docx", "folderPath": "x", "evidenceSegments": []}
+        std = {**base, "id": "S", "materialTier": "standard"}
+        prj = {**base, "id": "P", "materialTier": "project"}
+        title = "供货保障能力"  # 命中同义词组加权 4 → topic 0.55
+        out_ids = {m["id"] for m in planner.topic_match_materials([std, prj], title, threshold=0.6)}
+        self.assertIn("P", out_ids)
+        self.assertNotIn("S", out_ids)
+
 
 class RouteWeakRecallTests(unittest.TestCase):
     def test_empty_library_returns_none(self) -> None:

@@ -266,7 +266,12 @@ def _cap_plan_candidates(plan: dict[str, Any], *, limit: int = 4) -> int:
         if any(bool(c.get("literalFolderHit")) for c in candidates):
             continue
         candidates.sort(key=lambda m: float(m.get("matchScore") or m.get("confidence") or 0), reverse=True)
-        item["candidateMaterials"] = candidates[:limit]
+        # 项目素材不占 top-N 名额（金标反评 B 类），追加在后、另设上限防洪。
+        project_extras = [
+            c for c in candidates[limit:]
+            if str(c.get("materialTier") or c.get("libraryScope") or "").lower() == "project"
+        ][:limit]
+        item["candidateMaterials"] = candidates[:limit] + project_extras
         capped += 1
     if capped:
         logger.info("技术标缺口识别：%d 个目录项候选截断至 top-%d", capped, limit)
