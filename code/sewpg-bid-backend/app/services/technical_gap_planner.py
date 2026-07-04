@@ -189,6 +189,48 @@ def _attach_topic_recall_to_plan(plan: dict[str, Any], material_index: list[dict
     return enriched
 
 
+def _augment_fill_candidates(plan: dict[str, Any], material_index: list[dict[str, Any]]) -> int:
+    """正文 AI 填写项的参考候选并入弱召回现成素材（ready/fill 路径此前都不跑弱召回）。
+
+    金标反评：5.16 设备运行和维护专题的答案尾段来自库内成品《技术服务及售后服务》，
+    弱召回能找到（同义词组 0.5+）但填写项候选池没有入口。top-4 + 项目素材追加。
+    附表填写项（来源矩阵驱动）不动。
+    """
+    helpers = _load_planner_segment_helpers()
+    recall = getattr(helpers, "weak_recall_materials", None) if helpers else None
+    if recall is None or not material_index:
+        return 0
+    augmented = 0
+    for item in _object_items(plan.get("items")):
+        if str(item.get("decision") or "") != "fill_required":
+            continue
+        if _object_items(item.get("appendixTasks")):
+            continue
+        if not _object_items(item.get("fillTasks")):
+            continue  # 无 fillTask 的 material_match 语义项走别的路径
+        title = str(item.get("title") or "")
+        weak_ready = [m for m in recall(material_index, title) if not helpers.material_requires_fill(m)]
+        if not weak_ready:
+            continue
+        merged = {str(c.get("id") or c.get("name") or ""): c for c in _object_items(item.get("candidateMaterials"))}
+        before = len(merged)
+        for extra in weak_ready:
+            merged.setdefault(str(extra.get("id") or extra.get("name") or ""), extra)
+        if len(merged) == before:
+            continue
+        candidates = helpers.attach_recalled_segments(list(merged.values()), title)
+        candidates.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+        project_extras = [
+            c for c in candidates[4:]
+            if str(c.get("materialTier") or c.get("libraryScope") or "").lower() == "project"
+        ][:4]
+        item["candidateMaterials"] = candidates[:4] + project_extras
+        augmented += 1
+    if augmented:
+        logger.info("技术标缺口识别：%d 个正文填写项候选并入弱召回素材", augmented)
+    return augmented
+
+
 def _link_duplicate_title_items(plan: dict[str, Any]) -> int:
     """同名目录项互链（金标反评：同一张表在目录两处出现，如 附表3 与 附表G.1.2）。
 
@@ -307,15 +349,28 @@ def _normalize_literal_matches(plan: dict[str, Any], material_index: list[dict[s
         title = str(item.get("title") or "")
         primary = by_id.get(str(matched[0].get("id") or matched[0].get("materialId") or "")) or matched[0]
         if helpers.title_matches_file_name(primary, title):
-            # 真整章素材：备选并入同目录兄弟（一章多素材可加选），top-4。
-            siblings = helpers.sibling_folder_materials(primary, material_index, title)
-            if siblings:
+            # 真整章素材：备选并入同目录兄弟 + 弱召回现成素材（承诺函族这类近主题
+            # 素材靠同义词组召回，ready 路径此前从不跑弱召回是盲区），
+            # top-4 + 项目素材追加不占名额。
+            recall = getattr(helpers, "weak_recall_materials", None)
+            weak_ready = [
+                m for m in (recall(material_index, title) if recall else [])
+                if not helpers.material_requires_fill(m)
+            ]
+            extra_pool = helpers.sibling_folder_materials(primary, material_index, title) + weak_ready
+            if extra_pool:
+                primary_id = str(primary.get("id") or "")
                 merged = {str(c.get("id") or c.get("name") or ""): c for c in _object_items(item.get("candidateMaterials"))}
-                for sib in siblings:
-                    merged.setdefault(str(sib.get("id") or sib.get("name") or ""), sib)
+                for extra in extra_pool:
+                    merged.setdefault(str(extra.get("id") or extra.get("name") or ""), extra)
+                merged.pop(primary_id, None)
                 candidates = helpers.attach_recalled_segments(list(merged.values()), title)
                 candidates.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
-                item["candidateMaterials"] = candidates[:4]
+                project_extras = [
+                    c for c in candidates[4:]
+                    if str(c.get("materialTier") or c.get("libraryScope") or "").lower() == "project"
+                ][:4]
+                item["candidateMaterials"] = candidates[:4] + project_extras
             continue
         folder_prefix = helpers.folder_prefix_for_title(primary, title)
         if not folder_prefix:
@@ -709,6 +764,8 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
     _attach_topic_recall_to_plan(plan, material_index)
     # 固定素材通道收紧：自动定案只信文件名命中；目录名撞章节名转人工选用拼装。
     _normalize_literal_matches(plan, material_index)
+    # 正文 AI 填写项候选并入弱召回素材（参考素材盲区）。
+    _augment_fill_candidates(plan, material_index)
     # 同名目录项互链：同一张表在目录两处出现时，空的一侧指向有解决路径的一侧。
     _link_duplicate_title_items(plan)
     # 非附表项候选统一 top-4（金标反评 D3；同名目录素材豁免）。

@@ -580,7 +580,7 @@ TECH_TASK_SYNONYMS: dict[str, list[str]] = {
     "考核指标": ["考核", "可利用率", "功率曲线", "等效满负荷", "满负荷小时", "承诺值", "保证值", "承诺函"],
     "技术资料交付进度": ["技术资料", "交付", "交付进度", "图纸", "说明书", "保管", "包装"],
     "项目验收": ["验收", "质保", "出质保", "最终验收", "质量保证期"],
-    "运行维护": ["运行维护", "运维", "售后", "技术服务"],
+    "运行维护": ["运行维护", "运行和维护", "运维", "售后", "技术服务"],
     # 以下为金标反评（正式技术卷逐节对照）归纳的漏召回主题组，均为风电投标领域
     # 通用词面，不绑定单一项目/客户。
     "风资源机位排布": ["风资源", "测风塔", "机位排布", "机位", "发电量", "不确定性", "风切变", "机组选型", "风资源评估"],
@@ -1838,11 +1838,27 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     status = "matched"
                     decision = "ready"
                     usage = "chapter_master"
-                    # 金标反评 D3：整章素材的备选并入同目录兄弟素材（如承诺函章的
-                    # 电量承诺书），人工可加选拼装；top-4 截断。
+                    # 金标反评 D3：整章素材的备选并入同目录兄弟 + 弱召回现成素材
+                    # （承诺函章的电量承诺书靠同义词组召回），人工可加选拼装；
+                    # top-4 + 项目素材追加。
+                    weak_ready = [
+                        m for m in weak_recall_materials(indexed_materials, title)
+                        if not material_requires_fill(m)
+                    ]
                     alternative_materials = dedupe_materials(
-                        alternative_materials + sibling_folder_materials(matched_material, indexed_materials, title)
-                    )[:4]
+                        alternative_materials
+                        + sibling_folder_materials(matched_material, indexed_materials, title)
+                        + weak_ready
+                    )
+                    chapter_matched_id = str((matched_material or {}).get("id") or "")
+                    alternative_materials = [m for m in alternative_materials if str(m.get("id") or "") != chapter_matched_id]
+                    alternative_materials = attach_recalled_segments(alternative_materials, title)
+                    alternative_materials.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+                    chapter_project_extras = [
+                        m for m in alternative_materials[4:]
+                        if str(m.get("materialTier") or "").lower() == "project"
+                    ][:4]
+                    alternative_materials = alternative_materials[:4] + chapter_project_extras
                     gap_reason = "允许范围内已有整章 Word，可覆盖本章及其子节。"
                     next_actions = ["s4_merge_material"]
                 parent_coverages[number_key] = {
@@ -1915,14 +1931,27 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 matched_materials = [matched_material] if matched_material else []
                 # ready 态也召回片段，供 S4 合并/复核时定位证据；matched + 备选都附。
                 matched_materials = attach_recalled_segments(matched_materials, title)
-                # 金标反评 D3：备选并入同目录兄弟素材（一章=多素材拼装场景，人工可加选），
-                # 统一按匹配分排序取 top-4。
+                # 金标反评 D3：备选并入同目录兄弟素材 + 弱召回现成素材（承诺函族这类
+                # 近主题素材靠同义词组召回，ready 路径此前从不跑弱召回是盲区），
+                # 统一按匹配分排序取 top-4，召回到的项目素材不占名额。
+                weak_ready = [
+                    m for m in weak_recall_materials(indexed_materials, title)
+                    if not material_requires_fill(m)
+                ]
                 alternative_materials = dedupe_materials(
-                    alternative_materials + sibling_folder_materials(matched_material, indexed_materials, title)
+                    alternative_materials
+                    + sibling_folder_materials(matched_material, indexed_materials, title)
+                    + weak_ready
                 )
+                matched_id = str((matched_material or {}).get("id") or "")
+                alternative_materials = [m for m in alternative_materials if str(m.get("id") or "") != matched_id]
                 alternative_materials = attach_recalled_segments(alternative_materials, title)
                 alternative_materials.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
-                alternative_materials = alternative_materials[:4]
+                project_extras = [
+                    m for m in alternative_materials[4:]
+                    if str(m.get("materialTier") or "").lower() == "project"
+                ][:4]
+                alternative_materials = alternative_materials[:4] + project_extras
                 gap_reason = "允许范围内已有可用素材。"
                 next_actions = ["s4_merge_material"]
         else:
