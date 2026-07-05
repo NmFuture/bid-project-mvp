@@ -541,12 +541,23 @@ def label_score(label: str, context: str, fact: dict[str, Any]) -> float:
     fact_label = norm(fact.get("label"))
     if not label_norm or not fact_label:
         return 0.0
+    material_fact = str(fact.get("sourceKind") or "") in {"docx", "xlsx"}
     score = 0.0
     if label_norm == fact_label:
         score = 0.94
-    elif label_norm in fact_label or fact_label in label_norm:
+    elif label_norm in fact_label:
+        # 方向性约束（金标反评/商务标 519f8a4 同款）：占位符标签 ⊂ 事实键才算强包含
         score = 0.82
+    elif fact_label in label_norm:
+        # 反向包含只对足够长的事实键放行——短键蹭长标签是污染源
+        if len(fact_label) < 5:
+            return 0.0
+        score = 0.78
     else:
+        if material_fact:
+            # 素材文档抽的事实禁走模糊路径：金标反评发现无关素材参数
+            # （如低温冲击功）靠 SequenceMatcher 蹭分批量污染承诺值占位符。
+            return 0.0
         score = SequenceMatcher(None, label_norm, fact_label).ratio() * 0.78
     context_norm = norm(context)
     value_norm = norm(fact.get("value"))
@@ -560,17 +571,68 @@ def label_score(label: str, context: str, fact: dict[str, Any]) -> float:
     return round(min(score, 0.99), 3)
 
 
-def choose_fact(label: str, context: str, facts: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+def choose_fact(
+    label: str,
+    context: str,
+    facts: list[dict[str, Any]],
+    used_material_facts: dict[tuple[str, str], str] | None = None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     candidates = []
     for fact in facts:
         score = label_score(label, context, fact)
         if score > 0:
             item = dict(fact)
             item["score"] = score
+            # 事实表/派生事实优先（金标反评：错值的正确答案大多躺在已确认事实表里，
+            # 却被素材证据以相近分捞走）——同分段位内 manifest 来源先选。
+            item["_trustBoost"] = 0.1 if str(item.get("sourceKind") or "") == "manifest" else 0.0
             candidates.append(item)
-    candidates.sort(key=lambda item: (item["score"], item.get("sourcePriority", 0)), reverse=True)
-    selected = next((item for item in candidates if item["score"] >= 0.62), None)
+    candidates.sort(key=lambda item: (item["score"] + item["_trustBoost"], item.get("sourcePriority", 0)), reverse=True)
+
+    def usable(item: dict[str, Any]) -> bool:
+        if item["score"] < 0.62:
+            return False
+        if used_material_facts is not None and str(item.get("sourceKind") or "") in {"docx", "xlsx"}:
+            # 素材证据单次使用：同一条素材事实不得绑定到语义不同的占位符
+            #（金标反评：一条证据喷洒 23 处占位符）。同标签复用（表格重复行）放行。
+            key = (norm(item.get("label")), norm(item.get("value")))
+            bound_to = used_material_facts.get(key)
+            if bound_to is not None and bound_to != norm(label):
+                return False
+        return True
+
+    selected = next((item for item in candidates if usable(item)), None)
     return selected, candidates[:5]
+
+
+# 宁空勿错哨兵：上下文规则明确该槽位属于某个事实、但事实缺失时返回它，
+# 强制走人工占位，禁止级联到后续规则或模糊匹配错填（金标反评：单机容量缺失
+# 级联到总装机容量规则，10MW 被填成 600）。
+MANUAL_SENTINEL: dict[str, Any] = {"__manual__": True}
+
+NUMERIC_HINT_LABELS = (
+    "数量", "台数", "小时", "容量", "坐标", "高度", "风速", "直径",
+    "功率", "保证率", "可利用率", "利用率", "更换率", "电量", "年限", "期限",
+)
+
+
+def numeric_slot(text: str, placeholder: dict[str, Any], label: str) -> bool:
+    """占位符槽位是否期望数字值（比较符前缀 / 单位后缀 / 数字型标签）。"""
+    start = int(placeholder.get("start") or 0)
+    end = int(placeholder.get("end") or 0)
+    before = clean(text[max(0, start - 8):start])
+    after = clean(text[end:end + 4])
+    if any(ch in before[-3:] for ch in ("≥", "≤", ">", "<", "＞", "＜")):
+        return True
+    if re.match(r"^(台|套|米|m\b|mw|kw|h\b|小时|年|%|℃|mm)", after, re.IGNORECASE):
+        return True
+    return any(key in label for key in NUMERIC_HINT_LABELS)
+
+
+def value_fits_numeric_slot(value: Any) -> bool:
+    """数字槽位守卫：值必须含数字且是短值——长混合串（型号+参数拼接）判不合格。"""
+    text = clean(value)
+    return bool(re.search(r"\d", text)) and len(norm(text)) <= 24
 
 
 def synthetic_fact(label: str, value: str, source: str, confidence: float = 0.9) -> dict[str, Any] | None:
@@ -666,11 +728,15 @@ def context_fact(label: str, context: str, placeholder: dict[str, Any], occurren
         if "叶片" in ctx:
             return value_fact(facts, "叶片供货制造基地介绍", "叶片供货制造基地", confidence=0.78)
         return value_fact(facts, "主机供货制造基地介绍", "主机供货制造基地", confidence=0.78)
-    if label_norm in {"投标方案", "项目方案", "技术方案", "招标要求"} or any(key in label for key in ("性能指标承诺", "风资源数据", "发电小时数承诺", "章节索引")):
+    if label_norm in {"投标方案", "项目方案", "技术方案", "招标要求", "投标响应"} or any(key in label for key in ("性能指标承诺", "风资源数据", "发电小时数承诺", "章节索引")):
+        # 章节索引列最先短路：它是目录引用不是数据值，绝不能被下面的
+        # 机型/容量等上下文规则错填（金标反评：18 行索引列被机型名覆盖）。
+        if "章节索引" in label:
+            return synthetic_fact("章节索引", "详见对应技术方案章节及技术附表", "directory context", confidence=0.65)
         if "单叶片吊装" in ctx:
-            return value_fact(facts, "单叶片吊装及辅助工装工具套数", confidence=0.9)
+            return value_fact(facts, "单叶片吊装及辅助工装工具套数", confidence=0.9) or MANUAL_SENTINEL
         if "运行维护工具" in ctx:
-            return value_fact(facts, "运行维护工具套数", confidence=0.9)
+            return value_fact(facts, "运行维护工具套数", confidence=0.9) or MANUAL_SENTINEL
         if "超细干粉灭火装置" in ctx and ("主机舱" in ctx or "副机舱" in ctx):
             return synthetic_fact("自动消防配置数量", "3", "standard fire protection configuration", confidence=0.78)
         if "机舱烟感温感组合" in ctx:
@@ -678,62 +744,60 @@ def context_fact(label: str, context: str, placeholder: dict[str, Any], occurren
         if any(item in ctx for item in ("声光报警器", "消防控制器", "气溶胶灭火装置", "温感探测器", "超细干粉灭火装置")):
             return synthetic_fact("自动消防配置数量", "1", "standard fire protection configuration", confidence=0.76)
         if "升降机" in ctx and "导向" in ctx:
-            return value_fact(facts, "升降机导向方式", confidence=0.86)
+            return value_fact(facts, "升降机导向方式", confidence=0.86) or MANUAL_SENTINEL
         if "主机" in ctx and "基地" in ctx:
-            return value_fact(facts, "主机供货制造基地", confidence=0.86)
+            return value_fact(facts, "主机供货制造基地", confidence=0.86) or MANUAL_SENTINEL
         if "叶片" in ctx and "基地" in ctx:
-            return value_fact(facts, "叶片供货制造基地", confidence=0.86)
+            return value_fact(facts, "叶片供货制造基地", confidence=0.86) or MANUAL_SENTINEL
         if "项目名称" in ctx:
-            return value_fact(facts, "项目名称", confidence=0.95)
+            return value_fact(facts, "项目名称", confidence=0.95) or MANUAL_SENTINEL
         if "承诺方式" in ctx:
             if "考核" in ctx:
                 return synthetic_fact("承诺方式", "承诺考核值（77%折减）", "tender/performance facts", confidence=0.82)
             return synthetic_fact("承诺方式", "承诺保证值（75%折减）", "tender/performance facts", confidence=0.82)
         if "轮毂高度" in ctx or "轮毂中心高度" in ctx:
-            return value_fact(facts, "轮毂高度", confidence=0.9)
+            return value_fact(facts, "轮毂高度", confidence=0.9) or MANUAL_SENTINEL
         if "净发电量" in ctx and "考核" in ctx:
-            return value_fact(facts, "考核发电量", "考核净发电量", confidence=0.9)
+            return value_fact(facts, "考核发电量", "考核净发电量", confidence=0.9) or MANUAL_SENTINEL
         if "净发电量" in ctx:
-            return value_fact(facts, "保证发电量", "保证净发电量", confidence=0.9)
+            return value_fact(facts, "保证发电量", "保证净发电量", confidence=0.9) or MANUAL_SENTINEL
         if "有效小时" in ctx and "考核" in ctx:
-            return value_fact(facts, "考核有效小时数", confidence=0.9)
+            return value_fact(facts, "考核有效小时数", confidence=0.9) or MANUAL_SENTINEL
         if "有效小时" in ctx:
-            return value_fact(facts, "保证有效小时数", confidence=0.9)
+            return value_fact(facts, "保证有效小时数", confidence=0.9) or MANUAL_SENTINEL
         if "功率曲线" in ctx or "功率曲线保证" in label:
-            return value_fact(facts, "功率曲线保证率", confidence=0.88)
+            return value_fact(facts, "功率曲线保证率", confidence=0.88) or MANUAL_SENTINEL
         if ("单台" in ctx or "每台" in ctx) and "可利用率" in ctx:
-            return value_fact(facts, "单台可利用率", confidence=0.88)
+            return value_fact(facts, "单台可利用率", confidence=0.88) or MANUAL_SENTINEL
         if "设备利用率" in ctx:
-            return value_fact(facts, "单台可利用率", confidence=0.86)
+            return value_fact(facts, "单台可利用率", confidence=0.86) or MANUAL_SENTINEL
         if ("全场" in ctx or "全部" in ctx) and "可利用率" in ctx:
-            return value_fact(facts, "全场可利用率", confidence=0.88)
+            return value_fact(facts, "全场可利用率", confidence=0.88) or MANUAL_SENTINEL
         if "主要部件更换率" in ctx:
-            return value_fact(facts, "主要部件更换率", confidence=0.88)
+            return value_fact(facts, "主要部件更换率", confidence=0.88) or MANUAL_SENTINEL
         if "风机数量" in ctx or "台数" in ctx or "全场配置" in ctx or suffix.startswith("台"):
-            return value_fact(facts, "机组台数", "台数", confidence=0.9)
+            return value_fact(facts, "机组台数", "台数", confidence=0.9) or MANUAL_SENTINEL
         if "单机容量" in ctx:
-            return value_fact(facts, "单机容量", confidence=0.9)
+            return value_fact(facts, "单机容量", confidence=0.9) or MANUAL_SENTINEL
         if "总装机容量" in ctx or "容量mw" in ctx or "项目总装机容量" in ctx:
-            return value_fact(facts, "总装机容量", "容量", confidence=0.9)
+            return value_fact(facts, "总装机容量", "容量", confidence=0.9) or MANUAL_SENTINEL
         if "容量" in ctx and "mw" in ctx:
-            return value_fact(facts, "总装机容量", "容量", confidence=0.9)
+            return value_fact(facts, "总装机容量", "容量", confidence=0.9) or MANUAL_SENTINEL
         if "方案" in ctx and "考核" in ctx:
-            return value_fact(facts, "方案", confidence=0.86)
+            return value_fact(facts, "方案", confidence=0.86) or MANUAL_SENTINEL
         if "方案" in ctx:
-            return value_fact(facts, "投标方案", "方案", confidence=0.86)
+            return value_fact(facts, "投标方案", "方案", confidence=0.86) or MANUAL_SENTINEL
         if "机型" in ctx:
-            return value_fact(facts, "投标方案", "投标机型", confidence=0.95)
+            return value_fact(facts, "投标方案", "投标机型", confidence=0.95) or MANUAL_SENTINEL
         if "叶轮直径" in ctx:
-            return value_fact(facts, "叶轮直径", confidence=0.9)
+            return value_fact(facts, "叶轮直径", confidence=0.9) or MANUAL_SENTINEL
         if "年平均风速" in ctx:
-            return value_fact(facts, "测风塔210315年平均风速", confidence=0.9)
+            return value_fact(facts, "测风塔210315年平均风速", confidence=0.9) or MANUAL_SENTINEL
         if "测风塔" in ctx or "风资源数据" in label:
             tower = first_fact_value(facts, "测风塔210315坐标")
             speed = first_fact_value(facts, "测风塔210315年平均风速")
             if tower and speed:
                 return synthetic_fact("风资源数据", f"210315#（{tower}）125m高度处年平均风速{speed}m/s", "wind resource facts", confidence=0.86)
-        if "章节索引" in label:
-            return synthetic_fact("章节索引", "详见对应技术方案章节及技术附表", "directory context", confidence=0.65)
     if label_norm == "待填写内容":
         if "t1r" in ctx and "共计" in ctx:
             return value_fact(facts, "试运行业绩台数" if suffix.startswith("台") else "试运行业绩容量", confidence=0.92)
@@ -878,7 +942,12 @@ def validate_key_data_tables(output_file: Path, facts: list[dict[str, Any]], fil
     }
 
 
-def replace_text(text: str, facts: list[dict[str, Any]], context: str) -> tuple[str, list[dict[str, Any]], list[str], bool]:
+def replace_text(
+    text: str,
+    facts: list[dict[str, Any]],
+    context: str,
+    used_material_facts: dict[tuple[str, str], str] | None = None,
+) -> tuple[str, list[dict[str, Any]], list[str], bool]:
     decisions: list[dict[str, Any]] = []
     unfilled: list[str] = []
     highlighted = False
@@ -892,10 +961,19 @@ def replace_text(text: str, facts: list[dict[str, Any]], context: str) -> tuple[
         placeholder["rawText"] = text
         selected = context_fact(placeholder["label"], context, placeholder, occurrence, facts)
         alternatives: list[dict[str, Any]] = []
-        if selected is None:
-            selected, alternatives = choose_fact(placeholder["label"], context, facts)
+        if selected is MANUAL_SENTINEL:
+            selected = None  # 宁空勿错：规则已认领该槽位但事实缺失，禁止模糊兜底
+        elif selected is None:
+            selected, alternatives = choose_fact(placeholder["label"], context, facts, used_material_facts)
+        if selected and numeric_slot(text, placeholder, placeholder["label"]) and not value_fits_numeric_slot(selected.get("value")):
+            # 类型守卫：数字槽位拒绝非数字/超长混合值（金标反评：QT350-22AL 参数串
+            # 覆盖 97%/2836h 等承诺数字）。
+            alternatives = ([selected] + alternatives)[:4]
+            selected = None
         if selected:
             value = clean(selected["value"])
+            if used_material_facts is not None and str(selected.get("sourceKind") or "") in {"docx", "xlsx"}:
+                used_material_facts.setdefault((norm(selected.get("label")), norm(value)), norm(placeholder["label"]))
             decisions.append(
                 {
                     "placeholder": placeholder["full"],
@@ -933,13 +1011,15 @@ def fill_docx(source_path: Path, output_file: Path, facts: list[dict[str, Any]])
     doc = Document(str(source_path))
     decisions: list[dict[str, Any]] = []
     unfilled: list[str] = []
+    # 素材证据单次使用登记（文档级）：(事实标签, 值) -> 首次绑定的占位符标签
+    used_material_facts: dict[tuple[str, str], str] = {}
 
     for idx, paragraph in enumerate(doc.paragraphs, start=1):
         text = paragraph.text
         if not find_placeholders(text):
             continue
         context = clean(text)
-        replaced, local_decisions, local_unfilled, highlight = replace_text(text, facts, context)
+        replaced, local_decisions, local_unfilled, highlight = replace_text(text, facts, context, used_material_facts)
         set_paragraph_text(paragraph, replaced, highlight=highlight)
         for decision in local_decisions:
             decision["location"] = f"P{idx}"
@@ -965,7 +1045,7 @@ def fill_docx(source_path: Path, output_file: Path, facts: list[dict[str, Any]])
                 )
                 table_marker = f"T{table_idx}R{row_idx}C{col_idx}"
                 context = " / ".join(part for part in (table_marker, row_context, column_context, clean(text)) if part)
-                replaced, local_decisions, local_unfilled, highlight = replace_text(text, facts, context)
+                replaced, local_decisions, local_unfilled, highlight = replace_text(text, facts, context, used_material_facts)
                 cell.text = ""
                 set_paragraph_text(cell.paragraphs[0], replaced, highlight=highlight)
                 if highlight:
