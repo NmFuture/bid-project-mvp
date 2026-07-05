@@ -768,6 +768,16 @@ async def technical_raw_batch_tags(data: dict[str, Any] = Body(default_factory=d
     }
 
 
+@router.post("/api/technical/materials/raw/certificate-time/batch")
+async def technical_raw_certificate_time_batch(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    file_ids = [str(item) for item in (data.get("fileIds") or []) if str(item or "").strip()]
+    return await technical_material_store.raw_certificate_time_batch(
+        folder_path=str(data.get("folderPath") or ""),
+        file_ids=file_ids,
+        limit=int(data.get("limit") or 50),
+    )
+
+
 @router.post("/api/technical/materials/raw/{file_id}/split/preview")
 async def technical_raw_preview_split(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     return await technical_material_store.preview_technical_split(
@@ -832,6 +842,12 @@ async def technical_raw_download_content(file_id: str) -> StreamingResponse:
     return minio_streaming_response(payload)
 
 
+@router.get("/api/technical/materials/raw/{file_id}/preview-content")
+async def technical_raw_preview_content(file_id: str) -> StreamingResponse:
+    payload = await technical_material_store.raw_download_content(file_id)
+    return minio_streaming_response(payload, inline=True)
+
+
 @router.get("/api/technical/materials/raw/{file_id}/cleaned/preview")
 async def technical_raw_preview_cleaned_file(file_id: str, request: Request) -> dict[str, Any]:
     return await technical_material_store.raw_cleaned_preview(
@@ -866,6 +882,56 @@ async def technical_raw_download_cleaned_content_by_name(file_id: str, filename:
 async def technical_wiki_list(nodeId: str = "", bidType: str = "") -> dict[str, Any]:
     _ = bidType
     return await technical_material_store.wiki_list(nodeId)
+
+
+@router.get("/api/technical/materials/wiki/certificate-time")
+async def technical_wiki_certificate_time() -> dict[str, Any]:
+    return await technical_material_store.certificate_time_registry()
+
+
+@router.patch("/api/technical/materials/wiki/certificate-time/{file_id}")
+async def technical_wiki_update_certificate_time(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await technical_material_store.update_certificate_time(file_id, data)
+
+
+@router.get("/api/technical/materials/certificates")
+async def technical_certificate_ledger() -> dict[str, Any]:
+    return await technical_material_store.certificate_time_registry()
+
+
+@router.get("/api/technical/materials/certificates/suggestions")
+async def technical_certificate_suggestions() -> dict[str, Any]:
+    return await technical_material_store.certificate_time_suggestions()
+
+
+@router.put("/api/technical/materials/certificates/scopes")
+async def technical_update_certificate_scopes(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await technical_material_store.update_certificate_time_scopes(data)
+
+
+@router.post("/api/technical/materials/certificates/incremental")
+async def technical_run_certificate_incremental(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await technical_material_store.run_certificate_time_incremental(data)
+
+
+@router.post("/api/technical/materials/certificates/{file_id}/recognize")
+async def technical_recognize_certificate_ledger(file_id: str) -> dict[str, Any]:
+    return await technical_material_store.recognize_certificate_time(file_id)
+
+
+@router.post("/api/technical/materials/certificates/bulk-delete")
+async def technical_delete_certificate_ledgers(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await technical_material_store.delete_certificate_times(data)
+
+
+@router.patch("/api/technical/materials/certificates/{file_id}")
+async def technical_update_certificate_ledger(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await technical_material_store.update_certificate_time(file_id, data)
+
+
+@router.delete("/api/technical/materials/certificates/{file_id}")
+async def technical_delete_certificate_ledger(file_id: str) -> dict[str, Any]:
+    return await technical_material_store.delete_certificate_time(file_id)
 
 
 @router.post("/api/technical/materials/wiki/bootstrap")

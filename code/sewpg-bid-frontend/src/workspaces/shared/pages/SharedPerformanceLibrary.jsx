@@ -195,8 +195,11 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
   const sharedPerformanceItems = useMemo(() => [
     { key: 'raw', label: '原始素材', absolutePath: `${sourceMaterialsBasePath}/raw` },
     { key: 'wiki', label: 'Wiki', absolutePath: `${sourceMaterialsBasePath}/wiki` },
+    ...(sourceWorkspace === 'tech'
+      ? [{ key: 'certificates', label: '证书台账', absolutePath: `${sourceMaterialsBasePath}/certificates` }]
+      : []),
     { key: 'performance', label: '业绩库', absolutePath: '/workspace/shared/materials/performance' },
-  ], [sourceMaterialsBasePath])
+  ], [sourceMaterialsBasePath, sourceWorkspace])
 
   const query = useMemo(() => ({ ...filters, ...sort, page, pageSize }), [filters, sort, page])
 

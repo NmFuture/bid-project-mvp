@@ -14,6 +14,16 @@ from app.services.business_material_splitter import (
     preview_business_material_split,
 )
 from app.services.material_store import material_store
+from app.services.material_certificate_time import (
+    delete_certificate_time_record,
+    delete_certificate_time_records,
+    list_certificate_time_registry,
+    run_certificate_time_batch,
+    run_certificate_time_incremental,
+    suggest_certificate_time_scopes,
+    update_certificate_time_scopes,
+    update_certificate_time_record,
+)
 from app.services.material_tag_import import build_preview, parse_tag_excel
 from app.services.material_tag_import_fuzzy import run_tag_import_fuzzy_match
 from app.services.peripheral import PeripheralError
@@ -545,6 +555,67 @@ class TechnicalMaterialStore:
     async def raw_download_content(self, file_id: str) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)
         return await material_store.raw_download_content(file_id, bid_type=TECHNICAL_BID_TYPE)
+
+    async def raw_certificate_time_batch(
+        self,
+        *,
+        folder_path: str = "",
+        file_ids: list[str] | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        normalized_folder = self.ensure_root_path(folder_path, "证书目录") if folder_path else TECHNICAL_BID_TYPE
+        return await run_certificate_time_batch(
+            bid_type=TECHNICAL_BID_TYPE,
+            folder_path=normalized_folder,
+            file_ids=file_ids,
+            limit=limit,
+        )
+
+    async def certificate_time_registry(self) -> dict[str, Any]:
+        return await list_certificate_time_registry(bid_type=TECHNICAL_BID_TYPE)
+
+    async def certificate_time_suggestions(self) -> dict[str, Any]:
+        return await suggest_certificate_time_scopes(bid_type=TECHNICAL_BID_TYPE)
+
+    async def update_certificate_time_scopes(self, data: dict[str, Any]) -> dict[str, Any]:
+        return await update_certificate_time_scopes(
+            bid_type=TECHNICAL_BID_TYPE,
+            scopes=data.get("scopes") or [],
+        )
+
+    async def run_certificate_time_incremental(self, data: dict[str, Any]) -> dict[str, Any]:
+        return await run_certificate_time_incremental(
+            bid_type=TECHNICAL_BID_TYPE,
+            limit=int(data.get("limit") or 50),
+            include_failed=bool(data.get("includeFailed", True)),
+        )
+
+    async def recognize_certificate_time(self, file_id: str) -> dict[str, Any]:
+        return await run_certificate_time_batch(
+            bid_type=TECHNICAL_BID_TYPE,
+            file_ids=[file_id],
+            limit=1,
+        )
+
+    async def update_certificate_time(self, file_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        return await update_certificate_time_record(
+            bid_type=TECHNICAL_BID_TYPE,
+            file_id=file_id,
+            issue_date=data.get("issueDate"),
+            expiry_date=data.get("expiryDate"),
+        )
+
+    async def delete_certificate_time(self, file_id: str) -> dict[str, Any]:
+        return await delete_certificate_time_record(
+            bid_type=TECHNICAL_BID_TYPE,
+            file_id=file_id,
+        )
+
+    async def delete_certificate_times(self, data: dict[str, Any]) -> dict[str, Any]:
+        return await delete_certificate_time_records(
+            bid_type=TECHNICAL_BID_TYPE,
+            file_ids=data.get("fileIds") or [],
+        )
 
     async def wiki_list(self, node_id: str = "") -> dict[str, Any]:
         return self._with_urls(await material_store.wiki_list(node_id, TECHNICAL_BID_TYPE))
