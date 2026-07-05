@@ -232,6 +232,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   }
 
   return (
+    <>
     <div className="flex flex-col gap-3 animate-fade-in">
       <MaterialsViewSwitch
         active="wiki"
@@ -265,7 +266,9 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
               </div>
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-3 space-y-1">{renderTree(tree)}</div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-3 space-y-1">
+            {renderTree(tree)}
+          </div>
         </div>
 
         <div className="xl:col-span-9 flex min-w-0 flex-col">
@@ -286,5 +289,6 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         </div>
       </div>
     </div>
+    </>
   )
 }

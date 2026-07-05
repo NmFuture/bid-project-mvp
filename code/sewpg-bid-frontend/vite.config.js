@@ -8,6 +8,7 @@ export default defineConfig(({ mode }) => {
   const devPort = Number(env.VITE_DEV_PORT || 5173)
   const proxyTarget = env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8000'
   const onlyofficeTarget = env.VITE_ONLYOFFICE_PROXY_TARGET || 'http://127.0.0.1:8080'
+  const onlyofficeKeepPrefix = env.VITE_ONLYOFFICE_PROXY_KEEP_PREFIX === 'true'
   const proxyBase = apiBase.startsWith('/') ? apiBase : '/api'
   const proxy = {
     [proxyBase]: {
@@ -18,7 +19,7 @@ export default defineConfig(({ mode }) => {
       target: onlyofficeTarget,
       changeOrigin: true,
       ws: true,
-      rewrite: (path) => path.replace(/^\/ds/, ''),
+      rewrite: onlyofficeKeepPrefix ? undefined : (path) => path.replace(/^\/ds/, ''),
     },
   }
 
