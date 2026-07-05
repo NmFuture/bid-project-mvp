@@ -755,6 +755,18 @@ def component_keywords_for(prefix: str) -> list[str]:
         return ["主轴专题", "主轴承专题", "齿轮箱专题", "偏航系统专题", "制动系统专题", "液压系统专题", "机舱专题"]
     if prefix == "C1":
         return ["机型投标参数表", "参数表", "防雷系统专题", "机舱专题"]
+    # H2 交货进度：物流方案/运输方案
+    if prefix == "H2":
+        return ["物流解决方案", "物流方案", "运输方案", "交货", "发运"]
+    # G1 安全等级统计：载荷评估/安全评估
+    if prefix == "G1":
+        return ["载荷安全性评估", "安全等级", "载荷评估", "场址安全"]
+    # F2 设计认证：认证证书/型式认证
+    if prefix == "F2":
+        return ["认证证书", "型式认证", "设计认证", "CQC认证"]
+    # D7 性能考核：功率曲线/性能保证
+    if prefix == "D7":
+        return ["性能保证", "功率曲线", "考核指标", "承诺函"]
     return []
 
 
@@ -1862,6 +1874,15 @@ def score(field: dict[str, Any], fact: dict[str, Any], scenario: str) -> float:
         return 0.0
     if "扭矩" in field_name and "扭矩" not in fact_label and "转矩" not in fact_label:
         return 0.0
+    # IEC S vs IB 语义区分：设计等级 ≠ 场址安全等级
+    # "风电机组安全等级" / "场址安全等级" 应填 IEC IB/IIA 等场址等级，
+    # 不应填 IEC S（设计等级）——后者来自认证证书，不是场址载荷评估。
+    if ("安全等级" in field_name or "场址" in field_name) and "设计" not in field_name:
+        if "设计等级" in fact_label or "设计安全等级" in fact_label:
+            return 0.0
+        # IEC S 是设计等级，不是场址等级
+        if fact["value"] and re.match(r"IEC\s+[SABCR]$", str(fact["value"]).strip(), re.IGNORECASE):
+            return 0.0
 
     value = 0.54 + 0.24 * len(overlap) / max(1, len(field["concepts"]))
     if generic_score >= 0.68:
@@ -3498,6 +3519,13 @@ def apply_same_shape_source_table_fill(
         if spec.value_col >= len(row.cells):
             continue
         value = selected["row"]["value"]
+        # IEC S vs IB 语义区分：设计等级 ≠ 场址安全等级
+        # "风电机组安全等级" / "场址安全等级" 应填 IEC IB/IIA 等场址等级，
+        # 不应填 IEC S（设计等级）——后者来自认证证书，不是场址载荷评估。
+        field_name = str(decision.get("field") or "")
+        if ("安全等级" in field_name or "场址" in field_name) and "设计" not in field_name:
+            if re.match(r"IEC\s+[SABCR]$", str(value).strip(), re.IGNORECASE):
+                continue
         set_cell(row.cells[spec.value_col], value)
         replacements.append(
             {
