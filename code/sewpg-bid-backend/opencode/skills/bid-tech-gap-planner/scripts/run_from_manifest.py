@@ -2015,6 +2015,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    collapse_empirically_converged_chapters(plan_items)
     summary = summarize(plan_items)
     integrity = coverage_integrity(items, plan_items, summary)
     if integrity["coverageStatus"] != "passed":
@@ -2037,6 +2038,133 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         "items": plan_items,
         "integrity": integrity,
     }
+
+
+_STANDALONE_APPENDIX_NUMBER_RE = re.compile(r"^(技术附表|附表|附件)")
+
+
+def _converged_primary_material(item: dict[str, Any]) -> dict[str, Any] | None:
+    """子节独立匹配后指向的"主素材"：优先已定素材，其次首选候选，
+    附表类子节退回附表来源路由（sourceRouting / 推荐素材）。"""
+    for material in item.get("matchedMaterials") or []:
+        if isinstance(material, dict) and str(material.get("id") or ""):
+            return material
+    if str(item.get("usage") or "") in ("section_fill", "appendix_fill"):
+        for material in item.get("candidateMaterials") or []:
+            if isinstance(material, dict) and str(material.get("id") or ""):
+                return material
+        for task in item.get("appendixTasks") or []:
+            routing = task.get("sourceRouting") if isinstance(task.get("sourceRouting"), dict) else {}
+            for material in routing.get("matchedMaterials") or []:
+                if isinstance(material, dict) and str(material.get("id") or ""):
+                    return material
+            for material in task.get("recommendedMaterials") or []:
+                if isinstance(material, dict) and str(material.get("id") or ""):
+                    return material
+    return None
+
+
+def collapse_empirically_converged_chapters(plan_items: list[dict[str, Any]]) -> None:
+    """章头因标题/文件名对不上而没能收敛整章素材时的兜底：
+
+    章头收敛整章素材（chapter_master）靠字面匹配（chapter_title_matches_file）：
+    要求候选文件名包含章标题拆词后的全部词。像"风资源评估报告.docx"对"风资源
+    评估与机位排布方案"这种章标题，拆词后只命中"风资源评估"、命中不了"机位
+    排布方案"，判定必然失败——但子节各自独立召回（弱关联/候选择优/附表来源）
+    后，实际上全部收敛到了同一份现成素材，这本身就是"该素材覆盖全章"的经验证据
+    （华能翁牛特旗第3章即此形态：整章正文与内嵌表格都出自《风资源评估报告》）。
+
+    只有当一章的每个子节都收敛到同一份现成素材（非"待填写"模板）时，才判定
+    整章覆盖，避免误伤子节内容各异的章（如第5章各专题指向不同素材）。
+
+    附表类子节（如 3.3 关联附表G.1）也可并入父章覆盖，前提是它引用的附表都
+    已由独立附表目录项（number 形如"附表G.1"）兜底填写——此时子节上挂的附表
+    任务只是标题撞词导致的重复，去掉不丢交付物；正文合并时表格内容随整章素材
+    一并进入。反之，附表无独立兜底、或子节挂的是自身正文模板填写（word/素材
+    fill），则不吸收，保留其独立产出。
+    """
+    standalone_appendix_ids: set[str] = set()
+    for plan_item in plan_items:
+        number = str(plan_item.get("number") or "").strip()
+        if _STANDALONE_APPENDIX_NUMBER_RE.match(number):
+            for task in plan_item.get("appendixTasks") or []:
+                task_id = str(task.get("id") or "")
+                if task_id:
+                    standalone_appendix_ids.add(task_id)
+
+    def _absorbable(item: dict[str, Any]) -> bool:
+        if str(item.get("coveredByParent") or ""):
+            return False
+        appendix_ids = [str(t.get("id") or "") for t in item.get("appendixTasks") or []]
+        # 附表类子节：仅当所有附表都有独立目录项兜底时可吸收
+        if appendix_ids and not all(aid in standalone_appendix_ids for aid in appendix_ids):
+            return False
+        # 无附表但挂了 fill 任务 → 本节自身正文模板填写，独立产出，不吸收
+        if item.get("fillTasks") and not appendix_ids:
+            return False
+        return True
+
+    headers: dict[str, dict[str, Any]] = {}
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for plan_item in plan_items:
+        number_key = toc_number_key(plan_item.get("number"))
+        if not number_key:
+            continue
+        top = number_key.split(".")[0]
+        if number_key == top:
+            headers[top] = plan_item
+        else:
+            groups.setdefault(top, []).append(plan_item)
+
+    for top, header in headers.items():
+        if str(header.get("coverageRole") or "") == "chapter_master" or str(header.get("coveredByParent") or ""):
+            continue
+        subs = groups.get(top) or []
+        if len(subs) < 2:
+            continue
+        primary_ids: set[str] = set()
+        shared_material: dict[str, Any] | None = None
+        converged = True
+        for d in subs:
+            material = _converged_primary_material(d) if _absorbable(d) else None
+            if not isinstance(material, dict) or not str(material.get("id") or ""):
+                converged = False
+                break
+            primary_ids.add(str(material.get("id")))
+            if shared_material is None:
+                shared_material = material
+        if not converged or len(primary_ids) != 1 or shared_material is None:
+            continue
+        shared_material = dict(shared_material)
+        if material_requires_fill(shared_material):
+            continue
+
+        header["coverageRole"] = "chapter_master"
+        header["status"] = "matched"
+        header["decision"] = "ready"
+        header["usage"] = "chapter_master"
+        header["matchedMaterials"] = [shared_material]
+        header["gapReason"] = (
+            f"子节独立匹配全部收敛到同一份素材“{shared_material.get('name') or shared_material.get('id')}”，"
+            "判定其实际覆盖整章。"
+        )
+        header["nextActions"] = ["s4_merge_material"]
+        header_id = str(header.get("id") or "")
+        for d in subs:
+            d["coveredByParent"] = header_id
+            d["coverageRole"] = "covered_by_parent"
+            d["status"] = "matched"
+            d["decision"] = "ready"
+            d["usage"] = "covered_by_parent"
+            d["matchedMaterials"] = []
+            d["candidateMaterials"] = []
+            # 附表任务由独立附表目录项兜底，此处的重复挂载去掉不丢交付物
+            d["appendixTasks"] = []
+            d["fillTasks"] = []
+            d["requiredInputs"] = []
+            d["priority"] = "medium"
+            d["gapReason"] = f"已由父章节“{header.get('title') or top}”整章素材覆盖（子节独立匹配收敛认定）。"
+            d["nextActions"] = ["s4_merge_material"]
 
 
 def summarize(items: list[dict[str, Any]]) -> dict[str, int]:
