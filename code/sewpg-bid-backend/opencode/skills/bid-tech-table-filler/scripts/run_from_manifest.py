@@ -380,6 +380,17 @@ def concepts_for(text: str) -> list[str]:
     return found
 
 
+def is_conditional_requirement_text(value: Any) -> bool:
+    """按场景分叉的门槛描述（"纯钢塔：需≤125；混塔：需≥140"）不是可用的具体值——
+    素材库源表里常见"（项目定制）"占位行留着这类指导性文字给人工改，被通用
+    抽取逻辑当成"合法事实"直接抄进答案格。这里只用"需≤/需≥/不低于/不高于/
+    不得低于/不得高于/至少"这类多字、精确的门槛用语，不用"应/须/要求"这种
+    单字判断——那些字在"屈服应力""驱动须知"等正常技术词里很常见，会把大量
+    合法值误伤成不可用。"""
+    text = clean(value)
+    return bool(re.search(r"需\s*[≤≥<>]|不(?:低于|高于|得低于|得高于)|至少", text))
+
+
 def usable_value(value: str) -> bool:
     v = clean(value)
     if not v or v in {"/", "-", "—", "无", "None", "none", "N/A", "n/a"}:
@@ -387,7 +398,9 @@ def usable_value(value: str) -> bool:
     if any(marker in v for marker in ("待填写", "待补充", "待确认", "待人工补充", "[", "【")):
         return False
     weak = ["见商务", "商务报价表", "商务部分", "项目定制", "待定", "无明确", "参照1.1", "参照 1.1"]
-    return not any(token in v for token in weak)
+    if any(token in v for token in weak):
+        return False
+    return not is_conditional_requirement_text(v)
 
 
 def cell_needs_fill(value: Any) -> bool:
@@ -403,10 +416,14 @@ def requirement_value_is_direct_response(value: Any) -> bool:
         return False
     if any(token in text for token in ("根据", "厂家", "测算", "确定", "另行", "待", "见", "详见")):
         return False
+    if requirement_like_value(text):
+        return False
     return bool(re.search(r"[0-9]|%|IEC|GB|NB|DL|是|否|有|无", text, flags=re.I))
 
 
 def requirement_like_value(value: Any) -> bool:
+    # 条件式招标要求（"纯钢塔：需≤125；混塔：需≥140"这类按场景分叉的门槛描述）
+    # 不是可以直接抄的答案值——它描述的是"要求"本身，不是投标人declare的具体值。
     text = clean(value)
     return any(token in text for token in ("需≤", "需≥", "不低于", "不高于", "至少", "应", "须", "要求"))
 
@@ -493,6 +510,17 @@ def generic_parse_value_allowed(label: str, value: str) -> bool:
     return True
 
 
+_TRAILING_ANNOTATION_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)\s*[（(]([^0-9()（）]{1,12})[）)]$")
+
+
+def strip_numeric_trailing_annotation(value_text: str) -> str:
+    """数值答案后面挂的中文场景注（如"50（背风策略）"）在正式表格里应只留数字——
+    真实中标件对照证实这类括注不是答案的一部分。只在括号内不含数字时剥离，
+    避免误删"10（±5%）"这类真正影响数值含义的限定。"""
+    match = _TRAILING_ANNOTATION_RE.match(value_text)
+    return match.group(1) if match else value_text
+
+
 def normalize_value_for_field(field: dict[str, Any], selected: dict[str, Any]) -> str:
     field_text = clean(f"{field.get('field')} {field.get('unit')}")
     label_text = clean(selected.get("label"))
@@ -502,7 +530,7 @@ def normalize_value_for_field(field: dict[str, Any], selected: dict[str, Any]) -
             number = parse_float(value_text)
             if number is not None:
                 return trim_float(number / 1000, 3)
-    return value_text
+    return strip_numeric_trailing_annotation(value_text)
 
 
 def add_fact(

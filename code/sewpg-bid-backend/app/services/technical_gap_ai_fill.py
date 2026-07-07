@@ -878,10 +878,25 @@ def run_technical_ai_fill_for_gap(
     parse_fields = _parse_fields_for_fill(appendix_task, task, data)
     work_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / gap_id
     work_dir.mkdir(parents=True, exist_ok=True)
+    shared_material_cache_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / "_material_index_cache"
     material_index = _prepare_material_index_files(
         material_index,
         work_dir,
-        cache_dir=_project_dir(project) / "s4_gap_workdir" / "ai_fill" / "_material_index_cache",
+        cache_dir=shared_material_cache_dir,
+    )
+    # referenceMaterials/recommendedMaterials 只带素材库虚拟目录路径（如
+    # "技术标/通用素材/.../证书.pdf"），不是本地可读路径；只下载过 material_index，
+    # 这两路（尤其是路由命中的认证证书 PDF）从未落地过，table-filler 拿到手时
+    # material_path() 解析不出真实文件，会静默丢弃——即使上游路由完全正确。
+    reference_materials = _prepare_material_index_files(
+        reference_materials,
+        work_dir,
+        cache_dir=shared_material_cache_dir,
+    )
+    recommended_materials = _prepare_material_index_files(
+        recommended_materials,
+        work_dir,
+        cache_dir=shared_material_cache_dir,
     )
     artifact_task_id = _safe_filename(str(task.get("id") or "task"), "task")
     artifact_id = f"ART-{gap_id}-{artifact_task_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
