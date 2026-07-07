@@ -160,5 +160,54 @@ class TopicRecallTests(unittest.TestCase):
         self.assertEqual(planner._tech_similarity_score("", "x"), 0.0)
 
 
+class PureLetterAppendixMatchTests(unittest.TestCase):
+    """纯字母技术附表匹配兜底：编号正则要求带数字，'技术附表I' 这种纯字母章级
+    附表提取不出 code，靠字母兜底匹配；有同字母子附表的容器（B/C/F）排除。"""
+
+    def _appendices(self) -> list[dict]:
+        # B/C/F 有子附表（附表X.数字）→ 容器；I 无子附表 → 独立叶子表
+        return [
+            {"id": "APPX-B", "title": "技术附表B 供货范围、消耗品及安装调试人员计划"},
+            {"id": "APPX-B1", "title": "附表B.1 供货范围清单（计入投标总价）"},
+            {"id": "APPX-C", "title": "技术附表C 项目投标设备综合技术参数"},
+            {"id": "APPX-C1", "title": "附表C.1 总体技术参数与规格"},
+            {"id": "APPX-F", "title": "技术附表F 投标机型样机认证与测试情况"},
+            {"id": "APPX-F1", "title": "附表F.1 投标机型样机基本信息"},
+            {"id": "APPX-I", "title": "技术附表I 技术条款偏差表"},
+        ]
+
+    def test_pure_letter_code_only_for_letter_without_number(self) -> None:
+        self.assertEqual(planner.pure_letter_appendix_code("技术附表I 技术条款偏差表"), "I")
+        self.assertEqual(planner.pure_letter_appendix_code("技术附表B"), "B")
+        self.assertEqual(planner.pure_letter_appendix_code("附表B.1 供货范围清单"), "")
+        self.assertEqual(planner.pure_letter_appendix_code("附表C.8 升降机"), "")
+        self.assertEqual(planner.pure_letter_appendix_code("附表1 风资源评估与机位排布方案"), "")
+
+    def test_container_letters_exclude_leaf(self) -> None:
+        letters = planner.appendix_container_letters(self._appendices())
+        self.assertIn("B", letters)
+        self.assertIn("C", letters)
+        self.assertIn("F", letters)
+        self.assertNotIn("I", letters)
+
+    def test_leaf_letter_appendix_matches(self) -> None:
+        item = {"number": "技术附表I", "title": "技术条款偏差表"}
+        matched = planner.matching_appendices(item, self._appendices(), allow_title_match=True)
+        self.assertEqual([a["id"] for a in matched], ["APPX-I"])
+
+    def test_container_letter_appendix_not_matched(self) -> None:
+        for num, title in [("技术附表B", "供货范围、消耗品及安装调试人员计划"),
+                           ("技术附表C", "项目投标设备综合技术参数"),
+                           ("技术附表F", "投标机型样机认证与测试情况")]:
+            matched = planner.matching_appendices({"number": num, "title": title}, self._appendices())
+            self.assertEqual(matched, [], f"{num} 是分组容器，不应配表")
+
+    def test_numbered_appendix_unaffected(self) -> None:
+        # 带数字附表仍走原 code 精确匹配，不受纯字母兜底影响
+        item = {"number": "附表B.1", "title": "供货范围清单（计入投标总价）"}
+        matched = planner.matching_appendices(item, self._appendices())
+        self.assertEqual([a["id"] for a in matched], ["APPX-B1"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1266,16 +1266,49 @@ def strong_chapter_master_candidates(
     return result
 
 
+_PURE_LETTER_APPENDIX_RE = re.compile(r"^\s*(?:技术附表|附表)\s*([A-Za-z])\s*(?![.．\dA-Za-z])")
+
+
+def pure_letter_appendix_code(value: Any) -> str:
+    """提取"技术附表I""附表I"这种编号后仅单字母、无数字的附表字母；
+
+    带数字的（附表B.1、附表C.7）返回空——APPENDIX_CODE_RE 的编号必带数字，
+    纯字母章级附表（如技术附表I 技术条款偏差表）会被它漏掉，这里补一条。
+    """
+    match = _PURE_LETTER_APPENDIX_RE.match(str(value or ""))
+    return match.group(1).upper() if match else ""
+
+
+def appendix_container_letters(appendices: list[dict[str, Any]]) -> set[str]:
+    """有子附表（附表X.数字）的字母集合。
+
+    这些字母的"技术附表X"是分组容器（如技术附表B 下有 附表B.1~B.9），
+    自身没有独立表格，不应单独配填写任务；无同字母子附表的纯字母附表
+    （如技术附表I，目录中不存在附表I.x）才是独立叶子表。
+    """
+    letters: set[str] = set()
+    for appendix in appendices:
+        code = appendix_code(str(appendix.get("title") or ""))
+        head = re.match(r"([A-Za-z])", code)
+        if head and any(ch.isdigit() for ch in code):
+            letters.add(head.group(1).upper())
+    return letters
+
+
 def matching_appendices(
     item: dict[str, Any],
     appendices: list[dict[str, Any]],
     *,
     allow_title_match: bool = True,
+    container_letters: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     title = str(item.get("title") or "")
     number = str(item.get("number") or "")
     item_code = appendix_code(number) or appendix_code(title)
     item_is_appendix = "附表" in number or "附表" in title or "空表" in title
+    if container_letters is None:
+        container_letters = appendix_container_letters(appendices)
+    item_letter = pure_letter_appendix_code(number) or pure_letter_appendix_code(title)
     title_key = normalize_key(title)
     matches: list[dict[str, Any]] = []
     for appendix in appendices:
@@ -1285,6 +1318,12 @@ def matching_appendices(
         app_code = appendix_code(appendix_title) or appendix_code(appendix_id)
         if item_code and app_code and item_code == app_code:
             matches.append(appendix)
+            continue
+        # 纯字母技术附表（如"技术附表I"）兜底：编号正则要求带数字、提取不出纯字母 code，
+        # 这里按字母精确匹配；有同字母子附表的是分组容器（B/C/F），排除不配表。
+        if item_letter and item_letter not in container_letters:
+            if pure_letter_appendix_code(appendix_title) == item_letter:
+                matches.append(appendix)
             continue
         if item_is_appendix or not allow_title_match:
             continue
