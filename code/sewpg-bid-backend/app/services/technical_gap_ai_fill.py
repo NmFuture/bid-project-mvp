@@ -345,7 +345,7 @@ def _prepare_material_index_files(
     work_dir: Path,
     *,
     cache_dir: Path | None = None,
-    limit: int = 80,
+    limit: int = 240,
 ) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
     cache_dir = cache_dir or (work_dir / "material_index")

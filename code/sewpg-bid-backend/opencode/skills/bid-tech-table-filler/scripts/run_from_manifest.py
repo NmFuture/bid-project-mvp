@@ -280,6 +280,7 @@ class AppendixSpec:
     value_col: int
     unit_col: int | None
     remark_col: int | None
+    own_tables: int = 1  # 属于本附表的表数（S1 越界表之前），多表附表续表填写用
 
 
 def now_iso() -> str:
@@ -521,15 +522,40 @@ def strip_numeric_trailing_annotation(value_text: str) -> str:
     return match.group(1) if match else value_text
 
 
+_UNIT_CONVERSIONS = {("kw", "mw"): 1e-3, ("mw", "kw"): 1e3, ("kg", "t"): 1e-3, ("t", "kg"): 1e3}
+_CAPACITY_FIELD_TOKENS = ("单机容量", "额定功率", "装机容量", "标段规模", "总容量")
+
+
 def normalize_value_for_field(field: dict[str, Any], selected: dict[str, Any]) -> str:
     field_text = clean(f"{field.get('field')} {field.get('unit')}")
     label_text = clean(selected.get("label"))
     value_text = clean(selected.get("value"))
+    field_unit = norm(field.get("unit") or "")
+    fact_unit = norm(selected.get("unit") or "")
     if "基础钢筋" in field_text and re.search(r"(?:（|\\(|\\b)t(?:）|\\)|\\b)|吨", field_text, flags=re.I):
         if "kg" in label_text.lower() or "千克" in label_text:
             number = parse_float(value_text)
             if number is not None:
                 return trim_float(number / 1000, 3)
+    # 机型字段：素材里的机型常带布局后缀（EW10.0-220上置），正式表格只填机型本体。
+    if "机型" in field_text:
+        value_text = re.sub(r"(上置|下置|内置|外置)$", "", value_text)
+    # 单位换算：事实单位与模板单位量纲同族但量级不同（10000 kW → 10 MW）。
+    factor = _UNIT_CONVERSIONS.get((fact_unit, field_unit))
+    if factor is not None and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", value_text):
+        return trim_float(float(value_text) * factor, 6)
+    # 容量/功率字段且模板未给单位：按投标惯例统一成 MW 数值（600MW→600、10000+kW→10）。
+    if not field_unit and any(token in field_text for token in _CAPACITY_FIELD_TOKENS):
+        probe = value_text if re.search(r"(MW|kW|万千瓦)", value_text, flags=re.I) else f"{value_text}{selected.get('unit') or ''}"
+        mw = rated_power_to_mw(probe)
+        if mw is not None:
+            selected["unit"] = "MW"  # 值换算成 MW 后，决策单位同步改写，避免单位列残留 kW
+            return trim_float(mw, 6)
+    # 模板单位列已有单位时，数值里重复携带的同单位后缀剥掉（"600MW"+单位列MW→"600"）。
+    if field_unit:
+        match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z/%μ°².³]+)", value_text)
+        if match and norm(match.group(2)) == field_unit:
+            return match.group(1)
     return strip_numeric_trailing_annotation(value_text)
 
 
@@ -646,6 +672,11 @@ def blank_docx_path(manifest: dict[str, Any], manifest_path: Path) -> Path:
 
 def appendix_prefix(text: str) -> str:
     compact = clean(text)
+    # 通用：从"附表X.Y"提取 字母+首级编号（附表G.2.2→G2、附表H.2→H2、附表F.2.1→F2）。
+    # 旧实现只识别 C1/C2/C3，component_keywords_for 里 H2/G1/F2/D7 分支因此从未触发。
+    match = re.search(r"(?:技术)?附表\s*([A-Za-z])\s*[.．]?\s*([0-9]+)", compact, flags=re.I)
+    if match:
+        return f"{match.group(1).upper()}{match.group(2)}"
     if re.search(r"C[.．]?\s*1", compact, flags=re.I):
         return "C1"
     if re.search(r"C[.．]?\s*2", compact, flags=re.I):
@@ -653,6 +684,36 @@ def appendix_prefix(text: str) -> str:
     if re.search(r"C[.．]?\s*3", compact, flags=re.I):
         return "C3"
     return "GEN"
+
+
+APPENDIX_HEADING_RE = re.compile(r"^(技术附表[A-Za-z]|附表[A-Za-z0-9]+(?:[.．][0-9]+)*(?:-[0-9]+)?)(?![0-9A-Za-z])")
+ATTACHMENT_HEADING_RE = re.compile(r"^附\s*件")
+
+
+def own_table_limit(doc: Any) -> int:
+    """blankDocx 里属于本附表的表数（用于剔除 S1 越界表）。
+
+    S1 切片系统性"错位一格"：每张附表 docx 末尾都带着下一张附表的标题段+首表
+    （金标核查 49/52 例）。判据自包含：第二个（编号不同的）附表标题、或"附件"
+    章标题之后的表格全是越界内容，不做填写目标。同编号重复标题（续表）不算边界。
+    """
+    first_number = ""
+    count = 0
+    for child in doc.element.body.iterchildren():
+        if child.tag.endswith("}p"):
+            text = clean("".join(child.itertext()))
+            if first_number and ATTACHMENT_HEADING_RE.match(text):
+                break
+            match = APPENDIX_HEADING_RE.match(text)
+            if match:
+                number = re.sub(r"\s+", "", match.group(1))
+                if not first_number:
+                    first_number = number
+                elif number != first_number:
+                    break
+        elif child.tag.endswith("}tbl"):
+            count += 1
+    return count
 
 
 def choose_response_value_col(cells: list[str]) -> int:
@@ -705,9 +766,10 @@ def detect_appendix_spec(source: Path, manifest: dict[str, Any]) -> AppendixSpec
     title = clean(appendix_task.get("title") or blank_source.get("title") or manifest.get("title") or source.stem)
     prefix = appendix_prefix(f"{title} {source.name}")
     appendix_id = clean(appendix_task.get("id") or blank_source.get("id") or prefix or source.stem)
+    own_tables = own_table_limit(doc)
 
     best_generic: tuple[int, int, list[str], int] | None = None
-    for table_index, table in enumerate(doc.tables):
+    for table_index, table in enumerate(doc.tables[:own_tables]):
         for header_row, row in enumerate(table.rows[:4]):
             cells = [clean(cell.text) for cell in row.cells]
             joined = " ".join(cells)
@@ -744,10 +806,11 @@ def detect_appendix_spec(source: Path, manifest: dict[str, Any]) -> AppendixSpec
                 value_col=value_col,
                 unit_col=unit_col,
                 remark_col=remark_col,
+                own_tables=own_tables,
             )
 
     if not doc.tables:
-        return AppendixSpec(appendix_id, prefix, title, source, -1, -1, 0, 1, None, None)
+        return AppendixSpec(appendix_id, prefix, title, source, -1, -1, 0, 1, None, None, own_tables=own_tables)
     if best_generic is not None:
         table_index, header_row, cells, _score_value = best_generic
         value_col_candidates = []
@@ -766,14 +829,14 @@ def detect_appendix_spec(source: Path, manifest: dict[str, Any]) -> AppendixSpec
         field_col = choose_field_col(cells, value_col)
         unit_col = next((i for i, cell in enumerate(cells) if "计量单位" in cell or cell == "单位"), None)
         remark_col = next((i for i, cell in enumerate(cells) if "备注" in cell or "说明" in cell), None)
-        return AppendixSpec(appendix_id, prefix, title, source, table_index, header_row, field_col, value_col, unit_col, remark_col)
+        return AppendixSpec(appendix_id, prefix, title, source, table_index, header_row, field_col, value_col, unit_col, remark_col, own_tables=own_tables)
     if prefix == "C2":
         field_col, value_col, unit_col, remark_col = 1, 2, 3, 4
     elif prefix in {"C1", "C3"}:
         field_col, value_col, unit_col, remark_col = 2, 3, 4, 5
     else:
         field_col, value_col, unit_col, remark_col = 0, 1, None, None
-    return AppendixSpec(appendix_id, prefix, title, source, 0, 0, field_col, value_col, unit_col, remark_col)
+    return AppendixSpec(appendix_id, prefix, title, source, 0, 0, field_col, value_col, unit_col, remark_col, own_tables=own_tables)
 
 
 def component_keywords_for(prefix: str) -> list[str]:
@@ -789,6 +852,9 @@ def component_keywords_for(prefix: str) -> list[str]:
     # G1 安全等级统计：载荷评估/安全评估
     if prefix == "G1":
         return ["载荷安全性评估", "安全等级", "载荷评估", "场址安全"]
+    # G2 场址载荷/风参数：机位坐标矩阵在风资源评估报告里
+    if prefix == "G2":
+        return ["风资源评估报告", "载荷安全性评估", "机位排布", "机位坐标", "风参数"]
     # F2 设计认证：认证证书/型式认证
     if prefix == "F2":
         return ["认证证书", "型式认证", "设计认证", "CQC认证"]
@@ -1774,33 +1840,54 @@ def extract_manifest_parse_facts(manifest: dict[str, Any]) -> list[dict[str, Any
     return facts
 
 
-def extract_target_fields(spec: AppendixSpec) -> list[dict[str, Any]]:
-    doc = Document(str(spec.source))
-    if spec.table_index < 0:
-        return []
-    table = doc.tables[spec.table_index]
+def detect_table_layout(table: Any) -> tuple[int, int, int, int | None, int | None] | None:
+    """单表列布局检测（续表用）：返回 (header_row, field_col, value_col, unit_col, remark_col)。"""
+    for header_row, row in enumerate(table.rows[:4]):
+        cells = [clean(cell.text) for cell in row.cells]
+        value_col = choose_response_value_col(cells)
+        if value_col < 0:
+            continue
+        unit_col = next((i for i, cell in enumerate(cells) if "计量单位" in cell or cell == "单位"), None)
+        remark_col = next((i for i, cell in enumerate(cells) if "备注" in cell or "说明" in cell), None)
+        field_col = choose_field_col(cells, value_col)
+        return header_row, field_col, value_col, unit_col, remark_col
+    return None
+
+
+def _extract_fields_from_table(
+    spec: AppendixSpec,
+    table: Any,
+    *,
+    table_index: int,
+    header_row: int,
+    field_col: int,
+    value_col: int,
+    unit_col: int | None,
+    remark_col: int | None,
+) -> list[dict[str, Any]]:
     curve_role_cols = [
         idx
         for idx in range(len(table.rows[0].cells) if table.rows else 0)
-        if matrix_role(table_header_text(table, min(spec.header_row + 1, len(table.rows) - 1), idx))
+        if matrix_role(table_header_text(table, min(header_row + 1, len(table.rows) - 1), idx))
     ]
-    numeric_row_count = sum(1 for row in table.rows[spec.header_row + 1 :] if row_numeric_key(row) is not None)
+    numeric_row_count = sum(1 for row in table.rows[header_row + 1 :] if row_numeric_key(row) is not None)
     if curve_role_cols and numeric_row_count >= 3:
         return []
     fields: list[dict[str, Any]] = []
     current_group = ""
-    requirement_col = requirement_col_for_response(table, spec.header_row, spec.value_col)
-    for idx, row in enumerate(table.rows[spec.header_row + 1 :], start=spec.header_row + 1):
+    requirement_col = requirement_col_for_response(table, header_row, value_col)
+    primary = table_index == spec.table_index
+    for idx, row in enumerate(table.rows[header_row + 1 :], start=header_row + 1):
         cells = [clean(cell.text) for cell in row.cells]
-        if spec.field_col >= len(cells) or spec.value_col >= len(cells):
+        if field_col >= len(cells) or value_col >= len(cells):
             continue
-        field = cells[spec.field_col]
-        value = cells[spec.value_col]
+        field = cells[field_col]
+        value = cells[value_col]
         if not cell_needs_fill(value):
             continue
         number = cells[0] if cells else ""
-        unit = cells[spec.unit_col] if spec.unit_col is not None and spec.unit_col < len(cells) else ""
-        remark = cells[spec.remark_col] if spec.remark_col is not None and spec.remark_col < len(cells) else ""
+        unit = cells[unit_col] if unit_col is not None and unit_col < len(cells) else ""
+        remark = cells[remark_col] if remark_col is not None and remark_col < len(cells) else ""
         requirement_value = cells[requirement_col] if requirement_col is not None and requirement_col < len(cells) else ""
         if spec.prefix != "C1" and field and field == value and not number.isdigit():
             current_group = field
@@ -1811,8 +1898,11 @@ def extract_target_fields(spec: AppendixSpec) -> list[dict[str, Any]]:
         concepts = concepts_for(context)
         fields.append(
             {
-                "id": f"{spec.prefix}-R{idx:02d}",
+                "id": f"{spec.prefix}-R{idx:02d}" if primary else f"{spec.prefix}-T{table_index}R{idx:02d}",
                 "rowIndex": idx,
+                "tableIndex": table_index,
+                "valueCol": value_col,
+                "unitCol": unit_col,
                 "group": current_group,
                 "field": field,
                 "unit": unit,
@@ -1825,7 +1915,50 @@ def extract_target_fields(spec: AppendixSpec) -> list[dict[str, Any]]:
     return fields
 
 
+def extract_target_fields(spec: AppendixSpec) -> list[dict[str, Any]]:
+    doc = Document(str(spec.source))
+    if spec.table_index < 0:
+        return []
+    fields = _extract_fields_from_table(
+        spec,
+        doc.tables[spec.table_index],
+        table_index=spec.table_index,
+        header_row=spec.header_row,
+        field_col=spec.field_col,
+        value_col=spec.value_col,
+        unit_col=spec.unit_col,
+        remark_col=spec.remark_col,
+    )
+    # 真续表（同一附表边界内的其余表）：逐表检测布局后并入填写目标；
+    # S1 越界表在 own_tables 之外，天然不进来。
+    for extra_index in range(len(doc.tables[: spec.own_tables])):
+        if extra_index == spec.table_index:
+            continue
+        layout = detect_table_layout(doc.tables[extra_index])
+        if layout is None:
+            continue
+        header_row, field_col, value_col, unit_col, remark_col = layout
+        fields.extend(
+            _extract_fields_from_table(
+                spec,
+                doc.tables[extra_index],
+                table_index=extra_index,
+                header_row=header_row,
+                field_col=field_col,
+                value_col=value_col,
+                unit_col=unit_col,
+                remark_col=remark_col,
+            )
+        )
+    return fields
+
+
 def score(field: dict[str, Any], fact: dict[str, Any], scenario: str) -> float:
+    # 扫风面积（总值）不能拿"单位千瓦扫风面积"顶上——量纲差四个数量级（金标反评 C.1）。
+    # 必须放在 generic 早退之前：词面高度相似，generic 路径会给出 0.79 的假高分。
+    if "扫风面积" in field["field"] and "单位千瓦" not in field["field"] and "每千瓦" not in field["field"]:
+        if "单位千瓦" in fact["label"] or "每千瓦" in fact["label"] or "kw" in norm(fact.get("unit") or "").lower():
+            return 0.0
     overlap = set(field["concepts"]) & set(fact["concepts"])
     generic_score = generic_match_score(field["field"], fact["label"])
     if not overlap and generic_score <= 0:
@@ -2048,6 +2181,9 @@ def map_fields(spec: AppendixSpec, fields: list[dict[str, Any]], facts: list[dic
                 {
                     "targetFieldId": field["id"],
                     "rowIndex": field["rowIndex"],
+                    "tableIndex": field.get("tableIndex"),
+                    "valueCol": field.get("valueCol"),
+                    "unitCol": field.get("unitCol"),
                     "field": field["field"],
                     "action": action,
                     "value": display_value,
@@ -2069,6 +2205,9 @@ def map_fields(spec: AppendixSpec, fields: list[dict[str, Any]], facts: list[dic
                 {
                     "targetFieldId": field["id"],
                     "rowIndex": field["rowIndex"],
+                    "tableIndex": field.get("tableIndex"),
+                    "valueCol": field.get("valueCol"),
+                    "unitCol": field.get("unitCol"),
                     "field": field["field"],
                     "action": "manual",
                     "value": f"[待人工补充：{field['field']}]",
@@ -2129,18 +2268,30 @@ def fill_doc(spec: AppendixSpec, mapping: dict[str, Any], output_file: Path) -> 
         output_file.parent.mkdir(parents=True, exist_ok=True)
         doc.save(str(output_file))
         return
-    table = doc.tables[spec.table_index]
-    by_row = {decision["rowIndex"]: decision for decision in mapping["decisions"]}
-    for row_idx, decision in by_row.items():
+    # 每条决策自带 tableIndex/valueCol（续表字段），缺省回落主表 spec 列。
+    by_cell: dict[tuple[int, int], dict[str, Any]] = {}
+    for decision in mapping["decisions"]:
+        table_idx = decision.get("tableIndex")
+        table_idx = spec.table_index if table_idx is None else int(table_idx)
+        by_cell[(table_idx, decision["rowIndex"])] = decision
+    for (table_idx, row_idx), decision in by_cell.items():
+        if table_idx < 0 or table_idx >= len(doc.tables):
+            continue
+        table = doc.tables[table_idx]
         if row_idx >= len(table.rows):
             continue
+        value_col = decision.get("valueCol")
+        value_col = spec.value_col if value_col is None else int(value_col)
+        unit_col = decision.get("unitCol")
+        if unit_col is None and table_idx == spec.table_index:
+            unit_col = spec.unit_col
         row = table.rows[row_idx]
-        if spec.value_col >= len(row.cells):
+        if value_col >= len(row.cells):
             continue
         highlight = decision["action"] in {"manual", "partial"}
-        set_cell(row.cells[spec.value_col], decision["value"], highlight=highlight)
-        if decision["unit"] and spec.unit_col is not None and spec.unit_col < len(row.cells):
-            set_cell(row.cells[spec.unit_col], decision["unit"])
+        set_cell(row.cells[value_col], decision["value"], highlight=highlight)
+        if decision["unit"] and unit_col is not None and unit_col < len(row.cells):
+            set_cell(row.cells[unit_col], decision["unit"])
     output_file.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_file))
 
@@ -3286,8 +3437,9 @@ def apply_load_wind_parameter_table_fill(output_file: Path, sources: list[Source
     if not position_rows or source is None:
         return []
     doc = Document(str(output_file))
+    own_limit = own_table_limit(doc)
     decisions: list[dict[str, Any]] = []
-    for table_idx, target_table in enumerate(doc.tables):
+    for table_idx, target_table in enumerate(doc.tables[:own_limit]):
         target_text = " ".join(clean(cell.text) for row in target_table.rows[:4] for cell in row.cells)
         if "载荷计算风参数分组" not in target_text or "投标机型" not in target_text:
             continue
@@ -3344,8 +3496,9 @@ def apply_load_wind_parameter_table_fill(output_file: Path, sources: list[Source
 
 def apply_source_table_transplant(output_file: Path, sources: list[Source]) -> list[dict[str, Any]]:
     doc = Document(str(output_file))
+    own_limit = own_table_limit(doc)
     candidates: list[dict[str, Any]] = []
-    for target_idx, target_table in enumerate(doc.tables):
+    for target_idx, target_table in enumerate(doc.tables[:own_limit]):
         if not sparse_table_needs_expansion(target_table):
             continue
         for source in sources:
@@ -3634,8 +3787,9 @@ def apply_curve_matrix_fill(output_file: Path, sources: list[Source]) -> list[di
     if not curve_tables:
         return []
     doc = Document(str(output_file))
+    own_limit = own_table_limit(doc)
     decisions: list[dict[str, Any]] = []
-    for table_idx, table in enumerate(doc.tables):
+    for table_idx, table in enumerate(doc.tables[:own_limit]):
         curve_header_row = -1
         wind_col = -1
         for probe_idx, probe_row in enumerate(table.rows[:5]):

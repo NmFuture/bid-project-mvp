@@ -84,5 +84,97 @@ class StripNumericTrailingAnnotationTests(unittest.TestCase):
         self.assertEqual(filler.strip_numeric_trailing_annotation("EW10.0-220上置"), "EW10.0-220上置")
 
 
+class AppendixPrefixTests(unittest.TestCase):
+    """通用附表编号前缀：旧实现只识别 C1/C2/C3，H2/G1/F2/D7 关键词分支是死代码。"""
+
+    def test_general_letter_number(self) -> None:
+        self.assertEqual(filler.appendix_prefix("附表G.2.2 投标人对招标项目场址载荷计算选取风参数结果"), "G2")
+        self.assertEqual(filler.appendix_prefix("附表H.2 交货进度表"), "H2")
+        self.assertEqual(filler.appendix_prefix("附表F.2.1 投标机组设计认证"), "F2")
+        self.assertEqual(filler.appendix_prefix("附表D.7 性能及考核承诺保证表"), "D7")
+
+    def test_c_series_unchanged(self) -> None:
+        self.assertEqual(filler.appendix_prefix("附表C.1 总体技术参数与规格"), "C1")
+        self.assertEqual(filler.appendix_prefix("附表C.2 风轮系统技术参数"), "C2")
+
+    def test_no_code_falls_back_gen(self) -> None:
+        self.assertEqual(filler.appendix_prefix("某个正文表格"), "GEN")
+
+    def test_keyword_branches_now_reachable(self) -> None:
+        self.assertIn("物流解决方案", filler.component_keywords_for("H2"))
+        self.assertIn("风资源评估报告", filler.component_keywords_for("G2"))
+
+
+class OwnTableLimitTests(unittest.TestCase):
+    """S1 越界表剔除：blankDocx 内第二个（编号不同）附表标题/附件标题后的表不属于本附表。"""
+
+    @staticmethod
+    def _doc(blocks):
+        from docx import Document as _D
+
+        doc = _D()
+        for kind, text in blocks:
+            if kind == "P":
+                doc.add_paragraph(text)
+            else:
+                doc.add_table(rows=2, cols=2)
+        return doc
+
+    def test_bleed_after_next_heading_excluded(self) -> None:
+        doc = self._doc([("P", "附表D.1 标准及风电场空气密度功率曲线"), ("T", ""), ("P", "附表D.2 推力系数曲线"), ("T", "")])
+        self.assertEqual(filler.own_table_limit(doc), 1)
+
+    def test_same_number_continuation_not_boundary(self) -> None:
+        doc = self._doc([("P", "附表D.3 标准功率曲线下功率桨距角曲线"), ("T", ""), ("P", "附表D.3 标准功率曲线下功率桨距角曲线（续）"), ("T", "")])
+        self.assertEqual(filler.own_table_limit(doc), 2)
+
+    def test_attachment_heading_is_boundary(self) -> None:
+        doc = self._doc([("P", "技术附表I 技术条款偏差表"), ("T", ""), ("P", "附  件"), ("T", ""), ("T", "")])
+        self.assertEqual(filler.own_table_limit(doc), 1)
+
+    def test_genuine_multi_table_kept(self) -> None:
+        doc = self._doc([("P", "附表E.3 推荐机型各机位发电量成果表"), ("T", ""), ("T", "")])
+        self.assertEqual(filler.own_table_limit(doc), 2)
+
+
+class UnitNormalizationTests(unittest.TestCase):
+    """单位归一化：金标反评 C.1 暴露的 kW/MW 混填、值尾重复单位、机型布局后缀。"""
+
+    def test_kw_to_mw_with_template_unit(self) -> None:
+        field = {"field": "额定功率", "unit": "MW"}
+        selected = {"value": "10000", "unit": "kW", "label": "额定功率"}
+        self.assertEqual(filler.normalize_value_for_field(field, selected), "10")
+
+    def test_capacity_without_template_unit_normalizes_to_mw(self) -> None:
+        field = {"field": "单机容量", "unit": ""}
+        selected = {"value": "10000", "unit": "kW", "label": "机组额定功率"}
+        self.assertEqual(filler.normalize_value_for_field(field, selected), "10")
+        self.assertEqual(selected["unit"], "MW")
+
+    def test_value_with_embedded_mw(self) -> None:
+        field = {"field": "标段规模", "unit": ""}
+        selected = {"value": "600MW", "unit": "", "label": "标段规模"}
+        self.assertEqual(filler.normalize_value_for_field(field, selected), "600")
+
+    def test_duplicated_unit_suffix_stripped(self) -> None:
+        field = {"field": "切出风速", "unit": "m/s"}
+        selected = {"value": "70m/s", "unit": "", "label": "切出风速"}
+        self.assertEqual(filler.normalize_value_for_field(field, selected), "70")
+
+    def test_turbine_model_layout_suffix_stripped(self) -> None:
+        field = {"field": "投标机型", "unit": ""}
+        selected = {"value": "EW10.0-220上置", "unit": "", "label": "投标机型"}
+        self.assertEqual(filler.normalize_value_for_field(field, selected), "EW10.0-220")
+
+    def test_swept_area_rejects_per_kw_fact(self) -> None:
+        field = {"field": "扫风面积", "unit": "m^2", "concepts": [], "remark": "", "requirementValue": ""}
+        fact = {
+            "label": "单位千瓦扫风面积", "value": "3.80", "unit": "m2/kW", "concepts": ["swept_area_per_kw"],
+            "sourceKind": "xlsx", "sourcePriority": 100, "baseConfidence": 0.9, "usable": True,
+            "source": "参数表", "row": 1, "sheet": "s", "notes": "", "risk": "", "actionHint": "fill", "id": "F1",
+        }
+        self.assertEqual(filler.score(field, fact, "auto_or_manual"), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
