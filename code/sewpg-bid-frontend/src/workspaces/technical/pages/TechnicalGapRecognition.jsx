@@ -984,6 +984,31 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
   }
 
+  const handlePreviewBlank = () => {
+    // 直接预览待填写空副表/待填写 Word：优先复用弹窗里已有的空表选项；
+    // 没有 fillTasks.blankSource 时兜底用 appendixTasks 构造（预览走同一接口）。
+    const existing = selectedPreviewChoices.find((choice) => choice.kind === 'appendix' || choice.kind === 'blankMaterial')
+    if (existing) {
+      setPreviewChoiceKey(existing.key)
+      setPreviewOpen(true)
+      return
+    }
+    const appendix = selectedAppendixTasks.find((task) => task?.id)
+    if (!appendix) return
+    const choice = {
+      key: `appendix:${appendix.id}:manual`,
+      kind: 'appendix',
+      label: '空副表',
+      title: appendix.title || appendix.id,
+      subtitle: appendix.sourceFile || appendix.workspacePath || '招标文件解析产物',
+      blankSource: { id: appendix.id, title: appendix.title },
+      itemId: selected?.id,
+    }
+    setManualPreviewChoice(choice)
+    setPreviewChoiceKey(choice.key)
+    setPreviewOpen(true)
+  }
+
   const handlePreviewMaterial = (material) => {
     const materialId = String(material?.id || material?.materialId || '').trim()
     if (!selected || !materialId) return
@@ -1330,7 +1355,17 @@ export default function TechnicalGapRecognition({ showToast }) {
                           <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
                             <div className="flex flex-wrap items-start justify-between gap-3">
                               <div className="min-w-0">
-                                <div className="text-xs font-semibold text-on-surface">待填写对象</div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-semibold text-on-surface">待填写对象</span>
+                                  <button
+                                    type="button"
+                                    onClick={handlePreviewBlank}
+                                    className="inline-flex items-center gap-1 rounded border border-outline-variant px-2 py-0.5 text-[11px] font-medium text-primary hover:bg-surface-container-high"
+                                  >
+                                    <span className="material-symbols-outlined text-[13px]">visibility</span>
+                                    预览
+                                  </button>
+                                </div>
                                 <div className="mt-1 truncate text-[11px] text-outline" title={selectedBlankSource?.title || ''}>
                                   {selectedBlankSource?.title || '待填写空表/Word'}
                                 </div>
