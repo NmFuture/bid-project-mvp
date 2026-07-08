@@ -5,7 +5,7 @@
 fill_results.json 每条：{appendixId, number(附表编号), title, blankDocx, outputFile}。
 正式标书留在本地，不入库。
 
-对齐口径演进——v3：v2 基础上剔除 blankDocx 里的 S1 越界表。
+对齐口径演进——v4：v3（剔除 S1 越界表）基础上加行对齐（行数不一致时按行键序列对齐，消除投标人增删行导致的整段错位假阴性）。
 
 v2 修了跨节错配；v3 修分母灌水——S1 切片系统性"错位一格"，每张附表 docx
 末尾都带着下一张附表的标题段+第一张表。这些越界表不属于本附表，不该拿去和
@@ -165,6 +165,30 @@ def tolerant_equal(left: str, right: str) -> bool:
     return abs(left_num - right_num) <= tolerance
 
 
+def _row_key(row: list[str]) -> str:
+    for cell in row:
+        text = norm_text(cell)
+        if len(text) >= 2 and not re.fullmatch(r"[0-9.\-/]+", text):
+            return text
+    return norm_text(row[0]) if row else ""
+
+
+def _row_mapping(human_table: list[list[str]], other_table: list[list[str]]) -> list[int | None]:
+    """human 每行在 other（blank/agent）里的对应行号；行数一致时纯行号直连。"""
+    if len(other_table) == len(human_table):
+        return list(range(len(human_table)))
+    import difflib
+
+    human_keys = [_row_key(row) for row in human_table]
+    other_keys = [_row_key(row) for row in other_table]
+    mapping: list[int | None] = [None] * len(human_table)
+    matcher = difflib.SequenceMatcher(None, human_keys, other_keys, autojunk=False)
+    for block in matcher.get_matching_blocks():
+        for offset in range(block.size):
+            mapping[block.a + offset] = block.b + offset
+    return mapping
+
+
 def score_outputs(results: list[dict[str, Any]], human_docx: Path, min_align: float = 0.30) -> dict[str, Any]:
     items, headings = build_heading_index(human_docx)
     full_human_tables = table_cells(human_docx)  # 兜底用
@@ -201,23 +225,28 @@ def score_outputs(results: list[dict[str, Any]], human_docx: Path, min_align: fl
             totals["alignedTables"] += 1
             human_table = pool[human_idx]
             changed = correct = touched = same_row_attempt = tolerant_correct = 0
-            max_rows = max(len(blank_table), len(human_table), len(agent_table))
+            # v4 行对齐：投标人增删行会使纯行号比对从错位点起全部误判
+            #（C.2 删 1 行 → 后半张表全算错）。行数不一致时按"行键"（首个非纯数字
+            # 静态格文本）做序列对齐；行数一致保持纯行号（无噪声）。
+            blank_of = _row_mapping(human_table, blank_table)
+            agent_of = _row_mapping(human_table, agent_table)
+            max_rows = len(human_table)
             wrong_cells = []
             for row_idx in range(max_rows):
-                max_cols = max(
-                    len(blank_table[row_idx]) if row_idx < len(blank_table) else 0,
-                    len(human_table[row_idx]) if row_idx < len(human_table) else 0,
-                    len(agent_table[row_idx]) if row_idx < len(agent_table) else 0,
-                )
-                agent_row_values = {norm_text(c) for c in (agent_table[row_idx] if row_idx < len(agent_table) else [])}
+                blank_row = blank_table[blank_of[row_idx]] if blank_of[row_idx] is not None else []
+                agent_row = agent_table[agent_of[row_idx]] if agent_of[row_idx] is not None else []
+                human_row = human_table[row_idx]
+                max_cols = max(len(blank_row), len(human_row), len(agent_row))
+                agent_row_values = {norm_text(c) for c in agent_row}
                 for col_idx in range(max_cols):
-                    blank_text = norm_text(cell_at(blank_table, row_idx, col_idx))
-                    human_text = norm_text(cell_at(human_table, row_idx, col_idx))
-                    agent_text = norm_text(cell_at(agent_table, row_idx, col_idx))
+                    blank_text = norm_text(blank_row[col_idx]) if col_idx < len(blank_row) else ""
+                    human_text = norm_text(human_row[col_idx]) if col_idx < len(human_row) else ""
+                    agent_raw = agent_row[col_idx] if col_idx < len(agent_row) else ""
+                    agent_text = norm_text(agent_raw)
                     if human_text and human_text != blank_text:
                         changed += 1
                         is_correct = agent_text == human_text
-                        is_tolerant = tolerant_equal(cell_at(agent_table, row_idx, col_idx), cell_at(human_table, row_idx, col_idx))
+                        is_tolerant = tolerant_equal(agent_raw, human_row[col_idx])
                         if is_correct:
                             correct += 1
                         if is_tolerant:
@@ -227,9 +256,9 @@ def score_outputs(results: list[dict[str, Any]], human_docx: Path, min_align: fl
                         if not is_tolerant:
                             wrong_cells.append({
                                 "row": row_idx, "col": col_idx,
-                                "expected": cell_at(human_table, row_idx, col_idx)[:60],
-                                "got": cell_at(agent_table, row_idx, col_idx)[:60],
-                                "blank": cell_at(blank_table, row_idx, col_idx)[:40],
+                                "expected": human_row[col_idx][:60],
+                                "got": str(agent_raw)[:60],
+                                "blank": (blank_row[col_idx] if col_idx < len(blank_row) else "")[:40],
                             })
                     if agent_text and agent_text != blank_text:
                         touched += 1

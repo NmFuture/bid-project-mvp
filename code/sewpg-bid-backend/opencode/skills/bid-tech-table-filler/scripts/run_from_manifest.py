@@ -2991,6 +2991,12 @@ def apply_large_component_transport_table_fill(output_file: Path, sources: list[
     if "附表H.5" not in spec.title and "大部件" not in spec.title:
         return []
     source = next((item for item in sources if item.kind == "xlsx" and "X2平台机型投标参数" in item.name), None)
+    if source is None:
+        # 素材命名演进：不再限定旧文件名，凡参数表内含运输尺寸行（长×宽×高）的 xlsx 均可作源。
+        source = next(
+            (item for item in sources if item.kind == "xlsx" and x2_param_value(item, project, "长×宽×高")),
+            None,
+        )
     logistics = source_with_tokens(sources, "物流解决方案", kind="docx")
     if source is None:
         return []
