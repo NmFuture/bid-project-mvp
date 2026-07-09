@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.opencode_client import OpencodeClient
 
 
@@ -395,6 +396,30 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(result["summary"]["templateCount"], 2)
         self.assertEqual(result["opencodeOutput"]["completionSource"], "btplnav-finalize")
 
+    def test_extract_business_templates_aborts_session_when_cancelled_after_session_ready(self) -> None:
+        client = OpencodeClient()
+        ready_events: list[dict[str, str]] = []
+
+        def session_ready(details: dict[str, str]) -> None:
+            ready_events.append(details)
+            raise ParseCancelledError("解析已取消。")
+
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-template-cancel"}),
+            patch.object(client, "send_prompt") as send_prompt,
+            patch.object(client, "abort_session", return_value=True) as abort_session,
+        ):
+            with self.assertRaisesRegex(ParseCancelledError, "解析已取消"):
+                client.extract_business_templates_with_trace(
+                    "prompt",
+                    session_ready_callback=session_ready,
+                    cancel_check=lambda: True,
+                )
+
+        self.assertEqual(ready_events[0]["sessionId"], "ses-template-cancel")
+        abort_session.assert_called_once_with("ses-template-cancel")
+        send_prompt.assert_not_called()
+
     def test_btplnav_finalize_tool_output_is_terminal(self) -> None:
         final_output = (
             '{"schemaVersion":"bid-business-template-extractor-v1",'
@@ -571,6 +596,79 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertTrue(response["_earlyCompletion"])
         self.assertEqual(response["_completionSource"], "s4gap")
         self.assertIn("bid-tech-gap-plan-v1", response["parts"][0]["text"])
+
+    def test_polling_emits_heartbeat_when_snapshot_does_not_change(self) -> None:
+        client = OpencodeClient()
+        events: list[dict] = []
+
+        def slow_send_prompt(session_id: str, prompt_text: str) -> dict:
+            time.sleep(1.2)
+            return {"parts": [{"type": "text", "text": '{"late":true}'}]}
+
+        messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-working"},
+                "parts": [{"type": "text", "text": "working"}],
+            }
+        ]
+
+        with (
+            patch.object(client, "send_prompt", side_effect=slow_send_prompt),
+            patch.object(client, "list_session_messages", return_value=messages),
+            patch("app.services.opencode_client.OPENCODE_PROGRESS_HEARTBEAT_SECONDS", 0.1),
+        ):
+            client._send_prompt_with_session_polling(
+                "ses-heartbeat",
+                "prompt",
+                stream_callback=events.append,
+            )
+
+        heartbeat_events = [event for event in events if event.get("heartbeat")]
+        self.assertTrue(heartbeat_events)
+        self.assertGreaterEqual(heartbeat_events[-1]["idleSeconds"], 1)
+        self.assertGreaterEqual(heartbeat_events[-1]["elapsedSeconds"], heartbeat_events[-1]["idleSeconds"])
+        self.assertEqual(heartbeat_events[-1]["sessionId"], "ses-heartbeat")
+
+    def test_polling_aborts_session_when_cancel_requested(self) -> None:
+        client = OpencodeClient()
+
+        def slow_send_prompt(session_id: str, prompt_text: str) -> dict:
+            time.sleep(2)
+            return {"parts": [{"type": "text", "text": '{"late":true}'}]}
+
+        with (
+            patch.object(client, "send_prompt", side_effect=slow_send_prompt),
+            patch.object(client, "abort_session", return_value=True) as abort_session,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "解析已取消"):
+                client._send_prompt_with_session_polling(
+                    "ses_cancel_polling_probe",
+                    "prompt",
+                    early_tool_command="s1parse-finalize",
+                    cancel_check=lambda: True,
+                )
+
+        abort_session.assert_called_once_with("ses_cancel_polling_probe")
+
+    def test_generate_tender_parse_aborts_session_when_cancelled_after_session_ready(self) -> None:
+        client = OpencodeClient()
+
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses_cancel_ready_probe"}),
+            patch.object(client, "send_prompt") as send_prompt,
+            patch.object(client, "abort_session", return_value=True) as abort_session,
+        ):
+            with self.assertRaisesRegex(ParseCancelledError, "解析已取消"):
+                client.generate_tender_parse_with_trace(
+                    "prompt",
+                    session_ready_callback=lambda _details: (_ for _ in ()).throw(
+                        ParseCancelledError("解析已取消。")
+                    ),
+                    cancel_check=lambda: True,
+                )
+
+        abort_session.assert_called_once_with("ses_cancel_ready_probe")
+        send_prompt.assert_not_called()
 
     def test_s1_parse_does_not_complete_on_prepare_stdout(self) -> None:
         client = OpencodeClient()

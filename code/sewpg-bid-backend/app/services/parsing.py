@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import zipfile
 from dataclasses import dataclass
 from datetime import date
@@ -17,8 +18,11 @@ from typing import Any, Callable
 from xml.etree import ElementTree as ET
 
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 from app.core.config import settings
+from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.business_section_tree import write_business_section_tree
 from app.services.business_template_extractor import run_business_template_extractor
 from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
@@ -47,6 +51,12 @@ from parser_core import parse_documents as parse_structured_documents  # noqa: E
 
 WORD_NAMESPACE = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 TEXT_PREVIEW_LIMIT = 600
+DOCX_SLICE_STORED_XML_THRESHOLD_BYTES = 5 * 1024 * 1024
+
+
+def _raise_if_parse_cancelled(cancel_check: Callable[[], bool] | None) -> None:
+    if cancel_check is not None and cancel_check():
+        raise ParseCancelledError("解析已取消。")
 
 
 @dataclass(frozen=True)
@@ -346,20 +356,81 @@ def _normalize_text(raw_text: str) -> str:
     return "\n".join(compact).strip()
 
 
-def extract_docx_text(path: Path) -> str:
+def _run_with_progress_heartbeat(
+    operation: Callable[[], Any],
+    *,
+    heartbeat: Callable[[dict[str, Any]], None],
+    interval_seconds: float = 10.0,
+    cancel_check: Callable[[], bool] | None = None,
+) -> Any:
+    result: Any = None
+    error: BaseException | None = None
+    done = threading.Event()
+
+    def run() -> None:
+        nonlocal result, error
+        try:
+            result = operation()
+        except BaseException as exc:  # pragma: no cover - re-raised in caller thread
+            error = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=run, daemon=True, name="parse-progress-heartbeat")
+    thread.start()
+    interval = max(0.001, float(interval_seconds))
+    started_at = time.monotonic()
+    heartbeat_index = 0
+    while not done.wait(interval):
+        _raise_if_parse_cancelled(cancel_check)
+        heartbeat_index += 1
+        heartbeat(
+            {
+                "heartbeat": True,
+                "heartbeatIndex": heartbeat_index,
+                "elapsedSeconds": max(0, round(time.monotonic() - started_at)),
+            }
+        )
+    thread.join()
+    _raise_if_parse_cancelled(cancel_check)
+    if error:
+        raise error
+    return result
+
+
+def extract_docx_text(path: Path, progress_callback: Callable[[int, int], None] | None = None) -> str:
     pieces: list[str] = []
+    text_length = 0
     with zipfile.ZipFile(path) as archive:
-        with archive.open("word/document.xml") as xml_file:
-            for _, element in ET.iterparse(xml_file, events=("end",)):
-                if element.tag == f"{WORD_NAMESPACE}t":
-                    pieces.append(element.text or "")
-                elif element.tag == f"{WORD_NAMESPACE}tab":
-                    pieces.append("\t")
-                elif element.tag in {f"{WORD_NAMESPACE}br", f"{WORD_NAMESPACE}cr"}:
-                    pieces.append("\n")
-                elif element.tag == f"{WORD_NAMESPACE}p":
-                    pieces.append("\n")
-                    element.clear()
+        document_xml = archive.read("word/document.xml")
+    total_bytes = max(1, len(document_xml))
+    parser = ET.XMLPullParser(events=("end",))
+    chunk_size = 512 * 1024
+    next_progress = 20
+    for offset in range(0, len(document_xml), chunk_size):
+        chunk = document_xml[offset : offset + chunk_size]
+        parser.feed(chunk)
+        for _, element in parser.read_events():
+            if element.tag == f"{WORD_NAMESPACE}t":
+                text = element.text or ""
+                pieces.append(text)
+                text_length += len(text)
+            elif element.tag == f"{WORD_NAMESPACE}tab":
+                pieces.append("\t")
+                text_length += 1
+            elif element.tag in {f"{WORD_NAMESPACE}br", f"{WORD_NAMESPACE}cr"}:
+                pieces.append("\n")
+                text_length += 1
+            elif element.tag == f"{WORD_NAMESPACE}p":
+                pieces.append("\n")
+                text_length += 1
+                element.clear()
+        if progress_callback:
+            progress = max(1, min(99, round((offset + len(chunk)) * 100 / total_bytes)))
+            if progress >= next_progress:
+                progress_callback(progress, text_length)
+                next_progress += 20
+    parser.close()
     return _normalize_text("".join(pieces))
 
 
@@ -569,12 +640,13 @@ def _merge_document_nav_quality(
     return quality
 
 
-def _parse_business_pdf_with_document_engine(
+def _parse_pdf_with_document_engine(
     *,
     project_id: str,
     document: dict[str, Any],
     file_path: Path,
     project_dir: Path,
+    engine_fallback: str | None = None,
 ) -> tuple[str, dict[str, Any], list[str]]:
     document_id = str(document.get("id") or "DOC-1")
     existing_document_nav_path = project_dir / f"{document_id}_document_nav.json"
@@ -611,9 +683,10 @@ def _parse_business_pdf_with_document_engine(
             metadata["pageCount"] = page_count
             return text, metadata, list(quality.get("warnings") or [])
 
+    effective_fallback = engine_fallback if engine_fallback is not None else settings.business_pdf_engine_fallback
     engine = create_document_parse_engine(
         parse_engine=settings.business_pdf_parse_engine,
-        fallback=settings.business_pdf_engine_fallback,
+        fallback=effective_fallback,
     )
     result = engine.parse_pdf(project_id=project_id, document=document, output_dir=project_dir)
     metadata = {
@@ -688,13 +761,28 @@ def _parse_business_pdf_with_document_engine(
 
     fallback_reason = str(result.get("fallbackReason") or "Docling 解析未生成 DocumentNav")
     metadata["fallbackReason"] = fallback_reason
-    if settings.business_pdf_engine_fallback != "lightweight":
+    if effective_fallback != "lightweight":
         metadata["documentParseStatus"] = "failed"
         warnings.append(f"Docling 解析失败，未启用 PDF 解析兜底：{fallback_reason}")
         return "", metadata, warnings
     metadata["documentParseStatus"] = "fallback"
     warnings.append(f"Docling 解析失败，已回退到轻量 PDF 文本解析：{fallback_reason}")
     return "", metadata, warnings
+
+
+def _parse_business_pdf_with_document_engine(
+    *,
+    project_id: str,
+    document: dict[str, Any],
+    file_path: Path,
+    project_dir: Path,
+) -> tuple[str, dict[str, Any], list[str]]:
+    return _parse_pdf_with_document_engine(
+        project_id=project_id,
+        document=document,
+        file_path=file_path,
+        project_dir=project_dir,
+    )
 
 
 def _normalize_date_match(match: re.Match[str]) -> str:
@@ -3208,6 +3296,407 @@ def _extract_text_business_appendices(
     return appendices
 
 
+def _is_text_appendix_toc_artifact(line: str, next_line: str = "") -> bool:
+    text = str(line or "").strip()
+    following = str(next_line or "").strip()
+    if re.search(r"(?:\.{2,}|…{2,}).*(?:\d{1,4}|错误！未定义书签。?)$", text):
+        return True
+    if "错误！未定义书签" in text:
+        return True
+    if re.search(r"\D\d{2,4}$", text):
+        return True
+    return bool(following and re.search(r"(?:\.{2,}|…{2,}).*(?:\d{1,4}|错误！未定义书签。?)$", following))
+
+
+def _is_text_appendix_noise_line(line: str) -> bool:
+    text = str(line or "").strip()
+    if not text:
+        return True
+    if re.fullmatch(r"\d{1,4}", text):
+        return True
+    return text.startswith("中国华能集团有限公司") or text in {"技术规范"}
+
+
+def _plain_text_table_cells(line: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", str(line or "").strip())
+    normalized = re.sub(r"序\s+号", "序号", normalized)
+    return [cell for cell in normalized.split(" ") if cell]
+
+
+def _is_plain_text_table_header(cells: list[str]) -> bool:
+    return len(cells) >= 2 and any(cell == "序号" for cell in cells[:2])
+
+
+def _is_plain_text_table_data_row(cells: list[str], expected_columns: int) -> bool:
+    if len(cells) < 2:
+        return False
+    first = cells[0].strip()
+    if re.fullmatch(r"(?:\d+|[一二三四五六七八九十]+|[A-Za-z]\d*)[).、．]?", first):
+        return True
+    return expected_columns > 0 and len(cells) >= max(2, expected_columns - 1)
+
+
+def _text_appendix_content_blocks(lines: list[tuple[int, str]]) -> tuple[list[dict[str, Any]], list[list[str]]]:
+    content_blocks: list[dict[str, Any]] = []
+    current_table: list[list[str]] = []
+    primary_rows: list[list[str]] = []
+
+    def flush_table() -> None:
+        nonlocal current_table, primary_rows
+        if not current_table:
+            return
+        if not primary_rows:
+            primary_rows = current_table
+        content_blocks.append({"type": "table", "rows": current_table})
+        current_table = []
+
+    for _, line in lines:
+        if _is_text_appendix_noise_line(line):
+            continue
+        cells = _plain_text_table_cells(line)
+        if not current_table:
+            if _is_plain_text_table_header(cells):
+                current_table = [cells]
+            else:
+                content_blocks.append({"type": "paragraph", "text": line.strip()})
+            continue
+
+        expected_columns = len(current_table[0])
+        if _is_plain_text_table_data_row(cells, expected_columns):
+            if expected_columns and len(cells) < expected_columns:
+                cells = [*cells, *([""] * (expected_columns - len(cells)))]
+            current_table.append(cells)
+            continue
+
+        flush_table()
+        content_blocks.append({"type": "paragraph", "text": line.strip()})
+
+    flush_table()
+    return content_blocks, primary_rows
+
+
+def _extract_text_appendices(
+    project_id: str,
+    documents: list[dict[str, Any]],
+    texts_by_id: dict[str, str],
+    *,
+    start_index: int = 0,
+    profile: ParseProfile = TECHNICAL_PARSE_PROFILE,
+    skip_document_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    if profile.key == "business":
+        return []
+    appendices: list[dict[str, Any]] = []
+    max_content_lines = 200
+    skipped = skip_document_ids or set()
+    for document in documents:
+        document_id = str(document.get("id") or "")
+        if document_id in skipped:
+            continue
+        source_file = str(document.get("name") or document_id or "招标文件")
+        source_path = Path(str(document.get("sourcePath") or ""))
+        if source_path.suffix.lower() != ".pdf":
+            continue
+        lines = [
+            (line_number, line.strip())
+            for line_number, line in enumerate(texts_by_id.get(document_id, "").splitlines(), start=1)
+            if line.strip()
+        ]
+        index = 0
+        while index < len(lines):
+            line_number, line = lines[index]
+            next_line = lines[index + 1][1] if index + 1 < len(lines) else ""
+            if (
+                not _is_relevant_appendix_heading(line, profile)
+                or _is_text_appendix_toc_artifact(line, next_line)
+                or _is_scoring_appendix_heading(line)
+            ):
+                index += 1
+                continue
+
+            next_heading = len(lines)
+            for lookahead in range(index + 1, len(lines)):
+                next_line = lines[lookahead][1]
+                following_line = lines[lookahead + 1][1] if lookahead + 1 < len(lines) else ""
+                if _is_relevant_appendix_heading(next_line, profile) and not _is_text_appendix_toc_artifact(next_line, following_line):
+                    next_heading = lookahead
+                    break
+
+            content_end = min(next_heading, index + 1 + max_content_lines)
+            content_blocks, rows = _text_appendix_content_blocks(lines[index + 1:content_end])
+            if not content_blocks and not rows:
+                index = max(index + 1, next_heading)
+                continue
+
+            appendix_id = f"APPX-{start_index + len(appendices) + 1:04d}"
+            title = line.strip(" #")
+            appendices.append(
+                materialize_appendix_docx(
+                    project_id,
+                    {
+                        "id": appendix_id,
+                        "title": title,
+                        "status": "generated",
+                        "sourceFile": source_file,
+                        "sourceDocumentId": document_id,
+                        "evidence": line,
+                        "evidenceLocation": f"L{line_number}",
+                        "rows": rows,
+                        "contentBlocks": content_blocks,
+                        "rowCount": len(rows),
+                        "docxPath": "",
+                        "extractionMode": "pdf_text_slice",
+                    },
+                    profile=profile,
+                )
+            )
+            index = max(index + 1, next_heading)
+    return appendices
+
+
+def _document_nav_page_no(block: dict[str, Any]) -> int:
+    try:
+        page_no = int(block.get("pageNo") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return page_no if page_no > 0 else 0
+
+
+def _document_nav_table_rows(value: Any) -> list[list[str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[list[str]] = []
+    for row in value:
+        if isinstance(row, list):
+            rows.append([str(cell if cell is not None else "") for cell in row])
+    return rows
+
+
+def _document_nav_table_cells(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    cells: list[dict[str, Any]] = []
+    for cell in value:
+        if not isinstance(cell, dict):
+            continue
+        try:
+            row_start = int(cell.get("rowStart") if cell.get("rowStart") is not None else cell.get("start_row_offset_idx"))
+            row_end = int(cell.get("rowEnd") if cell.get("rowEnd") is not None else cell.get("end_row_offset_idx"))
+            col_start = int(cell.get("colStart") if cell.get("colStart") is not None else cell.get("start_col_offset_idx"))
+            col_end = int(cell.get("colEnd") if cell.get("colEnd") is not None else cell.get("end_col_offset_idx"))
+        except (TypeError, ValueError):
+            continue
+        if row_end <= row_start or col_end <= col_start:
+            continue
+        bbox = cell.get("bbox")
+        cells.append(
+            {
+                "rowStart": row_start,
+                "rowEnd": row_end,
+                "colStart": col_start,
+                "colEnd": col_end,
+                "rowSpan": row_end - row_start,
+                "colSpan": col_end - col_start,
+                "text": str(cell.get("text") or ""),
+                "bbox": bbox if isinstance(bbox, list) else [],
+            }
+        )
+    return cells
+
+
+def _document_nav_blocks(document_nav: dict[str, Any]) -> list[dict[str, Any]]:
+    source_engine = str(document_nav.get("sourceEngine") or "docling")
+    tables_by_id = {
+        str(table.get("id") or ""): table
+        for table in (document_nav.get("tables") if isinstance(document_nav.get("tables"), list) else [])
+        if isinstance(table, dict)
+    }
+    blocks: list[dict[str, Any]] = []
+    for order, raw_block in enumerate(document_nav.get("blocks") if isinstance(document_nav.get("blocks"), list) else [], start=1):
+        if not isinstance(raw_block, dict):
+            continue
+        table_id = str(raw_block.get("tableId") or "")
+        table = tables_by_id.get(table_id, {})
+        rows = _document_nav_table_rows(raw_block.get("rows"))
+        if not rows and isinstance(table, dict):
+            rows = _document_nav_table_rows(table.get("rows"))
+        cells = _document_nav_table_cells(raw_block.get("cells"))
+        if not cells and isinstance(table, dict):
+            cells = _document_nav_table_cells(table.get("cells"))
+        page_no = raw_block.get("pageNo") or (table.get("pageNo") if isinstance(table, dict) else 0) or 0
+        try:
+            page_no = int(page_no)
+        except (TypeError, ValueError):
+            page_no = 0
+        text = str(raw_block.get("text") or "").strip()
+        if not text and isinstance(table, dict):
+            text = str(table.get("title") or "").strip()
+        block_type = str(raw_block.get("type") or ("table" if rows else "paragraph")).lower()
+        bbox = raw_block.get("bbox")
+        if not isinstance(bbox, list) and isinstance(table, dict):
+            bbox = table.get("bbox")
+        blocks.append(
+            {
+                "blockId": order,
+                "type": block_type,
+                "text": text,
+                "rows": rows,
+                "cells": cells,
+                "pageNo": page_no if page_no > 0 else 0,
+                "bbox": bbox if isinstance(bbox, list) else [],
+                "tableId": table_id,
+                "sourceEngine": str(
+                    raw_block.get("sourceEngine")
+                    or (table.get("sourceEngine") if isinstance(table, dict) else "")
+                    or source_engine
+                ),
+            }
+        )
+    return blocks
+
+
+def _next_document_nav_text(blocks: list[dict[str, Any]], index: int) -> str:
+    for lookahead in range(index + 1, min(len(blocks), index + 6)):
+        text = str(blocks[lookahead].get("text") or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _is_document_nav_appendix_heading(blocks: list[dict[str, Any]], index: int, profile: ParseProfile) -> bool:
+    block = blocks[index]
+    block_type = str(block.get("type") or "").lower()
+    if block_type not in {"heading", "paragraph", "title", "section_header"}:
+        return False
+    text = str(block.get("text") or "").strip()
+    if (
+        not _is_relevant_appendix_heading(text, profile)
+        or _is_text_appendix_toc_artifact(text, _next_document_nav_text(blocks, index))
+        or _looks_like_toc_or_directory_line(text)
+        or _is_scoring_appendix_heading(text)
+    ):
+        return False
+    return True
+
+
+def _next_document_nav_appendix_heading_index(blocks: list[dict[str, Any]], start_index: int, profile: ParseProfile) -> int:
+    for lookahead in range(start_index + 1, len(blocks)):
+        if _is_document_nav_appendix_heading(blocks, lookahead, profile):
+            return lookahead
+    return len(blocks)
+
+
+def _document_nav_appendix_content_blocks(
+    blocks: list[dict[str, Any]],
+    start_index: int,
+    end_index: int,
+) -> tuple[list[dict[str, Any]], list[list[str]]]:
+    content_blocks: list[dict[str, Any]] = []
+    primary_rows: list[list[str]] = []
+    for block in blocks[start_index + 1:end_index]:
+        rows = block.get("rows") if isinstance(block.get("rows"), list) else []
+        cells = block.get("cells") if isinstance(block.get("cells"), list) else []
+        if rows:
+            if not primary_rows:
+                primary_rows = rows
+            table_block = {
+                "type": "table",
+                "rows": rows,
+                "pageNo": block.get("pageNo") or 0,
+                "bbox": block.get("bbox") if isinstance(block.get("bbox"), list) else [],
+            }
+            if cells:
+                table_block["cells"] = cells
+            content_blocks.append(table_block)
+            continue
+        text = str(block.get("text") or "").strip()
+        if text and not _is_text_appendix_noise_line(text):
+            content_blocks.append(
+                {
+                    "type": "paragraph",
+                    "text": text,
+                    "pageNo": block.get("pageNo") or 0,
+                    "bbox": block.get("bbox") if isinstance(block.get("bbox"), list) else [],
+                }
+            )
+    return content_blocks, primary_rows
+
+
+def _document_nav_page_label(block: dict[str, Any]) -> str:
+    page_no = _document_nav_page_no(block)
+    return f"P{page_no}" if page_no else ""
+
+
+def _extract_document_nav_appendices(
+    project_id: str,
+    documents: list[dict[str, Any]],
+    *,
+    start_index: int = 0,
+    profile: ParseProfile = TECHNICAL_PARSE_PROFILE,
+) -> list[dict[str, Any]]:
+    if profile.key != "technical":
+        return []
+    appendices: list[dict[str, Any]] = []
+    max_content_blocks = 250
+    for document in documents:
+        document_id = str(document.get("id") or "")
+        source_file = str(document.get("name") or document_id or "tender.pdf")
+        source_path = Path(str(document.get("sourcePath") or ""))
+        nav_path = Path(str(document.get("documentNavPath") or ""))
+        if source_path.suffix.lower() != ".pdf" or not nav_path.is_file():
+            continue
+        try:
+            document_nav = json.loads(nav_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(document_nav, dict):
+            continue
+        blocks = _document_nav_blocks(document_nav)
+        source_engine = str(document.get("documentParseEngine") or document_nav.get("sourceEngine") or "docling")
+        index = 0
+        while index < len(blocks):
+            if not _is_document_nav_appendix_heading(blocks, index, profile):
+                index += 1
+                continue
+            next_heading = _next_document_nav_appendix_heading_index(blocks, index, profile)
+            content_end = min(next_heading, index + 1 + max_content_blocks)
+            content_blocks, rows = _document_nav_appendix_content_blocks(blocks, index, content_end)
+            if not _appendix_has_material_content(rows, content_blocks):
+                index = max(index + 1, next_heading)
+                continue
+
+            selected = blocks[index:content_end]
+            source_start = _document_nav_page_label(selected[0]) if selected else ""
+            source_end = _document_nav_page_label(selected[-1]) if selected else source_start
+            title = str(blocks[index].get("text") or "").strip(" #")
+            appendix_id = f"APPX-{start_index + len(appendices) + 1:04d}"
+            appendices.append(
+                materialize_appendix_docx(
+                    project_id,
+                    {
+                        "id": appendix_id,
+                        "title": title,
+                        "status": "generated",
+                        "sourceFile": source_file,
+                        "sourceDocumentId": document_id,
+                        "sourceEngine": source_engine,
+                        "evidence": title,
+                        "evidenceLocation": source_start or f"B{blocks[index].get('blockId') or index + 1}",
+                        "sourceStart": source_start,
+                        "sourceEnd": source_end,
+                        "rows": rows,
+                        "contentBlocks": content_blocks,
+                        "rowCount": len(rows),
+                        "docxPath": "",
+                        "extractionMode": "pdf_document_nav_slice",
+                    },
+                    profile=profile,
+                )
+            )
+            index = max(index + 1, next_heading)
+    return appendices
+
+
 def _sanitize_docx_name(value: str, fallback: str) -> str:
     cleaned = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
@@ -3225,13 +3714,126 @@ def _is_markdown_separator_row(cells: list[str]) -> bool:
     return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
 
 
-def _write_table_to_docx(doc: Document, rows: list[list[str]]) -> None:
-    column_count = max(len(row) for row in rows)
-    table = doc.add_table(rows=len(rows), cols=column_count)
-    table.style = "Table Grid"
-    for row_index, row in enumerate(rows):
-        for col_index in range(column_count):
-            table.cell(row_index, col_index).text = row[col_index] if col_index < len(row) else ""
+def _append_text_to_docx_paragraph(paragraph_element: Any, text: str) -> None:
+    parts = str(text or "").split("\n")
+    for index, part in enumerate(parts):
+        run = OxmlElement("w:r")
+        if index > 0:
+            run.append(OxmlElement("w:br"))
+        if part:
+            text_element = OxmlElement("w:t")
+            if part != part.strip():
+                text_element.set(qn("xml:space"), "preserve")
+            text_element.text = part
+            run.append(text_element)
+        paragraph_element.append(run)
+
+
+def _docx_table_column_count(rows: list[list[str]], cells: list[dict[str, Any]]) -> int:
+    return max(
+        max((len(row) for row in rows), default=0),
+        max((int(cell.get("colEnd") or 0) for cell in cells), default=0),
+    )
+
+
+def _append_docx_table_cell(
+    row_element: Any,
+    text: str,
+    *,
+    col_span: int = 1,
+    v_merge: str = "",
+) -> None:
+    cell = OxmlElement("w:tc")
+    cell_pr = OxmlElement("w:tcPr")
+    cell_width = OxmlElement("w:tcW")
+    cell_width.set(qn("w:w"), str(2400 * max(1, col_span)))
+    cell_width.set(qn("w:type"), "dxa")
+    cell_pr.append(cell_width)
+    if col_span > 1:
+        grid_span = OxmlElement("w:gridSpan")
+        grid_span.set(qn("w:val"), str(col_span))
+        cell_pr.append(grid_span)
+    if v_merge:
+        vertical_merge = OxmlElement("w:vMerge")
+        if v_merge == "restart":
+            vertical_merge.set(qn("w:val"), "restart")
+        cell_pr.append(vertical_merge)
+    cell.append(cell_pr)
+
+    paragraph = OxmlElement("w:p")
+    _append_text_to_docx_paragraph(paragraph, text)
+    cell.append(paragraph)
+    row_element.append(cell)
+
+
+def _write_table_to_docx(doc: Document, rows: list[list[str]], cells: list[dict[str, Any]] | None = None) -> None:
+    normalized_cells = _document_nav_table_cells(cells)
+    column_count = _docx_table_column_count(rows, normalized_cells)
+    if column_count <= 0:
+        return
+    row_count = max(len(rows), max((int(cell.get("rowEnd") or 0) for cell in normalized_cells), default=0))
+    table = OxmlElement("w:tbl")
+    table_pr = OxmlElement("w:tblPr")
+    table_style = OxmlElement("w:tblStyle")
+    table_style.set(qn("w:val"), "TableGrid")
+    table_pr.append(table_style)
+    table.append(table_pr)
+
+    table_grid = OxmlElement("w:tblGrid")
+    for _ in range(column_count):
+        grid_col = OxmlElement("w:gridCol")
+        grid_col.set(qn("w:w"), "2400")
+        table_grid.append(grid_col)
+    table.append(table_grid)
+
+    origin_cells: dict[tuple[int, int], dict[str, Any]] = {}
+    continuation_cells: dict[tuple[int, int], dict[str, Any]] = {}
+    skipped_positions: set[tuple[int, int]] = set()
+    for cell in normalized_cells:
+        row_start = int(cell.get("rowStart") or 0)
+        row_end = int(cell.get("rowEnd") or row_start + 1)
+        col_start = int(cell.get("colStart") or 0)
+        col_end = int(cell.get("colEnd") or col_start + 1)
+        origin_cells[(row_start, col_start)] = cell
+        for row_index in range(row_start, row_end):
+            for col_index in range(col_start, col_end):
+                if row_index == row_start and col_index == col_start:
+                    continue
+                if row_index > row_start and col_index == col_start:
+                    continuation_cells[(row_index, col_index)] = cell
+                    continue
+                skipped_positions.add((row_index, col_index))
+
+    for row_index in range(row_count):
+        row = rows[row_index] if row_index < len(rows) and isinstance(rows[row_index], list) else []
+        row_element = OxmlElement("w:tr")
+        col_index = 0
+        while col_index < column_count:
+            if (row_index, col_index) in skipped_positions:
+                col_index += 1
+                continue
+            origin_cell = origin_cells.get((row_index, col_index))
+            if origin_cell is not None:
+                col_span = max(1, int(origin_cell.get("colSpan") or 1))
+                row_span = max(1, int(origin_cell.get("rowSpan") or 1))
+                _append_docx_table_cell(
+                    row_element,
+                    str(origin_cell.get("text") or ""),
+                    col_span=col_span,
+                    v_merge="restart" if row_span > 1 else "",
+                )
+                col_index += col_span
+                continue
+            continuation_cell = continuation_cells.get((row_index, col_index))
+            if continuation_cell is not None:
+                col_span = max(1, int(continuation_cell.get("colSpan") or 1))
+                _append_docx_table_cell(row_element, "", col_span=col_span, v_merge="continue")
+                col_index += col_span
+                continue
+            _append_docx_table_cell(row_element, row[col_index] if col_index < len(row) else "")
+            col_index += 1
+        table.append(row_element)
+    doc._body._element.insert_element_before(table, "w:sectPr")
 
 
 def _write_appendix_docx(
@@ -3261,8 +3863,9 @@ def _write_appendix_docx(
                 wrote_content = True
         elif block_type == "table":
             block_rows = block.get("rows") if isinstance(block.get("rows"), list) else []
+            block_cells = block.get("cells") if isinstance(block.get("cells"), list) else []
             if block_rows:
-                _write_table_to_docx(doc, block_rows)
+                _write_table_to_docx(doc, block_rows, block_cells)
                 wrote_content = True
     if rows and not wrote_content:
         _write_table_to_docx(doc, rows)
@@ -3440,10 +4043,13 @@ def _slice_appendix_from_source(
     # (styles, numbering, rels, media) ships byte-for-byte.
     parts: dict[str, tuple[Any, bytes]] = source_state["parts"]
     try:
-        with zipfile.ZipFile(target_docx, "w", zipfile.ZIP_DEFLATED) as dst:
+        with zipfile.ZipFile(target_docx, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as dst:
             for filename, (info, data) in parts.items():
                 if filename == "word/document.xml":
-                    dst.writestr(info, new_doc_xml)
+                    if len(new_doc_xml) >= DOCX_SLICE_STORED_XML_THRESHOLD_BYTES:
+                        dst.writestr(filename, new_doc_xml, compress_type=zipfile.ZIP_STORED)
+                    else:
+                        dst.writestr(info, new_doc_xml)
                 else:
                     dst.writestr(info, data)
     except Exception:
@@ -4819,6 +5425,13 @@ def _docx_table_rows(table: Any) -> list[list[str]]:
     return [[cell.text.strip() for cell in row.cells] for row in table.rows]
 
 
+def _docx_table_has_cell_merges(table_element: Any) -> bool:
+    return (
+        table_element.find(f".//{WORD_NAMESPACE}gridSpan") is not None
+        or table_element.find(f".//{WORD_NAMESPACE}vMerge") is not None
+    )
+
+
 def _iter_docx_blocks(path: Path) -> list[dict[str, Any]]:
     """Walk the docx body and yield {paragraph,table} blocks.
 
@@ -4850,6 +5463,7 @@ def _iter_docx_blocks(path: Path) -> list[dict[str, Any]]:
                         "type": "table",
                         "rows": _docx_table_rows(table),
                         "body_index": body_index,
+                        "hasCellMerges": _docx_table_has_cell_merges(child),
                     }
                 )
     return blocks
@@ -4861,6 +5475,8 @@ def _extract_docx_appendices(
     *,
     start_index: int = 0,
     profile: ParseProfile = TECHNICAL_PARSE_PROFILE,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> list[dict[str, Any]]:
     appendices: list[dict[str, Any]] = []
     for document in documents:
@@ -4869,13 +5485,82 @@ def _extract_docx_appendices(
             continue
 
         source_file = str(document.get("name") or source_path.name or "招标文件")
-        blocks = _iter_docx_blocks(source_path)
+        def report_docx_appendix_scanning(metadata: dict[str, Any] | None = None) -> None:
+            if progress_callback:
+                payload = {"fileName": source_file}
+                payload.update(metadata or {})
+                progress_callback("docx_appendix_scanning", payload)
+
+        report_docx_appendix_scanning()
+        blocks = _run_with_progress_heartbeat(
+            lambda: _iter_docx_blocks(source_path),
+            heartbeat=report_docx_appendix_scanning,
+            cancel_check=cancel_check,
+        )
+        _raise_if_parse_cancelled(cancel_check)
         business_regions = _detect_business_format_regions(blocks) if profile.key == "business" else []
-        # Parse the source docx once and hand the cached lxml tree + zip
-        # path to every per-appendix slicer. Without this cache, a 21 MB RFP
-        # with 50 appendices would re-parse the source ~50 times (each open
-        # + parse takes seconds, freezing the request for minutes).
-        source_state = _build_appendix_slice_state(source_path)
+        if profile.key == "technical":
+            docx_appendix_total = sum(
+                1
+                for candidate_index, candidate in enumerate(blocks)
+                if candidate.get("type") == "paragraph"
+                and _is_relevant_appendix_heading(str(candidate.get("text") or "").strip(), profile)
+                and not _is_scoring_appendix_heading(str(candidate.get("text") or "").strip())
+                and not _is_docx_appendix_toc_artifact(blocks, candidate_index)
+            )
+        else:
+            docx_appendix_total = 0
+        generated_count = 0
+
+        def report_docx_appendix_progress(title: str) -> None:
+            nonlocal generated_count
+            generated_count += 1
+            if progress_callback:
+                progress_callback(
+                    "docx_appendix_progress",
+                    {
+                        "fileName": source_file,
+                        "title": title,
+                        "current": generated_count,
+                        "total": max(docx_appendix_total, generated_count),
+                    },
+                )
+
+        def report_docx_appendix_materializing(title: str, metadata: dict[str, Any] | None = None) -> None:
+            if progress_callback:
+                next_count = generated_count + 1
+                payload = {
+                    "fileName": source_file,
+                    "title": title,
+                    "current": next_count,
+                    "total": max(docx_appendix_total, next_count),
+                }
+                payload.update(metadata or {})
+                progress_callback("docx_appendix_materializing", payload)
+
+        if progress_callback:
+            progress_callback(
+                "docx_appendix_started",
+                {
+                    "fileName": source_file,
+                    "total": docx_appendix_total,
+                },
+            )
+        # Build the expensive source slice cache only if an appendix really
+        # needs verbatim DOCX slicing (for example, merged cells).
+        source_state: dict[str, Any] | None = None
+
+        def ensure_source_state() -> dict[str, Any] | None:
+            nonlocal source_state
+            if source_state is None:
+                source_state = _run_with_progress_heartbeat(
+                    lambda: _build_appendix_slice_state(source_path),
+                    heartbeat=report_docx_appendix_scanning,
+                    cancel_check=cancel_check,
+                )
+                _raise_if_parse_cancelled(cancel_check)
+            return source_state
+
         used_tables: set[int] = set()
         in_template_section = False
         template_section_title = ""
@@ -4912,6 +5597,7 @@ def _extract_docx_appendices(
 
             title = line.strip(" #") or "附表"
             table_index = -1
+            table_has_cell_merges = False
             rows: list[list[str]] = []
             table_body_index: int | None = None
             next_heading_index = _next_appendix_heading_index(blocks, index, profile)
@@ -4922,6 +5608,7 @@ def _extract_docx_appendices(
                 next_block = blocks[lookahead]
                 if next_block.get("type") == "table" and lookahead not in used_tables:
                     table_index = lookahead
+                    table_has_cell_merges = bool(next_block.get("hasCellMerges"))
                     rows = next_block.get("rows") or []
                     raw_body_index = next_block.get("body_index")
                     table_body_index = raw_body_index if isinstance(raw_body_index, int) else None
@@ -4969,13 +5656,22 @@ def _extract_docx_appendices(
                     and heading_body_index is not None
                     and slice_end_body_index is not None
                 ):
+                    source_state_for_slice = ensure_source_state()
                     appendix_payload["_slice"] = {
                         "sourcePath": str(source_path),
                         "keepStart": heading_body_index,
                         "keepEnd": slice_end_body_index,
-                        "sourceState": source_state,
+                        "sourceState": source_state_for_slice,
                     }
-                appendices.append(materialize_appendix_docx(project_id, appendix_payload, profile=profile))
+                report_docx_appendix_materializing(title)
+                appendices.append(
+                    _run_with_progress_heartbeat(
+                        lambda: materialize_appendix_docx(project_id, appendix_payload, profile=profile),
+                        heartbeat=lambda metadata: report_docx_appendix_materializing(title, metadata),
+                        cancel_check=cancel_check,
+                    )
+                )
+                report_docx_appendix_progress(title)
                 continue
 
             used_tables.add(table_index)
@@ -4993,14 +5689,24 @@ def _extract_docx_appendices(
                 **metadata,
             }
             slice_keep_end = slice_end_body_index if profile.key == "business" else table_body_index
-            if heading_body_index is not None and slice_keep_end is not None:
+            should_use_source_slice = profile.key == "business" or table_has_cell_merges
+            if heading_body_index is not None and slice_keep_end is not None and should_use_source_slice:
+                source_state_for_slice = ensure_source_state()
                 appendix_payload["_slice"] = {
                     "sourcePath": str(source_path),
                     "keepStart": heading_body_index,
                     "keepEnd": slice_keep_end,
-                    "sourceState": source_state,
+                    "sourceState": source_state_for_slice,
                 }
-            appendices.append(materialize_appendix_docx(project_id, appendix_payload, profile=profile))
+            report_docx_appendix_materializing(title)
+            appendices.append(
+                _run_with_progress_heartbeat(
+                    lambda: materialize_appendix_docx(project_id, appendix_payload, profile=profile),
+                    heartbeat=lambda metadata: report_docx_appendix_materializing(title, metadata),
+                    cancel_check=cancel_check,
+                )
+            )
+            report_docx_appendix_progress(title)
         if profile.key == "business":
             used_heading_indices = {
                 int(str(item.get("evidenceLocation") or "B0").lstrip("B") or "0") - 1
@@ -5071,14 +5777,32 @@ def _extract_docx_appendices(
                     **metadata,
                 }
                 if heading_body_index is not None and table_body_index is not None:
+                    source_state_for_slice = ensure_source_state()
                     payload["_slice"] = {
                         "sourcePath": str(source_path),
                         "keepStart": heading_body_index,
                         "keepEnd": table_body_index,
-                        "sourceState": source_state,
+                        "sourceState": source_state_for_slice,
                     }
                 used_tables.add(table_index)
-                appendices.append(materialize_appendix_docx(project_id, payload, profile=profile))
+                report_docx_appendix_materializing(title)
+                appendices.append(
+                    _run_with_progress_heartbeat(
+                        lambda: materialize_appendix_docx(project_id, payload, profile=profile),
+                        heartbeat=lambda metadata: report_docx_appendix_materializing(title, metadata),
+                        cancel_check=cancel_check,
+                    )
+                )
+                report_docx_appendix_progress(title)
+        if progress_callback:
+            progress_callback(
+                "docx_appendix_finished",
+                {
+                    "fileName": source_file,
+                    "current": generated_count,
+                    "total": max(docx_appendix_total, generated_count),
+                },
+            )
     return appendices
 
 
@@ -5241,12 +5965,15 @@ s1parse search {skill_manifest_path} "<query>" --limit 20
 s1parse read {skill_manifest_path} <evidenceId> --mode summary --max-chars 2000
 s1parse window {skill_manifest_path} <evidenceId> --before 4 --after 6
 s1parse table {skill_manifest_path} <tableId> --rows 1-12 --max-chars 4000
+s1parse submit {skill_manifest_path} projectBasics '<json>'
 s1parse submit {skill_manifest_path} technicalInterpretation '<json>'
 s1parse validate {skill_manifest_path}
 s1parse status {skill_manifest_path}
 s1parse finalize {skill_manifest_path}
 
 禁止用 opencode 的 read 工具读取或打印解析中间产物的大 JSON；证据定位必须通过 s1parse 小输出导航命令完成。禁止调用 Task/subagent/子代理/任务委派工具。
+
+项目基础信息必须按六项提交到 `projectBasics`：项目名称 `projectName`、招标编号 `tenderNo`、项目单位 `projectUnit`、招标人 `tenderer`、招标代理机构 `tenderAgency`、递交截止时间 `bidDeadline`。每条基础信息必须显式提交标准 key 或 fieldKey，label 只作展示，不会被脚本用来归一；原文中的不同叫法由你结合上下文和证据自主判断后归入上述标准 key。封面、公告、前附表都是可用证据来源，不要因为信息位于封面而跳过。递交截止时间指投标/响应文件最晚递交或提交时间，不要把交货期、供货期、服务期、工期等履约日期当作截止时间。六项按当前文件可支撑内容提交，不能空交付；项目名称、招标人、递交截止时间如有值必须带字段级 evidenceIds，提交值必须能被证据文本直接支撑。
 
 只使用 s1parse 返回过的 evidenceId，不要编造证据。`found` 和 `partial` 必须有证据；`needs_spec` 必须写 `neededSourceName`，且使用招标文件原文里的卷册、附件或附表叫法，不要固定写“第二卷技术规范书”。validate 失败时继续回查并重新 submit；必须执行 finalize，最终结构化 JSON 必须由 finalize 写入 manifest.structuredResultPath。
 
@@ -5256,10 +5983,10 @@ s1parse finalize {skill_manifest_path}
   "schemaVersion": "{profile.schema_version}",
   "targetSkill": "{profile.skill_name}",
   "outputFile": "manifest 中的 structuredResultPath",
-  "summary": {{"itemCount": 58, "checklistCount": 58, "statusCounts": {{"found": 0, "partial": 0, "missing": 0, "needs_spec": 0}}, "workflowStage": "finalized", "projectDates": {{"startDate": "", "endDate": ""}}}}
+  "summary": {{"itemCount": 58, "checklistCount": 58, "statusCounts": {{"found": 0, "partial": 0, "missing": 0, "needs_spec": 0}}, "workflowStage": "finalized"}}
 }}
 
-完整 JSON 必须包含 structured.sourceDocuments、structured.technicalInterpretation、structured.workflow，且 workflow.mode 为 opencode-agentic-navigation。
+完整 JSON 必须包含 structured.sourceDocuments、structured.fieldGroups.projectBasics、structured.projectFactFields、structured.technicalInterpretation、structured.workflow，且 workflow.mode 为 opencode-agentic-navigation。
 """.strip()
 
 
@@ -5283,19 +6010,20 @@ manifest：{skill_manifest_path}
 按下面顺序执行：
 
 s1parse status {skill_manifest_path}
+s1parse submit {skill_manifest_path} projectBasics '<json>'
 s1parse submit {skill_manifest_path} technicalInterpretation '<json>'
 s1parse validate {skill_manifest_path}
 s1parse status {skill_manifest_path}
 s1parse finalize {skill_manifest_path}
 
-如果 status 显示已有提交项，只补缺失或校验失败项；如果证据不足，只用 s1parse search/read/window/table 做最小回查。`needs_spec` 必须写招标文件原文里的 `neededSourceName`。必须执行 finalize，最终结构化 JSON 必须由 finalize 写入 manifest.structuredResultPath。
+如果 status 显示已有提交项，只补缺失或校验失败项；如果证据不足，只用 s1parse search/read/window/table 做最小回查。项目基础信息仍按六项提交到 `projectBasics`，每条必须显式提交标准 key 或 fieldKey，不能空交付；项目名称、招标人、递交截止时间如有值必须带字段级 evidenceIds。`needs_spec` 必须写招标文件原文里的 `neededSourceName`。必须执行 finalize，最终结构化 JSON 必须由 finalize 写入 manifest.structuredResultPath。
 
 最后只返回 finalize 命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。返回格式必须是：
 {{
   "schemaVersion": "{profile.schema_version}",
   "targetSkill": "{profile.skill_name}",
   "outputFile": "manifest 中的 structuredResultPath",
-  "summary": {{"itemCount": 58, "checklistCount": 58, "statusCounts": {{"found": 0, "partial": 0, "missing": 0, "needs_spec": 0}}, "workflowStage": "finalized", "projectDates": {{"startDate": "", "endDate": ""}}}}
+  "summary": {{"itemCount": 58, "checklistCount": 58, "statusCounts": {{"found": 0, "partial": 0, "missing": 0, "needs_spec": 0}}, "workflowStage": "finalized"}}
 }}
 """.strip()
     return f"""
@@ -5468,7 +6196,9 @@ def _run_parse_skill(
     local_result: dict[str, Any],
     profile: ParseProfile,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[dict[str, Any], str]:
+    _raise_if_parse_cancelled(cancel_check)
     if not settings.s1_parse_opencode_enabled:
         return local_result, ""
     client = OpencodeClient()
@@ -5477,22 +6207,45 @@ def _run_parse_skill(
         if progress_callback
         else None
     )
+    session_ready_callback = (
+        (
+            lambda details: progress_callback(
+                "opencode_delta",
+                {
+                    **details,
+                    "status": "running",
+                    "parts": [{"type": "text", "text": "opencode session 已建立，正在运行 S1 解析 Skill。"}],
+                },
+            )
+        )
+        if progress_callback
+        else None
+    )
     try:
         result = client.generate_tender_parse_with_trace(
             _build_tender_parse_prompt(skill_manifest_path, profile),
             stream_callback=stream_callback,
+            session_ready_callback=session_ready_callback,
+            cancel_check=cancel_check,
         )
+        _raise_if_parse_cancelled(cancel_check)
         return _resolve_skill_structured_result(result, local_result=local_result, profile=profile), ""
+    except ParseCancelledError:
+        raise
     except RuntimeError as exc:
         attempts = [_opencode_attempt_from_error(exc, 1)]
         trace = getattr(exc, "opencode_trace", None)
         if progress_callback and isinstance(trace, dict):
             progress_callback("opencode_delta", copy.deepcopy(trace))
+        _raise_if_parse_cancelled(cancel_check)
         try:
             retry_result = client.generate_tender_parse_with_trace(
                 _build_tender_parse_retry_prompt(skill_manifest_path, profile, exc),
                 stream_callback=stream_callback,
+                session_ready_callback=session_ready_callback,
+                cancel_check=cancel_check,
             )
+            _raise_if_parse_cancelled(cancel_check)
             resolved = _resolve_skill_structured_result(retry_result, local_result=local_result, profile=profile)
             retry_trace = (resolved.get("structured") or {}).get("opencodeOutput")
             attempts.append(
@@ -5505,6 +6258,8 @@ def _run_parse_skill(
                 }
             )
             return _attach_opencode_attempts(resolved, attempts), ""
+        except ParseCancelledError:
+            raise
         except RuntimeError as retry_exc:
             attempts.append(_opencode_attempt_from_error(retry_exc, 2))
             if profile.key == "business":
@@ -5677,26 +6432,49 @@ def _finalize_business_s1_result(
         )
 
 
+def _project_basics_bid_deadline(structured: dict[str, Any]) -> str:
+    field_groups = structured.get("fieldGroups") if isinstance(structured.get("fieldGroups"), dict) else {}
+    project_basics = field_groups.get("projectBasics") if isinstance(field_groups.get("projectBasics"), list) else []
+    for row in project_basics:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("key") or row.get("fieldKey") or "").strip()
+        if key != "bidDeadline":
+            continue
+        status = str(row.get("status") or "").strip()
+        if status in {"missing", "needs_spec"}:
+            return ""
+        normalized = _normalize_bid_deadline(str(row.get("value") or ""))
+        return normalized if _is_normalized_bid_deadline(normalized) else ""
+    return ""
+
+
 def parse_tender_documents(
     project_id: str,
     tender_files: list[dict[str, Any]],
     *,
     bid_type: str,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    _raise_if_parse_cancelled(cancel_check)
     profile = resolve_parse_profile(bid_type)
     project_dir = parsed_project_dir(project_id)
     appendix_temp_dir = project_dir / "s1_appendices"
     if appendix_temp_dir.exists():
         shutil.rmtree(appendix_temp_dir)
+    primary_extension = ".pdf" if any(Path(str(file_record.get("path") or "")).suffix.lower() == ".pdf" for file_record in tender_files) else (
+        Path(str(tender_files[0].get("path") or "")).suffix.lower() if tender_files else ""
+    )
     documents: list[dict[str, Any]] = []
     combined_parts: list[str] = []
     texts_by_id: dict[str, str] = {}
     warnings: list[str] = []
     if progress_callback:
-        progress_callback("extract_started", {"fileCount": len(tender_files)})
+        progress_callback("extract_started", {"fileCount": len(tender_files), "fileExtension": primary_extension})
 
-    for file_record in tender_files:
+    for file_index, file_record in enumerate(tender_files, start=1):
+        _raise_if_parse_cancelled(cancel_check)
         file_path = Path(str(file_record["path"]))
         extension = file_path.suffix.lower()
         page_count: int | str = "-"
@@ -5704,10 +6482,34 @@ def parse_tender_documents(
         ocr_meta: dict[str, Any] | None = None
         parse_metadata: dict[str, Any] = {}
         if progress_callback:
-            progress_callback("extracting_file", {"fileName": file_record.get("name") or file_path.name})
+            progress_callback(
+                "extracting_file",
+                {
+                    "fileName": file_record.get("name") or file_path.name,
+                    "current": file_index,
+                    "total": len(tender_files),
+                    "fileCount": len(tender_files),
+                    "fileExtension": extension,
+                },
+            )
 
         if extension == ".docx":
-            text = extract_docx_text(file_path)
+            def report_docx_text_progress(progress: int, text_length: int) -> None:
+                if progress_callback:
+                    progress_callback(
+                        "extracting_file_progress",
+                        {
+                            "fileName": file_record.get("name") or file_path.name,
+                            "current": file_index,
+                            "total": len(tender_files),
+                            "fileCount": len(tender_files),
+                            "progress": progress,
+                            "textLength": text_length,
+                            "fileExtension": extension,
+                        },
+                    )
+
+            text = extract_docx_text(file_path, progress_callback=report_docx_text_progress)
         elif extension == ".md":
             text = file_path.read_text(encoding="utf-8", errors="replace")
         elif extension == ".txt":
@@ -5715,24 +6517,41 @@ def parse_tender_documents(
         elif extension == ".pdf":
             pdf_text_fallback_enabled = True
             if (
-                profile.key == "business"
+                profile.key in {"business", "technical"}
                 and settings.business_pdf_parse_engine == "docling"
             ):
-                text, parse_metadata, engine_warnings = _parse_business_pdf_with_document_engine(
-                    project_id=project_id,
-                    document={
-                        "id": file_record["id"],
-                        "name": file_record.get("name") or file_path.name,
-                        "path": str(file_path),
-                        "sourcePath": str(file_path),
-                    },
-                    file_path=file_path,
-                    project_dir=project_dir,
+                def report_pdf_extract_progress(metadata: dict[str, Any] | None = None) -> None:
+                    if progress_callback:
+                        payload = {
+                            "fileName": file_record.get("name") or file_path.name,
+                            "current": file_index,
+                            "total": len(tender_files),
+                            "fileCount": len(tender_files),
+                            "fileExtension": extension,
+                        }
+                        payload.update(metadata or {})
+                        progress_callback("pdf_extracting_progress", payload)
+
+                text, parse_metadata, engine_warnings = _run_with_progress_heartbeat(
+                    lambda: _parse_pdf_with_document_engine(
+                        project_id=project_id,
+                        document={
+                            "id": file_record["id"],
+                            "name": file_record.get("name") or file_path.name,
+                            "path": str(file_path),
+                            "sourcePath": str(file_path),
+                        },
+                        file_path=file_path,
+                        project_dir=project_dir,
+                        engine_fallback="none" if profile.key == "technical" else None,
+                    ),
+                    heartbeat=report_pdf_extract_progress,
+                    cancel_check=cancel_check,
                 )
                 page_count = parse_metadata.get("pageCount") or page_count
                 file_warnings.extend(engine_warnings)
                 pdf_meta = {"pageCount": page_count, "warnings": [], "requiresOcr": False}
-                pdf_text_fallback_enabled = settings.business_pdf_engine_fallback == "lightweight"
+                pdf_text_fallback_enabled = profile.key == "business" and settings.business_pdf_engine_fallback == "lightweight"
             else:
                 text = ""
                 pdf_meta = {"pageCount": page_count, "warnings": [], "requiresOcr": False}
@@ -5768,6 +6587,7 @@ def parse_tender_documents(
             text = ""
             file_warnings.append(f"当前 MVP 暂不解析 {extension or '未知'} 类型文件。")
 
+        _raise_if_parse_cancelled(cancel_check)
         text = _normalize_text(text)
         text_length = len(text)
         text_path = project_dir / f"{file_record['id']}.txt"
@@ -5799,14 +6619,24 @@ def parse_tender_documents(
                     "fileName": file_record.get("name") or file_path.name,
                     "textLength": text_length,
                     "warnings": file_warnings,
+                    "current": file_index,
+                    "total": len(tender_files),
+                    "fileCount": len(tender_files),
+                    "fileExtension": extension,
                 },
             )
+        _raise_if_parse_cancelled(cancel_check)
 
     combined_text = _normalize_text("\n\n".join(combined_parts))
     combined_text_path = project_dir / "combined.txt"
     combined_text_path.write_text(combined_text, encoding="utf-8")
 
+    if progress_callback:
+        progress_callback("local_structure_started", {"documentCount": len(documents), "fileExtension": primary_extension})
     structured_result = _extract_structured_requirements(documents, texts_by_id)
+    if progress_callback:
+        local_items = structured_result.get("items") if isinstance(structured_result.get("items"), list) else []
+        progress_callback("local_structure_finished", {"itemCount": len(local_items), "fileExtension": primary_extension})
     template_extraction_payload: dict[str, Any] | None = None
     template_extraction_warning = ""
     template_extraction_path = project_dir / "business_template_extraction" / "business_template_extraction.json"
@@ -5814,6 +6644,7 @@ def parse_tender_documents(
     business_section_tree_summary: dict[str, Any] = {}
 
     if profile.key == "business":
+        _raise_if_parse_cancelled(cancel_check)
         section_tree_path, section_tree_payload = write_business_section_tree(documents, project_dir)
         business_section_tree_path = str(section_tree_path)
         business_section_tree_summary = (
@@ -5822,13 +6653,18 @@ def parse_tender_documents(
             else {}
         )
         if progress_callback:
-            progress_callback("business_template_extraction_started", {"documentCount": len(documents)})
+            progress_callback(
+                "business_template_extraction_started",
+                {"documentCount": len(documents), "fileExtension": primary_extension},
+            )
         appendices, template_extraction_payload, template_extraction_warning = run_business_template_extractor(
             project_id=project_id,
             documents=documents,
             project_dir=project_dir,
             progress_callback=progress_callback,
+            cancel_check=cancel_check,
         )
+        _raise_if_parse_cancelled(cancel_check)
         if progress_callback:
             progress_callback(
                 "business_template_extraction_finished",
@@ -5840,8 +6676,19 @@ def parse_tender_documents(
                 },
             )
         if not appendices and _business_template_extractor_allows_preview_fallback(template_extraction_warning):
+            if progress_callback:
+                progress_callback("appendices_started", {"documentCount": len(documents), "fileExtension": primary_extension})
             appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
-            appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices), profile=profile))
+            appendices.extend(
+                _extract_docx_appendices(
+                    project_id,
+                    documents,
+                    start_index=len(appendices),
+                    profile=profile,
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check,
+                )
+            )
             appendices.extend(
                 _extract_text_business_appendices(
                     project_id,
@@ -5852,8 +6699,42 @@ def parse_tender_documents(
                 )
             )
     else:
+        _raise_if_parse_cancelled(cancel_check)
+        if progress_callback:
+            progress_callback("appendices_started", {"documentCount": len(documents), "fileExtension": primary_extension})
         appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
-        appendices.extend(_extract_docx_appendices(project_id, documents, start_index=len(appendices), profile=profile))
+        appendices.extend(
+            _extract_docx_appendices(
+                project_id,
+                documents,
+                start_index=len(appendices),
+                profile=profile,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+            )
+        )
+        document_nav_appendices = _extract_document_nav_appendices(
+            project_id,
+            documents,
+            start_index=len(appendices),
+            profile=profile,
+        )
+        appendices.extend(document_nav_appendices)
+        document_nav_document_ids = {
+            str(item.get("sourceDocumentId") or "")
+            for item in document_nav_appendices
+            if str(item.get("sourceDocumentId") or "")
+        }
+        appendices.extend(
+            _extract_text_appendices(
+                project_id,
+                documents,
+                texts_by_id,
+                start_index=len(appendices),
+                profile=profile,
+                skip_document_ids=document_nav_document_ids,
+            )
+        )
     appendices = _prepare_appendix_outputs(project_id, appendices, renumber=True, profile=profile)
     structured_result["structured"]["appendices"] = appendices
     if profile.key == "business" and not settings.s1_parse_opencode_enabled:
@@ -5873,6 +6754,7 @@ def parse_tender_documents(
             {
                 "appendixCount": len(appendices),
                 "generatedCount": sum(1 for item in appendices if item.get("status") == "generated"),
+                "fileExtension": primary_extension,
             },
         )
     structured_path = project_dir / "s1_structured_result.json"
@@ -5898,13 +6780,18 @@ def parse_tender_documents(
     }
     skill_manifest_path.write_text(json.dumps(skill_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     if progress_callback:
-        progress_callback("skill_manifest_ready", {"manifestPath": str(skill_manifest_path)})
+        progress_callback("skill_manifest_ready", {"manifestPath": str(skill_manifest_path), "fileExtension": primary_extension})
+    _raise_if_parse_cancelled(cancel_check)
     structured_result, skill_warning = _run_parse_skill(
         skill_manifest_path,
         local_result=structured_result,
         profile=profile,
         progress_callback=progress_callback,
+        cancel_check=cancel_check,
     )
+    _raise_if_parse_cancelled(cancel_check)
+    if progress_callback and settings.s1_parse_opencode_enabled:
+        progress_callback("opencode_finished", {})
     if _needs_business_s1_finalize_guard(
         profile=profile,
         structured_result=structured_result,
@@ -5962,6 +6849,7 @@ def parse_tender_documents(
     items = structured_result.get("items") if isinstance(structured_result.get("items"), list) else []
     structured = structured_result.get("structured") if isinstance(structured_result.get("structured"), dict) else {}
     project_dates = structured.get("projectDates") if isinstance(structured.get("projectDates"), dict) else {}
+    project_deadline = _project_basics_bid_deadline(structured)
 
     summary = {
         "fileCount": len(tender_files),
@@ -5971,12 +6859,13 @@ def parse_tender_documents(
         "warnings": warnings,
         "targetSkill": profile.skill_name,
         "categoryCounts": structured.get("categoryCounts") or {},
-        "projectDates": {
-            "startDate": project_dates.get("startDate") or "",
-            "endDate": project_dates.get("endDate") or "",
-        },
         "appendixCount": len(structured.get("appendices") or []),
     }
+    if profile.key == "business" or project_dates:
+        summary["projectDates"] = {
+            "startDate": project_dates.get("startDate") or "",
+            "endDate": project_dates.get("endDate") or "",
+        }
     if profile.key == "business":
         summary["commitmentLetterCount"] = len(structured.get("commitmentLetters") or [])
 
@@ -5988,6 +6877,16 @@ def parse_tender_documents(
                 "appendixCount": len(structured.get("appendices") or []),
             },
         )
+    _raise_if_parse_cancelled(cancel_check)
+
+    project_update_start = project_dates.get("startDate") or ""
+    project_update_end = project_deadline or project_dates.get("endDate") or ""
+    project_updates = {}
+    if project_update_start:
+        project_updates["startDate"] = project_update_start
+    if project_update_end:
+        project_updates["endDate"] = project_update_end
+        project_updates["deadline"] = project_update_end
 
     return summary, {
         "projectDir": str(project_dir),
@@ -6000,9 +6899,5 @@ def parse_tender_documents(
         "documents": documents,
         "items": items,
         "structured": structured,
-        "projectUpdates": {
-            "startDate": project_dates.get("startDate") or "",
-            "endDate": project_dates.get("endDate") or "",
-            "deadline": project_dates.get("endDate") or "",
-        },
+        "projectUpdates": project_updates,
     }

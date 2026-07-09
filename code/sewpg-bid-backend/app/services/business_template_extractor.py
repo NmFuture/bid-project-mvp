@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.opencode_client import OpencodeClient
 
 
@@ -20,6 +22,11 @@ def backend_root() -> Path:
 
 def btplnav_runner_path() -> Path:
     return backend_root() / "opencode" / "skills" / SKILL_NAME / "scripts" / "run_from_manifest.py"
+
+
+def _raise_if_cancelled(cancel_check: Callable[[], bool] | None) -> None:
+    if cancel_check is not None and cancel_check():
+        raise ParseCancelledError("解析已取消。")
 
 
 def build_business_template_extractor_manifest(
@@ -68,17 +75,46 @@ def _write_manifest(path: Path, manifest: dict[str, Any]) -> None:
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _run_btplnav_command(command: str, manifest_path: Path, *args: object) -> dict[str, Any]:
+def _run_btplnav_command(
+    command: str,
+    manifest_path: Path,
+    *args: object,
+    cancel_check: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
     runner = btplnav_runner_path()
-    completed = subprocess.run(
-        [sys.executable, str(runner), command, str(manifest_path), *(str(arg) for arg in args)],
-        cwd=str(backend_root()),
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
+    command_args = [sys.executable, str(runner), command, str(manifest_path), *(str(arg) for arg in args)]
+    if cancel_check is None:
+        completed = subprocess.run(
+            command_args,
+            cwd=str(backend_root()),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+    else:
+        process = subprocess.Popen(
+            command_args,
+            cwd=str(backend_root()),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        while process.poll() is None:
+            if cancel_check():
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                raise ParseCancelledError("解析已取消。")
+            time.sleep(0.2)
+        stdout, stderr = process.communicate()
+        completed = subprocess.CompletedProcess(command_args, process.returncode, stdout, stderr)
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
         raise RuntimeError(f"btplnav {command} failed: {message}")
@@ -277,7 +313,9 @@ def run_business_template_extractor(
     documents: list[dict[str, Any]],
     project_dir: Path,
     progress_callback=None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, str]:
+    _raise_if_cancelled(cancel_check)
     output_dir = project_dir / "business_template_extraction"
     manifest_path = project_dir / "business_template_extraction_manifest.json"
     existing = _existing_finalized_payload(output_dir, documents)
@@ -296,19 +334,43 @@ def run_business_template_extractor(
         return [], None, "未找到可用于商务模板提取 skill 的 DOCX 招标文件。"
 
     try:
-        _run_btplnav_command("prepare", manifest_path)
+        _raise_if_cancelled(cancel_check)
+        _run_btplnav_command("prepare", manifest_path, cancel_check=cancel_check)
+        _raise_if_cancelled(cancel_check)
+    except ParseCancelledError:
+        raise
     except RuntimeError as exc:
         return [], None, f"商务模板提取 skill prepare 阶段失败：{exc}"
 
     prepare_payload = _load_extraction_payload(output_dir)
     fallback_reason = ""
     opencode_trace: dict[str, Any] | None = None
+
+    def emit_session_ready(details: dict[str, Any]) -> None:
+        if progress_callback:
+            progress_callback(
+                "business_template_extraction_agent",
+                {
+                    **details,
+                    "status": "running",
+                    "parts": [{"type": "text", "text": "opencode session 已建立，正在识别商务模板。"}],
+                },
+            )
+
     try:
+        _raise_if_cancelled(cancel_check)
         prompt = build_business_template_navigation_prompt(project_id=project_id, manifest_path=manifest_path)
-        agent_result = OpencodeClient(timeout_ms=TEMPLATE_EXTRACTION_AGENT_TIMEOUT_MS).extract_business_templates_with_trace(prompt)
+        agent_result = OpencodeClient(timeout_ms=TEMPLATE_EXTRACTION_AGENT_TIMEOUT_MS).extract_business_templates_with_trace(
+            prompt,
+            session_ready_callback=emit_session_ready,
+            cancel_check=cancel_check,
+        )
+        _raise_if_cancelled(cancel_check)
         opencode_trace = agent_result.get("opencodeOutput") if isinstance(agent_result.get("opencodeOutput"), dict) else None
         if opencode_trace and progress_callback:
             progress_callback("business_template_extraction_agent", opencode_trace)
+    except ParseCancelledError:
+        raise
     except Exception as exc:
         fallback_reason = str(exc)
         trace = _trace_from_exception(exc)
@@ -316,11 +378,16 @@ def run_business_template_extractor(
             progress_callback("business_template_extraction_agent", trace)
         opencode_trace = trace
 
+    _raise_if_cancelled(cancel_check)
     payload = _load_extraction_payload(output_dir)
     if payload is None:
         try:
-            _run_btplnav_command("finalize", manifest_path)
+            _raise_if_cancelled(cancel_check)
+            _run_btplnav_command("finalize", manifest_path, cancel_check=cancel_check)
+            _raise_if_cancelled(cancel_check)
             payload = _load_extraction_payload(output_dir)
+        except ParseCancelledError:
+            raise
         except RuntimeError as exc:
             return [], prepare_payload, f"商务模板提取 skill finalize 阶段失败：{exc}"
     if payload is None:

@@ -234,7 +234,7 @@ class BusinessTemplateExtractorAgenticTests(unittest.TestCase):
             build_agentic_template_docx(source)
             output_dir = project_dir / "business_template_extraction"
 
-            def fake_agent(_client, prompt: str):  # type: ignore[no-untyped-def]
+            def fake_agent(_client, prompt: str, **_kwargs):  # type: ignore[no-untyped-def]
                 self.assertIn("btplnav finalize", prompt)
                 output_dir.mkdir(parents=True, exist_ok=True)
                 (output_dir / "business_template_extraction.json").write_text(

@@ -105,6 +105,94 @@ def test_convert_docling_output_to_document_nav_reads_pages_texts_tables_and_pic
     assert {item["sourceEngine"] for item in nav["evidence"]} == {"docling"}
 
 
+def test_convert_docling_output_to_document_nav_preserves_docling_table_cell_spans(tmp_path) -> None:
+    output_dir = tmp_path / "docling"
+    output_dir.mkdir()
+    (output_dir / "docling_document.json").write_text(
+        json.dumps(
+            {
+                "pages": {"1": {"size": {"width": 595, "height": 842}}},
+                "texts": [],
+                "tables": [
+                    {
+                        "caption_text": "附表A.1 投标机型总方案信息表",
+                        "prov": [{"page_no": 1, "bbox": {"l": 20, "t": 100, "r": 500, "b": 220}}],
+                        "data": {
+                            "table_cells": [
+                                {
+                                    "start_row_offset_idx": 0,
+                                    "end_row_offset_idx": 1,
+                                    "start_col_offset_idx": 0,
+                                    "end_col_offset_idx": 1,
+                                    "text": "编号",
+                                },
+                                {
+                                    "start_row_offset_idx": 0,
+                                    "end_row_offset_idx": 1,
+                                    "start_col_offset_idx": 1,
+                                    "end_col_offset_idx": 3,
+                                    "text": "项目",
+                                },
+                                {
+                                    "start_row_offset_idx": 1,
+                                    "end_row_offset_idx": 3,
+                                    "start_col_offset_idx": 0,
+                                    "end_col_offset_idx": 1,
+                                    "text": "12",
+                                },
+                                {
+                                    "start_row_offset_idx": 1,
+                                    "end_row_offset_idx": 3,
+                                    "start_col_offset_idx": 1,
+                                    "end_col_offset_idx": 2,
+                                    "text": "塔筒重量（t）",
+                                },
+                                {
+                                    "start_row_offset_idx": 1,
+                                    "end_row_offset_idx": 2,
+                                    "start_col_offset_idx": 2,
+                                    "end_col_offset_idx": 3,
+                                    "text": "TG1",
+                                },
+                                {
+                                    "start_row_offset_idx": 2,
+                                    "end_row_offset_idx": 3,
+                                    "start_col_offset_idx": 2,
+                                    "end_col_offset_idx": 3,
+                                    "text": "TG2",
+                                },
+                            ]
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    nav = convert_docling_output_to_document_nav(
+        document_id="DOC-1",
+        source_path=tmp_path / "source.pdf",
+        docling_output_dir=output_dir,
+    )
+
+    table = nav["tables"][0]
+    assert table["rows"] == [["编号", "项目", ""], ["12", "塔筒重量（t）", "TG1"], ["", "", "TG2"]]
+    assert table["cells"][1] == {
+        "rowStart": 0,
+        "rowEnd": 1,
+        "colStart": 1,
+        "colEnd": 3,
+        "rowSpan": 1,
+        "colSpan": 2,
+        "text": "项目",
+        "bbox": [],
+    }
+    assert table["cells"][2]["rowSpan"] == 2
+    assert table["cells"][3]["rowSpan"] == 2
+
+
 def test_convert_docling_output_to_document_nav_keeps_picture_without_exported_image_uri(tmp_path) -> None:
     output_dir = tmp_path / "docling"
     output_dir.mkdir()

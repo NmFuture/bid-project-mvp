@@ -8,7 +8,7 @@ from typing import Any
 from .paths import submission_path
 
 
-TARGET_KEYS = {"technicalInterpretation"}
+TARGET_KEYS = {"projectBasics", "technicalInterpretation"}
 
 
 def _empty() -> dict[str, Any]:

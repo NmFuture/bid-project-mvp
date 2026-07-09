@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -393,6 +394,42 @@ class ParsePipelineTests(unittest.TestCase):
         self.client.close()
         self.temp_dir.cleanup()
 
+    def test_long_running_parse_step_emits_progress_heartbeats_until_done(self) -> None:
+        heartbeats = []
+
+        def slow_step() -> str:
+            time.sleep(0.05)
+            return "done"
+
+        result = parsing_service._run_with_progress_heartbeat(
+            slow_step,
+            heartbeat=lambda metadata: heartbeats.append(metadata),
+            interval_seconds=0.01,
+        )
+
+        self.assertEqual(result, "done")
+        self.assertGreaterEqual(len(heartbeats), 1)
+        self.assertTrue(heartbeats[0]["heartbeat"])
+        self.assertEqual(heartbeats[0]["heartbeatIndex"], 1)
+        self.assertIn("elapsedSeconds", heartbeats[0])
+
+    def test_long_running_parse_step_checks_cancel_before_heartbeat(self) -> None:
+        heartbeats = []
+
+        def slow_step() -> str:
+            time.sleep(0.05)
+            return "done"
+
+        with self.assertRaises(parsing_service.ParseCancelledError):
+            parsing_service._run_with_progress_heartbeat(
+                slow_step,
+                heartbeat=lambda metadata: heartbeats.append(metadata),
+                interval_seconds=0.01,
+                cancel_check=lambda: True,
+            )
+
+        self.assertEqual(heartbeats, [])
+
     def create_project(self) -> str:
         response = self.client.post(
             "/api/technical/projects",
@@ -543,6 +580,7 @@ class ParsePipelineTests(unittest.TestCase):
         project_id = self.create_business_project()
         calls: list[str] = []
         seen_manifest: dict[str, object] = {}
+        seen_cancel_check: dict[str, bool] = {}
 
         def fake_section_tree(documents: list[dict], project_dir: Path):
             calls.append("section_tree")
@@ -570,8 +608,16 @@ class ParsePipelineTests(unittest.TestCase):
             tree_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             return tree_path, payload
 
-        def fake_template_extractor(*, project_id: str, documents: list[dict], project_dir: Path, progress_callback=None):
+        def fake_template_extractor(
+            *,
+            project_id: str,
+            documents: list[dict],
+            project_dir: Path,
+            progress_callback=None,
+            cancel_check,
+        ):
             calls.append("template")
+            seen_cancel_check["callable"] = callable(cancel_check)
             output_dir = project_dir / "business_template_extraction"
             template_dir = output_dir / "templates"
             template_dir.mkdir(parents=True, exist_ok=True)
@@ -658,6 +704,7 @@ class ParsePipelineTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(calls, ["section_tree", "template", "structured"])
+        self.assertTrue(seen_cancel_check["callable"])
         extraction_path = Path(str(seen_manifest.get("businessTemplateExtractionPath") or ""))
         self.assertTrue(extraction_path.is_file())
         self.assertEqual(seen_manifest.get("businessTemplateExtractionSummary"), {"templateCount": 1})
@@ -902,12 +949,40 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertFalse(quality["fallbackUsed"])
         self.assertEqual(quality["ocrAppliedPages"], [1])
 
+    def test_parse_tender_documents_stops_when_cancel_requested_before_extracting(self) -> None:
+        project_id = self.create_project()
+        tender_path = settings.uploads_dir / project_id / "cancel-source.md"
+        tender_path.parent.mkdir(parents=True, exist_ok=True)
+        tender_path.write_text("取消测试文件", encoding="utf-8")
+
+        with self.assertRaisesRegex(RuntimeError, "解析已取消"):
+            parsing_service.parse_tender_documents(
+                project_id,
+                [
+                    {
+                        "id": "DOC-1",
+                        "name": "cancel-source.md",
+                        "path": str(tender_path),
+                        "content_type": "text/markdown",
+                    }
+                ],
+                bid_type="技术标",
+                cancel_check=lambda: True,
+            )
+
     def test_business_section_tree_is_ready_before_structured_parser(self) -> None:
         project_id = self.create_business_project()
         calls: list[str] = []
         seen_manifest: dict[str, object] = {}
 
-        def fake_template_extractor(*, project_id: str, documents: list[dict], project_dir: Path, progress_callback=None):
+        def fake_template_extractor(
+            *,
+            project_id: str,
+            documents: list[dict],
+            project_dir: Path,
+            progress_callback=None,
+            cancel_check=None,
+        ):
             calls.append("template")
             return [], {"schemaVersion": "bid-business-template-extractor-v1", "summary": {"templateCount": 0}}, ""
 
@@ -979,7 +1054,14 @@ class ParsePipelineTests(unittest.TestCase):
         project_id = self.create_business_project()
         seen_tree: dict[str, object] = {}
 
-        def fake_template_extractor(*, project_id: str, documents: list[dict], project_dir: Path, progress_callback=None):
+        def fake_template_extractor(
+            *,
+            project_id: str,
+            documents: list[dict],
+            project_dir: Path,
+            progress_callback=None,
+            cancel_check=None,
+        ):
             return [], {"schemaVersion": "bid-business-template-extractor-v1", "summary": {"templateCount": 0}}, ""
 
         def fake_structured_parser(skill_manifest_path: Path, **kwargs):
@@ -1042,7 +1124,14 @@ class ParsePipelineTests(unittest.TestCase):
         project_id = self.create_business_project()
         template_docx = settings.parsed_dir / project_id / "business_template_extraction" / "templates" / "TPL-0001.docx"
 
-        def fake_template_extractor(*, project_id: str, documents: list[dict], project_dir: Path, progress_callback=None):
+        def fake_template_extractor(
+            *,
+            project_id: str,
+            documents: list[dict],
+            project_dir: Path,
+            progress_callback=None,
+            cancel_check=None,
+        ):
             template_docx.parent.mkdir(parents=True, exist_ok=True)
             Document().save(str(template_docx))
             payload = {
@@ -1310,6 +1399,218 @@ class ParsePipelineTests(unittest.TestCase):
         structured = response.json()["structured"]
         self.assertEqual(structured["fieldGroups"], {})
         self.assertEqual(structured["projectDates"], {})
+
+    def test_technical_skill_result_does_not_backfill_project_basics_from_local_parser(self) -> None:
+        project_id = self.create_project()
+        tender = "\n".join(
+            [
+                "华能蒙东新能源公司赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目区）",
+                "风力发电机组（不含塔架）及附属设备采购",
+                "招 标 文 件",
+                "招标编号：HNZB2025-12-1-382-01",
+                "招标人：华能内蒙古东部能源有限公司",
+                "项目单位：华能翁牛特旗新能源有限公司",
+                "招标代理机构：中国华能集团有限公司北京睿采数动科技分公司",
+                "投标文件递交截止时间：2026年01月26日15时00分",
+                "本项目招标范围为整套风力发电机组及塔筒内所有必要设备。",
+            ]
+        ).encode("utf-8")
+
+        def fake_run_parse_skill(_skill_manifest_path: Path, **kwargs):
+            skill_result = json.loads(json.dumps(kwargs["local_result"], ensure_ascii=False))
+            project_basics = skill_result["structured"].setdefault("fieldGroups", {}).setdefault("projectBasics", [])
+            for row in project_basics:
+                row["value"] = ""
+                row["status"] = "missing"
+                row["sourceFile"] = ""
+                row["sourceDocumentId"] = ""
+                row["section"] = ""
+                row["evidence"] = ""
+                row["evidenceLocation"] = ""
+            skill_result["structured"].pop("projectDates", None)
+            skill_result["structured"]["projectFactFields"] = project_basics
+            skill_result["structured"]["workflow"] = {
+                "stage": "finalized",
+                "mode": "opencode-agentic-navigation",
+                "submittedTargetCount": 2,
+                "missingTargets": [],
+                "validationErrors": [],
+            }
+            return skill_result, ""
+
+        with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+            "app.services.parsing._run_parse_skill",
+            side_effect=fake_run_parse_skill,
+        ):
+            response = self.client.post(
+                self.parse_results_url(project_id, "/upload-and-run"),
+                files=[("tenderFiles", ("招标文件-技术规范.md", tender, "text/markdown"))],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        structured = response.json()["structured"]
+        project_basics = structured["fieldGroups"]["projectBasics"]
+        self.assertEqual(field_by_key(project_basics, "projectName")["value"], "")
+        self.assertEqual(field_by_key(project_basics, "tenderNo")["value"], "")
+        self.assertEqual(field_by_key(project_basics, "projectUnit")["value"], "")
+        self.assertEqual(field_by_key(project_basics, "tenderer")["value"], "")
+        self.assertEqual(field_by_key(project_basics, "tenderAgency")["value"], "")
+        self.assertEqual(field_by_key(project_basics, "bidDeadline")["value"], "")
+        self.assertNotIn("projectDates", structured)
+        self.assertEqual(structured["projectFactFields"], project_basics)
+        self.assertNotIn("localProjectBasicsMerged", structured["workflow"])
+
+    def test_technical_skill_result_updates_project_deadline_from_project_basics_without_project_dates(self) -> None:
+        project_id = self.create_project()
+        tender = "\n".join(
+            [
+                "都匀市盛黔风电场风力发电机组及附属设备采购项目",
+                "招标编号：PC-0307-26J1-FG0002",
+                "招标人：都匀盛黔新能源有限公司",
+                "投标文件递交截止时间：2026年05月06日10时00分",
+                "本项目招标范围为整套风力发电机组及塔筒内所有必要设备。",
+            ]
+        ).encode("utf-8")
+
+        def fake_run_parse_skill(_skill_manifest_path: Path, **kwargs):
+            skill_result = json.loads(json.dumps(kwargs["local_result"], ensure_ascii=False))
+            project_basics = [
+                {"key": "projectName", "fieldKey": "projectName", "label": "项目名称", "value": "都匀市盛黔风电场风力发电机组及附属设备采购项目"},
+                {"key": "tenderNo", "fieldKey": "tenderNo", "label": "招标编号", "value": "PC-0307-26J1-FG0002"},
+                {"key": "projectUnit", "fieldKey": "projectUnit", "label": "项目单位", "value": ""},
+                {"key": "tenderer", "fieldKey": "tenderer", "label": "招标人", "value": "都匀盛黔新能源有限公司"},
+                {"key": "tenderAgency", "fieldKey": "tenderAgency", "label": "招标代理机构", "value": ""},
+                {"key": "bidDeadline", "fieldKey": "bidDeadline", "label": "递交截止时间", "status": "found", "value": "2026-05-06 10:00"},
+            ]
+            structured = skill_result.setdefault("structured", {})
+            structured.setdefault("fieldGroups", {})["projectBasics"] = project_basics
+            structured.pop("projectDates", None)
+            structured["projectFactFields"] = project_basics
+            structured["workflow"] = {
+                "stage": "finalized",
+                "mode": "opencode-agentic-navigation",
+                "submittedTargetCount": 2,
+                "missingTargets": [],
+                "validationErrors": [],
+            }
+            return skill_result, ""
+
+        with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+            "app.services.parsing._run_parse_skill",
+            side_effect=fake_run_parse_skill,
+        ):
+            response = self.client.post(
+                self.parse_results_url(project_id, "/upload-and-run"),
+                files=[("tenderFiles", ("招标文件-技术规范.md", tender, "text/markdown"))],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        structured = payload["structured"]
+        project_basics = structured["fieldGroups"]["projectBasics"]
+        self.assertEqual(field_by_key(project_basics, "bidDeadline")["value"], "2026-05-06 10:00")
+        self.assertNotIn("projectDates", structured)
+        self.assertNotIn("projectDates", payload["summary"])
+
+        project = store._require(project_id)
+        self.assertEqual(project["endDate"], "2026-05-06 10:00")
+        self.assertEqual(project["deadline"], "2026-05-06 10:00")
+
+    def test_technical_parse_results_preserves_agentic_project_basics_without_text_repair(self) -> None:
+        project_id = self.create_project()
+        parse_dir = settings.parsed_dir / project_id
+        parse_dir.mkdir(parents=True, exist_ok=True)
+        text_path = parse_dir / "TEN-1.txt"
+        text_path.write_text(
+            "\n".join(
+                [
+                    "华能蒙东新能源公司赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目区）",
+                    "风力发电机组（不含塔架）及附属设备采购",
+                    "招 标 文 件",
+                    "招标编号：HNZB2025-12-1-382-01",
+                    "招标人",
+                    "：",
+                    "华能内蒙古东部能源有限公司",
+                    "管理单位",
+                    "：",
+                    "华能翁牛特旗新能源有限公司",
+                    "招标代理机构",
+                    "：",
+                    "中国华能集团有限公司北京睿采数动科技分公司",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        structured_path = parse_dir / "s1_structured_result.json"
+        empty_basics = [
+            {"key": key, "label": label, "value": "", "status": "missing", "fieldKey": key}
+            for key, label in (
+                ("projectName", "项目名称"),
+                ("tenderNo", "招标编号"),
+                ("projectUnit", "项目单位"),
+                ("tenderer", "招标人"),
+                ("tenderAgency", "招标代理机构"),
+                ("bidDeadline", "递交截止时间"),
+            )
+        ]
+        structured_path.write_text(
+            json.dumps(
+                {
+                    "items": [],
+                    "structured": {
+                        "schemaVersion": "bid-tender-structured-v1",
+                        "workflow": {"stage": "finalized", "mode": "opencode-agentic-navigation"},
+                        "fieldGroups": {"projectBasics": empty_basics},
+                        "projectDates": {"startDate": "", "endDate": ""},
+                        "projectFactFields": empty_basics,
+                        "technicalInterpretation": {"items": [], "summary": {"total": 0}},
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        complete_parse_for_tests(
+            project_id,
+            [{"id": "TEN-1", "name": "招标文件-技术规范.md", "size_label": "1 KB"}],
+            [],
+            summary={"fileCount": 1, "extractedCount": 0, "textLength": 0, "warnings": []},
+            parse_storage={
+                "structuredResultPath": str(structured_path),
+                "documents": [
+                    {
+                        "id": "TEN-1",
+                        "name": "招标文件-技术规范.md",
+                        "textPath": str(text_path),
+                    }
+                ],
+                "items": [],
+                "structured": {
+                    "schemaVersion": "bid-tender-structured-v1",
+                    "workflow": {"stage": "finalized", "mode": "opencode-agentic-navigation"},
+                    "fieldGroups": {"projectBasics": empty_basics},
+                    "projectDates": {"startDate": "", "endDate": ""},
+                    "projectFactFields": empty_basics,
+                    "technicalInterpretation": {"items": [], "summary": {"total": 0}},
+                },
+            },
+        )
+
+        response = self.client.get(self.parse_results_url(project_id))
+
+        self.assertEqual(response.status_code, 200)
+        structured = response.json()["structured"]
+        project_basics = structured["fieldGroups"]["projectBasics"]
+        self.assertEqual(field_by_key(project_basics, "projectName")["value"], "")
+        self.assertEqual(field_by_key(project_basics, "tenderer")["value"], "")
+        self.assertEqual(field_by_key(project_basics, "projectUnit")["value"], "")
+        self.assertNotIn("localProjectBasicsMerged", structured["workflow"])
+        persisted = json.loads(structured_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            field_by_key(persisted["structured"]["fieldGroups"]["projectBasics"], "tenderAgency")["value"],
+            "",
+        )
 
     def test_business_skill_failure_fails_parse_without_local_fallback_result(self) -> None:
         project_id = self.create_business_project()
@@ -1925,9 +2226,12 @@ class ParsePipelineTests(unittest.TestCase):
                 self.assertTrue(row["evidenceLocation"])
 
         field_groups = structured["fieldGroups"]
-        self.assertEqual(field_by_key(field_groups["projectBasics"], "projectName")["value"], "华能甘肃100MW风电项目")
-        self.assertEqual(field_by_key(field_groups["projectBasics"], "tenderNo")["value"], "HN-2026-001")
-        self.assertEqual(field_by_key(field_groups["projectBasics"], "deliveryPeriod")["value"], "2026年10月1日至2027年3月31日")
+        project_basics = field_groups["projectBasics"]
+        self.assertEqual(
+            [field["key"] for field in project_basics],
+            ["projectName", "tenderNo", "projectUnit", "tenderer", "tenderAgency", "bidDeadline"],
+        )
+        self.assertTrue(all(field["value"] == "" for field in project_basics))
         self.assertEqual(field_by_key(field_groups["turbineCoreParameters"], "singleCapacity")["value"], "6.25MW")
         self.assertEqual(field_by_key(field_groups["turbineCoreParameters"], "bladeTipClearance")["value"], "20m")
         self.assertIn("认证功率曲线", field_by_key(field_groups["performanceGuarantees"], "powerCurve")["value"])
@@ -2008,10 +2312,12 @@ class ParsePipelineTests(unittest.TestCase):
         payload = json.loads(output_path.read_text(encoding="utf-8"))
         self.assertEqual(len(payload["structured"]["scoringCriteria"]["technical"]), 2)
         self.assertEqual(len(payload["structured"]["scoringCriteria"]["business"]), 2)
+        project_basics = payload["structured"]["fieldGroups"]["projectBasics"]
         self.assertEqual(
-            field_by_key(payload["structured"]["fieldGroups"]["projectBasics"], "projectName")["value"],
-            "华能甘肃100MW风电项目",
+            [field["key"] for field in project_basics],
+            ["projectName", "tenderNo", "projectUnit", "tenderer", "tenderAgency", "bidDeadline"],
         )
+        self.assertTrue(all(field["value"] == "" for field in project_basics))
 
     def test_parse_result_exposes_fixed_fields_presence_and_appendix_docx_assets(self) -> None:
         project_id = self.create_project()
@@ -2064,14 +2370,11 @@ class ParsePipelineTests(unittest.TestCase):
         field_groups = structured["fieldGroups"]
 
         project_basics = field_groups["projectBasics"]
-        self.assertEqual(field_by_key(project_basics, "projectName")["value"], "华能甘肃100MW风电项目")
-        self.assertEqual(field_by_key(project_basics, "tenderNo")["value"], "HN-2026-001")
-        self.assertEqual(field_by_key(project_basics, "tenderer")["value"], "华能集团")
-        self.assertEqual(field_by_key(project_basics, "managementUnit")["value"], "华能甘肃公司")
-        self.assertEqual(field_by_key(project_basics, "bidSectionScale")["value"], "100MW")
-        self.assertEqual(field_by_key(project_basics, "deliveryPeriod")["value"], "2026年10月1日至2027年3月31日")
-        self.assertEqual(field_by_key(project_basics, "warrantyPeriod")["value"], "5年")
-        self.assertIn("全部技术规范", field_by_key(project_basics, "technicalCommitment")["value"])
+        self.assertEqual(
+            [field["key"] for field in project_basics],
+            ["projectName", "tenderNo", "projectUnit", "tenderer", "tenderAgency", "bidDeadline"],
+        )
+        self.assertTrue(all(field["value"] == "" for field in project_basics))
 
         turbine = field_groups["turbineCoreParameters"]
         self.assertEqual(field_by_key(turbine, "singleCapacity")["value"], "6.25MW")
@@ -2145,6 +2448,188 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(appendix_doc.tables[0].cell(0, 1).text, "设备名称")
         self.assertEqual(appendix_doc.tables[0].cell(1, 2).text, "")
 
+    def test_parse_pdf_text_appendix_generates_workspace_docx(self) -> None:
+        project_id = self.create_project()
+        tender_text = "\n".join(
+            [
+                "招标文件技术规范",
+                "附表G.3.1 关键设计方法 ..................................................206",
+                "附表G.2.4 场址投标机组疲劳载荷与认证机组疲劳载荷对比（m=10）206",
+                "附表G.5.2 招标项目场址机组等效疲劳载荷与认证机组等效疲劳载荷对",
+                "比 ................................................................................................................. 209",
+                "附表G.3.2 塔筒极限强度设计安全余量",
+                "序号 截面位置 安全余量 投标响应",
+                "1 塔底 不低于5% ",
+                "2 门洞 不低于5% ",
+                "附表G.3.3 塔筒屈曲稳定性安全余量",
+                "序号 截面位置 安全余量 投标响应",
+                "1 塔底 不低于5% ",
+            ]
+        )
+
+        def fake_extract_pdf_text(_path: Path):
+            return tender_text, {"pageCount": 3, "warnings": [], "requiresOcr": False}
+
+        with patch("app.services.parsing.settings.business_pdf_parse_engine", "lightweight", create=True), patch(
+            "app.services.parsing.extract_pdf_text",
+            side_effect=fake_extract_pdf_text,
+        ):
+            response = self.client.post(
+                self.parse_results_url(project_id, "/upload-and-run"),
+                files=[("tenderFiles", ("招标文件-技术规范.pdf", b"%PDF-1.4\n", "application/pdf"))],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        self.assertEqual([item["title"] for item in appendices], ["附表G.3.2 塔筒极限强度设计安全余量", "附表G.3.3 塔筒屈曲稳定性安全余量"])
+        self.assertEqual([item["rowCount"] for item in appendices], [3, 2])
+        appendix_doc = Document(appendices[0]["docxPath"])
+        self.assertEqual(len(appendix_doc.tables), 1)
+        self.assertEqual(appendix_doc.tables[0].cell(0, 1).text, "截面位置")
+        self.assertEqual(appendix_doc.tables[0].cell(1, 3).text, "")
+
+    def test_parse_pdf_document_nav_appendix_preserves_table_blocks(self) -> None:
+        project_id = self.create_project()
+        nav_payload = {
+            "schemaVersion": "business-document-nav-v1",
+            "sourceEngine": "docling",
+            "documents": [{"id": "DOC-1", "sourcePath": "technical.pdf"}],
+            "pages": [{"pageNo": 1, "textDensity": 0.8}],
+            "blocks": [
+                {"id": "DOC-1:B000001", "type": "paragraph", "text": "招标文件技术规范", "pageNo": 1},
+                {"id": "DOC-1:B000002", "type": "heading", "text": "附表A.1 投标机型总方案信息表", "pageNo": 1, "bbox": [50, 80, 500, 110]},
+                {"id": "DOC-1:B000003", "type": "paragraph", "text": "投标人应按下表填写。", "pageNo": 1, "bbox": [50, 120, 500, 145]},
+                {"id": "DOC-1:B000004", "type": "table", "text": "", "tableId": "T1", "pageNo": 1, "bbox": [50, 150, 540, 260]},
+                {"id": "DOC-1:B000005", "type": "heading", "text": "附表A.2 机型配置品牌表", "pageNo": 2, "bbox": [50, 80, 500, 110]},
+                {"id": "DOC-1:B000006", "type": "table", "text": "", "tableId": "T2", "pageNo": 2, "bbox": [50, 150, 540, 230]},
+            ],
+            "tables": [
+                {
+                    "id": "T1",
+                    "rows": [
+                        ["编号", "项目", "", "备注"],
+                        ["12", "塔筒重量（t）", "TG1", "说明"],
+                        ["", "", "TG2", ""],
+                    ],
+                    "cells": [
+                        {"rowStart": 0, "rowEnd": 1, "colStart": 0, "colEnd": 1, "rowSpan": 1, "colSpan": 1, "text": "编号", "bbox": []},
+                        {"rowStart": 0, "rowEnd": 1, "colStart": 1, "colEnd": 3, "rowSpan": 1, "colSpan": 2, "text": "项目", "bbox": []},
+                        {"rowStart": 0, "rowEnd": 1, "colStart": 3, "colEnd": 4, "rowSpan": 1, "colSpan": 1, "text": "备注", "bbox": []},
+                        {"rowStart": 1, "rowEnd": 3, "colStart": 0, "colEnd": 1, "rowSpan": 2, "colSpan": 1, "text": "12", "bbox": []},
+                        {"rowStart": 1, "rowEnd": 3, "colStart": 1, "colEnd": 2, "rowSpan": 2, "colSpan": 1, "text": "塔筒重量（t）", "bbox": []},
+                        {"rowStart": 1, "rowEnd": 2, "colStart": 2, "colEnd": 3, "rowSpan": 1, "colSpan": 1, "text": "TG1", "bbox": []},
+                        {"rowStart": 1, "rowEnd": 3, "colStart": 3, "colEnd": 4, "rowSpan": 2, "colSpan": 1, "text": "说明", "bbox": []},
+                        {"rowStart": 2, "rowEnd": 3, "colStart": 2, "colEnd": 3, "rowSpan": 1, "colSpan": 1, "text": "TG2", "bbox": []},
+                    ],
+                    "sourceEngine": "docling",
+                },
+                {
+                    "id": "T2",
+                    "rows": [
+                        ["序号", "部件", "品牌"],
+                        ["1", "叶片", ""],
+                    ],
+                    "sourceEngine": "docling",
+                },
+            ],
+            "images": [],
+            "evidence": [],
+            "quality": {"engine": "docling", "status": "completed", "fallbackUsed": False},
+        }
+
+        def fake_parse_pdf(self, *, project_id: str, document: dict, output_dir: Path):
+            nav_path = output_dir / "DOC-1_document_nav.json"
+            quality_path = output_dir / "document_parse" / "docling" / "DOC-1" / "parse_quality.json"
+            quality_path.parent.mkdir(parents=True, exist_ok=True)
+            nav_path.write_text(json.dumps(nav_payload, ensure_ascii=False), encoding="utf-8")
+            quality_path.write_text(
+                json.dumps({"engine": "docling", "status": "completed", "fallbackUsed": False}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return {
+                "documentParseEngine": "docling",
+                "status": "completed",
+                "documentNavPath": str(nav_path),
+                "parseQualityPath": str(quality_path),
+            }
+
+        with patch("app.services.parsing.settings.business_pdf_parse_engine", "docling", create=True), patch(
+            "app.services.parsing.DoclingParseEngine.parse_pdf",
+            new=fake_parse_pdf,
+        ), patch(
+            "app.services.parsing.extract_pdf_text",
+            return_value=("", {"pageCount": 2, "warnings": [], "requiresOcr": False}),
+        ):
+            response = self.client.post(
+                self.parse_results_url(project_id, "/upload-and-run"),
+                files=[("tenderFiles", ("招标文件-技术规范.pdf", b"%PDF-1.4\n", "application/pdf"))],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        appendices = response.json()["structured"]["appendices"]
+        self.assertEqual(
+            [item["title"] for item in appendices],
+            ["附表A.1 投标机型总方案信息表", "附表A.2 机型配置品牌表"],
+        )
+        self.assertEqual([item["extractionMode"] for item in appendices], ["pdf_document_nav_slice", "pdf_document_nav_slice"])
+        self.assertEqual([item["rowCount"] for item in appendices], [3, 2])
+        self.assertEqual(appendices[0]["sourceEngine"], "docling")
+        self.assertEqual(appendices[0]["sourceStart"], "P1")
+        self.assertEqual(appendices[0]["contentBlocks"][1]["cells"][1]["colSpan"], 2)
+        self.assertEqual(appendices[0]["contentBlocks"][1]["cells"][3]["rowSpan"], 2)
+        appendix_doc = Document(appendices[0]["docxPath"])
+        self.assertEqual(len(appendix_doc.tables), 1)
+        self.assertEqual(appendix_doc.tables[0].cell(0, 1).text, "项目")
+        self.assertEqual(appendix_doc.tables[0].cell(1, 1).text, "塔筒重量（t）")
+        with zipfile.ZipFile(appendices[0]["docxPath"]) as docx_zip:
+            document_xml = docx_zip.read("word/document.xml").decode("utf-8")
+        self.assertIn("gridSpan", document_xml)
+        self.assertIn("vMerge", document_xml)
+
+    def test_technical_pdf_docling_failure_does_not_use_local_table_nav_fallback(self) -> None:
+        project_id = self.create_project()
+        pdf_path = settings.uploads_dir / project_id / "technical.pdf"
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        pdf_path.write_bytes(b"%PDF-1.4\n")
+
+        def fake_run_docling_conversion(_pdf_path: Path, _output_dir: Path):
+            raise RuntimeError("rapidocr model missing")
+
+        with patch("app.services.parsing.settings.s1_parse_opencode_enabled", False), patch(
+            "app.services.parsing.settings.business_pdf_parse_engine",
+            "docling",
+            create=True,
+        ), patch(
+            "app.services.parsing.settings.business_pdf_engine_fallback",
+            "none",
+            create=True,
+        ), patch(
+            "app.services.docling_engine.run_docling_conversion",
+            side_effect=fake_run_docling_conversion,
+        ), patch(
+            "app.services.docling_engine.run_docling_local_text_layer_conversion",
+            side_effect=AssertionError("technical PDF must not use local-text-layer fallback"),
+        ), patch(
+            "app.services.parsing.extract_pdf_text",
+            side_effect=AssertionError("technical PDF must not use lightweight text fallback"),
+        ):
+            _summary, storage = parsing_service.parse_tender_documents(
+                project_id,
+                [
+                    {
+                        "id": "DOC-1",
+                        "name": "招标文件-技术规范.pdf",
+                        "path": str(pdf_path),
+                        "content_type": "application/pdf",
+                    }
+                ],
+                bid_type="技术标",
+            )
+
+        self.assertEqual(storage["structured"]["appendices"], [])
+        self.assertEqual(storage["documents"][0]["documentParseStatus"], "failed")
+        self.assertIn("rapidocr model missing", storage["documents"][0]["fallbackReason"])
+
     def test_parse_docx_appendix_preserves_cell_merges_via_source_slicing(self) -> None:
         """Ensure the appendix docx generated from a docx-source RFP keeps the
         original <w:vMerge>/<w:gridSpan> structures rather than being rebuilt
@@ -2208,6 +2693,90 @@ class ParsePipelineTests(unittest.TestCase):
             ["附表D.1 标准及风电场空气密度功率曲线"],
             "only the appendix heading paragraph should remain in body; got %r" % (non_empty_paragraphs,),
         )
+
+    def test_technical_docx_plain_tables_skip_source_slice_but_merged_tables_keep_it(self) -> None:
+        plain_path = settings.uploads_dir / "plain-appendix.docx"
+        merged_path = settings.uploads_dir / "merged-appendix.docx"
+        plain_path.write_bytes(
+            build_docx_blocks_bytes(
+                "附表A.1 投标机型总方案信息表",
+                [
+                    ["序号", "项目", "投标响应"],
+                    ["1", "机型总方案", ""],
+                ],
+            )
+        )
+        merged_path.write_bytes(build_appendix_with_merges_docx_bytes())
+
+        captured: list[dict] = []
+
+        def fake_materialize(project_id: str, appendix: dict, *, profile):
+            captured.append(appendix)
+            return dict(appendix)
+
+        with patch("app.services.parsing.materialize_appendix_docx", side_effect=fake_materialize):
+            parsing_service._extract_docx_appendices(
+                "PRJ-SLICE-POLICY",
+                [
+                    {"name": "plain-appendix.docx", "sourcePath": str(plain_path)},
+                    {"name": "merged-appendix.docx", "sourcePath": str(merged_path)},
+                ],
+            )
+
+        self.assertEqual(len(captured), 2)
+        self.assertNotIn("_slice", captured[0])
+        self.assertIn("_slice", captured[1])
+
+    def test_large_docx_slice_stores_document_xml_without_expensive_deflate(self) -> None:
+        source_path = settings.uploads_dir / "large-slice-source.docx"
+        target_path = settings.parsed_dir / "large-slice-target.docx"
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        doc = Document()
+        doc.add_paragraph("附表A.1 大型测试表")
+        table = doc.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "序号"
+        table.cell(0, 1).text = "内容"
+        table.cell(1, 0).text = "1"
+        table.cell(1, 1).text = "大段内容" * 20
+        doc.save(source_path)
+
+        source_state = parsing_service._build_appendix_slice_state(source_path)
+        with patch("app.services.parsing.DOCX_SLICE_STORED_XML_THRESHOLD_BYTES", 1, create=True):
+            sliced = parsing_service._slice_appendix_from_source(
+                source_path,
+                target_path,
+                0,
+                1,
+                source_state=source_state,
+            )
+
+        self.assertTrue(sliced)
+        with zipfile.ZipFile(target_path) as zf:
+            self.assertEqual(zf.getinfo("word/document.xml").compress_type, zipfile.ZIP_STORED)
+
+    def test_large_rebuilt_appendix_table_writes_within_budget(self) -> None:
+        target_path = settings.parsed_dir / "large-rebuilt-appendix-table.docx"
+        rows = [
+            [f"R{row_index}C{column_index} " * 2 for column_index in range(5)]
+            for row_index in range(160)
+        ]
+
+        started_at = time.perf_counter()
+        parsing_service._write_appendix_docx(
+            target_path,
+            "技术附表I 技术条款偏差表",
+            rows,
+            [{"type": "table", "rows": rows}],
+        )
+        elapsed = time.perf_counter() - started_at
+
+        self.assertLess(elapsed, 4.0)
+        doc = Document(str(target_path))
+        self.assertEqual(len(doc.tables), 1)
+        self.assertEqual(len(doc.tables[0].rows), len(rows))
+        self.assertEqual(doc.tables[0].cell(159, 4).text, rows[159][4])
 
     def test_parse_docx_appendix_slicing_handles_large_body_within_budget(self) -> None:
         """Regression guard: a real RFP body can have thousands of paragraphs and
@@ -2414,6 +2983,108 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(preview.status_code, 200)
         self.assertIn(str(workspace_appendix_dir), preview.json()["docxPath"])
         self.assertFalse(temp_project_dir.exists())
+
+    def test_participating_project_reparse_refreshes_workspace_parse_artifacts(self) -> None:
+        project_id = self.create_project()
+
+        def fake_parse_with_appendix(title: str):
+            def fake_parse(project_id_arg, tender_files, *, bid_type, progress_callback=None, cancel_check=None):
+                parse_dir = settings.parsed_dir / project_id_arg
+                parse_dir.mkdir(parents=True, exist_ok=True)
+                combined_path = parse_dir / "combined.txt"
+                manifest_path = parse_dir / "manifest.json"
+                skill_manifest_path = parse_dir / "s1_parse_manifest.json"
+                structured_path = parse_dir / "s1_structured_result.json"
+                rows = [["序号", "项目", "投标响应"], ["1", title, ""]]
+                structured = {
+                    "schemaVersion": "bid-tender-structured-v1",
+                    "projectDates": {"startDate": "", "endDate": ""},
+                    "appendices": [
+                        {
+                            "id": "APPX-0001",
+                            "title": title,
+                            "status": "generated",
+                            "sourceFile": tender_files[0]["name"],
+                            "rows": rows,
+                            "contentBlocks": [{"type": "table", "rows": rows}],
+                            "rowCount": len(rows),
+                            "docxPath": "",
+                            "extractionMode": "pdf_document_nav_slice",
+                        }
+                    ],
+                }
+                combined_path.write_text(title, encoding="utf-8")
+                manifest = {
+                    "documents": [
+                        {
+                            "id": "TEN-1",
+                            "name": tender_files[0]["name"],
+                            "textPath": str(combined_path),
+                            "pageCount": 1,
+                            "textLength": len(title),
+                        }
+                    ]
+                }
+                manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+                skill_manifest_path.write_text(json.dumps({"structuredResultPath": str(structured_path)}), encoding="utf-8")
+                structured_path.write_text(
+                    json.dumps({"items": [], "structured": structured}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                return (
+                    {"fileCount": 1, "extractedCount": 0, "textLength": len(title), "textPreview": title, "warnings": []},
+                    {
+                        "documents": manifest["documents"],
+                        "items": [],
+                        "structured": structured,
+                        "combinedTextPath": str(combined_path),
+                        "manifestPath": str(manifest_path),
+                        "skillManifestPath": str(skill_manifest_path),
+                        "structuredResultPath": str(structured_path),
+                        "projectUpdates": {},
+                    },
+                )
+
+            return fake_parse
+
+        with patch("app.services.bid_parse_service.parse_tender_documents", side_effect=fake_parse_with_appendix("附表1 初版")):
+            first = self.client.post(
+                self.parse_results_url(project_id, "/upload-and-run"),
+                files=[("tenderFiles", ("first.pdf", b"%PDF-1.4\n", "application/pdf"))],
+            )
+        self.assertEqual(first.status_code, 200)
+
+        updated = self.client.put(
+            self.project_url(project_id),
+            json={
+                "name": "参与后重复解析项目",
+                "customerName": "测试业主",
+                "bidType": "技术标",
+                "reviewDecision": "participate",
+            },
+        )
+        self.assertEqual(updated.status_code, 200)
+
+        workspace_parse_result = settings.documents_dir / project_id / "technical-workspace" / "parse" / "parse-result.workspace.json"
+        self.assertTrue(workspace_parse_result.exists())
+        self.assertEqual(
+            json.loads(workspace_parse_result.read_text(encoding="utf-8"))["structured"]["appendices"][0]["title"],
+            "附表1 初版",
+        )
+
+        with patch("app.services.bid_parse_service.parse_tender_documents", side_effect=fake_parse_with_appendix("附表2 重解析新版")):
+            second = self.client.post(
+                self.parse_results_url(project_id, "/upload-and-run"),
+                files=[("tenderFiles", ("second.pdf", b"%PDF-1.4\n", "application/pdf"))],
+            )
+        self.assertEqual(second.status_code, 200)
+
+        refreshed = json.loads(workspace_parse_result.read_text(encoding="utf-8"))
+        appendix = refreshed["structured"]["appendices"][0]
+        self.assertEqual(appendix["title"], "附表2 重解析新版")
+        self.assertEqual(appendix["extractionMode"], "pdf_document_nav_slice")
+        self.assertIn("technical-workspace/appendices/", appendix["workspacePath"])
+        self.assertTrue(Path(appendix["docxPath"]).exists())
 
     def test_business_bid_parse_returns_business_contract_without_technical_groups(self) -> None:
         project_id = self.create_business_project()
@@ -3002,7 +3673,14 @@ class ParsePipelineTests(unittest.TestCase):
         project_id = self.create_business_project()
         template_docx = settings.parsed_dir / project_id / "business_template_extraction" / "templates" / "TPL-0001.docx"
 
-        def fake_template_extractor(*, project_id: str, documents: list[dict], project_dir: Path, progress_callback=None):
+        def fake_template_extractor(
+            *,
+            project_id: str,
+            documents: list[dict],
+            project_dir: Path,
+            progress_callback=None,
+            cancel_check=None,
+        ):
             template_docx.parent.mkdir(parents=True, exist_ok=True)
             Document().save(str(template_docx))
             appendix = {
@@ -4008,7 +4686,7 @@ class ParsePipelineTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        def fake_parse(project_id, tender_files, *, bid_type, progress_callback=None):
+        def fake_parse(project_id, tender_files, *, bid_type, progress_callback=None, cancel_check=None):
             return (
                 {"fileCount": 1, "extractedCount": 0, "textLength": 10, "textPreview": "", "warnings": []},
                 {
@@ -4112,7 +4790,7 @@ class ParsePipelineTests(unittest.TestCase):
         project_id = self.create_project()
         tender = "progress stale streaming closeout test\n".encode("utf-8")
 
-        def fake_parse(project_id, tender_files, *, bid_type, progress_callback=None):
+        def fake_parse(project_id, tender_files, *, bid_type, progress_callback=None, cancel_check=None):
             if progress_callback:
                 progress_callback(
                     "opencode_delta",
@@ -4148,11 +4826,89 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertEqual(progress["opencodeOutput"]["status"], "received")
         self.assertEqual(progress["opencodeOutput"]["sessionId"], "ses-stale")
 
+    def test_cancel_parse_endpoint_marks_progress_and_aborts_opencode_session(self) -> None:
+        project_id = self.create_project()
+        project = store.require_project_for_update(project_id)
+        project["parse_progress"] = {
+            "status": "running",
+            "percentage": 80,
+            "summary": "opencode 正在返回解析输出。",
+            "startedAt": "2026-07-04T09:00:00Z",
+            "completedAt": "",
+            "events": [],
+            "opencodeOutput": {
+                "status": "streaming",
+                "sessionId": "ses_cancel_parse_probe",
+                "parts": [{"type": "text", "text": "s1parse 正在执行"}],
+            },
+        }
+        store.persist_project_state(project)
+
+        with patch(
+            "app.services.bid_parse_service.OpencodeClient.abort_session",
+            return_value=True,
+            create=True,
+        ) as abort_session:
+            response = self.client.post(self.parse_results_url(project_id, "/cancel"))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "cancelled")
+        self.assertTrue(payload["cancelRequested"])
+        self.assertEqual(payload["opencodeOutput"]["status"], "cancelled")
+        self.assertEqual(payload["opencodeAbort"]["sessionId"], "ses_cancel_parse_probe")
+        self.assertTrue(payload["opencodeAbort"]["aborted"])
+        abort_session.assert_called_once_with("ses_cancel_parse_probe")
+
+        progress = self.client.get(self.parse_results_url(project_id, "/progress")).json()
+        self.assertEqual(progress["status"], "cancelled")
+        self.assertTrue(progress["cancelRequested"])
+
+    def test_upload_parse_returns_cancelled_when_cancel_requested_before_completion(self) -> None:
+        project_id = self.create_project()
+        tender = "cancel before complete\n".encode("utf-8")
+
+        def fake_parse(project_id_arg, tender_files, *, bid_type, progress_callback=None, cancel_check=None):
+            project = store.require_project_for_update(project_id_arg)
+            progress = project.get("parse_progress")
+            self.assertIsInstance(progress, dict)
+            progress["status"] = "cancelled"
+            progress["cancelRequested"] = True
+            progress["summary"] = "已请求停止后端解析和 Opencode 任务。"
+            project["parse_progress"] = progress
+            store.persist_project_state(project)
+            if cancel_check:
+                self.assertTrue(cancel_check())
+            return (
+                {"fileCount": 1, "extractedCount": 1, "textLength": 10, "textPreview": "", "warnings": []},
+                {
+                    "documents": [{"name": "tender.md", "pageCount": 1, "textLength": 10}],
+                    "items": [{"id": "REQ-1", "title": "should not be committed"}],
+                    "structured": {
+                        "schemaVersion": "bid-tender-structured-v1",
+                        "appendices": [],
+                    },
+                    "projectUpdates": {},
+                },
+            )
+
+        with patch("app.services.bid_parse_service.parse_tender_documents", side_effect=fake_parse):
+            response = self.client.post(
+                self.parse_results_url(project_id, "/upload-and-run"),
+                files=[("tenderFiles", ("tender.md", tender, "text/markdown"))],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "cancelled")
+        project = store._require(project_id)
+        self.assertNotEqual(project["parse_result"]["status"], "completed")
+        self.assertEqual(project["parse_progress"]["status"], "cancelled")
+
     def test_business_template_extraction_progress_is_visible(self) -> None:
         project_id = self.create_business_project()
         tender = "business template progress test\n".encode("utf-8")
 
-        def fake_parse(project_id, tender_files, *, bid_type, progress_callback=None):
+        def fake_parse(project_id, tender_files, *, bid_type, progress_callback=None, cancel_check=None):
             if progress_callback:
                 progress_callback(
                     "business_template_extraction_started",

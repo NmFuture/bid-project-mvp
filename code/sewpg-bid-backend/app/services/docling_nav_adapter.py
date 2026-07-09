@@ -118,20 +118,45 @@ def _blocks_from_docling_texts(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return blocks
 
 
-def _rows_from_table_cells(cells: list[Any]) -> list[list[str]]:
+def _normalize_table_cells(cells: list[Any]) -> list[dict[str, Any]]:
     normalized_cells = [cell for cell in cells if isinstance(cell, dict)]
+    normalized: list[dict[str, Any]] = []
+    for cell in normalized_cells:
+        try:
+            row_start = int(cell.get("start_row_offset_idx") if cell.get("start_row_offset_idx") is not None else cell.get("rowStart"))
+            row_end = int(cell.get("end_row_offset_idx") if cell.get("end_row_offset_idx") is not None else cell.get("rowEnd"))
+            col_start = int(cell.get("start_col_offset_idx") if cell.get("start_col_offset_idx") is not None else cell.get("colStart"))
+            col_end = int(cell.get("end_col_offset_idx") if cell.get("end_col_offset_idx") is not None else cell.get("colEnd"))
+        except (TypeError, ValueError):
+            continue
+        if row_end <= row_start or col_end <= col_start:
+            continue
+        normalized.append(
+            {
+                "rowStart": row_start,
+                "rowEnd": row_end,
+                "colStart": col_start,
+                "colEnd": col_end,
+                "rowSpan": row_end - row_start,
+                "colSpan": col_end - col_start,
+                "text": str(cell.get("text") or "").strip(),
+                "bbox": _bbox(cell.get("bbox")),
+            }
+        )
+    return normalized
+
+
+def _rows_from_table_cells(cells: list[Any]) -> list[list[str]]:
+    normalized_cells = _normalize_table_cells(cells)
     row_count = 0
     col_count = 0
     for cell in normalized_cells:
-        row_count = max(row_count, int(cell.get("end_row_offset_idx") or 0))
-        col_count = max(col_count, int(cell.get("end_col_offset_idx") or 0))
+        row_count = max(row_count, int(cell.get("rowEnd") or 0))
+        col_count = max(col_count, int(cell.get("colEnd") or 0))
     rows = [["" for _ in range(col_count)] for _ in range(row_count)]
     for cell in normalized_cells:
-        try:
-            row_index = int(cell.get("start_row_offset_idx") or 0)
-            col_index = int(cell.get("start_col_offset_idx") or 0)
-        except (TypeError, ValueError):
-            continue
+        row_index = int(cell.get("rowStart") or 0)
+        col_index = int(cell.get("colStart") or 0)
         if 0 <= row_index < row_count and 0 <= col_index < col_count:
             rows[row_index][col_index] = str(cell.get("text") or "").strip()
     return rows
@@ -146,13 +171,14 @@ def _tables_from_docling(payload: dict[str, Any]) -> tuple[list[dict[str, Any]],
             continue
         table_id = f"DOCLING-T{len(tables) + 1:04d}"
         data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
-        cells = data.get("table_cells") if isinstance(data.get("table_cells"), list) else []
-        rows = _rows_from_table_cells(cells)
+        raw_cells = data.get("table_cells") if isinstance(data.get("table_cells"), list) else []
+        cells = _normalize_table_cells(raw_cells)
+        rows = _rows_from_table_cells(raw_cells)
         title = str(raw.get("caption_text") or raw.get("title") or raw.get("text") or "").strip()
         prov = _first_prov(raw)
         page_no = _page_no(raw)
         bbox = _bbox(prov.get("bbox") or raw.get("bbox"))
-        tables.append({"id": table_id, "pageNo": page_no, "title": title, "rows": rows, "bbox": bbox})
+        tables.append({"id": table_id, "pageNo": page_no, "title": title, "rows": rows, "cells": cells, "bbox": bbox})
         blocks.append({"pageNo": page_no, "type": "table", "text": title or "表格", "bbox": bbox, "tableId": table_id})
     return tables, blocks
 

@@ -9,6 +9,7 @@ from unittest.mock import patch
 from docx import Document
 
 from app.services import business_template_extractor
+from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.business_template_extractor import (
     build_business_template_extractor_manifest,
     convert_extractor_appendices,
@@ -603,7 +604,7 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
                 )
                 return completed()
 
-            def fake_agentic_template_extractor(_client, prompt: str):  # type: ignore[no-untyped-def]
+            def fake_agentic_template_extractor(_client, prompt: str, **_kwargs):  # type: ignore[no-untyped-def]
                 agent_prompts.append(prompt)
                 self.assertIn("btplnav prepare", prompt)
                 self.assertIn("btplnav submit", prompt)
@@ -661,6 +662,176 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
         self.assertEqual(appendices[0]["extractionMode"], "business_template_extractor_skill")
         self.assertFalse((payload or {})["quality"]["scriptFallbackUsed"])
         self.assertEqual((payload or {})["opencodeOutput"]["completionSource"], "btplnav-finalize")
+
+    def test_run_extractor_reports_template_agent_session_and_forwards_cancel_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            source = project_dir / "agent-session.docx"
+            source.write_bytes(b"fake-docx")
+            events: list[tuple[str, dict[str, object]]] = []
+
+            class PrepareProcess:
+                returncode = 0
+
+                def __init__(self, args, **kwargs):  # type: ignore[no-untyped-def]
+                    self.args = args
+                    self._write_prepare_payload(args)
+
+                @staticmethod
+                def _write_prepare_payload(args) -> None:  # type: ignore[no-untyped-def]
+                    manifest_path = Path(args[3])
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    output_dir = Path(manifest["outputDir"])
+                    document_output = output_dir / "DOC-1"
+                    document_output.mkdir(parents=True, exist_ok=True)
+                    (output_dir / "business_template_extraction.json").write_text(
+                        json.dumps(
+                            {
+                                "stage": "prepare",
+                                "schemaVersion": "bid-business-template-extractor-v1",
+                                "outputDir": str(output_dir),
+                                "documents": [{"id": "DOC-1", "outputDir": str(document_output)}],
+                                "appendices": [],
+                                "quality": {"scriptFallbackUsed": False},
+                            },
+                            ensure_ascii=False,
+                        ),
+                        encoding="utf-8",
+                    )
+
+                def poll(self):  # type: ignore[no-untyped-def]
+                    return self.returncode
+
+                def communicate(self):  # type: ignore[no-untyped-def]
+                    return "{}", ""
+
+            def fake_popen(args, **kwargs):  # type: ignore[no-untyped-def]
+                manifest_path = Path(args[3])
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                output_dir = Path(manifest["outputDir"])
+                document_output = output_dir / "DOC-1"
+                document_output.mkdir(parents=True, exist_ok=True)
+                (output_dir / "business_template_extraction.json").write_text(
+                    json.dumps(
+                        {
+                            "stage": "prepare",
+                            "schemaVersion": "bid-business-template-extractor-v1",
+                            "outputDir": str(output_dir),
+                            "documents": [{"id": "DOC-1", "outputDir": str(document_output)}],
+                            "appendices": [],
+                            "quality": {"scriptFallbackUsed": False},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                return PrepareProcess(args, **kwargs)
+
+            cancel_check_fn = lambda: False
+
+            def fake_agentic_template_extractor(
+                _client,
+                prompt: str,
+                *,
+                session_ready_callback=None,
+                cancel_check=None,
+            ):  # type: ignore[no-untyped-def]
+                self.assertIn("btplnav finalize", prompt)
+                self.assertIs(cancel_check, cancel_check_fn)
+                self.assertIsNotNone(session_ready_callback)
+                session_ready_callback(
+                    {
+                        "sessionId": "ses-template-ready",
+                        "providerId": "opencode",
+                        "modelId": "big-pickle",
+                    }
+                )
+                output_dir = project_dir / "business_template_extraction"
+                document_output = output_dir / "DOC-1"
+                document_output.mkdir(parents=True, exist_ok=True)
+                (output_dir / "business_template_extraction.json").write_text(
+                    json.dumps(
+                        {
+                            "stage": "finalize",
+                            "schemaVersion": "bid-business-template-extractor-v1",
+                            "outputDir": str(output_dir),
+                            "appendices": [],
+                            "quality": {"scriptFallbackUsed": False},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                return {
+                    "schemaVersion": "bid-business-template-extractor-v1",
+                    "outputFile": str(output_dir / "business_template_extraction.json"),
+                    "summary": {"templateCount": 0},
+                    "opencodeOutput": {
+                        "sessionId": "ses-template-ready",
+                        "completionSource": "btplnav-finalize",
+                    },
+                }
+
+            with (
+                patch("app.services.business_template_extractor.subprocess.Popen", side_effect=fake_popen),
+                patch(
+                    "app.services.business_template_extractor.OpencodeClient.extract_business_templates_with_trace",
+                    new=fake_agentic_template_extractor,
+                ),
+            ):
+                run_business_template_extractor(
+                    project_id="PRJ-1",
+                    documents=[{"id": "DOC-1", "name": "agent-session.docx", "sourcePath": str(source)}],
+                    project_dir=project_dir,
+                    progress_callback=lambda event, details: events.append((event, details or {})),
+                    cancel_check=cancel_check_fn,
+                )
+
+        self.assertEqual(events[0][0], "business_template_extraction_agent")
+        self.assertEqual(events[0][1]["sessionId"], "ses-template-ready")
+        self.assertEqual(events[0][1]["status"], "running")
+
+    def test_btplnav_command_terminates_running_process_when_cancelled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+
+            class HangingProcess:
+                def __init__(self) -> None:
+                    self.returncode = None
+                    self.terminated = False
+                    self.killed = False
+
+                def poll(self):  # type: ignore[no-untyped-def]
+                    return None
+
+                def terminate(self) -> None:
+                    self.terminated = True
+                    self.returncode = -15
+
+                def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                    return self.returncode
+
+                def kill(self) -> None:
+                    self.killed = True
+                    self.returncode = -9
+
+                def communicate(self):  # type: ignore[no-untyped-def]
+                    return "{}", ""
+
+            process = HangingProcess()
+            checks = iter([False, True])
+
+            with patch("app.services.business_template_extractor.subprocess.Popen", return_value=process):
+                with self.assertRaisesRegex(ParseCancelledError, "解析已取消"):
+                    business_template_extractor._run_btplnav_command(
+                        "prepare",
+                        manifest,
+                        cancel_check=lambda: next(checks, True),
+                    )
+
+        self.assertTrue(process.terminated)
+        self.assertFalse(process.killed)
 
     def test_run_extractor_reuses_existing_finalized_payload_without_prepare(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

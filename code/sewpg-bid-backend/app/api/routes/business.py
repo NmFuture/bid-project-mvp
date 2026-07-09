@@ -163,6 +163,11 @@ async def get_business_parse_progress(project_id: str) -> dict[str, Any]:
     return await business_parse_service.progress(project_id)
 
 
+@router.post("/api/business/projects/{project_id}/parse-results/cancel")
+async def cancel_business_parse(project_id: str) -> dict[str, Any]:
+    return await business_parse_service.cancel(project_id)
+
+
 @router.get("/api/business/projects/{project_id}/parse-results/appendices/{appendix_id}/preview")
 async def get_business_appendix_preview(project_id: str, appendix_id: str, request: Request) -> dict[str, Any]:
     return await business_parse_service.appendix_preview(project_id, appendix_id, request)

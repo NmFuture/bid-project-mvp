@@ -11,7 +11,11 @@ from typing import Any, Callable
 import httpx
 
 from app.core.config import settings
+from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.system_settings import system_settings_service
+
+
+OPENCODE_PROGRESS_HEARTBEAT_SECONDS = 10.0
 
 
 class OpencodeClient:
@@ -397,14 +401,31 @@ class OpencodeClient:
         self,
         prompt_text: str,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         session = self.create_session("S1 招标文件结构化解析")
         session_id = str(session.get("id") or "")
+        try:
+            if session_ready_callback:
+                session_ready_callback(
+                    {
+                        "sessionId": session_id,
+                        "providerId": self.provider_id,
+                        "modelId": self.model_id,
+                    }
+                )
+            if cancel_check is not None and cancel_check():
+                raise ParseCancelledError("解析已取消。")
+        except ParseCancelledError:
+            self.abort_session(session_id)
+            raise
         response = self._send_prompt_with_session_polling(
             session_id,
             prompt_text,
             stream_callback=stream_callback,
             early_tool_command="s1parse-finalize",
+            cancel_check=cancel_check,
         )
         parsed = self._extract_tender_parse_json(response)
         return {
@@ -441,13 +462,30 @@ class OpencodeClient:
     def extract_business_templates_with_trace(
         self,
         prompt_text: str,
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         session = self.create_session("商务标模板自主提取")
         session_id = str(session.get("id") or "")
+        try:
+            if session_ready_callback:
+                session_ready_callback(
+                    {
+                        "sessionId": session_id,
+                        "providerId": self.provider_id,
+                        "modelId": self.model_id,
+                    }
+                )
+            if cancel_check is not None and cancel_check():
+                raise ParseCancelledError("解析已取消。")
+        except ParseCancelledError:
+            self.abort_session(session_id)
+            raise
         response = self._send_prompt_with_session_polling(
             session_id,
             prompt_text,
             early_tool_command="btplnav-finalize",
+            cancel_check=cancel_check,
         )
         parsed = self._extract_business_template_extraction_json(response)
         return {
@@ -467,6 +505,20 @@ class OpencodeClient:
         if isinstance(payload, list):
             return [item for item in payload if isinstance(item, dict)]
         return []
+
+    def abort_session(self, session_id: str) -> bool:
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return False
+        try:
+            with httpx.Client(timeout=httpx.Timeout(5.0, connect=5.0)) as client:
+                response = client.post(f"{self.base_url}/session/{session_id}/abort")
+                response.raise_for_status()
+                if not response.text.strip():
+                    return True
+                return bool(response.json())
+        except (httpx.HTTPError, ValueError):
+            return False
 
     def _extract_outline_json(self, response: dict[str, Any]) -> dict[str, Any]:
         parsed = self._extract_json_response(
@@ -648,6 +700,7 @@ class OpencodeClient:
         prompt_text: str,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
         early_tool_command: str = "",
+        cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         if stream_callback is None and not early_tool_command:
             return self.send_prompt(session_id, prompt_text)
@@ -655,6 +708,16 @@ class OpencodeClient:
         response_holder: dict[str, Any] = {}
         error_holder: dict[str, Exception] = {}
         finished = threading.Event()
+        abort_sent = False
+
+        def raise_if_cancelled() -> None:
+            nonlocal abort_sent
+            if cancel_check is None or not cancel_check():
+                return
+            if not abort_sent:
+                abort_sent = True
+                self.abort_session(session_id)
+            raise ParseCancelledError("解析已取消。")
 
         def worker() -> None:
             try:
@@ -671,16 +734,21 @@ class OpencodeClient:
         )
         thread.start()
 
+        progress_started_at = time.monotonic()
         last_signature: tuple[str, tuple[tuple[str, str], ...]] | None = None
-        last_activity = time.monotonic()
+        last_activity = progress_started_at
+        last_heartbeat = last_activity
+        heartbeat_index = 0
         idle_timeout = self._session_polling_idle_timeout(early_tool_command)
         while not finished.wait(0.5):
+            raise_if_cancelled()
             previous_signature = last_signature
             if stream_callback is not None:
                 last_signature = self._emit_session_output_delta(
                     session_id,
                     stream_callback,
                     last_signature,
+                    elapsed_seconds=time.monotonic() - progress_started_at,
                 )
             elif early_tool_command:
                 snapshot = self._get_session_output_snapshot(session_id)
@@ -689,19 +757,39 @@ class OpencodeClient:
                     last_signature = signature
             if last_signature != previous_signature:
                 last_activity = time.monotonic()
-            elif time.monotonic() - last_activity > idle_timeout:
-                if early_tool_command == "s1parse-finalize":
-                    self._raise_s1_opencode_stalled(session_id, self.list_session_messages(session_id), idle_timeout)
-                if early_tool_command == "btplnav-finalize":
-                    self._raise_template_finalize_opencode_stalled(
-                        session_id,
-                        self.list_session_messages(session_id),
-                        idle_timeout,
+                last_heartbeat = last_activity
+                heartbeat_index = 0
+            else:
+                now = time.monotonic()
+                if (
+                    stream_callback is not None
+                    and now - last_heartbeat >= OPENCODE_PROGRESS_HEARTBEAT_SECONDS
+                ):
+                    heartbeat_index += 1
+                    snapshot = self._get_session_output_snapshot(session_id)
+                    self._emit_session_progress_heartbeat(
+                        session_id=session_id,
+                        stream_callback=stream_callback,
+                        snapshot=snapshot,
+                        idle_seconds=now - last_activity,
+                        elapsed_seconds=now - progress_started_at,
+                        heartbeat_index=heartbeat_index,
+                        early_tool_command=early_tool_command,
                     )
-                raise RuntimeError(
-                    f"futurecode idle timeout after {int(idle_timeout)} seconds without new output; "
-                    f"check session {session_id} tool calls."
-                )
+                    last_heartbeat = now
+                if now - last_activity > idle_timeout:
+                    if early_tool_command == "s1parse-finalize":
+                        self._raise_s1_opencode_stalled(session_id, self.list_session_messages(session_id), idle_timeout)
+                    if early_tool_command == "btplnav-finalize":
+                        self._raise_template_finalize_opencode_stalled(
+                            session_id,
+                            self.list_session_messages(session_id),
+                            idle_timeout,
+                        )
+                    raise RuntimeError(
+                        f"futurecode idle timeout after {int(idle_timeout)} seconds without new output; "
+                        f"check session {session_id} tool calls."
+                    )
             if early_tool_command:
                 messages = self.list_session_messages(session_id)
                 self._raise_session_error_if_present(session_id, messages)
@@ -775,7 +863,14 @@ class OpencodeClient:
             if self._last_tool_is_running(self._last_tool_trace(messages)):
                 stalled_until = time.monotonic() + idle_timeout
                 last_signature = self._get_session_output_snapshot_from_messages(session_id, messages).get("signature")
+                last_activity = 0.0
+                last_heartbeat = 0.0
+                if stream_callback is not None:
+                    last_activity = time.monotonic()
+                    last_heartbeat = last_activity
+                heartbeat_index = 0
                 while time.monotonic() < stalled_until:
+                    raise_if_cancelled()
                     time.sleep(0.5)
                     messages = self.list_session_messages(session_id)
                     self._raise_session_error_if_present(session_id, messages)
@@ -806,6 +901,7 @@ class OpencodeClient:
                                     "parts": self._normalize_output_parts(trace_parts),
                                     "earlyCompletion": True,
                                     "completionSource": early_tool_command,
+                                    "elapsedSeconds": max(0, int(time.monotonic() - progress_started_at)),
                                 }
                             )
                         return early_response
@@ -814,6 +910,10 @@ class OpencodeClient:
                     if signature != last_signature:
                         stalled_until = time.monotonic() + idle_timeout
                         last_signature = signature
+                        heartbeat_index = 0
+                        if stream_callback is not None:
+                            last_activity = time.monotonic()
+                            last_heartbeat = last_activity
                         if stream_callback is not None:
                             stream_callback(
                                 {
@@ -823,8 +923,23 @@ class OpencodeClient:
                                     "modelId": self.model_id,
                                     "receivedAt": snapshot["receivedAt"],
                                     "parts": snapshot["parts"],
+                                    "elapsedSeconds": max(0, int(time.monotonic() - progress_started_at)),
                                 }
                             )
+                    elif stream_callback is not None:
+                        now = time.monotonic()
+                        if now - last_heartbeat >= OPENCODE_PROGRESS_HEARTBEAT_SECONDS:
+                            heartbeat_index += 1
+                            self._emit_session_progress_heartbeat(
+                                session_id=session_id,
+                                stream_callback=stream_callback,
+                                snapshot=snapshot,
+                                idle_seconds=now - last_activity,
+                                elapsed_seconds=now - progress_started_at,
+                                heartbeat_index=heartbeat_index,
+                                early_tool_command=early_tool_command,
+                            )
+                            last_heartbeat = now
                     if not self._last_tool_is_running(self._last_tool_trace(messages)):
                         break
                 if self._last_tool_is_running(self._last_tool_trace(messages)):
@@ -834,6 +949,8 @@ class OpencodeClient:
                 session_id=session_id,
                 idle_timeout=idle_timeout,
                 stream_callback=stream_callback,
+                cancel_check=cancel_check,
+                progress_started_at=progress_started_at,
             )
             if pending_response:
                 return pending_response
@@ -845,18 +962,23 @@ class OpencodeClient:
                 session_id=session_id,
                 idle_timeout=idle_timeout,
                 stream_callback=stream_callback,
+                cancel_check=cancel_check,
+                progress_started_at=progress_started_at,
             )
             if pending_response:
                 return pending_response
 
         if stream_callback is not None:
+            raise_if_cancelled()
             self._raise_session_error_if_present(session_id, self.list_session_messages(session_id))
             last_signature = self._emit_session_output_delta(
                 session_id,
                 stream_callback,
                 last_signature,
+                elapsed_seconds=time.monotonic() - progress_started_at,
             )
         thread.join()
+        raise_if_cancelled()
         if error_holder.get("error"):
             raise error_holder["error"]
         return response_holder["response"]
@@ -867,12 +989,25 @@ class OpencodeClient:
         session_id: str,
         idle_timeout: float,
         stream_callback: Callable[[dict[str, Any]], None] | None,
+        cancel_check: Callable[[], bool] | None = None,
+        progress_started_at: float | None = None,
     ) -> dict[str, Any] | None:
         messages: list[dict[str, Any]] = []
         last_signature: tuple[str, tuple[tuple[str, str], ...]] | None = None
         deadline = time.monotonic() + idle_timeout
+        if progress_started_at is None:
+            progress_started_at = time.monotonic()
+        last_activity = 0.0
+        last_heartbeat = 0.0
+        if stream_callback is not None:
+            last_activity = time.monotonic()
+            last_heartbeat = last_activity
+        heartbeat_index = 0
 
         while time.monotonic() < deadline:
+            if cancel_check is not None and cancel_check():
+                self.abort_session(session_id)
+                raise ParseCancelledError("解析已取消。")
             messages = self.list_session_messages(session_id)
             self._raise_session_error_if_present(session_id, messages)
             tool_output = self._find_completed_bash_tool_output(messages, "s1parse-finalize")
@@ -902,6 +1037,7 @@ class OpencodeClient:
                             "parts": self._normalize_output_parts(trace_parts),
                             "earlyCompletion": True,
                             "completionSource": "s1parse-finalize",
+                            "elapsedSeconds": max(0, int(time.monotonic() - progress_started_at)),
                         }
                     )
                 return early_response
@@ -911,6 +1047,10 @@ class OpencodeClient:
             if signature != last_signature:
                 last_signature = signature
                 deadline = time.monotonic() + idle_timeout
+                heartbeat_index = 0
+                if stream_callback is not None:
+                    last_activity = time.monotonic()
+                    last_heartbeat = last_activity
                 if stream_callback is not None:
                     stream_callback(
                         {
@@ -920,8 +1060,23 @@ class OpencodeClient:
                             "modelId": self.model_id,
                             "receivedAt": snapshot["receivedAt"],
                             "parts": snapshot["parts"],
+                            "elapsedSeconds": max(0, int(time.monotonic() - progress_started_at)),
                         }
                     )
+            elif stream_callback is not None:
+                now = time.monotonic()
+                if now - last_heartbeat >= OPENCODE_PROGRESS_HEARTBEAT_SECONDS:
+                    heartbeat_index += 1
+                    self._emit_session_progress_heartbeat(
+                        session_id=session_id,
+                        stream_callback=stream_callback,
+                        snapshot=snapshot,
+                        idle_seconds=now - last_activity,
+                        elapsed_seconds=now - progress_started_at,
+                        heartbeat_index=heartbeat_index,
+                        early_tool_command="s1parse-finalize",
+                    )
+                    last_heartbeat = now
             time.sleep(0.5)
 
         self._raise_s1_opencode_stalled(session_id, messages, idle_timeout)
@@ -933,13 +1088,26 @@ class OpencodeClient:
         session_id: str,
         idle_timeout: float,
         stream_callback: Callable[[dict[str, Any]], None] | None,
+        cancel_check: Callable[[], bool] | None = None,
+        progress_started_at: float | None = None,
     ) -> dict[str, Any] | None:
         early_tool_command = "btplnav-finalize"
         messages: list[dict[str, Any]] = []
         last_signature: tuple[str, tuple[tuple[str, str], ...]] | None = None
         deadline = time.monotonic() + idle_timeout
+        if progress_started_at is None:
+            progress_started_at = time.monotonic()
+        last_activity = 0.0
+        last_heartbeat = 0.0
+        if stream_callback is not None:
+            last_activity = time.monotonic()
+            last_heartbeat = last_activity
+        heartbeat_index = 0
 
         while time.monotonic() < deadline:
+            if cancel_check is not None and cancel_check():
+                self.abort_session(session_id)
+                raise ParseCancelledError("解析已取消。")
             messages = self.list_session_messages(session_id)
             self._raise_session_error_if_present(session_id, messages)
             tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
@@ -969,6 +1137,7 @@ class OpencodeClient:
                             "parts": self._normalize_output_parts(trace_parts),
                             "earlyCompletion": True,
                             "completionSource": early_tool_command,
+                            "elapsedSeconds": max(0, int(time.monotonic() - progress_started_at)),
                         }
                     )
                 return early_response
@@ -978,6 +1147,10 @@ class OpencodeClient:
             if signature != last_signature:
                 last_signature = signature
                 deadline = time.monotonic() + idle_timeout
+                heartbeat_index = 0
+                if stream_callback is not None:
+                    last_activity = time.monotonic()
+                    last_heartbeat = last_activity
                 if stream_callback is not None:
                     stream_callback(
                         {
@@ -987,8 +1160,23 @@ class OpencodeClient:
                             "modelId": self.model_id,
                             "receivedAt": snapshot["receivedAt"],
                             "parts": snapshot["parts"],
+                            "elapsedSeconds": max(0, int(time.monotonic() - progress_started_at)),
                         }
                     )
+            elif stream_callback is not None:
+                now = time.monotonic()
+                if now - last_heartbeat >= OPENCODE_PROGRESS_HEARTBEAT_SECONDS:
+                    heartbeat_index += 1
+                    self._emit_session_progress_heartbeat(
+                        session_id=session_id,
+                        stream_callback=stream_callback,
+                        snapshot=snapshot,
+                        idle_seconds=now - last_activity,
+                        elapsed_seconds=now - progress_started_at,
+                        heartbeat_index=heartbeat_index,
+                        early_tool_command=early_tool_command,
+                    )
+                    last_heartbeat = now
             time.sleep(0.5)
 
         self._raise_template_finalize_opencode_stalled(session_id, messages, idle_timeout)
@@ -999,23 +1187,59 @@ class OpencodeClient:
         session_id: str,
         stream_callback: Callable[[dict[str, Any]], None],
         last_signature: tuple[str, tuple[tuple[str, str], ...]] | None,
+        *,
+        elapsed_seconds: float | None = None,
     ) -> tuple[str, tuple[tuple[str, str], ...]] | None:
         snapshot = self._get_session_output_snapshot(session_id)
         signature = snapshot.get("signature")
         if signature is None or signature == last_signature:
             return last_signature
 
+        payload = {
+            "status": snapshot["status"],
+            "sessionId": session_id,
+            "providerId": self.provider_id,
+            "modelId": self.model_id,
+            "receivedAt": snapshot["receivedAt"],
+            "parts": snapshot["parts"],
+        }
+        if elapsed_seconds is not None:
+            payload["elapsedSeconds"] = max(0, int(elapsed_seconds))
+        stream_callback(payload)
+        return signature
+
+    def _emit_session_progress_heartbeat(
+        self,
+        *,
+        session_id: str,
+        stream_callback: Callable[[dict[str, Any]], None],
+        snapshot: dict[str, Any],
+        idle_seconds: float,
+        elapsed_seconds: float | None = None,
+        heartbeat_index: int,
+        early_tool_command: str = "",
+    ) -> None:
+        resolved_idle_seconds = max(1, int(idle_seconds))
+        resolved_elapsed_seconds = (
+            max(resolved_idle_seconds, int(elapsed_seconds))
+            if elapsed_seconds is not None
+            else resolved_idle_seconds
+        )
         stream_callback(
             {
-                "status": snapshot["status"],
+                "status": snapshot.get("status") or "waiting",
                 "sessionId": session_id,
                 "providerId": self.provider_id,
                 "modelId": self.model_id,
-                "receivedAt": snapshot["receivedAt"],
-                "parts": snapshot["parts"],
+                "receivedAt": snapshot.get("receivedAt") or "",
+                "parts": snapshot.get("parts") or [],
+                "heartbeat": True,
+                "heartbeatIndex": heartbeat_index,
+                "idleSeconds": resolved_idle_seconds,
+                "elapsedSeconds": resolved_elapsed_seconds,
+                "earlyToolCommand": early_tool_command,
             }
         )
-        return signature
 
     def _get_session_output_snapshot(self, session_id: str) -> dict[str, Any]:
         return self._get_session_output_snapshot_from_messages(

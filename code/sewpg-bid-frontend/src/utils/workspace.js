@@ -59,10 +59,43 @@ export const projectRoute = (projectId = '', suffix = '', slug = '') => {
   return workspaceRoute(slug, projectPath)
 }
 
+const splitPath = (path = '') => {
+  const raw = String(path || '')
+  const hashIndex = raw.indexOf('#')
+  const hash = hashIndex >= 0 ? raw.slice(hashIndex) : ''
+  const withoutHash = hashIndex >= 0 ? raw.slice(0, hashIndex) : raw
+  const queryIndex = withoutHash.indexOf('?')
+  return {
+    pathname: queryIndex >= 0 ? withoutHash.slice(0, queryIndex) : withoutHash,
+    search: queryIndex >= 0 ? withoutHash.slice(queryIndex) : '',
+    hash,
+  }
+}
+
 export const workspaceFromPathname = (pathname = '') => {
-  const match = String(pathname || '').match(/^\/workspace\/([^/]+)/)
+  const cleanPathname = splitPath(pathname).pathname
+  const match = cleanPathname.match(/^\/workspace\/([^/]+)/)
   const workspace = workspaceFromSlug(match?.[1] || '')
-  return workspace?.slug || ''
+  if (workspace?.slug) return workspace.slug
+
+  const parseMatch = cleanPathname.match(/^\/parse\/(business|technical)(?:\/|$)/)
+  if (parseMatch?.[1] === 'business') return 'business'
+  if (parseMatch?.[1] === 'technical') return 'tech'
+  return ''
+}
+
+export const workspaceSwitchRoute = (currentPath = '', targetSlug = '') => {
+  const targetWorkspace = workspaceFromSlug(targetSlug)
+  if (!targetWorkspace) return ''
+
+  const { pathname, search, hash } = splitPath(currentPath)
+  if (/^\/parse\/(business|technical)(?:\/|$)/.test(pathname)) {
+    return targetWorkspace.slug === 'business' ? '/parse/business' : '/parse/technical'
+  }
+
+  const workspaceMatch = pathname.match(/^\/workspace\/([^/]+)(.*)$/)
+  if (!workspaceFromSlug(workspaceMatch?.[1] || '')) return ''
+  return `/workspace/${targetWorkspace.slug}${workspaceMatch?.[2] || ''}${search}${hash}`
 }
 
 export const useWorkspaceSlug = () => {

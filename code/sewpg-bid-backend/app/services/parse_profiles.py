@@ -38,7 +38,6 @@ TECHNICAL_PARSE_PROFILE = ParseProfile(
         "专题方案要求",
         "附表和供货范围",
         "考核条款",
-        "投标相关日期",
     ),
 )
 

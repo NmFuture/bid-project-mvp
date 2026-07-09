@@ -25,6 +25,7 @@ services:
       context: ./sewpg-bid-backend
       args:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
     container_name: sewpg_bid_fastapi
     environment:
       APP_ENV: production
@@ -40,7 +41,7 @@ services:
       S1_PARSE_OPENCODE_ENABLED: ${S1_PARSE_OPENCODE_ENABLED:-true}
       BUSINESS_PDF_PARSE_ENGINE: ${BUSINESS_PDF_PARSE_ENGINE:-docling}
       BUSINESS_PDF_ENGINE_FALLBACK: ${BUSINESS_PDF_ENGINE_FALLBACK:-none}
-      DOCLING_ARTIFACTS_PATH: ${DOCLING_ARTIFACTS_PATH:-/data/docling-models}
+      BID_DOCLING_ARTIFACTS_PATH: ${BID_DOCLING_ARTIFACTS_PATH:-${DOCLING_ARTIFACTS_PATH:-/opt/docling-models}}
       BID_INTERNAL_API_BASE_URL: ${BID_INTERNAL_API_BASE_URL:-http://fastapi:8000}
       MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-524288000}
       ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.doc,.docx,.md,.txt,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff}
@@ -103,10 +104,6 @@ services:
 
   worker:
     image: ${FASTAPI_IMAGE:-sewpg-bid/fastapi:${APP_IMAGE_TAG:-latest}}
-    build:
-      context: ./sewpg-bid-backend
-      args:
-        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     container_name: sewpg_bid_worker
     command: ["python", "-m", "app.workers.redis_worker"]
     environment:
@@ -123,7 +120,7 @@ services:
       S1_PARSE_OPENCODE_ENABLED: ${S1_PARSE_OPENCODE_ENABLED:-true}
       BUSINESS_PDF_PARSE_ENGINE: ${BUSINESS_PDF_PARSE_ENGINE:-docling}
       BUSINESS_PDF_ENGINE_FALLBACK: ${BUSINESS_PDF_ENGINE_FALLBACK:-none}
-      DOCLING_ARTIFACTS_PATH: ${DOCLING_ARTIFACTS_PATH:-/data/docling-models}
+      BID_DOCLING_ARTIFACTS_PATH: ${BID_DOCLING_ARTIFACTS_PATH:-${DOCLING_ARTIFACTS_PATH:-/opt/docling-models}}
       BID_INTERNAL_API_BASE_URL: ${BID_INTERNAL_API_BASE_URL:-http://fastapi:8000}
       MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-524288000}
       ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.doc,.docx,.md,.txt,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff}
