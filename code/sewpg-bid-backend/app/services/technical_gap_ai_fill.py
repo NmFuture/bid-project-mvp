@@ -13,7 +13,9 @@ from typing import Any, Callable
 from app.core.config import BASE_DIR
 from app.services.identity import build_project_material_scope
 from app.services.minio_client import minio_client
+from app.services.ocr_service import ocr_service
 from app.services.opencode_client import OpencodeClient
+from app.services.peripheral import PeripheralError
 from app.services.technical_gap_domain import (
     summarize_technical_gap_plan,
     technical_gap_artifact_onlyoffice_payload,
@@ -316,14 +318,15 @@ async def _downloadable_technical_fill_source_payload(material_id: str) -> tuple
         payload = await technical_material_store.raw_download_content(material_id)
     mime_type = str(payload.get("mimeType") or "")
     file_name = str(payload.get("fileName") or "").lower()
-    allowed_ext = file_name.endswith((".docx", ".xlsx", ".xlsm"))
+    allowed_ext = file_name.endswith((".docx", ".xlsx", ".xlsm", ".pdf"))
     allowed_mime = (
         "wordprocessingml" in mime_type
         or "spreadsheetml" in mime_type
         or "ms-excel" in mime_type
+        or mime_type == "application/pdf"
     )
     if not allowed_ext and not allowed_mime:
-        raise ValueError(f"素材 {material_id} 不是填写 Skill 可读取的 Word/Excel。")
+        raise ValueError(f"素材 {material_id} 不是填写 Skill 可读取的 Word/Excel/PDF。")
     return payload, "raw"
 
 
@@ -340,15 +343,47 @@ async def _downloadable_technical_word_payload(material_id: str) -> tuple[dict[s
     return payload, "raw"
 
 
+def _ensure_pdf_ocr_sidecar(pdf_path: Path) -> tuple[str, str]:
+    """为证书类 PDF 素材生成 OCR 文本 sidecar（{stem}.ocr.txt，与 PDF 同目录缓存复用）。
+
+    返回 (sidecar 路径, 状态)。OCR 未配置/失败时不抛出，仅返回空路径与原因，
+    由 manifest 透出，填表侧对无 sidecar 的 PDF 显式报错。
+    """
+    sidecar_path = pdf_path.with_suffix(".ocr.txt")
+    if sidecar_path.exists() and sidecar_path.stat().st_size > 0:
+        return str(sidecar_path), "cached"
+    try:
+        text, _meta = _run_async(
+            ocr_service.recognize_text_for_parse(
+                file_name=pdf_path.name,
+                content=pdf_path.read_bytes(),
+                mime_type="application/pdf",
+            )
+        )
+    except PeripheralError as exc:
+        if exc.code == "OCR_CONFIG_REQUIRED":
+            return "", "skipped: OCR 模型未启用或未配置"
+        return "", f"failed: {exc.detail}"
+    except Exception as exc:
+        return "", f"failed: {exc}"
+    if not str(text or "").strip():
+        return "", "failed: OCR 识别结果为空"
+    sidecar_path.write_text(str(text), encoding="utf-8")
+    return str(sidecar_path), "generated"
+
+
 def _prepare_material_index_files(
     material_index: list[dict[str, Any]],
     work_dir: Path,
     *,
     cache_dir: Path | None = None,
     limit: int = 240,
+    ocr_pdf: bool = False,
+    ocr_budget: int = 12,
 ) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
     cache_dir = cache_dir or (work_dir / "material_index")
+    ocr_generated = 0
     for material in material_index[:limit]:
         item = dict(material)
         material_id = str(item.get("id") or item.get("materialId") or "").strip()
@@ -377,6 +412,17 @@ def _prepare_material_index_files(
                 "fileName": target_path.name,
             }
         )
+        if ocr_pdf and target_path.suffix.lower() == ".pdf":
+            has_cache = target_path.with_suffix(".ocr.txt").exists()
+            if has_cache or ocr_generated < ocr_budget:
+                sidecar_path, ocr_status = _ensure_pdf_ocr_sidecar(target_path)
+                if sidecar_path:
+                    item["ocrTextPath"] = sidecar_path
+                if ocr_status == "generated":
+                    ocr_generated += 1
+            else:
+                ocr_status = "skipped: 本次运行 OCR 配额已用完，缓存后续运行补齐"
+            item["ocrStatus"] = ocr_status
         prepared.append(item)
     return prepared
 
@@ -879,10 +925,13 @@ def run_technical_ai_fill_for_gap(
     work_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / gap_id
     work_dir.mkdir(parents=True, exist_ok=True)
     shared_material_cache_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / "_material_index_cache"
+    # PDF 素材（认证证书等）三路都做 OCR sidecar：证书 PDF 通常只经 materialIndex
+    # 关键词选源进入填表。sidecar 落在共享缓存跨缺口复用，单次运行有 OCR 配额上限。
     material_index = _prepare_material_index_files(
         material_index,
         work_dir,
         cache_dir=shared_material_cache_dir,
+        ocr_pdf=True,
     )
     # referenceMaterials/recommendedMaterials 只带素材库虚拟目录路径（如
     # "技术标/通用素材/.../证书.pdf"），不是本地可读路径；只下载过 material_index，
@@ -892,11 +941,13 @@ def run_technical_ai_fill_for_gap(
         reference_materials,
         work_dir,
         cache_dir=shared_material_cache_dir,
+        ocr_pdf=True,
     )
     recommended_materials = _prepare_material_index_files(
         recommended_materials,
         work_dir,
         cache_dir=shared_material_cache_dir,
+        ocr_pdf=True,
     )
     artifact_task_id = _safe_filename(str(task.get("id") or "task"), "task")
     artifact_id = f"ART-{gap_id}-{artifact_task_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"

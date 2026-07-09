@@ -237,7 +237,12 @@ class OcrService:
         async with httpx.AsyncClient(timeout=timeout_ms / 1000, trust_env=False) as client:
             response = await client.post(url, headers=headers, json=payload)
         if response.status_code >= 400:
-            raise PeripheralError(response.status_code, f"OCR 调用失败：HTTP {response.status_code}", "OCR_REQUEST_FAILED")
+            detail = re.sub(r"\s+", " ", response.text or "").strip()[:200]
+            raise PeripheralError(
+                response.status_code,
+                f"OCR 调用失败：HTTP {response.status_code}" + (f"（{detail}）" if detail else ""),
+                "OCR_REQUEST_FAILED",
+            )
         raw = response.json()
         content_text = str(((raw.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
         raw["_latencyMs"] = int((time.perf_counter() - start) * 1000)

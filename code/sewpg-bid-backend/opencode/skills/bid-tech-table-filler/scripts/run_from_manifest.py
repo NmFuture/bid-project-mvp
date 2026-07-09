@@ -56,7 +56,7 @@ AUTO_SOURCE_MAX = 12
 C1_CONCEPTS = {
     "model": ["投标机型", "制造厂家/型号", "机型型号"],
     "turbine_type": ["机组类型", "发电机型式", "双馈异步发电机", "双馈"],
-    "rated_power": ["单机容量", "额定功率", "机组额定功率"],
+    "rated_power": ["单机容量", "额定功率", "机组额定功率", "单机功率"],
     "turbine_count": ["机组数量", "机组台数", "台数", "风机数量"],
     "total_capacity": ["总装机容量", "装机容量", "项目容量", "总容量", "标段规模"],
     "rotor_diameter": ["叶轮直径", "风轮直径"],
@@ -64,7 +64,7 @@ C1_CONCEPTS = {
     "hub_height": ["轮毂中心高度", "轮毂高度"],
     "swept_area": ["扫风面积"],
     "swept_area_per_kw": ["单位千瓦扫风面积", "单位kW扫风面积"],
-    "certification_level": ["认证级别", "安全等级", "机组安全设计等级"],
+    "certification_level": ["认证级别", "安全等级", "机组安全设计等级", "机组等级"],
     "vref": ["参考风速Vref", "极限风速（50年一遇）10min", "极限风速50年一遇10min"],
     "ve50": ["极端风速Ve50", "极限风速（50年一遇）3s", "极限风速50年一遇3s"],
     "vave": ["轮毂高度年平均风速Vave", "年平均风速"],
@@ -266,6 +266,7 @@ class Source:
     material_id: str = ""
     selection_score: float = 0.0
     selection_reasons: tuple[str, ...] = ()
+    ocr_text_path: Path | None = None  # PDF 素材的 OCR 文本 sidecar（后端生成）
 
 
 @dataclass
@@ -858,6 +859,18 @@ def component_keywords_for(prefix: str) -> list[str]:
     # F2 设计认证：认证证书/型式认证
     if prefix == "F2":
         return ["认证证书", "型式认证", "设计认证", "CQC认证"]
+    # F1 样机信息：样机/试运行记录
+    if prefix == "F1":
+        return ["样机", "试运行", "并网运行"]
+    # F3 大部件认证：叶片/齿轮箱/发电机等部件认证证书
+    if prefix == "F3":
+        return ["认证证书", "部件认证", "叶片认证", "大部件"]
+    # F4 电网性能认证：并网/电网适应性检测认证
+    if prefix == "F4":
+        return ["电网适应性", "并网认证", "电网性能", "低电压穿越", "认证证书"]
+    # F5 工厂体系认证：质量/环境/职业健康管理体系
+    if prefix == "F5":
+        return ["体系认证", "质量管理体系", "环境管理体系", "职业健康", "ISO9001"]
     # D7 性能考核：功率曲线/性能保证
     if prefix == "D7":
         return ["性能保证", "功率曲线", "考核指标", "承诺函"]
@@ -1143,6 +1156,12 @@ def add_source_from_material(
         return
     name = material_label(material) or path.name
     suffix = path.suffix.lower()
+    ocr_text_path: Path | None = None
+    if suffix == ".pdf":
+        for candidate in (Path(clean(material.get("ocrTextPath"))) if clean(material.get("ocrTextPath")) else None, path.with_suffix(".ocr.txt")):
+            if candidate is not None and candidate.exists() and candidate.is_file():
+                ocr_text_path = candidate.resolve()
+                break
     sources.append(
         Source(
             name=name,
@@ -1153,6 +1172,7 @@ def add_source_from_material(
             material_id=clean(material.get("id") or material.get("materialId")),
             selection_score=round(selection_score, 3),
             selection_reasons=tuple(clean(reason) for reason in selection_reasons or [] if clean(reason)),
+            ocr_text_path=ocr_text_path,
         )
     )
 
@@ -1280,6 +1300,25 @@ def select_sources(
         if previous is None or source.priority > previous.priority:
             deduped[key] = source
     selected = sorted(deduped.values(), key=lambda item: (item.kind != "xlsx", -item.priority, -item.selection_score, item.name))
+    # F 系列认证表按证书意图收窄 PDF 来源：设计认证表混入部件/电网证书时，
+    # 各证书的证书编号/有效期/额定功率互相冲突，find_conflict 会把正确值一起毙掉。
+    if spec.prefix.startswith("F"):
+        spec_intents = cert_intents_for(spec.title)
+        if spec_intents:
+            def pdf_intents(source: Source) -> set[str]:
+                return cert_intents_for(f"{source.name} {source.path.name}") if source.kind == "pdf" else set()
+
+            has_matching_pdf = any(pdf_intents(source) & spec_intents for source in selected)
+            narrowed = []
+            for source in selected:
+                source_intents = pdf_intents(source)
+                if source_intents and not (source_intents & spec_intents):
+                    continue  # 证书意图与附表不符（如设计认证表里的部件证书）
+                if source.kind == "pdf" and not source_intents and has_matching_pdf:
+                    continue  # 已有意图匹配的证书时，意图不明的证书只会带来编号/日期冲突
+                narrowed.append(source)
+            if any(source.kind == "pdf" for source in narrowed):
+                selected = narrowed
     selection_report["selected"] = [
         {
             "id": source.material_id,
@@ -1660,7 +1699,7 @@ def extract_doc_generic_facts(source: Source) -> list[dict[str, Any]]:
             add_fact(
                 facts,
                 label=match.group(1),
-                value=match.group(2),
+                value=cert_value_clean(match.group(2)),
                 source=source,
                 row=para_idx,
                 confidence=0.58,
@@ -1690,6 +1729,154 @@ def extract_doc_generic_facts(source: Source) -> list[dict[str, Any]]:
                 break
             if len(facts) >= GENERIC_FACT_LIMIT_PER_FILE:
                 return facts
+    return facts
+
+
+CERT_INTENT_TOKENS: dict[str, tuple[str, ...]] = {
+    "设计": ("设计",),
+    "型式": ("型式",),
+    "电网": ("电网", "穿越", "电能质量", "适应性"),
+    "体系": ("体系", "ISO"),
+    "部件": ("部件", "叶片", "齿轮箱", "发电机", "主轴承", "变流器", "主控", "轴承", "大部件"),
+    "样机": ("样机",),
+}
+
+
+def cert_intents_for(text: str) -> set[str]:
+    lowered = clean(text).lower()
+    return {intent for intent, tokens in CERT_INTENT_TOKENS.items() if any(token.lower() in lowered for token in tokens)}
+
+
+CERT_ISSUER_SUFFIXES = ("认证中心", "认证公司", "认证有限公司", "认证集团", "船级社", "检验认证")
+CERT_OCR_RISK = "OCR 识别值，需人工核对证书原件"
+CERT_FIELD_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"(?:证书编号|证书号|注册号|报告编号)\s*[:：]?\s*([A-Za-z0-9][A-Za-z0-9\-/\.·]{3,40})", "证书编号"),
+    (r"(?:Certificate\s*(?:Registration\s*)?No\.?)\s*[:：]?\s*([A-Za-z0-9][A-Za-z0-9\-/\.·]{3,40})", "证书编号"),
+    (r"(?:有效期至|有效期截止|有效截止日期|有效至)\s*[:：]?\s*([0-9]{4}\s*[年.\-/]\s*[0-9]{1,2}\s*(?:[月.\-/]\s*[0-9]{1,2})?\s*日?)", "有效期"),
+    (r"(?:发证日期|颁发日期|签发日期|首次发证日期|发布日期)\s*[:：]?\s*([0-9]{4}\s*[年.\-/]\s*[0-9]{1,2}\s*(?:[月.\-/]\s*[0-9]{1,2})?\s*日?)", "发证日期"),
+    # 机构名冒号必选：无冒号会把"…需发证机构批准…"之类条款散文误捕为机构名，
+    # 独立成行的机构名由 CERT_ISSUER_SUFFIXES 行识别兜底
+    (r"(?:发证机构|认证机构|颁发机构|签发机构)\s*[:：]\s*(\S.{1,60}?)(?:\s{2,}|$)", "认证机构"),
+    (r"机组型号\s*[:：]?\s*([A-Za-z][A-Za-z0-9\.\-]{2,30})", "机组型号"),
+)
+
+
+def pdf_ocr_text(source: Source) -> str:
+    candidates = [source.ocr_text_path, source.path.with_suffix(".ocr.txt")]
+    for candidate in candidates:
+        try:
+            if candidate is not None and candidate.exists():
+                return candidate.read_text(encoding="utf-8")
+        except Exception:
+            continue
+    return ""
+
+
+def cert_value_clean(value: str) -> str:
+    """证书排版惯用千分位逗号（10,000 kW），投标表格不用，抄录时剥掉。"""
+    return re.sub(r"(?<=\d),(?=\d{3})", "", clean(value))
+
+
+def extract_pdf_ocr_facts(source: Source) -> list[dict[str, Any]]:
+    """PDF 素材（认证证书等扫描件）经后端 OCR sidecar 的键值事实抽取。"""
+    text = pdf_ocr_text(source)
+    if not text.strip():
+        raise RuntimeError("PDF 素材缺少 OCR 文本 sidecar（后端 OCR 未启用或识别失败），无法抽取事实")
+    facts: list[dict[str, Any]] = []
+    lines = [clean(line) for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    for line_idx, line in enumerate(lines, start=1):
+        if len(facts) >= GENERIC_FACT_LIMIT_PER_FILE:
+            return facts
+        # markdown 表格行：相邻两个非空单元格作为键值对（与 Word 通用表格抽取同策略）
+        if line.startswith("|") or line.count("|") >= 2:
+            cells = [clean(cell) for cell in line.split("|")]
+            nonempty = [cell for cell in cells if cell and set(cell) - {"-", ":", " "}]
+            for label, value in zip(nonempty, nonempty[1:]):
+                if looks_like_header_or_empty(label, value):
+                    continue
+                add_fact(
+                    facts,
+                    label=label,
+                    value=cert_value_clean(value),
+                    source=source,
+                    row=line_idx,
+                    # 表格结构保真度高于散文（证书附页参数表），概念匹配路径
+                    # 需要 ≥0.8 才能过 0.62 选取线
+                    confidence=0.8,
+                    notes="证书 OCR 表格键值抽取",
+                    action_hint="partial",
+                    risk=CERT_OCR_RISK,
+                )
+                break
+            continue
+        match = re.match(r"^([^:：|]{2,40})[:：]\s*(.{1,160})$", line)
+        if match and not looks_like_header_or_empty(match.group(1), match.group(2)):
+            add_fact(
+                facts,
+                label=match.group(1),
+                value=cert_value_clean(match.group(2)),
+                source=source,
+                row=line_idx,
+                confidence=0.7,
+                notes="证书 OCR 键值抽取",
+                action_hint="partial",
+                risk=CERT_OCR_RISK,
+            )
+            continue
+        # 发证机构常以独立一行出现（无键名），按机构名后缀识别
+        if len(line) <= 40 and line.endswith(CERT_ISSUER_SUFFIXES):
+            add_fact(
+                facts,
+                label="认证机构",
+                value=line,
+                source=source,
+                row=line_idx,
+                confidence=0.66,
+                notes="证书 OCR 机构名识别",
+                action_hint="partial",
+                risk=CERT_OCR_RISK,
+            )
+    seen_domain: set[tuple[str, str]] = set()
+    domain_values: dict[str, str] = {}
+    for pattern, label in CERT_FIELD_PATTERNS:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            value = cert_value_clean(match.group(1))
+            if not value or (label, value) in seen_domain:
+                continue
+            seen_domain.add((label, value))
+            domain_values.setdefault(label, value)
+            add_fact(
+                facts,
+                label=label,
+                value=value,
+                source=source,
+                confidence=0.74,
+                notes="证书 OCR 领域字段抽取",
+                action_hint="partial",
+                risk=CERT_OCR_RISK,
+            )
+            if len(facts) >= GENERIC_FACT_LIMIT_PER_FILE:
+                return facts
+    # 中标件"认证有效日期"的通行写法是"发证日期~有效期"区间，两个日期都在时合成一条
+    issue_date = domain_values.get("发证日期", "")
+    expiry_date = domain_values.get("有效期", "")
+    if issue_date and expiry_date:
+        add_fact(
+            facts,
+            label="认证有效日期",
+            value=f"{issue_date}~{expiry_date}",
+            source=source,
+            confidence=0.74,
+            notes="证书 OCR 发证/有效期合成",
+            action_hint="partial",
+            risk=CERT_OCR_RISK,
+        )
+    # 词面撞车：如"轮毂高度处运行风速范围"因含"轮毂高度"被记为 hub_height，
+    # 与真正的轮毂高度值互相冲突——提及风速的标签不是尺寸事实
+    for fact in facts:
+        if "风速" in fact["label"] and "hub_height" in fact["concepts"]:
+            fact["concepts"] = [concept for concept in fact["concepts"] if concept != "hub_height"]
     return facts
 
 
@@ -2135,6 +2322,13 @@ def map_fields(spec: AppendixSpec, fields: list[dict[str, Any]], facts: list[dic
             key=lambda item: (item["score"], item["sourceKind"] == "xlsx", item.get("sourcePriority", 0)),
             reverse=True,
         )
+        # F 系列认证表：证书 OCR 值是权威来源。有过线的证书事实时收窄到证书候选，
+        # 否则校核报告等 docx 的污染值（金标反评：单机功率"P…"、轮毂 630mm）
+        # 会通过 find_conflict 把正确的证书值一起否掉。
+        if spec.prefix.startswith("F"):
+            pdf_candidates = [item for item in candidates if item["sourceKind"] == "pdf" and item["usable"] and item["score"] >= 0.62]
+            if pdf_candidates:
+                candidates = pdf_candidates
         selected = next((item for item in candidates if item["usable"] and item["score"] >= 0.62), None)
         concepts = set(field["concepts"])
         reason = ""
@@ -2144,16 +2338,52 @@ def map_fields(spec: AppendixSpec, fields: list[dict[str, Any]], facts: list[dic
         if conflict and (not selected or selected["score"] < 0.82):
             selected = None
             reason = conflict
-        if concepts & PROJECT_SPECIFIC and selected and not project_specific_source_allowed(selected):
+        if (
+            concepts & PROJECT_SPECIFIC
+            and selected
+            and not project_specific_source_allowed(selected)
+            # F 系列认证表例外：证书本身就是"认证了什么配置"的权威记载，
+            # 轮毂高度/安全等级等值按证书抄录正是这类表的本意
+            and not (spec.prefix.startswith("F") and selected.get("sourceKind") == "pdf")
+        ):
             selected = None
             reason = "该字段是项目/场址特定值，当前候选来源不属于项目信息、招标解析或项目范围素材，不能直接填。"
         if concepts & STRICT_MANUAL and (not selected or selected["score"] < 0.78):
             selected = None
         if selected and selected.get("actionHint") == "partial":
             action = "partial"
-        if selected and selected.get("risk") and selected["score"] < 0.76:
+        # partial 事实（如证书 OCR 值）本身语义就是"填入并高亮待人工核对"，
+        # 不走 risk 低分拦截——拦掉就退回全空，人工连核对起点都没有。
+        if selected and selected.get("risk") and selected["score"] < 0.76 and action != "partial":
             reason = selected["risk"]
             selected = None
+
+        # F 系列"认证未完成或存在待解决项"类字段：证书已读到且未见待解决记载时，
+        # 按中标件通行写法默认"无"，partial 高亮交人工确认
+        if (
+            not selected
+            and spec.prefix.startswith("F")
+            and "待解决" in field["field"]
+            and any(fact["sourceKind"] == "pdf" for fact in facts)
+        ):
+            selected = {
+                "factId": f"{field['id']}-CERT-NONE",
+                "label": "待解决项默认响应",
+                "value": "无",
+                "unit": "",
+                "source": "证书 OCR（未见待解决项记载）",
+                "sourceKind": "pdf",
+                "sourcePriority": 60,
+                "row": field["rowIndex"],
+                "sheet": "",
+                "score": 0.62,
+                "usable": True,
+                "notes": "证书 OCR 文本未见未完成/待解决记载，按通行写法默认'无'。",
+                "risk": CERT_OCR_RISK,
+                "actionHint": "partial",
+            }
+            action = "partial"
+            reason = ""
 
         if not selected and requirement_value_is_direct_response(field.get("requirementValue")):
             requirement_value = clean(field.get("requirementValue"))
@@ -2988,7 +3218,9 @@ def transport_weight(value: str) -> str:
 
 
 def apply_large_component_transport_table_fill(output_file: Path, sources: list[Source], spec: AppendixSpec, project: dict[str, Any]) -> list[dict[str, Any]]:
-    if "附表H.5" not in spec.title and "大部件" not in spec.title:
+    # "大部件"词面会撞上 F.3 系"大部件认证情况"——那是认证表不是运输表，
+    # 整表重建会把 58x5 认证空表替换成 7x10 运输表（金标反评 F.3.1 假阳性 66 格）。
+    if "附表H.5" not in spec.title and ("大部件" not in spec.title or "认证" in spec.title):
         return []
     source = next((item for item in sources if item.kind == "xlsx" and "X2平台机型投标参数" in item.name), None)
     if source is None:
@@ -3909,6 +4141,8 @@ def collect_facts(sources: list[Source], project: dict[str, Any], manifest: dict
                 facts.extend(extract_xlsx_generic_facts(source))
             elif source.kind == "docx":
                 facts.extend(extract_doc_facts(source))
+            elif source.kind == "pdf":
+                facts.extend(extract_pdf_ocr_facts(source))
         except Exception as exc:
             meta[source.name] = {"error": str(exc)}
     facts.extend(extract_manifest_parse_facts(manifest))
