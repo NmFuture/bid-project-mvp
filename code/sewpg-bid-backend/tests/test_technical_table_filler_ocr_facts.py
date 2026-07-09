@@ -230,5 +230,96 @@ class MapFieldsOcrPartialTests(unittest.TestCase):
         self.assertEqual(decision["value"], "TC-WT-2025-001")
 
 
+class CertMirrorColumnTests(unittest.TestCase):
+    """F 系列"认证机型N/投标机型N"成对列：投标机型即认证机型，fill_doc 两列同值
+    （金标反评 F.2.1：中标人 16 格逐格复制，差异列不动）。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _build_blank(self) -> Path:
+        from docx import Document
+
+        doc = Document()
+        table = doc.add_table(rows=3, cols=5)
+        headers = ["项目名称", "项目名称", "认证机型1", "投标机型1", "认证机型1与投标机型1差异"]
+        for idx, text in enumerate(headers):
+            table.rows[0].cells[idx].text = text
+        table.rows[1].cells[0].text = "基本信息"
+        table.rows[1].cells[1].text = "认证机构"
+        table.rows[2].cells[0].text = "基本信息"
+        table.rows[2].cells[1].text = "机组型号"
+        path = self.base / "blank_f21.docx"
+        doc.save(str(path))
+        return path
+
+    def _spec(self, blank: Path) -> object:
+        return filler.AppendixSpec(
+            appendix_id="APPX-F21",
+            prefix="F2",
+            title="附表F.2.1 投标机组设计认证",
+            source=blank,
+            table_index=0,
+            header_row=0,
+            field_col=1,
+            value_col=2,
+            unit_col=None,
+            remark_col=None,
+        )
+
+    def test_value_mirrored_to_bid_model_column(self) -> None:
+        from docx import Document
+
+        blank = self._build_blank()
+        spec = self._spec(blank)
+        mapping = {
+            "decisions": [
+                {"rowIndex": 1, "tableIndex": 0, "valueCol": 2, "unitCol": None, "field": "认证机构", "action": "partial", "value": "中国质量认证中心", "unit": ""},
+                {"rowIndex": 2, "tableIndex": 0, "valueCol": 2, "unitCol": None, "field": "机组型号", "action": "manual", "value": "[待人工补充：机组型号]", "unit": ""},
+            ]
+        }
+        out = self.base / "out.docx"
+        filler.fill_doc(spec, mapping, out)
+        table = Document(str(out)).tables[0]
+        self.assertEqual(table.rows[1].cells[2].text, "中国质量认证中心")
+        self.assertEqual(table.rows[1].cells[3].text, "中国质量认证中心")
+        self.assertEqual(table.rows[1].cells[4].text, "")
+        # manual 占位不镜像
+        self.assertEqual(table.rows[2].cells[3].text, "")
+
+    def test_no_mirror_without_paired_headers(self) -> None:
+        from docx import Document
+
+        doc = Document()
+        table = doc.add_table(rows=2, cols=3)
+        for idx, text in enumerate(["项目", "内容", "备注"]):
+            table.rows[0].cells[idx].text = text
+        table.rows[1].cells[0].text = "证书编号"
+        blank = self.base / "blank_plain.docx"
+        doc.save(str(blank))
+        spec = filler.AppendixSpec(
+            appendix_id="APPX-F21",
+            prefix="F2",
+            title="附表F.2.1 投标机组设计认证",
+            source=blank,
+            table_index=0,
+            header_row=0,
+            field_col=0,
+            value_col=1,
+            unit_col=None,
+            remark_col=None,
+        )
+        mapping = {"decisions": [{"rowIndex": 1, "tableIndex": 0, "valueCol": 1, "unitCol": None, "field": "证书编号", "action": "fill", "value": "X-1", "unit": ""}]}
+        out = self.base / "out_plain.docx"
+        filler.fill_doc(spec, mapping, out)
+        table = Document(str(out)).tables[0]
+        self.assertEqual(table.rows[1].cells[1].text, "X-1")
+        self.assertEqual(table.rows[1].cells[2].text, "")
+
+
 if __name__ == "__main__":
     unittest.main()

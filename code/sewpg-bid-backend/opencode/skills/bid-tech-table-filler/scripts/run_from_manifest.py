@@ -2492,6 +2492,20 @@ def set_cell(cell: Any, text: str, *, highlight: bool = False) -> None:
         tc_pr.remove(shd)
 
 
+def cert_mirror_value_col(spec: AppendixSpec, table: Any) -> int | None:
+    """F 系列认证表"认证机型N/投标机型N"成对列：投标机型即认证机型（同一机型投标），
+    中标件通行填法是两列同值；返回需要同值复制的投标机型列（差异列不算）。"""
+    if not spec.prefix.startswith("F") or spec.header_row >= len(table.rows):
+        return None
+    headers = [clean(cell.text) for cell in table.rows[spec.header_row].cells]
+    if spec.value_col >= len(headers) or "认证机型" not in headers[spec.value_col]:
+        return None
+    for idx, text in enumerate(headers):
+        if idx != spec.value_col and "投标机型" in text and "差异" not in text:
+            return idx
+    return None
+
+
 def fill_doc(spec: AppendixSpec, mapping: dict[str, Any], output_file: Path) -> None:
     doc = Document(str(spec.source))
     if spec.table_index < 0:
@@ -2520,6 +2534,14 @@ def fill_doc(spec: AppendixSpec, mapping: dict[str, Any], output_file: Path) -> 
             continue
         highlight = decision["action"] in {"manual", "partial"}
         set_cell(row.cells[value_col], decision["value"], highlight=highlight)
+        if (
+            decision["action"] in {"fill", "partial"}
+            and table_idx == spec.table_index
+            and value_col == spec.value_col
+        ):
+            mirror_col = cert_mirror_value_col(spec, table)
+            if mirror_col is not None and mirror_col < len(row.cells) and cell_needs_fill(row.cells[mirror_col].text):
+                set_cell(row.cells[mirror_col], decision["value"], highlight=highlight)
         if decision["unit"] and unit_col is not None and unit_col < len(row.cells):
             set_cell(row.cells[unit_col], decision["unit"])
     output_file.parent.mkdir(parents=True, exist_ok=True)
