@@ -165,6 +165,39 @@ def tolerant_equal(left: str, right: str) -> bool:
     return abs(left_num - right_num) <= tolerance
 
 
+# ---- v5 等价类（2026-07-09 差异审计确认：82/642 wrongCells 属"填对被判错"）----
+
+_EMPTY_RESPONSE_CLASS = {"/", "\\", "—", "-", "－", "无", "n/a", "na", "不适用"}
+
+
+def _norm_number_format(text: str) -> str:
+    """千分位、结尾 .0、空格、全角逗号归一（10,000==10000、8.0rpm==8rpm）。"""
+    t = norm_text(text).replace("，", ",")
+    t = re.sub(r"(?<=\d),(?=\d{3})", "", t)
+    t = re.sub(r"(\d+)\.0+(?=\D|$)", r"\1", t)
+    t = re.sub(r"(\d+\.\d*?)0+(?=\D|$)", r"\1", t)
+    return t.lower()
+
+
+def _strip_separators(text: str) -> str:
+    """换行/分隔符归一：docx 换行被 clean 成 " / " 的等价（B.1.1/D.5 实测 20 格）。"""
+    return re.sub(r"[\s/\\|，,;；]+", "", str(text or ""))
+
+
+def tolerant_equal_v5(left: str, right: str) -> bool:
+    if tolerant_equal(left, right):
+        return True
+    l, r = norm_text(left).lower(), norm_text(right).lower()
+    if l in _EMPTY_RESPONSE_CLASS and r in _EMPTY_RESPONSE_CLASS:
+        return True
+    if _norm_number_format(left) == _norm_number_format(right):
+        return True
+    ls, rs = _strip_separators(left), _strip_separators(right)
+    if ls and ls == rs:
+        return True
+    return False
+
+
 def _row_key(row: list[str]) -> str:
     for cell in row:
         text = norm_text(cell)
@@ -224,7 +257,7 @@ def score_outputs(results: list[dict[str, Any]], human_docx: Path, min_align: fl
                 continue
             totals["alignedTables"] += 1
             human_table = pool[human_idx]
-            changed = correct = touched = same_row_attempt = tolerant_correct = 0
+            changed = correct = touched = same_row_attempt = tolerant_correct = tolerant_v5_correct = 0
             # v4 行对齐：投标人增删行会使纯行号比对从错位点起全部误判
             #（C.2 删 1 行 → 后半张表全算错）。行数不一致时按"行键"（首个非纯数字
             # 静态格文本）做序列对齐；行数一致保持纯行号（无噪声）。
@@ -253,6 +286,8 @@ def score_outputs(results: list[dict[str, Any]], human_docx: Path, min_align: fl
                             tolerant_correct += 1
                         elif human_text in agent_row_values:
                             same_row_attempt += 1
+                        if tolerant_equal_v5(agent_raw, human_row[col_idx]):
+                            tolerant_v5_correct += 1
                         if not is_tolerant:
                             wrong_cells.append({
                                 "row": row_idx, "col": col_idx,
@@ -265,6 +300,7 @@ def score_outputs(results: list[dict[str, Any]], human_docx: Path, min_align: fl
             totals["humanChangedCells"] += changed
             totals["agentCorrectCells"] += correct
             totals["agentTolerantCorrectCells"] += tolerant_correct
+            totals["agentTolerantV5CorrectCells"] = totals.get("agentTolerantV5CorrectCells", 0) + tolerant_v5_correct
             totals["agentTouchedCells"] += touched
             totals["sameRowAttemptCells"] += same_row_attempt
             rows.append({
@@ -272,7 +308,7 @@ def score_outputs(results: list[dict[str, Any]], human_docx: Path, min_align: fl
                 "table": table_idx, "aligned": True, "usedFallback": used_fallback,
                 "humanTable": human_idx, "alignScore": round(align_score, 3),
                 "humanChangedCells": changed, "agentCorrectCells": correct,
-                "agentTolerantCorrectCells": tolerant_correct, "agentTouchedCells": touched,
+                "agentTolerantCorrectCells": tolerant_correct, "agentTolerantV5CorrectCells": tolerant_v5_correct, "agentTouchedCells": touched,
                 "sameRowAttemptCells": same_row_attempt,
                 "strictCoverage": round(correct / changed, 4) if changed else None,
                 "tolerantCoverage": round(tolerant_correct / changed, 4) if changed else None,
@@ -280,6 +316,7 @@ def score_outputs(results: list[dict[str, Any]], human_docx: Path, min_align: fl
             })
     totals["strictCoverage"] = round(totals["agentCorrectCells"] / totals["humanChangedCells"], 4) if totals["humanChangedCells"] else None
     totals["tolerantCoverage"] = round(totals["agentTolerantCorrectCells"] / totals["humanChangedCells"], 4) if totals["humanChangedCells"] else None
+    totals["tolerantV5Coverage"] = round(totals.get("agentTolerantV5CorrectCells", 0) / totals["humanChangedCells"], 4) if totals["humanChangedCells"] else None
     totals["rowAttemptCoverage"] = round((totals["agentCorrectCells"] + totals["sameRowAttemptCells"]) / totals["humanChangedCells"], 4) if totals["humanChangedCells"] else None
     return {"summary": totals, "tables": rows, "headingsFound": len(headings)}
 
