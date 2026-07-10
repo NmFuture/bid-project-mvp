@@ -20,6 +20,7 @@ from app.services.minio_client import minio_client
 from app.services.onlyoffice_documents import document_path
 from app.services.bid_runtime_state import now_iso
 from app.services.technical_gap_repository import get_technical_gap_project_runtime_state
+from app.services.technical_gap_domain import technical_gap_artifact_is_s7_ready
 from app.services.technical_gap_review import build_technical_review_payload
 from app.services.technical_gap_state import ensure_technical_gap_state
 from app.services.technical_material_store import technical_material_store
@@ -382,6 +383,8 @@ def _with_recovered_ai_fill_artifacts(project_id: str, plan: dict[str, Any]) -> 
                 continue
             report = _load_ai_fill_report(output_file)
             title = str(report.get("title") or item.get("title") or output_file.stem)
+            quality_report = report.get("qualityReport") if isinstance(report.get("qualityReport"), dict) else {}
+            s7_ready = bool(report.get("s7Ready")) or quality_report.get("status") == "passed"
             artifacts.append(
                 {
                     "id": f"RECOVERED-{gap_dir.name}-{index:03d}",
@@ -391,7 +394,10 @@ def _with_recovered_ai_fill_artifacts(project_id: str, plan: dict[str, Any]) -> 
                     "title": title,
                     "fileName": output_file.name,
                     "path": output_path,
-                    "s7Ready": True,
+                    "qualityReport": quality_report,
+                    "s7Ready": s7_ready,
+                    "qualityGate": "auto_passed" if s7_ready else "needs_review",
+                    "confirmed": s7_ready,
                     "recoveredBy": "s4_assembly",
                 }
             )
@@ -399,7 +405,7 @@ def _with_recovered_ai_fill_artifacts(project_id: str, plan: dict[str, Any]) -> 
             continue
         item.setdefault("resolvedArtifacts", []).extend(artifacts)
         item["matchedMaterials"] = []
-        item["status"] = "resolved"
+        item["status"] = "resolved" if all(artifact["s7Ready"] for artifact in artifacts) else "needs_input"
         item["resolvedSource"] = f"{len(item.get('resolvedArtifacts') or [])} 份AI填写产物"
         recovered_count += len(artifacts)
 
@@ -419,6 +425,10 @@ def _load_ai_fill_report(output_file: Path) -> dict[str, Any]:
         if isinstance(data, dict):
             report = data.get("fillReport") if isinstance(data.get("fillReport"), dict) else {}
             merged = dict(report)
+            if isinstance(data.get("qualityReport"), dict):
+                merged["qualityReport"] = data["qualityReport"]
+            if "s7Ready" in data:
+                merged["s7Ready"] = bool(data.get("s7Ready"))
             for key in ("title", "skill", "status"):
                 if data.get(key) and key not in merged:
                     merged[key] = data.get(key)
@@ -433,6 +443,8 @@ def _gap_plan_has_resolved_artifacts(plan: dict[str, Any]) -> bool:
             continue
         for artifact in item.get("resolvedArtifacts") or []:
             if not isinstance(artifact, dict):
+                continue
+            if not technical_gap_artifact_is_s7_ready(artifact):
                 continue
             path = _runtime_path(str(artifact.get("path") or artifact.get("docx") or ""))
             if path.exists() and path.suffix.lower() == ".docx":

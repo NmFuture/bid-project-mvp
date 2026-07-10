@@ -442,6 +442,11 @@ export const technicalGapsAPI = {
       timeoutMs: 10 * 60 * 1000,
       retryCount: 0,
     }),
+  confirmAiFillArtifact: (projectId, gid, artifactId, data) =>
+    request(`/technical/projects/${projectId}/gaps/${gid}/artifacts/${artifactId}/confirm`, {
+      method: 'POST',
+      body: data,
+    }),
   aiFillAll: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/ai-fill-all`, {
       method: 'POST',

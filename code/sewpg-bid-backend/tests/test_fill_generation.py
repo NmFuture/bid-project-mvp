@@ -624,7 +624,13 @@ class FillGenerationTests(unittest.TestCase):
         doc.add_paragraph("已填写表格")
         doc.save(filled_docx)
         (ai_fill_dir / "投标机型总方案信息表_AI填写.fill_report.json").write_text(
-            json.dumps({"fillReport": {"title": "投标机型总方案信息表"}}, ensure_ascii=False),
+            json.dumps(
+                {
+                    "fillReport": {"title": "投标机型总方案信息表"},
+                    "qualityReport": {"status": "passed"},
+                },
+                ensure_ascii=False,
+            ),
             encoding="utf-8",
         )
 
@@ -639,7 +645,49 @@ class FillGenerationTests(unittest.TestCase):
         self.assertEqual(len(item["resolvedArtifacts"]), 1)
         self.assertEqual(item["resolvedArtifacts"][0]["source"], "ai_fill")
         self.assertEqual(item["resolvedArtifacts"][0]["path"], str(filled_docx))
+        self.assertTrue(item["resolvedArtifacts"][0]["s7Ready"])
         self.assertEqual(recovered["s7RecoveredAiFillArtifactCount"], 1)
+
+    def test_s7_recovered_ai_fill_without_quality_pass_stays_blocked(self) -> None:
+        from app.services import tech_assembly
+
+        project_id = self._prepare_project_after_outline()
+        project = store._require(project_id)
+        project["gap_state"] = {
+            "plan": {
+                "schemaVersion": "bid-tech-gap-plan-v1",
+                "status": "ready",
+                "items": [
+                    {
+                        "id": "GAP-0058",
+                        "number": "附表A.1",
+                        "title": "投标机型总方案信息表",
+                        "status": "needs_input",
+                        "matchedMaterials": [],
+                        "resolvedArtifacts": [],
+                    }
+                ],
+            },
+            "integrity": {"status": "blocked", "blockingCount": 1},
+        }
+        store._persist_project(project)
+
+        ai_fill_dir = technical_workspace_stage_dir(project_id, "s4_gap_workdir") / "ai_fill" / "GAP-0058"
+        ai_fill_dir.mkdir(parents=True, exist_ok=True)
+        filled_docx = ai_fill_dir / "投标机型总方案信息表_AI填写.docx"
+        doc = Document()
+        doc.add_paragraph("未验收填写结果")
+        doc.save(filled_docx)
+
+        recovered = tech_assembly._with_recovered_ai_fill_artifacts(
+            project_id,
+            json.loads(json.dumps(project["gap_state"]["plan"], ensure_ascii=False)),
+        )
+
+        artifact = recovered["items"][0]["resolvedArtifacts"][0]
+        self.assertFalse(artifact["s7Ready"])
+        self.assertEqual(artifact["qualityGate"], "needs_review")
+        self.assertFalse(tech_assembly._gap_plan_has_resolved_artifacts(recovered))
 
     def test_wiki_export_failure_keeps_runtime_wiki_available(self) -> None:
         from app.services import tech_assembly

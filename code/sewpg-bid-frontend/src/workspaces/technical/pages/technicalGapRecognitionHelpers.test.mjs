@@ -22,7 +22,7 @@ test('技术标 AI 填表默认选中来源矩阵推荐素材', () => {
   const task = { blankSource: { id: 'APPX-C1' } }
 
   assert.equal(appendixTaskForFillTask(selected, task)?.id, 'APPX-C1')
-  assert.deepEqual(defaultAiFillReferenceMaterialIds(selected, [], task), ['RAW-RULE-ITEM'])
+  assert.deepEqual(defaultAiFillReferenceMaterialIds(selected, [], task), ['RAW-RULE-APPX', 'RAW-RULE-ITEM'])
   assert.deepEqual(defaultAiFillReferenceMaterialIds(selected, ['RAW-MANUAL'], task), ['RAW-MANUAL'])
 })
 

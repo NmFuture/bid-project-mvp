@@ -402,9 +402,12 @@ class GapReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["item"]["status"], "resolved")
+        self.assertEqual(payload["item"]["status"], "needs_input")
+        self.assertEqual(payload["item"]["decision"], "review_required")
         self.assertEqual(payload["artifact"]["source"], "ai_fill")
         self.assertEqual(payload["artifact"]["skill"], "bid-tech-table-filler")
+        self.assertFalse(payload["artifact"]["s7Ready"])
+        self.assertEqual(payload["artifact"]["referenceMaterialIds"], ["RAW-0001"])
         self.assertIn("AI 填写仍有未填字段：1 项", payload["item"]["reviewNotes"])
         self.assertTrue(Path(payload["artifact"]["path"]).exists())
         self.assertIn("onlyoffice", payload["artifact"])
@@ -421,7 +424,21 @@ class GapReviewFlowTests(unittest.TestCase):
         updated_gap = self.client.get(f"/api/technical/projects/{project_id}/gaps").json()["gapPlan"]
         updated_item = next(item for item in updated_gap["items"] if item["id"] == gap_id)
         self.assertEqual(updated_item["resolvedArtifacts"][0]["source"], "ai_fill")
+        self.assertEqual(updated_item["resolvedArtifacts"][0]["referenceMaterialIds"], ["RAW-0001"])
+        self.assertEqual(updated_item["resolvedArtifacts"][0]["referenceMaterials"][0]["id"], "RAW-0001")
         self.assertEqual(updated_item["fillTasks"][0]["status"], "completed")
+
+        confirm_response = self.client.post(
+            f"/api/technical/projects/{project_id}/gaps/{gap_id}/artifacts/{payload['artifact']['id']}/confirm",
+            json={"operator": "复核用户"},
+        )
+        self.assertEqual(confirm_response.status_code, 200, confirm_response.text)
+        confirmed = confirm_response.json()
+        self.assertEqual(confirmed["item"]["status"], "resolved")
+        self.assertEqual(confirmed["item"]["decision"], "ready")
+        self.assertTrue(confirmed["artifact"]["s7Ready"])
+        self.assertEqual(confirmed["artifact"]["qualityGate"], "human_confirmed")
+        self.assertEqual(confirmed["artifact"]["confirmedBy"], "复核用户")
 
     def test_gap_ai_fill_manifest_carries_appendix_context_and_recommended_materials(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
@@ -502,7 +519,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(manifest["appendixTask"]["sourceRouting"]["standardSources"], ["性能保证基准素材"])
         self.assertEqual(manifest["recommendedMaterials"][0]["id"], "RAW-0001")
         self.assertEqual(manifest["referenceMaterials"][0]["id"], "RAW-0001")
-        self.assertTrue(manifest["materialIndex"])
+        self.assertEqual([item["id"] for item in manifest["materialIndex"]], ["RAW-0001"])
         self.assertEqual(manifest["parseFields"][0]["id"], "FIELD-POWER")
         self.assertEqual(manifest["blankSource"]["id"], "APP-PERF")
         artifact = response.json()["artifact"]
@@ -1417,30 +1434,49 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(payload["artifact"]["skill"], "bid-tech-word-placeholder-filler")
         self.assertEqual(payload["item"]["fillTasks"][0]["status"], "completed")
 
-    def test_fill_material_index_keeps_project_scope_when_item_has_blank_candidate(self) -> None:
-        with patch(
-            "app.services.technical_gap_ai_fill._allowed_technical_material_index",
-            return_value=[
-                {"id": "RAW-FACTS", "name": "风资源评估报告.docx", "folderPath": "技术标/项目素材"},
-            ],
-        ):
-            index = technical_gap_ai_fill._material_index_for_fill(
-                {"id": "PRJ-TEST"},
-                {"scopeBoundary": {"paths": ["技术标/项目素材"]}},
-                {
-                    "candidateMaterials": [
-                        {
-                            "id": "RAW-BLANK",
-                            "name": "待填写-投标关键数据一览表.docx",
-                            "folderPath": "技术标/通用素材",
-                        }
-                    ],
-                    "matchedMaterials": [],
-                    "appendixTasks": [],
-                },
-            )
+    def test_fill_material_index_is_locked_to_selected_references(self) -> None:
+        index = technical_gap_ai_fill._material_index_for_fill(
+            {"id": "PRJ-TEST"},
+            {
+                "materialIndex": [
+                    {"id": "RAW-SELECTED", "name": "已选素材.docx"},
+                    {"id": "RAW-UNSELECTED", "name": "未选素材.docx"},
+                ]
+            },
+            {
+                "candidateMaterials": [{"id": "RAW-CANDIDATE", "name": "候选素材.docx"}],
+                "matchedMaterials": [],
+                "appendixTasks": [],
+            },
+            ["RAW-SELECTED"],
+            [{"id": "RAW-SELECTED", "name": "已选素材.docx"}],
+        )
 
-        self.assertEqual([item["id"] for item in index], ["RAW-BLANK", "RAW-FACTS"])
+        self.assertEqual([item["id"] for item in index], ["RAW-SELECTED"])
+
+    def test_ai_fill_reference_selection_uses_all_routed_materials_and_respects_explicit_empty(self) -> None:
+        item = {
+            "sourceRouting": {"source": "appendix_source_matrix"},
+            "sourceRoutedMaterials": [{"id": "RAW-ITEM-1"}, {"id": "RAW-ITEM-2"}],
+            "matchedMaterials": [{"id": "RAW-MATCHED"}],
+        }
+        appendix_task = {
+            "sourceRouting": {"source": "appendix_source_matrix"},
+            "recommendedMaterials": [{"id": "RAW-TASK-1"}, {"id": "RAW-TASK-2"}],
+        }
+
+        self.assertEqual(
+            technical_gap_ai_fill._selected_reference_material_ids(item, appendix_task, {}),
+            ["RAW-TASK-1", "RAW-TASK-2", "RAW-ITEM-1", "RAW-ITEM-2"],
+        )
+        self.assertEqual(
+            technical_gap_ai_fill._selected_reference_material_ids(
+                item,
+                appendix_task,
+                {"referenceMaterialIds": []},
+            ),
+            [],
+        )
 
     def test_gap_upload_registers_real_project_artifact_for_s7(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
@@ -1892,6 +1928,8 @@ class GapReviewFlowTests(unittest.TestCase):
                 continue
             if item.get("fillTasks"):
                 item["status"] = "resolved"
+                for task in item["fillTasks"]:
+                    task["status"] = "completed"
                 item["resolvedArtifacts"] = [
                     {
                         "id": f"ART-{item['id']}",
@@ -1899,6 +1937,7 @@ class GapReviewFlowTests(unittest.TestCase):
                         "skill": "bid-tech-table-filler",
                         "fileName": f"{item['id']}.docx",
                         "s7Ready": True,
+                        "qualityReport": {"status": "passed"},
                         "unfilledFields": [],
                         "fillReport": {"filledFieldCount": 2, "unfilledFieldCount": 0},
                         "evidenceRefs": [{"type": "material", "id": "RAW-0001"}],

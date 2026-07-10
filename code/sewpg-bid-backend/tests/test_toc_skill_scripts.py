@@ -1035,7 +1035,7 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertEqual(result["fillReport"]["unfilledFieldCount"], 1)
             filled_doc = Document(str(output))
             rows = filled_doc.tables[0].rows
-            self.assertEqual(rows[1].cells[2].text, "EW10.0-220上置")
+            self.assertEqual(rows[1].cells[2].text, "EW10.0-220")
             self.assertEqual(rows[2].cells[2].text, "220")
             self.assertEqual(rows[3].cells[2].text, "测试业主")
             self.assertEqual(rows[4].cells[2].text, "[待人工补充：场址空气密度]")
@@ -1388,7 +1388,7 @@ class TocSkillScriptTests(unittest.TestCase):
 
             filled_doc = Document(str(output))
             rows = filled_doc.tables[0].rows
-            self.assertEqual(rows[1].cells[3].text, "EW10.0-220上置")
+            self.assertEqual(rows[1].cells[3].text, "EW10.0-220")
             self.assertEqual(rows[1].cells[4].text, "")
             self.assertEqual(rows[2].cells[3].text, "60")
 
@@ -1865,7 +1865,7 @@ class TocSkillScriptTests(unittest.TestCase):
             filled_doc = Document(str(output))
             rows = filled_doc.tables[0].rows
             self.assertEqual(rows[1].cells[2].text, "60")
-            self.assertEqual(rows[2].cells[2].text, "600MW")
+            self.assertEqual(rows[2].cells[2].text, "600")
             self.assertEqual(rows[3].cells[2].text, "1.154 kg/m³")
             self.assertEqual(rows[4].cells[2].text, "789.482")
             self.assertEqual(rows[5].cells[2].text, "85.788")
@@ -2536,10 +2536,16 @@ class TocSkillScriptTests(unittest.TestCase):
                                 "id": "GAP-0058",
                                 "number": "附表A.1",
                                 "title": "投标机型总方案信息表",
+                                "fillTasks": [{"id": "FILL-0058", "status": "completed"}],
+                                "matchedMaterials": [
+                                    {"path": "/tmp/投标机型总方案信息表_待填写.docx"}
+                                ],
                                 "resolvedArtifacts": [
                                     {
                                         "source": "ai_fill",
                                         "path": "/tmp/投标机型总方案信息表_AI填写.docx",
+                                        "s7Ready": True,
+                                        "qualityReport": {"status": "passed"},
                                     }
                                 ],
                             }
@@ -2570,6 +2576,57 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(updated[0]["status"], "MATCHED")
         self.assertEqual(updated[0]["paths"], ["/tmp/投标机型总方案信息表_AI填写.docx"])
         self.assertEqual(updated[0]["gap_plan_item_id"], "GAP-0058")
+
+    def test_bid_assembler_gap_plan_skips_unreviewed_ai_fill_artifact(self) -> None:
+        build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap_plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-0058",
+                                "number": "附表A.1",
+                                "title": "投标机型总方案信息表",
+                                "fillTasks": [{"id": "FILL-0058", "status": "completed"}],
+                                "matchedMaterials": [
+                                    {"path": "/tmp/投标机型总方案信息表_待填写.docx"}
+                                ],
+                                "resolvedArtifacts": [
+                                    {
+                                        "source": "ai_fill",
+                                        "path": "/tmp/未验收_AI填写.docx",
+                                        "s7Ready": True,
+                                        "qualityReport": {"status": "needs_review"},
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "chapter_no_flat": "附表A.1",
+                    "chapter_no": "",
+                    "title": "投标机型总方案信息表",
+                    "paths": [],
+                    "shifts": [],
+                    "attach_modes": [],
+                    "field_replace": False,
+                    "status": "NEEDS_REVIEW",
+                    "note": "待人工复核",
+                }
+            ]
+
+            updated = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+        self.assertEqual(updated[0]["status"], "NEEDS_REVIEW")
+        self.assertEqual(updated[0]["paths"], [])
 
     def test_bid_assembler_gap_plan_preserves_structural_items(self) -> None:
         build_assembly = load_assembler_script("build_assembly")

@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.config import BASE_DIR
-from app.services.identity import build_project_material_scope
 from app.services.minio_client import minio_client
 from app.services.ocr_service import ocr_service
 from app.services.opencode_client import OpencodeClient
@@ -181,9 +180,8 @@ def _selected_reference_material_ids(
     appendix_task: dict[str, Any],
     data: dict[str, Any],
 ) -> list[str]:
-    requested = _string_items(data.get("referenceMaterialIds"))
-    if requested:
-        return requested
+    if "referenceMaterialIds" in data:
+        return _string_items(data.get("referenceMaterialIds"))
 
     has_source_routing = (
         isinstance(appendix_task.get("sourceRouting"), dict)
@@ -193,27 +191,26 @@ def _selected_reference_material_ids(
         and item["sourceRouting"].get("source") == "appendix_source_matrix"
     )
     if has_source_routing:
-        routed = [
+        routed = _string_items([
             _material_key(material)
             for material in (
                 _object_items(appendix_task.get("recommendedMaterials"))
                 + _object_items(item.get("sourceRoutedMaterials"))
             )
-        ]
-        routed = [material_id for material_id in routed if material_id]
+        ])
         if routed:
-            return routed[:1]
+            return routed
 
     matched = [_material_key(material) for material in _object_items(item.get("matchedMaterials"))]
     matched = [item for item in matched if item]
     if matched:
         return matched
 
-    recommended = [
+    recommended = _string_items([
         _material_key(material)
-        for material in _object_items(appendix_task.get("recommendedMaterials"))[:1]
-    ]
-    return [item for item in recommended if item]
+        for material in _object_items(appendix_task.get("recommendedMaterials"))
+    ])
+    return recommended
 
 
 def _reference_materials_for_fill(
@@ -291,9 +288,18 @@ def _allowed_technical_material_index(material_scope: dict[str, Any], turbine_mo
     return items
 
 
-def _material_index_for_fill(project: dict[str, Any], plan: dict[str, Any], item: dict[str, Any]) -> list[dict[str, Any]]:
-    item_candidates = _dedupe_material_summaries(
-        _object_items(plan.get("materialIndex"))
+def _material_index_for_fill(
+    project: dict[str, Any],
+    plan: dict[str, Any],
+    item: dict[str, Any],
+    selected_ids: list[str],
+    reference_materials: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    _ = project
+    context = _dedupe_material_summaries(
+        reference_materials
+        + _object_items(item.get("sourceRoutedMaterials"))
+        + _object_items(plan.get("materialIndex"))
         + _object_items(item.get("candidateMaterials"))
         + _object_items(item.get("matchedMaterials"))
         + [
@@ -302,12 +308,15 @@ def _material_index_for_fill(project: dict[str, Any], plan: dict[str, Any], item
             for material in _object_items(task.get("recommendedMaterials"))
         ]
     )
-
-    material_scope = plan.get("scopeBoundary") if isinstance(plan.get("scopeBoundary"), dict) else {}
-    if not material_scope:
-        material_scope = build_project_material_scope(project)
-    scoped_index = _allowed_technical_material_index(material_scope, project_turbine_model(project))
-    return _dedupe_material_summaries(item_candidates + scoped_index)
+    by_id = {
+        _material_key(material): material
+        for material in context
+        if _material_key(material)
+    }
+    return _dedupe_material_summaries([
+        by_id.get(material_id) or {"id": material_id, "name": material_id}
+        for material_id in selected_ids
+    ])
 
 
 async def _downloadable_technical_fill_source_payload(material_id: str) -> tuple[dict[str, Any], str]:
@@ -775,6 +784,7 @@ def _build_ai_fill_artifacts(
     recommended_materials: list[dict[str, Any]],
     parse_fields: list[dict[str, Any]],
     manifest_path: Path,
+    s7_ready: bool,
     browser_base_url: str = "",
     onlyoffice_base_url: str = "",
 ) -> list[dict[str, Any]]:
@@ -787,6 +797,7 @@ def _build_ai_fill_artifacts(
         artifact_id = base_artifact_id if batch_count == 1 else f"{base_artifact_id}-{index:03d}"
         title = str(target_report.get("title") or item_title or output_file.stem)
         quality_report = _build_fill_quality_report(target_result, output_exists=output_file.exists())
+        artifact_s7_ready = s7_ready and quality_report["status"] == "passed"
         artifacts.append(
             {
                 "id": artifact_id,
@@ -803,6 +814,11 @@ def _build_ai_fill_artifacts(
                 "evidenceRefs": list(target_result.get("evidenceRefs") or []),
                 "fillReport": target_report,
                 "qualityReport": quality_report,
+                "referenceMaterialIds": [
+                    _material_key(material)
+                    for material in reference_materials
+                    if _material_key(material)
+                ],
                 "referenceMaterials": reference_materials,
                 "recommendedMaterials": recommended_materials,
                 "parseFields": parse_fields,
@@ -818,13 +834,25 @@ def _build_ai_fill_artifacts(
                     browser_base_url=browser_base_url,
                     onlyoffice_base_url=onlyoffice_base_url,
                 ),
-                "s7Ready": True,
+                "s7Ready": artifact_s7_ready,
+                "qualityGate": "auto_passed" if artifact_s7_ready else "needs_review",
+                "confirmed": artifact_s7_ready,
             }
         )
     return artifacts
 
 
 def _compact_resolved_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
+    reference_materials = [
+        {
+            "id": _material_key(material),
+            "name": str(material.get("name") or material.get("title") or material.get("fileName") or ""),
+            "folderPath": str(material.get("folderPath") or ""),
+            "materialTier": str(material.get("materialTier") or ""),
+        }
+        for material in _object_items(artifact.get("referenceMaterials"))
+        if _material_key(material)
+    ]
     return {
         "id": artifact.get("id"),
         "source": artifact.get("source"),
@@ -840,12 +868,21 @@ def _compact_resolved_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
         "evidenceRefs": list(artifact.get("evidenceRefs") or []),
         "fillReport": artifact.get("fillReport") or {},
         "qualityReport": artifact.get("qualityReport") or {},
+        "referenceMaterialIds": _string_items(
+            artifact.get("referenceMaterialIds")
+            or [_material_key(material) for material in reference_materials]
+        ),
+        "referenceMaterials": reference_materials,
         "manifestPath": artifact.get("manifestPath"),
         "batchReportPath": artifact.get("batchReportPath") or "",
         "batchTargetIndex": artifact.get("batchTargetIndex") or 0,
         "batchTargetCount": artifact.get("batchTargetCount") or 0,
         "onlyoffice": artifact.get("onlyoffice") or {},
         "s7Ready": artifact.get("s7Ready", True),
+        "qualityGate": str(artifact.get("qualityGate") or ""),
+        "confirmed": bool(artifact.get("confirmed")),
+        "confirmedAt": str(artifact.get("confirmedAt") or ""),
+        "confirmedBy": str(artifact.get("confirmedBy") or ""),
         "referenceMaterialCount": len(artifact.get("referenceMaterials") or []),
         "recommendedMaterialCount": len(artifact.get("recommendedMaterials") or []),
     }
@@ -919,8 +956,14 @@ def run_technical_ai_fill_for_gap(
         for material in reference_materials
         if str(material.get("id") or material.get("materialId") or "").strip() != blank_source_id
     ]
-    recommended_materials = _dedupe_material_summaries(_object_items(appendix_task.get("recommendedMaterials")))
-    material_index = _material_index_for_fill(project, plan, item)
+    recommended_materials = list(reference_materials)
+    material_index = _material_index_for_fill(
+        project,
+        plan,
+        item,
+        selected_reference_ids,
+        reference_materials,
+    )
     parse_fields = _parse_fields_for_fill(appendix_task, task, data)
     work_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / gap_id
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -1042,6 +1085,7 @@ def run_technical_ai_fill_for_gap(
         recommended_materials=recommended_materials,
         parse_fields=parse_fields,
         manifest_path=manifest_path,
+        s7_ready=quality_report["status"] == "passed",
         browser_base_url=browser_base_url,
         onlyoffice_base_url=onlyoffice_base_url,
     )
@@ -1051,7 +1095,7 @@ def run_technical_ai_fill_for_gap(
     task["outputArtifactId"] = artifact["id"]
     task["outputArtifactIds"] = [entry["id"] for entry in artifacts]
     task["completedAt"] = created_at
-    item["status"] = "resolved"
+    item["status"] = "resolved" if quality_report["status"] == "passed" else "needs_input"
     item["qualityStatus"] = quality_report["status"]
     item["qualityReport"] = quality_report
     item["resolvedArtifacts"] = _replace_resolved_artifacts(

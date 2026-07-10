@@ -30,11 +30,16 @@ export const defaultAiFillReferenceMaterialIds = (selected, selectedMaterialIds 
   const scopedAppendixTasks = appendixTask ? [appendixTask] : asObjectArray(selected?.appendixTasks)
   const hasSourceRouting = scopedAppendixTasks.some((item) => item?.sourceRouting?.source === 'appendix_source_matrix')
     || selected?.sourceRouting?.source === 'appendix_source_matrix'
-  const routedIds = uniqueStrings(asObjectArray(selected?.sourceRoutedMaterials).map((item) => item.id || item.materialId))
-  if (hasSourceRouting && routedIds.length) return routedIds.slice(0, 1)
+  const routedIds = uniqueStrings([
+    ...scopedAppendixTasks
+      .flatMap((item) => asObjectArray(item?.recommendedMaterials))
+      .map((item) => item.id || item.materialId),
+    ...asObjectArray(selected?.sourceRoutedMaterials).map((item) => item.id || item.materialId),
+  ])
+  if (hasSourceRouting && routedIds.length) return routedIds
   const recommendedIds = uniqueStrings(
     scopedAppendixTasks
-      .flatMap((item) => asObjectArray(item?.recommendedMaterials).slice(0, 1))
+      .flatMap((item) => asObjectArray(item?.recommendedMaterials))
       .map((item) => item.id),
   )
   if (hasSourceRouting) return recommendedIds

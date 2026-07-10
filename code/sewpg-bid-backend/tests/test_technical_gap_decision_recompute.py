@@ -49,6 +49,67 @@ class RecomputeTechnicalGapDecisionsTests(unittest.TestCase):
         self.assertEqual(changed, 0)
         self.assertEqual(item["decision"], "fill_required")
 
+    def test_unreviewed_ai_artifact_requires_review(self) -> None:
+        item = _base_item(
+            decision="fill_required",
+            status="needs_input",
+            fillTasks=[{"id": "FILL-1", "status": "completed"}],
+            resolvedArtifacts=[{"id": "ART-AI", "source": "ai_fill", "s7Ready": False}],
+        )
+        plan = {"items": [item]}
+
+        changed = recompute_technical_gap_decisions(plan)
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(item["decision"], "review_required")
+        self.assertEqual(item["status"], "needs_input")
+
+    def test_legacy_needs_review_ai_artifact_is_not_trusted_by_s7_ready_flag(self) -> None:
+        item = _base_item(
+            decision="ready",
+            status="resolved",
+            fillTasks=[{"id": "FILL-1", "status": "completed"}],
+            resolvedArtifacts=[
+                {
+                    "id": "ART-AI",
+                    "source": "ai_fill",
+                    "s7Ready": True,
+                    "qualityReport": {"status": "needs_review"},
+                }
+            ],
+        )
+        plan = {"items": [item]}
+
+        recompute_technical_gap_decisions(plan)
+
+        self.assertEqual(item["decision"], "review_required")
+        self.assertEqual(item["status"], "needs_input")
+
+    def test_ready_ai_artifact_does_not_hide_another_pending_fill_task(self) -> None:
+        item = _base_item(
+            decision="ready",
+            status="resolved",
+            fillTasks=[
+                {"id": "FILL-1", "status": "completed"},
+                {"id": "FILL-2", "status": "pending"},
+            ],
+            resolvedArtifacts=[
+                {
+                    "id": "ART-AI",
+                    "source": "ai_fill",
+                    "s7Ready": True,
+                    "qualityReport": {"status": "passed"},
+                }
+            ],
+        )
+        plan = {"items": [item]}
+
+        changed = recompute_technical_gap_decisions(plan)
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(item["decision"], "fill_required")
+        self.assertEqual(item["status"], "needs_input")
+
     def test_completed_fill_tasks_do_not_block_review(self) -> None:
         """fillTasks 全部 completed 但还没产出 resolvedArtifacts → 不再算「需要处理」，按候选情况继续走终审。"""
         item = _base_item(
