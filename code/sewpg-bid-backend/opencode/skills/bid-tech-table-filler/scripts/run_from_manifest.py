@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 from copy import deepcopy
 from difflib import SequenceMatcher
@@ -393,11 +394,22 @@ def is_conditional_requirement_text(value: Any) -> bool:
     return bool(re.search(r"需\s*[≤≥<>]|不(?:低于|高于|得低于|得高于)|至少", text))
 
 
+PURE_UNIT_VALUES = {
+    "m", "mm", "cm", "km", "m/s", "mm/s", "m2", "m²", "m3", "m³", "kg", "t", "g",
+    "kw", "mw", "kwh", "mwh", "kv", "v", "a", "hz", "rpm", "r/min", "kg/m3", "kg/m³",
+    "℃", "°c", "%", "pa", "kpa", "mpa", "db", "db(a)", "n", "kn", "n·m", "kn·m", "年", "h", "min", "s",
+}
+QUANTIFIER_ONLY_VALUES = {"台", "套", "个", "片", "支", "件", "座", "根", "只", "条"}
+
+
 def usable_value(value: str) -> bool:
     v = clean(value)
     if not v or v in {"/", "-", "—", "无", "None", "none", "N/A", "n/a"}:
         return False
     if any(marker in v for marker in ("待填写", "待补充", "待确认", "待人工补充", "[", "【")):
+        return False
+    # 纯单位串/纯量词不是答案值（金标反评：'kg/m3'、'm/s'、'台' 被当值抄进格）
+    if v.lower().replace(" ", "") in PURE_UNIT_VALUES or v in QUANTIFIER_ONLY_VALUES:
         return False
     weak = ["见商务", "商务报价表", "商务部分", "项目定制", "待定", "无明确", "参照1.1", "参照 1.1"]
     if any(token in v for token in weak):
@@ -527,11 +539,28 @@ _UNIT_CONVERSIONS = {("kw", "mw"): 1e-3, ("mw", "kw"): 1e3, ("kg", "t"): 1e-3, (
 _CAPACITY_FIELD_TOKENS = ("单机容量", "额定功率", "装机容量", "标段规模", "总容量")
 
 
+_FIELD_NAME_UNIT_RE = re.compile(r"[（(]\s*([A-Za-z/%μ°℃²³·^0-9.]{1,12})\s*[）)]\s*$")
+
+
+def field_embedded_unit(field_name: str) -> str:
+    """字段名内嵌单位（"齿轮箱重量（kg）"、"轮毂中心高度（m）"）——模板无独立
+    单位列时的单位口径来源，用于同单位剥离与量纲换算。"""
+    match = _FIELD_NAME_UNIT_RE.search(clean(field_name))
+    if not match:
+        return ""
+    token = match.group(1)
+    if token.lower().replace(" ", "") in PURE_UNIT_VALUES or re.fullmatch(r"[A-Za-zμ°℃²³·^/]{1,8}[23]?", token):
+        return norm(token)
+    return ""
+
+
 def normalize_value_for_field(field: dict[str, Any], selected: dict[str, Any]) -> str:
     field_text = clean(f"{field.get('field')} {field.get('unit')}")
     label_text = clean(selected.get("label"))
     value_text = clean(selected.get("value"))
-    field_unit = norm(field.get("unit") or "")
+    # 数值尾部星号/脚注标记不是值的一部分（金标反评 C.1："10.7*"）
+    value_text = re.sub(r"(?<=[0-9])\s*[*＊†‡]+$", "", value_text)
+    field_unit = norm(field.get("unit") or "") or field_embedded_unit(field.get("field") or "")
     fact_unit = norm(selected.get("unit") or "")
     if "基础钢筋" in field_text and re.search(r"(?:（|\\(|\\b)t(?:）|\\)|\\b)|吨", field_text, flags=re.I):
         if "kg" in label_text.lower() or "千克" in label_text:
@@ -552,11 +581,17 @@ def normalize_value_for_field(field: dict[str, Any], selected: dict[str, Any]) -
         if mw is not None:
             selected["unit"] = "MW"  # 值换算成 MW 后，决策单位同步改写，避免单位列残留 kW
             return trim_float(mw, 6)
-    # 模板单位列已有单位时，数值里重复携带的同单位后缀剥掉（"600MW"+单位列MW→"600"）。
+    # 模板单位口径（单位列或字段名内嵌）已定时：值内同单位后缀剥掉
+    # （"600MW"+MW→"600"），异单位同族换算（"17.8T"+kg列→"17800"）。
     if field_unit:
-        match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z/%μ°².³]+)", value_text)
-        if match and norm(match.group(2)) == field_unit:
-            return match.group(1)
+        match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z/%μ°².³]+|吨)", value_text)
+        if match:
+            suffix = "t" if match.group(2) == "吨" else norm(match.group(2))
+            if suffix == field_unit:
+                return match.group(1)
+            suffix_factor = _UNIT_CONVERSIONS.get((suffix, field_unit))
+            if suffix_factor is not None:
+                return trim_float(float(match.group(1)) * suffix_factor, 6)
     return strip_numeric_trailing_annotation(value_text)
 
 
@@ -1546,6 +1581,28 @@ def derive_project_facts(facts: list[dict[str, Any]]) -> None:
                 confidence=0.88,
                 notes="由保证发电量和机组台数派生",
             )
+    # 扫风面积 = π(D/2)²：纯几何派生（金标反评 C.1：38013 = π×110²，
+    # 库内只有"单位千瓦扫风面积"，词面相近导致 3.80 假值顶位）。
+    rotor_diameter = first_fact_number(facts, "rotor_diameter")
+    has_real_swept_area = any(
+        "swept_area" in fact["concepts"]
+        and "单位千瓦" not in fact["label"]
+        and "每千瓦" not in fact["label"]
+        and fact.get("source") != "derived"
+        for fact in facts
+    )
+    if rotor_diameter is not None and not has_real_swept_area:
+        swept = math.pi * (rotor_diameter / 2) ** 2
+        add_fact(
+            facts,
+            label="扫风面积",
+            value=str(int(round(swept))),
+            unit="m²",
+            concept="swept_area",
+            source="derived",
+            confidence=0.9,
+            notes=f"由叶轮直径 {trim_float(rotor_diameter, 3)}m 按 π(D/2)² 派生",
+        )
 
 
 def looks_like_header_or_empty(label: str, value: str) -> bool:
@@ -1711,10 +1768,15 @@ def extract_doc_generic_facts(source: Source) -> list[dict[str, Any]]:
             nonempty = [(idx, value) for idx, value in enumerate(values) if value]
             if len(nonempty) < 2:
                 continue
+            # 同行允许两对键值：真值对常在第二对（"塔节 | 重量（kg）| 75136"），
+            # 第二对起只收数值型值，避免同行文字对成串产生噪声
+            row_fact_count = 0
             for first, second in zip(nonempty, nonempty[1:]):
                 label = first[1]
                 value = second[1]
                 if looks_like_header_or_empty(label, value):
+                    continue
+                if row_fact_count and not re.search(r"[0-9]", value):
                     continue
                 add_fact(
                     facts,
@@ -1726,7 +1788,9 @@ def extract_doc_generic_facts(source: Source) -> list[dict[str, Any]]:
                     confidence=0.72,
                     notes="通用 Word 表格键值抽取",
                 )
-                break
+                row_fact_count += 1
+                if row_fact_count >= 2:
+                    break
             if len(facts) >= GENERIC_FACT_LIMIT_PER_FILE:
                 return facts
     return facts
@@ -1745,6 +1809,17 @@ CERT_INTENT_TOKENS: dict[str, tuple[str, ...]] = {
 def cert_intents_for(text: str) -> set[str]:
     lowered = clean(text).lower()
     return {intent for intent, tokens in CERT_INTENT_TOKENS.items() if any(token.lower() in lowered for token in tokens)}
+
+
+# 行键部件词：长词在前（主轴承先于主轴），供 F.3 行组锁定事实来源
+COMPONENT_ROW_TOKENS = ("主轴承", "齿轮箱", "发电机", "变流器", "主控", "叶片", "轮毂", "变桨", "偏航", "主轴", "塔架", "机舱")
+
+
+def component_row_token(text: str) -> str:
+    for token in COMPONENT_ROW_TOKENS:
+        if token in text:
+            return token
+    return ""
 
 
 CERT_ISSUER_SUFFIXES = ("认证中心", "认证公司", "认证有限公司", "认证集团", "船级社", "检验认证")
@@ -2322,6 +2397,15 @@ def map_fields(spec: AppendixSpec, fields: list[dict[str, Any]], facts: list[dic
             key=lambda item: (item["score"], item["sourceKind"] == "xlsx", item.get("sourcePriority", 0)),
             reverse=True,
         )
+        # F.3 大部件行键路由：行组（"叶片单独认证"等跨列组标题）锁定部件后，
+        # 候选只保留来源名带同部件词的事实——否则发电机证书的制造商会顶进
+        # 叶片行（金标反评 F.3.1：96 格错位主因之一）。
+        if spec.prefix == "F3":
+            row_token = component_row_token(clean(f"{field.get('group') or ''}"))
+            if row_token:
+                scoped = [item for item in candidates if row_token in clean(item["source"])]
+                if scoped:
+                    candidates = scoped
         # F 系列认证表：证书 OCR 值是权威来源。有过线的证书事实时收窄到证书候选，
         # 否则校核报告等 docx 的污染值（金标反评：单机功率"P…"、轮毂 630mm）
         # 会通过 find_conflict 把正确的证书值一起否掉。

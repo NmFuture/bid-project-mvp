@@ -323,3 +323,137 @@ class CertMirrorColumnTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OutputNormalizationTests(unittest.TestCase):
+    """WP1 输出规范化：纯单位/量词值过滤、字段名内嵌单位剥离与换算、尾星号。
+    金标反评证据：C.1 'kg/m3' 被当值抄进格、A.1 冲突候选值='台'、
+    C.3 '17.8T' 应按字段名"（T）"剥成 '17.8'、C.1 '10.7*' 尾注。"""
+
+    def test_pure_unit_and_quantifier_values_unusable(self) -> None:
+        for bad in ("kg/m3", "m/s", "rpm", "MW", "台", "套"):
+            self.assertFalse(filler.usable_value(bad), bad)
+        for good in ("10.7", "IEC IB", "60", "GFRP"):
+            self.assertTrue(filler.usable_value(good), good)
+
+    def test_field_embedded_unit_strip(self) -> None:
+        field = {"field": "主轴重量（T）", "unit": "", "concepts": []}
+        selected = {"label": "主轴重量", "value": "17.8T", "unit": ""}
+        self.assertEqual(filler.normalize_value_for_field(field, selected), "17.8")
+
+    def test_field_embedded_unit_conversion(self) -> None:
+        field = {"field": "齿轮箱重量（kg）", "unit": "", "concepts": []}
+        selected = {"label": "齿轮箱重量", "value": "14.4T", "unit": ""}
+        self.assertEqual(filler.normalize_value_for_field(field, selected), "14400")
+
+    def test_trailing_asterisk_stripped(self) -> None:
+        field = {"field": "切出风速", "unit": "m/s", "concepts": []}
+        selected = {"label": "切出风速", "value": "10.7*", "unit": ""}
+        self.assertEqual(filler.normalize_value_for_field(field, selected), "10.7")
+
+    def test_plain_value_untouched(self) -> None:
+        field = {"field": "认证机构", "unit": "", "concepts": []}
+        selected = {"label": "认证机构", "value": "中国质量认证中心", "unit": ""}
+        self.assertEqual(filler.normalize_value_for_field(field, selected), "中国质量认证中心")
+
+
+class DerivedAndMultiPairTests(unittest.TestCase):
+    """WP2：扫风面积几何派生 + doc 表格同行第二对数值键值。"""
+
+    def test_swept_area_derived_from_rotor_diameter(self) -> None:
+        facts = []
+        filler.add_fact(facts, label="风轮直径", value="220", unit="m", concept="rotor_diameter", source="test")
+        filler.derive_project_facts(facts)
+        swept = [f for f in facts if f["label"] == "扫风面积" and f["source"] == "derived"]
+        self.assertTrue(swept)
+        self.assertEqual(swept[0]["value"], "38013")
+
+    def test_swept_area_not_derived_when_real_fact_exists(self) -> None:
+        facts = []
+        filler.add_fact(facts, label="风轮直径", value="220", unit="m", concept="rotor_diameter", source="test")
+        filler.add_fact(facts, label="扫风面积", value="38000", unit="m²", concept="swept_area", source="param.xlsx")
+        filler.derive_project_facts(facts)
+        derived = [f for f in facts if f["label"] == "扫风面积" and f["source"] == "derived"]
+        self.assertFalse(derived)
+
+    def test_per_kw_fact_does_not_block_derivation(self) -> None:
+        facts = []
+        filler.add_fact(facts, label="风轮直径", value="220", unit="m", concept="rotor_diameter", source="test")
+        filler.add_fact(facts, label="单位千瓦扫风面积", value="3.80", source="param.xlsx")
+        filler.derive_project_facts(facts)
+        derived = [f for f in facts if f["label"] == "扫风面积" and f["source"] == "derived"]
+        self.assertTrue(derived)
+
+    def test_doc_table_second_numeric_pair_extracted(self) -> None:
+        import tempfile as _tf
+        from docx import Document as _D
+
+        with _tf.TemporaryDirectory() as tmp:
+            doc = _D()
+            table = doc.add_table(rows=1, cols=3)
+            table.rows[0].cells[0].text = "第5段(顶)塔节Q355NE"
+            table.rows[0].cells[1].text = "重量（kg）"
+            table.rows[0].cells[2].text = "75136"
+            path = Path(tmp) / "塔架与基础工程量.docx"
+            doc.save(str(path))
+            source = filler.Source(name="塔架与基础工程量.docx", path=path, kind="docx", priority=60, route="t")
+            facts = filler.extract_doc_generic_facts(source)
+            values = {(f["label"], f["value"]) for f in facts}
+            self.assertIn(("重量（kg）", "75136"), values)
+
+
+class RowKeyRoutingTests(unittest.TestCase):
+    """WP3：F.3 行键路由——行组锁定部件后候选只保留同部件来源，
+    防止发电机证书的制造商顶进叶片行。"""
+
+    def _spec(self) -> object:
+        return filler.AppendixSpec(
+            appendix_id="APPX-F31",
+            prefix="F3",
+            title="附表F.3.1 大部件认证情况",
+            source=Path("/nonexistent/blank.docx"),
+            table_index=0,
+            header_row=1,
+            field_col=0,
+            value_col=1,
+            unit_col=None,
+            remark_col=None,
+        )
+
+    def _field(self, group: str) -> dict:
+        return {
+            "id": "F3-R05",
+            "rowIndex": 5,
+            "tableIndex": 0,
+            "valueCol": 1,
+            "unitCol": None,
+            "group": group,
+            "field": "制造厂家",
+            "unit": "",
+            "remark": "",
+            "requirementValue": "",
+            "concepts": [],
+            "generic": True,
+        }
+
+    def _facts(self) -> list:
+        facts = []
+        blade = filler.Source(name="叶片型式认证证书.pdf", path=Path("/tmp/a.pdf"), kind="pdf", priority=80, route="t")
+        gen = filler.Source(name="发电机部件认证证书.pdf", path=Path("/tmp/b.pdf"), kind="pdf", priority=80, route="t")
+        filler.add_fact(facts, label="制造厂家", value="中材科技", source=blade, confidence=0.8, action_hint="partial", risk="OCR")
+        filler.add_fact(facts, label="制造厂家", value="上海电气发电机厂", source=gen, confidence=0.8, action_hint="partial", risk="OCR")
+        return facts
+
+    def test_blade_row_only_uses_blade_source(self) -> None:
+        mapping = filler.map_fields(self._spec(), [self._field("叶片单独认证")], self._facts(), "table")
+        decision = mapping["decisions"][0]
+        self.assertEqual(decision["value"], "中材科技")
+
+    def test_generator_row_only_uses_generator_source(self) -> None:
+        mapping = filler.map_fields(self._spec(), [self._field("发电机单独认证")], self._facts(), "table")
+        decision = mapping["decisions"][0]
+        self.assertEqual(decision["value"], "上海电气发电机厂")
+
+    def test_component_token_priority(self) -> None:
+        self.assertEqual(filler.component_row_token("主轴承单独认证"), "主轴承")
+        self.assertEqual(filler.component_row_token("主轴单独认证"), "主轴")
