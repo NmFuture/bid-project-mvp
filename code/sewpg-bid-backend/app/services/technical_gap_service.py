@@ -33,6 +33,7 @@ from app.services.technical_gap_domain import (
     check_technical_gap_integrity,
     find_technical_gap_item,
     find_technical_gap_plan_item,
+    recompute_technical_gap_decisions,
     refresh_technical_gap_plan_artifact_urls,
     summarize_technical_gap_plan,
 )
@@ -76,6 +77,11 @@ class TechnicalGapService:
 
     @staticmethod
     def _refresh_gap_integrity(project: dict[str, Any], gap_state: dict[str, Any]) -> None:
+        plan = gap_state.get("plan")
+        if isinstance(plan, dict):
+            # 决策终审：选中/上传/AI填写完成后，decision 要跟着从「候选待定」翻成 ready，
+            # 而不是永远停在 fill_required/review_required——对齐商务标的两层架构。
+            recompute_technical_gap_decisions(plan)
         gap_state["integrity"] = check_technical_gap_integrity(gap_state.get("plan") or {})
         if isinstance(gap_state.get("plan"), dict):
             gap_state["plan"]["integrity"] = gap_state["integrity"]
@@ -99,7 +105,12 @@ class TechnicalGapService:
     ) -> dict[str, Any]:
         if gap_state["recognitionStatus"] != "completed":
             raise ValueError("请先触发缺口识别后再进入缺口处理。")
-        if repair_technical_gap_state_fill_task_skills(gap_state):
+        repaired = repair_technical_gap_state_fill_task_skills(gap_state)
+        plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+        decisions_changed = recompute_technical_gap_decisions(plan) if plan else 0
+        if repaired or decisions_changed:
+            self._refresh_gap_integrity(project, gap_state)
+            gap_state["items"] = legacy_technical_gap_items_from_plan(plan)
             project["updatedAt"] = now_iso()
             persist_technical_gap_project(project)
         gap_plan = copy.deepcopy(gap_state.get("plan") or {})
@@ -124,7 +135,12 @@ class TechnicalGapService:
         try:
             project = require_technical_gap_project_for_update(project_id)
             gap_state = ensure_technical_gap_state(project)
-            if repair_technical_gap_state_fill_task_skills(gap_state):
+            repaired = repair_technical_gap_state_fill_task_skills(gap_state)
+            plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+            decisions_changed = recompute_technical_gap_decisions(plan) if plan else 0
+            if repaired or decisions_changed:
+                self._refresh_gap_integrity(project, gap_state)
+                gap_state["items"] = legacy_technical_gap_items_from_plan(plan)
                 project["updatedAt"] = now_iso()
                 persist_technical_gap_project(project)
             return build_technical_gap_detection_payload(project, gap_state)
@@ -280,6 +296,69 @@ class TechnicalGapService:
         _ = filename
         return FileResponse(path=path, filename=str(artifact.get("fileName") or path.name))
 
+    def confirm_ai_fill_artifact(
+        self,
+        project_id: str,
+        gap_id: str,
+        artifact_id: str,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            project = require_technical_gap_project_for_update(project_id)
+            gap_state = ensure_technical_gap_state(project)
+            plan_item = find_technical_gap_plan_item(gap_state, gap_id)
+            if plan_item is None:
+                raise KeyError(gap_id)
+            artifacts = [
+                artifact
+                for artifact in (plan_item.get("resolvedArtifacts") or [])
+                if isinstance(artifact, dict)
+            ]
+            target = next((artifact for artifact in artifacts if str(artifact.get("id") or "") == artifact_id), None)
+            if target is None or str(target.get("source") or "") != "ai_fill":
+                raise KeyError(artifact_id)
+
+            fill_task_id = str(target.get("fillTaskId") or "")
+            batch_artifacts = [
+                artifact
+                for artifact in artifacts
+                if str(artifact.get("source") or "") == "ai_fill"
+                and (
+                    str(artifact.get("fillTaskId") or "") == fill_task_id
+                    if fill_task_id
+                    else str(artifact.get("id") or "") == artifact_id
+                )
+            ]
+            confirmed_at = now_iso()
+            confirmed_by = str((data or {}).get("operator") or "当前用户")
+            for artifact in batch_artifacts:
+                artifact["s7Ready"] = True
+                artifact["qualityGate"] = "human_confirmed"
+                artifact["confirmed"] = True
+                artifact["confirmedAt"] = confirmed_at
+                artifact["confirmedBy"] = confirmed_by
+
+            plan_item["qualityStatus"] = "human_confirmed"
+            plan_item.setdefault("reviewNotes", []).append(
+                f"人工确认 AI 填写产物可用于合并：{len(batch_artifacts)} 份"
+            )
+            gap_state["submittedForReview"] = False
+            gap_state["reviewConfirmed"] = False
+            gap_state["reviewedAt"] = ""
+            self._refresh_gap_integrity(project, gap_state)
+            gap_state["items"] = legacy_technical_gap_items_from_plan(gap_state.get("plan") or {})
+            project["review_document_state"] = default_technical_review_document_state(project)
+            persist_technical_gap_project(project)
+            return {
+                "message": f"已确认 {len(batch_artifacts)} 份 AI 填写产物可用于合并。",
+                "item": copy.deepcopy(plan_item),
+                "artifact": copy.deepcopy(target),
+                "artifacts": copy.deepcopy(batch_artifacts),
+                "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
+            }
+        except Exception as exc:
+            _raise_gap_error(exc, "Gap artifact not found")
+
     async def select_material(
         self,
         project_id: str,
@@ -314,7 +393,10 @@ class TechnicalGapService:
             if gap_state["recognitionStatus"] != "completed":
                 raise ValueError("请先完成缺口识别后再提交确认。")
 
-            integrity = check_technical_gap_integrity(gap_state.get("plan") or {})
+            plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+            recompute_technical_gap_decisions(plan)
+            gap_state["items"] = legacy_technical_gap_items_from_plan(plan)
+            integrity = check_technical_gap_integrity(plan)
             gap_state["integrity"] = integrity
             if integrity["status"] != "passed":
                 raise ValueError(f"仍有 {integrity['blockingCount']} 项缺口未解决，暂不可提交审核。")
@@ -396,7 +478,10 @@ class TechnicalGapService:
             gap_state = ensure_technical_gap_state(project)
             if gap_state["recognitionStatus"] != "completed":
                 raise ValueError("请先完成缺口识别。")
-            integrity = check_technical_gap_integrity(gap_state.get("plan") or {})
+            plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+            recompute_technical_gap_decisions(plan)
+            gap_state["items"] = legacy_technical_gap_items_from_plan(plan)
+            integrity = check_technical_gap_integrity(plan)
             gap_state["integrity"] = integrity
             if isinstance(gap_state.get("plan"), dict):
                 gap_state["plan"]["integrity"] = integrity

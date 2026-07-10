@@ -712,7 +712,12 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
 
 def _gap_plan_paths(item: dict) -> list[str]:
     paths: list[str] = []
-    for key in ("matchedMaterials", "resolvedArtifacts"):
+    has_ai_fill_flow = bool(item.get("fillTasks")) or any(
+        isinstance(artifact, dict) and str(artifact.get("source") or "") == "ai_fill"
+        for artifact in (item.get("resolvedArtifacts") or [])
+    )
+    keys = ("resolvedArtifacts",) if has_ai_fill_flow else ("matchedMaterials", "resolvedArtifacts")
+    for key in keys:
         values = item.get(key) or []
         if not isinstance(values, list):
             continue
@@ -720,12 +725,25 @@ def _gap_plan_paths(item: dict) -> list[str]:
             if isinstance(value, str):
                 candidate = value
             elif isinstance(value, dict):
+                if key == "resolvedArtifacts" and not _resolved_artifact_is_s7_ready(value):
+                    continue
                 candidate = str(value.get("path") or value.get("docx") or "")
             else:
                 candidate = ""
             if candidate and candidate not in paths:
                 paths.append(candidate)
     return paths
+
+
+def _resolved_artifact_is_s7_ready(artifact: dict) -> bool:
+    if artifact.get("s7Ready", True) is False:
+        return False
+    if str(artifact.get("source") or "") != "ai_fill":
+        return True
+    if str(artifact.get("qualityGate") or "") == "human_confirmed":
+        return True
+    quality_report = artifact.get("qualityReport") if isinstance(artifact.get("qualityReport"), dict) else {}
+    return str(quality_report.get("status") or "") == "passed"
 
 
 def _gap_plan_item_is_structural(item: dict) -> bool:

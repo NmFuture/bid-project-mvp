@@ -6,6 +6,94 @@ from typing import Any
 from urllib.parse import quote
 
 
+def technical_gap_artifact_is_s7_ready(artifact: dict[str, Any]) -> bool:
+    if artifact.get("s7Ready", True) is False:
+        return False
+    if str(artifact.get("source") or "") != "ai_fill":
+        return True
+    if str(artifact.get("qualityGate") or "") == "human_confirmed":
+        return True
+    quality_report = artifact.get("qualityReport") if isinstance(artifact.get("qualityReport"), dict) else {}
+    return str(quality_report.get("status") or "") == "passed"
+
+
+def recompute_technical_gap_decisions(plan: dict[str, Any]) -> int:
+    """决策终审：候选素材不等于决策，对齐商务标 recompute_task_states 的两层架构。
+
+    build_gap_plan 产出的 decision 是「初判」；这里是每次都会重跑的「终审」，按优先级：
+    1. 人工上传、人工选材等非 AI 可合并产物 → decision=ready，可替代 AI 填写任务。
+    2. 有未放行的 AI resolvedArtifacts → decision=review_required，必须先验收或人工确认。
+    3. 还有未完成的 fillTasks（附表或正文「待填写」模板）→ decision=fill_required。
+    4. 所有任务完成且存在可合并 AI 产物 → decision=ready。
+    5. 初判是 fill_required 但没有未完成 fillTasks、只有 candidateMaterials（字面候选/主题弱
+       关联召回，纯供人工挑选）→ 改判 review_required（此前只在 schema 占位、从未真正赋值）。
+    6. 其余（ready/structural/material_required 等）保持初判结果不变——尤其是「已经匹配到现成
+       素材」的 ready 态，就算带着 candidateMaterials 当备选，也不能被这条终审规则误伤。
+
+    返回被改写 decision 的条目数。
+    """
+    changed = 0
+    for item in plan.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        resolved_artifacts = [a for a in (item.get("resolvedArtifacts") or []) if isinstance(a, dict)]
+        ready_non_ai_artifacts = [
+            artifact
+            for artifact in resolved_artifacts
+            if str(artifact.get("source") or "") != "ai_fill"
+            and technical_gap_artifact_is_s7_ready(artifact)
+        ]
+        if ready_non_ai_artifacts:
+            if item.get("decision") != "ready" or item.get("status") != "resolved":
+                item["decision"] = "ready"
+                item["status"] = "resolved"
+                changed += 1
+            continue
+
+        unready_ai_artifacts = [
+            artifact
+            for artifact in resolved_artifacts
+            if str(artifact.get("source") or "") == "ai_fill"
+            and not technical_gap_artifact_is_s7_ready(artifact)
+        ]
+        if unready_ai_artifacts:
+            if item.get("decision") != "review_required" or item.get("status") != "needs_input":
+                item["decision"] = "review_required"
+                item["status"] = "needs_input"
+                changed += 1
+            continue
+
+        pending_fill_tasks = [
+            task for task in (item.get("fillTasks") or [])
+            if isinstance(task, dict) and str(task.get("status") or "pending") != "completed"
+        ]
+        if pending_fill_tasks:
+            if item.get("decision") != "fill_required" or item.get("status") == "resolved":
+                item["decision"] = "fill_required"
+                item["status"] = "needs_input"
+                changed += 1
+            continue
+
+        merge_ready_artifacts = [a for a in resolved_artifacts if technical_gap_artifact_is_s7_ready(a)]
+        if merge_ready_artifacts:
+            if item.get("decision") != "ready" or item.get("status") != "resolved":
+                item["decision"] = "ready"
+                item["status"] = "resolved"
+                changed += 1
+            continue
+
+        if str(item.get("decision") or "") != "fill_required":
+            continue  # ready/material_required/structural 等初判结果不参与终审改写
+
+        candidate_materials = [m for m in (item.get("candidateMaterials") or []) if isinstance(m, dict)]
+        if candidate_materials and item.get("decision") != "review_required":
+            item["decision"] = "review_required"
+            item["status"] = "needs_input"
+            changed += 1
+
+    return changed
+
+
 def summarize_technical_gap_plan(plan: dict[str, Any]) -> dict[str, Any]:
     items = [item for item in plan.get("items") or [] if isinstance(item, dict)]
     decision_counts: dict[str, int] = {}

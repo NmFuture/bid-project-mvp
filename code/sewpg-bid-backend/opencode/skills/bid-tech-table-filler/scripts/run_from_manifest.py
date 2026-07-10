@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 from copy import deepcopy
 from difflib import SequenceMatcher
@@ -56,7 +57,7 @@ AUTO_SOURCE_MAX = 12
 C1_CONCEPTS = {
     "model": ["投标机型", "制造厂家/型号", "机型型号"],
     "turbine_type": ["机组类型", "发电机型式", "双馈异步发电机", "双馈"],
-    "rated_power": ["单机容量", "额定功率", "机组额定功率"],
+    "rated_power": ["单机容量", "额定功率", "机组额定功率", "单机功率"],
     "turbine_count": ["机组数量", "机组台数", "台数", "风机数量"],
     "total_capacity": ["总装机容量", "装机容量", "项目容量", "总容量", "标段规模"],
     "rotor_diameter": ["叶轮直径", "风轮直径"],
@@ -64,7 +65,7 @@ C1_CONCEPTS = {
     "hub_height": ["轮毂中心高度", "轮毂高度"],
     "swept_area": ["扫风面积"],
     "swept_area_per_kw": ["单位千瓦扫风面积", "单位kW扫风面积"],
-    "certification_level": ["认证级别", "安全等级", "机组安全设计等级"],
+    "certification_level": ["认证级别", "安全等级", "机组安全设计等级", "机组等级"],
     "vref": ["参考风速Vref", "极限风速（50年一遇）10min", "极限风速50年一遇10min"],
     "ve50": ["极端风速Ve50", "极限风速（50年一遇）3s", "极限风速50年一遇3s"],
     "vave": ["轮毂高度年平均风速Vave", "年平均风速"],
@@ -266,6 +267,7 @@ class Source:
     material_id: str = ""
     selection_score: float = 0.0
     selection_reasons: tuple[str, ...] = ()
+    ocr_text_path: Path | None = None  # PDF 素材的 OCR 文本 sidecar（后端生成）
 
 
 @dataclass
@@ -280,6 +282,7 @@ class AppendixSpec:
     value_col: int
     unit_col: int | None
     remark_col: int | None
+    own_tables: int = 1  # 属于本附表的表数（S1 越界表之前），多表附表续表填写用
 
 
 def now_iso() -> str:
@@ -380,14 +383,38 @@ def concepts_for(text: str) -> list[str]:
     return found
 
 
+def is_conditional_requirement_text(value: Any) -> bool:
+    """按场景分叉的门槛描述（"纯钢塔：需≤125；混塔：需≥140"）不是可用的具体值——
+    素材库源表里常见"（项目定制）"占位行留着这类指导性文字给人工改，被通用
+    抽取逻辑当成"合法事实"直接抄进答案格。这里只用"需≤/需≥/不低于/不高于/
+    不得低于/不得高于/至少"这类多字、精确的门槛用语，不用"应/须/要求"这种
+    单字判断——那些字在"屈服应力""驱动须知"等正常技术词里很常见，会把大量
+    合法值误伤成不可用。"""
+    text = clean(value)
+    return bool(re.search(r"需\s*[≤≥<>]|不(?:低于|高于|得低于|得高于)|至少", text))
+
+
+PURE_UNIT_VALUES = {
+    "m", "mm", "cm", "km", "m/s", "mm/s", "m2", "m²", "m3", "m³", "kg", "t", "g",
+    "kw", "mw", "kwh", "mwh", "kv", "v", "a", "hz", "rpm", "r/min", "kg/m3", "kg/m³",
+    "℃", "°c", "%", "pa", "kpa", "mpa", "db", "db(a)", "n", "kn", "n·m", "kn·m", "年", "h", "min", "s",
+}
+QUANTIFIER_ONLY_VALUES = {"台", "套", "个", "片", "支", "件", "座", "根", "只", "条"}
+
+
 def usable_value(value: str) -> bool:
     v = clean(value)
     if not v or v in {"/", "-", "—", "无", "None", "none", "N/A", "n/a"}:
         return False
     if any(marker in v for marker in ("待填写", "待补充", "待确认", "待人工补充", "[", "【")):
         return False
+    # 纯单位串/纯量词不是答案值（金标反评：'kg/m3'、'm/s'、'台' 被当值抄进格）
+    if v.lower().replace(" ", "") in PURE_UNIT_VALUES or v in QUANTIFIER_ONLY_VALUES:
+        return False
     weak = ["见商务", "商务报价表", "商务部分", "项目定制", "待定", "无明确", "参照1.1", "参照 1.1"]
-    return not any(token in v for token in weak)
+    if any(token in v for token in weak):
+        return False
+    return not is_conditional_requirement_text(v)
 
 
 def cell_needs_fill(value: Any) -> bool:
@@ -403,10 +430,14 @@ def requirement_value_is_direct_response(value: Any) -> bool:
         return False
     if any(token in text for token in ("根据", "厂家", "测算", "确定", "另行", "待", "见", "详见")):
         return False
+    if requirement_like_value(text):
+        return False
     return bool(re.search(r"[0-9]|%|IEC|GB|NB|DL|是|否|有|无", text, flags=re.I))
 
 
 def requirement_like_value(value: Any) -> bool:
+    # 条件式招标要求（"纯钢塔：需≤125；混塔：需≥140"这类按场景分叉的门槛描述）
+    # 不是可以直接抄的答案值——它描述的是"要求"本身，不是投标人declare的具体值。
     text = clean(value)
     return any(token in text for token in ("需≤", "需≥", "不低于", "不高于", "至少", "应", "须", "要求"))
 
@@ -493,16 +524,75 @@ def generic_parse_value_allowed(label: str, value: str) -> bool:
     return True
 
 
+_TRAILING_ANNOTATION_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)\s*[（(]([^0-9()（）]{1,12})[）)]$")
+
+
+def strip_numeric_trailing_annotation(value_text: str) -> str:
+    """数值答案后面挂的中文场景注（如"50（背风策略）"）在正式表格里应只留数字——
+    真实中标件对照证实这类括注不是答案的一部分。只在括号内不含数字时剥离，
+    避免误删"10（±5%）"这类真正影响数值含义的限定。"""
+    match = _TRAILING_ANNOTATION_RE.match(value_text)
+    return match.group(1) if match else value_text
+
+
+_UNIT_CONVERSIONS = {("kw", "mw"): 1e-3, ("mw", "kw"): 1e3, ("kg", "t"): 1e-3, ("t", "kg"): 1e3}
+_CAPACITY_FIELD_TOKENS = ("单机容量", "额定功率", "装机容量", "标段规模", "总容量")
+
+
+_FIELD_NAME_UNIT_RE = re.compile(r"[（(]\s*([A-Za-z/%μ°℃²³·^0-9.]{1,12})\s*[）)]\s*$")
+
+
+def field_embedded_unit(field_name: str) -> str:
+    """字段名内嵌单位（"齿轮箱重量（kg）"、"轮毂中心高度（m）"）——模板无独立
+    单位列时的单位口径来源，用于同单位剥离与量纲换算。"""
+    match = _FIELD_NAME_UNIT_RE.search(clean(field_name))
+    if not match:
+        return ""
+    token = match.group(1)
+    if token.lower().replace(" ", "") in PURE_UNIT_VALUES or re.fullmatch(r"[A-Za-zμ°℃²³·^/]{1,8}[23]?", token):
+        return norm(token)
+    return ""
+
+
 def normalize_value_for_field(field: dict[str, Any], selected: dict[str, Any]) -> str:
     field_text = clean(f"{field.get('field')} {field.get('unit')}")
     label_text = clean(selected.get("label"))
     value_text = clean(selected.get("value"))
+    # 数值尾部星号/脚注标记不是值的一部分（金标反评 C.1："10.7*"）
+    value_text = re.sub(r"(?<=[0-9])\s*[*＊†‡]+$", "", value_text)
+    field_unit = norm(field.get("unit") or "") or field_embedded_unit(field.get("field") or "")
+    fact_unit = norm(selected.get("unit") or "")
     if "基础钢筋" in field_text and re.search(r"(?:（|\\(|\\b)t(?:）|\\)|\\b)|吨", field_text, flags=re.I):
         if "kg" in label_text.lower() or "千克" in label_text:
             number = parse_float(value_text)
             if number is not None:
                 return trim_float(number / 1000, 3)
-    return value_text
+    # 机型字段：素材里的机型常带布局后缀（EW10.0-220上置），正式表格只填机型本体。
+    if "机型" in field_text:
+        value_text = re.sub(r"(上置|下置|内置|外置)$", "", value_text)
+    # 单位换算：事实单位与模板单位量纲同族但量级不同（10000 kW → 10 MW）。
+    factor = _UNIT_CONVERSIONS.get((fact_unit, field_unit))
+    if factor is not None and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", value_text):
+        return trim_float(float(value_text) * factor, 6)
+    # 容量/功率字段且模板未给单位：按投标惯例统一成 MW 数值（600MW→600、10000+kW→10）。
+    if not field_unit and any(token in field_text for token in _CAPACITY_FIELD_TOKENS):
+        probe = value_text if re.search(r"(MW|kW|万千瓦)", value_text, flags=re.I) else f"{value_text}{selected.get('unit') or ''}"
+        mw = rated_power_to_mw(probe)
+        if mw is not None:
+            selected["unit"] = "MW"  # 值换算成 MW 后，决策单位同步改写，避免单位列残留 kW
+            return trim_float(mw, 6)
+    # 模板单位口径（单位列或字段名内嵌）已定时：值内同单位后缀剥掉
+    # （"600MW"+MW→"600"），异单位同族换算（"17.8T"+kg列→"17800"）。
+    if field_unit:
+        match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z/%μ°².³]+|吨)", value_text)
+        if match:
+            suffix = "t" if match.group(2) == "吨" else norm(match.group(2))
+            if suffix == field_unit:
+                return match.group(1)
+            suffix_factor = _UNIT_CONVERSIONS.get((suffix, field_unit))
+            if suffix_factor is not None:
+                return trim_float(float(match.group(1)) * suffix_factor, 6)
+    return strip_numeric_trailing_annotation(value_text)
 
 
 def add_fact(
@@ -618,6 +708,11 @@ def blank_docx_path(manifest: dict[str, Any], manifest_path: Path) -> Path:
 
 def appendix_prefix(text: str) -> str:
     compact = clean(text)
+    # 通用：从"附表X.Y"提取 字母+首级编号（附表G.2.2→G2、附表H.2→H2、附表F.2.1→F2）。
+    # 旧实现只识别 C1/C2/C3，component_keywords_for 里 H2/G1/F2/D7 分支因此从未触发。
+    match = re.search(r"(?:技术)?附表\s*([A-Za-z])\s*[.．]?\s*([0-9]+)", compact, flags=re.I)
+    if match:
+        return f"{match.group(1).upper()}{match.group(2)}"
     if re.search(r"C[.．]?\s*1", compact, flags=re.I):
         return "C1"
     if re.search(r"C[.．]?\s*2", compact, flags=re.I):
@@ -625,6 +720,36 @@ def appendix_prefix(text: str) -> str:
     if re.search(r"C[.．]?\s*3", compact, flags=re.I):
         return "C3"
     return "GEN"
+
+
+APPENDIX_HEADING_RE = re.compile(r"^(技术附表[A-Za-z]|附表[A-Za-z0-9]+(?:[.．][0-9]+)*(?:-[0-9]+)?)(?![0-9A-Za-z])")
+ATTACHMENT_HEADING_RE = re.compile(r"^附\s*件")
+
+
+def own_table_limit(doc: Any) -> int:
+    """blankDocx 里属于本附表的表数（用于剔除 S1 越界表）。
+
+    S1 切片系统性"错位一格"：每张附表 docx 末尾都带着下一张附表的标题段+首表
+    （金标核查 49/52 例）。判据自包含：第二个（编号不同的）附表标题、或"附件"
+    章标题之后的表格全是越界内容，不做填写目标。同编号重复标题（续表）不算边界。
+    """
+    first_number = ""
+    count = 0
+    for child in doc.element.body.iterchildren():
+        if child.tag.endswith("}p"):
+            text = clean("".join(child.itertext()))
+            if first_number and ATTACHMENT_HEADING_RE.match(text):
+                break
+            match = APPENDIX_HEADING_RE.match(text)
+            if match:
+                number = re.sub(r"\s+", "", match.group(1))
+                if not first_number:
+                    first_number = number
+                elif number != first_number:
+                    break
+        elif child.tag.endswith("}tbl"):
+            count += 1
+    return count
 
 
 def choose_response_value_col(cells: list[str]) -> int:
@@ -677,9 +802,10 @@ def detect_appendix_spec(source: Path, manifest: dict[str, Any]) -> AppendixSpec
     title = clean(appendix_task.get("title") or blank_source.get("title") or manifest.get("title") or source.stem)
     prefix = appendix_prefix(f"{title} {source.name}")
     appendix_id = clean(appendix_task.get("id") or blank_source.get("id") or prefix or source.stem)
+    own_tables = own_table_limit(doc)
 
     best_generic: tuple[int, int, list[str], int] | None = None
-    for table_index, table in enumerate(doc.tables):
+    for table_index, table in enumerate(doc.tables[:own_tables]):
         for header_row, row in enumerate(table.rows[:4]):
             cells = [clean(cell.text) for cell in row.cells]
             joined = " ".join(cells)
@@ -716,10 +842,11 @@ def detect_appendix_spec(source: Path, manifest: dict[str, Any]) -> AppendixSpec
                 value_col=value_col,
                 unit_col=unit_col,
                 remark_col=remark_col,
+                own_tables=own_tables,
             )
 
     if not doc.tables:
-        return AppendixSpec(appendix_id, prefix, title, source, -1, -1, 0, 1, None, None)
+        return AppendixSpec(appendix_id, prefix, title, source, -1, -1, 0, 1, None, None, own_tables=own_tables)
     if best_generic is not None:
         table_index, header_row, cells, _score_value = best_generic
         value_col_candidates = []
@@ -738,14 +865,14 @@ def detect_appendix_spec(source: Path, manifest: dict[str, Any]) -> AppendixSpec
         field_col = choose_field_col(cells, value_col)
         unit_col = next((i for i, cell in enumerate(cells) if "计量单位" in cell or cell == "单位"), None)
         remark_col = next((i for i, cell in enumerate(cells) if "备注" in cell or "说明" in cell), None)
-        return AppendixSpec(appendix_id, prefix, title, source, table_index, header_row, field_col, value_col, unit_col, remark_col)
+        return AppendixSpec(appendix_id, prefix, title, source, table_index, header_row, field_col, value_col, unit_col, remark_col, own_tables=own_tables)
     if prefix == "C2":
         field_col, value_col, unit_col, remark_col = 1, 2, 3, 4
     elif prefix in {"C1", "C3"}:
         field_col, value_col, unit_col, remark_col = 2, 3, 4, 5
     else:
         field_col, value_col, unit_col, remark_col = 0, 1, None, None
-    return AppendixSpec(appendix_id, prefix, title, source, 0, 0, field_col, value_col, unit_col, remark_col)
+    return AppendixSpec(appendix_id, prefix, title, source, 0, 0, field_col, value_col, unit_col, remark_col, own_tables=own_tables)
 
 
 def component_keywords_for(prefix: str) -> list[str]:
@@ -755,6 +882,33 @@ def component_keywords_for(prefix: str) -> list[str]:
         return ["主轴专题", "主轴承专题", "齿轮箱专题", "偏航系统专题", "制动系统专题", "液压系统专题", "机舱专题"]
     if prefix == "C1":
         return ["机型投标参数表", "参数表", "防雷系统专题", "机舱专题"]
+    # H2 交货进度：物流方案/运输方案
+    if prefix == "H2":
+        return ["物流解决方案", "物流方案", "运输方案", "交货", "发运"]
+    # G1 安全等级统计：载荷评估/安全评估
+    if prefix == "G1":
+        return ["载荷安全性评估", "安全等级", "载荷评估", "场址安全"]
+    # G2 场址载荷/风参数：机位坐标矩阵在风资源评估报告里
+    if prefix == "G2":
+        return ["风资源评估报告", "载荷安全性评估", "机位排布", "机位坐标", "风参数"]
+    # F2 设计认证：认证证书/型式认证
+    if prefix == "F2":
+        return ["认证证书", "型式认证", "设计认证", "CQC认证"]
+    # F1 样机信息：样机/试运行记录
+    if prefix == "F1":
+        return ["样机", "试运行", "并网运行"]
+    # F3 大部件认证：叶片/齿轮箱/发电机等部件认证证书
+    if prefix == "F3":
+        return ["认证证书", "部件认证", "叶片认证", "大部件"]
+    # F4 电网性能认证：并网/电网适应性检测认证
+    if prefix == "F4":
+        return ["电网适应性", "并网认证", "电网性能", "低电压穿越", "认证证书"]
+    # F5 工厂体系认证：质量/环境/职业健康管理体系
+    if prefix == "F5":
+        return ["体系认证", "质量管理体系", "环境管理体系", "职业健康", "ISO9001"]
+    # D7 性能考核：功率曲线/性能保证
+    if prefix == "D7":
+        return ["性能保证", "功率曲线", "考核指标", "承诺函"]
     return []
 
 
@@ -1037,6 +1191,12 @@ def add_source_from_material(
         return
     name = material_label(material) or path.name
     suffix = path.suffix.lower()
+    ocr_text_path: Path | None = None
+    if suffix == ".pdf":
+        for candidate in (Path(clean(material.get("ocrTextPath"))) if clean(material.get("ocrTextPath")) else None, path.with_suffix(".ocr.txt")):
+            if candidate is not None and candidate.exists() and candidate.is_file():
+                ocr_text_path = candidate.resolve()
+                break
     sources.append(
         Source(
             name=name,
@@ -1047,6 +1207,7 @@ def add_source_from_material(
             material_id=clean(material.get("id") or material.get("materialId")),
             selection_score=round(selection_score, 3),
             selection_reasons=tuple(clean(reason) for reason in selection_reasons or [] if clean(reason)),
+            ocr_text_path=ocr_text_path,
         )
     )
 
@@ -1174,6 +1335,25 @@ def select_sources(
         if previous is None or source.priority > previous.priority:
             deduped[key] = source
     selected = sorted(deduped.values(), key=lambda item: (item.kind != "xlsx", -item.priority, -item.selection_score, item.name))
+    # F 系列认证表按证书意图收窄 PDF 来源：设计认证表混入部件/电网证书时，
+    # 各证书的证书编号/有效期/额定功率互相冲突，find_conflict 会把正确值一起毙掉。
+    if spec.prefix.startswith("F"):
+        spec_intents = cert_intents_for(spec.title)
+        if spec_intents:
+            def pdf_intents(source: Source) -> set[str]:
+                return cert_intents_for(f"{source.name} {source.path.name}") if source.kind == "pdf" else set()
+
+            has_matching_pdf = any(pdf_intents(source) & spec_intents for source in selected)
+            narrowed = []
+            for source in selected:
+                source_intents = pdf_intents(source)
+                if source_intents and not (source_intents & spec_intents):
+                    continue  # 证书意图与附表不符（如设计认证表里的部件证书）
+                if source.kind == "pdf" and not source_intents and has_matching_pdf:
+                    continue  # 已有意图匹配的证书时，意图不明的证书只会带来编号/日期冲突
+                narrowed.append(source)
+            if any(source.kind == "pdf" for source in narrowed):
+                selected = narrowed
     selection_report["selected"] = [
         {
             "id": source.material_id,
@@ -1401,6 +1581,28 @@ def derive_project_facts(facts: list[dict[str, Any]]) -> None:
                 confidence=0.88,
                 notes="由保证发电量和机组台数派生",
             )
+    # 扫风面积 = π(D/2)²：纯几何派生（金标反评 C.1：38013 = π×110²，
+    # 库内只有"单位千瓦扫风面积"，词面相近导致 3.80 假值顶位）。
+    rotor_diameter = first_fact_number(facts, "rotor_diameter")
+    has_real_swept_area = any(
+        "swept_area" in fact["concepts"]
+        and "单位千瓦" not in fact["label"]
+        and "每千瓦" not in fact["label"]
+        and fact.get("source") != "derived"
+        for fact in facts
+    )
+    if rotor_diameter is not None and not has_real_swept_area:
+        swept = math.pi * (rotor_diameter / 2) ** 2
+        add_fact(
+            facts,
+            label="扫风面积",
+            value=str(int(round(swept))),
+            unit="m²",
+            concept="swept_area",
+            source="derived",
+            confidence=0.9,
+            notes=f"由叶轮直径 {trim_float(rotor_diameter, 3)}m 按 π(D/2)² 派生",
+        )
 
 
 def looks_like_header_or_empty(label: str, value: str) -> bool:
@@ -1554,7 +1756,7 @@ def extract_doc_generic_facts(source: Source) -> list[dict[str, Any]]:
             add_fact(
                 facts,
                 label=match.group(1),
-                value=match.group(2),
+                value=cert_value_clean(match.group(2)),
                 source=source,
                 row=para_idx,
                 confidence=0.58,
@@ -1566,10 +1768,15 @@ def extract_doc_generic_facts(source: Source) -> list[dict[str, Any]]:
             nonempty = [(idx, value) for idx, value in enumerate(values) if value]
             if len(nonempty) < 2:
                 continue
+            # 同行允许两对键值：真值对常在第二对（"塔节 | 重量（kg）| 75136"），
+            # 第二对起只收数值型值，避免同行文字对成串产生噪声
+            row_fact_count = 0
             for first, second in zip(nonempty, nonempty[1:]):
                 label = first[1]
                 value = second[1]
                 if looks_like_header_or_empty(label, value):
+                    continue
+                if row_fact_count and not re.search(r"[0-9]", value):
                     continue
                 add_fact(
                     facts,
@@ -1581,9 +1788,170 @@ def extract_doc_generic_facts(source: Source) -> list[dict[str, Any]]:
                     confidence=0.72,
                     notes="通用 Word 表格键值抽取",
                 )
-                break
+                row_fact_count += 1
+                if row_fact_count >= 2:
+                    break
             if len(facts) >= GENERIC_FACT_LIMIT_PER_FILE:
                 return facts
+    return facts
+
+
+CERT_INTENT_TOKENS: dict[str, tuple[str, ...]] = {
+    "设计": ("设计",),
+    "型式": ("型式",),
+    "电网": ("电网", "穿越", "电能质量", "适应性"),
+    "体系": ("体系", "ISO"),
+    "部件": ("部件", "叶片", "齿轮箱", "发电机", "主轴承", "变流器", "主控", "轴承", "大部件"),
+    "样机": ("样机",),
+}
+
+
+def cert_intents_for(text: str) -> set[str]:
+    lowered = clean(text).lower()
+    return {intent for intent, tokens in CERT_INTENT_TOKENS.items() if any(token.lower() in lowered for token in tokens)}
+
+
+# 行键部件词：长词在前（主轴承先于主轴），供 F.3 行组锁定事实来源
+COMPONENT_ROW_TOKENS = ("主轴承", "齿轮箱", "发电机", "变流器", "主控", "叶片", "轮毂", "变桨", "偏航", "主轴", "塔架", "机舱")
+
+
+def component_row_token(text: str) -> str:
+    for token in COMPONENT_ROW_TOKENS:
+        if token in text:
+            return token
+    return ""
+
+
+CERT_ISSUER_SUFFIXES = ("认证中心", "认证公司", "认证有限公司", "认证集团", "船级社", "检验认证")
+CERT_OCR_RISK = "OCR 识别值，需人工核对证书原件"
+CERT_FIELD_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"(?:证书编号|证书号|注册号|报告编号)\s*[:：]?\s*([A-Za-z0-9][A-Za-z0-9\-/\.·]{3,40})", "证书编号"),
+    (r"(?:Certificate\s*(?:Registration\s*)?No\.?)\s*[:：]?\s*([A-Za-z0-9][A-Za-z0-9\-/\.·]{3,40})", "证书编号"),
+    (r"(?:有效期至|有效期截止|有效截止日期|有效至)\s*[:：]?\s*([0-9]{4}\s*[年.\-/]\s*[0-9]{1,2}\s*(?:[月.\-/]\s*[0-9]{1,2})?\s*日?)", "有效期"),
+    (r"(?:发证日期|颁发日期|签发日期|首次发证日期|发布日期)\s*[:：]?\s*([0-9]{4}\s*[年.\-/]\s*[0-9]{1,2}\s*(?:[月.\-/]\s*[0-9]{1,2})?\s*日?)", "发证日期"),
+    # 机构名冒号必选：无冒号会把"…需发证机构批准…"之类条款散文误捕为机构名，
+    # 独立成行的机构名由 CERT_ISSUER_SUFFIXES 行识别兜底
+    (r"(?:发证机构|认证机构|颁发机构|签发机构)\s*[:：]\s*(\S.{1,60}?)(?:\s{2,}|$)", "认证机构"),
+    (r"机组型号\s*[:：]?\s*([A-Za-z][A-Za-z0-9\.\-]{2,30})", "机组型号"),
+)
+
+
+def pdf_ocr_text(source: Source) -> str:
+    candidates = [source.ocr_text_path, source.path.with_suffix(".ocr.txt")]
+    for candidate in candidates:
+        try:
+            if candidate is not None and candidate.exists():
+                return candidate.read_text(encoding="utf-8")
+        except Exception:
+            continue
+    return ""
+
+
+def cert_value_clean(value: str) -> str:
+    """证书排版惯用千分位逗号（10,000 kW），投标表格不用，抄录时剥掉。"""
+    return re.sub(r"(?<=\d),(?=\d{3})", "", clean(value))
+
+
+def extract_pdf_ocr_facts(source: Source) -> list[dict[str, Any]]:
+    """PDF 素材（认证证书等扫描件）经后端 OCR sidecar 的键值事实抽取。"""
+    text = pdf_ocr_text(source)
+    if not text.strip():
+        raise RuntimeError("PDF 素材缺少 OCR 文本 sidecar（后端 OCR 未启用或识别失败），无法抽取事实")
+    facts: list[dict[str, Any]] = []
+    lines = [clean(line) for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    for line_idx, line in enumerate(lines, start=1):
+        if len(facts) >= GENERIC_FACT_LIMIT_PER_FILE:
+            return facts
+        # markdown 表格行：相邻两个非空单元格作为键值对（与 Word 通用表格抽取同策略）
+        if line.startswith("|") or line.count("|") >= 2:
+            cells = [clean(cell) for cell in line.split("|")]
+            nonempty = [cell for cell in cells if cell and set(cell) - {"-", ":", " "}]
+            for label, value in zip(nonempty, nonempty[1:]):
+                if looks_like_header_or_empty(label, value):
+                    continue
+                add_fact(
+                    facts,
+                    label=label,
+                    value=cert_value_clean(value),
+                    source=source,
+                    row=line_idx,
+                    # 表格结构保真度高于散文（证书附页参数表），概念匹配路径
+                    # 需要 ≥0.8 才能过 0.62 选取线
+                    confidence=0.8,
+                    notes="证书 OCR 表格键值抽取",
+                    action_hint="partial",
+                    risk=CERT_OCR_RISK,
+                )
+                break
+            continue
+        match = re.match(r"^([^:：|]{2,40})[:：]\s*(.{1,160})$", line)
+        if match and not looks_like_header_or_empty(match.group(1), match.group(2)):
+            add_fact(
+                facts,
+                label=match.group(1),
+                value=cert_value_clean(match.group(2)),
+                source=source,
+                row=line_idx,
+                confidence=0.7,
+                notes="证书 OCR 键值抽取",
+                action_hint="partial",
+                risk=CERT_OCR_RISK,
+            )
+            continue
+        # 发证机构常以独立一行出现（无键名），按机构名后缀识别
+        if len(line) <= 40 and line.endswith(CERT_ISSUER_SUFFIXES):
+            add_fact(
+                facts,
+                label="认证机构",
+                value=line,
+                source=source,
+                row=line_idx,
+                confidence=0.66,
+                notes="证书 OCR 机构名识别",
+                action_hint="partial",
+                risk=CERT_OCR_RISK,
+            )
+    seen_domain: set[tuple[str, str]] = set()
+    domain_values: dict[str, str] = {}
+    for pattern, label in CERT_FIELD_PATTERNS:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            value = cert_value_clean(match.group(1))
+            if not value or (label, value) in seen_domain:
+                continue
+            seen_domain.add((label, value))
+            domain_values.setdefault(label, value)
+            add_fact(
+                facts,
+                label=label,
+                value=value,
+                source=source,
+                confidence=0.74,
+                notes="证书 OCR 领域字段抽取",
+                action_hint="partial",
+                risk=CERT_OCR_RISK,
+            )
+            if len(facts) >= GENERIC_FACT_LIMIT_PER_FILE:
+                return facts
+    # 中标件"认证有效日期"的通行写法是"发证日期~有效期"区间，两个日期都在时合成一条
+    issue_date = domain_values.get("发证日期", "")
+    expiry_date = domain_values.get("有效期", "")
+    if issue_date and expiry_date:
+        add_fact(
+            facts,
+            label="认证有效日期",
+            value=f"{issue_date}~{expiry_date}",
+            source=source,
+            confidence=0.74,
+            notes="证书 OCR 发证/有效期合成",
+            action_hint="partial",
+            risk=CERT_OCR_RISK,
+        )
+    # 词面撞车：如"轮毂高度处运行风速范围"因含"轮毂高度"被记为 hub_height，
+    # 与真正的轮毂高度值互相冲突——提及风速的标签不是尺寸事实
+    for fact in facts:
+        if "风速" in fact["label"] and "hub_height" in fact["concepts"]:
+            fact["concepts"] = [concept for concept in fact["concepts"] if concept != "hub_height"]
     return facts
 
 
@@ -1734,33 +2102,54 @@ def extract_manifest_parse_facts(manifest: dict[str, Any]) -> list[dict[str, Any
     return facts
 
 
-def extract_target_fields(spec: AppendixSpec) -> list[dict[str, Any]]:
-    doc = Document(str(spec.source))
-    if spec.table_index < 0:
-        return []
-    table = doc.tables[spec.table_index]
+def detect_table_layout(table: Any) -> tuple[int, int, int, int | None, int | None] | None:
+    """单表列布局检测（续表用）：返回 (header_row, field_col, value_col, unit_col, remark_col)。"""
+    for header_row, row in enumerate(table.rows[:4]):
+        cells = [clean(cell.text) for cell in row.cells]
+        value_col = choose_response_value_col(cells)
+        if value_col < 0:
+            continue
+        unit_col = next((i for i, cell in enumerate(cells) if "计量单位" in cell or cell == "单位"), None)
+        remark_col = next((i for i, cell in enumerate(cells) if "备注" in cell or "说明" in cell), None)
+        field_col = choose_field_col(cells, value_col)
+        return header_row, field_col, value_col, unit_col, remark_col
+    return None
+
+
+def _extract_fields_from_table(
+    spec: AppendixSpec,
+    table: Any,
+    *,
+    table_index: int,
+    header_row: int,
+    field_col: int,
+    value_col: int,
+    unit_col: int | None,
+    remark_col: int | None,
+) -> list[dict[str, Any]]:
     curve_role_cols = [
         idx
         for idx in range(len(table.rows[0].cells) if table.rows else 0)
-        if matrix_role(table_header_text(table, min(spec.header_row + 1, len(table.rows) - 1), idx))
+        if matrix_role(table_header_text(table, min(header_row + 1, len(table.rows) - 1), idx))
     ]
-    numeric_row_count = sum(1 for row in table.rows[spec.header_row + 1 :] if row_numeric_key(row) is not None)
+    numeric_row_count = sum(1 for row in table.rows[header_row + 1 :] if row_numeric_key(row) is not None)
     if curve_role_cols and numeric_row_count >= 3:
         return []
     fields: list[dict[str, Any]] = []
     current_group = ""
-    requirement_col = requirement_col_for_response(table, spec.header_row, spec.value_col)
-    for idx, row in enumerate(table.rows[spec.header_row + 1 :], start=spec.header_row + 1):
+    requirement_col = requirement_col_for_response(table, header_row, value_col)
+    primary = table_index == spec.table_index
+    for idx, row in enumerate(table.rows[header_row + 1 :], start=header_row + 1):
         cells = [clean(cell.text) for cell in row.cells]
-        if spec.field_col >= len(cells) or spec.value_col >= len(cells):
+        if field_col >= len(cells) or value_col >= len(cells):
             continue
-        field = cells[spec.field_col]
-        value = cells[spec.value_col]
+        field = cells[field_col]
+        value = cells[value_col]
         if not cell_needs_fill(value):
             continue
         number = cells[0] if cells else ""
-        unit = cells[spec.unit_col] if spec.unit_col is not None and spec.unit_col < len(cells) else ""
-        remark = cells[spec.remark_col] if spec.remark_col is not None and spec.remark_col < len(cells) else ""
+        unit = cells[unit_col] if unit_col is not None and unit_col < len(cells) else ""
+        remark = cells[remark_col] if remark_col is not None and remark_col < len(cells) else ""
         requirement_value = cells[requirement_col] if requirement_col is not None and requirement_col < len(cells) else ""
         if spec.prefix != "C1" and field and field == value and not number.isdigit():
             current_group = field
@@ -1771,8 +2160,11 @@ def extract_target_fields(spec: AppendixSpec) -> list[dict[str, Any]]:
         concepts = concepts_for(context)
         fields.append(
             {
-                "id": f"{spec.prefix}-R{idx:02d}",
+                "id": f"{spec.prefix}-R{idx:02d}" if primary else f"{spec.prefix}-T{table_index}R{idx:02d}",
                 "rowIndex": idx,
+                "tableIndex": table_index,
+                "valueCol": value_col,
+                "unitCol": unit_col,
                 "group": current_group,
                 "field": field,
                 "unit": unit,
@@ -1785,7 +2177,50 @@ def extract_target_fields(spec: AppendixSpec) -> list[dict[str, Any]]:
     return fields
 
 
+def extract_target_fields(spec: AppendixSpec) -> list[dict[str, Any]]:
+    doc = Document(str(spec.source))
+    if spec.table_index < 0:
+        return []
+    fields = _extract_fields_from_table(
+        spec,
+        doc.tables[spec.table_index],
+        table_index=spec.table_index,
+        header_row=spec.header_row,
+        field_col=spec.field_col,
+        value_col=spec.value_col,
+        unit_col=spec.unit_col,
+        remark_col=spec.remark_col,
+    )
+    # 真续表（同一附表边界内的其余表）：逐表检测布局后并入填写目标；
+    # S1 越界表在 own_tables 之外，天然不进来。
+    for extra_index in range(len(doc.tables[: spec.own_tables])):
+        if extra_index == spec.table_index:
+            continue
+        layout = detect_table_layout(doc.tables[extra_index])
+        if layout is None:
+            continue
+        header_row, field_col, value_col, unit_col, remark_col = layout
+        fields.extend(
+            _extract_fields_from_table(
+                spec,
+                doc.tables[extra_index],
+                table_index=extra_index,
+                header_row=header_row,
+                field_col=field_col,
+                value_col=value_col,
+                unit_col=unit_col,
+                remark_col=remark_col,
+            )
+        )
+    return fields
+
+
 def score(field: dict[str, Any], fact: dict[str, Any], scenario: str) -> float:
+    # 扫风面积（总值）不能拿"单位千瓦扫风面积"顶上——量纲差四个数量级（金标反评 C.1）。
+    # 必须放在 generic 早退之前：词面高度相似，generic 路径会给出 0.79 的假高分。
+    if "扫风面积" in field["field"] and "单位千瓦" not in field["field"] and "每千瓦" not in field["field"]:
+        if "单位千瓦" in fact["label"] or "每千瓦" in fact["label"] or "kw" in norm(fact.get("unit") or "").lower():
+            return 0.0
     overlap = set(field["concepts"]) & set(fact["concepts"])
     generic_score = generic_match_score(field["field"], fact["label"])
     if not overlap and generic_score <= 0:
@@ -1862,6 +2297,15 @@ def score(field: dict[str, Any], fact: dict[str, Any], scenario: str) -> float:
         return 0.0
     if "扭矩" in field_name and "扭矩" not in fact_label and "转矩" not in fact_label:
         return 0.0
+    # IEC S vs IB 语义区分：设计等级 ≠ 场址安全等级
+    # "风电机组安全等级" / "场址安全等级" 应填 IEC IB/IIA 等场址等级，
+    # 不应填 IEC S（设计等级）——后者来自认证证书，不是场址载荷评估。
+    if ("安全等级" in field_name or "场址" in field_name) and "设计" not in field_name:
+        if "设计等级" in fact_label or "设计安全等级" in fact_label:
+            return 0.0
+        # IEC S 是设计等级，不是场址等级
+        if fact["value"] and re.match(r"IEC\s+[SABCR]$", str(fact["value"]).strip(), re.IGNORECASE):
+            return 0.0
 
     value = 0.54 + 0.24 * len(overlap) / max(1, len(field["concepts"]))
     if generic_score >= 0.68:
@@ -1953,6 +2397,22 @@ def map_fields(spec: AppendixSpec, fields: list[dict[str, Any]], facts: list[dic
             key=lambda item: (item["score"], item["sourceKind"] == "xlsx", item.get("sourcePriority", 0)),
             reverse=True,
         )
+        # F.3 大部件行键路由：行组（"叶片单独认证"等跨列组标题）锁定部件后，
+        # 候选只保留来源名带同部件词的事实——否则发电机证书的制造商会顶进
+        # 叶片行（金标反评 F.3.1：96 格错位主因之一）。
+        if spec.prefix == "F3":
+            row_token = component_row_token(clean(f"{field.get('group') or ''}"))
+            if row_token:
+                scoped = [item for item in candidates if row_token in clean(item["source"])]
+                if scoped:
+                    candidates = scoped
+        # F 系列认证表：证书 OCR 值是权威来源。有过线的证书事实时收窄到证书候选，
+        # 否则校核报告等 docx 的污染值（金标反评：单机功率"P…"、轮毂 630mm）
+        # 会通过 find_conflict 把正确的证书值一起否掉。
+        if spec.prefix.startswith("F"):
+            pdf_candidates = [item for item in candidates if item["sourceKind"] == "pdf" and item["usable"] and item["score"] >= 0.62]
+            if pdf_candidates:
+                candidates = pdf_candidates
         selected = next((item for item in candidates if item["usable"] and item["score"] >= 0.62), None)
         concepts = set(field["concepts"])
         reason = ""
@@ -1962,16 +2422,52 @@ def map_fields(spec: AppendixSpec, fields: list[dict[str, Any]], facts: list[dic
         if conflict and (not selected or selected["score"] < 0.82):
             selected = None
             reason = conflict
-        if concepts & PROJECT_SPECIFIC and selected and not project_specific_source_allowed(selected):
+        if (
+            concepts & PROJECT_SPECIFIC
+            and selected
+            and not project_specific_source_allowed(selected)
+            # F 系列认证表例外：证书本身就是"认证了什么配置"的权威记载，
+            # 轮毂高度/安全等级等值按证书抄录正是这类表的本意
+            and not (spec.prefix.startswith("F") and selected.get("sourceKind") == "pdf")
+        ):
             selected = None
             reason = "该字段是项目/场址特定值，当前候选来源不属于项目信息、招标解析或项目范围素材，不能直接填。"
         if concepts & STRICT_MANUAL and (not selected or selected["score"] < 0.78):
             selected = None
         if selected and selected.get("actionHint") == "partial":
             action = "partial"
-        if selected and selected.get("risk") and selected["score"] < 0.76:
+        # partial 事实（如证书 OCR 值）本身语义就是"填入并高亮待人工核对"，
+        # 不走 risk 低分拦截——拦掉就退回全空，人工连核对起点都没有。
+        if selected and selected.get("risk") and selected["score"] < 0.76 and action != "partial":
             reason = selected["risk"]
             selected = None
+
+        # F 系列"认证未完成或存在待解决项"类字段：证书已读到且未见待解决记载时，
+        # 按中标件通行写法默认"无"，partial 高亮交人工确认
+        if (
+            not selected
+            and spec.prefix.startswith("F")
+            and "待解决" in field["field"]
+            and any(fact["sourceKind"] == "pdf" for fact in facts)
+        ):
+            selected = {
+                "factId": f"{field['id']}-CERT-NONE",
+                "label": "待解决项默认响应",
+                "value": "无",
+                "unit": "",
+                "source": "证书 OCR（未见待解决项记载）",
+                "sourceKind": "pdf",
+                "sourcePriority": 60,
+                "row": field["rowIndex"],
+                "sheet": "",
+                "score": 0.62,
+                "usable": True,
+                "notes": "证书 OCR 文本未见未完成/待解决记载，按通行写法默认'无'。",
+                "risk": CERT_OCR_RISK,
+                "actionHint": "partial",
+            }
+            action = "partial"
+            reason = ""
 
         if not selected and requirement_value_is_direct_response(field.get("requirementValue")):
             requirement_value = clean(field.get("requirementValue"))
@@ -1999,6 +2495,9 @@ def map_fields(spec: AppendixSpec, fields: list[dict[str, Any]], facts: list[dic
                 {
                     "targetFieldId": field["id"],
                     "rowIndex": field["rowIndex"],
+                    "tableIndex": field.get("tableIndex"),
+                    "valueCol": field.get("valueCol"),
+                    "unitCol": field.get("unitCol"),
                     "field": field["field"],
                     "action": action,
                     "value": display_value,
@@ -2020,6 +2519,9 @@ def map_fields(spec: AppendixSpec, fields: list[dict[str, Any]], facts: list[dic
                 {
                     "targetFieldId": field["id"],
                     "rowIndex": field["rowIndex"],
+                    "tableIndex": field.get("tableIndex"),
+                    "valueCol": field.get("valueCol"),
+                    "unitCol": field.get("unitCol"),
                     "field": field["field"],
                     "action": "manual",
                     "value": f"[待人工补充：{field['field']}]",
@@ -2074,24 +2576,58 @@ def set_cell(cell: Any, text: str, *, highlight: bool = False) -> None:
         tc_pr.remove(shd)
 
 
+def cert_mirror_value_col(spec: AppendixSpec, table: Any) -> int | None:
+    """F 系列认证表"认证机型N/投标机型N"成对列：投标机型即认证机型（同一机型投标），
+    中标件通行填法是两列同值；返回需要同值复制的投标机型列（差异列不算）。"""
+    if not spec.prefix.startswith("F") or spec.header_row >= len(table.rows):
+        return None
+    headers = [clean(cell.text) for cell in table.rows[spec.header_row].cells]
+    if spec.value_col >= len(headers) or "认证机型" not in headers[spec.value_col]:
+        return None
+    for idx, text in enumerate(headers):
+        if idx != spec.value_col and "投标机型" in text and "差异" not in text:
+            return idx
+    return None
+
+
 def fill_doc(spec: AppendixSpec, mapping: dict[str, Any], output_file: Path) -> None:
     doc = Document(str(spec.source))
     if spec.table_index < 0:
         output_file.parent.mkdir(parents=True, exist_ok=True)
         doc.save(str(output_file))
         return
-    table = doc.tables[spec.table_index]
-    by_row = {decision["rowIndex"]: decision for decision in mapping["decisions"]}
-    for row_idx, decision in by_row.items():
+    # 每条决策自带 tableIndex/valueCol（续表字段），缺省回落主表 spec 列。
+    by_cell: dict[tuple[int, int], dict[str, Any]] = {}
+    for decision in mapping["decisions"]:
+        table_idx = decision.get("tableIndex")
+        table_idx = spec.table_index if table_idx is None else int(table_idx)
+        by_cell[(table_idx, decision["rowIndex"])] = decision
+    for (table_idx, row_idx), decision in by_cell.items():
+        if table_idx < 0 or table_idx >= len(doc.tables):
+            continue
+        table = doc.tables[table_idx]
         if row_idx >= len(table.rows):
             continue
+        value_col = decision.get("valueCol")
+        value_col = spec.value_col if value_col is None else int(value_col)
+        unit_col = decision.get("unitCol")
+        if unit_col is None and table_idx == spec.table_index:
+            unit_col = spec.unit_col
         row = table.rows[row_idx]
-        if spec.value_col >= len(row.cells):
+        if value_col >= len(row.cells):
             continue
         highlight = decision["action"] in {"manual", "partial"}
-        set_cell(row.cells[spec.value_col], decision["value"], highlight=highlight)
-        if decision["unit"] and spec.unit_col is not None and spec.unit_col < len(row.cells):
-            set_cell(row.cells[spec.unit_col], decision["unit"])
+        set_cell(row.cells[value_col], decision["value"], highlight=highlight)
+        if (
+            decision["action"] in {"fill", "partial"}
+            and table_idx == spec.table_index
+            and value_col == spec.value_col
+        ):
+            mirror_col = cert_mirror_value_col(spec, table)
+            if mirror_col is not None and mirror_col < len(row.cells) and cell_needs_fill(row.cells[mirror_col].text):
+                set_cell(row.cells[mirror_col], decision["value"], highlight=highlight)
+        if decision["unit"] and unit_col is not None and unit_col < len(row.cells):
+            set_cell(row.cells[unit_col], decision["unit"])
     output_file.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_file))
 
@@ -2788,9 +3324,17 @@ def transport_weight(value: str) -> str:
 
 
 def apply_large_component_transport_table_fill(output_file: Path, sources: list[Source], spec: AppendixSpec, project: dict[str, Any]) -> list[dict[str, Any]]:
-    if "附表H.5" not in spec.title and "大部件" not in spec.title:
+    # "大部件"词面会撞上 F.3 系"大部件认证情况"——那是认证表不是运输表，
+    # 整表重建会把 58x5 认证空表替换成 7x10 运输表（金标反评 F.3.1 假阳性 66 格）。
+    if "附表H.5" not in spec.title and ("大部件" not in spec.title or "认证" in spec.title):
         return []
     source = next((item for item in sources if item.kind == "xlsx" and "X2平台机型投标参数" in item.name), None)
+    if source is None:
+        # 素材命名演进：不再限定旧文件名，凡参数表内含运输尺寸行（长×宽×高）的 xlsx 均可作源。
+        source = next(
+            (item for item in sources if item.kind == "xlsx" and x2_param_value(item, project, "长×宽×高")),
+            None,
+        )
     logistics = source_with_tokens(sources, "物流解决方案", kind="docx")
     if source is None:
         return []
@@ -3237,8 +3781,9 @@ def apply_load_wind_parameter_table_fill(output_file: Path, sources: list[Source
     if not position_rows or source is None:
         return []
     doc = Document(str(output_file))
+    own_limit = own_table_limit(doc)
     decisions: list[dict[str, Any]] = []
-    for table_idx, target_table in enumerate(doc.tables):
+    for table_idx, target_table in enumerate(doc.tables[:own_limit]):
         target_text = " ".join(clean(cell.text) for row in target_table.rows[:4] for cell in row.cells)
         if "载荷计算风参数分组" not in target_text or "投标机型" not in target_text:
             continue
@@ -3295,8 +3840,9 @@ def apply_load_wind_parameter_table_fill(output_file: Path, sources: list[Source
 
 def apply_source_table_transplant(output_file: Path, sources: list[Source]) -> list[dict[str, Any]]:
     doc = Document(str(output_file))
+    own_limit = own_table_limit(doc)
     candidates: list[dict[str, Any]] = []
-    for target_idx, target_table in enumerate(doc.tables):
+    for target_idx, target_table in enumerate(doc.tables[:own_limit]):
         if not sparse_table_needs_expansion(target_table):
             continue
         for source in sources:
@@ -3498,6 +4044,13 @@ def apply_same_shape_source_table_fill(
         if spec.value_col >= len(row.cells):
             continue
         value = selected["row"]["value"]
+        # IEC S vs IB 语义区分：设计等级 ≠ 场址安全等级
+        # "风电机组安全等级" / "场址安全等级" 应填 IEC IB/IIA 等场址等级，
+        # 不应填 IEC S（设计等级）——后者来自认证证书，不是场址载荷评估。
+        field_name = str(decision.get("field") or "")
+        if ("安全等级" in field_name or "场址" in field_name) and "设计" not in field_name:
+            if re.match(r"IEC\s+[SABCR]$", str(value).strip(), re.IGNORECASE):
+                continue
         set_cell(row.cells[spec.value_col], value)
         replacements.append(
             {
@@ -3578,8 +4131,9 @@ def apply_curve_matrix_fill(output_file: Path, sources: list[Source]) -> list[di
     if not curve_tables:
         return []
     doc = Document(str(output_file))
+    own_limit = own_table_limit(doc)
     decisions: list[dict[str, Any]] = []
-    for table_idx, table in enumerate(doc.tables):
+    for table_idx, table in enumerate(doc.tables[:own_limit]):
         curve_header_row = -1
         wind_col = -1
         for probe_idx, probe_row in enumerate(table.rows[:5]):
@@ -3693,6 +4247,8 @@ def collect_facts(sources: list[Source], project: dict[str, Any], manifest: dict
                 facts.extend(extract_xlsx_generic_facts(source))
             elif source.kind == "docx":
                 facts.extend(extract_doc_facts(source))
+            elif source.kind == "pdf":
+                facts.extend(extract_pdf_ocr_facts(source))
         except Exception as exc:
             meta[source.name] = {"error": str(exc)}
     facts.extend(extract_manifest_parse_facts(manifest))

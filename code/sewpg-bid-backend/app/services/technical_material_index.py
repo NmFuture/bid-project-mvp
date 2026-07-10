@@ -17,6 +17,7 @@ from app.services.technical_wiki_preview_prompt import (
     PREVIEW_BATCH_SIZE,
     PREVIEW_SCHEMA_VERSION,
     build_batch_preview_prompt,
+    build_evidence_segments,
     build_preview_prompt,
     parse_batch_preview_reply,
     parse_preview_reply,
@@ -122,6 +123,14 @@ def _preview_signature(name: str, profile: dict[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _safe_build_segments(material_id: str, name: str, path: str, profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """确定性切分证据片段，吞异常（切分失败不应拖垮预览/索引）。"""
+    try:
+        return build_evidence_segments(material_id, name, path, profile)
+    except Exception:  # noqa: BLE001 - 切分尽力而为，失败返回空
+        return []
+
+
 def _should_generate_preview(ext: str, profile: dict[str, Any]) -> tuple[bool, str]:
     """是否值得调 LLM 生成预览。返回 (should, skipReason)。"""
     if str(ext or "").lower() != "docx":
@@ -143,17 +152,22 @@ def _compute_preview_payload(
     ext: str,
     signature: str,
     profile: dict[str, Any],
+    material_id: str = "",
 ) -> dict[str, Any]:
     """纯计算（跑在线程池）：降级判定 -> 调 LLM -> 解析 -> 组完整缓存 payload。
 
     全程吞异常，永不抛出；失败记为 status=failed，让上层降级为纯索引卡片。
+    evidenceSegments 由 profile 确定性切分（不依赖 LLM），只要 docx 解析出
+    heading/正文就附上，供非附表正文缺口召回；LLM 预览失败不影响它。
     """
     from app.services.opencode_client import OpencodeClient  # 延迟导入避免循环引用
 
+    segments = _safe_build_segments(material_id, name, path, profile)
     base = {
         "schemaVersion": PREVIEW_SCHEMA_VERSION,
         "signature": signature,
         "generatedAt": _now_display(),
+        "evidenceSegments": segments,
     }
 
     should, skip_reason = _should_generate_preview(ext, profile)
@@ -266,6 +280,8 @@ async def _resolve_preview_plan(item: Any) -> dict[str, Any]:
             "schemaVersion": PREVIEW_SCHEMA_VERSION,
             "signature": signature,
             "generatedAt": _now_display(),
+            # 证据片段确定性切分，与 LLM 预览无关；无论预览成功/跳过/失败都附带。
+            "evidenceSegments": _safe_build_segments(file_id, name, path, profile),
         },
     }
 
@@ -344,9 +360,27 @@ def _wanted_docx_ids(file_items: list[dict[str, Any]]) -> set[int]:
     return wanted_ids
 
 
+def _slim_preview_payload(cached: dict[str, Any]) -> dict[str, Any]:
+    """从一份缓存 payload 抽出要注入索引的轻量子对象。
+
+    - preview：仅当 LLM 生成完成（completed）且非空时带上。
+    - evidenceSegments：确定性切分结果，与 LLM 状态无关，有就带上（供正文缺口召回）。
+
+    两者都没有时返回空 dict，调用方据此跳过注入。
+    """
+    if not isinstance(cached, dict):
+        return {}
+    slim: dict[str, Any] = {}
+    if cached.get("status") == "completed" and isinstance(cached.get("preview"), dict) and cached["preview"]:
+        slim["preview"] = cached["preview"]
+    segments = cached.get("evidenceSegments")
+    if isinstance(segments, list) and segments:
+        slim["evidenceSegments"] = segments
+    return slim
+
+
 async def _collect_cached_previews(file_items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """只读 DB 里已缓存（completed）的预览，不调 LLM、不写盘。
-
     供 Wiki 镜像「快路径」使用：重建/刷新 Wiki 时秒级注入已生成的预览卡片，
     尚未生成预览的 docx 自动降级为纯目录卡片，等后台任务补齐。
     """
@@ -366,13 +400,12 @@ async def _collect_cached_previews(file_items: list[dict[str, Any]]) -> dict[str
         )
         for raw_id, ext_fields in result.all():
             cached = (ext_fields or {}).get(PREVIEW_EXT_FIELD)
-            if (
-                isinstance(cached, dict)
-                and cached.get("status") == "completed"
-                and isinstance(cached.get("preview"), dict)
-                and cached["preview"]
-            ):
-                preview_by_id[f"RAW-{int(raw_id):04d}"] = cached["preview"]
+            if not isinstance(cached, dict):
+                continue
+            file_id = f"RAW-{int(raw_id):04d}"
+            slim = _slim_preview_payload(cached)
+            if slim:
+                preview_by_id[file_id] = slim
     return preview_by_id
 
 
@@ -478,12 +511,19 @@ async def _enrich_previews(
             failed += 1
             continue
         status = payload.get("status")
+        slim = _slim_preview_payload(payload)
         if status == "completed" and payload.get("preview"):
-            preview_by_id[file_id] = payload["preview"]
+            if slim:
+                preview_by_id[file_id] = slim
             completed += 1
         elif status == "skipped":
+            # 预览跳过（无正文），但确定性切分可能仍有片段，照样回填供召回。
+            if slim:
+                preview_by_id[file_id] = slim
             skipped += 1
         else:
+            if slim:
+                preview_by_id[file_id] = slim
             failed += 1
     logger.info(
         "tech wiki preview enrich: %d completed, %d skipped, %d failed (of %d docx, %d batches)",
@@ -577,10 +617,14 @@ def _file_entry(
         "tags": tags,
     }
 
-    # AI 内容预览：仅注入已生成（completed）的 preview 子对象；缺失即降级渲染。
-    preview = (preview_by_id or {}).get(file_id)
-    if preview:
-        entry["preview"] = preview
+    # AI 内容预览 + 证据片段：preview 仅在 LLM 生成完成时有值；evidenceSegments
+    # 由 profile 确定性切分，与 LLM 无关，故可独立存在（即便预览 skipped/failed）。
+    enriched = (preview_by_id or {}).get(file_id)
+    if isinstance(enriched, dict):
+        if enriched.get("preview"):
+            entry["preview"] = enriched["preview"]
+        if enriched.get("evidenceSegments"):
+            entry["evidenceSegments"] = enriched["evidenceSegments"]
 
     return entry
 

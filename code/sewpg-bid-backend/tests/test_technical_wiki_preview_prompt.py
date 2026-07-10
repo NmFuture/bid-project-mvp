@@ -7,6 +7,7 @@ from app.services.technical_wiki_preview_prompt import (
     PREVIEW_BATCH_SIZE,
     PREVIEW_SCHEMA_VERSION,
     build_batch_preview_prompt,
+    build_evidence_segments,
     build_preview_prompt,
     parse_batch_preview_reply,
     parse_preview_reply,
@@ -118,6 +119,58 @@ class PreviewPromptModuleTests(unittest.TestCase):
         self.assertEqual(parse_batch_preview_reply("", _loader), {})
         self.assertEqual(parse_batch_preview_reply("not json", _loader), {})
         self.assertEqual(parse_batch_preview_reply(json.dumps({"nope": 1}), _loader), {})
+
+
+class EvidenceSegmentTests(unittest.TestCase):
+    def test_heading_sections(self) -> None:
+        profile = {
+            "headings": [
+                {"level": 1, "title": "混塔解决方案专题"},
+                {"level": 2, "title": "一、混塔结构方案"},
+            ],
+            "paragraphs": ["本方案针对EW5.0-202机型提供混合塔架解决方案。", "混塔由下部混凝土段和上部钢段组成。"],
+        }
+        segs = build_evidence_segments(
+            "RAW-0476", "混塔解决方案专题.docx", "技术标/通用素材/EW5.0-202/混塔解决方案专题.docx", profile
+        )
+        self.assertEqual(len(segs), 2)
+        self.assertTrue(all(s["segmentScope"] == "heading_section" for s in segs))
+        self.assertEqual(segs[0]["title"], "混塔解决方案专题")
+        self.assertEqual(segs[0]["materialId"], "RAW-0476")
+        # segmentId 稳定且唯一
+        self.assertEqual(len({s["segmentId"] for s in segs}), 2)
+        self.assertTrue(all(s["segmentId"].startswith("tech-seg-") for s in segs))
+        # 领域 marker 命中关键词，路径骨架被过滤
+        self.assertIn("混塔", segs[0]["keywords"])
+        self.assertNotIn("通用素材", segs[0]["keywords"])
+        self.assertNotIn("docx", segs[0]["keywords"])
+
+    def test_paragraph_overflow_when_few_headings(self) -> None:
+        profile = {
+            "headings": [{"level": 1, "title": "前言"}],
+            "paragraphs": ["第一段。", "第二段。", "第三段。"],
+        }
+        segs = build_evidence_segments("RAW-1", "前言.docx", "p/前言.docx", profile)
+        scopes = [s["segmentScope"] for s in segs]
+        self.assertIn("heading_section", scopes)
+        self.assertIn("paragraph_overflow", scopes)
+
+    def test_file_fallback_without_headings(self) -> None:
+        profile = {"headings": [], "paragraphs": ["上海电气是领先的整机制造商。"]}
+        segs = build_evidence_segments("RAW-2", "概述.docx", "p/概述.docx", profile)
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(segs[0]["segmentScope"], "file_fallback")
+        self.assertEqual(segs[0]["sourcePages"], "整件/待定位")
+
+    def test_empty_profile_yields_no_segments(self) -> None:
+        self.assertEqual(build_evidence_segments("RAW-3", "扫描件.pdf", "p/扫描件.pdf", {"headings": [], "paragraphs": []}), [])
+        self.assertEqual(build_evidence_segments("RAW-4", "x.docx", "p/x.docx", {"parseError": "读取失败"}), [])
+
+    def test_segment_id_deterministic(self) -> None:
+        profile = {"headings": [{"level": 1, "title": "总体方案"}], "paragraphs": ["内容。"]}
+        a = build_evidence_segments("RAW-9", "x.docx", "p/x.docx", profile)
+        b = build_evidence_segments("RAW-9", "x.docx", "p/x.docx", profile)
+        self.assertEqual([s["segmentId"] for s in a], [s["segmentId"] for s in b])
 
 
 if __name__ == "__main__":

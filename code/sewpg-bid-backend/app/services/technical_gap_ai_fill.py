@@ -11,9 +11,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.config import BASE_DIR
-from app.services.identity import build_project_material_scope
 from app.services.minio_client import minio_client
+from app.services.ocr_service import ocr_service
 from app.services.opencode_client import OpencodeClient
+from app.services.peripheral import PeripheralError
 from app.services.technical_gap_domain import (
     summarize_technical_gap_plan,
     technical_gap_artifact_onlyoffice_payload,
@@ -179,20 +180,37 @@ def _selected_reference_material_ids(
     appendix_task: dict[str, Any],
     data: dict[str, Any],
 ) -> list[str]:
-    requested = _string_items(data.get("referenceMaterialIds"))
-    if requested:
-        return requested
+    if "referenceMaterialIds" in data:
+        return _string_items(data.get("referenceMaterialIds"))
+
+    has_source_routing = (
+        isinstance(appendix_task.get("sourceRouting"), dict)
+        and appendix_task["sourceRouting"].get("source") == "appendix_source_matrix"
+    ) or (
+        isinstance(item.get("sourceRouting"), dict)
+        and item["sourceRouting"].get("source") == "appendix_source_matrix"
+    )
+    if has_source_routing:
+        routed = _string_items([
+            _material_key(material)
+            for material in (
+                _object_items(appendix_task.get("recommendedMaterials"))
+                + _object_items(item.get("sourceRoutedMaterials"))
+            )
+        ])
+        if routed:
+            return routed
 
     matched = [_material_key(material) for material in _object_items(item.get("matchedMaterials"))]
     matched = [item for item in matched if item]
     if matched:
         return matched
 
-    recommended = [
+    recommended = _string_items([
         _material_key(material)
-        for material in _object_items(appendix_task.get("recommendedMaterials"))[:1]
-    ]
-    return [item for item in recommended if item]
+        for material in _object_items(appendix_task.get("recommendedMaterials"))
+    ])
+    return recommended
 
 
 def _reference_materials_for_fill(
@@ -205,6 +223,7 @@ def _reference_materials_for_fill(
         _object_items(data.get("referenceMaterials"))
         + _object_items(item.get("matchedMaterials"))
         + _object_items(item.get("candidateMaterials"))
+        + _object_items(item.get("sourceRoutedMaterials"))
         + _object_items(appendix_task.get("recommendedMaterials"))
         + [
             material
@@ -269,9 +288,18 @@ def _allowed_technical_material_index(material_scope: dict[str, Any], turbine_mo
     return items
 
 
-def _material_index_for_fill(project: dict[str, Any], plan: dict[str, Any], item: dict[str, Any]) -> list[dict[str, Any]]:
-    item_candidates = _dedupe_material_summaries(
-        _object_items(plan.get("materialIndex"))
+def _material_index_for_fill(
+    project: dict[str, Any],
+    plan: dict[str, Any],
+    item: dict[str, Any],
+    selected_ids: list[str],
+    reference_materials: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    _ = project
+    context = _dedupe_material_summaries(
+        reference_materials
+        + _object_items(item.get("sourceRoutedMaterials"))
+        + _object_items(plan.get("materialIndex"))
         + _object_items(item.get("candidateMaterials"))
         + _object_items(item.get("matchedMaterials"))
         + [
@@ -280,12 +308,15 @@ def _material_index_for_fill(project: dict[str, Any], plan: dict[str, Any], item
             for material in _object_items(task.get("recommendedMaterials"))
         ]
     )
-
-    material_scope = plan.get("scopeBoundary") if isinstance(plan.get("scopeBoundary"), dict) else {}
-    if not material_scope:
-        material_scope = build_project_material_scope(project)
-    scoped_index = _allowed_technical_material_index(material_scope, project_turbine_model(project))
-    return _dedupe_material_summaries(item_candidates + scoped_index)
+    by_id = {
+        _material_key(material): material
+        for material in context
+        if _material_key(material)
+    }
+    return _dedupe_material_summaries([
+        by_id.get(material_id) or {"id": material_id, "name": material_id}
+        for material_id in selected_ids
+    ])
 
 
 async def _downloadable_technical_fill_source_payload(material_id: str) -> tuple[dict[str, Any], str]:
@@ -296,14 +327,15 @@ async def _downloadable_technical_fill_source_payload(material_id: str) -> tuple
         payload = await technical_material_store.raw_download_content(material_id)
     mime_type = str(payload.get("mimeType") or "")
     file_name = str(payload.get("fileName") or "").lower()
-    allowed_ext = file_name.endswith((".docx", ".xlsx", ".xlsm"))
+    allowed_ext = file_name.endswith((".docx", ".xlsx", ".xlsm", ".pdf"))
     allowed_mime = (
         "wordprocessingml" in mime_type
         or "spreadsheetml" in mime_type
         or "ms-excel" in mime_type
+        or mime_type == "application/pdf"
     )
     if not allowed_ext and not allowed_mime:
-        raise ValueError(f"素材 {material_id} 不是填写 Skill 可读取的 Word/Excel。")
+        raise ValueError(f"素材 {material_id} 不是填写 Skill 可读取的 Word/Excel/PDF。")
     return payload, "raw"
 
 
@@ -320,15 +352,47 @@ async def _downloadable_technical_word_payload(material_id: str) -> tuple[dict[s
     return payload, "raw"
 
 
+def _ensure_pdf_ocr_sidecar(pdf_path: Path) -> tuple[str, str]:
+    """为证书类 PDF 素材生成 OCR 文本 sidecar（{stem}.ocr.txt，与 PDF 同目录缓存复用）。
+
+    返回 (sidecar 路径, 状态)。OCR 未配置/失败时不抛出，仅返回空路径与原因，
+    由 manifest 透出，填表侧对无 sidecar 的 PDF 显式报错。
+    """
+    sidecar_path = pdf_path.with_suffix(".ocr.txt")
+    if sidecar_path.exists() and sidecar_path.stat().st_size > 0:
+        return str(sidecar_path), "cached"
+    try:
+        text, _meta = _run_async(
+            ocr_service.recognize_text_for_parse(
+                file_name=pdf_path.name,
+                content=pdf_path.read_bytes(),
+                mime_type="application/pdf",
+            )
+        )
+    except PeripheralError as exc:
+        if exc.code == "OCR_CONFIG_REQUIRED":
+            return "", "skipped: OCR 模型未启用或未配置"
+        return "", f"failed: {exc.detail}"
+    except Exception as exc:
+        return "", f"failed: {exc}"
+    if not str(text or "").strip():
+        return "", "failed: OCR 识别结果为空"
+    sidecar_path.write_text(str(text), encoding="utf-8")
+    return str(sidecar_path), "generated"
+
+
 def _prepare_material_index_files(
     material_index: list[dict[str, Any]],
     work_dir: Path,
     *,
     cache_dir: Path | None = None,
-    limit: int = 80,
+    limit: int = 240,
+    ocr_pdf: bool = False,
+    ocr_budget: int = 12,
 ) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
     cache_dir = cache_dir or (work_dir / "material_index")
+    ocr_generated = 0
     for material in material_index[:limit]:
         item = dict(material)
         material_id = str(item.get("id") or item.get("materialId") or "").strip()
@@ -357,6 +421,17 @@ def _prepare_material_index_files(
                 "fileName": target_path.name,
             }
         )
+        if ocr_pdf and target_path.suffix.lower() == ".pdf":
+            has_cache = target_path.with_suffix(".ocr.txt").exists()
+            if has_cache or ocr_generated < ocr_budget:
+                sidecar_path, ocr_status = _ensure_pdf_ocr_sidecar(target_path)
+                if sidecar_path:
+                    item["ocrTextPath"] = sidecar_path
+                if ocr_status == "generated":
+                    ocr_generated += 1
+            else:
+                ocr_status = "skipped: 本次运行 OCR 配额已用完，缓存后续运行补齐"
+            item["ocrStatus"] = ocr_status
         prepared.append(item)
     return prepared
 
@@ -709,6 +784,7 @@ def _build_ai_fill_artifacts(
     recommended_materials: list[dict[str, Any]],
     parse_fields: list[dict[str, Any]],
     manifest_path: Path,
+    s7_ready: bool,
     browser_base_url: str = "",
     onlyoffice_base_url: str = "",
 ) -> list[dict[str, Any]]:
@@ -721,6 +797,7 @@ def _build_ai_fill_artifacts(
         artifact_id = base_artifact_id if batch_count == 1 else f"{base_artifact_id}-{index:03d}"
         title = str(target_report.get("title") or item_title or output_file.stem)
         quality_report = _build_fill_quality_report(target_result, output_exists=output_file.exists())
+        artifact_s7_ready = s7_ready and quality_report["status"] == "passed"
         artifacts.append(
             {
                 "id": artifact_id,
@@ -737,6 +814,11 @@ def _build_ai_fill_artifacts(
                 "evidenceRefs": list(target_result.get("evidenceRefs") or []),
                 "fillReport": target_report,
                 "qualityReport": quality_report,
+                "referenceMaterialIds": [
+                    _material_key(material)
+                    for material in reference_materials
+                    if _material_key(material)
+                ],
                 "referenceMaterials": reference_materials,
                 "recommendedMaterials": recommended_materials,
                 "parseFields": parse_fields,
@@ -752,13 +834,25 @@ def _build_ai_fill_artifacts(
                     browser_base_url=browser_base_url,
                     onlyoffice_base_url=onlyoffice_base_url,
                 ),
-                "s7Ready": True,
+                "s7Ready": artifact_s7_ready,
+                "qualityGate": "auto_passed" if artifact_s7_ready else "needs_review",
+                "confirmed": artifact_s7_ready,
             }
         )
     return artifacts
 
 
 def _compact_resolved_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
+    reference_materials = [
+        {
+            "id": _material_key(material),
+            "name": str(material.get("name") or material.get("title") or material.get("fileName") or ""),
+            "folderPath": str(material.get("folderPath") or ""),
+            "materialTier": str(material.get("materialTier") or ""),
+        }
+        for material in _object_items(artifact.get("referenceMaterials"))
+        if _material_key(material)
+    ]
     return {
         "id": artifact.get("id"),
         "source": artifact.get("source"),
@@ -774,12 +868,21 @@ def _compact_resolved_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
         "evidenceRefs": list(artifact.get("evidenceRefs") or []),
         "fillReport": artifact.get("fillReport") or {},
         "qualityReport": artifact.get("qualityReport") or {},
+        "referenceMaterialIds": _string_items(
+            artifact.get("referenceMaterialIds")
+            or [_material_key(material) for material in reference_materials]
+        ),
+        "referenceMaterials": reference_materials,
         "manifestPath": artifact.get("manifestPath"),
         "batchReportPath": artifact.get("batchReportPath") or "",
         "batchTargetIndex": artifact.get("batchTargetIndex") or 0,
         "batchTargetCount": artifact.get("batchTargetCount") or 0,
         "onlyoffice": artifact.get("onlyoffice") or {},
         "s7Ready": artifact.get("s7Ready", True),
+        "qualityGate": str(artifact.get("qualityGate") or ""),
+        "confirmed": bool(artifact.get("confirmed")),
+        "confirmedAt": str(artifact.get("confirmedAt") or ""),
+        "confirmedBy": str(artifact.get("confirmedBy") or ""),
         "referenceMaterialCount": len(artifact.get("referenceMaterials") or []),
         "recommendedMaterialCount": len(artifact.get("recommendedMaterials") or []),
     }
@@ -853,15 +956,41 @@ def run_technical_ai_fill_for_gap(
         for material in reference_materials
         if str(material.get("id") or material.get("materialId") or "").strip() != blank_source_id
     ]
-    recommended_materials = _dedupe_material_summaries(_object_items(appendix_task.get("recommendedMaterials")))
-    material_index = _material_index_for_fill(project, plan, item)
+    recommended_materials = list(reference_materials)
+    material_index = _material_index_for_fill(
+        project,
+        plan,
+        item,
+        selected_reference_ids,
+        reference_materials,
+    )
     parse_fields = _parse_fields_for_fill(appendix_task, task, data)
     work_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / gap_id
     work_dir.mkdir(parents=True, exist_ok=True)
+    shared_material_cache_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / "_material_index_cache"
+    # PDF 素材（认证证书等）三路都做 OCR sidecar：证书 PDF 通常只经 materialIndex
+    # 关键词选源进入填表。sidecar 落在共享缓存跨缺口复用，单次运行有 OCR 配额上限。
     material_index = _prepare_material_index_files(
         material_index,
         work_dir,
-        cache_dir=_project_dir(project) / "s4_gap_workdir" / "ai_fill" / "_material_index_cache",
+        cache_dir=shared_material_cache_dir,
+        ocr_pdf=True,
+    )
+    # referenceMaterials/recommendedMaterials 只带素材库虚拟目录路径（如
+    # "技术标/通用素材/.../证书.pdf"），不是本地可读路径；只下载过 material_index，
+    # 这两路（尤其是路由命中的认证证书 PDF）从未落地过，table-filler 拿到手时
+    # material_path() 解析不出真实文件，会静默丢弃——即使上游路由完全正确。
+    reference_materials = _prepare_material_index_files(
+        reference_materials,
+        work_dir,
+        cache_dir=shared_material_cache_dir,
+        ocr_pdf=True,
+    )
+    recommended_materials = _prepare_material_index_files(
+        recommended_materials,
+        work_dir,
+        cache_dir=shared_material_cache_dir,
+        ocr_pdf=True,
     )
     artifact_task_id = _safe_filename(str(task.get("id") or "task"), "task")
     artifact_id = f"ART-{gap_id}-{artifact_task_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
@@ -901,6 +1030,7 @@ def run_technical_ai_fill_for_gap(
             "docxPath": str(appendix_task.get("docxPath") or ""),
             "workspacePath": str(appendix_task.get("workspacePath") or ""),
             "rowCount": appendix_task.get("rowCount") or 0,
+            "sourceRouting": appendix_task.get("sourceRouting") if isinstance(appendix_task.get("sourceRouting"), dict) else {},
             "availableParseFields": parse_fields,
         },
         "blankSource": blank_source,
@@ -955,6 +1085,7 @@ def run_technical_ai_fill_for_gap(
         recommended_materials=recommended_materials,
         parse_fields=parse_fields,
         manifest_path=manifest_path,
+        s7_ready=quality_report["status"] == "passed",
         browser_base_url=browser_base_url,
         onlyoffice_base_url=onlyoffice_base_url,
     )
@@ -964,7 +1095,7 @@ def run_technical_ai_fill_for_gap(
     task["outputArtifactId"] = artifact["id"]
     task["outputArtifactIds"] = [entry["id"] for entry in artifacts]
     task["completedAt"] = created_at
-    item["status"] = "resolved"
+    item["status"] = "resolved" if quality_report["status"] == "passed" else "needs_input"
     item["qualityStatus"] = quality_report["status"]
     item["qualityReport"] = quality_report
     item["resolvedArtifacts"] = _replace_resolved_artifacts(

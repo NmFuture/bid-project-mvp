@@ -211,6 +211,14 @@ def status_label(status: str, raw_text: str = "") -> str:
     }.get(status, status)
 
 
+def _layout_of(text: str) -> str:
+    """从型号/路径文本里取变压器布局（上置/下置），取不到返回空串。"""
+    for word in LAYOUT_WORDS:
+        if word in str(text or ""):
+            return word
+    return ""
+
+
 def material_model_fit(material: dict[str, Any], turbine_model: dict[str, Any]) -> str:
     selected = normalize_project_turbine_model(turbine_model)
     if not selected:
@@ -230,6 +238,16 @@ def material_model_fit(material: dict[str, Any], turbine_model: dict[str, Any]) 
     tokens = [match.group(0) for match in MODEL_PATTERN.finditer(text)]
     if not tokens:
         return "generic"
+    # 布局感知：MODEL_PATTERN 不会把上置/下置纳入 token，故布局要从素材全文（含 folderPath）取。
+    # 项目布局优先取 layout 字段，否则从型号串（如 EW10.0-220上置）推断。
+    # 素材只含相反布局、且不含当前布局 → 直接判冲突，避免布局无关别名（EW10.0-220）
+    # 子串命中 EW10.0-220下置，把下置素材误判成当前上置项目的可用素材。
+    selected_layout = _layout_of(selected.get("layout")) or _layout_of(selected.get("model"))
+    if selected_layout:
+        has_selected_layout = selected_layout in text
+        has_opposite_layout = any(word in text for word in LAYOUT_WORDS if word != selected_layout)
+        if has_opposite_layout and not has_selected_layout:
+            return "conflict"
     aliases = {alias.upper().replace("_", "") for alias in selected.get("aliases") or []}
     aliases.add(str(selected.get("model") or "").upper().replace("_", ""))
     for token in tokens:

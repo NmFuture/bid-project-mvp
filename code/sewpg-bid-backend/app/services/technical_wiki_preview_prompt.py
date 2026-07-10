@@ -44,3 +44,4 @@ build_preview_prompt = _MODULE.build_preview_prompt
 parse_preview_reply = _MODULE.parse_preview_reply
 build_batch_preview_prompt = _MODULE.build_batch_preview_prompt
 parse_batch_preview_reply = _MODULE.parse_batch_preview_reply
+build_evidence_segments = _MODULE.build_evidence_segments

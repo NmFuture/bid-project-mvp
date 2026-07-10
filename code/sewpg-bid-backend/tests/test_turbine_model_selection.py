@@ -270,7 +270,20 @@ class TurbineModelSelectionTests(unittest.TestCase):
             doc = Document()
             doc.add_paragraph("按 EW10.0-220下置 填写性能保证。")
             doc.save(output_file)
-            return {"schema_version": "bid-tech-table-fill-v1", "outputFile": str(output_file)}
+            return {
+                "schema_version": "bid-tech-table-fill-v1",
+                "outputFile": str(output_file),
+                "unfilledFields": [],
+                "evidenceRefs": [{"field": "性能保证", "source": "projectTurbineModel"}],
+                "fillReport": {
+                    "targetFieldCount": 1,
+                    "filledFieldCount": 1,
+                    "unfilledFieldCount": 0,
+                    "semanticCheckCount": 1,
+                    "semanticFailedCount": 0,
+                    "semanticValidationRate": 1,
+                },
+            }
 
         with patch("app.services.technical_gap_ai_fill.run_technical_table_filler_skill", side_effect=fake_table_filler):
             fill = self.client.post(

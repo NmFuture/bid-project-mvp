@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+from openpyxl import Workbook
 from starlette.datastructures import URL
 
 import app.services.technical_gap_service as technical_gap_service_module
@@ -58,6 +59,7 @@ from app.services.bid_project_state import (
 from app.services.bid_runtime_state import ensure_project_runtime_states, now_iso, outline_nodes_from_toc_items, recover_parse_result
 from app.services.technical_coverage import build_technical_coverage
 from app.services.technical_gap_planner import _allowed_technical_material_index
+from app.services.technical_appendix_source_matrix import load_appendix_source_matrix_for_project
 from app.services.store import store
 from app.services.technical_gap_fact_table import PROJECT_FACT_TABLE_SCHEMA_VERSION
 from app.services.technical_gap_repository import persist_technical_gap_project, require_technical_gap_project_for_update
@@ -955,6 +957,7 @@ def test_bid_project_state_rules_are_outside_store() -> None:
             "customerName": "测试业主",
             "bidType": "商务标",
             "reviewDecision": "unknown",
+            "appendixSourceMatrixPath": "/data/documents/_config/initial.xlsx",
         },
     )
     participating_project = create_project_state(
@@ -974,6 +977,8 @@ def test_bid_project_state_rules_are_outside_store() -> None:
             "deadline": "2026-06-30",
             "reviewDecision": "abandon",
             "reviewComment": "暂不参与",
+            "appendixSourceMatrixPath": "/data/documents/_config/technical_appendix_source_matrix.xlsx",
+            "technicalAppendixSourceMatrix": {"path": "/data/documents/_config/technical_appendix_source_matrix.xlsx"},
         },
     )
     try:
@@ -1012,6 +1017,7 @@ def test_bid_project_state_rules_are_outside_store() -> None:
     assert project["endDate"] == "2026-06-30"
     assert project["reviewDecision"] == "abandon"
     assert project["reviewComment"] == "暂不参与"
+    assert project["appendixSourceMatrixPath"] == "/data/documents/_config/technical_appendix_source_matrix.xlsx"
     assert project["identity"]["projectCode"] == "BIZ-STATE-001"
     assert fallback_before == {"enabled": True, "sourceId": "system-default"}
     assert project["templateFallback"] == {"enabled": False, "sourceId": "business-template"}
@@ -1033,6 +1039,10 @@ def test_bid_project_state_rules_are_outside_store() -> None:
     assert summary["stageLabel"] == "审核终止"
     assert summary["reviewDecisionLabel"] == "不参与"
     assert detail["templateFallback"] == {"enabled": False, "sourceId": "business-template"}
+    assert detail["appendixSourceMatrixPath"] == "/data/documents/_config/technical_appendix_source_matrix.xlsx"
+    assert detail["technicalAppendixSourceMatrix"] == {
+        "path": "/data/documents/_config/technical_appendix_source_matrix.xlsx"
+    }
     assert "from app.services.bid_project_state import" in store_source
     assert "create_project_state(project_id, data)" in store_source
     assert "update_project_state(project, project_id, data)" in store_source
@@ -1087,6 +1097,43 @@ def test_bid_project_persistence_is_outside_store() -> None:
     assert "SELECT id, payload FROM projects" in repository_source
     assert "INSERT INTO projects" in repository_source
     assert "DELETE FROM projects" in repository_source
+
+
+def test_technical_appendix_source_matrix_uses_default_documents_config(tmp_path, monkeypatch) -> None:
+    from app.core.config import settings
+
+    config_dir = tmp_path / "_config"
+    config_dir.mkdir(parents=True)
+    matrix_path = config_dir / "technical_appendix_source_matrix.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "来源矩阵"
+    sheet.append(["客户", "表格", "项目定制", "标准文件", "其他"])
+    sheet.append(["华能", "附表C.1 总体技术参数与规格", "", "机型参数表", ""])
+    workbook.save(matrix_path)
+
+    override_path = tmp_path / "override.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["客户", "表格", "项目定制", "标准文件", "其他"])
+    sheet.append(["华能", "附表D.1-D.6", "功率曲线", "", ""])
+    workbook.save(override_path)
+
+    monkeypatch.setattr(settings, "documents_dir", tmp_path)
+
+    default_matrix = load_appendix_source_matrix_for_project({"customerName": "华能集团"})
+    assert default_matrix["path"] == str(matrix_path)
+    assert default_matrix["rows"][0]["customer"] == "华能"
+    assert default_matrix["rows"][0]["standardSources"] == ["机型参数表"]
+
+    project_matrix = load_appendix_source_matrix_for_project(
+        {
+            "customerName": "华能集团",
+            "appendixSourceMatrixPath": str(override_path),
+        }
+    )
+    assert project_matrix["path"] == str(override_path)
+    assert project_matrix["rows"][0]["projectSources"] == ["功率曲线"]
 
 
 def test_services_use_public_project_state_mutation_api() -> None:

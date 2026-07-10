@@ -13,6 +13,10 @@ from typing import Any
 
 
 SCHEMA_VERSION = "bid-tech-gap-plan-v1"
+APPENDIX_CODE_RE = re.compile(
+    r"附表\s*([A-Za-z]?\s*\.?\s*\d+(?:\.\d+)*)(?:\s*[-—~～至到]\s*([A-Za-z]?\s*\.?\s*\d+(?:\.\d+)*))?",
+    re.IGNORECASE,
+)
 
 
 def now_iso() -> str:
@@ -164,8 +168,44 @@ def clean_value(value: str) -> str:
     return text
 
 
+def clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return re.sub(r"\s+", " ", str(value).replace("\n", " / ")).strip()
+
+
 def normalize_key(value: Any) -> str:
     return re.sub(r"[\s　,，、.。:：;；()（）\[\]【】{}<>《》\"'`·_\-—/\\|]+", "", str(value or "").lower())
+
+
+def source_terms(value: Any) -> list[str]:
+    if isinstance(value, list):
+        terms: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            for term in source_terms(item):
+                if term and term not in seen:
+                    seen.add(term)
+                    terms.append(term)
+        return terms
+    text = clean_text(value)
+    if not text:
+        return []
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw in re.split(r"[&＆,，、;；/／\n]+", text):
+        term = clean_text(raw).strip(" ：:")
+        if not term or term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+    return terms
+
+
+def normalize_appendix_code(value: Any) -> str:
+    return re.sub(r"\s+", "", clean_text(value).upper()).lstrip(".")
 
 
 def toc_number_key(number: Any) -> str:
@@ -195,11 +235,49 @@ def chinese_number_to_int(value: str) -> int | None:
 
 
 def appendix_code(value: Any) -> str:
-    text = str(value or "").strip()
-    match = re.search(r"附表\s*([A-Za-z]?\s*\.?\s*\d+(?:\.\d+)*)", text)
+    match = APPENDIX_CODE_RE.search(str(value or "").strip())
+    return normalize_appendix_code(match.group(1)) if match else ""
+
+
+def _appendix_code_parts(value: Any) -> tuple[str, tuple[int, ...]] | None:
+    code = normalize_appendix_code(value)
+    match = re.fullmatch(r"([A-Z]+)?\.?([0-9]+(?:\.[0-9]+)*)", code)
     if not match:
-        return ""
-    return re.sub(r"\s+", "", match.group(1)).upper().lstrip(".")
+        return None
+    prefix = match.group(1) or ""
+    numbers = tuple(int(part) for part in match.group(2).split("."))
+    return prefix, numbers
+
+
+def appendix_rule_code_score(table_title: Any, rule_title: Any) -> float:
+    table_code = appendix_code(table_title)
+    if not table_code:
+        return 0.0
+    rule_match = APPENDIX_CODE_RE.search(clean_text(rule_title))
+    if not rule_match:
+        return 0.0
+    start_code = normalize_appendix_code(rule_match.group(1))
+    end_code = normalize_appendix_code(rule_match.group(2) or "")
+    if not end_code:
+        return 0.96 if table_code == start_code else 0.0
+
+    table_parts = _appendix_code_parts(table_code)
+    start_parts = _appendix_code_parts(start_code)
+    end_parts = _appendix_code_parts(end_code)
+    if not table_parts or not start_parts or not end_parts:
+        return 0.0
+    table_prefix, table_numbers = table_parts
+    start_prefix, start_numbers = start_parts
+    end_prefix, end_numbers = end_parts
+    if not end_prefix:
+        end_prefix = start_prefix
+    if table_prefix and start_prefix and table_prefix != start_prefix:
+        return 0.0
+    if table_prefix and end_prefix and table_prefix != end_prefix:
+        return 0.0
+    if start_numbers <= table_numbers <= end_numbers:
+        return 0.94
+    return 0.0
 
 
 def is_structural(item: dict[str, Any], all_items: list[dict[str, Any]]) -> bool:
@@ -265,6 +343,7 @@ def material_index_from_manifest(manifest: dict[str, Any]) -> list[dict[str, Any
             continue
         name = str(raw.get("name") or raw.get("fileName") or raw.get("cleanedFileName") or "")
         folder_path = str(raw.get("folderPath") or "")
+        evidence_segments = raw.get("evidenceSegments")
         output.append(
             {
                 "id": str(raw.get("id") or raw.get("materialId") or ""),
@@ -279,6 +358,7 @@ def material_index_from_manifest(manifest: dict[str, Any]) -> list[dict[str, Any
                 "placeholderLabels": list(raw.get("placeholderLabels") or []),
                 "placeholderSamples": list(raw.get("placeholderSamples") or []),
                 "fillProfile": raw.get("fillProfile") if isinstance(raw.get("fillProfile"), dict) else {},
+                "evidenceSegments": list(evidence_segments) if isinstance(evidence_segments, list) else [],
                 "usage": "section_merge",
                 "matchReason": "允许素材范围内的素材索引候选",
                 "confidence": 0.74,
@@ -458,25 +538,227 @@ def material_requires_fill(material: dict[str, Any] | None) -> bool:
 
 
 def material_score(material: dict[str, Any], title: str) -> float:
+    """文件级匹配分，0~1 口径（对齐商务标 material_match_score 的归一化语义）。
+
+    权重由旧版无界原始分整体 ÷200 等价缩放而来，排序行为与旧版严格一致；
+    强命中可略超 1，展示侧（attach_recalled_segments / recall_material_segments）统一封顶 0.99。
+    """
     text = normalize_key(material_text(material))
     title_key = normalize_key(title)
-    score = float(material.get("confidence") or 0) * 10
+    score = float(material.get("confidence") or 0) * 0.05
     if title_key and title_key in text:
-        score += 120
+        score += 0.6
     for token in re.split(r"[与及和、/\\（）()]+", str(title or "")):
         token_key = normalize_key(token)
         if len(token_key) >= 2 and token_key in text:
-            score += 16
+            score += 0.08
     tier = str(material.get("materialTier") or "").lower()
     if tier == "project":
-        score += 20
+        score += 0.1
     elif tier == "customer":
-        score += 12
+        score += 0.06
     elif tier == "standard":
-        score += 5
+        score += 0.025
     if str(material.get("hasCleanedWord") or "").lower() == "true" or material.get("cleanedFileName"):
-        score += 6
+        score += 0.03
     return score
+
+
+# ---------------------------------------------------------------------------
+# 主题级弱关联召回（迁移自商务标 bid-business-gap-planner，技术标线内独立实现）
+#
+# 现有 material_match 的文件级匹配是「章节标题整串字面包含」，对「主题相关但文件名
+# 对不上」的素材（如章节"试验、检验和监造" vs 素材"试验检测能力专题"/"质量保障体系"）
+# 召不回。这里补一套同义词 + 中文分词相似度的弱关联召回，纯 stdlib、不调 LLM。
+# ---------------------------------------------------------------------------
+
+# 技术标领域同义词表：key 为章节主题的归一词，value 为可在素材文本里命中的近义/相关词。
+# 基于真实投标技术卷里「漏召回」章节归纳，不照搬商务标的投标函/业绩那套。
+TECH_TASK_SYNONYMS: dict[str, list[str]] = {
+    "试验检验监造": ["试验", "检验", "监造", "试验检测", "型式试验", "检测能力", "质量保障", "质量保证", "全过程质量", "质量控制"],
+    "安装调试试运行": ["安装", "调试", "试运行", "吊装", "安装要求", "调试解决方案"],
+    "考核指标": ["考核", "可利用率", "功率曲线", "等效满负荷", "满负荷小时", "承诺值", "保证值", "承诺函"],
+    "技术资料交付进度": ["技术资料", "交付", "交付进度", "图纸", "说明书", "保管", "包装"],
+    "项目验收": ["验收", "质保", "出质保", "最终验收", "质量保证期"],
+    "运行维护": ["运行维护", "运行和维护", "运维", "售后", "技术服务"],
+    # 以下为金标反评（正式技术卷逐节对照）归纳的漏召回主题组，均为风电投标领域
+    # 通用词面，不绑定单一项目/客户。
+    "风资源机位排布": ["风资源", "测风塔", "机位排布", "机位", "发电量", "不确定性", "风切变", "机组选型", "风资源评估"],
+    "供货保障": ["供货保障", "生产能力", "生产基地", "制造基地", "供货制造", "设备制造", "生产制造", "产能", "物流", "运输保障"],
+    "风机子系统": ["子系统", "叶片", "变桨", "齿轮箱", "主轴承", "发电机", "变流器", "主控", "偏航"],
+    "场址设计安全性": ["场址设计安全性", "场址安全", "载荷", "极限载荷", "疲劳载荷", "载荷评估", "载荷安全", "安全等级", "净空", "塔筒安全", "变桨轴承"],
+    "认证测试": ["认证", "型式认证", "设计认证", "样机", "测试", "试验检测", "电网性能"],
+    "运输存储": ["运输", "物流", "运输路线", "存储", "堆场", "包装", "保管", "交货"],
+    "技术参数指标": ["技术参数", "技术指标", "性能指标", "关键数据", "参数一览", "指标一览"],
+    "投标业绩": ["业绩", "合同业绩", "供货业绩", "运行业绩", "投运"],
+    "方案优势": ["方案优势", "整体优势", "技术路线", "先进性", "优势说明"],
+}
+
+
+def _tech_normalize_text(value: Any) -> str:
+    """归一化：小写 + 去标点空白（与商务标 normalize_text 等价）。"""
+    return re.sub(r"[\s　,，、.。:：;；()（）\[\]【】{}<>《》\"'`·_\-—/\\|]+", "", str(value or "").lower())
+
+
+def _tech_tokenize_zh(value: str) -> list[str]:
+    """中文 n-gram 切分（2~6 gram），用于无空格中文的 token Jaccard。"""
+    text = _tech_normalize_text(value)
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for length in (6, 5, 4, 3, 2):
+        for start in range(0, max(0, len(text) - length + 1)):
+            tok = text[start : start + length]
+            if tok not in seen:
+                seen.add(tok)
+                tokens.append(tok)
+    return tokens
+
+
+def _tech_similarity_score(a: str, b: str) -> float:
+    """标题 a 与素材文本 b 的相似度（子串优先 + token Jaccard），迁移商务标算法。"""
+    a = _tech_normalize_text(a)
+    b = _tech_normalize_text(b)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    if a in b or b in a:
+        return min(len(a), len(b)) / max(len(a), len(b)) + 0.25
+    a_tokens = set(_tech_tokenize_zh(a))
+    b_tokens = set(_tech_tokenize_zh(b))
+    if not a_tokens or not b_tokens:
+        return 0.0
+    return len(a_tokens & b_tokens) / max(len(a_tokens | b_tokens), 1)
+
+
+def _tech_synonym_terms_for_title(title: str) -> list[str]:
+    """取章节标题命中的同义词组：标题里出现某主题 key 的任一词，则纳入该组全部近义词。"""
+    title_key = _tech_normalize_text(title)
+    terms: list[str] = []
+    seen: set[str] = set()
+    for topic, synonyms in TECH_TASK_SYNONYMS.items():
+        group = [topic, *synonyms]
+        # 标题命中该主题任一词，即认为属于该主题，纳入整组近义词供素材侧匹配。
+        if any(_tech_normalize_text(word) and _tech_normalize_text(word) in title_key for word in group):
+            for word in group:
+                key = _tech_normalize_text(word)
+                if len(key) >= 2 and key not in seen:
+                    seen.add(key)
+                    terms.append(word)
+    return terms
+
+
+def tech_synonym_hit_count(title: str, haystack: str) -> int:
+    """章节标题的同义词组在素材文本里的加权命中数（长词×2，上限 8）。
+
+    ≥4 字的领域词（如"场址设计安全性"）比 2 字泛词（如"载荷"）指向性强得多，
+    加权后正确素材能与恰好蹭到两个泛词的噪声素材拉开排序差距。
+    """
+    normalized = _tech_normalize_text(haystack)
+    if not normalized:
+        return 0
+    hits = 0
+    for term in _tech_synonym_terms_for_title(title):
+        key = _tech_normalize_text(term)
+        if len(key) >= 2 and key in normalized:
+            hits += 2 if len(key) >= 4 else 1
+            if hits >= 8:
+                return 8
+    return hits
+
+
+def _segment_text(segment: dict[str, Any]) -> str:
+    """证据片段的可匹配文本：标题 + 摘要 + 关键词。"""
+    keywords = segment.get("keywords") if isinstance(segment.get("keywords"), list) else []
+    return " ".join(
+        str(value or "")
+        for value in (segment.get("title"), segment.get("summary"), " ".join(str(k) for k in keywords))
+    )
+
+
+def segment_score(segment: dict[str, Any], title: str) -> float:
+    """单个证据片段相对目录标题的相关度打分（纯算法，无 LLM）。
+
+    维度（中文无空格分词，故同时用整串子串和片段自带 keywords 双向命中）：
+    - 标题整串命中片段标题/正文：强信号。
+    - title_terms 分词命中：词面信号。
+    - 片段 keywords 与标题的双向子串命中：中文场景的主力信号
+      （A 层已把领域词如「混塔」「电网友好性」切进 keywords，弥补 title_terms 不切中文词）。
+    返回非负分，0 表示无任何重合。
+    """
+    seg_title = normalize_key(segment.get("title"))
+    seg_text = normalize_key(_segment_text(segment))
+    title_key = normalize_key(title)
+    if not seg_text or not title_key:
+        return 0.0
+    # 权重与 material_score 同一 0~1 口径（旧版原始分 ÷200 等价缩放）。
+    score = 0.0
+    if title_key in seg_title:
+        score += 0.3
+    elif title_key in seg_text:
+        score += 0.15
+    for term in title_terms(title):
+        if term in seg_title:
+            score += 0.1
+        elif term in seg_text:
+            score += 0.04
+    # 片段关键词双向命中：keyword 出现在标题里，或标题里的关键词出现在 keyword 里。
+    keywords = segment.get("keywords") if isinstance(segment.get("keywords"), list) else []
+    for keyword in keywords:
+        key = normalize_key(keyword)
+        if len(key) < 2:
+            continue
+        if key in title_key or title_key in key:
+            score += 0.12
+    return score
+
+
+def recall_material_segments(material: dict[str, Any], title: str, *, limit: int = 3) -> list[dict[str, Any]]:
+    """从一份素材的 evidenceSegments 里召回与目录标题最相关的片段。
+
+    仅返回有正向相关度（score > 0）的片段，按分降序取前 limit 条；素材没有片段
+    或全不相关时返回空（调用方退化为文件级匹配）。每条附 matchScore 便于前端展示。
+    """
+    segments = material.get("evidenceSegments")
+    if not isinstance(segments, list) or not segments:
+        return []
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        score = segment_score(segment, title)
+        if score > 0:
+            enriched = dict(segment)
+            # 展示分封顶 0.99（多关键词命中可略超 1），排序仍用未封顶的原始分。
+            enriched["matchScore"] = round(min(score, 0.99), 2)
+            scored.append((score, enriched))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [segment for _, segment in scored[:limit]]
+
+
+def attach_recalled_segments(materials: list[dict[str, Any]], title: str, *, limit: int = 3) -> list[dict[str, Any]]:
+    """给候选素材附上「与本目录标题相关的证据片段」+ 综合 matchScore（0~1，封顶 0.99）。
+
+    用于非附表正文缺口：在文件级匹配之上叠加段落级证据，让下游 AI/人工能定位到
+    素材内具体段落。matchScore = max(文件级分, 主题召回 topicRelevance) + 最佳片段
+    加成（封顶 0.25），整体封顶 0.99，对齐商务标 0~1 打分口径。
+    取 topicRelevance 兜底是因为主题召回的素材文件名往往与标题字面对不上，
+    纯文件级分会把真实相关度显示得过低。不改动来源矩阵/附表路径。
+    """
+    enriched_list: list[dict[str, Any]] = []
+    for material in materials:
+        if not isinstance(material, dict):
+            continue
+        recalled = recall_material_segments(material, title, limit=limit)
+        item = dict(material)
+        base = max(material_score(material, title), _weak_recall_rank(material))
+        segment_bonus = min(recalled[0]["matchScore"] if recalled else 0.0, 0.25)
+        item["matchScore"] = round(min(base + segment_bonus, 0.99), 2)
+        if recalled:
+            item["recalledSegments"] = recalled
+            item["matchReason"] = f"段落级证据召回（{len(recalled)} 段相关）"
+        enriched_list.append(item)
+    return enriched_list
 
 
 def title_terms(title: str) -> list[str]:
@@ -517,31 +799,32 @@ def chapter_title_matches_file(material: dict[str, Any], title: str) -> bool:
 
 
 def chapter_master_score(material: dict[str, Any], title: str, child_titles: list[str] | None = None) -> float:
+    # 仅内部排序用，不外泄前端；加成随 material_score 归一化同比例（÷200）缩放，保持排序等价。
     score = material_score(material, title)
     text = normalize_key(material_text(material))
     file_text = normalize_key(material_file_text(material))
     title_key = normalize_key(title)
     if title_key and title_key in file_text:
-        score += 520
+        score += 2.6
     elif chapter_title_matches_file(material, title):
-        score += 430
+        score += 2.15
     elif title_key and title_key in text:
-        score += 180
+        score += 0.9
     for term in title_terms(title):
         if term in file_text:
-            score += 58
+            score += 0.29
         elif term in text:
-            score += 22
+            score += 0.11
     child_matches = 0
     for child_title in child_titles or []:
         child_key = normalize_key(child_title)
         if child_key and len(child_key) >= 3 and child_key in text:
             child_matches += 1
-    score += child_matches * 70
+    score += child_matches * 0.35
     if str(material.get("materialTier") or "").lower() == "project":
-        score += 30
+        score += 0.15
     if str(material.get("materialTier") or "").lower() == "standard":
-        score += 12
+        score += 0.06
     return score
 
 
@@ -576,6 +859,38 @@ def pick_chapter_master_material(
     return selected, alternatives
 
 
+def sibling_folder_materials(
+    matched: dict[str, Any] | None,
+    materials: list[dict[str, Any]],
+    title: str,
+    *,
+    limit: int = 4,
+) -> list[dict[str, Any]]:
+    """同目录兄弟素材（金标反评 D3）：固定素材命中专题目录时，把同目录其余素材
+    作为候选露出，供人工加选拼装（一章=多素材场景，如环境适应性/数字化智慧风场）。"""
+    folder = str((matched or {}).get("folderPath") or "").rstrip("/")
+    if not folder:
+        return []
+    matched_id = str((matched or {}).get("id") or "")
+    siblings = []
+    for material in materials:
+        if not isinstance(material, dict):
+            continue
+        if str(material.get("folderPath") or "").rstrip("/") != folder:
+            continue
+        if str(material.get("id") or "") == matched_id or material_requires_fill(material):
+            continue
+        sib = dict(material)
+        # 附名称相似度：项目根目录这类「非主题目录」下兄弟众多且 material_score
+        # 常平分，靠素材名与章节标题的相似度把真相关的（如 承诺函 系列）排上来。
+        name_sim = _tech_similarity_score(title, _material_name_stem(str(sib.get("name") or "")))
+        if name_sim >= 0.2:
+            sib["nameSimilarity"] = round(name_sim, 3)
+        siblings.append(sib)
+    siblings.sort(key=lambda m: material_score(m, title) + float(m.get("nameSimilarity") or 0), reverse=True)
+    return [dict(m) for m in siblings[:limit]]
+
+
 def matching_materials_for_title(materials: list[dict[str, Any]], title: str) -> list[dict[str, Any]]:
     title_key = normalize_key(title)
     if not title_key:
@@ -585,6 +900,323 @@ def matching_materials_for_title(materials: list[dict[str, Any]], title: str) ->
         for material in materials
         if title_key in normalize_key(material_text(material))
     ]
+
+
+def title_matches_file_name(material: dict[str, Any], title: str) -> bool:
+    """章节标题是否命中素材的文件级名称（文件名/清洗稿名，不含目录路径）。
+
+    只有文件名命中才允许固定素材自动定案（一份 doc = 一整章）；
+    目录名撞章节名不算（那是「目录 = 章、目录下多份子素材」的拼装结构）。
+    """
+    title_key = normalize_key(title)
+    return bool(title_key) and title_key in normalize_key(material_file_text(material))
+
+
+def folder_prefix_for_title(material: dict[str, Any], title: str) -> str:
+    """素材路径中与章节标题同名的目录前缀（无则空串）。
+
+    如章节"数字化智慧风场专题" vs 路径"技术标/客户素材/华能集团/数字化智慧风场专题/
+    智能风机部件监控系统"，返回到「数字化智慧风场专题」为止的前缀。
+    目录名需 ≥4 个归一化字符（防「专题」这类短词误判）。
+    """
+    title_key = normalize_key(title)
+    if not title_key:
+        return ""
+    parts = [p for p in str(material.get("folderPath") or "").split("/") if p]
+    acc: list[str] = []
+    for part in parts:
+        acc.append(part)
+        part_key = normalize_key(part)
+        if len(part_key) >= 4 and (part_key in title_key or title_key in part_key):
+            return "/".join(acc)
+    return ""
+
+
+def folder_member_materials(
+    materials: list[dict[str, Any]],
+    folder_prefix: str,
+    title: str,
+) -> list[dict[str, Any]]:
+    """同名目录（含子目录）下的全部现成素材，按匹配分排序。
+
+    按**目录名**跨分支收成员（金标反评：智慧风场专题在 通用素材/<机型> 与
+    客户定制/<客户> 各有一个同名目录，答案两个分支都用了——只收命中素材所在
+    分支会漏掉另一半骨架章节）。这些素材是确定相关的（目录即章节），全部进候选
+    供人工拼装，带 literalFolderHit 标记以豁免 top-4 截断；待填写模板剔除。
+    """
+    dir_key = normalize_key(folder_prefix.rstrip("/").rsplit("/", 1)[-1])
+    if not dir_key:
+        return []
+    members = []
+    for material in materials:
+        if not isinstance(material, dict) or material_requires_fill(material):
+            continue
+        segments_path = [p for p in str(material.get("folderPath") or "").split("/") if p]
+        if not any(normalize_key(part) == dir_key for part in segments_path):
+            continue
+        member = dict(material)
+        member["literalFolderHit"] = True
+        member["matchReason"] = "章节同名目录素材（人工选用拼装）"
+        members.append(member)
+    members.sort(key=lambda m: material_score(m, title), reverse=True)
+    return members
+
+
+def route_folder_literal(
+    candidate_materials: list[dict[str, Any]],
+    indexed_materials: list[dict[str, Any]],
+    title: str,
+) -> dict[str, Any] | None:
+    """字面命中仅来自「目录名撞章节名」时的路由：不自动定案，转素材匹配。
+
+    返回 None 表示不适用（有文件名命中，或命中来自其他文本特征）。
+    """
+    if any(title_matches_file_name(m, title) for m in candidate_materials):
+        return None
+    folder_prefix = ""
+    for material in candidate_materials:
+        folder_prefix = folder_prefix_for_title(material, title)
+        if folder_prefix:
+            break
+    if not folder_prefix:
+        return None
+    members = folder_member_materials(indexed_materials, folder_prefix, title)
+    if not members:
+        return None
+    candidates = attach_recalled_segments(members, title)
+    for candidate in candidates:
+        candidate["literalFolderHit"] = True
+    return {
+        "status": "needs_input",
+        "decision": "fill_required",
+        "usage": "section_fill",
+        "matched": [],
+        "alternatives": candidates,
+        "fill_tasks": [],
+        "required_inputs": [{"type": "material_match", "label": "从章节同名目录素材中选用拼装"}],
+        "gap_reason": f"章节与素材目录「{folder_prefix.rsplit('/', 1)[-1]}」同名，目录下 {len(candidates)} 份素材需人工选用拼装，不自动定案。",
+        "next_actions": ["select_reference_material", "manual_upload"],
+    }
+
+
+def _material_topic_text(material: dict[str, Any]) -> str:
+    """素材的主题文本池：文件名 + 路径 + 片段 topicKeywords/keywords/title/summary。
+
+    用于主题级弱关联召回——把「主题相关但文件名对不上」的素材也纳入打分。
+    """
+    parts = [material_text(material)]
+    for segment in material.get("evidenceSegments") or []:
+        if not isinstance(segment, dict):
+            continue
+        parts.append(str(segment.get("title") or ""))
+        parts.append(str(segment.get("summary") or ""))
+        for key in ("topicKeywords", "keywords"):
+            value = segment.get(key)
+            if isinstance(value, list):
+                parts.append(" ".join(str(v) for v in value))
+    return " ".join(parts)
+
+
+def topic_match_score(material: dict[str, Any], title: str) -> float:
+    """章节标题与素材主题文本的弱关联相关度（0~1），迁移商务标 wiki_card_relevance 思路。
+
+    取「分词相似度」与「同义词命中折算」的较大者：
+    - similarity：标题 vs 素材主题池的子串/token Jaccard。
+    - 同义词：命中 >=2 个折 0.45，命中 1 个折 0.3（标题主题被素材覆盖的信号）。
+    返回 0 表示无主题关联。
+    """
+    pool = _material_topic_text(material)
+    if not pool or not normalize_key(title):
+        return 0.0
+    sim = _tech_similarity_score(title, pool)
+    syn_hits = tech_synonym_hit_count(title, pool)
+    syn_score = 0.0
+    if syn_hits >= 2:
+        # 命中数越多排序越靠前（0.45 起步、封顶 0.75），避免同组素材打平分后排序随机。
+        syn_score = min(0.45 + 0.05 * (syn_hits - 2), 0.75)
+    elif syn_hits == 1:
+        syn_score = 0.3
+    return max(sim, syn_score)
+
+
+def topic_match_materials(
+    materials: list[dict[str, Any]],
+    title: str,
+    *,
+    threshold: float = 0.2,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """主题级弱关联召回：从允许范围素材里挑与章节标题主题相关的素材。
+
+    对每份素材算 topic_match_score，>= threshold 的纳入候选（附 topicRelevance），
+    按分降序取前 limit。用于补「文件名对不上但主题相关」的素材，救字面召回的漏网。
+    """
+    title_key = normalize_key(title)
+    if not title_key:
+        return []
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for material in materials:
+        if not isinstance(material, dict):
+            continue
+        score = topic_match_score(material, title)
+        # 项目素材阈值放宽 ×0.6（金标反评 B 类：项目定制素材漏召回代价远大于噪声）
+        if score >= (threshold * 0.6 if str(material.get("materialTier") or "").lower() == "project" else threshold):
+            enriched = dict(material)
+            enriched["topicRelevance"] = round(score, 3)
+            enriched["matchReason"] = enriched.get("matchReason") or "主题相关素材（弱关联召回）"
+            scored.append((score, enriched))
+    # 路内排序也加层级加成：平分时项目/客户素材优先，避免 tie-break 按插入序把它们挤出路内上限。
+    scored.sort(key=lambda pair: pair[0] + _tier_recall_bonus(pair[1]), reverse=True)
+    return [material for _, material in scored[:limit]]
+
+
+def _material_name_stem(name: str) -> str:
+    """素材名词干：去扩展名、去「待填写-/定制-」等加工前缀、去尾部页码数字。"""
+    stem = re.sub(r"\.[A-Za-z0-9]+$", "", str(name or "")).strip()
+    stem = re.sub(r"^(?:待填写|待补充|定制|模板)\s*[-—_]\s*", "", stem)
+    return stem.strip()
+
+
+def approx_name_match_materials(
+    materials: list[dict[str, Any]],
+    title: str,
+    *,
+    threshold: float = 0.34,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """近似名称召回（金标反评 D1）：章节标题 vs 素材名/清洗稿名 的相似度召回。
+
+    补「整串包含」召不回的近名素材（如章节"投标机型项目场址设计安全性专题" vs
+    素材"钢塔筒招标项目场址设计安全性.docx"）。只产候选，不自动定案。
+    词干需 ≥4 个归一化字符（"专题"这类短目录词会把相似度打满，是噪声源）。
+    """
+    title_clean = str(title or "")
+    if not normalize_key(title_clean):
+        return []
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for material in materials:
+        if not isinstance(material, dict):
+            continue
+        best = 0.0
+        for name in (str(material.get("name") or ""), str(material.get("cleanedFileName") or "")):
+            stem = _material_name_stem(name)
+            if len(normalize_key(stem)) >= 4:
+                best = max(best, _tech_similarity_score(title_clean, stem))
+        # 项目素材阈值放宽 ×0.6（金标反评 B 类）
+        if best >= (threshold * 0.6 if str(material.get("materialTier") or "").lower() == "project" else threshold):
+            enriched = dict(material)
+            enriched["nameSimilarity"] = round(best, 3)
+            enriched["matchReason"] = enriched.get("matchReason") or "近似名称召回"
+            scored.append((best, enriched))
+    # 路内排序也加层级加成：平分时项目/客户素材优先，避免 tie-break 按插入序把它们挤出路内上限。
+    scored.sort(key=lambda pair: pair[0] + _tier_recall_bonus(pair[1]), reverse=True)
+    return [material for _, material in scored[:limit]]
+
+
+def _segment_title_clean(segment: dict[str, Any]) -> str:
+    """片段标题清洗：去头部编号（1.1 / 一、）与尾部页码数字，留纯标题词面。"""
+    text = str(segment.get("title") or "").strip()
+    text = re.sub(r"^\s*(?:[0-9]+(?:\.[0-9]+)*|[一二三四五六七八九十]+)\s*[、.．\s]\s*", "", text)
+    return re.sub(r"[0-9]+\s*$", "", text).strip()
+
+
+def segment_recall_materials(
+    materials: list[dict[str, Any]],
+    title: str,
+    *,
+    threshold: float = 0.45,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """片段级召回（金标反评 D2）：章节标题与素材片段标题相似即召回该素材。
+
+    解决大报告章节复用——素材文件名对不上、但内部某片段正是本章内容
+    （如"风资源评估报告"内的"项目概况"章 vs 目录项"项目概况"）。
+    只用片段标题（真实文档章节头，信号干净）；不用 keywords——A 层关键词混有
+    项目号/目录碎屑（MATPRJ、"专题"等），双向包含会产生大量假命中。
+    """
+    if not normalize_key(title):
+        return []
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for material in materials:
+        if not isinstance(material, dict):
+            continue
+        segments = [s for s in material.get("evidenceSegments") or [] if isinstance(s, dict)]
+        if not segments:
+            # 金标反评 A 类：PDF/xlsx 等未切片素材以文件名词干做伪片段，
+            # 让片段路由对它们不失效（如 载荷安全性评估报告.pdf）。
+            stem = _material_name_stem(str(material.get("name") or ""))
+            if stem:
+                segments = [{"title": stem}]
+        best, best_seg = 0.0, ""
+        for segment in segments:
+            seg_title = _segment_title_clean(segment)
+            if len(normalize_key(seg_title)) < 4:
+                continue
+            score = _tech_similarity_score(title, seg_title)
+            if score > best:
+                best, best_seg = score, seg_title
+        # 项目素材阈值放宽 ×0.6（金标反评 B 类）
+        if best >= (threshold * 0.6 if str(material.get("materialTier") or "").lower() == "project" else threshold):
+            enriched = dict(material)
+            enriched["segmentRecallScore"] = round(min(best, 0.99), 3)
+            enriched["matchReason"] = enriched.get("matchReason") or f"片段级召回：{best_seg or '相关片段'}"
+            scored.append((best, enriched))
+    # 路内排序也加层级加成：平分时项目/客户素材优先，避免 tie-break 按插入序把它们挤出路内上限。
+    scored.sort(key=lambda pair: pair[0] + _tier_recall_bonus(pair[1]), reverse=True)
+    return [material for _, material in scored[:limit]]
+
+
+def _tier_recall_bonus(material: dict[str, Any]) -> float:
+    """召回排序的层级加成（金标反评 B 类）：项目素材是为本项目定制/收集的，
+    正式标书大量复用（锡盟基地/物流方案/电量承诺书跨多章出现），排序上
+    应压过靠同义词蹭分的通用素材。"""
+    tier = str(material.get("materialTier") or "").lower()
+    if tier == "project":
+        return 0.12
+    if tier == "customer":
+        return 0.06
+    return 0.0
+
+
+def _weak_recall_rank(material: dict[str, Any]) -> float:
+    # 三路求和：多路同时命中（名称+片段+主题一致指向）的素材优先于单路命中的；
+    # 项目/客户素材另有层级加成。
+    return (
+        float(material.get("topicRelevance") or 0)
+        + float(material.get("nameSimilarity") or 0)
+        + float(material.get("segmentRecallScore") or 0)
+        + _tier_recall_bonus(material)
+    )
+
+
+def weak_recall_materials(
+    materials: list[dict[str, Any]],
+    title: str,
+    *,
+    limit: int = 14,
+) -> list[dict[str, Any]]:
+    """弱关联召回统一入口：主题 + 近名 + 片段三路合并去重，按各路最高分排序取前 limit。
+
+    金标反评方针：召回优先、允许牺牲准确率；所有产出只进候选（人工终审），不自动定案。
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for pool in (
+        topic_match_materials(materials, title),
+        approx_name_match_materials(materials, title),
+        segment_recall_materials(materials, title),
+    ):
+        for material in pool:
+            key = str(material.get("id") or material.get("path") or material.get("name") or "")
+            if not key:
+                continue
+            if key in merged:
+                for field in ("topicRelevance", "nameSimilarity", "segmentRecallScore"):
+                    if material.get(field) is not None and merged[key].get(field) is None:
+                        merged[key][field] = material[field]
+            else:
+                merged[key] = dict(material)
+    ranked = sorted(merged.values(), key=_weak_recall_rank, reverse=True)
+    return ranked[:limit]
 
 
 def chapter_children(item: dict[str, Any], all_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -634,16 +1266,49 @@ def strong_chapter_master_candidates(
     return result
 
 
+_PURE_LETTER_APPENDIX_RE = re.compile(r"^\s*(?:技术附表|附表)\s*([A-Za-z])\s*(?![.．\dA-Za-z])")
+
+
+def pure_letter_appendix_code(value: Any) -> str:
+    """提取"技术附表I""附表I"这种编号后仅单字母、无数字的附表字母；
+
+    带数字的（附表B.1、附表C.7）返回空——APPENDIX_CODE_RE 的编号必带数字，
+    纯字母章级附表（如技术附表I 技术条款偏差表）会被它漏掉，这里补一条。
+    """
+    match = _PURE_LETTER_APPENDIX_RE.match(str(value or ""))
+    return match.group(1).upper() if match else ""
+
+
+def appendix_container_letters(appendices: list[dict[str, Any]]) -> set[str]:
+    """有子附表（附表X.数字）的字母集合。
+
+    这些字母的"技术附表X"是分组容器（如技术附表B 下有 附表B.1~B.9），
+    自身没有独立表格，不应单独配填写任务；无同字母子附表的纯字母附表
+    （如技术附表I，目录中不存在附表I.x）才是独立叶子表。
+    """
+    letters: set[str] = set()
+    for appendix in appendices:
+        code = appendix_code(str(appendix.get("title") or ""))
+        head = re.match(r"([A-Za-z])", code)
+        if head and any(ch.isdigit() for ch in code):
+            letters.add(head.group(1).upper())
+    return letters
+
+
 def matching_appendices(
     item: dict[str, Any],
     appendices: list[dict[str, Any]],
     *,
     allow_title_match: bool = True,
+    container_letters: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     title = str(item.get("title") or "")
     number = str(item.get("number") or "")
     item_code = appendix_code(number) or appendix_code(title)
     item_is_appendix = "附表" in number or "附表" in title or "空表" in title
+    if container_letters is None:
+        container_letters = appendix_container_letters(appendices)
+    item_letter = pure_letter_appendix_code(number) or pure_letter_appendix_code(title)
     title_key = normalize_key(title)
     matches: list[dict[str, Any]] = []
     for appendix in appendices:
@@ -654,6 +1319,12 @@ def matching_appendices(
         if item_code and app_code and item_code == app_code:
             matches.append(appendix)
             continue
+        # 纯字母技术附表（如"技术附表I"）兜底：编号正则要求带数字、提取不出纯字母 code，
+        # 这里按字母精确匹配；有同字母子附表的是分组容器（B/C/F），排除不配表。
+        if item_letter and item_letter not in container_letters:
+            if pure_letter_appendix_code(appendix_title) == item_letter:
+                matches.append(appendix)
+            continue
         if item_is_appendix or not allow_title_match:
             continue
         if title_key and len(title_key) >= 3 and (title_key in appendix_key or appendix_key in title_key):
@@ -662,30 +1333,208 @@ def matching_appendices(
 
 
 def appendix_material_score(material: dict[str, Any], appendix: dict[str, Any]) -> float:
+    # 仅内部排序用，不外泄前端；加成随 material_score 归一化同比例（÷200）缩放，保持排序等价。
     title = str(appendix.get("title") or "")
     score = material_score(material, title)
     title_key = normalize_key(title)
     text = normalize_key(material_text(material))
     file_text = normalize_key(material_file_text(material))
     if title_key and title_key in file_text:
-        score += 260
+        score += 1.3
     elif title_key and title_key in text:
-        score += 120
+        score += 0.6
     for term in title_terms(title):
         if term in file_text:
-            score += 85
+            score += 0.425
         elif term in text:
-            score += 45
+            score += 0.225
     return score
+
+
+def project_customer_name(manifest: dict[str, Any]) -> str:
+    identity = manifest.get("projectIdentity") if isinstance(manifest.get("projectIdentity"), dict) else {}
+    return clean_text(
+        manifest.get("customerName")
+        or identity.get("customerCanonicalName")
+        or identity.get("customerName")
+        or identity.get("owner")
+        or ""
+    )
+
+
+def customer_rule_matches(project_customer: str, rule_customer: Any) -> bool:
+    if not project_customer:
+        return True
+    project_key = normalize_key(project_customer)
+    rule_key = normalize_key(rule_customer)
+    return bool(project_key and rule_key and (project_key == rule_key or project_key in rule_key or rule_key in project_key))
+
+
+def table_rule_score(table_title: Any, rule_title: Any) -> float:
+    code_score = appendix_rule_code_score(table_title, rule_title)
+    if code_score:
+        return code_score
+    left = normalize_key(table_title)
+    right = normalize_key(rule_title)
+    if not left or not right:
+        return 0.0
+    if left == right:
+        return 1.0
+    if left in right or right in left:
+        return 0.88
+    shared = len(set(left) & set(right))
+    total = len(set(left) | set(right))
+    return shared / total if total else 0.0
+
+
+def find_source_matrix_rule(manifest: dict[str, Any], appendix: dict[str, Any]) -> dict[str, Any]:
+    matrix = manifest.get("appendixSourceMatrix") if isinstance(manifest.get("appendixSourceMatrix"), dict) else {}
+    rows = matrix.get("rows") if isinstance(matrix.get("rows"), list) else []
+    customer_name = project_customer_name(manifest)
+    title = appendix.get("title") or appendix.get("id") or ""
+    best: tuple[float, dict[str, Any]] | None = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if not customer_rule_matches(customer_name, row.get("customer")):
+            continue
+        score = table_rule_score(title, row.get("tableTitle"))
+        if score < 0.82:
+            continue
+        customer_bonus = 0.3 if customer_rule_matches(customer_name, row.get("customer")) else 0
+        rank = score + customer_bonus
+        if best is None or rank > best[0]:
+            best = (rank, row)
+    return dict(best[1]) if best else {}
+
+
+def source_matrix_rule_terms(rule: dict[str, Any]) -> dict[str, list[str]]:
+    return {
+        "project": source_terms(rule.get("projectSources")),
+        "standard": source_terms(rule.get("standardSources")),
+        "other": source_terms(rule.get("otherSources")),
+    }
+
+
+def matrix_material_score(material: dict[str, Any], rule: dict[str, Any]) -> tuple[float, list[str]]:
+    terms = source_matrix_rule_terms(rule)
+    if not any(terms.values()):
+        return 0.0, []
+    text = normalize_key(material_text(material))
+    tier = normalize_key(material.get("materialTier") or material.get("materialScope") or "")
+    score = 0.0
+    reasons: list[str] = []
+    for scope, scope_terms in (("project", terms["project"]), ("standard", terms["standard"])):
+        scope_hit = False
+        if scope == "project":
+            scope_hit = "project" in tier or "项目" in tier
+        elif scope == "standard":
+            scope_hit = "standard" in tier or "标准" in tier or "通用" in tier
+        for term in scope_terms:
+            term_key = normalize_key(term)
+            if not term_key:
+                continue
+            if term_key in text:
+                score += 420 if scope_hit else 260
+                reasons.append(f"{scope} 来源规定命中：{term}")
+            elif any(part and part in text for part in source_terms(term) if len(normalize_key(part)) >= 2):
+                score += 180 if scope_hit else 120
+                reasons.append(f"{scope} 来源规定部分命中：{term}")
+    if score and "project" in tier:
+        score += 30
+    elif score and ("standard" in tier or "标准" in tier or "通用" in tier):
+        score += 20
+    return score, reasons[:6]
+
+
+def source_routing_payload(rule: dict[str, Any], materials: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rule:
+        return {}
+    terms = source_matrix_rule_terms(rule)
+    matched = [
+        {
+            "id": str(material.get("id") or material.get("materialId") or ""),
+            "name": str(material.get("name") or material.get("cleanedFileName") or ""),
+            "folderPath": str(material.get("folderPath") or ""),
+            "materialTier": str(material.get("materialTier") or ""),
+            "matchReason": str(material.get("matchReason") or ""),
+        }
+        for material in materials[:8]
+        if material.get("sourceRouting")
+    ]
+    manual_terms = [term for term in terms["other"] if any(token in term for token in ("人工", "收集", "项目定制收集"))]
+    tender_terms = [term for term in terms["other"] if any(token in term for token in ("招标", "响应招标"))]
+    status = "matched" if matched else ("manual_required" if manual_terms else ("tender_parse_fields" if tender_terms else "missing_source"))
+    return {
+        "status": status,
+        "source": "appendix_source_matrix",
+        "ruleId": str(rule.get("id") or ""),
+        "customer": str(rule.get("customer") or ""),
+        "tableTitle": str(rule.get("tableTitle") or ""),
+        "projectSources": terms["project"],
+        "standardSources": terms["standard"],
+        "otherSources": terms["other"],
+        "matchedMaterials": matched,
+        "manualRequired": bool(manual_terms),
+        "useTenderParseFields": bool(tender_terms),
+    }
+
+
+def item_source_rule_title(number: str, title: str) -> str:
+    title_text = clean_text(title)
+    number_text = clean_text(number)
+    if number_text.startswith("附表") and number_text not in title_text:
+        return " ".join(part for part in (number_text, title_text) if part)
+    return title_text or number_text
+
+
+def source_routing_for_item(
+    manifest: dict[str, Any],
+    *,
+    number: str,
+    title: str,
+    materials: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    rule_probe = {
+        "id": item_source_rule_title(number, title) or title,
+        "title": item_source_rule_title(number, title) or title,
+    }
+    source_rule = find_source_matrix_rule(manifest, rule_probe)
+    if not source_rule:
+        return {}, []
+    routed_materials = recommended_materials_for_appendix(
+        rule_probe,
+        materials,
+        source_rule=source_rule,
+    )
+    return source_routing_payload(source_rule, routed_materials), routed_materials[:5]
 
 
 def recommended_materials_for_appendix(
     appendix: dict[str, Any],
     materials: list[dict[str, Any]],
+    *,
+    source_rule: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    ranked: list[dict[str, Any]] = []
+    has_source_rule = bool(source_rule and any(source_matrix_rule_terms(source_rule).values()))
+    for material in dedupe_materials(materials):
+        item = dict(material)
+        rule_score, reasons = matrix_material_score(item, source_rule or {})
+        if has_source_rule and not rule_score:
+            continue
+        if rule_score:
+            item["matchReason"] = "；".join([*(reasons or []), str(item.get("matchReason") or "")]).strip("；")
+            item["sourceRouting"] = {
+                "source": "appendix_source_matrix",
+                "ruleId": str((source_rule or {}).get("id") or ""),
+                "reasons": reasons,
+            }
+        item["_sourceMatrixScore"] = rule_score
+        ranked.append(item)
     return sorted(
-        dedupe_materials(materials),
-        key=lambda material: appendix_material_score(material, appendix),
+        ranked,
+        key=lambda material: (float(material.get("_sourceMatrixScore") or 0), appendix_material_score(material, appendix)),
         reverse=True,
     )
 
@@ -694,6 +1543,7 @@ def build_appendix_task(
     appendix: dict[str, Any],
     recommended_materials: list[dict[str, Any]],
     parse_fields: list[dict[str, Any]] | None = None,
+    source_routing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     fields = appendix.get("availableParseFields") or appendix.get("fields") or []
     if not isinstance(fields, list):
@@ -716,8 +1566,9 @@ def build_appendix_task(
         "workspacePath": str(appendix.get("workspacePath") or appendix.get("workspace_path") or ""),
         "rowCount": appendix.get("rowCount") or appendix.get("row_count") or 0,
         "availableParseFields": merged_fields,
+        "sourceRouting": dict(source_routing or {}),
         "recommendedMaterials": [
-            {**dict(material), "usage": "table_source"}
+            {k: v for k, v in {**dict(material), "usage": "table_source"}.items() if k != "_sourceMatrixScore"}
             for material in recommended_materials[:5]
         ],
     }
@@ -769,6 +1620,86 @@ def build_material_fill_task(item: dict[str, Any], material: dict[str, Any], gap
             "sourceType": "material_fill_template",
         },
         "requiredReferences": ["素材库文件", "招标解析字段", "项目投标机型"],
+    }
+
+
+def _fill_template_trusted(template: dict[str, Any], pool: list[dict[str, Any]], title: str) -> bool:
+    """弱召回主推的待填写模板是否可信到直接挂 AI 填写任务。
+
+    金标反评发现的错误路由（5.8 各子系统专题被挂上"优势说明"模板）：模板靠
+    同义词组蹭分登顶，但与章节主题无关——AI 拿错模板填出错误方向比漏召回更糟。
+    可信条件（满足其一）：
+    - 模板名称词干与章节标题字面相关（文件名命中或相似度 ≥0.3；比较前剥掉
+      「（双TRB+碳纤叶片）」这类括号修饰——模板按目标章节命名，括号是配置后缀）；
+    - 模板召回分明显领先现成素材（≥0.15），说明不是同义词蹭分的并列噪声。
+    否则降级为素材匹配候选，交人工判断。
+    """
+    if title_matches_file_name(template, title):
+        return True
+    stem = _material_name_stem(str(template.get("name") or ""))
+    stem_core = re.sub(r"[（(][^（）()]*[)）]", "", stem).strip()
+    if max(
+        _tech_similarity_score(title, stem),
+        _tech_similarity_score(title, stem_core) if stem_core else 0.0,
+    ) >= 0.3:
+        return True
+    ready_ranks = [_weak_recall_rank(m) for m in pool if not material_requires_fill(m)]
+    if not ready_ranks:
+        return False  # 名称不相关且无现成素材对照 → 不可信，宁判人工补料
+    return _weak_recall_rank(template) - max(ready_ranks) >= 0.15
+
+
+def route_weak_recall(
+    item: dict[str, Any],
+    indexed_materials: list[dict[str, Any]],
+    title: str,
+    gap_id: str,
+) -> dict[str, Any] | None:
+    """字面候选为空时的弱召回路由（金标反评 D1+D2+D4）。
+
+    主题+近名+片段三路统一召回；命中「待填写模板」走 AI 填写，命中现成素材给
+    top-4 候选人工勾选（候选≠决策）；三路全空返回 None（调用方判人工补料）。
+    """
+    pool = weak_recall_materials(indexed_materials, title)
+    if not pool:
+        return None
+    primary = pool[0]
+    if material_requires_fill(primary) and _fill_template_trusted(primary, pool, title):
+        candidates = attach_recalled_segments(pool, title)
+        candidates.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+        return {
+            "status": "needs_input",
+            "decision": "fill_required",
+            "usage": "section_fill",
+            "matched": [],
+            "alternatives": candidates[:4],
+            "fill_tasks": [build_material_fill_task(item, primary, gap_id)],
+            "required_inputs": [{"type": "ai_fill", "label": "选择参考素材并填写待填写 Word"}],
+            "gap_reason": "召回命中待填写模板，需先由 AI 填写后再进入 S4 合并。",
+            "next_actions": ["ai_fill_word", "select_reference_material", "manual_upload"],
+        }
+    # material_match 候选是「选择即合并」列表，剔除待填写模板（它们只应走 AI 填写）。
+    ready_pool = [m for m in pool if not material_requires_fill(m)]
+    if not ready_pool:
+        return None  # 池里只有不可信模板 → 宁判人工补料，不给错误方向
+    candidates = attach_recalled_segments(ready_pool, title)
+    candidates.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+    # 金标反评 B 类：召回到的项目素材不占 top-4 名额（正式标书大量复用项目定制
+    # 素材，被通用素材挤出的代价最大），追加在后、另设上限防洪。
+    project_extras = [
+        m for m in candidates[4:]
+        if str(m.get("materialTier") or "").lower() == "project"
+    ][:4]
+    return {
+        "status": "needs_input",
+        "decision": "fill_required",
+        "usage": "section_fill",
+        "matched": [],
+        "alternatives": candidates[:4] + project_extras,
+        "fill_tasks": [],
+        "required_inputs": [{"type": "material_match", "label": "从召回候选中选用素材"}],
+        "gap_reason": "弱关联召回命中（主题/近名/片段），可选用素材后合入或补充。",
+        "next_actions": ["select_reference_material", "manual_upload"],
     }
 
 
@@ -847,6 +1778,13 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         wiki_materials = resolve_material_hints(list(wiki_index.get(number) or []), indexed_materials, allowed_paths)
         index_materials = matching_materials_for_title(indexed_materials, title)
         candidate_materials = dedupe_materials(toc_materials + wiki_materials + index_materials)
+        source_rule_pool = dedupe_materials(candidate_materials + indexed_materials + toc_materials_all)
+        item_source_routing, item_source_materials = source_routing_for_item(
+            manifest,
+            number=number,
+            title=title,
+            materials=source_rule_pool,
+        )
         matched_material: dict[str, Any] | None = None
         alternative_materials: list[dict[str, Any]] = []
         structural = is_structural(item, items)
@@ -874,10 +1812,22 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
             next_actions = ["ai_fill_word"] if parent_decision == "fill_required" else ["s4_merge_material"]
         elif appendix_matches:
             recommended_pool = dedupe_materials(candidate_materials + indexed_materials + toc_materials_all)
-            appendix_tasks = [
-                build_appendix_task(appendix, recommended_materials_for_appendix(appendix, recommended_pool), parse_fields)
-                for appendix in appendix_matches
-            ]
+            appendix_tasks = []
+            for appendix in appendix_matches:
+                source_rule = find_source_matrix_rule(manifest, appendix)
+                recommended = recommended_materials_for_appendix(
+                    appendix,
+                    recommended_pool,
+                    source_rule=source_rule,
+                )
+                appendix_tasks.append(
+                    build_appendix_task(
+                        appendix,
+                        recommended,
+                        parse_fields,
+                        source_routing=source_routing_payload(source_rule, recommended),
+                    )
+                )
             fill_tasks = [build_fill_task(item, appendix, gap_id) for appendix in appendix_matches]
             required_inputs.append({"type": "ai_fill", "label": "选择参考素材并填写空表"})
             status = "needs_input"
@@ -888,7 +1838,11 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 [
                     material
                     for appendix in appendix_matches
-                    for material in recommended_materials_for_appendix(appendix, recommended_pool)[:5]
+                    for material in recommended_materials_for_appendix(
+                        appendix,
+                        recommended_pool,
+                        source_rule=find_source_matrix_rule(manifest, appendix),
+                    )[:5]
                 ]
             )
             gap_reason = "解析阶段已生成空副表/Word，需要进入 S3 发起填写任务。"
@@ -916,12 +1870,34 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     status = "needs_input"
                     decision = "fill_required"
                     usage = "chapter_fill"
+                    alternative_materials = alternative_materials[:4]
                     gap_reason = "已匹配到整章待填写 Word，可填写后覆盖本章及其子节。"
                     next_actions = ["ai_fill_word", "select_reference_material", "manual_upload"]
                 else:
                     status = "matched"
                     decision = "ready"
                     usage = "chapter_master"
+                    # 金标反评 D3：整章素材的备选并入同目录兄弟 + 弱召回现成素材
+                    # （承诺函章的电量承诺书靠同义词组召回），人工可加选拼装；
+                    # top-4 + 项目素材追加。
+                    weak_ready = [
+                        m for m in weak_recall_materials(indexed_materials, title)
+                        if not material_requires_fill(m)
+                    ]
+                    alternative_materials = dedupe_materials(
+                        alternative_materials
+                        + sibling_folder_materials(matched_material, indexed_materials, title)
+                        + weak_ready
+                    )
+                    chapter_matched_id = str((matched_material or {}).get("id") or "")
+                    alternative_materials = [m for m in alternative_materials if str(m.get("id") or "") != chapter_matched_id]
+                    alternative_materials = attach_recalled_segments(alternative_materials, title)
+                    alternative_materials.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+                    chapter_project_extras = [
+                        m for m in alternative_materials[4:]
+                        if str(m.get("materialTier") or "").lower() == "project"
+                    ][:4]
+                    alternative_materials = alternative_materials[:4] + chapter_project_extras
                     gap_reason = "允许范围内已有整章 Word，可覆盖本章及其子节。"
                     next_actions = ["s4_merge_material"]
                 parent_coverages[number_key] = {
@@ -931,14 +1907,47 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     "decision": decision,
                 }
             else:
-                status = "structural"
-                decision = "ready"
-                usage = "structural"
-                matched_materials = []
-                gap_reason = "结构性目录项，不直接要求素材。"
-                next_actions = ["s4_merge_material"]
+                # 无子节的结构项（如附表1/2/3 成果表）正式标书里往往有实质内容：
+                # 也跑弱召回（金标反评 D5），命中给候选人工确认；全空才保持结构项。
+                routed = route_weak_recall(item, indexed_materials, title, gap_id) if not children else None
+                if routed:
+                    status = routed["status"]
+                    decision = routed["decision"]
+                    usage = routed["usage"]
+                    matched_materials = routed["matched"]
+                    alternative_materials = routed["alternatives"]
+                    fill_tasks = routed["fill_tasks"]
+                    required_inputs.extend(routed["required_inputs"])
+                    gap_reason = routed["gap_reason"]
+                    next_actions = routed["next_actions"]
+                else:
+                    status = "structural"
+                    decision = "ready"
+                    usage = "structural"
+                    matched_materials = []
+                    gap_reason = "结构性目录项，不直接要求素材。"
+                    next_actions = ["s4_merge_material"]
+        elif candidate_materials and (folder_routed := route_folder_literal(candidate_materials, indexed_materials, title)):
+            # 字面命中仅来自「目录名撞章节名」（如 数字化智慧风场专题/ 目录）：
+            # 目录=章、目录下多份子素材，随便挑一份自动定案是错的——转素材匹配，
+            # 目录成员全部进候选（豁免 top-4）供人工拼装。
+            status = folder_routed["status"]
+            decision = folder_routed["decision"]
+            usage = folder_routed["usage"]
+            matched_materials = folder_routed["matched"]
+            alternative_materials = folder_routed["alternatives"]
+            fill_tasks = folder_routed["fill_tasks"]
+            required_inputs.extend(folder_routed["required_inputs"])
+            gap_reason = folder_routed["gap_reason"]
+            next_actions = folder_routed["next_actions"]
         elif candidate_materials:
-            matched_material, alternative_materials = pick_material(candidate_materials, title)
+            # 固定素材自动定案只信文件名命中；有文件名命中时优先从中选主素材。
+            file_hits = [m for m in candidate_materials if title_matches_file_name(m, title)]
+            pick_pool = file_hits or candidate_materials
+            matched_material, alternative_materials = pick_material(pick_pool, title)
+            if file_hits and len(file_hits) < len(candidate_materials):
+                others = [m for m in candidate_materials if m not in file_hits]
+                alternative_materials = dedupe_materials(alternative_materials + others)
             if material_requires_fill(matched_material):
                 fill_tasks = [build_material_fill_task(item, matched_material, gap_id)] if matched_material else []
                 required_inputs.append({"type": "ai_fill", "label": "选择参考素材并填写待填写 Word"})
@@ -947,6 +1956,11 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 usage = "section_fill"
                 matched_materials = []
                 alternative_materials = dedupe_materials(([matched_material] if matched_material else []) + alternative_materials)
+                # 非附表正文缺口：给候选附段落级证据召回（A 层 evidenceSegments），
+                # 让下游能定位素材内具体段落；无片段则退化为文件级（matchReason 不变）。
+                alternative_materials = attach_recalled_segments(alternative_materials, title)
+                alternative_materials.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+                alternative_materials = alternative_materials[:4]
                 gap_reason = "已匹配到待填写 Word 模板，需要先由 AI 填写后再进入 S4 合并。"
                 next_actions = ["ai_fill_word", "select_reference_material", "manual_upload"]
             else:
@@ -954,16 +1968,53 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 decision = "ready"
                 usage = str((matched_material or {}).get("usage") or "section_merge")
                 matched_materials = [matched_material] if matched_material else []
+                # ready 态也召回片段，供 S4 合并/复核时定位证据；matched + 备选都附。
+                matched_materials = attach_recalled_segments(matched_materials, title)
+                # 金标反评 D3：备选并入同目录兄弟素材 + 弱召回现成素材（承诺函族这类
+                # 近主题素材靠同义词组召回，ready 路径此前从不跑弱召回是盲区），
+                # 统一按匹配分排序取 top-4，召回到的项目素材不占名额。
+                weak_ready = [
+                    m for m in weak_recall_materials(indexed_materials, title)
+                    if not material_requires_fill(m)
+                ]
+                alternative_materials = dedupe_materials(
+                    alternative_materials
+                    + sibling_folder_materials(matched_material, indexed_materials, title)
+                    + weak_ready
+                )
+                matched_id = str((matched_material or {}).get("id") or "")
+                alternative_materials = [m for m in alternative_materials if str(m.get("id") or "") != matched_id]
+                alternative_materials = attach_recalled_segments(alternative_materials, title)
+                alternative_materials.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+                project_extras = [
+                    m for m in alternative_materials[4:]
+                    if str(m.get("materialTier") or "").lower() == "project"
+                ][:4]
+                alternative_materials = alternative_materials[:4] + project_extras
                 gap_reason = "允许范围内已有可用素材。"
                 next_actions = ["s4_merge_material"]
         else:
-            status = "missing"
-            decision = "material_required"
-            usage = ""
-            matched_materials = []
-            gap_reason = "目录项未匹配到素材库 Wiki 或补料记录。"
-            required_inputs.append({"type": "upload", "label": "上传客户资料或选择已有素材"})
-            next_actions = ["manual_upload", "select_material", "ignore"]
+            # 字面候选为空：弱关联召回统一兜底（主题+近名+片段，金标反评 D1/D2）。
+            # 命中只进候选（人工终审），不自动定案；三路全空才判人工补料（D4）。
+            routed = route_weak_recall(item, indexed_materials, title, gap_id)
+            if routed:
+                status = routed["status"]
+                decision = routed["decision"]
+                usage = routed["usage"]
+                matched_materials = routed["matched"]
+                alternative_materials = routed["alternatives"]
+                fill_tasks = routed["fill_tasks"]
+                required_inputs.extend(routed["required_inputs"])
+                gap_reason = routed["gap_reason"]
+                next_actions = routed["next_actions"]
+            else:
+                status = "missing"
+                decision = "material_required"
+                usage = ""
+                matched_materials = []
+                gap_reason = "目录项未匹配到素材库 Wiki 或补料记录。"
+                required_inputs.append({"type": "upload", "label": "上传客户资料或选择已有素材"})
+                next_actions = ["manual_upload", "select_material", "ignore"]
 
         plan_items.append(
             {
@@ -984,6 +2035,11 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 "priority": "high" if status in {"needs_input", "missing"} else "medium",
                 "matchedMaterials": matched_materials,
                 "candidateMaterials": alternative_materials,
+                "sourceRouting": item_source_routing,
+                "sourceRoutedMaterials": [
+                    {k: v for k, v in {**dict(material), "usage": "table_source"}.items() if k != "_sourceMatrixScore"}
+                    for material in item_source_materials
+                ],
                 "appendixTasks": appendix_tasks,
                 "requiredInputs": required_inputs,
                 "fillTasks": fill_tasks,
@@ -998,6 +2054,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    collapse_empirically_converged_chapters(plan_items)
     summary = summarize(plan_items)
     integrity = coverage_integrity(items, plan_items, summary)
     if integrity["coverageStatus"] != "passed":
@@ -1010,6 +2067,8 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         "projectId": str(manifest.get("projectId") or ""),
         "projectName": str(manifest.get("projectName") or ""),
         "bidType": str(manifest.get("bidType") or "技术标"),
+        "customerName": project_customer_name(manifest),
+        "appendixSourceMatrixPath": str(manifest.get("appendixSourceMatrixPath") or ""),
         "projectTurbineModel": project_turbine_model,
         "status": "ready",
         "createdAt": now_iso(),
@@ -1018,6 +2077,133 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         "items": plan_items,
         "integrity": integrity,
     }
+
+
+_STANDALONE_APPENDIX_NUMBER_RE = re.compile(r"^(技术附表|附表|附件)")
+
+
+def _converged_primary_material(item: dict[str, Any]) -> dict[str, Any] | None:
+    """子节独立匹配后指向的"主素材"：优先已定素材，其次首选候选，
+    附表类子节退回附表来源路由（sourceRouting / 推荐素材）。"""
+    for material in item.get("matchedMaterials") or []:
+        if isinstance(material, dict) and str(material.get("id") or ""):
+            return material
+    if str(item.get("usage") or "") in ("section_fill", "appendix_fill"):
+        for material in item.get("candidateMaterials") or []:
+            if isinstance(material, dict) and str(material.get("id") or ""):
+                return material
+        for task in item.get("appendixTasks") or []:
+            routing = task.get("sourceRouting") if isinstance(task.get("sourceRouting"), dict) else {}
+            for material in routing.get("matchedMaterials") or []:
+                if isinstance(material, dict) and str(material.get("id") or ""):
+                    return material
+            for material in task.get("recommendedMaterials") or []:
+                if isinstance(material, dict) and str(material.get("id") or ""):
+                    return material
+    return None
+
+
+def collapse_empirically_converged_chapters(plan_items: list[dict[str, Any]]) -> None:
+    """章头因标题/文件名对不上而没能收敛整章素材时的兜底：
+
+    章头收敛整章素材（chapter_master）靠字面匹配（chapter_title_matches_file）：
+    要求候选文件名包含章标题拆词后的全部词。像"风资源评估报告.docx"对"风资源
+    评估与机位排布方案"这种章标题，拆词后只命中"风资源评估"、命中不了"机位
+    排布方案"，判定必然失败——但子节各自独立召回（弱关联/候选择优/附表来源）
+    后，实际上全部收敛到了同一份现成素材，这本身就是"该素材覆盖全章"的经验证据
+    （华能翁牛特旗第3章即此形态：整章正文与内嵌表格都出自《风资源评估报告》）。
+
+    只有当一章的每个子节都收敛到同一份现成素材（非"待填写"模板）时，才判定
+    整章覆盖，避免误伤子节内容各异的章（如第5章各专题指向不同素材）。
+
+    附表类子节（如 3.3 关联附表G.1）也可并入父章覆盖，前提是它引用的附表都
+    已由独立附表目录项（number 形如"附表G.1"）兜底填写——此时子节上挂的附表
+    任务只是标题撞词导致的重复，去掉不丢交付物；正文合并时表格内容随整章素材
+    一并进入。反之，附表无独立兜底、或子节挂的是自身正文模板填写（word/素材
+    fill），则不吸收，保留其独立产出。
+    """
+    standalone_appendix_ids: set[str] = set()
+    for plan_item in plan_items:
+        number = str(plan_item.get("number") or "").strip()
+        if _STANDALONE_APPENDIX_NUMBER_RE.match(number):
+            for task in plan_item.get("appendixTasks") or []:
+                task_id = str(task.get("id") or "")
+                if task_id:
+                    standalone_appendix_ids.add(task_id)
+
+    def _absorbable(item: dict[str, Any]) -> bool:
+        if str(item.get("coveredByParent") or ""):
+            return False
+        appendix_ids = [str(t.get("id") or "") for t in item.get("appendixTasks") or []]
+        # 附表类子节：仅当所有附表都有独立目录项兜底时可吸收
+        if appendix_ids and not all(aid in standalone_appendix_ids for aid in appendix_ids):
+            return False
+        # 无附表但挂了 fill 任务 → 本节自身正文模板填写，独立产出，不吸收
+        if item.get("fillTasks") and not appendix_ids:
+            return False
+        return True
+
+    headers: dict[str, dict[str, Any]] = {}
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for plan_item in plan_items:
+        number_key = toc_number_key(plan_item.get("number"))
+        if not number_key:
+            continue
+        top = number_key.split(".")[0]
+        if number_key == top:
+            headers[top] = plan_item
+        else:
+            groups.setdefault(top, []).append(plan_item)
+
+    for top, header in headers.items():
+        if str(header.get("coverageRole") or "") == "chapter_master" or str(header.get("coveredByParent") or ""):
+            continue
+        subs = groups.get(top) or []
+        if len(subs) < 2:
+            continue
+        primary_ids: set[str] = set()
+        shared_material: dict[str, Any] | None = None
+        converged = True
+        for d in subs:
+            material = _converged_primary_material(d) if _absorbable(d) else None
+            if not isinstance(material, dict) or not str(material.get("id") or ""):
+                converged = False
+                break
+            primary_ids.add(str(material.get("id")))
+            if shared_material is None:
+                shared_material = material
+        if not converged or len(primary_ids) != 1 or shared_material is None:
+            continue
+        shared_material = dict(shared_material)
+        if material_requires_fill(shared_material):
+            continue
+
+        header["coverageRole"] = "chapter_master"
+        header["status"] = "matched"
+        header["decision"] = "ready"
+        header["usage"] = "chapter_master"
+        header["matchedMaterials"] = [shared_material]
+        header["gapReason"] = (
+            f"子节独立匹配全部收敛到同一份素材“{shared_material.get('name') or shared_material.get('id')}”，"
+            "判定其实际覆盖整章。"
+        )
+        header["nextActions"] = ["s4_merge_material"]
+        header_id = str(header.get("id") or "")
+        for d in subs:
+            d["coveredByParent"] = header_id
+            d["coverageRole"] = "covered_by_parent"
+            d["status"] = "matched"
+            d["decision"] = "ready"
+            d["usage"] = "covered_by_parent"
+            d["matchedMaterials"] = []
+            d["candidateMaterials"] = []
+            # 附表任务由独立附表目录项兜底，此处的重复挂载去掉不丢交付物
+            d["appendixTasks"] = []
+            d["fillTasks"] = []
+            d["requiredInputs"] = []
+            d["priority"] = "medium"
+            d["gapReason"] = f"已由父章节“{header.get('title') or top}”整章素材覆盖（子节独立匹配收敛认定）。"
+            d["nextActions"] = ["s4_merge_material"]
 
 
 def summarize(items: list[dict[str, Any]]) -> dict[str, int]:

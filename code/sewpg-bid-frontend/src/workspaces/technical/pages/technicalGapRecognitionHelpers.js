@@ -13,20 +13,43 @@ export const uniqueStrings = (items) => {
     })
 }
 
-export const defaultAiFillReferenceMaterialIds = (selected, selectedMaterialIds = []) => {
+export const appendixTaskForFillTask = (selected, task) => {
+  const appendixTasks = asObjectArray(selected?.appendixTasks)
+  const blankId = String(task?.blankSource?.id || '').trim()
+  if (blankId) {
+    return appendixTasks.find((appendixTask) => String(appendixTask?.id || '').trim() === blankId) || null
+  }
+  return appendixTasks[0] || null
+}
+
+export const defaultAiFillReferenceMaterialIds = (selected, selectedMaterialIds = [], task = null) => {
   const manualIds = uniqueStrings(selectedMaterialIds)
   if (manualIds.length) return manualIds
+
+  const appendixTask = appendixTaskForFillTask(selected, task)
+  const scopedAppendixTasks = appendixTask ? [appendixTask] : asObjectArray(selected?.appendixTasks)
+  const hasSourceRouting = scopedAppendixTasks.some((item) => item?.sourceRouting?.source === 'appendix_source_matrix')
+    || selected?.sourceRouting?.source === 'appendix_source_matrix'
+  const routedIds = uniqueStrings([
+    ...scopedAppendixTasks
+      .flatMap((item) => asObjectArray(item?.recommendedMaterials))
+      .map((item) => item.id || item.materialId),
+    ...asObjectArray(selected?.sourceRoutedMaterials).map((item) => item.id || item.materialId),
+  ])
+  if (hasSourceRouting && routedIds.length) return routedIds
+  const recommendedIds = uniqueStrings(
+    scopedAppendixTasks
+      .flatMap((item) => asObjectArray(item?.recommendedMaterials))
+      .map((item) => item.id),
+  )
+  if (hasSourceRouting) return recommendedIds
+  if (recommendedIds.length) return recommendedIds
 
   const matchedIds = uniqueStrings(
     asObjectArray(selected?.matchedMaterials).map((item) => item.id),
   )
   if (matchedIds.length) return matchedIds
-
-  return uniqueStrings(
-    asObjectArray(selected?.appendixTasks)
-      .flatMap((task) => asObjectArray(task?.recommendedMaterials).slice(0, 1))
-      .map((item) => item.id),
-  )
+  return []
 }
 
 export const defaultAiFillParseFieldIds = (selected, task) => uniqueStrings([
@@ -42,6 +65,20 @@ export const defaultAiFillParseFieldIds = (selected, task) => uniqueStrings([
 export const latestResolvedArtifact = (selected) => {
   const artifacts = asObjectArray(selected?.resolvedArtifacts)
   return artifacts.length ? artifacts[artifacts.length - 1] : null
+}
+
+// 取素材上的证据片段：优先 planner 召回的 recalledSegments（带 matchScore，已按相关度排序），
+// 否则回退到该素材切分出的全部 evidenceSegments。返回归一化的片段数组（最多 limit 条）。
+export const evidenceSegmentsForMaterial = (material, limit = 3) => {
+  const recalled = asObjectArray(material?.recalledSegments)
+  const source = recalled.length ? recalled : asObjectArray(material?.evidenceSegments)
+  return source.slice(0, limit).map((segment) => ({
+    id: String(segment?.segmentId || segment?.id || '').trim(),
+    title: String(segment?.title || '').trim(),
+    summary: String(segment?.summary || '').trim(),
+    sourcePages: String(segment?.sourcePages || '').trim(),
+    matchScore: typeof segment?.matchScore === 'number' ? segment.matchScore : null,
+  })).filter((segment) => segment.title || segment.summary)
 }
 
 export const matchedMaterialForItem = (selected, allItems = []) => {
@@ -192,8 +229,15 @@ export const resultSummaryForItem = (selected, allItems = []) => {
     }
   }
 
-  if (asObjectArray(selected?.fillTasks).length || String(selected?.decision || '') === 'fill_required') {
+  if (asObjectArray(selected?.fillTasks).length || (
+    String(selected?.decision || '') === 'fill_required'
+    && asObjectArray(selected?.appendixTasks).length > 0
+  )) {
     return { label: '等待 AI 填写', tone: 'fill' }
+  }
+
+  if (String(selected?.decision || '') === 'fill_required') {
+    return { label: '等待选择匹配素材', tone: 'missing' }
   }
 
   if (String(selected?.decision || '') === 'material_required') {

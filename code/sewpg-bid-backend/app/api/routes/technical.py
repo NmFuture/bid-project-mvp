@@ -329,6 +329,16 @@ async def get_technical_gap_artifact_content(
     return await technical_gap_service.artifact_content(project_id, artifact_id, filename)
 
 
+@router.post("/api/technical/projects/{project_id}/gaps/{gap_id}/artifacts/{artifact_id}/confirm")
+def confirm_technical_gap_ai_fill_artifact(
+    project_id: str,
+    gap_id: str,
+    artifact_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    return technical_gap_service.confirm_ai_fill_artifact(project_id, gap_id, artifact_id, data)
+
+
 @router.post("/api/technical/projects/{project_id}/gaps/{gap_id}/select-material")
 async def select_technical_gap_material(
     project_id: str,

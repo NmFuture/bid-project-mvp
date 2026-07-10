@@ -117,6 +117,9 @@ def project_detail_state(project: dict[str, Any]) -> dict[str, Any]:
         "files": copy.deepcopy(project["files"]),
         "templateFiles": copy.deepcopy(project["templateFiles"]),
         "templateFallback": copy.deepcopy(normalize_template_fallback_state(project)),
+        "appendixSourceMatrixPath": str(project.get("appendixSourceMatrixPath") or ""),
+        "technicalAppendixSourceMatrixPath": str(project.get("technicalAppendixSourceMatrixPath") or ""),
+        "technicalAppendixSourceMatrix": copy.deepcopy(project.get("technicalAppendixSourceMatrix") or {}),
         "isKeyAccount": project["isKeyAccount"],
         "keyAccountId": project["keyAccountId"],
         "reviewComment": str(project.get("reviewComment") or ""),
@@ -285,6 +288,11 @@ def create_project_state(project_id: str, data: dict[str, Any]) -> dict[str, Any
         "reviewDecision": review_decision,
         "reviewDecidedAt": created_at if review_decision in {"participate", "abandon"} else "",
         "reviewComment": str(data.get("reviewComment") or ""),
+        "appendixSourceMatrixPath": str(data.get("appendixSourceMatrixPath") or ""),
+        "technicalAppendixSourceMatrixPath": str(data.get("technicalAppendixSourceMatrixPath") or ""),
+        "technicalAppendixSourceMatrix": copy.deepcopy(data.get("technicalAppendixSourceMatrix"))
+        if isinstance(data.get("technicalAppendixSourceMatrix"), dict)
+        else {},
         "files": [],
         "templateFiles": [],
         "fileRecords": [],
@@ -327,9 +335,14 @@ def update_project_state(project: dict[str, Any], project_id: str, data: dict[st
         "startDate",
         "endDate",
         "deadline",
+        "appendixSourceMatrixPath",
+        "technicalAppendixSourceMatrixPath",
     ]:
         if field in data:
-            project[field] = str(data[field] or "") if field == "projectCode" else data[field]
+            project[field] = str(data[field] or "") if field in {"projectCode", "appendixSourceMatrixPath", "technicalAppendixSourceMatrixPath"} else data[field]
+    if "technicalAppendixSourceMatrix" in data:
+        matrix_config = data.get("technicalAppendixSourceMatrix")
+        project["technicalAppendixSourceMatrix"] = copy.deepcopy(matrix_config) if isinstance(matrix_config, dict) else {}
     if "bidType" in data:
         project["bidType"] = require_bid_type(
             data.get("bidType"),
