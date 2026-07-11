@@ -18,7 +18,6 @@ from app.services.material_wiki_import import (
     wiki_import_node_tags,
     wiki_import_node_title,
 )
-from app.services.material_wiki_scope import GENERATED_WIKI_CHILD_TITLES
 from app.services.material_wiki_scope import normalize_wiki_bid_type
 from app.services.peripheral import PeripheralError
 
@@ -99,18 +98,6 @@ async def import_generated_wiki_blueprint_operation(
             for orphaned_root in orphaned_roots:
                 await purge_wiki_root(orphaned_root)
 
-        async def purge_generated_children(root: WikiNode) -> None:
-            generated_children = (
-                await session.execute(
-                    select(WikiNode).where(
-                        WikiNode.parent_id == root.id,
-                        WikiNode.title.in_(GENERATED_WIKI_CHILD_TITLES),
-                    )
-                )
-            ).scalars().all()
-            for child in generated_children:
-                await purge_wiki_root(child)
-
         async def create_node(
             spec: dict[str, Any],
             parent: WikiNode | None,
@@ -184,6 +171,23 @@ async def import_generated_wiki_blueprint_operation(
                         await upsert_node(child, node, sort_order=child_index)
             return node
 
+        async def sync_children_to_specs(parent: WikiNode, specs: list[dict[str, Any]]) -> None:
+            desired_titles: set[str] = set()
+            for index, child in enumerate(specs):
+                if not isinstance(child, dict):
+                    continue
+                desired_titles.add(wiki_import_node_title(child))
+                node = await upsert_node(child, parent, sort_order=index)
+                child_specs = [item for item in (child.get("children") or []) if isinstance(item, dict)]
+                await sync_children_to_specs(node, child_specs)
+
+            existing_children = (
+                await session.execute(select(WikiNode).where(WikiNode.parent_id == parent.id))
+            ).scalars().all()
+            for child in existing_children:
+                if child.title not in desired_titles:
+                    await purge_wiki_root(child)
+
         existing_roots = (
             await session.execute(
                 select(WikiNode)
@@ -221,14 +225,12 @@ async def import_generated_wiki_blueprint_operation(
                 else:
                     root_doc.markdown_content = root_spec["markdownContent"]
                     root_doc.tags = list(root_spec["tags"])
+                children = [child for child in (root_spec.get("children") or []) if isinstance(child, dict)]
                 if normalized_mode == "refresh":
-                    await purge_generated_children(root_node)
-                for index, child in enumerate(root_spec.get("children") or []):
-                    if isinstance(child, dict):
-                        if normalized_mode == "refresh":
-                            await create_node(child, root_node, sort_order=index)
-                        else:
-                            await upsert_node(child, root_node, sort_order=index)
+                    await sync_children_to_specs(root_node, children)
+                else:
+                    for index, child in enumerate(children):
+                        await upsert_node(child, root_node, sort_order=index)
                 if normalized_mode == "refresh":
                     message = generated_wiki_import_message(normalized_root_title, "refreshed")
                 else:

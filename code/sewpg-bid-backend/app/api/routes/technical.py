@@ -589,6 +589,9 @@ async def technical_raw_files(
     cleanStatus: str = "",
     keyword: str = "",
     turbineModel: str = "",
+    title: str = "",
+    tag: list[str] = Query(default_factory=list),
+    bidType: str = "",
     recursive: bool = True,
     page: int = 1,
     pageSize: int = 20,
@@ -601,6 +604,8 @@ async def technical_raw_files(
         clean_status=cleanStatus,
         keyword=keyword,
         turbine_model=turbineModel,
+        title=title,
+        tag=tag,
         recursive=recursive,
         page=page,
         page_size=pageSize,
@@ -633,14 +638,16 @@ async def technical_raw_upload(request: Request) -> dict[str, Any]:
         form = await request.form()
         uploads = [upload for upload in form.getlist("files") if hasattr(upload, "filename") and hasattr(upload, "file")]
         relative_paths = [str(value or "") for value in form.getlist("relativePaths")]
+        target_path = str(form.get("targetPath") or "")
         data = {
-            "targetPath": technical_material_store.ensure_path(str(form.get("targetPath") or ""), "目标目录"),
+            "targetPath": technical_material_store.ensure_write_path(target_path, "目标目录") if target_path else "",
             "projectId": str(form.get("projectId") or ""),
             "projectCode": str(form.get("projectCode") or ""),
             "projectName": str(form.get("projectName") or ""),
             "materialTier": str(form.get("materialTier") or ""),
             "customerId": str(form.get("customerId") or ""),
             "customerName": str(form.get("customerName") or ""),
+            "tags": form.getlist("tags"),
             "onConflict": str(form.get("onConflict") or ""),
             "files": [
                 {
@@ -658,7 +665,8 @@ async def technical_raw_upload(request: Request) -> dict[str, Any]:
             data = await request.json()
         except Exception:
             data = {}
-        data["targetPath"] = technical_material_store.ensure_path(str(data.get("targetPath") or ""), "目标目录")
+        target_path = str(data.get("targetPath") or "")
+        data["targetPath"] = technical_material_store.ensure_write_path(target_path, "目标目录") if target_path else ""
 
     return await technical_material_store.raw_upload(
         target_path=str(data.get("targetPath") or ""),
@@ -668,6 +676,7 @@ async def technical_raw_upload(request: Request) -> dict[str, Any]:
         material_tier=str(data.get("materialTier") or ""),
         customer_id=str(data.get("customerId") or ""),
         customer_name=str(data.get("customerName") or ""),
+        tags=data.get("tags") or [],
         on_conflict=str(data.get("onConflict") or ""),
         files=list(data.get("files") or []),
     )
@@ -706,27 +715,107 @@ async def technical_raw_update_file(file_id: str, data: dict[str, Any] = Body(de
         business_material_kind=str(data.get("businessMaterialKind") or ""),
         tags=data.get("tags"),
         update_tags="tags" in data,
+        tag_mode=str(data.get("tagMode") or "overwrite"),
     )
 
 
-@router.post("/api/technical/materials/raw/{file_id}/business-split/preview")
+@router.post("/api/technical/materials/raw/batch-delete")
+async def technical_raw_batch_delete(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    import asyncio
+    file_ids: list[str] = [str(fid) for fid in (data.get("fileIds") or []) if fid]
+    if not file_ids:
+        return {"succeeded": [], "failed": [], "message": "未提供文件 ID"}
+    succeeded: list[str] = []
+    failed: list[dict[str, Any]] = []
+
+    async def _delete_one(fid: str) -> None:
+        try:
+            await technical_material_store.raw_delete_file(fid)
+            succeeded.append(fid)
+        except Exception as exc:
+            failed.append({"fileId": fid, "error": str(exc)})
+
+    await asyncio.gather(*[_delete_one(fid) for fid in file_ids])
+    total = len(file_ids)
+    ok = len(succeeded)
+    return {
+        "succeeded": succeeded,
+        "failed": failed,
+        "message": f"批量删除完成：成功 {ok} 个，失败 {total - ok} 个",
+    }
+
+
+@router.post("/api/technical/materials/raw/batch-tags")
+async def technical_raw_batch_tags(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    import asyncio
+    file_ids: list[str] = [str(fid) for fid in (data.get("fileIds") or []) if fid]
+    tags: Any = data.get("tags") or []
+    tag_mode: str = str(data.get("tagMode") or "overwrite")
+    if not file_ids:
+        return {"succeeded": [], "failed": [], "message": "未提供文件 ID"}
+    succeeded: list[str] = []
+    failed: list[dict[str, Any]] = []
+
+    async def _tag_one(fid: str) -> None:
+        try:
+            await technical_material_store.raw_update_file(
+                file_id=fid,
+                tags=tags,
+                update_tags=True,
+                tag_mode=tag_mode,
+            )
+            succeeded.append(fid)
+        except Exception as exc:
+            failed.append({"fileId": fid, "error": str(exc)})
+
+    await asyncio.gather(*[_tag_one(fid) for fid in file_ids])
+    total = len(file_ids)
+    ok = len(succeeded)
+    return {
+        "succeeded": succeeded,
+        "failed": failed,
+        "message": f"批量打标签完成：成功 {ok} 个，失败 {total - ok} 个",
+    }
+
+
+@router.post("/api/technical/materials/raw/certificate-time/batch")
+async def technical_raw_certificate_time_batch(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    file_ids = [str(item) for item in (data.get("fileIds") or []) if str(item or "").strip()]
+    return await technical_material_store.raw_certificate_time_batch(
+        folder_path=str(data.get("folderPath") or ""),
+        file_ids=file_ids,
+        limit=int(data.get("limit") or 50),
+    )
+
+
+@router.post("/api/technical/materials/raw/{file_id}/split/preview")
 async def technical_raw_preview_split(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await technical_material_store.preview_business_split(
+    return await technical_material_store.preview_technical_split(
         file_id=file_id,
         target_path=str(data.get("targetPath") or ""),
         ai_mode=str(data.get("aiMode") or data.get("mode") or "auto"),
     )
 
 
-@router.post("/api/technical/materials/raw/{file_id}/business-split/confirm")
+@router.post("/api/technical/materials/raw/{file_id}/split/confirm")
 async def technical_raw_confirm_split(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     fragments = data.get("fragments") if "fragments" in data else data.get("items")
-    return await technical_material_store.confirm_business_split(
+    return await technical_material_store.confirm_technical_split(
         file_id=file_id,
         fragments=list(fragments or []),
         target_path=str(data.get("targetPath") or ""),
         on_conflict=str(data.get("onConflict") or ""),
     )
+
+
+@router.post("/api/technical/materials/raw/{file_id}/business-split/preview")
+async def technical_raw_preview_legacy_split(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await technical_raw_preview_split(file_id, data)
+
+
+@router.post("/api/technical/materials/raw/{file_id}/business-split/confirm")
+async def technical_raw_confirm_legacy_split(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await technical_raw_confirm_split(file_id, data)
 
 
 @router.post("/api/technical/materials/raw/move")
@@ -761,6 +850,12 @@ async def technical_raw_download_file(file_id: str) -> dict[str, Any]:
 async def technical_raw_download_content(file_id: str) -> StreamingResponse:
     payload = await technical_material_store.raw_download_content(file_id)
     return minio_streaming_response(payload)
+
+
+@router.get("/api/technical/materials/raw/{file_id}/preview-content")
+async def technical_raw_preview_content(file_id: str) -> StreamingResponse:
+    payload = await technical_material_store.raw_download_content(file_id)
+    return minio_streaming_response(payload, inline=True)
 
 
 @router.get("/api/technical/materials/raw/{file_id}/cleaned/preview")
@@ -799,6 +894,56 @@ async def technical_wiki_list(nodeId: str = "", bidType: str = "") -> dict[str, 
     return await technical_material_store.wiki_list(nodeId)
 
 
+@router.get("/api/technical/materials/wiki/certificate-time")
+async def technical_wiki_certificate_time() -> dict[str, Any]:
+    return await technical_material_store.certificate_time_registry()
+
+
+@router.patch("/api/technical/materials/wiki/certificate-time/{file_id}")
+async def technical_wiki_update_certificate_time(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await technical_material_store.update_certificate_time(file_id, data)
+
+
+@router.get("/api/technical/materials/certificates")
+async def technical_certificate_ledger() -> dict[str, Any]:
+    return await technical_material_store.certificate_time_registry()
+
+
+@router.get("/api/technical/materials/certificates/suggestions")
+async def technical_certificate_suggestions() -> dict[str, Any]:
+    return await technical_material_store.certificate_time_suggestions()
+
+
+@router.put("/api/technical/materials/certificates/scopes")
+async def technical_update_certificate_scopes(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await technical_material_store.update_certificate_time_scopes(data)
+
+
+@router.post("/api/technical/materials/certificates/incremental")
+async def technical_run_certificate_incremental(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await technical_material_store.run_certificate_time_incremental(data)
+
+
+@router.post("/api/technical/materials/certificates/{file_id}/recognize")
+async def technical_recognize_certificate_ledger(file_id: str) -> dict[str, Any]:
+    return await technical_material_store.recognize_certificate_time(file_id)
+
+
+@router.post("/api/technical/materials/certificates/bulk-delete")
+async def technical_delete_certificate_ledgers(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await technical_material_store.delete_certificate_times(data)
+
+
+@router.patch("/api/technical/materials/certificates/{file_id}")
+async def technical_update_certificate_ledger(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await technical_material_store.update_certificate_time(file_id, data)
+
+
+@router.delete("/api/technical/materials/certificates/{file_id}")
+async def technical_delete_certificate_ledger(file_id: str) -> dict[str, Any]:
+    return await technical_material_store.delete_certificate_time(file_id)
+
+
 @router.post("/api/technical/materials/wiki/bootstrap")
 async def technical_wiki_bootstrap(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     return await generate_technical_wiki(
@@ -806,22 +951,6 @@ async def technical_wiki_bootstrap(data: dict[str, Any] = Body(default_factory=d
         mode=str(data.get("mode") or "create"),
         fallback_to_deterministic=bool(data.get("fallbackToDeterministic")),
     )
-
-
-@router.post("/api/technical/materials/wiki/previews/generate")
-async def technical_wiki_previews_generate() -> dict[str, Any]:
-    """触发后台异步生成文件卡片 AI 预览（不阻塞，立即返回 jobId/状态）。"""
-    from app.services.technical_wiki_preview import enqueue_preview_job
-
-    return enqueue_preview_job()
-
-
-@router.get("/api/technical/materials/wiki/previews/status")
-async def technical_wiki_previews_status() -> dict[str, Any]:
-    """查询预览生成任务进度，供前端轮询。"""
-    from app.services.technical_wiki_preview import get_preview_status
-
-    return get_preview_status()
 
 
 @router.post("/api/technical/materials/wiki")

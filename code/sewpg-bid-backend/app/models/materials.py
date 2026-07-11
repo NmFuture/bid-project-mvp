@@ -147,6 +147,7 @@ class RawFile(Base):
             "splitSourceLocation": ext.get("splitSourceLocation") or {},
             "splitConfidence": ext.get("splitConfidence"),
             "splitRiskTips": ext.get("splitRiskTips") or [],
+            "certificateMeta": ext.get("certificateMeta") or {},
             "reviewStatus": ext.get("reviewStatus") or "",
             "updatedAt": self.updated_at.isoformat() if self.updated_at else "",
         }

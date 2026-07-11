@@ -33,6 +33,7 @@ CUSTOMER_REGISTRY = [
 
 ROOT_TIER_ALIASES = {
     "通用素材": "standard",
+    "标准文件": "standard",
     "标准模板": "standard",
     "客户素材": "customer",
     "客户定制": "customer",
@@ -42,6 +43,20 @@ ROOT_TIER_ALIASES = {
 
 TECHNICAL_MATERIAL_ROOT = TECHNICAL_BID_TYPE
 BUSINESS_MATERIAL_ROOT = BUSINESS_BID_TYPE
+
+
+def material_scope_root_name(bid_type: str, tier: str) -> str:
+    if bid_type == TECHNICAL_BID_TYPE:
+        return {
+            "standard": "标准文件",
+            "customer": "客户定制",
+            "project": "项目定制",
+        }.get(tier, "")
+    return {
+        "standard": "通用素材",
+        "customer": "客户素材",
+        "project": "项目素材",
+    }.get(tier, "")
 
 
 def normalize_identity_text(value: Any) -> str:
@@ -253,12 +268,15 @@ def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
     )
     customer_name = str(identity.get("customerCanonicalName") or identity.get("customerName") or "").strip()
     project_id = str(identity.get("projectId") or identity.get("bidProjectId") or project.get("id") or "").strip()
+    standard_root = material_scope_root_name(bid_type, "standard")
+    customer_root = material_scope_root_name(bid_type, "customer")
+    project_root = material_scope_root_name(bid_type, "project")
     scopes: list[dict[str, Any]] = [
         {
             "key": "standard",
-            "label": "通用素材",
+            "label": standard_root,
             "materialTier": "standard",
-            "path": f"{bid_type}/通用素材",
+            "path": f"{bid_type}/{standard_root}",
             "identityMatchedBy": "bidType",
         }
     ]
@@ -266,9 +284,9 @@ def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
         scopes.append(
             {
                 "key": "customer",
-                "label": "客户素材",
+                "label": customer_root,
                 "materialTier": "customer",
-                "path": f"{bid_type}/客户素材/{customer_name}",
+                "path": f"{bid_type}/{customer_root}/{customer_name}",
                 "customerId": str(identity.get("customerId") or ""),
                 "customerName": customer_name,
                 "identityMatchedBy": "customer",
@@ -278,9 +296,9 @@ def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
         scopes.append(
             {
                 "key": "project",
-                "label": "项目素材",
+                "label": project_root,
                 "materialTier": "project",
-                "path": f"{bid_type}/项目素材/{project_id}",
+                "path": f"{bid_type}/{project_root}/{project_id}",
                 "projectId": project_id,
                 "projectCode": str(identity.get("projectCode") or ""),
                 "projectName": str(identity.get("projectName") or ""),

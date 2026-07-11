@@ -1,0 +1,116 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# bid-project-mvp 本地运行预检清单
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+# 模型：会话首检 + 打勾持久化
+#   - 每次「运行会话」只在首次做一次完整预检
+#   - 通过的项会持久化到 .checked.local.json
+#   - 下次启动若缓存命中且未过期 → 静默放行
+#   - 代码 / 配置 / 环境真正变更时 → 自动重新触发
+#
+# 各项含义：
+#   status:
+#     required     → 必检项，不通过则阻断运行
+#     recommended  → 推荐项，不通过仅警告，不阻断
+#   verify:
+#     auto         → 脚本自动判断
+#     manual      → 由人或 Agent 确认后手动打勾
+#     ifAvailable → 有校验脚本就自动，没有就退化为手动
+#
+# 缓存失效（触发重新检查）条件见脚本 README 顶部的触发规则表。
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+schemaVersion: "1"
+lastUpdated: "2026-07-01"
+
+target:
+  syncBranch: "origin/main"       # 代码版本对齐的基准分支
+  maxStaleDays: 7                # 超过 N 天未检 → 强制重检
+
+checks:
+  # ── 代码版本 ──────────────────────────────────────────────
+  - id: code-version
+    category: 代码版本
+    name: 核心代码版本对齐
+    description: |
+      确认本地核心代码与团队基准分支一致。
+      多人协作仓库默认严格模式：本地 HEAD 必须等于 target.syncBranch。
+      本地超前、落后或分叉都会阻断运行；个人实验请先切独立分支并完成合并。
+    required: true
+    verify: auto
+    scripts:
+      - pre-run-check.sh::_check_code_version
+
+  - id: workspace
+    category: 代码版本
+    name: code/ 工作区状态
+    description: |
+      检查 code/ 下是否有未提交的本地修改。
+      如有，请逐项确认这些是你有意保留的本地工作，而非误改。
+    required: false        # 允许本地有未提交的个人工作
+    verify: ifAvailable
+    scripts:
+      - pre-run-check.sh::_check_workspace
+
+  # ── 依赖基线 ──────────────────────────────────────────────
+  - id: deps-backend
+    category: 依赖基线
+    name: 后端 Python 依赖就绪
+    description: |
+      后端 .venv 已创建、requirements.txt 未漂移。
+      首次或 requirements.txt 新于 .venv 时需重新执行依赖安装。
+    required: false
+    verify: ifAvailable
+    scripts:
+      - pre-run-check.sh::_check_deps_backend
+
+  - id: deps-frontend
+    category: 依赖基线
+    name: 前端 Node 依赖就绪
+    description: |
+      前端 node_modules 已安装、package-lock.json 未漂移。
+      首次或 package-lock.json 新于 node_modules 时需重新 npm ci。
+    required: false
+    verify: ifAvailable
+    scripts:
+      - pre-run-check.sh::_check_deps_frontend
+
+  # ── 配置 & 密钥 ───────────────────────────────────────────
+  - id: config
+    category: 配置 & 密钥
+    name: 本地 .env 配置完整
+    description: |
+      code/.env 已从 .env.example 创建，
+      且关键服务（数据库 / MinIO / Redis / opencode）配置已填入。
+    required: true
+    verify: ifAvailable
+    scripts:
+      - pre-run-check.sh::_check_config
+
+  - id: secrets
+    category: 配置 & 密钥
+    name: LLM / OCR 密钥未过期
+    description: |
+      team-bootstrap.local.yaml 中 settings.llm.apiKey /
+      settings.ocr.apiKey 未过期。
+      此清单为本地私有，不会提交到 git。
+    required: false        # 运行时才会真正暴露过期，这里仅做提醒
+    verify: manual
+
+  # ── 素材 / 数据 ───────────────────────────────────────────
+  - id: data
+    category: 素材 & 数据
+    name: 素材目录就绪
+    description: |
+      code/.localdata/ 存在或可自动生成；
+      素材版本默认动态加载，无需强制对齐。
+      如需冻结某个版本用于对比，请在下方 pinnedVersions 填写。
+    required: false
+    verify: ifAvailable
+    scripts:
+      - pre-run-check.sh::_check_data
+
+# 数据版本冻结（默认动态；填写后升级为必检）
+pinnedVersions:
+  ocrModel: null             # 例: deepseek-ai/DeepSeek-OCR
+  materialSnapshot: null      # 例: 2026-07-01 或 git tag

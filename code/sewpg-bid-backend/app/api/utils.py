@@ -123,11 +123,16 @@ def content_disposition(filename: str) -> str:
     return f"attachment; filename*=UTF-8''{quote(filename)}"
 
 
+def inline_content_disposition(filename: str) -> str:
+    return f"inline; filename*=UTF-8''{quote(filename)}"
+
+
 def minio_streaming_response(
     payload: dict[str, Any],
     *,
     default_file_name: str = "download.bin",
     default_media_type: str = "application/octet-stream",
+    inline: bool = False,
 ) -> StreamingResponse:
     response = minio_client.get_object_response(payload["bucket"], payload["key"])
 
@@ -144,5 +149,5 @@ def minio_streaming_response(
     return StreamingResponse(
         iterate_chunks(),
         media_type=media_type,
-        headers={"Content-Disposition": content_disposition(file_name)},
+        headers={"Content-Disposition": inline_content_disposition(file_name) if inline else content_disposition(file_name)},
     )

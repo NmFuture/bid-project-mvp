@@ -154,6 +154,18 @@ def material_tier_folder_name(material_tier: str) -> str:
     return TIER_FOLDER_NAMES[tier]
 
 
+def material_tier_folder_name_for_bid_type(bid_type: str, material_tier: str) -> str:
+    tier = normalize_material_tier(material_tier) or "project"
+    if require_material_bid_type(bid_type) == TECHNICAL_BID_TYPE:
+        if tier == "standard":
+            return "标准文件"
+        if tier == "customer":
+            return "客户定制"
+        if tier == "project":
+            return "项目定制"
+    return TIER_FOLDER_NAMES[tier]
+
+
 def material_tier_folder_sort_order(material_tier: str) -> int:
     tier = normalize_material_tier(material_tier) or "project"
     return TIER_FOLDER_SORT_ORDER[tier]
@@ -161,7 +173,7 @@ def material_tier_folder_sort_order(material_tier: str) -> int:
 
 def material_tier_root_path(bid_type: str, material_tier: str) -> str:
     normalized_bid_type = require_material_bid_type(bid_type)
-    return f"{normalized_bid_type}/{material_tier_folder_name(material_tier)}"
+    return f"{normalized_bid_type}/{material_tier_folder_name_for_bid_type(normalized_bid_type, material_tier)}"
 
 
 def project_material_root_path(bid_type: str, project_id: str) -> str:
@@ -174,11 +186,11 @@ def infer_material_tier_from_folder(*, tier: str = "", path: str = "") -> str:
         return normalized_tier
     normalized_path = str(path or "").replace("\\", "/").strip("/")
     if normalized_path.startswith(
-        (f"{TECHNICAL_BID_TYPE}/通用素材", f"{BUSINESS_BID_TYPE}/通用素材", "通用素材", "标准模板")
+        (f"{TECHNICAL_BID_TYPE}/标准文件", f"{TECHNICAL_BID_TYPE}/通用素材", f"{BUSINESS_BID_TYPE}/通用素材", "通用素材", "标准文件", "标准模板")
     ):
         return "standard"
     if normalized_path.startswith(
-        (f"{TECHNICAL_BID_TYPE}/客户素材", f"{BUSINESS_BID_TYPE}/客户素材", "客户素材", "客户定制")
+        (f"{TECHNICAL_BID_TYPE}/客户定制", f"{TECHNICAL_BID_TYPE}/客户素材", f"{BUSINESS_BID_TYPE}/客户素材", "客户素材", "客户定制")
     ):
         return "customer"
     return "project"

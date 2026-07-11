@@ -342,6 +342,57 @@ def test_technical_gap_material_index_uses_technical_material_store() -> None:
     assert items[0]["id"] == "RAW-TECH-0001"
 
 
+def test_technical_material_raw_files_use_index_tags_as_source_of_truth() -> None:
+    db_payload = {
+        "items": [
+            {
+                "id": "RAW-0001",
+                "name": "技术方案.docx",
+                "folderPath": "技术标/通用素材/施工组织",
+                "bidType": "技术标",
+                "tags": ["DB标签"],
+            },
+            {
+                "id": "RAW-0002",
+                "name": "吊装方案.docx",
+                "folderPath": "技术标/通用素材/施工组织",
+                "bidType": "技术标",
+                "tags": ["数据库旧标签"],
+            },
+        ],
+        "total": 2,
+        "page": 1,
+        "pageSize": 100000,
+        "tagOptions": ["DB标签", "数据库旧标签"],
+    }
+    index_tags = {
+        "RAW-0001": ["索引标签", "施工"],
+        "RAW-0002": ["吊装"],
+    }
+
+    async def run_case() -> dict[str, Any]:
+        with patch("app.services.technical_material_store.material_store.raw_files", AsyncMock(return_value=db_payload)) as raw_files, patch(
+            "app.services.technical_material_index.load_technical_material_index",
+            return_value={"schemaVersion": 2, "tiers": []},
+        ), patch(
+            "app.services.technical_material_index.file_tags_by_id",
+            return_value=index_tags,
+        ):
+            payload = await technical_material_store.raw_files(
+                folder_path="技术标/通用素材",
+                tag=["索引"],
+                page=1,
+                page_size=20,
+            )
+        raw_files.assert_awaited_once()
+        return payload
+
+    payload = asyncio.run(run_case())
+    assert [item["id"] for item in payload["items"]] == ["RAW-0001"]
+    assert payload["items"][0]["tags"] == ["索引标签", "施工"]
+    assert payload["tagOptions"] == ["索引标签", "施工", "吊装"]
+
+
 def test_technical_gap_service_uses_technical_action_boundary() -> None:
     source = Path(technical_gap_service_module.__file__).read_text(encoding="utf-8")
 
@@ -897,7 +948,7 @@ def test_project_delete_uses_workspace_material_store_facades() -> None:
         store.delete_project(technical_project_id)
 
     assert business_deleted == [f"商务标/项目素材/{business_project_id}"]
-    assert technical_deleted == [f"技术标/项目素材/{technical_project_id}"]
+    assert technical_deleted == [f"技术标/项目定制/{technical_project_id}"]
 
 
 def test_project_material_cleanup_facades_only_accept_project_roots() -> None:
@@ -2103,7 +2154,8 @@ def test_wiki_import_rules_are_outside_material_store() -> None:
     assert "WIKI_IMPORT_BID_TYPE_REQUIRED" in operations_source
     assert "AUTO_WIKI_DOC_SUMMARY" in operations_source
     assert "purge_wiki_root" in operations_source
-    assert "purge_generated_children" in operations_source
+    assert "sync_children_to_specs" in operations_source
+    assert "purge_generated_children" not in operations_source
     assert "duplicate_root" in operations_source
     assert "PLATFORM_WIKI_SECTION_TITLES" in operations_source
 

@@ -3,12 +3,12 @@
 技术标的 Wiki 目录树严格等于素材库三级目录结构（tier → folder → file），
 无需 LLM 语义精修，也不依赖商务标那套 inventory / 多级回退逻辑。流程：
 
-    取最新三级目录 JSON 索引
+    读取唯一三级目录 JSON 索引
       → 写成 manifest
       → subprocess 跑 bid-tech-wiki-material-builder/scripts/run_from_manifest.py
       → 把确定性 blueprint 导入技术标素材库
 
-供「重建 Wiki」主流程与后台预览任务（technical_wiki_preview）复用。
+供「刷新 Wiki」与「重建 Wiki」复用。
 """
 
 from __future__ import annotations
@@ -22,10 +22,10 @@ from typing import Any
 from app.core.config import BASE_DIR, settings
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.technical_material_store import technical_material_store
-from app.services.technical_material_index import (
-    load_technical_material_index,
-    rebuild_technical_material_index,
-)
+from app.services.technical_material_index import load_technical_material_index
+from app.services.bid_runtime_state import write_json_file_atomic
+from app.services.technical_material_index import TECHNICAL_MATERIAL_INDEX_PATH
+from app.services.technical_wiki_preview_generation import enrich_technical_wiki_previews
 from app.services.wiki_blueprint_common import (
     load_wiki_blueprint_result,
     normalize_blueprint,
@@ -59,11 +59,11 @@ async def mirror_technical_index_to_wiki(
     index_payload: dict[str, Any],
     *,
     mode: str,
+    preview_stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """把技术标三级目录索引 payload 确定性镜像成 Wiki blueprint 并导入（不走 LLM）。
 
-    供「重建 Wiki」主流程与后台预览任务复用：后台任务补齐预览后用 mode="replace"
-    重镜像一次，让带 AI 预览的文件卡片落到 Wiki 树上。
+    `mode="refresh"` 增量同步自动生成根树，`mode="replace"` 全量替换自动生成根树。
     """
     if not isinstance(index_payload, dict):
         index_payload = {}
@@ -88,7 +88,7 @@ async def mirror_technical_index_to_wiki(
     )
     stats = index_payload.get("stats") if isinstance(index_payload.get("stats"), dict) else {}
     imported["generation"] = {
-        "summary": blueprint["summary"],
+        "summary": _summary_with_preview(blueprint["summary"], preview_stats),
         "bidType": TECHNICAL_BID_TYPE,
         "skill": TECHNICAL_WIKI_SKILL_NAME,
         "generator": "technical_index_mirror",
@@ -99,9 +99,24 @@ async def mirror_technical_index_to_wiki(
             "fileCount": stats.get("fileCount"),
             "generatedAt": index_payload.get("generatedAt"),
         },
+        "preview": preview_stats or {"enabled": False},
         "opencodeOutput": opencode_output,
     }
     return imported
+
+
+def _summary_with_preview(summary: str, preview_stats: dict[str, Any] | None) -> str:
+    if not preview_stats or not preview_stats.get("enabled"):
+        return summary
+    completed = int(preview_stats.get("completed") or 0)
+    cached = int(preview_stats.get("cached") or 0)
+    fallback = int(preview_stats.get("fallback") or 0)
+    skipped = int(preview_stats.get("skipped") or 0)
+    failed = int(preview_stats.get("failed") or 0)
+    return (
+        f"{summary} 内容预览：AI 成功 {completed} 个（缓存 {cached} 个），"
+        f"本地 TLDR {fallback} 个，跳过 {skipped} 个，失败 {failed} 个。"
+    )
 
 
 async def generate_technical_wiki(
@@ -112,15 +127,14 @@ async def generate_technical_wiki(
 ) -> dict[str, Any]:
     """技术标 Wiki：确定性镜像三级目录 JSON 索引（tier→folder→file），不走 LLM。
 
-    技术标的目录树就该严格等于素材库三级结构，无需语义精修；因此独立于商务标
-    的 LLM/确定性回退链路，直接用 wikibuild 脚本把索引镜像成 blueprint 再导入。
+    技术标的目录树严格以已落盘的 `technical_material_index.json` 为唯一凭证，
+    不在 Wiki 生成入口重新从 DB 拼结构。刷新/重建只决定导入策略，不改变索引来源。
     `reference_path` / `fallback_to_deterministic` 仅为兼容 route 透传，技术标忽略。
     """
     _ = (reference_path, fallback_to_deterministic)
-    # 先实时重建索引拿最新结构；失败/为空时回退到已落盘的快照。
-    # preview_mode="cached"：秒级注入已生成的 AI 预览，不调 LLM —— 重建 Wiki 立即返回。
-    # 缺失预览的 docx 先降级为纯目录卡片，由后台 technical_wiki_preview 任务异步补齐。
-    index_payload = await rebuild_technical_material_index(preview_mode="cached")
-    if not isinstance(index_payload, dict) or not index_payload.get("tiers"):
-        index_payload = load_technical_material_index()
-    return await mirror_technical_index_to_wiki(index_payload, mode=mode)
+    index_payload = load_technical_material_index()
+    if not isinstance(index_payload, dict) or not isinstance(index_payload.get("tiers"), list):
+        raise RuntimeError("技术标 Wiki 缺少有效 technical_material_index.json，请先刷新原始素材 JSON 索引。")
+    preview_stats = await enrich_technical_wiki_previews(index_payload)
+    write_json_file_atomic(TECHNICAL_MATERIAL_INDEX_PATH, index_payload)
+    return await mirror_technical_index_to_wiki(index_payload, mode=mode, preview_stats=preview_stats)

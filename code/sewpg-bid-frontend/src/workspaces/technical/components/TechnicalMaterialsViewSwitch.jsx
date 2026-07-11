@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom'
 const DEFAULT_ITEMS = [
   { key: 'raw', label: '原始素材', path: '/raw' },
   { key: 'wiki', label: 'Wiki', path: '/wiki' },
+  { key: 'certificates', label: '证书台账', path: '/certificates' },
   { key: 'performance', label: '业绩库', absolutePath: '/workspace/shared/materials/performance' },
 ]
 

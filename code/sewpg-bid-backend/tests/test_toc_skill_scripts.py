@@ -646,24 +646,35 @@ class TocSkillScriptTests(unittest.TestCase):
             manifest_path = root / "wiki_manifest.json"
             output_file = root / "wiki_blueprint.json"
             manifest = {
-                "targetBidType": "技术标",
+                "bidType": "技术标",
                 "rootTitle": "技术标Wiki（自动生成）",
                 "workDir": str(root),
                 "outputFile": str(output_file),
-                "materialInventory": {
-                    "items": [
-                        {
-                            "id": "M1",
-                            "title": "总体方案",
-                            "name": "总体方案.docx",
-                            "path": "技术标/通用素材/总体方案.docx",
-                            "identityScope": "general",
-                            "materialTier": "general",
-                            "group": "总体方案",
-                            "headings": [{"title": "总体方案"}],
-                        }
-                    ]
-                },
+                "stats": {"fileCount": 1},
+                "tiers": [
+                    {
+                        "name": "标准文件",
+                        "tier": "standard",
+                        "path": "技术标/标准文件",
+                        "fileCount": 1,
+                        "folders": [
+                            {
+                                "name": "EW5.0",
+                                "path": "技术标/标准文件/EW5.0",
+                                "fileCount": 1,
+                                "files": [
+                                    {
+                                        "id": "M1",
+                                        "name": "总体方案.docx",
+                                        "path": "技术标/标准文件/EW5.0/总体方案.docx",
+                                        "ext": "docx",
+                                        "cleanStatus": "cleaned",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
             }
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
@@ -676,10 +687,9 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertEqual(blueprint["rootTitle"], "技术标Wiki（自动生成）")
             self.assertEqual(
                 [node["title"] for node in blueprint["nodes"]],
-                ["01-素材总表", "02-章节映射表", "03-素材卡片", "04-待填写清单", "05-使用规则"],
+                ["标准文件"],
             )
-            cards_node = next(node for node in blueprint["nodes"] if node["title"] == "03-素材卡片")
-            self.assertEqual(cards_node["children"][0]["children"][0]["children"][0]["title"], "总体方案")
+            self.assertEqual(blueprint["nodes"][0]["children"][0]["children"][0]["title"], "总体方案.docx")
 
     def test_bid_outline_generator_preserves_appendix_search_text_and_appends_last(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")

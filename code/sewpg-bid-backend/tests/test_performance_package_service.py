@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
+from subprocess import CalledProcessError, CompletedProcess
+from unittest.mock import patch
 from zipfile import ZipFile
 from xml.etree import ElementTree as ET
 
@@ -9,6 +12,7 @@ from docx.enum.text import WD_BREAK
 from docx.shared import Inches
 
 from app.services.performance_package_service import (
+    ITEM_CONTRACT_FORMAT_VERSION,
     match_contract_chunks_to_items,
     parse_performance_summary_docx,
     render_contract_item_docx,
@@ -199,6 +203,39 @@ def _docx_rfont_non_name_refs(content: bytes) -> set[str]:
     return refs
 
 
+def _docx_settings_count(content: bytes, local_name: str) -> int:
+    with ZipFile(BytesIO(content), "r") as zf:
+        settings_xml = zf.read("word/settings.xml")
+    root = ET.fromstring(settings_xml)
+    return sum(1 for element in root.iter() if element.tag.rsplit("}", 1)[-1] == local_name)
+
+
+def _docx_local_name_count(content: bytes, local_name: str) -> int:
+    with ZipFile(BytesIO(content), "r") as zf:
+        root = ET.fromstring(zf.read("word/document.xml"))
+    return sum(1 for element in root.iter() if element.tag.rsplit("}", 1)[-1] == local_name)
+
+
+def _docx_effect_extents(content: bytes) -> list[dict[str, str]]:
+    with ZipFile(BytesIO(content), "r") as zf:
+        root = ET.fromstring(zf.read("word/document.xml"))
+    return [
+        {attr: element.attrib.get(attr, "") for attr in ("l", "t", "r", "b")}
+        for element in root.iter()
+        if element.tag.rsplit("}", 1)[-1] == "effectExtent"
+    ]
+
+
+def _docx_picture_ids(content: bytes) -> list[str]:
+    with ZipFile(BytesIO(content), "r") as zf:
+        root = ET.fromstring(zf.read("word/document.xml"))
+    return [
+        element.attrib.get("id", "")
+        for element in root.iter()
+        if element.tag.rsplit("}", 1)[-1] == "docPr"
+    ]
+
+
 def _docx_body_layout(content: bytes) -> list[dict[str, object]]:
     with ZipFile(BytesIO(content)) as zf:
         root = ET.fromstring(zf.read("word/document.xml"))
@@ -309,6 +346,8 @@ def test_split_performance_contract_docx_preserves_item_documents_and_images() -
     assert second_doc.paragraphs[0].text == "内蒙古能源察右前旗50万千瓦风光实验实证项目风力发电机组"
     assert len(first_doc.tables) == 1
     assert len(second_doc.tables) == 1
+    assert first_doc.tables[0].cell(0, 0).text == "封面页"
+    assert second_doc.tables[0].cell(0, 0).text == "合同范围"
     assert first_doc.element.xpath('.//*[local-name()="drawing" or local-name()="pict"]')
     assert second_doc.element.xpath('.//*[local-name()="drawing" or local-name()="pict"]')
 
@@ -334,16 +373,14 @@ def test_render_contract_item_docx_keeps_table_caption_rows_with_image_rows() ->
     chunks = split_performance_contract_docx(_contract_with_paired_page_table_docx_bytes(), file_name="枣庄山亭19万千瓦业绩_合同.docx")
 
     content = render_contract_item_docx(chunks[0], output_title="山东华电枣庄山亭19万千瓦风电项目")
+    rendered = Document(BytesIO(content))
     rows = _docx_table_row_pagination(content)
 
-    assert rows[0]["text"] == "合同首页签字盖章页"
-    assert rows[0]["keepNext"] is True
-    assert rows[0]["cantSplit"] is True
-    assert rows[1]["cantSplit"] is True
-    assert rows[2]["text"] == "主要技术参数页主要技术参数页"
-    assert rows[2]["keepNext"] is True
-    assert rows[2]["cantSplit"] is True
-    assert rows[3]["cantSplit"] is True
+    assert len(rendered.tables) == 1
+    assert len(rows) == 4
+    assert "合同首页" in rows[0]["text"]
+    assert "主要技术参数页" in rows[2]["text"]
+    assert _docx_local_name_count(content, "drawing") == 4
 
 
 def test_render_contract_item_docx_uses_short_title_and_table_spacing() -> None:
@@ -353,9 +390,14 @@ def test_render_contract_item_docx_uses_short_title_and_table_spacing() -> None:
     rendered = Document(BytesIO(content))
     assert rendered.paragraphs[0].text == "华电新疆喀什 2×66 万千瓦"
     assert all(paragraph.text != "华电新疆喀什 2×66 万千瓦风力发电机组采购合同" for paragraph in rendered.paragraphs)
-    table_paragraph = rendered.tables[0].cell(0, 0).paragraphs[0]
-    assert table_paragraph.paragraph_format.line_spacing == 1.5
-    assert table_paragraph.paragraph_format.space_after.pt == 0
+    assert rendered.tables[0].cell(0, 0).text == "封面页"
+    assert ITEM_CONTRACT_FORMAT_VERSION == 15
+
+
+def test_render_contract_item_docx_sanitizes_fonts_for_text_documents() -> None:
+    chunks = split_performance_contract_docx(_contract_with_table_layout_docx_bytes(), file_name="枣庄山亭19万千瓦业绩_合同.docx")
+    content = render_contract_item_docx(chunks[0], output_title="山东华电枣庄山亭19万千瓦风电项目")
+
     fonts = _docx_declared_fonts(content)
     assert "Songti SC" in fonts
     assert "Times New Roman" in fonts
@@ -365,6 +407,71 @@ def test_render_contract_item_docx_uses_short_title_and_table_spacing() -> None:
     assert "Mangal" not in fonts
     assert not any("Theme" in font or font.startswith("major") or font.startswith("minor") for font in fonts)
     assert _docx_rfont_non_name_refs(content) == set()
+    assert _docx_settings_count(content, "compat") == 0
+    assert _docx_settings_count(content, "rsids") == 0
+
+
+def test_render_contract_item_docx_preserves_drawing_documents_for_onlyoffice() -> None:
+    chunks = split_performance_contract_docx(_contract_bundle_docx_bytes(), file_name="陆上11MW业绩_合同.docx")
+    content = render_contract_item_docx(chunks[0], output_title="华电新疆喀什 2×66 万千瓦")
+
+    assert _docx_local_name_count(content, "drawing") == 1
+    assert _docx_local_name_count(content, "useLocalDpi") == 0
+    assert _docx_picture_ids(content) == ["1"]
+    assert len(Document(BytesIO(content)).tables) == 1
+    Document(BytesIO(content))
+
+
+def test_render_contract_item_docx_uses_stable_ooxml_prefixes() -> None:
+    chunks = split_performance_contract_docx(_contract_with_paired_page_table_docx_bytes(), file_name="陆上7MW业绩_合同.docx")
+    content = render_contract_item_docx(chunks[0], output_title="吉林公主岭风电乡村振兴项目")
+
+    with ZipFile(BytesIO(content), "r") as zf:
+        document_xml = zf.read("word/document.xml").decode("utf-8")
+
+    assert "<w:document" in document_xml
+    assert "<ns0:document" not in document_xml
+    assert "mc:Ignorable=\"w14 wp14 w15\"" not in document_xml
+    Document(BytesIO(content))
+
+
+def test_render_contract_item_docx_normalizes_with_soffice() -> None:
+    chunks = split_performance_contract_docx(_contract_with_table_layout_docx_bytes(), file_name="陆上11MW业绩_合同.docx")
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **_: object) -> CompletedProcess[str]:
+        calls.append(args)
+        source_path = Path(args[-1])
+        outdir = Path(args[args.index("--outdir") + 1])
+        outdir.mkdir(parents=True, exist_ok=True)
+        (outdir / "source.docx").write_bytes(source_path.read_bytes())
+        return CompletedProcess(args, 0, stdout="ok", stderr="")
+
+    with (
+        patch("app.services.performance_package_service.shutil.which", return_value="/usr/bin/soffice"),
+        patch("app.services.performance_package_service.subprocess.run", side_effect=fake_run),
+    ):
+        content = render_contract_item_docx(chunks[0], output_title="山东华电枣庄山亭19万千瓦风电项目")
+
+    Document(BytesIO(content))
+    assert calls
+    assert "--convert-to" in calls[0]
+
+
+def test_render_contract_item_docx_keeps_original_when_soffice_fails() -> None:
+    chunks = split_performance_contract_docx(_contract_with_table_layout_docx_bytes(), file_name="陆上11MW业绩_合同.docx")
+
+    with (
+        patch("app.services.performance_package_service.shutil.which", return_value="/usr/bin/soffice"),
+        patch(
+            "app.services.performance_package_service.subprocess.run",
+            side_effect=CalledProcessError(1, ["soffice"], stderr="boom"),
+        ),
+    ):
+        content = render_contract_item_docx(chunks[0], output_title="山东华电枣庄山亭19万千瓦风电项目")
+
+    Document(BytesIO(content))
+    assert _docx_settings_count(content, "compat") == 0
 
 
 def test_match_contract_chunks_to_items_prefers_project_name_then_row_order() -> None:

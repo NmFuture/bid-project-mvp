@@ -2,8 +2,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { settingsAPI } from '../api'
 import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
 
-const safeMessage = (error, fallback) =>
-  error?.payload?.detail || error?.message || fallback
+const providerResponseMessage = (value) => {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  try {
+    const parsed = JSON.parse(text)
+    return String(parsed?.message || parsed?.error?.message || parsed?.detail || text)
+  } catch {
+    return text
+  }
+}
+
+const safeMessage = (error, fallback) => {
+  const base = error?.payload?.detail || error?.message || fallback
+  const providerMessage = providerResponseMessage(error?.payload?.responseText)
+  return providerMessage ? `${base}；Provider 返回：${providerMessage}` : base
+}
 
 const deepEqualByKeys = (left, right, keys) =>
   keys.every((key) => JSON.stringify(left?.[key]) === JSON.stringify(right?.[key]))

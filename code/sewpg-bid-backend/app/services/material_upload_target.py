@@ -69,10 +69,10 @@ def build_raw_upload_target_plan(
             "projectId": inferred_project_id,
         }
 
-    if not inferred_tier and len(target_parts) == 2 and target_parts[0] == "客户素材":
+    if not inferred_tier and len(target_parts) == 2 and target_parts[0] in {"客户素材", "客户定制"}:
         inferred_tier = "customer"
         inferred_customer_name = inferred_customer_name or target_parts[1]
-    if not inferred_tier and len(target_parts) == 2 and target_parts[0] == "项目素材":
+    if not inferred_tier and len(target_parts) == 2 and target_parts[0] in {"项目素材", "项目定制"}:
         inferred_tier = "project"
         inferred_project_id = inferred_project_id or target_parts[1]
 

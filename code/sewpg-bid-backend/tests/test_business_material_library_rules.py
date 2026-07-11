@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -176,13 +177,15 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
         for suffix in [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"]:
             self.assertIn(suffix, MATERIAL_LIBRARY_ALLOWED_SUFFIXES)
 
-    def test_ds_store_is_allowed_as_original_only_material(self) -> None:
-        self.assertEqual(material_suffix(".DS_Store"), ".ds_store")
-        self.assertEqual(ext_of(".DS_Store"), "ds_store")
-        self.assertIn(".ds_store", MATERIAL_LIBRARY_ALLOWED_SUFFIXES)
+    def test_ds_store_is_treated_as_system_noise(self) -> None:
+        self.assertEqual(material_suffix(".DS_Store"), "")
+        self.assertEqual(ext_of(".DS_Store"), "file")
+        self.assertNotIn(".ds_store", MATERIAL_LIBRARY_ALLOWED_SUFFIXES)
         status, message = clean_status_for_new_file(".DS_Store")
-        self.assertEqual(status, "original_only")
-        self.assertIn("DS_Store", message)
+        self.assertEqual(status, "failed")
+        self.assertIn("暂不支持", message)
+        upload_source = Path("app/services/material_upload_operations.py").read_text(encoding="utf-8")
+        self.assertIn('file_name.lower() == ".ds_store"', upload_source)
 
     def test_material_cleaning_uses_short_paths_for_long_names(self) -> None:
         from app.services.material_cleaning import _short_file_name_for_path, cleaned_object_key
@@ -413,7 +416,7 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
         self.assertEqual(root_spec["tags"], ["商务标", "素材库"])
         self.assertEqual(root_spec["applicableTypes"], ["商务标"])
         self.assertEqual(root_spec["children"][0]["title"], "资质库")
-        self.assertEqual(generated_wiki_import_message(root_spec["title"], "refreshed"), "商务标 Wiki 已刷新，并已替换自动生成节点。")
+        self.assertEqual(generated_wiki_import_message(root_spec["title"], "refreshed"), "商务标 Wiki 已按索引增量刷新。")
         self.assertEqual(wiki_import_node_title({"title": "A/B"}), "A-B")
         self.assertEqual(wiki_import_node_markdown({}, "默认节点"), "# 默认节点\n")
         self.assertEqual(wiki_import_node_tags({}, ["旧标签"]), ["旧标签"])
@@ -431,9 +434,10 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
 
     def test_raw_folder_scope_rules_describe_bid_roots_and_legacy_paths(self) -> None:
         self.assertEqual(project_material_root_path("商务标", "BIZ-001"), "商务标/项目素材/BIZ-001")
+        self.assertEqual(project_material_root_path("技术标", "PRJ-0002"), "技术标/项目定制/PRJ-0002")
         self.assertEqual(
             [item["name"] for item in raw_material_tier_folder_specs("技术标")],
-            ["通用素材", "客户素材", "项目素材"],
+            ["标准文件", "客户定制", "项目定制"],
         )
         self.assertEqual(normalize_material_bid_type(""), "")
         with self.assertRaises(ValueError):
@@ -987,7 +991,7 @@ class BusinessPerformanceLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("业绩证明", items[1]["keywords"])
         self.assertIn("review_status <> 'disabled'", session.statements[0])
 
-    async def test_business_material_index_includes_performance_candidates(self) -> None:
+    async def test_business_material_index_includes_performance_package_candidates_by_default(self) -> None:
         from app.services import business_gap_planning
 
         material_scope = {
@@ -995,14 +999,14 @@ class BusinessPerformanceLibraryTests(unittest.IsolatedAsyncioTestCase):
             "identity": {"customerCanonicalName": "华能集团", "projectId": "MAT-001"},
             "readableScopes": [{"path": "商务标/通用素材", "materialTier": "standard"}],
         }
-        performance_candidate = {
-            "id": "PERF-0008",
-            "materialId": "PERF-0008",
+        package_candidate = {
+            "id": "PERCAT-0008",
+            "materialId": "PERCAT-0008",
             "name": "华能风电供货业绩",
-            "folderPath": "商务标/共用业绩库/华能集团",
+            "folderPath": "业绩库",
             "materialTier": "customer",
-            "sourceType": "performance_library",
-            "candidateType": "performance_record",
+            "sourceType": "performance_package",
+            "candidateType": "performance_category",
             "businessMaterialKind": "performance",
             "businessMaterialKindLabel": "共用业绩",
             "cleanStatus": "original_only",
@@ -1039,21 +1043,54 @@ class BusinessPerformanceLibraryTests(unittest.IsolatedAsyncioTestCase):
                 ]
             }
 
-        async def fake_performance_candidates(scope, *, limit=300):
-            self.assertEqual(scope, material_scope)
-            self.assertEqual(limit, 300)
-            return [performance_candidate]
-
         with patch.object(business_gap_planning.business_material_store, "raw_files", side_effect=fake_raw_files), patch.object(
-            business_gap_planning.performance_library_service,
-            "list_match_candidates",
-            side_effect=fake_performance_candidates,
-        ):
+            business_gap_planning,
+            "_performance_package_candidates",
+            return_value=[package_candidate],
+        ), patch.object(business_gap_planning, "_legacy_performance_record_candidates") as legacy_candidates:
             items = business_gap_planning._business_material_index(material_scope, {})
 
-        self.assertEqual([item["id"] for item in items], ["RAW-0001", "RAW-0003", "PERF-0008"])
-        self.assertEqual(items[2]["sourceType"], "performance_library")
+        legacy_candidates.assert_not_called()
+        self.assertEqual([item["id"] for item in items], ["RAW-0001", "RAW-0003", "PERCAT-0008"])
+        self.assertEqual(items[2]["sourceType"], "performance_package")
         self.assertEqual(items[2]["businessMaterialKindLabel"], "共用业绩")
+
+    async def test_business_material_index_reads_legacy_performance_records_only_when_requested(self) -> None:
+        from app.services import business_gap_planning
+
+        material_scope = {
+            "bidType": "商务标",
+            "includeLegacyPerformanceRecords": True,
+            "readableScopes": [{"path": "商务标/通用素材", "materialTier": "standard"}],
+        }
+        legacy_candidate = {
+            "id": "PERF-0008",
+            "materialId": "PERF-0008",
+            "name": "旧业绩记录",
+            "sourceType": "performance_library",
+            "candidateType": "performance_record",
+            "businessMaterialKind": "performance",
+            "businessMaterialKindLabel": "共用业绩",
+            "legacy": True,
+        }
+
+        async def fake_raw_files(**_kwargs):
+            return {"items": []}
+
+        with patch.object(business_gap_planning.business_material_store, "raw_files", side_effect=fake_raw_files), patch.object(
+            business_gap_planning,
+            "_performance_package_candidates",
+            return_value=[],
+        ), patch.object(
+            business_gap_planning,
+            "_legacy_performance_record_candidates",
+            return_value=[legacy_candidate],
+        ) as legacy_candidates:
+            items = business_gap_planning._business_material_index(material_scope, {})
+
+        legacy_candidates.assert_called_once_with(material_scope, limit=300)
+        self.assertEqual([item["id"] for item in items], ["PERF-0008"])
+        self.assertTrue(items[0]["legacy"])
 
 
 if __name__ == "__main__":

@@ -5,8 +5,8 @@ import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import { workspaceRoute } from '../../../utils/workspace'
 
-const MAX_FILE_SIZE = 1024 * 1024 * 1024
-const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.DS_Store'
+const MAX_FILE_SIZE = 30 * 1024 * 1024 * 1024
+const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
 const UPLOAD_KIND_STORAGE_KEY = 'materials.raw.upload.kind'
 const MATERIAL_TIER_OPTIONS = [
   {
@@ -43,7 +43,7 @@ const BUSINESS_BID_TYPE = '商务标'
 const BUSINESS_WORKSPACE = 'business'
 const BUSINESS_ROOT_PATH = '商务标/通用素材'
 const ALLOWED_EXTENSIONS = new Set([
-  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff', 'ds_store',
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
 ])
 const MATERIAL_ROOT_PATHS = ['商务标']
 const PROTECTED_DELETE_FOLDER_PATHS = new Set([
@@ -138,6 +138,8 @@ const cleanedPreviewBlockedMessage = (item) => {
   if (item.cleanStatus === 'original_only') return '该素材仅保留原件。'
   if (item.cleanStatus === 'failed') return '清洗失败，暂无预览。'
   if (item.cleanStatus === 'cleaning') return '清洗中，完成后可预览。'
+  if (item.cleanStatus === 'pending') return '等待清洗，完成后可预览。'
+  if (item.cleanStatus === 'cleaned' && !item.hasCleanedWord) return '清洗文件丢失，请联系管理员重新处理。'
   return '暂无清洗稿。'
 }
 
@@ -178,7 +180,6 @@ const toSizeLabel = (bytes) => {
 }
 
 const extOf = (name) => {
-  if (String(name || '').toLowerCase() === '.ds_store') return 'ds_store'
   const parts = String(name || '').split('.')
   if (parts.length < 2) return ''
   return String(parts.pop() || '').toLowerCase()
@@ -677,6 +678,7 @@ function TreeNode({
   selectedFileId,
   onSelect,
   onFileSelect,
+  onFileDownload,
   onRenameFile,
   onDeleteFile,
   onUpdateBusinessMaterialKind,
@@ -913,7 +915,7 @@ function TreeNode({
                           onFileSelect(item)
                         }
                       }}
-                      title={previewable ? item.name || '' : cleanedPreviewBlockedMessage(item)}
+                      title={previewable ? `${item.name || ''}，悬停可预览或下载` : cleanedPreviewBlockedMessage(item)}
                       style={{
                         paddingLeft: `${fileIndent}px`,
                       }}
@@ -944,7 +946,33 @@ function TreeNode({
                           )}
                         </span>
                       )}
-                      <span className="flex min-w-[6rem] shrink-0 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                      <span className="flex min-w-[8rem] shrink-0 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                        {previewable && (
+                          <button
+                            type="button"
+                            title="OnlyOffice 预览"
+                            aria-label={`OnlyOffice 预览 ${item.name || item.id}`}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              onFileSelect?.(item)
+                            }}
+                            className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-primary/10 hover:text-primary"
+                          >
+                            <span aria-hidden="true" className="material-symbols-outlined text-[15px]">visibility</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          title="下载原件"
+                          aria-label={`下载原件 ${item.name || item.id}`}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            onFileDownload?.(item)
+                          }}
+                          className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-primary/10 hover:text-primary"
+                        >
+                          <span aria-hidden="true" className="material-symbols-outlined text-[15px]">download</span>
+                        </button>
                         <button
                           type="button"
                           title="重命名文件"
@@ -1013,6 +1041,7 @@ function TreeNode({
                     selectedFileId={selectedFileId}
                     onSelect={onSelect}
                     onFileSelect={onFileSelect}
+                    onFileDownload={onFileDownload}
                     onRenameFile={onRenameFile}
                     onDeleteFile={onDeleteFile}
                     onUpdateBusinessMaterialKind={onUpdateBusinessMaterialKind}
@@ -1314,23 +1343,29 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
   const onUploadFilesChanged = (event) => {
     const files = Array.from(event.target.files || [])
     if (!files.length) return
+    const oversized = []
+    const accepted = []
     for (const file of files) {
+      const name = file.name
+      if (/^\._/.test(name) || name === '.DS_Store') continue
+      if (!ALLOWED_EXTENSIONS.has(extOf(name))) continue
       if (Number(file.size || 0) > MAX_FILE_SIZE) {
-        setUploadError(`文件 ${file.name} 超过 1024MB 上限。`)
-        return
+        oversized.push(name)
+        continue
       }
-      if (!ALLOWED_EXTENSIONS.has(extOf(file.name))) {
-        setUploadError(`文件 ${file.name} 类型不在白名单内。`)
-        return
-      }
+      accepted.push(file)
     }
-    setUploadError('')
+    setUploadError(oversized.length ? `以下文件超过 30GB 上限：${oversized.join('、')}` : '')
+    if (!accepted.length) {
+      event.target.value = ''
+      return
+    }
     setUploadFiles((prev) => {
       const next = [...prev]
       const signatures = new Set(
         prev.map((file) => `${file.webkitRelativePath || file.name}::${file.size}::${file.lastModified}`)
       )
-      files.forEach((file) => {
+      accepted.forEach((file) => {
         const signature = `${file.webkitRelativePath || file.name}::${file.size}::${file.lastModified}`
         if (!signatures.has(signature)) {
           signatures.add(signature)
@@ -1711,6 +1746,11 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
     }
   }
 
+  const handleDownloadFile = (item) => {
+    if (!item?.id) return
+    window.open(businessMaterialsAPI.raw.contentUrl(item.id), '_blank', 'noopener')
+  }
+
   const parseDragPayload = (event, mimeType) => {
     try {
       const raw = event.dataTransfer.getData(mimeType)
@@ -1979,6 +2019,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                       setSelectedFolderPath(item.folderPath || selectedFolderPath)
                       handlePreviewCleaned(item)
                     }}
+                    onFileDownload={handleDownloadFile}
                     onRenameFile={handleRenameFile}
                     onDeleteFile={handleDeleteFile}
                     onUpdateBusinessMaterialKind={updateBusinessMaterialKind}
@@ -2304,11 +2345,11 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
               )}
 
               <p className="text-xs text-outline">
-                白名单：pdf/doc/docx/xls/xlsx/xlsm/png/jpg/jpeg/webp/bmp/tif/tiff/DS_Store；单文件 1024MB。图片类素材仅保留原件，不触发自动清洗。
+                白名单：pdf/doc/docx/xls/xlsx/xlsm/png/jpg/jpeg/webp/bmp/tif/tiff；单文件 30GB。图片类素材仅保留原件，不触发自动清洗。其他格式及系统隐藏文件自动忽略。
               </p>
 
               {uploadError && (
-                <div className="text-sm text-error bg-error-container/30 border border-error/30 rounded-lg px-3 py-2">
+                <div className="text-sm text-error bg-error-container/30 border border-error/30 rounded-lg px-3 py-2 whitespace-pre-line">
                   {uploadError}
                 </div>
               )}

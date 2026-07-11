@@ -43,7 +43,7 @@ CleaningJobEnqueuer = Callable[[int], dict[str, Any]]
 
 def _safe_segment(value: str, fallback: str) -> str:
     raw = str(value or "").strip()
-    # 记录是否以 '.' 开头（隐藏文件如 .DS_Store）
+    # 保留以 '.' 开头的隐藏文件名（如 .gitkeep）在 sanitize 后不丢失前导点
     leading_dot = raw.startswith(".") and len(raw) > 1
     text = re.sub(r"[\\/:*?\"<>|]+", "-", raw)
     text = re.sub(r"\s+", " ", text).strip(" .")
@@ -173,12 +173,14 @@ async def upload_raw_files(
             file_name = _safe_segment(relative_parts[-1] if relative_parts else item.get("name") or "", "")
             if not file_name:
                 continue
+            # macOS 系统噪音文件（._* 前缀的 AppleDouble、.DS_Store），静默跳过，不入库
+            if file_name.startswith("._") or file_name.lower() == ".ds_store":
+                continue
             suffix = material_suffix(file_name)
             if suffix not in MATERIAL_LIBRARY_ALLOWED_SUFFIXES:
-                allowed = ", ".join(sorted(MATERIAL_LIBRARY_ALLOWED_SUFFIXES))
                 raise PeripheralError(
                     400,
-                    f"文件 {file_name} 类型不在素材库白名单内，当前支持：{allowed}",
+                    f"文件 {file_name} 类型不支持。",
                     "RAW_FILE_TYPE_NOT_ALLOWED",
                 )
 

@@ -27,7 +27,7 @@ BUSINESS_MATERIAL_KIND_LABELS = {
     "other": "其他",
 }
 CLEANABLE_MATERIAL_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm", ".docx", ".doc"}
-ORIGINAL_ONLY_MATERIAL_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".ds_store"}
+ORIGINAL_ONLY_MATERIAL_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 MATERIAL_LIBRARY_ALLOWED_SUFFIXES = CLEANABLE_MATERIAL_SUFFIXES | ORIGINAL_ONLY_MATERIAL_SUFFIXES | {".md"}
 RAW_MATERIAL_ROOTS = (
     {"name": TECHNICAL_BID_TYPE, "tier": "standard", "bid_type": TECHNICAL_BID_TYPE, "sort_order": 1},
@@ -35,11 +35,15 @@ RAW_MATERIAL_ROOTS = (
 )
 RAW_MATERIAL_ROOT_TIERS = {str(item["name"]): str(item["tier"]) for item in RAW_MATERIAL_ROOTS}
 TECHNICAL_TIER_FOLDERS = (
+    {"name": "标准文件", "tier": "standard", "sort_order": 1, "customer_name": "平台标准"},
+    {"name": "客户定制", "tier": "customer", "sort_order": 2},
+    {"name": "项目定制", "tier": "project", "sort_order": 3},
+)
+BUSINESS_TIER_FOLDERS = (
     {"name": "通用素材", "tier": "standard", "sort_order": 1, "customer_name": "平台标准"},
     {"name": "客户素材", "tier": "customer", "sort_order": 2},
     {"name": "项目素材", "tier": "project", "sort_order": 3},
 )
-BUSINESS_TIER_FOLDERS = TECHNICAL_TIER_FOLDERS
 RAW_MATERIAL_PROTECTED_BASE_FOLDER_PATHS = {
     TECHNICAL_BID_TYPE,
     BUSINESS_BID_TYPE,
@@ -372,8 +376,6 @@ BUSINESS_CUSTOMIZED_PROTECTED_FOLDER_NAMES = {
 
 
 def material_suffix(name: str) -> str:
-    if str(name or "").lower() == ".ds_store":
-        return ".ds_store"
     return PurePosixPath(name).suffix.lower()
 
 
@@ -421,8 +423,8 @@ def canonical_technical_material_path(path: str) -> str:
         return ""
     if parts[0] == TECHNICAL_BID_TYPE:
         return "/".join(parts)
-    if len(parts) >= 2 and parts[0] in {"通用素材", "标准模板"} and parts[1] == TECHNICAL_BID_TYPE:
-        return "/".join([TECHNICAL_BID_TYPE, "通用素材", *parts[2:]])
+    if len(parts) >= 2 and parts[0] in {"通用素材", "标准文件", "标准模板"} and parts[1] == TECHNICAL_BID_TYPE:
+        return "/".join([TECHNICAL_BID_TYPE, "标准文件", *parts[2:]])
     if len(parts) >= 3 and parts[0] in {"客户素材", "客户定制"} and parts[2] == TECHNICAL_BID_TYPE:
         return "/".join([TECHNICAL_BID_TYPE, "客户素材", parts[1], *parts[3:]])
     if len(parts) >= 3 and parts[0] in {"项目素材", "项目定制"} and parts[2] == TECHNICAL_BID_TYPE:
@@ -438,6 +440,7 @@ def normalize_material_tier(value: str) -> str:
         "通用": "standard",
         "通用素材": "standard",
         "标准": "standard",
+        "标准文件": "standard",
         "标准模板": "standard",
         "客户": "customer",
         "客户素材": "customer",
@@ -542,8 +545,6 @@ def infer_business_material_category(folder_path: str = "", file_name: str = "",
 
 def clean_status_for_new_file(file_name: str) -> tuple[str, str]:
     suffix = material_suffix(str(file_name or ""))
-    if suffix == ".ds_store":
-        return "original_only", "DS_Store 原件直接保留，不触发自动清洗。"
     if suffix in CLEANABLE_MATERIAL_SUFFIXES:
         return "pending", "等待清洗转换为 Word。"
     if suffix in ORIGINAL_ONLY_MATERIAL_SUFFIXES:

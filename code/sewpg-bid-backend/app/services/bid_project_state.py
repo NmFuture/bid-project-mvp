@@ -403,6 +403,7 @@ def delete_project_material_folder(project: dict[str, Any]) -> None:
         path = str(item.get("path") or "").strip().strip("/")
         if not path or not (
             path.startswith(f"{BUSINESS_BID_TYPE}/项目素材/")
+            or path.startswith(f"{TECHNICAL_BID_TYPE}/项目定制/")
             or path.startswith(f"{TECHNICAL_BID_TYPE}/项目素材/")
         ):
             continue

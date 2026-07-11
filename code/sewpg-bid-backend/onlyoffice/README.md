@@ -7,6 +7,12 @@
 - `docker-entrypoint.sh`
   - 被 `code/docker-compose.yml` 挂载到 OnlyOffice Document Server 容器
   - 启动时调整上传、下载、图片大小和 nginx body size 限制
+- `fontconfig/99-sewpg-cjk-font-aliases.conf`
+  - 被 `code/docker-compose.yml` 挂载到 OnlyOffice 容器的 fontconfig 配置目录
+  - 将文档里常见的 `宋体`、`SimSun`、`NSimSun` 解析到当前随项目挂载的 `Songti.ttc` 字体族，避免预览时落到 DejaVu 等默认字体
+- `fonts/`
+  - 被 `code/docker-compose.yml` 挂载到 OnlyOffice 容器的 `/usr/share/fonts/truetype/custom`
+  - 当前包含 `Songti.ttc` 和 `ArialUnicode.ttf`
 - `README.md`
   - 说明本目录在当前项目里的定位
 

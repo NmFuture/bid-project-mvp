@@ -274,6 +274,11 @@ export const businessGapsAPI = {
     const qs = new URLSearchParams(cleanQuery(params)).toString()
     return request(`/business/projects/${projectId}/business-gaps/materials/${encodeURIComponent(materialId)}/preview${qs ? `?${qs}` : ''}`)
   },
+  materialContentUrl: (projectId, materialId, fileName) =>
+    joinUrl(
+      ENV.API_BASE_URL,
+      `/business/projects/${projectId}/business-gaps/materials/${encodeURIComponent(materialId)}/content/${encodeURIComponent(fileName || 'material.bin')}`,
+    ),
   buildFacts: (projectId) =>
     request(`/business/projects/${projectId}/business-gaps/facts/build`, { method: 'POST' }),
   saveFacts: (projectId, data) =>
@@ -487,10 +492,11 @@ export const technicalMaterialsAPI = {
   identityOptions: () => request('/technical/materials/identity-options'),
   turbineModelOptions: () => request('/technical/materials/turbine-model-options'),
   index: () => request('/technical/materials/index'),
+  setIndexTags: (data) => request('/technical/materials/index/tags', { method: 'PUT', body: data }),
   raw: {
     tree: () => request('/technical/materials/raw/tree'),
     files: (params = {}) => {
-      const qs = new URLSearchParams(cleanQuery(params)).toString()
+      const qs = appendCleanQuery(new URLSearchParams(), params).toString()
       return request(`/technical/materials/raw/files${qs ? `?${qs}` : ''}`)
     },
     upload: (data) =>
@@ -512,11 +518,19 @@ export const technicalMaterialsAPI = {
       request('/technical/materials/raw/tag-import/commit', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     moveFile: (data) => request('/technical/materials/raw/move', { method: 'POST', body: data }),
     deleteFile: (id) => request(`/technical/materials/raw/${id}`, { method: 'DELETE' }),
-    previewBusinessSplit: (id, data) =>
-      request(`/technical/materials/raw/${id}/business-split/preview`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
-    confirmBusinessSplit: (id, data) =>
-      request(`/technical/materials/raw/${id}/business-split/confirm`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    batchDelete: (data) => request('/technical/materials/raw/batch-delete', { method: 'POST', body: data }),
+    batchTags: (data) => request('/technical/materials/raw/batch-tags', { method: 'POST', body: data }),
+    batchCertificateTime: (data) =>
+      request('/technical/materials/raw/certificate-time/batch', { method: 'POST', body: data, timeoutMs: 20 * 60 * 1000 }),
+    previewTechnicalSplit: (id, data) =>
+      request(`/technical/materials/raw/${id}/split/preview`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
+    confirmTechnicalSplit: (id, data) =>
+      request(`/technical/materials/raw/${id}/split/confirm`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     previewCleanedFile: (id) => request(`/technical/materials/raw/${id}/cleaned/preview`),
+    contentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/technical/materials/raw/${id}/content`),
+    previewContentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/technical/materials/raw/${id}/preview-content`),
+    cleanedContentUrl: (id, fileName) =>
+      joinUrl(ENV.API_BASE_URL, `/technical/materials/raw/${id}/cleaned/content/${encodeURIComponent(fileName || 'cleaned.docx')}`),
     parseStatus: (projectId) => request(`/technical/projects/${projectId}/materials/parse-status`),
   },
   wiki: {
@@ -525,11 +539,7 @@ export const technicalMaterialsAPI = {
       return request(`/technical/materials/wiki${qs ? `?${qs}` : ''}`)
     },
     bootstrap: (data = {}) =>
-      request('/technical/materials/wiki/bootstrap', { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
-    generatePreviews: () =>
-      request('/technical/materials/wiki/previews/generate', { method: 'POST', body: {} }),
-    previewsStatus: () =>
-      request('/technical/materials/wiki/previews/status'),
+      request('/technical/materials/wiki/bootstrap', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     create: (data) => request('/technical/materials/wiki', { method: 'POST', body: data }),
     update: (id, data) => request(`/technical/materials/wiki/${id}`, { method: 'PUT', body: data }),
     delete: (id, params = {}) => {
@@ -545,6 +555,23 @@ export const technicalMaterialsAPI = {
     },
     refreshSummary: (id, data = {}) =>
       request(`/technical/materials/wiki/${id}/refresh-summary`, { method: 'POST', body: data }),
+    certificateTime: () => request('/technical/materials/wiki/certificate-time'),
+    updateCertificateTime: (fileId, data) =>
+      request(`/technical/materials/wiki/certificate-time/${fileId}`, { method: 'PATCH', body: data }),
+  },
+  certificates: {
+    ledger: () => request('/technical/materials/certificates'),
+    suggestions: () => request('/technical/materials/certificates/suggestions'),
+    saveScopes: (data) => request('/technical/materials/certificates/scopes', { method: 'PUT', body: data }),
+    incremental: (data = {}) =>
+      request('/technical/materials/certificates/incremental', { method: 'POST', body: data, timeoutMs: 20 * 60 * 1000 }),
+    recognize: (fileId) =>
+      request(`/technical/materials/certificates/${fileId}/recognize`, { method: 'POST', timeoutMs: 10 * 60 * 1000 }),
+    update: (fileId, data) =>
+      request(`/technical/materials/certificates/${fileId}`, { method: 'PATCH', body: data }),
+    delete: (fileId) => request(`/technical/materials/certificates/${fileId}`, { method: 'DELETE' }),
+    bulkDelete: (fileIds = []) =>
+      request('/technical/materials/certificates/bulk-delete', { method: 'POST', body: { fileIds } }),
   },
 }
 
@@ -703,8 +730,12 @@ export const performanceAPI = {
   updateCategoryStatus: (id, data) => request(`/materials/performance/categories/${id}/status`, { method: 'PATCH', body: data }),
   uploadCategoryAttachment: (id, data) =>
     request(`/materials/performance/categories/${id}/attachments`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+  previewCategoryAttachment: (categoryId, attachmentId) =>
+    request(`/materials/performance/categories/${categoryId}/attachments/${attachmentId}/preview`),
   categoryAttachmentUrl: (categoryId, attachmentId) =>
     joinUrl(ENV.API_BASE_URL, `/materials/performance/categories/${categoryId}/attachments/${attachmentId}`),
+  previewItemAttachment: (categoryId, itemId, attachmentId) =>
+    request(`/materials/performance/categories/${categoryId}/items/${itemId}/attachments/${attachmentId}/preview`),
   itemAttachmentUrl: (categoryId, itemId, attachmentId) =>
     joinUrl(ENV.API_BASE_URL, `/materials/performance/categories/${categoryId}/items/${itemId}/attachments/${attachmentId}`),
   create: (data) => request('/materials/performance', { method: 'POST', body: data }),
@@ -741,6 +772,9 @@ export const businessMaterialsAPI = {
     confirmBusinessSplit: (id, data) =>
       request(`/business/materials/raw/${id}/business-split/confirm`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     previewCleanedFile: (id) => request(`/business/materials/raw/${id}/cleaned/preview`),
+    contentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/business/materials/raw/${id}/content`),
+    cleanedContentUrl: (id, fileName) =>
+      joinUrl(ENV.API_BASE_URL, `/business/materials/raw/${id}/cleaned/content/${encodeURIComponent(fileName || 'cleaned.docx')}`),
     parseStatus: (projectId) => request(`/business/projects/${projectId}/materials/parse-status`),
   },
   wiki: {

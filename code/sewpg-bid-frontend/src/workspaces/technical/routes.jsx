@@ -9,6 +9,7 @@ import TechnicalGapRecognition from './pages/TechnicalGapRecognition'
 import TechnicalCoCreationEditor from './pages/TechnicalCoCreationEditor'
 import TechnicalMaterialDB from './pages/TechnicalMaterialDB'
 import TechnicalMaterialWiki from './pages/TechnicalMaterialWiki'
+import TechnicalCertificateLedger from './pages/TechnicalCertificateLedger'
 import TechnicalAuditLog from './pages/TechnicalAuditLog'
 
 const WORKSPACE = 'tech'
@@ -61,6 +62,10 @@ export function renderTechnicalRoutes({ user, showToast }) {
       <Route
         path="/workspace/tech/materials/wiki"
         element={withAccess(user, <TechnicalMaterialWiki showToast={showToast} />)}
+      />
+      <Route
+        path="/workspace/tech/materials/certificates"
+        element={withAccess(user, <TechnicalCertificateLedger showToast={showToast} />)}
       />
       <Route
         path="/workspace/tech/materials/performance"

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
+import { useCallback, useMemo, useState, useEffect } from 'react'
 import { technicalMaterialsAPI } from '../../../api'
 import MaterialsViewSwitch from '../components/TechnicalMaterialsViewSwitch'
 import MarkdownLite from '../../../components/shared/MarkdownLite'
@@ -8,8 +8,8 @@ import { workspaceRoute } from '../../../utils/workspace'
 const safeMessage = (error, fallback) =>
   error?.payload?.detail || error?.message || fallback
 
-const BUSINESS_BID_TYPE = '技术标'
-const BUSINESS_WORKSPACE = 'tech'
+const TECHNICAL_BID_TYPE = '技术标'
+const TECHNICAL_WORKSPACE = 'tech'
 
 const normalizeNode = (node) => {
   if (!node) return null
@@ -24,8 +24,8 @@ const normalizeNode = (node) => {
 }
 
 export default function TechnicalMaterialWiki({ showToast = () => {} }) {
-  const activeBidType = BUSINESS_BID_TYPE
-  const materialsBasePath = workspaceRoute(BUSINESS_WORKSPACE, '/materials')
+  const activeBidType = TECHNICAL_BID_TYPE
+  const materialsBasePath = workspaceRoute(TECHNICAL_WORKSPACE, '/materials')
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -33,11 +33,6 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const [refreshingWiki, setRefreshingWiki] = useState(false)
   const [rebuildingWiki, setRebuildingWiki] = useState(false)
   const [collapsedMap, setCollapsedMap] = useState({})
-
-  // AI 预览后台任务进度。{status, done, total, message, running}
-  const [previewStatus, setPreviewStatus] = useState(null)
-  const pollTimerRef = useRef(null)
-  const reloadRef = useRef(() => {})
 
   const applyPayload = useCallback((payload, options = {}) => {
     // 选中节点（preserveTree）时只更新 selectedNode，保留现有 tree 引用，
@@ -90,80 +85,6 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
     return () => clearTimeout(timer)
   }, [loadData])
 
-  // 让轮询回调始终拿到最新的 loadData，而不必把它列进轮询 effect 的依赖里。
-  useEffect(() => {
-    reloadRef.current = () => loadData()
-  }, [loadData])
-
-  const stopPolling = useCallback(() => {
-    if (pollTimerRef.current) {
-      clearInterval(pollTimerRef.current)
-      pollTimerRef.current = null
-    }
-  }, [])
-
-  // 轮询预览后台任务进度；完成/失败时停轮询，完成时静默重载 Wiki 让带预览卡片落地。
-  const startPolling = useCallback(() => {
-    stopPolling()
-    const tick = async () => {
-      try {
-        const status = await technicalMaterialsAPI.wiki.previewsStatus()
-        setPreviewStatus(status)
-        const running = status?.running || status?.status === 'running'
-        if (!running) {
-          stopPolling()
-          if (status?.status === 'completed') {
-            showToast('内容预览已全部生成，已刷新卡片')
-            reloadRef.current()
-          } else if (status?.status === 'failed') {
-            showToast(status?.message || '内容预览生成失败', 'error')
-          }
-        }
-      } catch (e) {
-        console.error(e)
-        // 单次轮询失败不打断，下个 tick 再试。
-      }
-    }
-    tick()
-    pollTimerRef.current = setInterval(tick, 3000)
-  }, [stopPolling, showToast])
-
-  // 触发后台预览生成并开始轮询。重建/刷新 Wiki 成功后调用。
-  const triggerPreviewGeneration = useCallback(async () => {
-    try {
-      const res = await technicalMaterialsAPI.wiki.generatePreviews()
-      if (res?.unavailable) {
-        showToast('后台任务队列不可用，已跳过内容预览生成。', 'error')
-        return
-      }
-      setPreviewStatus({ status: 'running', done: 0, total: 0, message: '正在生成内容预览…', running: true })
-      startPolling()
-    } catch (e) {
-      console.error(e)
-      showToast(safeMessage(e, '触发内容预览生成失败。'), 'error')
-    }
-  }, [startPolling, showToast])
-
-  // 首屏挂载时探一次状态：若 worker 正在跑（如上次离开页面后仍在生成），自动续上轮询。
-  useEffect(() => {
-    let cancelled = false
-    technicalMaterialsAPI.wiki
-      .previewsStatus()
-      .then((status) => {
-        if (cancelled) return
-        setPreviewStatus(status)
-        if (status?.running || status?.status === 'running') {
-          startPolling()
-        }
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
-  }, [startPolling])
-
-  useEffect(() => stopPolling, [stopPolling])
-
   const selectedNode = useMemo(() => normalizeNode(data?.selectedNode), [data])
   const selectedNodeId = selectedNode?.id || ''
   const tree = data?.tree || []
@@ -205,7 +126,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   }
 
   const handleRefreshWiki = async () => {
-    const ok = window.confirm(`确认刷新${activeBidType} Wiki？系统会重新读取当前素材库，并替换自动生成的 Wiki 节点。`)
+    const ok = window.confirm(`确认刷新${activeBidType} Wiki？系统会读取当前 JSON 索引，并同步新增、更新、删除自动生成的 Wiki 节点。`)
     if (!ok) return
     setRefreshingWiki(true)
     try {
@@ -215,7 +136,6 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       })
       applyPayload(payload)
       showToast(payload?.generation?.summary || payload?.message || `${activeBidType} Wiki 已刷新`)
-      triggerPreviewGeneration()
     } catch (e) {
       console.error(e)
       showToast(safeMessage(e, '刷新 Wiki 失败，请稍后重试。'), 'error')
@@ -235,7 +155,6 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       })
       applyPayload(payload)
       showToast(payload?.generation?.summary || payload?.message || `${activeBidType} Wiki 已重建`)
-      triggerPreviewGeneration()
     } catch (e) {
       console.error(e)
       showToast(safeMessage(e, '重建 Wiki 失败，请稍后重试。'), 'error')
@@ -289,19 +208,6 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       )
     })
 
-  const previewRunning = previewStatus?.running || previewStatus?.status === 'running'
-  const previewBusy = previewRunning || refreshingWiki || rebuildingWiki
-  const previewTotal = Number(previewStatus?.total || 0)
-  const previewDone = Number(previewStatus?.done || 0)
-  const previewBanner = previewRunning ? (
-    <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
-      <div className="flex items-center justify-between text-[13px] leading-[1.6] text-on-surface-variant">
-        <span>{previewStatus?.message || '正在后台生成文件卡片内容预览…'}</span>
-        {previewTotal > 0 ? <span className="font-medium text-primary">{previewDone}/{previewTotal}</span> : null}
-      </div>
-    </div>
-  ) : null
-
   if (loading && !data) {
     return <PageLoading title="正在加载 Wiki..." description="正在同步节点树和元数据。" />
   }
@@ -326,6 +232,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   }
 
   return (
+    <>
     <div className="flex flex-col gap-3 animate-fade-in">
       <MaterialsViewSwitch
         active="wiki"
@@ -346,18 +253,10 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
             >
               {rebuildingWiki ? '重建中...' : '重建Wiki'}
             </button>
-            <button
-              onClick={triggerPreviewGeneration}
-              disabled={previewBusy}
-              className="h-9 whitespace-nowrap rounded-lg bg-surface-container-high px-3 text-[13px] leading-[1.6] font-medium text-on-surface-variant transition-colors hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {previewBusy ? '生成预览中...' : '生成内容预览'}
-            </button>
           </div>
         )}
         basePath={materialsBasePath}
       />
-      {previewBanner}
       <div className="grid grid-cols-1 gap-6 xl:h-[calc(100dvh-12rem)] xl:grid-cols-12 xl:items-stretch">
         <div className="xl:col-span-3 bg-surface-container-lowest rounded-lg border border-outline-variant/45 flex min-h-[320px] max-h-[60vh] flex-col overflow-hidden xl:min-h-0 xl:max-h-none">
           <div className="shrink-0 px-4 py-4 border-b border-surface-container-high">
@@ -367,7 +266,9 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
               </div>
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-3 space-y-1">{renderTree(tree)}</div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-3 space-y-1">
+            {renderTree(tree)}
+          </div>
         </div>
 
         <div className="xl:col-span-9 flex min-w-0 flex-col">
@@ -388,5 +289,6 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         </div>
       </div>
     </div>
+    </>
   )
 }

@@ -20,10 +20,10 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
 
 后端自动维护一份技术标三级目录结构索引，**它是本 Wiki 的唯一数据来源**：
 
-- HTTP（推荐，保证最新）：`GET /api/technical/materials/index`
-- 容器内文件：`{DOCUMENTS_DIR}/_runtime/materials/technical_material_index.json`
+- 唯一落盘文件：`{DOCUMENTS_DIR}/_runtime/materials/technical_material_index.json`
+- HTTP 只读入口：`GET /api/technical/materials/index`
 
-每次素材目录结构变化（建/删/移目录、上传、拆分、改名、项目 bootstrap）后由后端钩子自动重建。结构（`schemaVersion = 1`）：
+每次素材目录结构变化（建/删/移目录、上传、拆分、改名、项目 bootstrap）后由后端钩子自动重建。Wiki 构建只消费这份 JSON，不自行从 DB 重新推导结构。结构（`schemaVersion = 2`）：
 
 ```
 {
@@ -69,12 +69,12 @@ Wiki 结构严格按 JSON 三级**一一映射**，不增减层级：
 
 ```
 root（技术标Wiki）
-  └─ 一级节点 = tier        01-标准文件 / 02-客户定制 / 03-项目定制（固定顺序）
+  └─ 一级节点 = tier.name   严格使用 JSON tiers[] 顺序和真实 name
        └─ 二级节点 = 3 级目录  机型号 / 客户名 / 项目标识
             └─ 三级节点 = 文件卡片  每个 file 一张，叶子节点
 ```
 
-- **一级（tier 节点）**：标题 `NN-{档位中文名}`，正文给出 tier 代码、真实 name、path、fileCount、3 级目录语义，并用一张表列出本档所有 3 级目录（目录名 / 身份 / 文件数）。
+- **一级（tier 节点）**：标题使用 JSON 的 `tier.name`，正文给出 tier 代码、真实 name、path、fileCount、3 级目录语义，并用一张表列出本档所有 3 级目录（目录名 / 身份 / 文件数）。
 - **二级（3 级目录节点）**：标题为目录真实名，正文给出目录 path、档位、身份（customerName / projectId）、fileCount、updatedAt，并用一张表列出文件清单（material_id / 文件名 / 扩展名 / 清洗状态）。
 - **三级（文件卡片）**：标题为文件名，正文给出 material_id、完整路径、扩展名、清洗状态、所属档位与目录、身份字段。卡片只是结构索引，不承载正文；深层层级靠完整路径还原。
 
@@ -82,7 +82,7 @@ root（技术标Wiki）
 
 ## 构建步骤
 
-1. 取索引：优先 `GET /api/technical/materials/index`（保证最新）；否则读容器内 `technical_material_index.json`。JSON 不存在或 `tiers` 为空时，产出空但结构合法的 blueprint，并在 summary 中标注无素材。
+1. 取索引：使用传入的 `technical_material_index.json` 或后端唯一落盘文件。不要在 Wiki 构建阶段重建索引。JSON 不存在或无效时应显式失败；`tiers` 为空时可产出空但结构合法的 blueprint，并在 summary 中标注无素材。
 2. 跑构建脚本：`python3 scripts/run_from_manifest.py <index.json>`。脚本接受原始 index JSON，或包裹了它的 manifest（`materialIndex` / `technicalMaterialIndex` / `index` 键）。
 3. 脚本输出 `wiki_blueprint.json`（`schema_version = bid-wiki-blueprint-v2`），含 `summary` / `rootTitle` / `nodes`，可直接交给 Wiki import。
 
@@ -96,7 +96,7 @@ root（技术标Wiki）
   "rootTitle": "技术标Wiki（自动生成）",
   "nodes": [
     {
-      "title": "01-标准文件",
+      "title": "标准文件",
       "markdownContent": "# 标准文件\n\n...",
       "tags": ["技术标", "标准文件", "档位"],
       "applicableTypes": ["技术标"],
@@ -106,44 +106,18 @@ root（技术标Wiki）
 }
 ```
 
-一级节点固定为按档位的 `01-标准文件` / `02-客户定制` / `03-项目定制`（仅出现索引中存在的档位，顺序固定 standard→customer→project）。不要再生成旧版的 `01-素材总表`/`02-章节映射表`/`03-素材卡片`/`04-待填写清单`/`05-使用规则` 聚合结构——新架构以目录树为骨架，映射与规则由下游消费时按目录身份处理。
+一级节点严格对应 JSON `tiers[]`，不加序号、不重排、不改名。不要再生成旧版的 `01-素材总表`/`02-章节映射表`/`03-素材卡片`/`04-待填写清单`/`05-使用规则` 聚合结构——新架构以目录树为骨架，映射与规则由下游消费时按目录身份处理。
 
 ## 质量准则
 
-- 严格镜像索引：节点的存在、归属、身份、文件数必须与 JSON 一致，不增删、不重排（档位顺序除外，固定 standard→customer→project）。
+- 严格镜像索引：节点的存在、归属、身份、文件数、数组顺序必须与 JSON 一致，不增删、不重排。
 - 判档只看 `tier` 字段，不靠目录中文名。
 - 不编造文件名、路径、客户/项目身份、参数、日期、保证值或业绩事实。
 - `description`/`customerId`/`projectCode` 恒空，不要在卡片里臆造其值。
 - 文件卡片保留完整 `path`，深层层级信息不得丢失。
 - 索引为空时仍输出结构合法的 blueprint，并在 summary 标注。
 
-## 文件卡片 AI 内容预览（preview）
+## 文件卡片内容边界
 
-镜像脚本只负责把三级目录镜像成 Wiki 树「骨架」（确定性、不调 LLM）。文件卡片上那张
-**AI 内容预览**（一句话导读 + 要点 + 关键参数 + 检索关键词）是另一条线，由 LLM 生成。
-
-本 skill 把预览的 **prompt 模板 / 输出 schema / 回复解析**沉淀在
-`scripts/technical_wiki_preview.py`（纯 stdlib，零 `app.*` 依赖），由后端经
-`app/services/technical_wiki_preview_prompt.py` 用 importlib 桥接 import 复用 —— 后端
-不再裸写 prompt。导出：
-
-- `PREVIEW_SCHEMA_VERSION`：预览缓存结构版本；prompt 或 preview 字段结构变化时升此版本，
-  让所有文件缓存指纹失效、触发重算。
-- `PREVIEW_BATCH_SIZE`：批量合并粒度（一次 LLM 调用喂多少份文件摘要）。
-- `build_preview_prompt(name, path, tier_label, profile)` / `parse_preview_reply(reply, json_loader)`：单文件版（fallback / BATCH_SIZE=1）。
-- `build_batch_preview_prompt(items)` / `parse_batch_preview_reply(reply, json_loader)`：批量版。
-
-单张预览对象 schema：
-```json
-{"lead":"一句话导读 ≤80字","points":["3-5条要点"],"keyParams":[{"label":"","value":""}],"retrievalHints":["2-6个检索词"]}
-```
-批量回复 schema（按 fileId 回填）：
-```json
-{"previews":{"RAW-XXXX":<预览对象>, "RAW-YYYY":<预览对象>}}
-```
-
-约定：**后端发请求、控制缓存与并发**，本模块只提供「怎么问、怎么读」；预览**不挂 opencode
-agent 逐文件编排**（几百文件起 agent 开销过大）。JSON 解析用依赖注入（后端把
-`OpencodeClient._parse_json_payload` 作为 `json_loader` 传入），保持本模块独立。
-减压两招：批量合并请求（请求数从「文件数」降到「文件数/BATCH」）+ per-file 指纹增量缓存
-（内容/文件名/版本不变不重算，failed 下次重试）。
+技术标 Wiki 文件卡片默认承载目录索引信息：文件定位、所属档位、3 级目录身份和结构说明。
+若输入索引的文件节点带有 `preview` 字段，应在文件卡片渲染“内容预览”区；不得在 runner 内自行生成或臆造预览。

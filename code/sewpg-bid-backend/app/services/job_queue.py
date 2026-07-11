@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 QUEUE_KEY = "bid:jobs"
 JOB_KEY_PREFIX = "bid:job:"
 LOCK_KEY_PREFIX = "bid:lock:"
-KNOWN_JOB_TYPES = {"directory_generation", "fill_generation", "material_cleaning", "technical_wiki_preview"}
+KNOWN_JOB_TYPES = {"directory_generation", "fill_generation", "material_cleaning"}
 
 
 @dataclass(frozen=True)

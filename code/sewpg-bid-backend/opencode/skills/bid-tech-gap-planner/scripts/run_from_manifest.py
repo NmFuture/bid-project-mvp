@@ -369,6 +369,22 @@ def material_index_from_manifest(manifest: dict[str, Any]) -> list[dict[str, Any
     return output
 
 
+_TECHNICAL_MATERIAL_ROOT_ALIASES = {
+    "技术标通用素材": "技术标标准文件",
+    "技术标标准模板": "技术标标准文件",
+    "技术标客户素材": "技术标客户定制",
+    "技术标项目素材": "技术标项目定制",
+}
+
+
+def canonical_material_path_key(value: Any) -> str:
+    """统一新旧技术标素材根目录，兼容已持久化的 S2 引用与 Wiki 卡片。"""
+    text = normalize_key(value)
+    for legacy, canonical in _TECHNICAL_MATERIAL_ROOT_ALIASES.items():
+        text = text.replace(legacy, canonical)
+    return text
+
+
 def material_scope_paths(manifest: dict[str, Any]) -> list[str]:
     scope = manifest.get("materialScope") if isinstance(manifest.get("materialScope"), dict) else {}
     raw_paths = scope.get("paths")
@@ -379,16 +395,16 @@ def material_scope_paths(manifest: dict[str, Any]) -> list[str]:
             if isinstance(item, dict)
         ]
     return [
-        normalize_key(path)
+        canonical_material_path_key(path)
         for path in raw_paths
-        if normalize_key(path)
+        if canonical_material_path_key(path)
     ]
 
 
 def material_within_scope(material: dict[str, Any], allowed_paths: list[str]) -> bool:
     if not allowed_paths:
         return True
-    text = normalize_key(
+    text = canonical_material_path_key(
         " ".join(
             str(material.get(key) or "")
             for key in ("path", "docx", "folderPath", "cleanedPath")
@@ -396,7 +412,8 @@ def material_within_scope(material: dict[str, Any], allowed_paths: list[str]) ->
     )
     if not text:
         return False
-    return any(text.startswith(path) or path in text for path in allowed_paths)
+    canonical_paths = [canonical_material_path_key(path) for path in allowed_paths]
+    return any(text.startswith(path) or path in text for path in canonical_paths if path)
 
 
 def material_lookup_keys(material: dict[str, Any]) -> list[str]:
@@ -412,11 +429,11 @@ def material_lookup_keys(material: dict[str, Any]) -> list[str]:
     path = str(material.get("path") or material.get("docx") or "").strip()
     if path:
         values.append(PurePosixPath(path).name)
-    return [normalize_key(value) for value in values if normalize_key(value)]
+    return [canonical_material_path_key(value) for value in values if canonical_material_path_key(value)]
 
 
 def material_path_key(material: dict[str, Any]) -> str:
-    return normalize_key(
+    return canonical_material_path_key(
         material.get("path")
         or material.get("docx")
         or (

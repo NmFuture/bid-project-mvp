@@ -407,7 +407,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(uploaded_calls), 1)
         self.assertEqual(uploaded_calls[0]["target_path"], "商务标/通用素材/通用模板底稿库")
-        self.assertNotIn("bid_type", uploaded_calls[0])
+        self.assertEqual(uploaded_calls[0]["bid_type"], "商务标")
         self.assertEqual(uploaded_calls[0]["files"][0]["extFields"]["splitParentMaterialId"], "RAW-0001")
         self.assertEqual(result["items"][0]["splitParentMaterialId"], "RAW-0001")
 

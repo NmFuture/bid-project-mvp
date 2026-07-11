@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { performanceAPI } from '../../../api'
+import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import MaterialsViewSwitch from '../components/SharedMaterialsViewSwitch'
 import { availableWorkspacesFor, defaultWorkspaceFor } from '../../../utils/permissions'
 import { workspaceRoute } from '../../../utils/workspace'
@@ -113,6 +114,44 @@ function SortHeader({ columnKey, label, sortBy, sortOrder, onSort, align = 'left
   )
 }
 
+function AttachmentHoverActions({
+  onPreview,
+  downloadUrl,
+  previewLabel = 'OnlyOffice 预览',
+  downloadLabel = '下载原件',
+}) {
+  return (
+    <span className="inline-flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      <button
+        type="button"
+        title={previewLabel}
+        aria-label={previewLabel}
+        onClick={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          onPreview?.()
+        }}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-white text-outline shadow-sm ring-1 ring-surface-container-high hover:bg-primary/10 hover:text-primary"
+      >
+        <span aria-hidden="true" className="material-symbols-outlined text-[16px]">visibility</span>
+      </button>
+      {downloadUrl ? (
+        <a
+          href={downloadUrl}
+          target="_blank"
+          rel="noreferrer"
+          title={downloadLabel}
+          aria-label={downloadLabel}
+          onClick={(event) => event.stopPropagation()}
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-white text-outline shadow-sm ring-1 ring-surface-container-high hover:bg-primary/10 hover:text-primary"
+        >
+          <span aria-hidden="true" className="material-symbols-outlined text-[16px]">download</span>
+        </a>
+      ) : null}
+    </span>
+  )
+}
+
 export default function SharedPerformanceLibrary({ showToast = () => {}, currentUser = null }) {
   const summaryInputRef = useRef(null)
   const attachmentInputRef = useRef(null)
@@ -145,6 +184,9 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleteConfirmName, setDeleteConfirmName] = useState('')
   const [deleting, setDeleting] = useState(false)
+  const [attachmentPreview, setAttachmentPreview] = useState(null)
+  const [attachmentPreviewLoading, setAttachmentPreviewLoading] = useState(false)
+  const [attachmentPreviewError, setAttachmentPreviewError] = useState('')
   const pageSize = 20
   const sourceWorkspace = sourceWorkspaceFor(currentUser)
   const sourceMaterialsBasePath = workspaceRoute(sourceWorkspace, '/materials')
@@ -153,8 +195,11 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
   const sharedPerformanceItems = useMemo(() => [
     { key: 'raw', label: '原始素材', absolutePath: `${sourceMaterialsBasePath}/raw` },
     { key: 'wiki', label: 'Wiki', absolutePath: `${sourceMaterialsBasePath}/wiki` },
+    ...(sourceWorkspace === 'tech'
+      ? [{ key: 'certificates', label: '证书台账', absolutePath: `${sourceMaterialsBasePath}/certificates` }]
+      : []),
     { key: 'performance', label: '业绩库', absolutePath: '/workspace/shared/materials/performance' },
-  ], [sourceMaterialsBasePath])
+  ], [sourceMaterialsBasePath, sourceWorkspace])
 
   const query = useMemo(() => ({ ...filters, ...sort, page, pageSize }), [filters, sort, page])
 
@@ -364,6 +409,53 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
       showToast(error?.message || '业绩类别删除失败', 'error')
     } finally {
       setDeleting(false)
+    }
+  }
+
+  const closeAttachmentPreview = () => {
+    setAttachmentPreview(null)
+    setAttachmentPreviewLoading(false)
+    setAttachmentPreviewError('')
+  }
+
+  const previewCategoryAttachment = async (attachment) => {
+    if (!attachment?.categoryId || !attachment?.id) return
+    setAttachmentPreview({ fileName: attachment.fileName || '附件预览' })
+    setAttachmentPreviewLoading(true)
+    setAttachmentPreviewError('')
+    try {
+      const payload = await performanceAPI.previewCategoryAttachment(attachment.categoryId, attachment.id)
+      setAttachmentPreview(payload)
+    } catch (error) {
+      setAttachmentPreviewError(error?.message || '附件预览加载失败')
+    } finally {
+      setAttachmentPreviewLoading(false)
+    }
+  }
+
+  const previewItemAttachment = async (row, attachment) => {
+    if (!row?.categoryId || !row?.id || !attachment?.id) return
+    setAttachmentPreview({
+      fileName: attachment.fileName || '项目合同附件',
+    })
+    setAttachmentPreviewError('')
+    setAttachmentPreviewLoading(true)
+    try {
+      const payload = await performanceAPI.previewItemAttachment(row.categoryId, row.id, attachment.id)
+      setAttachmentPreview({
+        ...payload,
+        fileUrl: payload?.fileUrl || performanceAPI.itemAttachmentUrl(row.categoryId, row.id, attachment.id),
+      })
+    } catch (error) {
+      setAttachmentPreviewError(error?.message || '项目合同预览加载失败')
+      setAttachmentPreview({
+        fileName: attachment.fileName || '项目合同附件',
+        previewMode: 'download',
+        fileUrl: performanceAPI.itemAttachmentUrl(row.categoryId, row.id, attachment.id),
+        message: '项目合同预览加载失败，请下载核对原件。',
+      })
+    } finally {
+      setAttachmentPreviewLoading(false)
     }
   }
 
@@ -645,18 +737,28 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                     <button onClick={() => chooseAttachmentFile(currentDetailItem)} className="rounded-md bg-primary/10 px-2.5 py-1.5 text-xs text-primary hover:bg-primary/15">上传合同</button>
                   </div>
                   <div className="grid gap-2 md:grid-cols-2">
-                    {(detail.attachments || []).length ? detail.attachments.map((attachment) => (
-                      <a
-                        key={attachment.id}
-                        href={performanceAPI.categoryAttachmentUrl(attachment.categoryId, attachment.id)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rounded-lg border border-surface-container-high bg-white px-3 py-2 text-sm hover:border-primary"
-                      >
-                        <span className="block font-medium text-primary">{attachment.fileName}</span>
-                        <span className="mt-1 block text-xs text-outline">{ATTACHMENT_LABELS[attachment.attachmentType] || attachment.attachmentType} · {sizeLabel(attachment.sizeBytes) || '-'}</span>
-                      </a>
-                    )) : <div className="text-sm text-on-surface-variant">暂无原始附件</div>}
+                    {(detail.attachments || []).length ? detail.attachments.map((attachment) => {
+                      const downloadUrl = performanceAPI.categoryAttachmentUrl(attachment.categoryId, attachment.id)
+                      return (
+                        <div
+                          key={attachment.id}
+                          className="group flex items-center justify-between gap-3 rounded-lg border border-surface-container-high bg-white px-3 py-2 text-left text-sm hover:border-primary"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => previewCategoryAttachment(attachment)}
+                            className="min-w-0 flex-1 text-left"
+                          >
+                            <span className="block truncate font-medium text-primary">{attachment.fileName}</span>
+                            <span className="mt-1 block truncate text-xs text-outline">{ATTACHMENT_LABELS[attachment.attachmentType] || attachment.attachmentType} · {sizeLabel(attachment.sizeBytes) || '-'}</span>
+                          </button>
+                          <AttachmentHoverActions
+                            downloadUrl={downloadUrl}
+                            onPreview={() => previewCategoryAttachment(attachment)}
+                          />
+                        </div>
+                      )
+                    }) : <div className="text-sm text-on-surface-variant">暂无原始附件</div>}
                   </div>
                 </div>
 
@@ -682,21 +784,31 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                           <td className="min-w-[180px] max-w-[240px] px-3 py-2 align-top">
                             {(row.attachments || []).length ? (
                               <div className="space-y-1">
-                                {row.attachments.map((attachment) => (
-                                  <a
-                                    key={attachment.id}
-                                    href={performanceAPI.itemAttachmentUrl(row.categoryId, row.id, attachment.id)}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    title={attachment.sourceTitle || attachment.fileName}
-                                    className="block rounded-md bg-primary/10 px-2 py-1 text-[11px] leading-4 text-primary hover:bg-primary/15"
-                                  >
-                                    <span className="block truncate">{attachment.fileName}</span>
-                                    <span className="block truncate text-[10px] text-outline">
-                                      {attachment.matchMethod === 'row_order' ? '按行匹配' : '项目名匹配'} · {attachment.matchConfidence || 0}%
-                                    </span>
-                                  </a>
-                                ))}
+                                {row.attachments.map((attachment) => {
+                                  const downloadUrl = performanceAPI.itemAttachmentUrl(row.categoryId, row.id, attachment.id)
+                                  return (
+                                    <div
+                                      key={attachment.id}
+                                      title={attachment.sourceTitle || attachment.fileName}
+                                      className="group flex w-full items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-left text-[11px] leading-4 text-primary hover:bg-primary/15"
+                                    >
+                                      <button
+                                        type="button"
+                                        onClick={() => previewItemAttachment(row, attachment)}
+                                        className="min-w-0 flex-1 text-left"
+                                      >
+                                        <span className="block truncate">{attachment.fileName}</span>
+                                        <span className="block truncate text-[10px] text-outline">
+                                          {attachment.matchMethod === 'row_order' ? '按行匹配' : '项目名匹配'} · {attachment.matchConfidence || 0}%
+                                        </span>
+                                      </button>
+                                      <AttachmentHoverActions
+                                        downloadUrl={downloadUrl}
+                                        onPreview={() => previewItemAttachment(row, attachment)}
+                                      />
+                                    </div>
+                                  )
+                                })}
                               </div>
                             ) : (
                               <span className="text-outline">未拆分</span>
@@ -714,6 +826,89 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {attachmentPreview && (
+        <div className="dialog-overlay fixed inset-0 z-[70] bg-black/45 p-3 sm:p-4">
+          <div className="mx-auto flex h-full w-full max-w-[92vw] flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest shadow-xl">
+            <div className="flex items-center justify-between gap-3 border-b border-surface-container-high px-5 py-3">
+              <div className="min-w-0">
+                <h2 className="truncate text-base font-semibold text-on-surface">{attachmentPreview.fileName || '附件预览'}</h2>
+                <p className="mt-1 text-xs text-on-surface-variant">业绩附件在线预览</p>
+              </div>
+              <button onClick={closeAttachmentPreview} className="close-plain flex h-8 w-8 items-center justify-center rounded-md text-on-surface-variant hover:text-primary" aria-label="关闭预览">
+                <span className="material-symbols-outlined text-base">close</span>
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 bg-surface-container-low p-3">
+              {attachmentPreviewLoading ? (
+                <div className="flex h-full items-center justify-center text-sm text-on-surface-variant">正在加载附件预览...</div>
+              ) : attachmentPreview?.previewMode === 'images' ? (
+                <div className="flex h-full min-h-0 flex-col gap-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-surface-container-high bg-white px-3 py-2 text-xs text-on-surface-variant">
+                    <span>{attachmentPreview.message || `共 ${attachmentPreview.images?.length || 0} 页合同图片`}</span>
+                    {attachmentPreview.fileUrl ? (
+                      <a
+                        href={attachmentPreview.fileUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex h-8 items-center gap-1 rounded-md bg-primary px-3 text-xs font-medium text-on-primary hover:opacity-90"
+                      >
+                        <span className="material-symbols-outlined text-sm">download</span>
+                        下载原件
+                      </a>
+                    ) : null}
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-surface-container-high bg-surface-container px-3 py-4">
+                    <div className="flex flex-col gap-4">
+                      {(attachmentPreview.images || []).map((image) => (
+                        <figure key={`${image.index}-${image.name}`} className="overflow-hidden rounded-lg border border-surface-container-high bg-white shadow-sm">
+                          <div className="border-b border-surface-container-high px-3 py-2 text-xs text-on-surface-variant">
+                            第 {image.index} 页 · {image.name}
+                          </div>
+                          <img
+                            src={image.dataUrl}
+                            alt={`合同第 ${image.index} 页`}
+                            className="block h-auto w-full"
+                            loading="lazy"
+                          />
+                        </figure>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : attachmentPreview?.previewMode === 'download' ? (
+                <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-surface-container-high bg-white px-4 text-center text-sm text-on-surface-variant">
+                  <div>
+                    <span className="material-symbols-outlined text-3xl text-primary">download</span>
+                    <p className="mt-3">{attachmentPreview.message || '该附件暂时无法在线预览。'}</p>
+                    {attachmentPreview.fileUrl ? (
+                      <a
+                        href={attachmentPreview.fileUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-4 inline-flex items-center rounded-lg bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:opacity-90"
+                      >
+                        下载附件
+                      </a>
+                    ) : null}
+                  </div>
+                </div>
+              ) : attachmentPreview?.onlyoffice?.fileUrl && !attachmentPreviewError ? (
+                <OnlyOfficeEmbed
+                  session={attachmentPreview.onlyoffice}
+                  mode="view"
+                  className="h-full w-full rounded-lg border border-surface-container-high bg-white"
+                  onError={(message) => setAttachmentPreviewError(message || 'OnlyOffice 附件预览加载失败')}
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-surface-container-high bg-white px-4 text-center text-sm text-on-surface-variant">
+                  {attachmentPreviewError || '该附件暂时无法在线预览。'}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

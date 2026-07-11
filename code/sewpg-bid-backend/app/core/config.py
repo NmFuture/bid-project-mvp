@@ -174,7 +174,7 @@ settings = Settings(
         ),
     ),
     allowed_upload_extensions=_upload_extensions(),
-    max_upload_file_size_bytes=_int_env("MAX_UPLOAD_FILE_SIZE_BYTES", 1024 * 1024 * 1024),
+    max_upload_file_size_bytes=_int_env("MAX_UPLOAD_FILE_SIZE_BYTES", 30 * 1024 * 1024 * 1024),
     onlyoffice_callback_token=os.getenv("ONLYOFFICE_CALLBACK_TOKEN", "").strip(),
     onlyoffice_callback_allowed_hosts=_csv_env(
         "ONLYOFFICE_CALLBACK_ALLOWED_HOSTS",
