@@ -63,20 +63,22 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
 
 已知约束：`description`/`customerId`/`projectCode` 恒为空，不要依赖；需要身份用 `customerName`/`projectId`。深层（4 级及更深）文件归并到其 3 级祖先目录的 `files[]`，但 `file.path` 保留完整原始路径。
 
-## 核心模式：镜像三级结构
+## 核心模式：镜像素材库真实层级
 
-Wiki 结构严格按 JSON 三级**一一映射**，不增减层级：
+Wiki 前三级严格按 JSON **一一映射**；3 级目录内再按 `file.path` 还原素材库的深层子目录：
 
 ```
 root（技术标Wiki）
   └─ 一级节点 = tier.name   严格使用 JSON tiers[] 顺序和真实 name
        └─ 二级节点 = 3 级目录  机型号 / 客户名 / 项目标识
-            └─ 三级节点 = 文件卡片  每个 file 一张，叶子节点
+            └─ 深层子目录……   按 file.path 还原 4 级及更深的原始层级
+                 └─ 文件卡片  每个 file 一张，叶子节点
 ```
 
 - **一级（tier 节点）**：标题使用 JSON 的 `tier.name`，正文给出 tier 代码、真实 name、path、fileCount、3 级目录语义，并用一张表列出本档所有 3 级目录（目录名 / 身份 / 文件数）。
-- **二级（3 级目录节点）**：标题为目录真实名，正文给出目录 path、档位、身份（customerName / projectId）、fileCount、updatedAt，并用一张表列出文件清单（material_id / 文件名 / 扩展名 / 清洗状态）。
-- **三级（文件卡片）**：标题为文件名，正文给出 material_id、完整路径、扩展名、清洗状态、所属档位与目录、身份字段。卡片只是结构索引，不承载正文；深层层级靠完整路径还原。
+- **二级（3 级目录节点）**：标题为目录真实名，正文给出目录 path、档位、身份（customerName / projectId）、fileCount、updatedAt，并用一张表列出全量文件清单（material_id / 文件名 / 相对路径 / 扩展名 / 清洗状态）。
+- **深层子目录节点**：索引把深层文件归并进 3 级目录的 `files[]`，构建时按每个文件 `path` 相对 3 级目录的中间段重建子目录节点，层级与素材库完全一致；正文给出目录路径、直属文件清单和子目录数。
+- **文件卡片（叶子）**：标题为文件名，挂在其真实所属目录下；正文给出 material_id、完整路径、扩展名、清洗状态、所属档位与目录、身份字段。卡片只是结构索引，不承载正文。
 
 身份信息写入 `tags`：tier 节点带档位中文名；customer/project 目录节点把 `customerName`/`projectId` 加入 tags，便于下游按身份过滤。
 
@@ -110,7 +112,7 @@ root（技术标Wiki）
 
 ## 质量准则
 
-- 严格镜像索引：节点的存在、归属、身份、文件数、数组顺序必须与 JSON 一致，不增删、不重排。
+- 严格镜像索引：节点的存在、归属、身份、文件数、数组顺序必须与 JSON 一致，不增删、不重排；深层子目录只能来自 `file.path` 的真实中间段，不得臆造。
 - 判档只看 `tier` 字段，不靠目录中文名。
 - 不编造文件名、路径、客户/项目身份、参数、日期、保证值或业绩事实。
 - `description`/`customerId`/`projectCode` 恒空，不要在卡片里臆造其值。

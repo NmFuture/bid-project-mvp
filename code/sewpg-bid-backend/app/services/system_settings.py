@@ -416,8 +416,10 @@ class SystemSettingsService:
                 response = await client.post(url, headers=headers, json=payload)
             latency_ms = int((time.perf_counter() - start) * 1000)
             if response.status_code >= 400:
+                # 不要直接使用外部 API 的 401 状态码，避免前端误判为登录过期
+                error_status = 422 if response.status_code in (401, 403) else response.status_code
                 raise PeripheralError(
-                    response.status_code,
+                    error_status,
                     f"连接测试失败：HTTP {response.status_code}",
                     f"{kind.upper()}_TEST_FAILED",
                     {"responseText": response.text[:500]},

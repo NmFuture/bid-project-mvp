@@ -2,12 +2,16 @@
 """按技术标三级目录 JSON 索引（`technical_material_index.json`）一一镜像，
 构建技术标素材 Wiki blueprint。
 
-Wiki 结构与 JSON 一一对应：
+Wiki 结构与素材库真实层级一一对应：
 
     root（技术标Wiki）
       └─ 一级节点 = tier        （标准文件 / 客户定制 / 项目定制）
            └─ 二级节点 = 3 级目录 （机型号 / 客户名 / 项目标识）
-                └─ 三级节点 = 文件卡片 （每个 file 一张卡片）
+                └─ 深层子目录…… （按文件完整 path 还原素材库原始层级）
+                     └─ 文件卡片 （每个 file 一张卡片）
+
+索引本身归并到 3 级目录，但每个 file 的 `path` 保留完整原始路径，
+本脚本据此在 3 级目录内重建 4 级及更深的子目录节点，与素材库结构对齐。
 
 源 JSON 结构（schemaVersion = 1）详见
 doc/anbc_doc/20260618-技术标三级目录JSON索引-下游使用Handoff.md。
@@ -167,7 +171,7 @@ def build_file_card(file: dict[str, Any], tier_code: str, folder: dict[str, Any]
     lines.append("")
     if not preview_lines:
         lines.append("> 本卡片仅为三级目录结构索引，不承载文件正文。")
-    lines.append("> 深层（4 级及更深）文件已归并到此 3 级目录下，原始层级见上方完整路径。")
+    lines.append("> 卡片在 Wiki 中的层级与素材库原始目录一一对应，完整路径见上方文件定位。")
 
     tags = [BID_TYPE, "文件卡片", TIER_LABELS.get(tier_code, tier_code)]
     if preview:
@@ -175,6 +179,95 @@ def build_file_card(file: dict[str, Any], tier_code: str, folder: dict[str, Any]
     if ext:
         tags.append(ext)
     return node(name, "\n".join(lines) + "\n", tags=tags)
+
+
+def file_subdir_segments(file: dict[str, Any], folder_path: str) -> list[str]:
+    """文件相对 3 级目录的中间子目录段（不含文件名）。
+
+    索引把深层文件归并进 3 级目录节点，但 `path` 保留完整原始路径，
+    据此可还原 4 级及更深的真实层级。路径不在该目录下时视为直属文件。
+    """
+    full_path = str(file.get("path") or "").strip("/")
+    prefix = str(folder_path or "").strip("/")
+    if not prefix or not full_path.startswith(prefix + "/"):
+        return []
+    parts = [part for part in full_path[len(prefix) + 1 :].split("/") if part]
+    return parts[:-1]
+
+
+def build_subdir_node(
+    name: str,
+    dir_path: str,
+    entries: list[tuple[list[str], dict[str, Any]]],
+    tier_code: str,
+    folder: dict[str, Any],
+) -> dict[str, Any]:
+    """深层子目录节点：还原素材库 4 级及更深的真实目录层级。"""
+    direct_files: list[dict[str, Any]] = []
+    by_subdir: dict[str, list[tuple[list[str], dict[str, Any]]]] = {}
+    for segments, file in entries:
+        if not segments:
+            direct_files.append(file)
+        else:
+            by_subdir.setdefault(segments[0], []).append((segments[1:], file))
+
+    children = [
+        build_subdir_node(sub_name, f"{dir_path}/{sub_name}", sub_entries, tier_code, folder)
+        for sub_name, sub_entries in by_subdir.items()
+    ]
+    children.extend(build_file_card(f, tier_code, folder) for f in direct_files)
+
+    lines = [
+        f"# {name}",
+        "",
+        f"- 目录路径: `{dir_path}`",
+        f"- 档位: {TIER_LABELS.get(tier_code, tier_code)} ({tier_code})",
+        f"- 直属文件数: {len(direct_files)}",
+        f"- 子目录数: {len(by_subdir)}",
+        "",
+        "## 直属文件清单",
+        "",
+        "| material_id | 文件名 | 扩展名 | 清洗状态 |",
+        "|---|---|---|---|",
+    ]
+    if not direct_files:
+        lines.append("| - | （该目录暂无直属文件） | - | - |")
+    for f in direct_files:
+        lines.append(
+            "| {fid} | {name} | {ext} | {status} |".format(
+                fid=md_escape(f.get("id")),
+                name=md_escape(f.get("name")),
+                ext=md_escape(f.get("ext")),
+                status=md_escape(clean_status_label(f.get("cleanStatus"))),
+            )
+        )
+    lines.append("")
+    lines.append("> 本节点按素材库原始目录层级自动生成。")
+
+    tags = [BID_TYPE, "子目录", TIER_LABELS.get(tier_code, tier_code)]
+    return node(name, "\n".join(lines) + "\n", tags=tags, children=children)
+
+
+def build_folder_children(folder: dict[str, Any], tier_code: str) -> list[dict[str, Any]]:
+    """3 级目录的子节点：先按文件完整 path 还原深层子目录，再挂直属文件卡片。"""
+    folder_path = str(folder.get("path") or "")
+    files = [f for f in (folder.get("files") or []) if isinstance(f, dict)]
+
+    direct_files: list[dict[str, Any]] = []
+    by_subdir: dict[str, list[tuple[list[str], dict[str, Any]]]] = {}
+    for f in files:
+        segments = file_subdir_segments(f, folder_path)
+        if not segments:
+            direct_files.append(f)
+        else:
+            by_subdir.setdefault(segments[0], []).append((segments[1:], f))
+
+    children = [
+        build_subdir_node(sub_name, f"{folder_path}/{sub_name}", sub_entries, tier_code, folder)
+        for sub_name, sub_entries in by_subdir.items()
+    ]
+    children.extend(build_file_card(f, tier_code, folder) for f in direct_files)
+    return children
 
 
 def build_folder_node(folder: dict[str, Any], tier_code: str) -> dict[str, Any]:
@@ -199,25 +292,27 @@ def build_folder_node(folder: dict[str, Any], tier_code: str) -> dict[str, Any]:
             f"- 文件数 (fileCount): {folder.get('fileCount', len(files))}",
             f"- 更新时间 (updatedAt): {folder.get('updatedAt') or ''}",
             "",
-            "## 文件清单",
+            "## 文件清单（含深层子目录文件）",
             "",
-            "| material_id | 文件名 | 扩展名 | 清洗状态 |",
-            "|---|---|---|---|",
+            "| material_id | 文件名 | 相对路径 | 扩展名 | 清洗状态 |",
+            "|---|---|---|---|---|",
         ]
     )
     if not files:
-        lines.append("| - | （该目录暂无归并文件） | - | - |")
+        lines.append("| - | （该目录暂无归并文件） | - | - | - |")
     for f in files:
+        rel_dir = "/".join(file_subdir_segments(f, path)) or "—"
         lines.append(
-            "| {fid} | {name} | {ext} | {status} |".format(
+            "| {fid} | {name} | {rel} | {ext} | {status} |".format(
                 fid=md_escape(f.get("id")),
                 name=md_escape(f.get("name")),
+                rel=md_escape(rel_dir),
                 ext=md_escape(f.get("ext")),
                 status=md_escape(clean_status_label(f.get("cleanStatus"))),
             )
         )
 
-    children = [build_file_card(f, tier_code, folder) for f in files]
+    children = build_folder_children(folder, tier_code)
     tags = [BID_TYPE, "三级目录", TIER_LABELS.get(tier_code, tier_code)]
     if identity:
         tags.append(identity)
@@ -276,7 +371,7 @@ def build_blueprint(manifest: dict[str, Any]) -> dict[str, Any]:
     summary = (
         f"已按三级目录 JSON 索引重建 {bid_type} Wiki："
         f"{len(tiers)} 个档位 / {folder_total} 个 3 级目录 / "
-        f"{stats.get('fileCount', '?')} 个文件，结构 tier→folder→file 镜像 JSON。"
+        f"{stats.get('fileCount', '?')} 个文件，深层子目录已按文件完整路径还原，与素材库层级一致。"
     )
     return {
         "summary": summary,

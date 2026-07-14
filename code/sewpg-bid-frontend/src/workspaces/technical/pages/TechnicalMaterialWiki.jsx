@@ -11,6 +11,10 @@ const safeMessage = (error, fallback) =>
 const TECHNICAL_BID_TYPE = '技术标'
 const TECHNICAL_WORKSPACE = 'tech'
 
+// 后端对所有节点都返回 children 数组（叶子为 []），不能用 Array.isArray 判断文件夹，
+// 否则每个叶子节点也会被当成文件夹渲染（带展开箭头 + folder 图标）。
+const isFolderNode = (node) => Array.isArray(node?.children) && node.children.length > 0
+
 const normalizeNode = (node) => {
   if (!node) return null
   return {
@@ -93,7 +97,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   // 已被用户操作过的节点保留本地值。重新拉取树时不会覆盖（避免闪烁 / 收起后回弹）。
   const isExpanded = useCallback(
     (node) => {
-      if (!Array.isArray(node.children)) return false
+      if (!isFolderNode(node)) return false
       if (Object.prototype.hasOwnProperty.call(collapsedMap, node.id)) {
         return !collapsedMap[node.id]
       }
@@ -120,7 +124,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   // 与原始素材库的目录树交互对齐（不必精准点中三角即可展开）。
   const handleRowClick = (node) => {
     handleSelectNode(node.id)
-    if (Array.isArray(node.children)) {
+    if (isFolderNode(node)) {
       toggleExpand(node)
     }
   }
@@ -165,14 +169,14 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
 
   const renderTree = (nodes, level = 0) =>
     (nodes || []).map((node) => {
-      const folder = Array.isArray(node.children)
+      const folder = isFolderNode(node)
       const expanded = folder ? isExpanded(node) : false
       const selected = node.id === selectedNodeId
       return (
         <div key={node.id}>
           <div
             style={{ paddingLeft: `${12 + level * 18}px` }}
-            className={`group flex items-center gap-2 pr-2 py-2 rounded-lg text-[13px] leading-[1.6] cursor-pointer transition-colors border ${
+            className={`group flex items-center gap-1.5 pr-2 py-2 rounded-lg text-[13px] leading-[1.6] cursor-pointer transition-colors border ${
               selected
                 ? 'bg-primary/10 border-primary/20 text-primary'
                 : 'border-transparent hover:bg-surface-container-low text-on-surface-variant'
@@ -181,27 +185,47 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
           >
             {folder ? (
               <button
+                title={expanded ? '收起' : '展开'}
+                aria-label={expanded ? '收起' : '展开'}
+                aria-expanded={expanded}
                 onClick={(event) => {
                   event.stopPropagation()
                   toggleExpand(node)
                 }}
-                className="w-5 h-5 rounded flex items-center justify-center hover:text-on-surface"
+                className="w-5 h-5 shrink-0 rounded flex items-center justify-center text-outline hover:bg-primary/10 hover:text-primary"
               >
-                <span className="material-symbols-outlined text-[16px] text-outline">
-                  {expanded ? 'expand_more' : 'chevron_right'}
+                <span
+                  aria-hidden="true"
+                  className={`material-symbols-outlined text-[18px] transition-transform duration-200 ease-out ${expanded ? 'rotate-90' : 'rotate-0'}`}
+                >
+                  chevron_right
                 </span>
               </button>
             ) : (
-              <span className="w-5 h-5" />
+              <span className="w-5 h-5 shrink-0" />
             )}
-            <span className={`material-symbols-outlined text-[16px] ${folder ? 'text-primary' : 'text-outline'}`}>
-              {folder ? 'folder' : 'article'}
+            <span
+              aria-hidden="true"
+              className={`material-symbols-outlined shrink-0 text-[17px] ${folder ? 'text-primary' : 'text-outline'}`}
+            >
+              {folder ? (expanded ? 'folder_open' : 'folder') : 'article'}
             </span>
-            <span className={`truncate ${selected ? 'font-semibold text-primary' : ''}`}>
+            <span
+              className={`truncate ${
+                selected
+                  ? 'font-semibold text-primary'
+                  : folder
+                    ? 'font-medium text-on-surface'
+                    : ''
+              }`}
+            >
               {node.title}
             </span>
+            {folder && (
+              <span className="ml-auto shrink-0 text-xs text-outline">{node.children.length}</span>
+            )}
           </div>
-          {folder && expanded && node.children?.length > 0 && (
+          {folder && expanded && (
             <div className="mt-1">{renderTree(node.children, level + 1)}</div>
           )}
         </div>

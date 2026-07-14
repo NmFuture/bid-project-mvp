@@ -91,6 +91,76 @@ class TechnicalWikiRunnerTests(unittest.TestCase):
         self.assertNotIn("内容预览", card["tags"])
         self.assertIn("本卡片仅为三级目录结构索引", card["markdownContent"])
 
+    def test_folder_node_restores_deep_hierarchy_from_file_paths(self) -> None:
+        folder = {
+            "name": "华能",
+            "path": "技术标/客户定制/华能",
+            "customerName": "华能",
+            "fileCount": 3,
+            "files": [
+                {
+                    "id": "RAW-0101",
+                    "name": "直属文件.docx",
+                    "path": "技术标/客户定制/华能/直属文件.docx",
+                    "ext": "docx",
+                    "cleanStatus": "cleaned",
+                },
+                {
+                    "id": "RAW-0102",
+                    "name": "四级文件.docx",
+                    "path": "技术标/客户定制/华能/北方公司/四级文件.docx",
+                    "ext": "docx",
+                    "cleanStatus": "cleaned",
+                },
+                {
+                    "id": "RAW-0103",
+                    "name": "五级文件.pdf",
+                    "path": "技术标/客户定制/华能/北方公司/风电项目/五级文件.pdf",
+                    "ext": "pdf",
+                    "cleanStatus": "pending",
+                },
+            ],
+        }
+
+        node = RUNNER.build_folder_node(folder, "customer")
+
+        # 3 级目录直接子节点 = 1 个子目录（北方公司）+ 1 个直属文件卡片
+        child_titles = [child["title"] for child in node["children"]]
+        self.assertEqual(child_titles, ["北方公司", "直属文件.docx"])
+
+        subdir = node["children"][0]
+        self.assertIn("子目录", subdir["tags"])
+        self.assertIn("`技术标/客户定制/华能/北方公司`", subdir["markdownContent"])
+
+        # 北方公司下：风电项目子目录 + 四级文件卡片
+        sub_titles = [child["title"] for child in subdir["children"]]
+        self.assertEqual(sub_titles, ["风电项目", "四级文件.docx"])
+
+        deepest = subdir["children"][0]
+        self.assertEqual([child["title"] for child in deepest["children"]], ["五级文件.pdf"])
+
+        # 3 级目录正文的全量清单带相对路径列
+        self.assertIn("| RAW-0103 | 五级文件.pdf | 北方公司/风电项目 |", node["markdownContent"])
+        self.assertIn("| RAW-0101 | 直属文件.docx | — |", node["markdownContent"])
+
+    def test_folder_node_without_deep_files_keeps_flat_children(self) -> None:
+        folder = {
+            "name": "EW5.0",
+            "path": "技术标/标准文件/EW5.0",
+            "files": [
+                {
+                    "id": "RAW-0001",
+                    "name": "总体方案.docx",
+                    "path": "技术标/标准文件/EW5.0/总体方案.docx",
+                    "ext": "docx",
+                    "cleanStatus": "cleaned",
+                },
+            ],
+        }
+
+        node = RUNNER.build_folder_node(folder, "standard")
+        self.assertEqual([child["title"] for child in node["children"]], ["总体方案.docx"])
+
 
 if __name__ == "__main__":
     unittest.main()

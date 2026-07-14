@@ -1,0 +1,369 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>投标平台 · 架构总览</title>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --ink:#1a2333; --muted:#5c6b82; --line:#e3e8ef;
+  --accent:#2563eb; --accent-soft:#eaf1fe; --ok:#0e9f6e; --warn:#d97706;
+  --chip:#eef2f7; --code:#f1f4f8;
+  --d-business:#2563eb; --d-technical:#0e9f6e; --d-material:#d97706; --d-bid:#7c3aed;
+  --d-engine:#db2777; --d-infra:#64748b; --d-fe:#0891b2; --d-perf:#b45309; --d-sys:#475569;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#0e1420; --panel:#161e2d; --ink:#e6ecf5; --muted:#93a3ba; --line:#26324a;
+    --accent:#5b93ff; --accent-soft:#1b2b4d; --chip:#1e2a41; --code:#101828; }
+}
+:root[data-theme="dark"]{ --bg:#0e1420; --panel:#161e2d; --ink:#e6ecf5; --muted:#93a3ba; --line:#26324a;
+  --accent:#5b93ff; --accent-soft:#1b2b4d; --chip:#1e2a41; --code:#101828; }
+:root[data-theme="light"]{ --bg:#f6f7f9; --panel:#ffffff; --ink:#1a2333; --muted:#5c6b82; --line:#e3e8ef;
+  --accent:#2563eb; --accent-soft:#eaf1fe; --chip:#eef2f7; --code:#f1f4f8; }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 20px 80px;}
+h1{font-size:26px;margin:0 0 6px;} h2{font-size:19px;margin:44px 0 14px;}
+.sub{color:var(--muted);margin:0 0 18px;}
+.stats{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 6px;}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 18px;}
+.stat b{font-size:20px;display:block;} .stat span{color:var(--muted);font-size:12.5px;}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;overflow-x:auto;}
+/* topology */
+.topo{display:grid;grid-template-columns:1fr;gap:14px;min-width:640px;}
+.tier{display:flex;gap:12px;align-items:stretch;}
+.tier .lbl{writing-mode:vertical-lr;color:var(--muted);font-size:12px;letter-spacing:2px;border-right:1px dashed var(--line);padding-right:8px;}
+.nodes{display:flex;flex-wrap:wrap;gap:12px;flex:1;}
+.node{border:1.5px solid var(--line);border-radius:10px;padding:10px 14px;min-width:150px;background:var(--bg);}
+.node b{display:block;font-size:14px;} .node small{color:var(--muted);display:block;line-height:1.45;}
+.node.hl{border-color:var(--accent);background:var(--accent-soft);}
+.flowline{color:var(--muted);font-size:12.5px;padding:2px 6px;}
+/* pipeline */
+.pipe{display:flex;gap:0;align-items:stretch;min-width:900px;}
+.step{flex:1;position:relative;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px 12px 12px 16px;margin-right:26px;}
+.step:after{content:"";position:absolute;right:-18px;top:50%;transform:translateY(-50%);border:9px solid transparent;border-left-color:var(--accent);}
+.step:last-child{margin-right:0;} .step:last-child:after{display:none;}
+.step b{display:block;font-size:13.5px;margin-bottom:3px;}
+.step small{color:var(--muted);display:block;font-size:12px;line-height:1.5;}
+.step .io{margin-top:6px;font-size:11.5px;color:var(--muted);background:var(--code);border-radius:6px;padding:4px 8px;}
+.human{position:absolute;top:-9px;right:8px;background:var(--warn);color:#fff;font-size:10px;border-radius:8px;padding:1px 7px;}
+/* browser */
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;align-items:center;}
+input[type=search]{flex:1;min-width:220px;padding:9px 14px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink);font-size:14px;outline:none;}
+input[type=search]:focus{border-color:var(--accent);}
+.pill{border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:999px;padding:5px 13px;font-size:12.5px;cursor:pointer;user-select:none;}
+.pill.on{background:var(--accent);border-color:var(--accent);color:#fff;}
+.count{color:var(--muted);font-size:12.5px;margin-left:auto;}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px;}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;cursor:pointer;transition:border-color .15s;}
+.card:hover{border-color:var(--accent);}
+.card h3{margin:0 0 4px;font-size:14.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all;}
+.card p{margin:0;color:var(--muted);font-size:13px;}
+.tags{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap;}
+.tag{font-size:11px;border-radius:6px;padding:1.5px 8px;background:var(--chip);color:var(--muted);}
+.tag.dom{color:#fff;}
+.card .detail{display:none;margin-top:10px;border-top:1px dashed var(--line);padding-top:10px;font-size:12.5px;color:var(--muted);}
+.card.open .detail{display:block;}
+.detail b{color:var(--ink);font-weight:600;}
+.detail div{margin-bottom:5px;word-break:break-all;}
+footer{margin-top:50px;color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padding-top:16px;}
+code{background:var(--code);border-radius:5px;padding:1px 6px;font-size:12.5px;}
+.legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;font-size:12px;color:var(--muted);}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:baseline;}
+</style>
+
+<div class="wrap">
+<h1>AI 数智化投标平台 · 架构总览</h1>
+<p class="sub">bid-project-mvp ｜ 生成于 2026-07-13 ｜ 事实源：<code>docs/architecture/</code>（Markdown 主档），本页为交互式索引</p>
+
+<div class="stats">
+  <div class="stat"><b>8</b><span>Docker 容器</span></div>
+  <div class="stat"><b>228</b><span>HTTP 端点</span></div>
+  <div class="stat"><b>137</b><span>后端服务模块</span></div>
+  <div class="stat"><b>26</b><span>前端页面/逻辑单元</span></div>
+  <div class="stat"><b>52,067</b><span>服务层代码行</span></div>
+  <div class="stat"><b id="cardTotal">—</b><span>模块卡片</span></div>
+</div>
+
+<h2>① 系统拓扑</h2>
+<div class="panel">
+  <div class="topo">
+    <div class="tier"><div class="lbl">入口</div><div class="nodes">
+      <div class="node"><b>web（nginx）</b><small>:80 · 静态前端 + 反代 /api→fastapi、/ds→onlyoffice</small></div>
+    </div></div>
+    <div class="flowline">↓ /api（业务） ↓ /ds（文档服务）</div>
+    <div class="tier"><div class="lbl">应用</div><div class="nodes">
+      <div class="node hl"><b>fastapi</b><small>:8000 · 双轨业务后端<br>228 端点 / 137 服务模块</small></div>
+      <div class="node hl"><b>worker</b><small>redis_worker · 消费三类任务：<br>directory / fill / material_cleaning</small></div>
+      <div class="node hl"><b>opencode</b><small>:4096 · LLM Agent 运行时<br>全部 AI 走 Skill（bid-tech-* / bid-business-* / bid-material-*）</small></div>
+      <div class="node"><b>onlyoffice</b><small>Document Server 9.3<br>在线共创 / 预览 / 回调保存</small></div>
+    </div></div>
+    <div class="flowline">↓ fastapi·worker·opencode 三容器共享数据卷：uploads / documents / parsed（Skill 大文件交换通道）</div>
+    <div class="tier"><div class="lbl">数据</div><div class="nodes">
+      <div class="node"><b>postgres</b><small>pgvector/pg16 · bidplatform<br>项目 JSONB 单表 + 素材/Wiki/审计/业绩表</small></div>
+      <div class="node"><b>redis</b><small>队列 bid:jobs · 状态 bid:job:*（24h）<br>锁 bid:lock:{type}:{pid}（2h）</small></div>
+      <div class="node"><b>minio</b><small>bid-materials（素材字节）<br>bid-documents（文档）· bid-templates（模板）</small></div>
+    </div></div>
+  </div>
+  <div class="legend">
+    <span><span class="dot" style="background:var(--warn)"></span>关键事实：opencode 是唯一 LLM 出口（默认模型 big-pickle，超时 1800s）</span>
+    <span><span class="dot" style="background:var(--accent)"></span>技术标素材 JSON 索引落 documents 卷 _runtime/，是解析候选 / Wiki / 标签 / 召回的唯一下游来源</span>
+  </div>
+</div>
+
+<h2>② 双轨主链路（商务标 / 技术标同构）</h2>
+<div class="panel">
+  <div class="pipe">
+    <div class="step"><b>S1 上传解析</b><small>/parse/{track}<br>Skill 结构化解析 + OCR 兜底</small><div class="io">入: 招标文件 → 出: 解析件 + 附表 blankDocx</div></div>
+    <div class="step"><span class="human">人工</span><b>资产确认 + 参与决策</b><small>附表/承诺函逐项 approve<br>participate 后转正式项目</small><div class="io">出: S1 阶段交接件（published）</div></div>
+    <div class="step"><b>目录生成与审核</b><small>directory_generation job<br>规则引擎 / outline Skill</small><div class="io">出: toc.json（人工 confirm）</div></div>
+    <div class="step"><span class="human">人工</span><b>缺口识别 + 素材匹配</b><small>gap-planner Skill 初判<br>+ 运行时终审（候选≠决策）</small><div class="io">出: 缺口计划（ready/fill/review/material）</div></div>
+    <div class="step"><b>AI 填写 / 草拟</b><small>table-filler · word-filler<br>事实表 + 来源矩阵 + 素材召回</small><div class="io">出: 产物 + 质量报告（S7 放行门）</div></div>
+    <div class="step"><b>正文装配</b><small>fill_generation job<br>assembler Skill + 格式清洗</small><div class="io">出: 正文 docx</div></div>
+    <div class="step"><span class="human">人工</span><b>共创 + 导出</b><small>OnlyOffice 编辑 · AI 重写(商务)<br>覆盖率门禁(技术) · Word/PDF</small><div class="io">出: 终稿</div></div>
+  </div>
+  <div class="legend">
+    <span><span class="dot" style="background:var(--d-business)"></span>商务标差异：模板候选 / AI 草拟 / 表格填写 / chat + 受控重写</span>
+    <span><span class="dot" style="background:var(--d-technical)"></span>技术标差异：附表 AI 填写（来源矩阵路由）/ SSE 目录流 / 覆盖率 / 证书台账 / 导出检查</span>
+    <span><span class="dot" style="background:var(--d-material)"></span>素材侧支撑：上传→清洗→JSON 索引→标签/Wiki/召回（详见 03-素材库与Wiki.md）</span>
+  </div>
+</div>
+
+<h2>③ 模块浏览器 <span style="font-weight:400;color:var(--muted);font-size:13px">（点卡片展开调用链，完整卡片在 <code>modules/&lt;名称&gt;.md</code>）</span></h2>
+<div class="toolbar">
+  <input type="search" id="q" placeholder="搜索模块名 / 职责 / 表名 / Skill 名…">
+  <span class="count" id="cnt"></span>
+</div>
+<div class="toolbar" id="domPills"></div>
+<div class="toolbar" id="layerPills"></div>
+<div class="grid" id="grid"></div>
+
+<footer>
+  文档主档：<code>docs/architecture/00-系统全景.md</code> · <code>01-商务标主链路.md</code> · <code>02-技术标主链路.md</code> · <code>03-素材库与Wiki.md</code> · <code>modules/</code>（每模块一张卡）· 数据源 <code>_data/*.json</code><br>
+  维护约定：模块行为变更时同步更新对应卡片与 JSON；本页可由 JSON 重新生成。
+</footer>
+</div>
+
+<script>
+// r: [name, domain, layer, loc, summary, upstream, downstream, state]
+const D=[
+["app_main","系统","应用入口",58,"FastAPI 装配点：启动初始化、CORS、异常映射、挂路由","uvicorn/容器","api_router·minio·auth·settings","启动建三桶三目录"],
+["api_router","系统","路由层",15,"汇总注册 9 个路由模块","app_main","routes/* 全部",""],
+["api_utils","系统","路由层",154,"MinIO 流式响应、OnlyOffice 回访地址推断","4 个路由文件","minio_client","lan_ip 缓存"],
+["route_auth","权限与审计","路由层",75,"登录/登出/me + 重点客户名录（4 端点）","前端 Login","auth_service·audit_service·identity","会话 TTL 24h"],
+["route_dashboard","系统","路由层",17,"GET /api/dashboard 工作台","前端 Dashboard","auth·dashboard_service",""],
+["route_project_info","系统","路由层",20,"项目信息表单选项，双轨各一端点","项目信息表单","project_info_options",""],
+["route_business","商务标","路由层",753,"商务标全业务入口（~70 端点）：项目/解析/OCR/目录/生成/文档/素材/Wiki/审计","business 工作区页面","10+ 个 business/bid 服务","运行态·三桶·队列"],
+["route_business_gaps","商务标","路由层",289,"商务缺口入口（19 端点）：检测/事实表/选材/草拟/填表/上传","BusinessGapRecognition","business_gap_service","决策五态+终审"],
+["route_technical","技术标","路由层",1047,"技术标全业务入口（~100 端点）：含 SSE 目录流/缺口 AI 填写/覆盖率/JSON 索引/证书台账","technical 工作区页面","11+ 个 technical 服务","缺口两层决策·索引"],
+["route_performance","业绩库","路由层",195,"业绩库入口（16 端点）：记录 CRUD/分类导入/附件","共享业绩库页","performance 两服务","status/reviewStatus"],
+["route_settings","系统","路由层",142,"用户管理/LLM·OCR 配置测试/默认模板/健康（13 端点）","前端 Settings","auth·system_settings","模型配置 kind"],
+["route_system","系统","路由层",43,"healthz 健康检查（3 端点）","docker healthcheck","core_config",""],
+["worker_redis","解析与AI引擎","Worker",109,"后台任务消费：directory/fill/material_cleaning 三类分发","worker 容器","job_queue·三个 flow","锁 2h·结果 24h"],
+["model_materials","素材库","数据模型",200,"素材 ORM：raw_folders/raw_files(ext_fields JSONB)/版本/墓碑","material_* 服务群","PostgreSQL","RAW-%04d 序列化"],
+["core_config","系统","核心配置",219,"全部环境变量唯一收口 Settings 单例","几乎全部模块","os.environ","三桶名·TTL·地址"],
+["core_redis","系统","核心配置",44,"Redis 客户端单例与探测（缺依赖优雅降级）","job_queue·worker","Redis",""],
+["bid_type","项目与状态流","服务层",41,"标类常量与归一化唯一定义（技术标/商务标/通用）","全局","—","BID_TYPES"],
+["bid_runtime_state","项目与状态流","服务层",426,"运行态默认值/事件构造/now_iso 唯一出处/JSON 原子写","store·各 state 模块","bid_type·workspace_artifacts","四大 state 结构"],
+["bid_project_state","项目与状态流","服务层",548,"项目实体纯函数：身份归一/参与决策/阶段/临时承载转正","store·workspace_project_access","identity·stage_flow·turbine_models","reviewDecision 三态"],
+["bid_project_repository","项目与状态流","服务层",106,"项目状态 JSONB 单表持久化（psycopg 直连）","store","PostgreSQL","projects 表"],
+["bid_project_service","项目与状态流","服务层",214,"项目 CRUD 中性类→两轨门面实例","两轨路由·parse_service","workspace_project_access·identity·template_store","bidType 强注入"],
+["bid_parse_service","项目与状态流","服务层",1462,"双轨 S1 解析服务：上传/异步解析/进度/资产物化与确认","两轨路由","parsing·parse_state·business_parse_assets·onlyoffice","parse_state·数据卷"],
+["bid_parse_state","项目与状态流","服务层",218,"解析进度/结果运行态纯函数","parse_service·parse_assets","runtime_state·stage_flow","idle→running→完成/失败"],
+["bid_directory_flow","项目与状态流","服务层",489,"目录生成中性底座：入队/锁/执行/进度/读写确认","两轨 directory_service·worker","outline_generation·job_queue·outline_state","job+锁·三步任务"],
+["bid_outline_state","项目与状态流","服务层",294,"directory/outline 两运行态纯函数（含 toc.json 恢复）","directory_flow·outline_generation","runtime_state·stage_flow","reviewStatus draft→confirmed"],
+["bid_generation_flow","项目与状态流","服务层",642,"正文生成中性底座：按标类路由两轨装配 Skill","两轨 generation_service·worker","两轨 draft_generation·job_queue·audit","fill job+锁·陈旧 1h"],
+["bid_fill_state","项目与状态流","服务层",66,"fill_state 默认结构与标类任务标签工厂","fill_generation_state","bid_type","三步任务模型"],
+["bid_fill_generation_state","项目与状态流","服务层",253,"fill_state 纯函数（开始/进度/失败/结果）","generation_flow·两轨 assembly","fill_state·runtime_state","idle→running→终态"],
+["bid_document_flow","项目与状态流","服务层",386,"文档/OnlyOffice 中性底座：会话/回调/终稿 PDF/白名单","两轨 document_service","onlyoffice_documents·document_state·minio","bid-documents·回调 token"],
+["bid_document_state","项目与状态流","服务层",61,"document_state 纯函数：版本递增/documentKey 刷新","document_flow·两轨服务","两轨 document_state","version/documentKey"],
+["bid_ocr_service","项目与状态流","服务层",68,"OCR 双轨薄封装：项目校验+审计元数据","两轨路由","bid_project_service·ocr_service",""],
+["job_queue","解析与AI引擎","服务层",196,"Redis 队列唯一封装：入队(互斥锁)/出队/状态/锁释放","各 flow·worker","core_redis","bid:jobs·bid:lock:*"],
+["opencode_client","解析与AI引擎","服务层",1750,"opencode HTTP 客户端——后端所有 LLM 调用唯一出口","outline·AI 类服务·parsing","opencode:4096·system_settings","session·执行轨迹"],
+["outline_generation","解析与AI引擎","服务层",1341,"目录生成引擎：manifest+按标类选 outline Skill","bid_directory_flow","opencode_client·outline_state·template_store","toc.json·审核预算"],
+["parsing","解析与AI引擎","服务层",5718,"S1 解析核心：复用 parser_core Skill+类目抽取+附表物化+OCR","parse_service·outline·certificate_time","Skill parser_core·ocr·section_tree·template_extractor","parsed 卷·类目关键词"],
+["parse_profiles","解析与AI引擎","服务层",69,"双轨解析画像：Skill/schema/workspace 目录/目标类目","parsing·parse_service·workspace_artifacts","bid_type","structured-v1 schema"],
+["ocr_service","解析与AI引擎","服务层",421,"OCR 引擎：外部模型识别→字段:值候选→人工确认","bid_ocr·parsing·certificate_time·wiki","ocr_tasks/candidates 表·OCR API","DeepSeek-OCR"],
+["onlyoffice_documents","解析与AI引擎","服务层",155,"OnlyOffice 底层：路径/对象 key/内容指纹 documentKey/回存","document_flow·assembly·parse_service","minio(bid-documents)·OnlyOffice HTTP","documents/{pid}/draft.docx"],
+["gap_reviewer","解析与AI引擎","服务层",115,"填写指令确定性质检：一致性/交叉引用/数值闭合","Skill/测试侧","derive_rules","gap-review-v1"],
+["derive_rules","解析与AI引擎","服务层",89,"核心事实推导：总装机=单机×台数（带来源）","gap_reviewer","—",""],
+["workspace_project_access","权限与审计","服务层",189,"双轨项目访问守门员：读写强校验标类归属","全部 flow 与两轨服务·worker","store·bid_project_state",""],
+["workspace_artifacts","权限与审计","服务层",371,"workspace 目录约定+S1 交接件发布+临时承载转正/清理","运行态/解析/装配/gap/wiki","parse_profiles·s1_handoff","documents卷/{pid}/{track}-workspace"],
+["store","基础设施与通用","服务层",161,"项目持久化门面 AppStore（postgres/内存双后端）","workspace_project_access","bid_project_repository·state","projects JSONB·PRJ 编号"],
+["minio_client","基础设施与通用","服务层",156,"MinIO 唯一封装单例","素材/文档/模板/业绩全域","MinIO 三桶",""],
+["auth_service","权限与审计","服务层",277,"认证与用户管理：pbkdf2+Bearer 会话+引导管理员","route_auth·settings·需登录端点","system_users/auth_sessions 表","会话 TTL 24h"],
+["audit_service","权限与审计","服务层",145,"全局审计：记录/查询/导出","route_auth·两轨门面·ocr·generation_flow","audit_logs 表","metadata.bidType 隔离"],
+["identity","权限与审计","服务层",418,"身份中心：客户注册表(别名归一)+路径分类+项目身份","项目状态/素材过滤/gap/wiki","bid_type","CUSTOMER_REGISTRY"],
+["dashboard_service","系统","服务层",159,"工作台构建：两轨项目卡片+进度映射","route_dashboard","bid_project_service","S0-S6→进度"],
+["system_settings","系统","服务层",791,"LLM/OCR 配置与测试+默认模板+健康（opencode 配置来源）","route_settings·opencode_client·ocr","SystemConfig/TemplateAsset 表·minio","kind=llm|ocr"],
+["project_info_options","系统","服务层",90,"项目信息表单静态选项（客户/机型/基础形式）","route_project_info","—","静态常量"],
+["project_stage_flow","项目与状态流","服务层",193,"阶段流唯一定义：S0_S6/双轨命名/人机分工/推进规则","bid_project/outline/parse_state","bid_type·turbine_models","STAGE_SCHEME"],
+["project_fact_materials","基础设施与通用","服务层",84,"事实素材下载准备：按轨路由+业绩+cleaned→raw 回退","technical_gap_fact_table","两轨 store·performance_resolver",""],
+["peripheral","基础设施与通用","服务层",1099,"PeripheralError 统一业务异常+外围内存承接(渐退)","几乎全部","material_folder_scope","错误码规约"],
+["file_utils","基础设施与通用","服务层",75,"文件名安全化/大小标签/run_awaitable_sync","极广","—",""],
+["filename_utils","基础设施与通用","服务层",63,"文件名 UTF-8 字节预算裁剪(128B)","cleaning·wiki 附件","—",""],
+["url_utils","基础设施与通用","服务层",116,"绝对地址/OnlyOffice 回访地址推断（服务层版）","document/parse/directory flow","core_config",""],
+["scoped_material_urls","基础设施与通用","服务层",22,"素材内部 URL 占位符→出口按轨改写","material_store 与两轨门面","—","两个前缀常量"],
+["template_store","基础设施与通用","服务层",501,"模板资产库：默认/回退模板+Excel 模板表+docx 校验","project_service·gap_planning·outline·settings","TemplateAsset 表·minio","bid-templates"],
+["turbine_models","基础设施与通用","服务层",328,"机型识别归一中心：正则+噪声过滤+xlsx 抽取+匹配度","项目状态/技术 gap/装配/上传","openpyxl","布局后缀仅内部用"],
+["kb_schema","基础设施与通用","服务层",105,"知识卡片 schema（Card/Source+锁定状态）","Skill/知识库方向","—",""],
+["performance_library_service","业绩库","服务层",481,"旧版单条业绩库（历史兼容）","route_performance·resolver","业绩表·minio","PERF- 前缀"],
+["performance_package_service","业绩库","服务层",2224,"业绩主模型：Excel 导入建类/多维检索/合同附件/docx 规范化","route_performance·business_gap_planning","业绩三表·minio","格式版本 15"],
+["performance_material_resolver","业绩库","服务层",81,"业绩素材识别与下载路由（id 前缀判定）","business_gap_service·fact_materials","两个业绩服务",""],
+["wiki_blueprint_common","Wiki通用","服务层",250,"两轨 Wiki 共用纯工具：JSON 容错解析/blueprint 归一/docx 剖析","两轨 wiki_generation","subprocess Skill","体积上限常量"],
+["wiki_export","Wiki通用","服务层",311,"Wiki 导出：内部 API 拉树→markdown 文件组（供装配）","tech_assembly","内部 HTTP API","index/skeleton/rules/synonyms"],
+["wiki_health","Wiki通用","服务层",53,"Wiki 目录体检：统计+token 预算警告","装配/Skill 侧","文件系统","token_limit 12万"],
+["business_gap_service","商务标","服务层",1701,"商务缺口域总门面：检测/计划/事实表/选材/草拟/填表/确认","route_business_gaps","gap_planning·domain·state·fact_table·material_store","decision 五态"],
+["business_gap_planning","商务标","服务层",1459,"缺口计划构建引擎：manifest+gap-planner Skill+选择器索引+填表 Skill","gap_service·assembly","Skill 两个·material_store·performance·opencode","workspace gaps/"],
+["business_gap_domain","商务标","服务层",556,"计划领域规则纯函数：查找/重算/装配模式/上传解码","gap_service·state·refresh","file_utils·folder_scope","resolvedArtifacts"],
+["business_gap_state","商务标","服务层",167,"business_gap_state 结构保障与落账","gap_service","domain·planning","recognitionStatus 等"],
+["business_gap_repository","商务标","服务层",39,"缺口域项目访问薄层（商务 404/400）","gap_service","workspace_project_access",""],
+["business_gap_refresh","商务标","服务层",156,"计划运行时刷新：模板候选同步+标签刷新","gap_service","domain·planning·workspace_artifacts","templateCandidates"],
+["business_gap_fact_table","商务标","服务层",931,"项目事实表 v1：字段规格(来源提示/用途)+自动构建","gap_service·assembly","bidder_profile·s1_handoff·identity","projectFactTable"],
+["business_gap_table_fill","商务标","服务层",145,"表格填写输入准备：源素材归一+本地化","gap_service","planning·material_store·minio",""],
+["business_gap_ai_draft","商务标","服务层",93,"AI 草拟 docx 确定性写盘（缺失占位不编造）","gap_service","python-docx",""],
+["business_bidder_profile","商务标","服务层",76,"投标人全局事实档案（SystemConfig 表）","gap_service·fact_table","system_config 表","business_bidder_facts"],
+["business_s1_handoff","商务标","服务层",103,"S1 交接件契约消费端：published 才可消费","gap_service·fact_table","—","handoff-v1"],
+["business_parse_assets","商务标","服务层",580,"S1 资产确认与入库素材库固定目录","parse_service·project_service","parsing·material_store·parse_state","parse-assets-v1"],
+["business_assembly","商务标","服务层",851,"商务响应文件装配：assembler+格式清洗 Skill+预设","draft_generation·document_service","Skill 两个·gap_planning·minio","FORMAT_PRESETS"],
+["business_draft_generation","商务标","服务层",20,"正文生成转发薄层→assembly","bid_generation_flow","business_assembly",""],
+["business_generation_service","商务标","服务层",11,"BidGenerationService 空壳实例（商务轨）","route_business","bid_generation_flow",""],
+["business_directory_service","商务标","服务层",11,"BidDirectoryService 空壳实例（商务轨）","route_business","bid_directory_flow",""],
+["business_document_service","商务标","服务层",299,"商务文档服务：底座+chat/受控重写/格式预设","route_business","document_flow·assembly·editing·opencode","businessFormat*"],
+["business_document_editing","商务标","服务层",178,"受控改写：唯一匹配才替换+改前备份","document_service","onlyoffice·workspace_artifacts","备份文件"],
+["business_document_state","商务标","服务层",25,"格式化结果写 document_state 纯函数","bid_document_state","—","lastBusinessFormat"],
+["business_material_store","商务标","服务层",383,"商务素材门面：强制「商务标/」空间+拆分器接入","route_business·gap 域·parse_assets","material_store·splitter·scoped_urls","路径前缀约束"],
+["business_material_splitter","商务标","服务层",1511,"素材 AI 拆分引擎（两轨共用）：预览→确认切成册","两轨 material_store","opencode·minio·raw_files","split-plan-v1"],
+["business_section_tree","商务标","服务层",1075,"招标章节树抽取（OOXML 直读+关键词，≤3 级）","parsing","—","section-tree-v1"],
+["business_template_extractor","商务标","服务层",253,"模板抽取 Skill 桥接（manifest+附表转换）","parsing·parse_service","Skill extractor·opencode","开关控制"],
+["business_wiki_generation","商务标","服务层",1564,"商务 Wiki：LLM 精修主路径+多级确定性回退","route_business bootstrap","wiki_blueprint·common·material_store·ocr","回退层级"],
+["business_wiki_blueprint","商务标","服务层",30,"importlib 桥接 Skill 蓝图脚本（单一事实源）","wiki_generation","Skill wiki-material-builder",""],
+["business_audit_service","商务标","服务层",30,"审计门面：bidType=商务标过滤+归属校验","route_business","audit_service",""],
+["technical_gap_service","技术标","服务层",713,"技术缺口域总门面：检测/计划(终审)/事实表/AI填写/评审/缺料台账","route_technical","gap_actions·domain·state·fact_table","gap_state"],
+["technical_gap_planner","技术标","服务层",786,"缺口计划构建：manifest+gap-planner Skill+片段召回+终审","gap_actions·material_index","Skill planner·domain·source_matrix·material_store","gap-plan-v1"],
+["technical_gap_domain","技术标","服务层",297,"领域纯函数：决策终审(6 优先级)+S7 放行判定","gap_service·assembly·planner","—","qualityGate"],
+["technical_gap_actions","技术标","服务层",272,"动作执行层：选材登记/人工上传/AI 填写入口","gap_service","planner·ai_fill·material_store","产物登记"],
+["technical_gap_ai_fill","技术标","服务层",1123,"AI 填写执行：附表 table-filler / 待填模板 word-filler","gap_actions","Skill 两个 filler·minio·ocr","qualityReport"],
+["technical_gap_state","技术标","服务层",89,"gap_state 结构保障+Skill 名修复+legacy 视图","gap_service·assembly","domain·planner","gap_state 全字段"],
+["technical_gap_repository","技术标","服务层",39,"缺口域项目访问薄层（技术 404/400）","gap_service·assembly","workspace_project_access",""],
+["technical_gap_review","技术标","服务层",184,"评审视图：三态统计+缺料提交关联","gap_service·assembly","domain·state","评审文档状态"],
+["technical_gap_fact_table","技术标","服务层",1419,"事实表构建：docx 表格/xlsx 抽取标签:值","gap_service","fact_materials·material_store·turbine_models","projectFactTable"],
+["technical_appendix_source_matrix","技术标","服务层",256,"附表来源矩阵加载：运营 Excel→来源路由表","gap_planner","openpyxl","可环境变量覆盖"],
+["tech_assembly","技术标","服务层",1413,"S4 正文装配：toc/缺口/Wiki/素材→assembler Skill→清洗","draft_generation·document_format","Skill 两个·gap 域·wiki_export·minio","stage 工作目录"],
+["technical_draft_generation","技术标","服务层",28,"生成入口薄层：校验后委托 tech_assembly","bid_generation_flow","tech_assembly",""],
+["technical_generation_service","技术标","服务层",11,"BidGenerationService 空壳实例（技术轨）","route_technical","bid_generation_flow",""],
+["technical_directory_service","技术标","服务层",11,"BidDirectoryService 空壳实例（技术轨/SSE）","route_technical","bid_directory_flow",""],
+["technical_document_service","技术标","服务层",72,"技术文档服务：底座+格式化预设套用","route_technical","document_flow·document_format","technicalFormat*"],
+["technical_document_format","技术标","服务层",187,"格式化预设执行（复用装配清洗管线）","document_service","tech_assembly·onlyoffice","TECH_FORMAT_PRESETS"],
+["technical_document_state","技术标","服务层",25,"格式化结果写 document_state（与商务对称）","bid_document_state","—","lastTechnicalFormat"],
+["technical_coverage","技术标","服务层",150,"覆盖率计算：目录×generationMode 三色加权","delivery_service","—",""],
+["technical_delivery_service","技术标","服务层",124,"覆盖率查询+导出前检查（红项须为 0）","route_technical","technical_coverage",""],
+["technical_material_store","技术标","服务层",706,"技术素材门面：空间约束+证书台账+标签导入+索引钩子","route_technical·gap 域·assembly","material_store·certificate_time·tag_import·paths","索引刷新钩子"],
+["technical_material_paths","技术标","服务层",68,"路径规约：写入根白名单{标准文件,客户定制,项目定制}","technical_material_store","—","旧名自动映射"],
+["technical_material_index","素材库","服务层",387,"三级目录 JSON 索引：结构 DB 实时+tag 认领贴回（tag 真值在索引）","material_store 钩子·route·下游全部","runtime_state·tags·taxonomy","写锁+原子写"],
+["technical_turbine_material_options","技术标","服务层",136,"机型下拉动态提取：扫描参数表 xlsx","technical_material_store","minio·turbine_models",""],
+["technical_wiki_generation","技术标","服务层",140,"技术 Wiki：确定性镜像三级目录（无 LLM 精修）","route_technical bootstrap","material_index·Skill builder·preview_generation","_wiki_build 目录"],
+["technical_wiki_preview_generation","技术标","服务层",495,"文件级 AI 预览增量生成：指纹判重+批量 LLM+本地回退","technical_wiki_generation","preview_prompt·blueprint_common","techWikiPreview 缓存"],
+["technical_wiki_preview_prompt","技术标","服务层",36,"importlib 桥接 Skill 预览 prompt/解析","preview_generation","Skill builder",""],
+["technical_audit_service","技术标","服务层",30,"审计门面：bidType=技术标过滤","route_technical","audit_service",""],
+["material_store","素材库","服务层",418,"素材库双轨总门面：组合 30+ operations 为 raw/wiki 两大 API 面","两轨门面","material_*_operations·runtime_tables","raw 两表+bid-materials"],
+["material_raw_tree","素材库","服务层",54,"目录树 payload 组装纯函数","tree_operations","folder_scope",""],
+["material_raw_tree_operations","素材库","服务层",41,"目录树查询：确保根后全量组树","material_store","raw 两表·raw_tree",""],
+["material_raw_file_operations","素材库","服务层",62,"文件列表查询（递归/标题/时间倒序）","material_store","raw_files 表·file_filter",""],
+["material_raw_file_filter","素材库","服务层",204,"多维过滤与分页+tag 选项+归属判定","各 operations·certificate_time","identity·tags·taxonomy",""],
+["material_raw_folder_operations","素材库","服务层",228,"目录结构保障：根/档位确保(尊重墓碑)/逐级建/bootstrap","material_store","raw_folders·folder_scope·maintenance","根目录规格"],
+["material_raw_lifecycle_operations","素材库","服务层",153,"建/删目录与删文件（保护+墓碑）","material_store","maintenance·taxonomy","raw_folder_deletions"],
+["material_raw_object_operations","素材库","服务层",88,"对象层：key 约定 raw/{目录}/{名}/清洗入队/版本归档","material_store·各操作","minio·job_queue","cleanedMinioKey"],
+["material_raw_update_operations","素材库","服务层",91,"文件更新：改名(同步 key)/kind/tags","material_store","update_metadata·minio",""],
+["material_raw_access_operations","素材库","服务层",172,"下载/预览访问：内部地址+流 payload+清洗预览","material_store","raw_files·scoped_urls",""],
+["material_move_operations","素材库","服务层",231,"文件/目录移动：换 key/冲突/归属重推导","material_store","move_metadata·folder_scope·minio","ext 移动审计"],
+["material_move_metadata","素材库","服务层",84,"移动 ext 构建纯函数","move_operations","taxonomy",""],
+["material_upload_operations","素材库","服务层",317,"上传总编排：规划→目录→白名单→冲突→MinIO→ext→清洗入队","material_store","upload_target/metadata·maintenance·minio","后缀白名单"],
+["material_upload_target","素材库","服务层",127,"上传目标规划：显式/auto 推导","upload_operations","identity·taxonomy",""],
+["material_upload_metadata","素材库","服务层",153,"上传 ext 构建：归属/类别/cleanStatus/机型推断","upload_operations","identity·taxonomy·turbine_models","冲突动作"],
+["material_update_metadata","素材库","服务层",38,"更新 ext 构建纯函数","update_operations","taxonomy·tags",""],
+["material_cleaning","素材库","服务层",298,"清洗执行器(worker)：pdf/xlsx/docx→规范 docx","worker·object_operations 入队","Skill format-cleaner·minio","cleanStatus 状态机"],
+["material_certificate_time","素材库","服务层",675,"证书有效期台账：识别+日期抽取(正则+OCR)+范围+批量","technical_material_store","parsing·ocr·minio","配置 JSON"],
+["material_folder_maintenance","素材库","服务层",388,"目录维护：商务子目录规格/bootstrap/旧结构迁移","folder/lifecycle/upload 操作","folder_scope·taxonomy","遗留清单"],
+["material_folder_scope","素材库","服务层",254,"素材空间规约中心：标类/档位命名/保护路径/项目根","material_* 全域·gap 域","identity·taxonomy","TIER 常量"],
+["material_taxonomy","素材库","服务层",556,"分类学中心：档位/商务类型(fixed|ai_fill)/类别推导/目录规格","material_* 全域·parsing·assembly","bid_type","双轨档位规格"],
+["material_tags","素材库","服务层",51,"标签归一化唯一规则（40 字/20 个上限）","上传/导入/索引/业绩","—",""],
+["material_tag_import","素材库","服务层",357,"标签 Excel 导入确定性内核：匹配/消歧/全角归一","technical_material_store","tags·minio","三区预览"],
+["material_tag_import_fuzzy","素材库","服务层",199,"AI 模糊匹配桥接：bigram 预筛→Skill 语义匹配（兜底）","technical_material_store","Skill tag-importer","180s 超时"],
+["material_runtime_tables","素材库","服务层",372,"运行表幂等建表器（墓碑/版本/wiki附件/OCR/业绩/配置）","material_store·ocr·performance·settings","PostgreSQL","_ready 标记"],
+["material_identity_options","素材库","服务层",195,"身份选项组装：素材+项目→客户/项目下拉","identity_options_operations","identity·folder_scope",""],
+["material_identity_options_operations","素材库","服务层",44,"身份选项查询（projects 缺失优雅跳过）","material_store","三表",""],
+["material_wiki_scope","素材库","服务层",62,"Wiki 双轨范围：标类归一/bidTypes 继承/根标题推断","wiki 各操作·document_flow","bid_type","固定子节点标题"],
+["material_wiki_tree","素材库","服务层",66,"Wiki 树上下文组装纯函数","wiki_list_operations","wiki_scope",""],
+["material_wiki_list_operations","素材库","服务层",58,"Wiki 列表：组树+选中文档与附件","material_store","wiki 三表·wiki_tree",""],
+["material_wiki_node_operations","素材库","服务层",203,"节点 CRUD/移动/摘要刷新（级联+附件清理）","material_store","wiki 三表·wiki_scope·wiki_export","path 级联"],
+["material_wiki_attachment_operations","素材库","服务层",189,"附件上传/下载/删除（MinIO+内部前缀）","material_store·import/node 操作","wiki_attachments·minio·filename_utils",""],
+["material_wiki_import","素材库","服务层",76,"蓝图导入纯函数规约（四种模式）","wiki_import_operations","wiki_scope",""],
+["material_wiki_import_operations","素材库","服务层",247,"蓝图导入执行：create/update/replace/refresh","material_store←两轨 wiki_generation","wiki 三表·wiki_import","replace 清旧树"],
+["fe_api","前端","前端逻辑",854,"唯一后端调用层：统一 request+SSE+26 个 API 组","全部页面","/api/* 全部端点","AUTH_STORAGE_KEY"],
+["fe_app","前端","前端逻辑",300,"应用根：会话生命周期+路由装配","main.jsx","三个 workspace routes·authAPI","localStorage 会话"],
+["fe_config","前端","前端逻辑",180,"ENV 收口+OnlyOffice 编辑器配置工厂","fe_api·OnlyOffice 组件","Vite 构建参数","DocsAPI 单例"],
+["fe_routes_workspaces","前端","前端逻辑",210,"双工作区路由装配：每轨 11 条同构+角色守卫","fe_app","各页面·permissions",""],
+["fe_stage_flows","前端","前端逻辑",76,"阶段号→路由/文案映射（对应后端 stage_flow）","列表/重定向页","fe_utils_workspace",""],
+["fe_project_routes","前端","前端逻辑",60,"解析页↔项目路由纽带","TenderReview·ProjectList","—",""],
+["fe_parse_upload_recovery","前端","前端逻辑",200,"解析进度轮询与上传超时恢复","两轨 TenderReview","parse API 组","终态判定"],
+["fe_shared_project_info","前端","前端逻辑",120,"项目信息表单逻辑：机型行模型+选项+风险标签","ProjectWizardModal","options API",""],
+["fe_utils_workspace","前端","前端工具",120,"slug↔bidType 映射与路由构造","全部页面","—",""],
+["fe_utils_stageLocking","前端","前端工具",45,"阶段锁定文案规则","阶段页面","—",""],
+["fe_utils_permissions","前端","前端工具",70,"角色模型 T/B/TB→工作区与设置权限","WorkspaceAccess·Settings","—",""],
+["fe_utils_misc","前端","前端工具",15,"opencode→futurecode 品牌替换+目录编号兼容","目录/生成页面","—",""],
+["fe_components","前端","前端组件",2000,"24 个组件：AppShell/OnlyOffice 嵌入/阶段进度/UI 原子件","全部页面","fe_config","编辑器会话生命周期"],
+["fe_page_dashboard","前端","前端页面",1471,"Dashboard 工作台+Login+Settings（TB 可写）","AppShell 导航","dashboard/auth/settings API","会话"],
+["fe_page_tender_review","前端","前端页面",3323,"解析入口：上传→轮询→解读→参与决策→向导","/parse/{track}","parse/projects API·OnlyOffice","解析轮询"],
+["fe_page_project_list","前端","前端页面",2050,"项目列表(participate)+阶段跳转+信息向导","/workspace/{slug}/projects","projects/stages/options API","向导表单态"],
+["fe_page_parse_result","前端","前端页面",1104,"阶段1：资产确认(approve)+目录生成(技术 SSE)","template-directory 路由","parse/directory API","三步任务进度"],
+["fe_page_outline_review","前端","前端页面",1595,"阶段2：目录树编辑+原文对照+确认","outline 路由","outline API·OnlyOffice","树编辑态"],
+["fe_page_gap_recognition","前端","前端页面",3951,"阶段3/4：缺口检测/候选选择/AI 填写草拟/事实表——最重页面","gaps 路由","gaps/materials/generate API","decision 分桶"],
+["fe_page_cocreation_editor","前端","前端页面",1221,"阶段5/6：生成轮询+共创+AI 重写(商务)+覆盖率导出(技术)","editor 路由","generate/document API·OnlyOffice","fill_state 轮询"],
+["fe_page_material_db","前端","前端页面",5824,"素材库：树+过滤+上传/拆分/清洗预览/打标/Excel 导入","materials/raw 路由","materials API 全组","导入三区"],
+["fe_page_material_wiki","前端","前端页面",602,"Wiki：树浏览+节点 CRUD+附件+bootstrap","materials/wiki 路由","wiki API 组",""],
+["fe_page_audit_log","前端","前端页面",758,"审计列表/导出/详情弹窗","logs 路由","audit API",""],
+["fe_page_certificate_ledger","前端","前端页面",1170,"证书台账：有效期/AI 识别/增量扫描/范围维护","materials/certificates 路由","certificates API 组","识别进行态"],
+["fe_page_performance_library","前端","前端页面",917,"业绩库：检索/Excel 导入/合同附件（两轨共用）","shared/materials/performance","performanceAPI","导入预览态"],
+["fe_technical_gap_helpers","前端","前端逻辑",400,"缺口页纯函数(来源矩阵推荐默认值)+招标解读分组","GapRecognition·TenderReview","—",""]
+];
+const DOM_COLORS={"商务标":"var(--d-business)","技术标":"var(--d-technical)","素材库":"var(--d-material)","项目与状态流":"var(--d-bid)","解析与AI引擎":"var(--d-engine)","基础设施与通用":"var(--d-infra)","前端":"var(--d-fe)","业绩库":"var(--d-perf)","系统":"var(--d-sys)","权限与审计":"var(--d-sys)","Wiki通用":"var(--d-material)"};
+const domains=[...new Set(D.map(r=>r[1]))];
+const layers=[...new Set(D.map(r=>r[2]))];
+let selDom=new Set(), selLayer=new Set(), q="";
+const grid=document.getElementById("grid"), cnt=document.getElementById("cnt");
+document.getElementById("cardTotal").textContent=D.length;
+
+function pillbar(el,items,sel){
+  items.forEach(v=>{
+    const p=document.createElement("span"); p.className="pill"; p.textContent=v;
+    p.onclick=()=>{ sel.has(v)?sel.delete(v):sel.add(v); p.classList.toggle("on"); render(); };
+    el.appendChild(p);
+  });
+}
+pillbar(document.getElementById("domPills"),domains,selDom);
+pillbar(document.getElementById("layerPills"),layers,selLayer);
+document.getElementById("q").addEventListener("input",e=>{q=e.target.value.trim().toLowerCase();render();});
+
+function render(){
+  grid.innerHTML="";
+  let n=0;
+  D.forEach(r=>{
+    const [name,dom,layer,loc,sum,up,down,state]=r;
+    if(selDom.size && !selDom.has(dom)) return;
+    if(selLayer.size && !selLayer.has(layer)) return;
+    if(q && !(name+dom+layer+sum+up+down+state).toLowerCase().includes(q)) return;
+    n++;
+    const c=document.createElement("div"); c.className="card";
+    c.innerHTML=`<h3>${name}</h3><p>${sum}</p>
+      <div class="tags"><span class="tag dom" style="background:${DOM_COLORS[dom]||"var(--d-sys)"}">${dom}</span><span class="tag">${layer}</span><span class="tag">${loc} 行</span></div>
+      <div class="detail">
+        ${up?`<div><b>上游</b> ← ${up}</div>`:""}
+        ${down&&down!=="—"?`<div><b>下游</b> → ${down}</div>`:""}
+        ${state?`<div><b>状态/数据</b>：${state}</div>`:""}
+        <div><b>完整卡片</b>：modules/${name}.md</div>
+      </div>`;
+    c.onclick=()=>c.classList.toggle("open");
+    grid.appendChild(c);
+  });
+  cnt.textContent=`${n} / ${D.length} 个模块`;
+}
+render();
+</script>
