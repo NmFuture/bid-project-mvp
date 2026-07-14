@@ -1,0 +1,12 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/code/sewpg-bid-frontend"
+    target-branch: "anbc"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "pip"
+    directory: "/code/sewpg-bid-backend"
+    target-branch: "anbc"
+    schedule:
+      interval: "weekly"
