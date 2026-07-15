@@ -21,10 +21,10 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 schemaVersion: "1"
-lastUpdated: "2026-07-01"
+lastUpdated: "2026-07-16"
 
 target:
-  syncBranch: "origin/main"       # 代码版本对齐的基准分支
+  syncBranch: "origin/Dev"        # 代码版本对齐的基准分支
   maxStaleDays: 7                # 超过 N 天未检 → 强制重检
 
 checks:
