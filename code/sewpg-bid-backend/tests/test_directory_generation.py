@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from docx import Document
-from docx.enum.style import WD_STYLE_TYPE
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -22,7 +22,6 @@ from app.services.bid_outline_state import (
     save_outline_state,
     start_directory_generation_state,
 )
-from app.services.outline_generation import _run_local_outline_skill
 from app.services.store import store
 from app.services.workspace_artifacts import business_workspace_dir, technical_workspace_dir
 
@@ -205,11 +204,89 @@ class DirectoryGenerationTests(unittest.TestCase):
         )
         return project_id
 
+    def _technical_manifest_from_prompt(self, prompt: str, kwargs: dict) -> Path:
+        self.assertIn("Use the bid-tech-outline-generator skill", prompt)
+        self.assertIn("s2outline prepare", prompt)
+        self.assertIn("s2outline next-batch", prompt)
+        self.assertIn("s2outline tables", prompt)
+        self.assertIn("s2outline review-batch", prompt)
+        self.assertIn("s2outline status", prompt)
+        self.assertIn("pending_chunk_count=0", prompt)
+        self.assertIn("不得直接读取", prompt)
+        self.assertIn("tender_review_chunks.json", prompt)
+        self.assertIn("target_node", prompt)
+        self.assertIn("一个节点", prompt)
+        self.assertIn("s2outline finalize", prompt)
+        self.assertNotIn("s2toc ", prompt)
+        self.assertNotIn("required_status", prompt)
+        self.assertNotIn("source_refs", prompt)
+        self.assertEqual(kwargs.get("early_tool_command"), "s2outline-finalize")
+        match = re.search(r"manifest[：:]\s*(?P<path>.+)", prompt)
+        self.assertIsNotNone(match)
+        manifest_path = Path(str(match.group("path")).strip())
+        self.assertTrue(manifest_path.exists())
+        return manifest_path
+
+    def _write_mock_technical_toc_outputs(
+        self,
+        manifest_path: Path,
+        *,
+        node_overrides: list[dict] | None = None,
+    ) -> dict:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        output_file = Path(manifest["outputFile"])
+        tender_file = manifest["tenderFiles"][0]
+        nodes = node_overrides or [
+            {
+                "number": "第一章",
+                "title": "投标响应概述",
+                "suggestion_action": "必要",
+                "suggestion_reason": "",
+                "children": [],
+            },
+            {
+                "number": "第二章",
+                "title": "项目实施方案",
+                "suggestion_action": "建议增加",
+                "suggestion_reason": "招标文件要求单独编制项目实施方案。",
+                "tender_basis": {
+                    "file_id": tender_file["id"],
+                    "search_text": "投标人应提供实施方案。",
+                },
+                "children": [],
+            },
+            {
+                "number": "第三章",
+                "title": "技术附表",
+                "suggestion_action": "必要",
+                "suggestion_reason": "",
+                "children": [
+                    {
+                        "number": "附表D.7",
+                        "title": "性能及考核承诺保证表",
+                        "suggestion_action": "建议增加",
+                        "suggestion_reason": "招标文件新增需填写技术附表。",
+                        "tender_basis": {
+                            "file_id": tender_file["id"],
+                            "search_text": "附表D.7 性能及考核承诺保证表",
+                        },
+                        "children": [],
+                    }
+                ],
+            },
+        ]
+        toc = {"schema_version": "technical-outline.v1", "nodes": nodes}
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_text(json.dumps(toc, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {
+            "schema_version": "technical-outline.v1",
+            "outputFile": str(output_file),
+            "summary": {"total_nodes": 4, "action_counts": {"必要": 2, "建议增加": 2}},
+        }
+
     def _mock_futurecode_outline(self, prompt: str, *args, **kwargs) -> dict:
-        self.assertIn("s2toc", prompt)
-        manifest_line = next(line for line in prompt.splitlines() if line.strip().startswith("s2toc "))
-        manifest_path = Path(manifest_line.strip().split(" ", 1)[1])
-        result = _run_local_outline_skill(manifest_path)
+        manifest_path = self._technical_manifest_from_prompt(prompt, kwargs)
+        result = self._write_mock_technical_toc_outputs(manifest_path)
         result["opencodeOutput"] = {
             "status": "received",
             "sessionId": "test-s2-session",
@@ -739,7 +816,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertNotIn("项目概况", titles)
         self.assertEqual(payload["reviewStatus"], "draft")
 
-    def test_generate_outline_for_project_calls_futurecode_s2toc_skill(self) -> None:
+    def test_generate_outline_for_project_uses_opencode_direct_decision(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
 
         project_id = self._prepare_project_with_parse_result()
@@ -751,11 +828,144 @@ class DirectoryGenerationTests(unittest.TestCase):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
         self.assertEqual(payload["status"], "completed")
-        self.assertEqual(payload["output"]["chapterCount"], 2)
+        self.assertEqual(payload["output"]["chapterCount"], 3)
         self.assertTrue(payload["events"])
         self.assertEqual(payload["events"][-1]["level"], "success")
         self.assertTrue(mock_generate.called)
+        self.assertEqual(mock_generate.call_args.kwargs["early_tool_command"], "s2outline-finalize")
         self.assertEqual(payload["opencodeOutput"]["status"], "received")
+
+    def test_technical_outline_prompt_delegates_decisions_to_skill_without_duplicate_contract(self) -> None:
+        from app.services.outline_generation import _build_outline_prompt
+
+        prompt = _build_outline_prompt(Path("C:/workspace/s2_input.json"), "技术标")
+
+        self.assertIn("s2outline prepare", prompt)
+        self.assertIn("s2outline next-batch", prompt)
+        self.assertIn("s2outline tables", prompt)
+        self.assertIn("s2outline review-batch", prompt)
+        self.assertIn("s2outline status", prompt)
+        self.assertIn("pending_chunk_count=0", prompt)
+        self.assertIn("不得直接读取", prompt)
+        self.assertIn("tender_review_chunks.json", prompt)
+        self.assertIn("target_node", prompt)
+        self.assertIn("一个节点", prompt)
+        self.assertIn("s2outline finalize", prompt)
+        self.assertIn("technical-outline.v1", prompt)
+        self.assertNotIn("required_status", prompt)
+        self.assertNotIn("source_refs", prompt)
+        self.assertLess(len(prompt), 1200)
+
+    def test_clean_technical_outline_nodes_uses_frontend_contract(self) -> None:
+        from app.services.outline_generation import _clean_technical_outline_nodes
+
+        nodes = _clean_technical_outline_nodes(
+            [
+                {
+                    "number": "5.8.1",
+                    "title": "叶片专题",
+                    "suggestion_action": "待确认",
+                    "suggestion_reason": "确认专题归属。",
+                    "tender_basis": {"file_id": "TEN-1", "search_text": "投标人应编制叶片专题。"},
+                    "children": [],
+                }
+            ]
+        )
+
+        self.assertEqual(
+            nodes,
+            [
+                {
+                    "id": "OL-1",
+                    "number": "5.8.1",
+                    "tocNumber": "5.8.1",
+                    "title": "叶片专题",
+                    "suggestionAction": "待确认",
+                    "suggestionReason": "确认专题归属。",
+                    "tenderBasis": {"fileId": "TEN-1", "searchText": "投标人应编制叶片专题。"},
+                    "children": [],
+                }
+            ],
+        )
+
+    def test_technical_nodes_keep_nested_number_title_and_actions(self) -> None:
+        from app.services.outline_generation import _nodes_from_generation_result
+
+        nodes = _nodes_from_generation_result(
+            {
+                "nodes": [
+                    {
+                    "number": "第一章",
+                    "title": "标前概述",
+                    "suggestion_action": "必要",
+                    "suggestion_reason": "",
+                    "children": [
+                        {
+                            "number": "1.1",
+                            "title": "评分索引",
+                            "suggestion_action": "建议增加",
+                            "suggestion_reason": "招标要求独立提供评分索引。",
+                            "children": [],
+                        }
+                    ],
+                    }
+                ]
+            },
+            compact_technical=True,
+        )
+
+        self.assertEqual(nodes[0]["tocNumber"], "第一章")
+        self.assertEqual(nodes[0]["suggestionAction"], "必要")
+        self.assertEqual(nodes[0]["children"][0]["id"], "OL-1-1")
+        self.assertEqual(nodes[0]["children"][0]["suggestionAction"], "建议增加")
+
+    def test_technical_generation_summary_uses_suggestion_action_counts(self) -> None:
+        from app.services.outline_generation import _summary_from_generation_result
+
+        summary = _summary_from_generation_result(
+            {
+                "summary": {
+                    "total_nodes": 3,
+                    "action_counts": {"必要": 2, "建议增加": 1},
+                }
+            }
+        )
+
+        self.assertEqual(summary, "目录生成完成，共 3 条目录项（必要2，建议增加1）。")
+
+    def test_runtime_toc_recovery_understands_compact_technical_contract(self) -> None:
+        from app.services.bid_runtime_state import outline_nodes_from_toc_items
+
+        nodes = outline_nodes_from_toc_items(
+            [
+                {
+                    "number": "附表G.2.3",
+                    "title": "附表G.2.3 场址载荷对比",
+                    "level": 1,
+                    "required_status": "必要",
+                    "review_required": False,
+                    "review_note": "",
+                    "source_refs": [],
+                }
+            ],
+            compact_technical=True,
+        )
+
+        self.assertEqual(
+            nodes,
+            [
+                {
+                    "id": "OL-1",
+                    "title": "场址载荷对比",
+                    "children": [],
+                    "tocNumber": "附表G.2.3",
+                    "requiredStatus": "必要",
+                    "reviewRequired": False,
+                    "reviewNote": "",
+                    "sourceRefs": [],
+                }
+            ],
+        )
 
     def test_generate_outline_uses_s1_text_and_visual_template_for_non_docx_inputs(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
@@ -827,11 +1037,14 @@ class DirectoryGenerationTests(unittest.TestCase):
         with patch(
             "app.services.outline_generation._ocr_fallback_text",
             return_value=("第一章 投标响应概述\n1.1 项目理解\n第二章 实施方案\n2.1 工作计划", {"status": "completed"}),
+        ), patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_futurecode_outline,
         ):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
         self.assertEqual(payload["status"], "completed")
-        self.assertGreaterEqual(payload["output"]["chapterCount"], 2)
+        self.assertEqual(payload["output"]["chapterCount"], 3)
         workspace = self._directory_state_for_tests(project_id)["opencodeOutput"]["workDir"]
         manifest = json.loads((Path(workspace) / "s2_input.json").read_text(encoding="utf-8"))
         self.assertEqual(Path(manifest["templateFile"]).suffix, ".docx")
@@ -840,7 +1053,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertEqual(payload["opencodeOutput"]["skill"], "bid-tech-outline-generator")
         self.assertTrue(payload["opencodeOutput"]["parts"])
         self.assertTrue(Path(payload["opencodeOutput"]["tocJsonPath"]).exists())
-        self.assertTrue(Path(payload["opencodeOutput"]["evidencePath"]).exists())
+        self.assertNotIn("evidencePath", payload["opencodeOutput"])
         self.assertEqual(
             payload["opencodeOutput"]["manifestPath"],
             payload["opencodeOutput"]["canonicalManifestPath"],
@@ -851,12 +1064,9 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         outline = self._outline_state_for_tests(project_id)
         self.assertEqual(outline["reviewStatus"], "draft")
-        self.assertEqual(len(outline["nodes"]), 2)
-        self.assertEqual(outline["nodes"][0]["title"], "第一章 投标响应概述")
-        self.assertEqual(outline["nodes"][1]["title"], "第二章 实施方案")
-        self.assertFalse(
-            any(child["title"] == "服务团队安排" for child in outline["nodes"][1]["children"])
-        )
+        self.assertEqual(len(outline["nodes"]), 3)
+        self.assertEqual(outline["nodes"][0]["title"], "投标响应概述")
+        self.assertEqual(outline["nodes"][1]["title"], "项目实施方案")
         self.assertEqual(outline["summary"]["totalNodeCount"], 4)
 
     def test_generate_outline_archives_previous_successful_workspace_on_success(self) -> None:
@@ -911,12 +1121,10 @@ class DirectoryGenerationTests(unittest.TestCase):
         with patch(
             "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
             side_effect=RuntimeError("futurecode down"),
-        ), patch(
-            "app.services.outline_generation._run_local_outline_skill",
-            side_effect=RuntimeError("local fallback down"),
-        ):
-            with self.assertRaises(RuntimeError):
+        ), patch("app.services.outline_generation._run_local_outline_skill") as local_fallback:
+            with self.assertRaisesRegex(RuntimeError, "目录生成需要 opencode 自主决策"):
                 generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+        local_fallback.assert_not_called()
 
         self.assertTrue(work_dir.exists())
         self.assertTrue(previous_toc.exists())
@@ -955,7 +1163,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertEqual(marker.read_text(encoding="utf-8"), "keep me")
         self.assertTrue((project_dir / "s2_toc_workdir.new").exists())
 
-    def test_generate_outline_outputs_template_and_tender_evidence_only(self) -> None:
+    def test_generate_outline_outputs_compact_technical_contract(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
 
         project_id = self._prepare_project_with_parse_result()
@@ -968,15 +1176,26 @@ class DirectoryGenerationTests(unittest.TestCase):
         toc_path = Path(payload["opencodeOutput"]["tocJsonPath"])
         toc = __import__("json").loads(toc_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(toc["schema_version"], "bid-toc-json-v1")
-        self.assertTrue(toc["items"])
-        sources = {item["source"] for item in toc["items"]}
-        self.assertLessEqual(sources, {"template", "tender"})
-        self.assertNotIn("wiki", sources)
-        self.assertTrue(all(item.get("material_refs") == [] for item in toc["items"]))
-        self.assertFalse(any(item["annotation"] == "新增-招标要求" for item in toc["items"]))
+        self.assertEqual(toc["schema_version"], "technical-outline.v1")
+        self.assertTrue(toc["nodes"])
+        allowed_keys = {
+            "number",
+            "title",
+            "suggestion_action",
+            "suggestion_reason",
+            "tender_basis",
+            "children",
+        }
 
-    def test_generate_outline_records_generic_evidence(self) -> None:
+        def assert_node_contract(nodes: list[dict]) -> None:
+            for node in nodes:
+                self.assertLessEqual(set(node), allowed_keys)
+                self.assertTrue({"number", "title", "suggestion_action", "suggestion_reason", "children"} <= set(node))
+                assert_node_contract(node["children"])
+
+        assert_node_contract(toc["nodes"])
+
+    def test_generate_outline_records_action_summary_without_evidence_file(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
 
         project_id = self._prepare_project_with_parse_result()
@@ -985,22 +1204,53 @@ class DirectoryGenerationTests(unittest.TestCase):
             side_effect=self._mock_futurecode_outline,
         ):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
-        evidence_path = Path(payload["opencodeOutput"]["evidencePath"])
-        evidence = __import__("json").loads(evidence_path.read_text(encoding="utf-8"))
-
-        self.assertEqual(evidence["schema_version"], "bid-toc-evidence-v1")
-        self.assertEqual(evidence["engine"], "bid-tech-outline-generator")
-        self.assertTrue(evidence["templateOutline"])
-        self.assertTrue(evidence["tenderCandidates"])
-        self.assertTrue(
-            any(
-                item["action"] == "candidate" and item["title"] == "服务团队安排"
-                for item in evidence["decisions"]
-            )
+        self.assertNotIn("evidencePath", payload["opencodeOutput"])
+        self.assertEqual(
+            payload["ruleEvidence"],
+            {
+                "schemaVersion": "technical-outline.v1",
+                "engine": "bid-tech-outline-generator",
+                "nodeCount": 4,
+                "actionCounts": {"必要": 2, "建议增加": 2},
+            },
         )
-        self.assertFalse(any("华能" in __import__("json").dumps(item, ensure_ascii=False) for item in evidence["decisions"]))
 
-    def test_generate_outline_links_tender_basis_and_adds_appendix_items(self) -> None:
+    def test_public_technical_evidence_v2_exposes_summary_only(self) -> None:
+        from app.services.outline_generation import _public_rule_evidence_from_file
+
+        evidence_path = Path(self.temp_dir.name) / "toc_evidence.json"
+        evidence_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "bid-toc-evidence-v2",
+                    "engine": "bid-tech-outline-generator",
+                    "ruleVersion": "opencode-autonomous-v2",
+                    "decisions": [
+                        {"action": "include", "review_required": False},
+                        {"action": "merge", "review_required": True},
+                        {"action": "exclude", "review_required": False},
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        public = _public_rule_evidence_from_file(evidence_path)
+
+        self.assertEqual(
+            public,
+            {
+                "schemaVersion": "bid-toc-evidence-v2",
+                "engine": "bid-tech-outline-generator",
+                "ruleVersion": "opencode-autonomous-v2",
+                "decisionCount": 3,
+                "reviewCount": 1,
+                "actionCounts": {"include": 1, "merge": 1, "exclude": 1},
+            },
+        )
+
+    def test_generate_outline_links_minimal_tender_basis_and_adds_appendix_items(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
 
         project_id = self._prepare_project_with_parse_result()
@@ -1021,168 +1271,43 @@ class DirectoryGenerationTests(unittest.TestCase):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
         toc = __import__("json").loads(Path(payload["opencodeOutput"]["tocJsonPath"]).read_text(encoding="utf-8"))
 
-        implementation_item = next(item for item in toc["items"] if "实施方案" in item["title"])
-        tender_refs = [ref for ref in implementation_item["source_refs"] if ref["type"] == "tender"]
-        self.assertTrue(tender_refs)
-        self.assertEqual(tender_refs[0]["fileId"], "TEN-1")
-        self.assertIn("投标人应提供实施方案", tender_refs[0]["basisText"])
+        implementation = next(item for item in toc["nodes"] if "实施方案" in item["title"])
+        self.assertEqual(
+            implementation["tender_basis"],
+            {"file_id": "TEN-1", "search_text": "投标人应提供实施方案。"},
+        )
+        self.assertEqual(implementation["suggestion_action"], "建议增加")
 
-        appendix_items = [item for item in toc["items"] if item["annotation"] == "新增-副表"]
-        self.assertTrue(any("性能及考核承诺保证表" in item["title"] for item in appendix_items))
-        self.assertTrue(appendix_items[0]["source_refs"][0]["basisText"])
+        appendix = toc["nodes"][-1]
+        self.assertEqual(appendix["title"], "技术附表")
+        self.assertEqual(appendix["children"][0]["number"], "附表D.7")
+        self.assertEqual(appendix["children"][0]["children"], [])
 
-    def test_tender_candidate_zero_limit_means_unlimited_and_strips_page_numbers(self) -> None:
+    def test_generate_outline_fails_without_opencode_output_file(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
 
         project_id = self._prepare_project_with_parse_result()
-        tender_path = settings.uploads_dir / project_id / "tender" / "招标文件.docx"
-        paragraphs = [("第一章 采购需求", "Heading 1")]
-        paragraphs.extend((f"投标人须提交前置章节{index}说明 {100 + index}", None) for index in range(1, 30))
-        paragraphs.append(("附表D.7 性能及考核承诺保证表 188", None))
-        self._write_docx(tender_path, paragraphs)
+
+        def _mock_missing_output(prompt: str, *args, **kwargs) -> dict:
+            manifest_path = self._technical_manifest_from_prompt(prompt, kwargs)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            return {
+                "schema_version": "technical-outline.v1",
+                "outputFile": manifest["outputFile"],
+                "summary": {"total_nodes": 0},
+                "opencodeOutput": {"status": "received", "parts": []},
+            }
 
         with patch(
             "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
-            side_effect=self._mock_futurecode_outline,
-        ):
-            payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+            side_effect=_mock_missing_output,
+        ), patch("app.services.outline_generation._run_local_outline_skill") as local_fallback:
+            with self.assertRaisesRegex(RuntimeError, "目录生成需要 opencode 自主决策"):
+                generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
-        toc = __import__("json").loads(Path(payload["opencodeOutput"]["tocJsonPath"]).read_text(encoding="utf-8"))
-        evidence = __import__("json").loads(Path(payload["opencodeOutput"]["evidencePath"]).read_text(encoding="utf-8"))
+        local_fallback.assert_not_called()
 
-        self.assertGreaterEqual(len(evidence["tenderCandidates"]), 30)
-        self.assertTrue(
-            any(
-                item["title"] == "性能及考核承诺保证表"
-                for item in toc["items"]
-                if item["annotation"] == "新增-副表"
-            )
-        )
-        self.assertFalse(
-            any(
-                item["title"].endswith("188")
-                for item in toc["items"]
-                if "性能及考核承诺保证表" in item["title"]
-            )
-        )
-
-    def test_only_explicit_appendix_tables_are_auto_added_after_template_outline(self) -> None:
-        from app.services.outline_generation import generate_outline_for_project
-
-        project_id = self._prepare_project_with_parse_result()
-        template_path = settings.uploads_dir / project_id / "template" / "投标模板.docx"
-        self._write_docx(
-            template_path,
-            [
-                ("第1章 风资源评估与机位排布方案", "Heading 1"),
-                ("1.1 项目风资源评估与机组选型排布及发电量计算", "Heading 2"),
-                ("第2章 产品交付、考核及验收", "Heading 1"),
-            ],
-        )
-        tender_path = settings.uploads_dir / project_id / "tender" / "招标文件.docx"
-        self._write_docx(
-            tender_path,
-            [
-                ("第一章 招标要求", "Heading 1"),
-                ("技术附表E 项目风资源评估及机组选型排布及发电量计算 194", None),
-                ("附表E.2 风电场保证电量计算折减因素及相关要求表 194", None),
-                ("表5.2.6-1 测风塔不同高度间风速相关系数表", None),
-            ],
-        )
-
-        parse_result, parse_storage = self._parse_runtime_state(project_id)
-        self._complete_parse_for_tests(
-            project_id,
-            tender_files=[
-                {
-                    "id": "TEN-1",
-                    "name": "招标文件.docx",
-                    "path": str(tender_path),
-                    "size_label": "1.0 MB",
-                }
-            ],
-            template_files=[
-                {
-                    "id": "TPL-1",
-                    "name": "投标模板.docx",
-                    "path": str(template_path),
-                    "size_label": "1.0 MB",
-                }
-            ],
-            summary=parse_result["summary"],
-            parse_storage=parse_storage,
-        )
-
-        with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
-            side_effect=self._mock_futurecode_outline,
-        ):
-            payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
-        toc = __import__("json").loads(Path(payload["opencodeOutput"]["tocJsonPath"]).read_text(encoding="utf-8"))
-        titles = [item["title"] for item in toc["items"]]
-
-        self.assertIn("风电场保证电量计算折减因素及相关要求表", titles)
-        self.assertNotIn("测风塔不同高度间风速相关系数表", titles)
-        wind_index = titles.index("风资源评估与机位排布方案")
-        wind_child_index = titles.index("项目风资源评估与机组选型排布及发电量计算")
-        appendix_index = titles.index("风电场保证电量计算折减因素及相关要求表")
-        delivery_index = titles.index("产品交付、考核及验收")
-        self.assertGreater(wind_child_index, wind_index)
-        self.assertGreater(appendix_index, delivery_index)
-        self.assertEqual(appendix_index, len(titles) - 1)
-        self.assertEqual(toc["items"][appendix_index]["level"], 1)
-        self.assertEqual(toc["items"][appendix_index]["number"], "附表E.2")
-
-    def test_added_items_do_not_shift_later_template_source_refs(self) -> None:
-        import importlib.util
-        import sys
-
-        script_path = skill_script_path("bid-tech-outline-generator", "run_from_manifest.py")
-        spec = importlib.util.spec_from_file_location("outline_runner_for_shift_test", script_path)
-        outline_runner = importlib.util.module_from_spec(spec)
-        assert spec and spec.loader
-        sys.modules["outline_runner_for_shift_test"] = outline_runner
-        spec.loader.exec_module(outline_runner)
-
-        template_outline = [
-            outline_runner.OutlineEntry("1", "风资源评估与机位排布方案", 1, "template.docx", 1, "第1章 风资源评估与机位排布方案"),
-            outline_runner.OutlineEntry("1.1", "项目风资源评估与机组选型排布及发电量计算", 2, "template.docx", 2, "1.1 项目风资源评估与机组选型排布及发电量计算"),
-            outline_runner.OutlineEntry("2", "产品交付、考核及验收", 1, "template.docx", 3, "第2章 产品交付、考核及验收"),
-            outline_runner.OutlineEntry("2.1", "设备安装、调试与试运行", 2, "template.docx", 4, "2.1 设备安装、调试与试运行"),
-        ]
-        tender_candidates = [
-            outline_runner.Candidate(
-                id="TC-0001",
-                title="附表E.2 风电场保证电量计算折减因素及相关要求表",
-                raw_text="附表E.2 风电场保证电量计算折减因素及相关要求表 194",
-                source_file="tender.docx",
-                file_id="TEN-1",
-                file_name="tender.docx",
-                paragraph_index=10,
-                kind="appendix",
-                number="附表E.2",
-                context_title="技术附表E 项目风资源评估及机组选型排布及发电量计算",
-            ),
-            outline_runner.Candidate(
-                id="TC-0002",
-                title="设备安装、调试与试运行",
-                raw_text="5. 设备安装、调试与试运行 101",
-                source_file="tender.docx",
-                file_id="TEN-1",
-                file_name="tender.docx",
-                paragraph_index=20,
-                kind="heading",
-                number="5",
-            ),
-        ]
-        items, _ = outline_runner.build_items(template_outline, [], tender_candidates)
-
-        install_item = next(item for item in items if item["title"] == "设备安装、调试与试运行")
-        refs = [ref for ref in install_item["source_refs"] if ref["type"] == "tender"]
-        self.assertTrue(refs)
-        self.assertIn("设备安装、调试与试运行", refs[0]["basisText"])
-
-    def test_get_directory_state_loads_rule_evidence_from_existing_file(self) -> None:
+    def test_get_directory_state_keeps_generated_action_summary(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
 
         project_id = self._prepare_project_with_parse_result()
@@ -1191,122 +1316,18 @@ class DirectoryGenerationTests(unittest.TestCase):
             side_effect=self._mock_futurecode_outline,
         ):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
-        project = store._require(project_id)
-        project["directory_state"].pop("ruleEvidence", None)
-
         state = self._directory_state_for_tests(project_id)
 
-        self.assertEqual(state["ruleEvidence"]["engine"], "bid-tech-outline-generator")
-        self.assertGreater(state["ruleEvidence"]["tenderCandidateCount"], 0)
-        self.assertTrue(state["ruleEvidence"]["decisions"])
         self.assertEqual(
-            state["ruleEvidence"]["schemaVersion"],
-            "bid-toc-evidence-v1",
+            state["ruleEvidence"],
+            {
+                "schemaVersion": "technical-outline.v1",
+                "engine": "bid-tech-outline-generator",
+                "nodeCount": 4,
+                "actionCounts": {"必要": 2, "建议增加": 2},
+            },
         )
-        self.assertTrue(Path(payload["opencodeOutput"]["evidencePath"]).exists())
-
-    def test_generate_outline_prefers_template_headings_then_adds_uncovered_tender_requirements(self) -> None:
-        from app.services.outline_generation import generate_outline_for_project
-
-        project_id = self._prepare_project_with_parse_result()
-        template_path = settings.uploads_dir / project_id / "template" / "投标模板.docx"
-        template_path.parent.mkdir(parents=True, exist_ok=True)
-
-        document = Document()
-        document.add_paragraph("目录")
-        document.add_paragraph("第1章 响应概述")
-        document.add_paragraph("1.1 基本响应")
-        document.add_paragraph("第2章 项目交付方案")
-        document.add_paragraph("2.1 进度安排")
-        document.save(template_path)
-
-        parse_result, parse_storage = self._parse_runtime_state(project_id)
-        self._complete_parse_for_tests(
-            project_id,
-            tender_files=[
-                {
-                    "id": "TEN-1",
-                    "name": "招标文件.docx",
-                    "path": str(settings.uploads_dir / project_id / "tender" / "招标文件.docx"),
-                    "size_label": "1.0 MB",
-                }
-            ],
-            template_files=[
-                {
-                    "id": "TPL-1",
-                    "name": "投标模板.docx",
-                    "path": str(template_path),
-                    "size_label": "2.0 MB",
-                }
-            ],
-            summary=parse_result["summary"],
-            parse_storage=parse_storage,
-        )
-
-        with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
-            side_effect=self._mock_futurecode_outline,
-        ):
-            generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
-
-        outline = self._outline_state_for_tests(project_id)
-        self.assertEqual(outline["nodes"][0]["title"], "第1章 响应概述")
-        self.assertEqual(outline["nodes"][0]["children"][0]["title"], "基本响应")
-        self.assertEqual(outline["nodes"][1]["title"], "第2章 项目交付方案")
-        self.assertFalse(any(child["title"] == "服务团队安排" for child in outline["nodes"][1]["children"]))
-
-    def test_generate_outline_uses_template_toc_region_not_full_body_headings(self) -> None:
-        from app.services.outline_generation import generate_outline_for_project
-
-        project_id = self._prepare_project_with_parse_result()
-        template_path = settings.uploads_dir / project_id / "template" / "投标模板.docx"
-        template_path.parent.mkdir(parents=True, exist_ok=True)
-
-        document = Document()
-        document.styles.add_style("toc 1", WD_STYLE_TYPE.PARAGRAPH)
-        document.styles.add_style("toc 2", WD_STYLE_TYPE.PARAGRAPH)
-        document.add_paragraph("目录")
-        document.add_paragraph("第1章 模板总述\t1", style="toc 1")
-        document.add_paragraph("1.1 基本情况\t2", style="toc 2")
-        document.add_paragraph("第2章 正文标题不能进入目录", style="Heading 1")
-        document.add_paragraph("2.1 正文小节不能进入目录", style="Heading 2")
-        document.add_paragraph("（1）正文编号清单不能进入目录")
-        document.save(template_path)
-
-        parse_result, parse_storage = self._parse_runtime_state(project_id)
-        self._complete_parse_for_tests(
-            project_id,
-            tender_files=[
-                {
-                    "id": "TEN-1",
-                    "name": "招标文件.docx",
-                    "path": str(settings.uploads_dir / project_id / "tender" / "招标文件.docx"),
-                    "size_label": "1.0 MB",
-                }
-            ],
-            template_files=[
-                {
-                    "id": "TPL-1",
-                    "name": "投标模板.docx",
-                    "path": str(template_path),
-                    "size_label": "2.0 MB",
-                }
-            ],
-            summary=parse_result["summary"],
-            parse_storage=parse_storage,
-        )
-
-        with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
-            side_effect=self._mock_futurecode_outline,
-        ):
-            payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
-        toc_path = Path(payload["opencodeOutput"]["tocJsonPath"])
-        toc = __import__("json").loads(toc_path.read_text(encoding="utf-8"))
-        template_items = [item for item in toc["items"] if item["source"] == "template"]
-
-        self.assertEqual([item["title"] for item in template_items], ["模板总述", "基本情况"])
-        self.assertFalse(any("不能进入目录" in item["title"] for item in toc["items"]))
+        self.assertNotIn("evidencePath", payload["opencodeOutput"])
 
     def test_run_directory_generation_returns_running_state_immediately(self) -> None:
         project_id = self._prepare_project_with_parse_result()
@@ -1329,6 +1350,10 @@ class DirectoryGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_with_parse_result()
         self._update_template_fallback_for_tests(project_id, {"enabled": False})
         parse_result, parse_storage = self._parse_runtime_state(project_id)
+        template_upload_dir = settings.uploads_dir / project_id / "template"
+        for path in template_upload_dir.glob("*"):
+            if path.is_file():
+                path.unlink()
         self._complete_parse_for_tests(
             project_id,
             tender_files=[

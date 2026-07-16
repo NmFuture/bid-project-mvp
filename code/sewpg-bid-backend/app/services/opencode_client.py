@@ -115,7 +115,7 @@ class OpencodeClient:
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
-        early_tool_command: str = "s2toc",
+        early_tool_command: str = "",
     ) -> dict[str, Any]:
         session = self.create_session("S2 目录生成")
         session_id = str(session.get("id") or "")
@@ -786,6 +786,12 @@ class OpencodeClient:
                             self.list_session_messages(session_id),
                             idle_timeout,
                         )
+                    if early_tool_command == "s2outline-finalize":
+                        self._raise_s2_outline_finalize_opencode_stalled(
+                            session_id,
+                            self.list_session_messages(session_id),
+                            idle_timeout,
+                        )
                     raise RuntimeError(
                         f"futurecode idle timeout after {int(idle_timeout)} seconds without new output; "
                         f"check session {session_id} tool calls."
@@ -959,6 +965,19 @@ class OpencodeClient:
             messages = self.list_session_messages(session_id)
             self._raise_session_error_if_present(session_id, messages)
             pending_response = self._wait_for_template_finalize_after_prompt_return(
+                session_id=session_id,
+                idle_timeout=idle_timeout,
+                stream_callback=stream_callback,
+                cancel_check=cancel_check,
+                progress_started_at=progress_started_at,
+            )
+            if pending_response:
+                return pending_response
+
+        if early_tool_command == "s2outline-finalize":
+            messages = self.list_session_messages(session_id)
+            self._raise_session_error_if_present(session_id, messages)
+            pending_response = self._wait_for_s2_outline_finalize_after_prompt_return(
                 session_id=session_id,
                 idle_timeout=idle_timeout,
                 stream_callback=stream_callback,
@@ -1182,6 +1201,106 @@ class OpencodeClient:
         self._raise_template_finalize_opencode_stalled(session_id, messages, idle_timeout)
         return None
 
+    def _wait_for_s2_outline_finalize_after_prompt_return(
+        self,
+        *,
+        session_id: str,
+        idle_timeout: float,
+        stream_callback: Callable[[dict[str, Any]], None] | None,
+        cancel_check: Callable[[], bool] | None = None,
+        progress_started_at: float | None = None,
+    ) -> dict[str, Any] | None:
+        early_tool_command = "s2outline-finalize"
+        messages: list[dict[str, Any]] = []
+        last_signature: tuple[str, tuple[tuple[str, str], ...]] | None = None
+        deadline = time.monotonic() + idle_timeout
+        if progress_started_at is None:
+            progress_started_at = time.monotonic()
+        last_activity = 0.0
+        last_heartbeat = 0.0
+        if stream_callback is not None:
+            last_activity = time.monotonic()
+            last_heartbeat = last_activity
+        heartbeat_index = 0
+
+        while time.monotonic() < deadline:
+            if cancel_check is not None and cancel_check():
+                self.abort_session(session_id)
+                raise ParseCancelledError("解析已取消。")
+            messages = self.list_session_messages(session_id)
+            self._raise_session_error_if_present(session_id, messages)
+            tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
+            if tool_output:
+                snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+                trace_parts = list(snapshot.get("parts") or [])
+                trace_parts.append(
+                    {
+                        "type": "text",
+                        "text": "s2outline finalize completed; backend uses finalize stdout as the S2 outline result.",
+                    }
+                )
+                early_response = self._tool_output_response(
+                    session_id=session_id,
+                    output=tool_output,
+                    trace_parts=trace_parts,
+                )
+                early_response["_completionSource"] = early_tool_command
+                if stream_callback is not None:
+                    stream_callback(
+                        {
+                            "status": "received",
+                            "sessionId": session_id,
+                            "providerId": self.provider_id,
+                            "modelId": self.model_id,
+                            "receivedAt": early_response["_traceReceivedAt"],
+                            "parts": self._normalize_output_parts(trace_parts),
+                            "earlyCompletion": True,
+                            "completionSource": early_tool_command,
+                            "elapsedSeconds": max(0, int(time.monotonic() - progress_started_at)),
+                        }
+                    )
+                return early_response
+
+            snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+            signature = snapshot.get("signature")
+            if signature != last_signature:
+                last_signature = signature
+                deadline = time.monotonic() + idle_timeout
+                heartbeat_index = 0
+                if stream_callback is not None:
+                    last_activity = time.monotonic()
+                    last_heartbeat = last_activity
+                if stream_callback is not None:
+                    stream_callback(
+                        {
+                            "status": snapshot["status"],
+                            "sessionId": session_id,
+                            "providerId": self.provider_id,
+                            "modelId": self.model_id,
+                            "receivedAt": snapshot["receivedAt"],
+                            "parts": snapshot["parts"],
+                            "elapsedSeconds": max(0, int(time.monotonic() - progress_started_at)),
+                        }
+                    )
+            elif stream_callback is not None:
+                now = time.monotonic()
+                if now - last_heartbeat >= OPENCODE_PROGRESS_HEARTBEAT_SECONDS:
+                    heartbeat_index += 1
+                    self._emit_session_progress_heartbeat(
+                        session_id=session_id,
+                        stream_callback=stream_callback,
+                        snapshot=snapshot,
+                        idle_seconds=now - last_activity,
+                        elapsed_seconds=now - progress_started_at,
+                        heartbeat_index=heartbeat_index,
+                        early_tool_command=early_tool_command,
+                    )
+                    last_heartbeat = now
+            time.sleep(0.5)
+
+        self._raise_s2_outline_finalize_opencode_stalled(session_id, messages, idle_timeout)
+        return None
+
     def _emit_session_output_delta(
         self,
         session_id: str,
@@ -1348,6 +1467,8 @@ class OpencodeClient:
             return first_word in {"s1parse", "s1parse_router.py"} and len(words) >= 3 and words[1] == "finalize"
         if expected == "btplnav-finalize":
             return first_word in {"btplnav", "run_from_manifest.py"} and len(words) >= 3 and words[1] == "finalize"
+        if expected == "s2outline-finalize":
+            return first_word in {"s2outline", "run_from_manifest.py"} and len(words) >= 3 and words[1] == "finalize"
         return first_word == expected
 
     @staticmethod
@@ -1373,6 +1494,22 @@ class OpencodeClient:
         if parsed.get("schemaVersion") != "bid-business-template-extractor-v1":
             return False
         return isinstance(parsed.get("outputFile"), str) and isinstance(parsed.get("summary"), dict)
+
+    @staticmethod
+    def _s2_outline_finalize_output_is_terminal(output: str) -> bool:
+        if not OpencodeClient._looks_like_json_object(output):
+            return False
+        try:
+            parsed = OpencodeClient._parse_json_payload(output)
+        except RuntimeError:
+            return False
+        if parsed.get("schema_version") != "technical-outline.v1":
+            return False
+        summary = parsed.get("summary") if isinstance(parsed.get("summary"), dict) else {}
+        return (
+            isinstance(parsed.get("outputFile"), str)
+            and str(summary.get("workflowStage") or "").strip().lower() == "finalized"
+        )
 
     @staticmethod
     def _find_completed_bash_tool_output(
@@ -1407,6 +1544,10 @@ class OpencodeClient:
                     continue
                 if expected == "btplnav-finalize":
                     if OpencodeClient._btplnav_finalize_output_is_terminal(output):
+                        return output
+                    continue
+                if expected == "s2outline-finalize":
+                    if OpencodeClient._s2_outline_finalize_output_is_terminal(output):
                         return output
                     continue
                 if output and OpencodeClient._looks_like_json_object(output):
@@ -1496,6 +1637,19 @@ class OpencodeClient:
             command_label="btplnav finalize",
         )
 
+    def _build_s2_outline_finalize_stalled_trace(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        idle_timeout: float,
+    ) -> dict[str, Any]:
+        return self._build_tool_stalled_trace(
+            session_id=session_id,
+            messages=messages,
+            idle_timeout=idle_timeout,
+            command_label="s2outline finalize",
+        )
+
     def _raise_s1_opencode_stalled(
         self,
         session_id: str,
@@ -1520,6 +1674,23 @@ class OpencodeClient:
         idle_timeout: float,
     ) -> None:
         trace = self._build_template_finalize_stalled_trace(session_id, messages, idle_timeout)
+        last_tool = str(trace.get("lastTool") or "unknown")
+        last_status = str(trace.get("lastToolStatus") or "unknown")
+        last_input = self._shorten_text(json.dumps(trace.get("lastToolInput") or {}, ensure_ascii=False), limit=260)
+        error = RuntimeError(
+            "opencode incomplete/stalled: "
+            f"sessionId={session_id}, lastTool={last_tool}, lastStatus={last_status}, lastInput={last_input}"
+        )
+        setattr(error, "opencode_trace", trace)
+        raise error
+
+    def _raise_s2_outline_finalize_opencode_stalled(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        idle_timeout: float,
+    ) -> None:
+        trace = self._build_s2_outline_finalize_stalled_trace(session_id, messages, idle_timeout)
         last_tool = str(trace.get("lastTool") or "unknown")
         last_status = str(trace.get("lastToolStatus") or "unknown")
         last_input = self._shorten_text(json.dumps(trace.get("lastToolInput") or {}, ensure_ascii=False), limit=260)

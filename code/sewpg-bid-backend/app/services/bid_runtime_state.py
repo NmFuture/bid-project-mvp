@@ -356,10 +356,17 @@ def outline_nodes_from_directory_toc(project: dict[str, Any]) -> list[dict[str, 
     items = toc.get("items") if isinstance(toc, dict) else None
     if not isinstance(items, list):
         return []
-    return outline_nodes_from_toc_items(items)
+    return outline_nodes_from_toc_items(
+        items,
+        compact_technical=str(toc.get("item_schema") or "") == "bid-tech-outline-item-v2",
+    )
 
 
-def outline_nodes_from_toc_items(items: list[Any]) -> list[dict[str, Any]]:
+def outline_nodes_from_toc_items(
+    items: list[Any],
+    *,
+    compact_technical: bool = False,
+) -> list[dict[str, Any]]:
     roots: list[dict[str, Any]] = []
     stack: list[tuple[int, dict[str, Any]]] = []
     counters: list[int] = []
@@ -381,23 +388,51 @@ def outline_nodes_from_toc_items(items: list[Any]) -> list[dict[str, Any]]:
             counters.extend([0] * (level - len(counters)))
         counters[level - 1] += 1
         title = str(item.get("title") or item.get("name") or f"未命名章节{fallback_order}").strip()
-        node = {
-            "id": "OL-" + "-".join(str(part) for part in counters[:level] if part),
-            "title": title,
-            "children": [],
-            "tocNumber": str(item.get("number") or "").strip(),
-            "annotation": str(item.get("annotation") or "").strip(),
-            "required_status": str(item.get("required_status") or item.get("requiredStatus") or "").strip(),
-            "requiredStatus": str(item.get("requiredStatus") or item.get("required_status") or "").strip(),
-            "source_text": str(item.get("source_text") or item.get("sourceText") or "").strip(),
-            "sourceText": str(item.get("sourceText") or item.get("source_text") or "").strip(),
-            "source": str(item.get("source") or "").strip(),
-            "reason": str(item.get("reason") or "").strip(),
-        }
-        if isinstance(item.get("source_refs"), list):
-            node["sourceRefs"] = copy.deepcopy(item["source_refs"])
-        if isinstance(item.get("material_refs"), list):
-            node["materialRefs"] = copy.deepcopy(item["material_refs"])
+        number = str(item.get("number") or "").strip()
+        if compact_technical:
+            if number and title.startswith(number):
+                title = title[len(number) :].strip(" ：:、.-") or title
+            node = {
+                "id": "OL-" + "-".join(str(part) for part in counters[:level] if part),
+                "title": title,
+                "children": [],
+                "tocNumber": number,
+                "requiredStatus": str(item.get("required_status") or item.get("requiredStatus") or "待确认").strip(),
+                "reviewRequired": bool(item.get("review_required") or item.get("reviewRequired")),
+                "reviewNote": str(item.get("review_note") or item.get("reviewNote") or "").strip(),
+                "sourceRefs": [
+                    {
+                        "refId": str(ref.get("ref_id") or ref.get("refId") or ""),
+                        "sourceType": str(ref.get("source_type") or ref.get("sourceType") or ref.get("type") or ""),
+                        "role": str(ref.get("role") or ""),
+                        "fileId": str(ref.get("file_id") or ref.get("fileId") or ""),
+                        "fileName": str(ref.get("file_name") or ref.get("fileName") or ""),
+                        "paragraphIndex": ref.get("paragraph_index") if "paragraph_index" in ref else ref.get("paragraphIndex"),
+                        "quote": str(ref.get("quote") or ref.get("basisText") or ""),
+                        "searchText": str(ref.get("search_text") or ref.get("searchText") or ref.get("quote") or ""),
+                    }
+                    for ref in (item.get("source_refs") if isinstance(item.get("source_refs"), list) else [])
+                    if isinstance(ref, dict)
+                ],
+            }
+        else:
+            node = {
+                "id": "OL-" + "-".join(str(part) for part in counters[:level] if part),
+                "title": title,
+                "children": [],
+                "tocNumber": number,
+                "annotation": str(item.get("annotation") or "").strip(),
+                "required_status": str(item.get("required_status") or item.get("requiredStatus") or "").strip(),
+                "requiredStatus": str(item.get("requiredStatus") or item.get("required_status") or "").strip(),
+                "source_text": str(item.get("source_text") or item.get("sourceText") or "").strip(),
+                "sourceText": str(item.get("sourceText") or item.get("source_text") or "").strip(),
+                "source": str(item.get("source") or "").strip(),
+                "reason": str(item.get("reason") or "").strip(),
+            }
+            if isinstance(item.get("source_refs"), list):
+                node["sourceRefs"] = copy.deepcopy(item["source_refs"])
+            if isinstance(item.get("material_refs"), list):
+                node["materialRefs"] = copy.deepcopy(item["material_refs"])
         if stack:
             stack[-1][1].setdefault("children", []).append(node)
         else:
