@@ -481,10 +481,17 @@ def _allowed_technical_material_index(material_scope: dict[str, Any], turbine_mo
         folder_path = str(scope.get("path") or "").strip()
         if not folder_path:
             continue
+        material_tier = str(scope.get("materialTier") or "").strip().lower()
+        query_folder_path = folder_path
+        if material_tier in {"customer", "project"}:
+            path_parts = [part for part in folder_path.split("/") if part]
+            query_folder_path = "/".join(path_parts[:2])
         payload = _run_async(
             technical_material_store.raw_files(
-                folder_path=folder_path,
-                material_tier=str(scope.get("materialTier") or ""),
+                folder_path=query_folder_path,
+                project_id=str(scope.get("projectId") or "") if material_tier == "project" else "",
+                customer_name=str(scope.get("customerName") or "") if material_tier == "customer" else "",
+                material_tier=material_tier,
                 turbine_model=turbine_model,
                 recursive=True,
                 page=1,
