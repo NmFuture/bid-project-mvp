@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.services import technical_gap_ai_fill
 from app.services.bid_outline_state import confirm_outline_state, save_generated_outline_state
 from app.services.technical_gap_domain import aggregate_technical_gap_fill_quality
-from app.services.bid_runtime_state import now_iso
+from app.services.bid_runtime_state import count_outline_nodes, now_iso, outline_nodes_from_toc_items
 from app.services.store import store
 from app.services.workspace_artifacts import technical_workspace_dir
 
@@ -82,6 +82,15 @@ def _confirm_outline_for_tests(project_id: str) -> dict:
     payload = confirm_outline_state(project)
     store.persist_project_state(project)
     return payload
+
+
+def _replace_confirmed_outline_from_toc(project_id: str, toc: dict) -> None:
+    project = store.require_project_for_update(project_id)
+    nodes = outline_nodes_from_toc_items(toc.get("items") or [])
+    project["outline_state"]["nodes"] = nodes
+    project["outline_state"]["summary"] = {"totalNodeCount": count_outline_nodes(nodes)}
+    project["outline_state"]["reviewStatus"] = "confirmed"
+    store.persist_project_state(project)
 
 
 class GapReviewFlowTests(unittest.TestCase):
@@ -207,6 +216,47 @@ class GapReviewFlowTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        _save_generated_outline_for_tests(
+            project_id=project_id,
+            nodes=[
+                {
+                    "id": "OL-1",
+                    "tocNumber": "1",
+                    "title": "标前概述",
+                    "source": "template",
+                    "children": [
+                        {
+                            "id": "OL-1-1",
+                            "tocNumber": "1.1",
+                            "title": "技术评分标准索引表",
+                            "annotation": "适配",
+                            "source": "wiki",
+                            "reason": "匹配素材库：评分索引",
+                            "materialRefs": [
+                                {
+                                    "id": "RAW-0001",
+                                    "docx": "技术标/通用素材/技术评分标准索引表.docx",
+                                    "usage": "both",
+                                }
+                            ],
+                            "children": [],
+                        },
+                        {
+                            "id": "OL-1-2",
+                            "tocNumber": "2.1",
+                            "title": "性能保证",
+                            "annotation": "新增-招标要求",
+                            "source": "tender_special",
+                            "reason": "招标文件要求填写性能保证附表",
+                            "children": [],
+                        },
+                    ],
+                }
+            ],
+            generated_at=now_iso(),
+            summary="目录已生成，共 3 条目录项。",
+        )
+        _confirm_outline_for_tests(project_id)
         parse_storage = copy.deepcopy(store.get_project_runtime_state(project_id)["parse_storage"])
         parse_storage["projectDir"] = str(project_dir)
         project = store._require(project_id)
@@ -224,6 +274,70 @@ class GapReviewFlowTests(unittest.TestCase):
         }
         store._persist_project(project)
         return project_id
+
+    def test_gap_detection_uses_confirmed_outline_without_deduplicating_numbers(self) -> None:
+        project_id = self._create_project_with_confirmed_outline()
+        project = store.require_project_for_update(project_id)
+        project["outline_state"]["nodes"] = [
+            {
+                "id": "OL-B8-1",
+                "tocNumber": "附表B.8",
+                "title": "附表B.8 出质保后备品备件服务",
+                "source": "tender",
+                "children": [],
+            },
+            {
+                "id": "OL-B8-2",
+                "tocNumber": "附表B.8",
+                "title": "附表B.8 出质保后备品备件服务 无",
+                "source": "tender",
+                "children": [],
+            },
+        ]
+        project["outline_state"]["summary"] = {"totalNodeCount": 2}
+        stale_toc = technical_workspace_dir(project_id) / "s2_toc_workdir" / "toc.json"
+        stale_toc.parent.mkdir(parents=True, exist_ok=True)
+        stale_toc.write_text(
+            json.dumps(
+                {
+                    "schema_version": "bid-toc-json-v1",
+                    "items": [
+                        {
+                            "number": "附表B.8",
+                            "title": "出质保后备品备件服务",
+                            "level": 1,
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        project["directory_state"]["opencodeOutput"]["tocJsonPath"] = str(stale_toc)
+        store.persist_project_state(project)
+
+        captured_toc: list[dict] = []
+
+        def fake_gap_planner(manifest_path):
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            toc = json.loads(Path(manifest["tocJsonPath"]).read_text(encoding="utf-8"))
+            captured_toc.extend(toc["items"])
+            output_file = Path(manifest["outputFile"])
+            plan = minimal_gap_plan_from_manifest(manifest)
+            output_file.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+            return {"schema_version": "bid-tech-gap-plan-v1", "outputFile": str(output_file)}
+
+        with patch("app.services.technical_gap_planner.run_technical_gap_planner_skill", side_effect=fake_gap_planner):
+            response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["summary"]["totalTocItems"], 2)
+        self.assertEqual([item["number"] for item in captured_toc], ["附表B.8", "附表B.8"])
+        self.assertEqual(
+            [item["title"] for item in captured_toc],
+            ["出质保后备品备件服务", "出质保后备品备件服务 无"],
+        )
+        self.assertEqual(len(json.loads(stale_toc.read_text(encoding="utf-8"))["items"]), 1)
 
     def _confirm_project_fact_table(self, project_id: str, extra_values: dict[str, str] | None = None) -> dict:
         build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
@@ -1618,6 +1732,7 @@ class GapReviewFlowTests(unittest.TestCase):
         for item in toc_data["items"]:
             item["material_refs"] = []
         toc_json.write_text(json.dumps(toc_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _replace_confirmed_outline_from_toc(project_id, toc_data)
         wiki_cards = project_dir / "s2_toc_workdir" / "wiki" / "卡片"
         wiki_cards.mkdir(parents=True, exist_ok=True)
         (wiki_cards / "技术评分标准索引表.md").write_text(
@@ -1669,11 +1784,9 @@ class GapReviewFlowTests(unittest.TestCase):
                 "materialTier": "project",
             },
         ]
-        toc_json.write_text(
-            json.dumps(
-                {
-                    "schema_version": "bid-toc-json-v1",
-                    "items": [
+        toc_data = {
+            "schema_version": "bid-toc-json-v1",
+            "items": [
                         {
                             "order": 1,
                             "number": "第3章",
@@ -1715,13 +1828,10 @@ class GapReviewFlowTests(unittest.TestCase):
                             "source": "tender_appendix",
                             "material_refs": [],
                         },
-                    ],
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+            ],
+        }
+        toc_json.write_text(json.dumps(toc_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _replace_confirmed_outline_from_toc(project_id, toc_data)
         project = store._require(project_id)
         project["materialProjectId"] = "MAT-HN-CHIFENG-001"
         project["materialProjectCode"] = "MAT-HN-CHIFENG-001"
@@ -1787,9 +1897,11 @@ class GapReviewFlowTests(unittest.TestCase):
         manifests: list[dict] = []
 
         async def fake_raw_files(**kwargs):
-            folder_path = str(kwargs.get("folder_path") or "")
             items = []
-            if folder_path.endswith("MAT-HN-CHIFENG-001"):
+            if (
+                kwargs.get("material_tier") == "project"
+                and kwargs.get("project_id") == "MAT-HN-CHIFENG-001"
+            ):
                 items.append(
                     {
                         "id": "RAW-0473",

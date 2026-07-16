@@ -582,17 +582,33 @@ def _validate_technical_gap_plan_toc_coverage(plan: dict[str, Any], toc_json_pat
 def _outline_nodes_to_toc_items(nodes: list[dict[str, Any]], prefix: str = "", level: int = 1) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for index, node in enumerate(nodes, start=1):
-        number = f"{prefix}.{index}" if prefix else str(index)
+        if not isinstance(node, dict):
+            continue
+        fallback_number = f"{prefix}.{index}" if prefix else str(index)
+        number = str(
+            node.get("tocNumber")
+            or node.get("toc_number")
+            or node.get("number")
+            or fallback_number
+        ).strip()
+        title = str(node.get("title") or "").strip()
+        if number and title.startswith(number):
+            suffix = title[len(number) :]
+            if not suffix or suffix[:1].isspace() or suffix[:1] in "：:、.-":
+                title = suffix.strip(" ：:、.-") or title
         items.append(
             {
                 "order": len(items) + 1,
                 "number": number,
-                "title": str(node.get("title") or "").strip(),
+                "title": title,
                 "level": level,
                 "annotation": str(node.get("annotation") or "保留"),
-                "source": "outline_state",
-                "reason": "",
-                "material_refs": list(node.get("material_refs") or []),
+                "source": str(node.get("source") or "outline_state"),
+                "reason": str(node.get("reason") or ""),
+                "requiredStatus": str(node.get("requiredStatus") or node.get("required_status") or ""),
+                "sourceText": str(node.get("sourceText") or node.get("source_text") or ""),
+                "source_refs": list(node.get("sourceRefs") or node.get("source_refs") or []),
+                "material_refs": list(node.get("materialRefs") or node.get("material_refs") or []),
             }
         )
         children = node.get("children") or []
@@ -606,6 +622,23 @@ def _outline_nodes_to_toc_items(nodes: list[dict[str, Any]], prefix: str = "", l
 
 def _resolve_toc_json(project: dict[str, Any], work_dir: Path) -> Path:
     project_id = str(project.get("id") or "")
+    outline_state = project.get("outline_state") if isinstance(project.get("outline_state"), dict) else {}
+    outline_nodes = list(outline_state.get("nodes") or [])
+    if outline_nodes:
+        output = {
+            "schema_version": "bid-toc-json-v1",
+            "document_title": f"{project.get('name') or project_id}投标文件总目录",
+            "project": {
+                "owner": project.get("customerName") or "",
+                "name": project.get("name") or project_id,
+                "code": project.get("projectCode") or project_id,
+            },
+            "items": _outline_nodes_to_toc_items(outline_nodes),
+        }
+        target = work_dir / settings.s2_toc_output_file_name
+        target.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+        return target
+
     parse_storage = project.get("parse_storage") or {}
     candidates = []
     directory_output = ((project.get("directory_state") or {}).get("opencodeOutput") or {})
@@ -621,7 +654,6 @@ def _resolve_toc_json(project: dict[str, Any], work_dir: Path) -> Path:
             shutil.copy2(candidate, target)
             return target
 
-    outline_nodes = list((project.get("outline_state") or {}).get("nodes") or [])
     output = {
         "schema_version": "bid-toc-json-v1",
         "document_title": f"{project.get('name') or project_id}投标文件总目录",
