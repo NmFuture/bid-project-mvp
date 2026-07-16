@@ -672,7 +672,6 @@ export default function TechnicalGapRecognition({ showToast }) {
     [readableScopes],
   )
   const projectTurbineModel = data?.gapPlan?.projectTurbineModel || data?.projectTurbineModel || materialScope?.turbineModel || null
-  const selectedDecision = decisionOf(selected)
   const selectedActionMode = technicalActionMode(selected)
   const selectedIsAppendixFill = isAppendixFillItem(selected)
   const selectedAppendixTasks = asArray(selected?.appendixTasks)
@@ -1084,6 +1083,41 @@ export default function TechnicalGapRecognition({ showToast }) {
       (result) => result?.artifact?.fileName
         ? `已选用素材：${result.artifact.fileName}`
         : '已选用素材',
+    )
+  }
+
+  // 上传即选用：文件以 data URL 提交到 gaps/{gapId}/upload，后端存为人工产物
+  //（source=manual_upload，s7Ready），终审直接判就绪。后端按 ZIP 魔数校验，仅支持 .docx。
+  const handleUploadGapMaterial = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file || !selected) return null
+    if (!file.name.toLowerCase().endsWith('.docx')) {
+      showToast?.('目前仅支持上传 .docx 素材，其他格式请先转换后再上传', 'error')
+      return null
+    }
+    let dataUrl = ''
+    try {
+      dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result || ''))
+        reader.onerror = () => reject(new Error('读取文件失败，请重试'))
+        reader.readAsDataURL(file)
+      })
+    } catch (e) {
+      showToast?.(e?.message || '读取文件失败，请重试', 'error')
+      return null
+    }
+    if (!dataUrl) return null
+    return runAction(
+      `upload:${selected.id}`,
+      () => technicalGapsAPI.upload(id, selected.id, {
+        files: [{ name: file.name, data: dataUrl }],
+        operator: '当前用户',
+      }),
+      (result) => (result?.artifact?.fileName
+        ? `已上传并选用：${result.artifact.fileName}`
+        : '已上传并选用素材'),
     )
   }
 
@@ -1560,84 +1594,103 @@ export default function TechnicalGapRecognition({ showToast }) {
                           </section>
                         ) : null}
 
-                        {selectedActionMode === 'material_match' || selectedDecision === 'material_required' || selectedDecision === 'review_required'
-                          || (selectedActionMode === 'fixed_material' && selectedCandidateMaterials.length > 0) ? (
+                        {!selectedIsAppendixFill && selectedReferenceCandidates.length ? (
                           <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
                             <div>
                               <div className="text-xs font-semibold text-on-surface">
-                                {selectedActionMode === 'fixed_material' ? '备选素材' : selectedActionMode === 'material_match' ? '候选素材匹配' : selectedDecision === 'material_required' ? '素材库查询' : '复核素材查询'}
+                                {selectedActionMode === 'fixed_material' ? '备选素材' : '候选素材匹配'}
                               </div>
                               <div className="mt-1 text-[11px] text-outline">
                                 {selectedActionMode === 'fixed_material'
                                   ? '已自动选定主素材；本章需要多份素材拼装或替换时，可从备选中加选，选用即并入合并列表。'
-                                  : selectedActionMode === 'material_match'
-                                  ? '只在当前项目、客户和通用素材边界内查询，选用后作为该目录项的可合入素材。'
-                                  : '只在当前项目、客户和通用素材边界内查询。'}
+                                  : '系统在当前项目、客户和通用素材边界内召回的候选，选用后作为该目录项的可合入素材。'}
                               </div>
                             </div>
-                            {selectedReferenceCandidates.length ? (
-                              <div className="mt-3 space-y-2">
-                                {selectedReferenceCandidates.map((material) => {
-                                  const materialId = String(material?.id || material?.materialId || '').trim()
-                                  return (
-                                    <MaterialCandidateCard
-                                      key={materialId || material.name}
-                                      material={material}
-                                      isSelected={selectedMaterialIdSet.has(materialId)}
-                                      busy={Boolean(busyAction) || !materialId}
-                                      selecting={busyAction === `select-material:${selected.id}:${materialId}`}
-                                      onPreview={handlePreviewMaterial}
-                                      onSelect={handleSelectMaterial}
-                                      {...cardAiFillProps(material)}
-                                    />
-                                  )
-                                })}
-                              </div>
-                            ) : null}
-                            <div className="mt-3 flex gap-2">
-                              <input
-                                value={materialKeyword}
-                                onChange={(event) => setMaterialKeyword(event.target.value)}
-                                onKeyDown={(event) => {
-                                  if (event.key === 'Enter') handleSearchMaterials()
-                                }}
-                                placeholder="搜索素材名称"
-                                className="min-w-0 flex-1 h-9 px-3 rounded-md border border-surface-container-high bg-surface text-sm text-on-surface"
-                              />
-                              <button
-                                onClick={handleSearchMaterials}
-                                disabled={materialLoading}
-                                className="h-9 px-3 bg-surface-container-high text-on-surface-variant text-xs font-semibold rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
-                              >
-                                {materialLoading ? '查询中...' : '查询'}
-                              </button>
-                            </div>
-                            <div className="mt-3 max-h-48 space-y-2 overflow-y-auto">
-                              {materialSearch.items.length ? materialSearch.items.map((item) => {
-                                const materialId = String(item?.id || item?.materialId || '').trim()
+                            <div className="mt-3 space-y-2">
+                              {selectedReferenceCandidates.map((material) => {
+                                const materialId = String(material?.id || material?.materialId || '').trim()
                                 return (
                                   <MaterialCandidateCard
-                                    key={item.id}
-                                    material={item}
+                                    key={materialId || material.name}
+                                    material={material}
                                     isSelected={selectedMaterialIdSet.has(materialId)}
                                     busy={Boolean(busyAction) || !materialId}
                                     selecting={busyAction === `select-material:${selected.id}:${materialId}`}
                                     onPreview={handlePreviewMaterial}
                                     onSelect={handleSelectMaterial}
-                                    {...cardAiFillProps(item)}
+                                    {...cardAiFillProps(material)}
                                   />
                                 )
-                              }) : (
-                                <p className="text-xs text-outline">
-                                  {materialLoading ? '正在查询素材...' : '输入关键词后查询限定素材库。'}
-                                </p>
-                              )}
+                              })}
                             </div>
                           </section>
                         ) : null}
 
                         </>
                       )}
+
+                      {/* 统一兜底入口（产品裁决）：所有目录项底部都可搜索限定素材库、或直接上传素材；
+                          上传成功即选用为本目录项的匹配素材（人工产物，终审直接就绪）。 */}
+                      <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="text-xs font-semibold text-on-surface">搜索 / 上传素材</div>
+                            <div className="mt-1 text-[11px] text-outline">
+                              搜索只在当前项目、客户和通用素材边界内进行；上传的文件会直接选用为本目录项的匹配素材。
+                            </div>
+                          </div>
+                          <label className={`inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container ${busyAction ? 'pointer-events-none opacity-50' : ''}`}>
+                            <span className="material-symbols-outlined text-[16px]">upload_file</span>
+                            {busyAction === `upload:${selected.id}` ? '上传中...' : '上传素材'}
+                            <input
+                              type="file"
+                              accept=".docx"
+                              className="hidden"
+                              disabled={Boolean(busyAction)}
+                              onChange={handleUploadGapMaterial}
+                            />
+                          </label>
+                        </div>
+                        <div className="mt-3 flex gap-2">
+                          <input
+                            value={materialKeyword}
+                            onChange={(event) => setMaterialKeyword(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') handleSearchMaterials()
+                            }}
+                            placeholder="搜索素材名称"
+                            className="min-w-0 flex-1 h-9 px-3 rounded-md border border-surface-container-high bg-surface text-sm text-on-surface"
+                          />
+                          <button
+                            onClick={handleSearchMaterials}
+                            disabled={materialLoading}
+                            className="h-9 px-3 bg-surface-container-high text-on-surface-variant text-xs font-semibold rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {materialLoading ? '查询中...' : '查询'}
+                          </button>
+                        </div>
+                        <div className="mt-3 max-h-64 space-y-2 overflow-y-auto">
+                          {materialSearch.items.length ? materialSearch.items.map((item) => {
+                            const materialId = String(item?.id || item?.materialId || '').trim()
+                            return (
+                              <MaterialCandidateCard
+                                key={item.id}
+                                material={item}
+                                isSelected={selectedMaterialIdSet.has(materialId)}
+                                busy={Boolean(busyAction) || !materialId}
+                                selecting={busyAction === `select-material:${selected.id}:${materialId}`}
+                                onPreview={handlePreviewMaterial}
+                                onSelect={handleSelectMaterial}
+                                {...cardAiFillProps(item)}
+                              />
+                            )
+                          }) : (
+                            <p className="text-xs text-outline">
+                              {materialLoading ? '正在查询素材...' : '输入关键词后查询限定素材库。'}
+                            </p>
+                          )}
+                        </div>
+                      </section>
                     </div>
                   </div>
                 </div>
