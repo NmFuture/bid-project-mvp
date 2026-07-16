@@ -17,7 +17,6 @@ import {
   appendixTaskForFillTask,
   defaultAiFillParseFieldIds,
   defaultAiFillReferenceMaterialIds,
-  evidenceSegmentsForMaterial,
   isFillTemplateMaterial,
   isStructuralItem,
   latestResolvedArtifact,
@@ -162,27 +161,6 @@ function StatCard({ label, value }) {
   )
 }
 
-// 素材证据片段：对齐商务标「Wiki依据」的紧凑单行呈现——只展示最相关的一段
-// （标题加粗 + 页码 + 「另有 N 段」折叠计数）+ 最多两行摘要，不逐段堆块，
-// 避免 A 层片段噪声（标题段切分的碎句）占满卡片。无片段则不渲染。
-function EvidenceSegments({ material }) {
-  const segments = evidenceSegmentsForMaterial(material, 8)
-  if (!segments.length) return null
-  const primary = segments[0]
-  return (
-    <>
-      <div className="mt-1 rounded bg-primary/5 px-2 py-1 text-[11px] text-on-surface-variant">
-        匹配依据：<span className="font-semibold text-primary">{primary.title || '相关片段'}</span>
-        {primary.sourcePages ? ` · ${primary.sourcePages}` : ''}
-        {segments.length > 1 ? ` · 另有 ${segments.length - 1} 段依据` : ''}
-      </div>
-      {primary.summary ? (
-        <div className="mt-1 line-clamp-2 text-[11px] text-on-surface-variant">{primary.summary}</div>
-      ) : null}
-    </>
-  )
-}
-
 // 素材卡（产品裁决 2026-07-16 统一交互）：所有素材一律 预览 + 选择 两个按钮；
 // 待填写素材（命名纪律「待填写-」前缀，或本目录项填写任务的空白模板）额外有 AI填写。
 // leading 用于前置控件（如 AI 参考素材勾选框）。系统召回、来源推荐、搜索结果共用此卡片。
@@ -201,12 +179,11 @@ function MaterialCandidateCard({
 }) {
   const name = material.name || material.cleanedFileName || material.id || material.materialId
   const path = material.folderPath || material.path || material.id
-  const reason = material.sourceRouting?.reasons?.[0] || material.matchReason
   // 新口径 matchScore 已是 0~1（启发式封顶 0.98，0.99=文件名精确命中）；Math.min 仅为存量旧版无界分兜底。
   const matchPercent = Math.min(100, Math.round(technicalMatchScore(material) * 100))
   const tierLabel = materialTierLabels[String(material.materialTier || '')] || ''
-  const cleanStatus = String(material.cleanStatus || '')
   const isFillable = fillable ?? isFillTemplateMaterial(material)
+  // 展示极简口径（产品裁决）：文件名 + 匹配度 + 路径，不展示召回原因/清洗状态/证据片段。
   return (
     <div
       className={`rounded-md border px-3 py-2 text-xs ${
@@ -222,26 +199,15 @@ function MaterialCandidateCard({
             {isFillable ? <Badge size="xs" variant="info">待填写</Badge> : null}
             {tierLabel ? <Badge size="xs" variant="pending">{tierLabel}</Badge> : null}
           </div>
-          {matchPercent > 0 || reason ? (
-            <div className="mt-1 text-[11px] text-outline">
-              {matchPercent > 0 ? (
-                // <50% 为弱关联召回的低置信候选（如纯同义词蹭分），弱化显示防误导。
-                <span className={`font-semibold ${matchPercent < 50 ? 'text-outline' : 'text-primary'}`}>
-                  匹配度 {matchPercent}%{matchPercent < 50 ? '（低置信）' : ''}
-                </span>
-              ) : null}
-              {matchPercent > 0 && reason ? ' · ' : ''}
-              {reason || ''}
+          {matchPercent > 0 ? (
+            <div className="mt-1 text-[11px]">
+              {/* <50% 为弱关联召回的低置信候选（如纯同义词蹭分），弱化显示防误导。 */}
+              <span className={`font-semibold ${matchPercent < 50 ? 'text-outline' : 'text-primary'}`}>
+                匹配度 {matchPercent}%{matchPercent < 50 ? '（低置信）' : ''}
+              </span>
             </div>
           ) : null}
-          {cleanStatus || material.cleanedFileName ? (
-            <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-on-surface-variant">
-              {cleanStatus ? <span>清洗：{cleanStatus}</span> : null}
-              {material.cleanedFileName ? <span>清洗稿可用</span> : null}
-            </div>
-          ) : null}
-          <span className="mt-1 block truncate text-[11px] text-outline">{path}</span>
-          <EvidenceSegments material={material} />
+          <span className="mt-1 block truncate text-[11px] text-outline" title={path}>{path}</span>
         </div>
         <div className="flex shrink-0 flex-col gap-2">
           <Button type="button" onClick={() => onPreview(material)} disabled={busy} size="sm" variant="quiet">
