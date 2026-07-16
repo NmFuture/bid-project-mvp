@@ -154,6 +154,25 @@ def xml_paragraph_style(element: ET.Element) -> str:
     return str(p_style.attrib.get(f"{WORD_NS}val") or p_style.attrib.get("val") or "")
 
 
+TOC_PARAGRAPH_STYLE_RE = re.compile(r"toc\s*\d|目录", re.IGNORECASE)
+
+
+def is_toc_paragraph(element: ET.Element) -> bool:
+    """目录行：TOC 域生成的段落（带 _Toc 锚点超链接，或 TOC/目录 样式）。
+
+    目录页的「1.1 标题……页码」会命中编号标题正则；不排除的话，标题配额被
+    目录行占满，还会混入带页码后缀的脏标题（金标复盘：风资源报告伪片段来源之一）。
+    """
+    style = xml_paragraph_style(element)
+    if style and TOC_PARAGRAPH_STYLE_RE.search(style):
+        return True
+    for link in element.iter(f"{WORD_NS}hyperlink"):
+        anchor = str(link.attrib.get(f"{WORD_NS}anchor") or "")
+        if anchor.startswith("_Toc"):
+            return True
+    return False
+
+
 def heading_level_from_style(style_id: str, text: str) -> int | None:
     style = str(style_id or "")
     match = HEADING_STYLE_RE.search(style)
@@ -165,6 +184,12 @@ def heading_level_from_style(style_id: str, text: str) -> int | None:
     if not numbered:
         return None
     numeric = numbered.group(3)
+    # 纯文本编号是兜底判据，要求编号后跟着真实标题词（≥2 个连续中文/字母），
+    # 排除表格数值（7.22）、日期区间（2022.06.01-2023.06.01）、量纲（1.156 @564m）等伪标题。
+    group_index = 1 if numbered.group(1) else 2 if numbered.group(2) else 3
+    body = text[numbered.end(group_index):]
+    if not re.search(r"[一-龥A-Za-z]{2}", body):
+        return None
     if numeric:
         return max(1, min(6, len(re.findall(r"\d+", numeric))))
     return 1
@@ -182,9 +207,33 @@ def extract_docx_profile(data: bytes) -> dict[str, Any]:
     table_previews: list[str] = []
     seen_paragraphs: set[str] = set()
     table_count = 0
+    table_depth = 0
     try:
-        for event, element in ET.iterparse(BytesIO(document_xml), events=("end",)):
+        for event, element in ET.iterparse(BytesIO(document_xml), events=("start", "end")):
+            if element.tag == f"{WORD_NS}tbl":
+                if event == "start":
+                    table_depth += 1
+                    continue
+                table_depth = max(0, table_depth - 1)
+                table_count += 1
+                if table_depth == 0:
+                    if len(table_previews) < 6:
+                        text = xml_text(element)
+                        if text:
+                            table_previews.append(text[:320])
+                    element.clear()
+                continue
+            if event != "end":
+                continue
             if element.tag == f"{WORD_NS}p":
+                # 表格单元格里的段落不参与标题/正文抽取：数值单元格会命中编号标题
+                # 正则产生伪标题（金标复盘：风资源报告片段大半是表格数值）。
+                # 不在此 clear，外层 tbl 结束收整表预览时还需要这些文本。
+                if table_depth > 0:
+                    continue
+                if is_toc_paragraph(element):
+                    element.clear()
+                    continue
                 text = xml_text(element)
                 if text:
                     level = heading_level_from_style(xml_paragraph_style(element), text)
@@ -197,13 +246,6 @@ def extract_docx_profile(data: bytes) -> dict[str, Any]:
                     ):
                         seen_paragraphs.add(text)
                         paragraphs.append(text[:260])
-                element.clear()
-            elif element.tag == f"{WORD_NS}tbl":
-                table_count += 1
-                if len(table_previews) < 6:
-                    text = xml_text(element)
-                    if text:
-                        table_previews.append(text[:320])
                 element.clear()
             if (
                 len(headings) >= MAX_CARD_HEADINGS

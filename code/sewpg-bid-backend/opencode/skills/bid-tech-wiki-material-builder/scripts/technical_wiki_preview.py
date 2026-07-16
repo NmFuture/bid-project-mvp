@@ -174,6 +174,15 @@ def build_evidence_segments(material_id: str, name: str, path: str, profile: dic
             "topicKeywords": topic_keywords,
         })
 
+    if len(headings) > _MAX_SEGMENTS_PER_MATERIAL:
+        # 层级优先保留：标题数超过片段上限时，先保层级最浅的章/节/附表骨架标题，
+        # 再按原文顺序回填深层小节——否则文档尾部的附表标题（如 附表1/2/3）会被
+        # 「取文档序前 N 个」截掉（金标复盘：风资源报告整章覆盖判定失效的根因之一）。
+        order = {id(head): index for index, head in enumerate(headings)}
+        kept = sorted(headings, key=lambda head: (int(head.get("level") or 9), order[id(head)]))
+        kept = kept[:_MAX_SEGMENTS_PER_MATERIAL]
+        headings = sorted(kept, key=lambda head: order[id(head)])
+
     if headings:
         # heading 级切分：标题来自 heading，摘要用紧随其后的正文摘录（profile 已是摘录，
         # 顺序近似原文），按出现顺序轮流分配，保证每个 heading 至少有一句导读。

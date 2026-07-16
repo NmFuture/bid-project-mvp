@@ -554,11 +554,18 @@ def material_requires_fill(material: dict[str, Any] | None) -> bool:
     return any(marker in text for marker in ("待填写", "待补充", "待确认"))
 
 
+# 展示分口径（产品裁决 2026-07-16）：0.99 专用于「文件名精确命中」（与自动定案同款
+# 判据 title_matches_file_name），一切启发式分（文件级/片段/主题/近名）封顶 0.98。
+HEURISTIC_SCORE_CAP = 0.98
+EXACT_MATCH_SCORE = 0.99
+
+
 def material_score(material: dict[str, Any], title: str) -> float:
     """文件级匹配分，0~1 口径（对齐商务标 material_match_score 的归一化语义）。
 
     权重由旧版无界原始分整体 ÷200 等价缩放而来，排序行为与旧版严格一致；
-    强命中可略超 1，展示侧（attach_recalled_segments / recall_material_segments）统一封顶 0.99。
+    强命中可略超 1，展示侧（attach_recalled_segments / recall_material_segments）统一封顶
+    0.98，0.99 只留给文件名精确命中。
     """
     text = normalize_key(material_text(material))
     title_key = normalize_key(title)
@@ -746,19 +753,20 @@ def recall_material_segments(material: dict[str, Any], title: str, *, limit: int
         score = segment_score(segment, title)
         if score > 0:
             enriched = dict(segment)
-            # 展示分封顶 0.99（多关键词命中可略超 1），排序仍用未封顶的原始分。
-            enriched["matchScore"] = round(min(score, 0.99), 2)
+            # 展示分封顶 0.98（多关键词命中可略超 1），排序仍用未封顶的原始分。
+            enriched["matchScore"] = round(min(score, HEURISTIC_SCORE_CAP), 2)
             scored.append((score, enriched))
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return [segment for _, segment in scored[:limit]]
 
 
 def attach_recalled_segments(materials: list[dict[str, Any]], title: str, *, limit: int = 3) -> list[dict[str, Any]]:
-    """给候选素材附上「与本目录标题相关的证据片段」+ 综合 matchScore（0~1，封顶 0.99）。
+    """给候选素材附上「与本目录标题相关的证据片段」+ 综合 matchScore（0~1）。
 
     用于非附表正文缺口：在文件级匹配之上叠加段落级证据，让下游 AI/人工能定位到
     素材内具体段落。matchScore = max(文件级分, 主题召回 topicRelevance) + 最佳片段
-    加成（封顶 0.25），整体封顶 0.99，对齐商务标 0~1 打分口径。
+    加成（封顶 0.25），启发式整体封顶 0.98；文件名精确命中（自动定案同款判据）
+    固定给 0.99，前端「已就绪」标签以此区分证据等级。
     取 topicRelevance 兜底是因为主题召回的素材文件名往往与标题字面对不上，
     纯文件级分会把真实相关度显示得过低。不改动来源矩阵/附表路径。
     """
@@ -768,12 +776,16 @@ def attach_recalled_segments(materials: list[dict[str, Any]], title: str, *, lim
             continue
         recalled = recall_material_segments(material, title, limit=limit)
         item = dict(material)
-        base = max(material_score(material, title), _weak_recall_rank(material))
-        segment_bonus = min(recalled[0]["matchScore"] if recalled else 0.0, 0.25)
-        item["matchScore"] = round(min(base + segment_bonus, 0.99), 2)
+        if title_matches_file_name(material, title):
+            item["matchScore"] = EXACT_MATCH_SCORE
+            item["matchReason"] = item.get("matchReason") or "文件名精确命中章节标题"
+        else:
+            base = max(material_score(material, title), _weak_recall_rank(material))
+            segment_bonus = min(recalled[0]["matchScore"] if recalled else 0.0, 0.25)
+            item["matchScore"] = round(min(base + segment_bonus, HEURISTIC_SCORE_CAP), 2)
         if recalled:
             item["recalledSegments"] = recalled
-            item["matchReason"] = f"段落级证据召回（{len(recalled)} 段相关）"
+            item["matchReason"] = f"段落级证据召回（{len(recalled)} 段相关）" if item["matchScore"] < EXACT_MATCH_SCORE else item["matchReason"]
         enriched_list.append(item)
     return enriched_list
 
@@ -902,7 +914,7 @@ def sibling_folder_materials(
         # 常平分，靠素材名与章节标题的相似度把真相关的（如 承诺函 系列）排上来。
         name_sim = _tech_similarity_score(title, _material_name_stem(str(sib.get("name") or "")))
         if name_sim >= 0.2:
-            sib["nameSimilarity"] = round(name_sim, 3)
+            sib["nameSimilarity"] = round(min(name_sim, HEURISTIC_SCORE_CAP), 3)
         siblings.append(sib)
     siblings.sort(key=lambda m: material_score(m, title) + float(m.get("nameSimilarity") or 0), reverse=True)
     return [dict(m) for m in siblings[:limit]]
@@ -1079,7 +1091,7 @@ def topic_match_materials(
         # 项目素材阈值放宽 ×0.6（金标反评 B 类：项目定制素材漏召回代价远大于噪声）
         if score >= (threshold * 0.6 if str(material.get("materialTier") or "").lower() == "project" else threshold):
             enriched = dict(material)
-            enriched["topicRelevance"] = round(score, 3)
+            enriched["topicRelevance"] = round(min(score, HEURISTIC_SCORE_CAP), 3)
             enriched["matchReason"] = enriched.get("matchReason") or "主题相关素材（弱关联召回）"
             scored.append((score, enriched))
     # 路内排序也加层级加成：平分时项目/客户素材优先，避免 tie-break 按插入序把它们挤出路内上限。
@@ -1122,7 +1134,7 @@ def approx_name_match_materials(
         # 项目素材阈值放宽 ×0.6（金标反评 B 类）
         if best >= (threshold * 0.6 if str(material.get("materialTier") or "").lower() == "project" else threshold):
             enriched = dict(material)
-            enriched["nameSimilarity"] = round(best, 3)
+            enriched["nameSimilarity"] = round(min(best, HEURISTIC_SCORE_CAP), 3)
             enriched["matchReason"] = enriched.get("matchReason") or "近似名称召回"
             scored.append((best, enriched))
     # 路内排序也加层级加成：平分时项目/客户素材优先，避免 tie-break 按插入序把它们挤出路内上限。
@@ -1175,7 +1187,7 @@ def segment_recall_materials(
         # 项目素材阈值放宽 ×0.6（金标反评 B 类）
         if best >= (threshold * 0.6 if str(material.get("materialTier") or "").lower() == "project" else threshold):
             enriched = dict(material)
-            enriched["segmentRecallScore"] = round(min(best, 0.99), 3)
+            enriched["segmentRecallScore"] = round(min(best, HEURISTIC_SCORE_CAP), 3)
             enriched["matchReason"] = enriched.get("matchReason") or f"片段级召回：{best_seg or '相关片段'}"
             scored.append((best, enriched))
     # 路内排序也加层级加成：平分时项目/客户素材优先，避免 tie-break 按插入序把它们挤出路内上限。
@@ -2072,6 +2084,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         )
 
     collapse_empirically_converged_chapters(plan_items)
+    extend_chapter_master_to_trailing_appendices(plan_items)
     summary = summarize(plan_items)
     integrity = coverage_integrity(items, plan_items, summary)
     if integrity["coverageStatus"] != "passed":
@@ -2221,6 +2234,88 @@ def collapse_empirically_converged_chapters(plan_items: list[dict[str, Any]]) ->
             d["priority"] = "medium"
             d["gapReason"] = f"已由父章节“{header.get('title') or top}”整章素材覆盖（子节独立匹配收敛认定）。"
             d["nextActions"] = ["s4_merge_material"]
+
+
+# 正文型附表编号：「附表N」纯数字系列（附表1/2/3）。字母系列（附表A.1…附表H.5）
+# 由解析空表 + 来源矩阵驱动，永不参与整章覆盖延伸。
+_TRAILING_APPENDIX_NUMBER_RE = re.compile(r"^附表\d+$")
+
+
+def extend_chapter_master_to_trailing_appendices(plan_items: list[dict[str, Any]]) -> None:
+    """整章覆盖延伸（答案卷验证，产品裁决 2026-07-16）：
+
+    真实标书里「第N章 + 紧随其后的 附表1/2/3」常由同一份整章文档承载（华能翁牛特旗
+    第3章：附表1/2/3 就是整章文档内部的收尾小节）。这些附表在招标目录格式里与章平级、
+    层级上不属于该章，但内容属于——需要跨层级的覆盖声明，目录层级本身不能改（招标格式钉死）。
+
+    仅处理「正文型附表」：编号形如“附表N”（纯数字），且无 appendixTasks/fillTasks/
+    resolvedArtifacts/自有 matchedMaterials。按证据强度分级（保守自动化）：
+    - 附表标题与章标题或整章素材文件名同名 → 自动 covered_by_parent；
+    - 附表标题命中整章素材的片段标题 → 自动 covered_by_parent；
+    - 仅位置相邻、无内容证据 → 不改判，只挂 suspectedParentCoverage 供人工确认。
+    从章的子树结束处开始扫描，遇到非正文型附表或下一章即停。
+    """
+    for index, header in enumerate(plan_items):
+        if str(header.get("coverageRole") or "") != "chapter_master":
+            continue
+        master = next((m for m in header.get("matchedMaterials") or [] if isinstance(m, dict)), None)
+        if not isinstance(master, dict):
+            continue
+        header_id = str(header.get("id") or "")
+        header_level = int(header.get("level") or 1)
+        header_title = str(header.get("title") or "")
+        header_key = _tech_normalize_text(header_title)
+        master_key = _tech_normalize_text(str(master.get("name") or ""))
+        segment_keys = [
+            key
+            for seg in master.get("evidenceSegments") or []
+            if isinstance(seg, dict)
+            for key in [_tech_normalize_text(str(seg.get("title") or ""))]
+            if len(key) >= 4
+        ]
+        cursor = index + 1
+        while cursor < len(plan_items) and int(plan_items[cursor].get("level") or 1) > header_level:
+            cursor += 1  # 跳过本章子树
+        while cursor < len(plan_items):
+            item = plan_items[cursor]
+            cursor += 1
+            number = re.sub(r"\s+", "", str(item.get("number") or ""))
+            if int(item.get("level") or 1) != header_level or not _TRAILING_APPENDIX_NUMBER_RE.match(number):
+                break
+            if (
+                item.get("appendixTasks")
+                or item.get("fillTasks")
+                or item.get("resolvedArtifacts")
+                or item.get("matchedMaterials")
+                or str(item.get("coveredByParent") or "")
+            ):
+                continue  # 有独立产出路径或已被覆盖的附表不吸收，继续看下一张
+            title_key = _tech_normalize_text(str(item.get("title") or ""))
+            if not title_key:
+                continue
+            same_name = title_key in header_key or title_key in master_key
+            segment_hit = any(title_key in key or key in title_key for key in segment_keys)
+            if same_name or segment_hit:
+                item["coveredByParent"] = header_id
+                item["coverageRole"] = "covered_by_parent"
+                item["status"] = "matched"
+                item["decision"] = "ready"
+                item["usage"] = "covered_by_parent"
+                item["candidateMaterials"] = []
+                item["gapReason"] = (
+                    f"已由父章节“{header_title}”整章素材覆盖"
+                    f"（{'同名附表' if same_name else '整章素材片段命中附表标题'}）。"
+                )
+                item["nextActions"] = ["s4_merge_material"]
+            else:
+                item["suspectedParentCoverage"] = {
+                    "gapId": header_id,
+                    "chapterTitle": header_title,
+                    "materialName": str(master.get("name") or ""),
+                }
+                base_reason = str(item.get("gapReason") or "").strip()
+                hint = f"紧随整章覆盖章节“{header_title}”之后，疑似由同一份整章素材覆盖，请人工确认或选用素材。"
+                item["gapReason"] = f"{base_reason} {hint}".strip()
 
 
 def summarize(items: list[dict[str, Any]]) -> dict[str, int]:
