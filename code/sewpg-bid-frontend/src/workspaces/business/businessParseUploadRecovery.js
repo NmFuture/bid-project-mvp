@@ -14,7 +14,8 @@ export const isParseProgressFailed = (progress) => failedStatuses.has(normalizeS
 
 export const isParseResultCompleted = (result) => completedStatuses.has(normalizeStatus(result))
 
-export const shouldPollParseProgress = ({ uploading = false, progress = null, result = null } = {}) => {
+export const shouldPollParseProgress = ({ uploading = false, stopped = false, progress = null, result = null } = {}) => {
+  if (stopped) return false
   if (uploading) return true
   if (isParseResultCompleted(result)) return false
   const status = normalizeStatus(progress)
@@ -60,6 +61,7 @@ export const recoverUploadAndRunTimeout = async ({
   pollIntervalMs = 1000,
   maxPollMs = 2 * 60 * 1000,
   onProgress,
+  signal,
 } = {}) => {
   if (!projectId || !parseClient?.progress) {
     return { completed: false, progress: null }
@@ -72,16 +74,25 @@ export const recoverUploadAndRunTimeout = async ({
   let firstPoll = true
 
   while (firstPoll || Date.now() - startedAt < maxPollMs) {
+    if (signal?.aborted) {
+      return { completed: false, failed: false, stopped: true, progress: lastProgress, result: lastResult, error: lastError }
+    }
     firstPoll = false
     try {
       const snapshot = await pollParseProgressOnce({ projectId, parseClient, onProgress })
       lastProgress = snapshot.progress
       lastResult = snapshot.result
       lastError = snapshot.error || lastError
+      if (signal?.aborted) {
+        return { completed: false, failed: false, stopped: true, progress: lastProgress, result: lastResult, error: lastError }
+      }
       if (snapshot.completed) return snapshot
       if (snapshot.failed) return snapshot
     } catch (error) {
       lastError = error
+      if (signal?.aborted) {
+        return { completed: false, failed: false, stopped: true, progress: lastProgress, result: lastResult, error: lastError }
+      }
     }
 
     if (isParseProgressFailed(lastProgress)) {

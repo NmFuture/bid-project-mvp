@@ -107,8 +107,36 @@ test('上传解析请求超时后仍在 running 时返回可继续展示的进�
   assert.equal(recovered.progress.percentage, 75)
 })
 
+test('上传解析超时恢复轮询收到停止信号后结束', async () => {
+  const controller = new AbortController()
+  let progressCalls = 0
+  const parseClient = {
+    progress: async () => {
+      progressCalls += 1
+      controller.abort()
+      return { status: 'running', percentage: 25, summary: 'AI 审查中。' }
+    },
+  }
+
+  const recovered = await recoverUploadAndRunTimeout({
+    projectId: 'PRJ-0021',
+    parseClient,
+    pollIntervalMs: 0,
+    maxPollMs: 1000,
+    signal: controller.signal,
+  })
+
+  assert.equal(recovered.stopped, true)
+  assert.equal(progressCalls, 1)
+})
+
 test('上传请求结束后只要后端仍 running 就继续轮询进度', () => {
   assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'running', percentage: 40 } }), true)
+  assert.equal(shouldPollParseProgress({
+    uploading: true,
+    stopped: true,
+    progress: { status: 'running', percentage: 40 },
+  }), false)
   assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'completed', percentage: 100 } }), true)
   assert.equal(shouldPollParseProgress({
     uploading: false,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { businessParseAPI, businessProjectsAPI } from '../../../api'
 import { PageError, PageLoading } from '../../../components/states/PageState'
@@ -21,6 +21,10 @@ import {
   selectBusinessParseProjectId,
   shouldSyncBusinessProjectParseResultRoute,
 } from '../businessProjectRoutes'
+import {
+  BUSINESS_PARSE_RESULT_DISPLAY,
+  businessParseResultDisplayState,
+} from '../businessParseResultDisplay'
 import { businessRiskLevelLabel } from '../businessRiskLevel'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
@@ -195,6 +199,20 @@ const BUSINESS_REVIEW_CONFIG = {
   showApproveCommitmentLetters: true,
   buildPresenceRows: () => [],
 }
+
+const BUSINESS_STOP_PARSE_MESSAGE = '已请求停止后端商务标解析和 Opencode 任务。'
+const isStoppedParseStatus = (status) => status === 'stopped' || status === 'cancelled'
+
+const buildStoppedParseProgress = (previous, summary) => ({
+  status: previous?.status === 'cancelled' ? 'cancelled' : 'stopped',
+  percentage: Math.max(0, Math.min(100, Number(previous?.percentage || 0))),
+  summary,
+  events: [
+    ...(Array.isArray(previous?.events) ? previous.events : []),
+    { step: 'stop', level: 'warning', message: summary },
+  ].slice(-8),
+  opencodeOutput: previous?.opencodeOutput || { parts: [] },
+})
 
 const commitmentTypeLabel = (value = '') => {
   if (value === 'disqualification') return '否决项承诺函'
@@ -632,6 +650,7 @@ export default function BusinessTenderReview({ showToast }) {
   const [uploadError, setUploadError] = useState('')
   const [tenderFiles, setTenderFiles] = useState([])
   const [uploading, setUploading] = useState(false)
+  const [parseStopRequested, setParseStopRequested] = useState(false)
   const [parseProgress, setParseProgress] = useState(null)
   const [deciding, setDeciding] = useState('')
   const [creatingReview, setCreatingReview] = useState(false)
@@ -645,6 +664,9 @@ export default function BusinessTenderReview({ showToast }) {
   const [commitmentLetterPreview, setCommitmentLetterPreview] = useState(null)
   const [commitmentLetterPreviewLoading, setCommitmentLetterPreviewLoading] = useState(false)
   const [commitmentLetterPreviewError, setCommitmentLetterPreviewError] = useState('')
+  const parseAbortControllerRef = useRef(null)
+  const activeParseProjectIdRef = useRef('')
+  const parseStoppedRef = useRef(false)
   const [selectedBusinessDocumentKind, setSelectedBusinessDocumentKind] = useState('commitment')
   const [savingAppendixId, setSavingAppendixId] = useState('')
   const [savingAllAppendices, setSavingAllAppendices] = useState(false)
@@ -780,10 +802,50 @@ export default function BusinessTenderReview({ showToast }) {
   const parseProgressStatus = parseProgress?.status
   const parseProgressPercentage = parseProgress?.percentage
   const parseResultStatus = parseData?.status
+  const parseIsStoppable = shouldPollParseProgress({
+    uploading,
+    stopped: parseStopRequested,
+    progress: { status: parseProgressStatus, percentage: parseProgressPercentage },
+    result: { status: parseResultStatus },
+  })
+
+  const handleStopParse = useCallback(async () => {
+    const targetProjectId = activeParseProjectIdRef.current || selectedProjectId
+    const cancelRequest = targetProjectId
+      ? parseClient.cancel(targetProjectId).catch((error) => ({ error }))
+      : Promise.resolve(null)
+    parseStoppedRef.current = true
+    setParseStopRequested(true)
+    parseAbortControllerRef.current?.abort()
+    parseAbortControllerRef.current = null
+    setUploading(false)
+    setUploadError(BUSINESS_STOP_PARSE_MESSAGE)
+    setParseProgress((previous) => buildStoppedParseProgress(previous, BUSINESS_STOP_PARSE_MESSAGE))
+    showToast?.('正在请求停止后端商务标解析和 Opencode 任务。')
+
+    const cancelled = await cancelRequest
+    if (cancelled?.error) {
+      activeParseProjectIdRef.current = ''
+      showToast?.(`后端停止请求失败：${cancelled.error?.message || '请稍后查看最新进度。'}`, 'error')
+      return
+    }
+    if (cancelled) {
+      const summary = cancelled.summary || cancelled.message || BUSINESS_STOP_PARSE_MESSAGE
+      setUploadError(summary)
+      setParseProgress((previous) => buildStoppedParseProgress({ ...previous, ...cancelled }, summary))
+      showToast?.(summary)
+    }
+    activeParseProjectIdRef.current = ''
+  }, [parseClient, selectedProjectId, showToast])
+
+  useEffect(() => () => {
+    parseAbortControllerRef.current?.abort()
+  }, [])
 
   useEffect(() => {
     if (!selectedProjectId || !shouldPollParseProgress({
       uploading,
+      stopped: parseStopRequested,
       progress: { status: parseProgressStatus, percentage: parseProgressPercentage },
       result: { status: parseResultStatus },
     })) return undefined
@@ -821,6 +883,7 @@ export default function BusinessTenderReview({ showToast }) {
     parseProgressPercentage,
     parseProgressStatus,
     parseResultStatus,
+    parseStopRequested,
     selectedProjectId,
     uploading,
   ])
@@ -940,6 +1003,10 @@ export default function BusinessTenderReview({ showToast }) {
 
   const rows = structuredRows.length ? structuredRows : fallbackRows
   const isParseCompleted = parseData?.status === 'completed'
+  const parseResultDisplayState = businessParseResultDisplayState({
+    isParseCompleted,
+    sourceFiles,
+  })
   const reviewDecision = String(project?.reviewDecision || 'pending')
   const reviewDecisionLabel = REVIEW_DECISION_LABELS[reviewDecision] || REVIEW_DECISION_LABELS.pending
   const showBusinessCompactUpload = !isParseCompleted
@@ -1056,6 +1123,8 @@ export default function BusinessTenderReview({ showToast }) {
     }
 
     setUploading(true)
+    setParseStopRequested(false)
+    parseStoppedRef.current = false
     setUploadError('')
     setParseProgress({
       status: 'running',
@@ -1065,31 +1134,52 @@ export default function BusinessTenderReview({ showToast }) {
       opencodeOutput: { parts: [] },
     })
     let targetProjectId = selectedProjectId
+    const abortController = new AbortController()
+    parseAbortControllerRef.current = abortController
     try {
       if (!targetProjectId) {
         const created = await createReviewProject({ silent: true })
         targetProjectId = created?.id || ''
       }
+      if (parseStoppedRef.current) return
       if (!targetProjectId) {
         throw new Error('上传解析入口准备失败，请刷新后重试。')
       }
+      activeParseProjectIdRef.current = targetProjectId
       const formData = new FormData()
       tenderFiles.forEach((file) => formData.append('tenderFiles', file))
-      const response = await parseClient.uploadAndRun(targetProjectId, { formData })
+      const response = await parseClient.uploadAndRun(targetProjectId, {
+        formData,
+        signal: abortController.signal,
+      })
+      if (parseStoppedRef.current) return
       setParseData(response)
       await syncParsedProject(targetProjectId)
       navigateToParseResult(targetProjectId)
       setTenderFiles([])
       showToast?.(response?.message || `${BUSINESS_BID_TYPE}招标文件解析完成。`)
     } catch (e) {
+      if (parseStoppedRef.current || e?.code === 'ABORTED') {
+        setUploadError(BUSINESS_STOP_PARSE_MESSAGE)
+        setParseProgress((previous) => buildStoppedParseProgress(previous, BUSINESS_STOP_PARSE_MESSAGE))
+        return
+      }
       if (isUploadAndRunTimeout(e) && targetProjectId) {
         setUploadError('')
         showToast?.('解析仍在后台继续，正在同步最新进度。')
         const recovered = await recoverUploadAndRunTimeout({
           projectId: targetProjectId,
           parseClient,
-          onProgress: (progress) => setParseProgress(progress),
+          signal: abortController.signal,
+          onProgress: (progress) => {
+            if (!parseStoppedRef.current) setParseProgress(progress)
+          },
         })
+        if (parseStoppedRef.current || recovered.stopped) {
+          setUploadError(BUSINESS_STOP_PARSE_MESSAGE)
+          setParseProgress((previous) => buildStoppedParseProgress(previous, BUSINESS_STOP_PARSE_MESSAGE))
+          return
+        }
         if (recovered.completed) {
           setParseData(recovered.result)
           await syncParsedProject(targetProjectId)
@@ -1112,7 +1202,13 @@ export default function BusinessTenderReview({ showToast }) {
       setUploadError(message)
       showToast?.(message, 'error')
     } finally {
-      setUploading(false)
+      if (parseAbortControllerRef.current === abortController) {
+        parseAbortControllerRef.current = null
+        activeParseProjectIdRef.current = ''
+        setUploading(false)
+      } else if (parseStoppedRef.current) {
+        setUploading(false)
+      }
     }
   }
 
@@ -1281,9 +1377,11 @@ export default function BusinessTenderReview({ showToast }) {
               ? 'bg-secondary-container text-on-secondary-container'
               : parseProgress.status === 'failed'
                 ? 'bg-error-container text-error'
+                : isStoppedParseStatus(parseProgress.status)
+                  ? 'bg-surface-container-high text-on-surface-variant'
                 : 'bg-surface-container-high text-on-surface-variant'
           }`}>
-            {parseProgress.status === 'completed' ? '完成' : parseProgress.status === 'failed' ? '失败' : '进行中'} · {percentage}%
+            {parseProgress.status === 'completed' ? '完成' : parseProgress.status === 'failed' ? '失败' : isStoppedParseStatus(parseProgress.status) ? '已停止' : '进行中'} · {percentage}%
           </span>
         </div>
         <div className="h-2 bg-surface-container-high overflow-hidden">
@@ -1326,7 +1424,7 @@ export default function BusinessTenderReview({ showToast }) {
     if (!uploading && (!parseProgress || parseProgress.status === 'idle')) return null
     const status = uploading ? 'running' : (parseProgress?.status || 'idle')
     const percentage = Math.max(0, Math.min(100, Number(parseProgress?.percentage || (uploading ? 3 : 0))))
-    const statusText = status === 'completed' ? '解析完成' : status === 'failed' ? '解析失败' : status === 'running' ? '解析中' : '等待上传'
+    const statusText = status === 'completed' ? '解析完成' : status === 'failed' ? '解析失败' : isStoppedParseStatus(status) ? '已停止' : status === 'running' ? '解析中' : '等待上传'
     const summary = parseProgress?.summary === '尚未触发招标文件解析。'
       ? '正在上传并解析商务招标文件，请稍候。'
       : (parseProgress?.summary || '正在上传并解析商务招标文件，请稍候。')
@@ -1342,6 +1440,8 @@ export default function BusinessTenderReview({ showToast }) {
             'shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold',
             status === 'failed'
               ? 'bg-error-container text-error'
+              : isStoppedParseStatus(status)
+                ? 'bg-surface-container-high text-on-surface-variant'
               : status === 'running'
                 ? 'bg-primary/10 text-primary'
                 : 'bg-surface-container-high text-on-surface-variant',
@@ -1468,7 +1568,7 @@ export default function BusinessTenderReview({ showToast }) {
             <div className="mt-3">
               {renderPickedFiles()}
             </div>
-            <div className="mt-4 flex justify-center">
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
               <Button
                 type="button"
                 onClick={handleUploadAndParse}
@@ -1478,6 +1578,17 @@ export default function BusinessTenderReview({ showToast }) {
               >
                 {uploading ? '上传解析中...' : '上传并解析'}
               </Button>
+              {parseIsStoppable && (
+                <Button
+                  type="button"
+                  onClick={handleStopParse}
+                  size="stage"
+                  variant="dangerQuiet"
+                  icon="stop_circle"
+                >
+                  停止解析
+                </Button>
+              )}
             </div>
             {uploadError && (
               <div className="mt-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
@@ -1549,14 +1660,26 @@ export default function BusinessTenderReview({ showToast }) {
               <h3 className="text-sm font-semibold text-on-surface">{reviewConfig.uploadSectionTitle}</h3>
               <p className="text-xs text-outline mt-1">{reviewConfig.uploadSectionDescription}</p>
             </div>
-            <Button
-              onClick={handleUploadAndParse}
-              disabled={uploading || reviewDecision === 'abandon'}
-              size="lg"
-              variant="primary"
-            >
-              {uploading ? '上传并解析中...' : '上传并解析'}
-            </Button>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button
+                onClick={handleUploadAndParse}
+                disabled={uploading || reviewDecision === 'abandon'}
+                size="lg"
+                variant="primary"
+              >
+                {uploading ? '上传并解析中...' : '上传并解析'}
+              </Button>
+              {parseIsStoppable && (
+                <Button
+                  onClick={handleStopParse}
+                  size="lg"
+                  variant="dangerQuiet"
+                  icon="stop_circle"
+                >
+                  停止解析
+                </Button>
+              )}
+            </div>
           </div>
 
           <div className="border border-surface-container-high rounded-md p-4 flex flex-col gap-3">
@@ -1611,9 +1734,9 @@ export default function BusinessTenderReview({ showToast }) {
       {!isParseCompleted ? renderParseProgress() : null}
 
       <DataCard className={isParseCompleted ? '!border-0 !bg-transparent !p-0 !shadow-none overflow-visible' : '!p-0 overflow-hidden'}>
-        {!sourceFiles.length ? (
+        {parseResultDisplayState === BUSINESS_PARSE_RESULT_DISPLAY.NO_SOURCE ? (
           <div className="p-6 text-sm text-on-surface-variant">{reviewConfig.noSourceHint}</div>
-        ) : !isParseCompleted ? (
+        ) : parseResultDisplayState === BUSINESS_PARSE_RESULT_DISPLAY.PENDING ? (
           <div className="p-6 text-sm text-on-surface-variant">{reviewConfig.pendingParseHint}</div>
         ) : (
           <div className="flex flex-col gap-5">

@@ -4,6 +4,7 @@ import enterpriseLogo from '../../assets/logo-removebg.png'
 import {
   WORKSPACE_TYPES,
   workspaceFromPathname,
+  workspaceSwitchRoute,
   workspaceRoute,
 } from '../../utils/workspace'
 import {
@@ -105,10 +106,8 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
   const handleSwitchWorkspace = (slug) => {
     if (slug === activeWorkspace) return
     setManualWorkspace(slug)
-    if (urlWorkspace) {
-      const tail = location.pathname.replace(/^\/workspace\/[^/]+/, '')
-      navigate(`/workspace/${slug}${tail}`)
-    }
+    const nextRoute = workspaceSwitchRoute(`${location.pathname}${location.search}${location.hash}`, slug)
+    if (nextRoute) navigate(nextRoute)
   }
 
   const navItems = NAV_DEFINITIONS.map((it) => ({

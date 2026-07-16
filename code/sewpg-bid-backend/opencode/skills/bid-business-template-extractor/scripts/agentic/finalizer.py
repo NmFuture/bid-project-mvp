@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from scripts.document_nav_docx_renderer import render_document_nav_templates
 from scripts.docx_slicer import slice_docx_by_boundaries
 
 from . import doc_browser, paths, submission_store
@@ -93,7 +94,7 @@ def _appendix_from_rendered(
         "templateType": str(raw.get("templateType") or "business_template"),
         "templateSectionTitle": "",
         "status": "generated",
-        "rowCount": 0,
+        "rowCount": int(raw.get("rowCount") or 0),
         "docxPath": str(docx_path),
         "workspacePath": "",
         "sourceDocumentId": str(document.get("id") or ""),
@@ -102,8 +103,26 @@ def _appendix_from_rendered(
         "extractionMode": "business_template_extractor_skill",
         "startBlockIndex": raw.get("startBlockId"),
         "endBlockIndex": raw.get("endBlockId"),
+        "sourceEngine": str(raw.get("sourceEngine") or document.get("documentParseEngine") or document.get("sourceEngine") or ""),
         "quality": raw.get("quality") if isinstance(raw.get("quality"), dict) else {},
     }
+
+
+def _render_templates_for_document(
+    document: dict[str, Any],
+    blocks: list[dict[str, Any]],
+    boundaries: dict[str, Any],
+    document_output: Path,
+) -> dict[str, Any]:
+    source_path = Path(str(document.get("sourcePath") or ""))
+    if str(document.get("documentNavPath") or "").strip() or source_path.suffix.lower() == ".pdf":
+        return render_document_nav_templates(
+            source_document=document,
+            blocks=blocks,
+            boundaries=boundaries,
+            output_dir=document_output,
+        )
+    return slice_docx_by_boundaries(source_path, blocks, boundaries, document_output)
 
 
 def finalize(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
@@ -123,12 +142,11 @@ def finalize(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
         )
     else:
         for document_id, document in documents.items():
-            source_path = Path(str(document.get("sourcePath") or ""))
             document_output = Path(str(document.get("outputDir") or ""))
             boundaries = {"templates": _boundary_templates(templates, document_id)}
             if not boundaries["templates"]:
                 continue
-            sliced = slice_docx_by_boundaries(source_path, _blocks(document), boundaries, document_output)
+            sliced = _render_templates_for_document(document, _blocks(document), boundaries, document_output)
             for raw in sliced.get("templates") or []:
                 if isinstance(raw, dict):
                     appendices.append(_appendix_from_rendered(raw, document=document, index=len(appendices) + 1))
@@ -152,6 +170,8 @@ def finalize(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
                 "id": str(document.get("id") or ""),
                 "name": str(document.get("name") or ""),
                 "sourcePath": str(document.get("sourcePath") or ""),
+                "documentNavPath": str(document.get("documentNavPath") or ""),
+                "documentParseEngine": str(document.get("documentParseEngine") or document.get("sourceEngine") or ""),
                 "outputDir": str(document.get("outputDir") or ""),
                 "summary": {"blockCount": int(document.get("blockCount") or 0)},
             }
@@ -165,7 +185,12 @@ def finalize(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
             validated_template_count=0 if validation.get("status") != "passed" else len(templates),
             sliced_template_count=len(appendices),
             warning_count=len(warnings),
-        ),
+        )
+        | {
+            "sourceEngine": "docling"
+            if any(str(item.get("sourceEngine") or "") == "docling" for item in appendices)
+            else "",
+        },
         "workflow": {
             "mode": "opencode-agentic-navigation",
             "navPath": str(paths.nav_path(manifest_path, manifest)),

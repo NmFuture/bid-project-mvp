@@ -9,6 +9,7 @@ from unittest.mock import patch
 from docx import Document
 
 from app.services import business_template_extractor
+from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.business_template_extractor import (
     build_business_template_extractor_manifest,
     convert_extractor_appendices,
@@ -142,6 +143,93 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
                 self.assertIn("isPageFirstNonEmpty", block)
                 self.assertNotIn("isLikelyHeading", block)
 
+    def test_btplnav_prepare_reads_document_nav_for_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nav_path = root / "document_nav.json"
+            output_dir = root / "out"
+            manifest = root / "manifest.json"
+            nav_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "business-document-nav-v1",
+                        "sourceEngine": "docling",
+                        "documents": [{"id": "DOC-1", "name": "sample.pdf", "sourcePath": "sample.pdf"}],
+                        "pages": [{"pageNo": 1, "textDensity": 0.9}],
+                        "blocks": [
+                            {
+                                "type": "heading",
+                                "text": "第六章 投标文件格式",
+                                "pageNo": 1,
+                                "evidenceId": "DOC-1:P0001:B000001",
+                            },
+                            {"type": "paragraph", "text": "一、投标函", "pageNo": 1, "evidenceId": "DOC-1:P0001:B000002"},
+                            {
+                                "type": "paragraph",
+                                "text": "二、法定代表人授权委托书",
+                                "pageNo": 1,
+                                "evidenceId": "DOC-1:P0001:B000003",
+                            },
+                            {"type": "table", "text": "三、商务偏差表", "pageNo": 1, "tableId": "DOC-1:T0001"},
+                        ],
+                        "tables": [
+                            {
+                                "id": "DOC-1:T0001",
+                                "title": "三、商务偏差表",
+                                "pageNo": 1,
+                                "rows": [["条款", "响应"], ["商务偏差表", "无偏差"]],
+                                "evidenceId": "DOC-1:P0001:T000001",
+                            }
+                        ],
+                        "images": [],
+                        "evidence": [],
+                        "quality": {"status": "completed"},
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-template-extractor-v1",
+                        "skillName": "bid-business-template-extractor",
+                        "projectId": "PRJ-TPL-DOCNAV",
+                        "outputDir": str(output_dir),
+                        "documents": [
+                            {
+                                "id": "DOC-1",
+                                "name": "sample.pdf",
+                                "sourcePath": str(root / "sample.pdf"),
+                                "documentNavPath": str(nav_path),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            prepared = stdout_json(run_btplnav("prepare", manifest))
+            overview = stdout_json(run_btplnav("overview", manifest, "--page", "1", "--page-size", "10"))
+            search = stdout_json(run_btplnav("search", manifest, "投标函", "--limit", "5"))
+            window = stdout_json(run_btplnav("window", manifest, "DOC-1", "2", "--before", "1", "--after", "1"))
+            read = stdout_json(run_btplnav("read", manifest, "DOC-1", "1", "4", "--max-chars", "500"))
+
+            document = prepared["documents"][0]
+            self.assertEqual(document["blockCount"], 4)
+            self.assertEqual(overview["blocks"][0]["text"], "第六章 投标文件格式")
+            self.assertGreaterEqual(search["matchCount"], 1)
+            self.assertTrue(any("投标函" in item["text"] for item in search["matches"]))
+            self.assertEqual([block["blockId"] for block in window["blocks"]], [1, 2, 3])
+            self.assertIn("二、法定代表人授权委托书", read["text"])
+            table_block = overview["blocks"][3]
+            self.assertEqual(table_block["rows"][1], ["商务偏差表", "无偏差"])
+            self.assertEqual(table_block["sourceEvidenceId"], "DOC-1:P0001:T000001")
+            self.assertEqual(table_block["sourceEngine"], "docling")
+
     def test_btplnav_submit_validate_and_finalize_slice_ai_ranges(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -214,6 +302,122 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
             for appendix in payload["appendices"]:
                 self.assertTrue(Path(appendix["docxPath"]).is_file())
 
+    def test_btplnav_finalize_renders_pdf_document_nav_ranges_to_docx(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "sample.pdf"
+            source.write_bytes(b"%PDF-1.4\n")
+            nav_path = root / "DOC-1_document_nav.json"
+            manifest = root / "manifest.json"
+            output_dir = root / "out"
+            nav_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "business-document-nav-v1",
+                        "sourceEngine": "docling",
+                        "documents": [{"id": "DOC-1", "name": "sample.pdf", "sourcePath": str(source)}],
+                        "pages": [{"pageNo": 1, "textDensity": 0.9}],
+                        "blocks": [
+                            {"type": "heading", "text": "第六章 投标文件格式", "pageNo": 1},
+                            {"type": "paragraph", "text": "投标函", "pageNo": 1},
+                            {"type": "paragraph", "text": "致：招标人", "pageNo": 1},
+                            {"type": "paragraph", "text": "投标人（盖章）：", "pageNo": 1},
+                            {"type": "table", "text": "商务偏差表", "pageNo": 1, "tableId": "DOC-1:T0001"},
+                        ],
+                        "tables": [
+                            {
+                                "id": "DOC-1:T0001",
+                                "title": "商务偏差表",
+                                "pageNo": 1,
+                                "rows": [["条款", "响应"], ["商务偏差", "无偏差"]],
+                            }
+                        ],
+                        "images": [],
+                        "evidence": [],
+                        "quality": {"status": "completed"},
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-business-template-extractor-v1",
+                        "skillName": "bid-business-template-extractor",
+                        "projectId": "PRJ-TPL-PDF",
+                        "outputDir": str(output_dir),
+                        "documents": [
+                            {
+                                "id": "DOC-1",
+                                "name": "sample.pdf",
+                                "sourcePath": str(source),
+                                "documentNavPath": str(nav_path),
+                                "documentParseEngine": "docling",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            stdout_json(run_btplnav("prepare", manifest))
+            stdout_json(
+                run_btplnav(
+                    "submit",
+                    manifest,
+                    "templates",
+                    json.dumps(
+                        {
+                            "templates": [
+                                {
+                                    "sourceDocumentId": "DOC-1",
+                                    "title": "投标函",
+                                    "templateType": "bid_letter",
+                                    "startBlockId": 2,
+                                    "endBlockId": 4,
+                                    "confidence": 0.95,
+                                    "reason": "需要投标人填写并盖章的商务模板。",
+                                },
+                                {
+                                    "sourceDocumentId": "DOC-1",
+                                    "title": "商务偏差表",
+                                    "templateType": "deviation_table",
+                                    "startBlockId": 5,
+                                    "endBlockId": 5,
+                                    "confidence": 0.9,
+                                    "reason": "需要逐项响应商务条款的表格模板。",
+                                },
+                            ]
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+
+            validation = stdout_json(run_btplnav("validate", manifest))
+            finalized = stdout_json(run_btplnav("finalize", manifest))
+
+            self.assertEqual(validation["status"], "passed")
+            self.assertEqual(finalized["summary"]["templateCount"], 2)
+            payload = json.loads((output_dir / "business_template_extraction.json").read_text(encoding="utf-8"))
+            self.assertFalse(payload["quality"]["scriptFallbackUsed"])
+            self.assertEqual(payload["quality"]["sourceEngine"], "docling")
+            self.assertEqual([item["sourceEngine"] for item in payload["appendices"]], ["docling", "docling"])
+            self.assertEqual(
+                [(item["startBlockIndex"], item["endBlockIndex"]) for item in payload["appendices"]],
+                [(2, 4), (5, 5)],
+            )
+            first_doc = Document(payload["appendices"][0]["docxPath"])
+            second_doc = Document(payload["appendices"][1]["docxPath"])
+            self.assertIn("投标人（盖章）：", "\n".join(paragraph.text for paragraph in first_doc.paragraphs))
+            self.assertEqual(second_doc.tables[0].rows[1].cells[0].text, "商务偏差")
+            self.assertEqual(second_doc.tables[0].rows[1].cells[1].text, "无偏差")
+            self.assertEqual(payload["appendices"][1]["rowCount"], 2)
+
     def test_btplnav_validator_rejects_structurally_invalid_ranges_without_section_rules(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -253,13 +457,21 @@ class BusinessTemplateExtractorSkillScriptTests(unittest.TestCase):
 
 
 class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
-    def test_build_manifest_keeps_only_docx_sources_and_output_dir(self) -> None:
+    def test_build_manifest_keeps_docx_and_pdf_sources_with_document_nav(self) -> None:
         output_dir = Path("C:/tmp/business-template-output")
         manifest = build_business_template_extractor_manifest(
             project_id="proj-1",
             documents=[
                 {"id": "DOC-1", "name": "招标.docx", "sourcePath": "C:/tmp/招标.docx"},
-                {"id": "DOC-2", "name": "说明.txt", "sourcePath": "C:/tmp/说明.txt"},
+                {
+                    "id": "DOC-2",
+                    "name": "business.pdf",
+                    "sourcePath": "C:/tmp/business.pdf",
+                    "textPath": "C:/tmp/DOC-2.txt",
+                    "documentNavPath": "C:/tmp/DOC-2_document_nav.json",
+                    "documentParseEngine": "docling",
+                },
+                {"id": "DOC-3", "name": "说明.txt", "sourcePath": "C:/tmp/说明.txt"},
             ],
             output_dir=output_dir,
         )
@@ -268,8 +480,11 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
         self.assertEqual(manifest["outputDir"], str(output_dir))
         self.assertEqual(manifest["stage"], "prepare")
         self.assertNotIn("fallbackMode", manifest)
-        self.assertEqual(len(manifest["documents"]), 1)
+        self.assertEqual(len(manifest["documents"]), 2)
         self.assertEqual(manifest["documents"][0]["id"], "DOC-1")
+        self.assertEqual(manifest["documents"][1]["id"], "DOC-2")
+        self.assertEqual(manifest["documents"][1]["documentNavPath"], "C:/tmp/DOC-2_document_nav.json")
+        self.assertEqual(manifest["documents"][1]["documentParseEngine"], "docling")
 
     def test_backend_service_does_not_expose_legacy_btplbound_orchestration(self) -> None:
         removed_names = {
@@ -389,7 +604,7 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
                 )
                 return completed()
 
-            def fake_agentic_template_extractor(_client, prompt: str):  # type: ignore[no-untyped-def]
+            def fake_agentic_template_extractor(_client, prompt: str, **_kwargs):  # type: ignore[no-untyped-def]
                 agent_prompts.append(prompt)
                 self.assertIn("btplnav prepare", prompt)
                 self.assertIn("btplnav submit", prompt)
@@ -447,6 +662,238 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
         self.assertEqual(appendices[0]["extractionMode"], "business_template_extractor_skill")
         self.assertFalse((payload or {})["quality"]["scriptFallbackUsed"])
         self.assertEqual((payload or {})["opencodeOutput"]["completionSource"], "btplnav-finalize")
+
+    def test_run_extractor_reports_template_agent_session_and_forwards_cancel_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            source = project_dir / "agent-session.docx"
+            source.write_bytes(b"fake-docx")
+            events: list[tuple[str, dict[str, object]]] = []
+
+            class PrepareProcess:
+                returncode = 0
+
+                def __init__(self, args, **kwargs):  # type: ignore[no-untyped-def]
+                    self.args = args
+                    self._write_prepare_payload(args)
+
+                @staticmethod
+                def _write_prepare_payload(args) -> None:  # type: ignore[no-untyped-def]
+                    manifest_path = Path(args[3])
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    output_dir = Path(manifest["outputDir"])
+                    document_output = output_dir / "DOC-1"
+                    document_output.mkdir(parents=True, exist_ok=True)
+                    (output_dir / "business_template_extraction.json").write_text(
+                        json.dumps(
+                            {
+                                "stage": "prepare",
+                                "schemaVersion": "bid-business-template-extractor-v1",
+                                "outputDir": str(output_dir),
+                                "documents": [{"id": "DOC-1", "outputDir": str(document_output)}],
+                                "appendices": [],
+                                "quality": {"scriptFallbackUsed": False},
+                            },
+                            ensure_ascii=False,
+                        ),
+                        encoding="utf-8",
+                    )
+
+                def poll(self):  # type: ignore[no-untyped-def]
+                    return self.returncode
+
+                def communicate(self):  # type: ignore[no-untyped-def]
+                    return "{}", ""
+
+            def fake_popen(args, **kwargs):  # type: ignore[no-untyped-def]
+                manifest_path = Path(args[3])
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                output_dir = Path(manifest["outputDir"])
+                document_output = output_dir / "DOC-1"
+                document_output.mkdir(parents=True, exist_ok=True)
+                (output_dir / "business_template_extraction.json").write_text(
+                    json.dumps(
+                        {
+                            "stage": "prepare",
+                            "schemaVersion": "bid-business-template-extractor-v1",
+                            "outputDir": str(output_dir),
+                            "documents": [{"id": "DOC-1", "outputDir": str(document_output)}],
+                            "appendices": [],
+                            "quality": {"scriptFallbackUsed": False},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                return PrepareProcess(args, **kwargs)
+
+            cancel_check_fn = lambda: False
+
+            def fake_agentic_template_extractor(
+                _client,
+                prompt: str,
+                *,
+                session_ready_callback=None,
+                cancel_check=None,
+            ):  # type: ignore[no-untyped-def]
+                self.assertIn("btplnav finalize", prompt)
+                self.assertIs(cancel_check, cancel_check_fn)
+                self.assertIsNotNone(session_ready_callback)
+                session_ready_callback(
+                    {
+                        "sessionId": "ses-template-ready",
+                        "providerId": "opencode",
+                        "modelId": "big-pickle",
+                    }
+                )
+                output_dir = project_dir / "business_template_extraction"
+                document_output = output_dir / "DOC-1"
+                document_output.mkdir(parents=True, exist_ok=True)
+                (output_dir / "business_template_extraction.json").write_text(
+                    json.dumps(
+                        {
+                            "stage": "finalize",
+                            "schemaVersion": "bid-business-template-extractor-v1",
+                            "outputDir": str(output_dir),
+                            "appendices": [],
+                            "quality": {"scriptFallbackUsed": False},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                return {
+                    "schemaVersion": "bid-business-template-extractor-v1",
+                    "outputFile": str(output_dir / "business_template_extraction.json"),
+                    "summary": {"templateCount": 0},
+                    "opencodeOutput": {
+                        "sessionId": "ses-template-ready",
+                        "completionSource": "btplnav-finalize",
+                    },
+                }
+
+            with (
+                patch("app.services.business_template_extractor.subprocess.Popen", side_effect=fake_popen),
+                patch(
+                    "app.services.business_template_extractor.OpencodeClient.extract_business_templates_with_trace",
+                    new=fake_agentic_template_extractor,
+                ),
+            ):
+                run_business_template_extractor(
+                    project_id="PRJ-1",
+                    documents=[{"id": "DOC-1", "name": "agent-session.docx", "sourcePath": str(source)}],
+                    project_dir=project_dir,
+                    progress_callback=lambda event, details: events.append((event, details or {})),
+                    cancel_check=cancel_check_fn,
+                )
+
+        self.assertEqual(events[0][0], "business_template_extraction_agent")
+        self.assertEqual(events[0][1]["sessionId"], "ses-template-ready")
+        self.assertEqual(events[0][1]["status"], "running")
+
+    def test_btplnav_command_terminates_running_process_when_cancelled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+
+            class HangingProcess:
+                def __init__(self) -> None:
+                    self.returncode = None
+                    self.terminated = False
+                    self.killed = False
+
+                def poll(self):  # type: ignore[no-untyped-def]
+                    return None
+
+                def terminate(self) -> None:
+                    self.terminated = True
+                    self.returncode = -15
+
+                def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                    return self.returncode
+
+                def kill(self) -> None:
+                    self.killed = True
+                    self.returncode = -9
+
+                def communicate(self):  # type: ignore[no-untyped-def]
+                    return "{}", ""
+
+            process = HangingProcess()
+            checks = iter([False, True])
+
+            with patch("app.services.business_template_extractor.subprocess.Popen", return_value=process):
+                with self.assertRaisesRegex(ParseCancelledError, "解析已取消"):
+                    business_template_extractor._run_btplnav_command(
+                        "prepare",
+                        manifest,
+                        cancel_check=lambda: next(checks, True),
+                    )
+
+        self.assertTrue(process.terminated)
+        self.assertFalse(process.killed)
+
+    def test_run_extractor_reuses_existing_finalized_payload_without_prepare(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            output_dir = project_dir / "business_template_extraction"
+            template_docx = output_dir / "DOC-1" / "templates" / "TPL-0001.docx"
+            template_docx.parent.mkdir(parents=True, exist_ok=True)
+            Document().save(str(template_docx))
+            existing_payload = {
+                "stage": "finalize",
+                "schemaVersion": "bid-business-template-extractor-v1",
+                "outputDir": str(output_dir),
+                "appendices": [
+                    {
+                        "id": "APPX-0001",
+                        "title": "Bid Letter",
+                        "artifactType": "business_attachment_template",
+                        "docxPath": str(template_docx),
+                        "sourceDocumentId": "DOC-1",
+                        "quality": {"confidence": 0.95},
+                    }
+                ],
+                "quality": {"scriptFallbackUsed": False},
+            }
+            expected_payload = json.loads(json.dumps(existing_payload, ensure_ascii=False))
+            expected_payload["appendices"][0]["sourceEngine"] = "docling"
+            expected_payload["appendices"][0]["quality"]["sourceEngine"] = "docling"
+            expected_payload["quality"]["sourceEngine"] = "docling"
+            result_path = output_dir / "business_template_extraction.json"
+            result_path.write_text(json.dumps(existing_payload, ensure_ascii=False), encoding="utf-8")
+
+            with (
+                patch(
+                    "app.services.business_template_extractor.subprocess.run",
+                    side_effect=AssertionError("existing finalized payload must not be overwritten by prepare"),
+                ),
+                patch(
+                    "app.services.business_template_extractor.OpencodeClient.extract_business_templates_with_trace",
+                    side_effect=AssertionError("existing finalized payload must not call agent"),
+                ),
+            ):
+                appendices, payload, warning = run_business_template_extractor(
+                    project_id="PRJ-1",
+                    documents=[
+                        {
+                            "id": "DOC-1",
+                            "name": "agent-success.pdf",
+                            "sourcePath": str(project_dir / "agent-success.pdf"),
+                            "documentParseEngine": "docling",
+                        }
+                    ],
+                    project_dir=project_dir,
+                )
+                persisted = json.loads(result_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(warning, "")
+        self.assertEqual(len(appendices), 1)
+        self.assertEqual(appendices[0]["title"], "Bid Letter")
+        self.assertEqual(appendices[0]["sourceDocumentId"], "DOC-1")
+        self.assertEqual(appendices[0]["quality"]["sourceEngine"], "docling")
+        self.assertEqual(payload, expected_payload)
+        self.assertEqual(persisted, expected_payload)
 
     def test_run_extractor_records_agent_failure_without_script_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

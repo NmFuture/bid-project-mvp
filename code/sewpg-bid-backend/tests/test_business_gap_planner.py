@@ -962,7 +962,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["status"], "completed")
         self.assertTrue(str(payload["plan"]["planFile"]).endswith("business_gap_plan.json"))
-        self.assertIn("business-workspace/gaps", str(payload["plan"]["planFile"]))
+        self.assertIn("business-workspace/gaps", Path(payload["plan"]["planFile"]).as_posix())
         self.assertEqual(store._require(project_id)["gap_state"]["recognitionStatus"], "idle")
         self.assertTrue((business_workspace / "gaps" / "business_gap_input.json").exists())
         self.assertFalse((technical_workspace_dir(project_id) / "s4_gap_workdir" / "gap_plan.json").exists())
@@ -996,7 +996,10 @@ class BusinessGapPlannerTests(unittest.TestCase):
         )
         self.assertEqual(manual_upload_response.status_code, 200)
         self.assertEqual(manual_upload_response.json()["task"]["status"], "ready")
-        self.assertIn("business-workspace/gaps/uploads", manual_upload_response.json()["artifact"]["filePath"])
+        self.assertIn(
+            "business-workspace/gaps/uploads",
+            Path(manual_upload_response.json()["artifact"]["filePath"]).as_posix(),
+        )
         manual_ref_after_upload = next(
             item
             for item in manual_upload_response.json()["plan"]["tocRefs"]
@@ -1101,7 +1104,10 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertEqual(selected_template_task["status"], "ready")
         self.assertEqual(selected_template_task["assemblyMode"], "template_fill_docx")
         self.assertEqual(select_template_response.json()["artifact"]["sourceMode"], "project_uploaded_bid_template")
-        self.assertIn("business-workspace/gaps/selected-templates", select_template_response.json()["artifact"]["filePath"])
+        self.assertIn(
+            "business-workspace/gaps/selected-templates",
+            Path(select_template_response.json()["artifact"]["filePath"]).as_posix(),
+        )
 
         upload_response = self.client.post(
             f"/api/business/projects/{project_id}/business-gaps/tasks/{bid_letter_task['id']}/upload",
@@ -1120,7 +1126,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertEqual(upload_response.json()["task"]["status"], "ready")
         self.assertEqual(upload_response.json()["task"]["handlingMode"], "manual_upload")
         self.assertEqual(uploaded["sourceMode"], "uploaded_in_business_s3")
-        self.assertIn("business-workspace/gaps/uploads", uploaded["filePath"])
+        self.assertIn("business-workspace/gaps/uploads", Path(uploaded["filePath"]).as_posix())
         self.assertTrue(Path(uploaded["filePath"]).exists())
         self.assertFalse((technical_workspace_dir(project_id) / "s4_gap_workdir" / "manual_upload").exists())
         self.assertEqual(uploaded["materialSyncStatus"], "not_synced")
@@ -1291,7 +1297,10 @@ class BusinessGapPlannerTests(unittest.TestCase):
         self.assertEqual(select_response.json()["artifact"]["sourceMode"], "selected_from_business_material_library")
         self.assertEqual(select_response.json()["artifact"]["businessMaterialKind"], "fixed")
         self.assertEqual(select_response.json()["artifact"]["evidenceSegmentId"], selectable_payload["segments"][0]["evidenceSegmentId"])
-        self.assertIn("business-workspace/gaps/selected-materials", select_response.json()["artifact"]["filePath"])
+        self.assertIn(
+            "business-workspace/gaps/selected-materials",
+            Path(select_response.json()["artifact"]["filePath"]).as_posix(),
+        )
         self.assertFalse((technical_workspace_dir(project_id) / "s4_gap_workdir" / "selected_material").exists())
 
         facts_response = self.client.post(f"/api/business/projects/{project_id}/business-gaps/facts/build")

@@ -4,8 +4,6 @@ import json
 import copy
 import re
 import shutil
-import subprocess
-import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +11,7 @@ from typing import Any, Callable
 
 from docx import Document
 
-from app.core.config import BASE_DIR, settings
+from app.core.config import settings
 from app.services.bid_outline_state import save_generated_outline_state
 from app.services.bid_project_state import project_parse_input_records
 from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type
@@ -30,27 +28,11 @@ from app.services.workspace_project_access import (
 
 OUTLINE_SKILL_NAME = "bid-tech-outline-generator"
 BUSINESS_OUTLINE_SKILL_NAME = "bid-business-outline-generator"
-OUTLINE_SKILL_COMMAND = "s2toc"
 BUSINESS_OUTLINE_SKILL_COMMAND = "business-outline"
-OUTLINE_SKILL_RUNNER = (
-    BASE_DIR
-    / "opencode"
-    / "skill"
-    / OUTLINE_SKILL_NAME
-    / "scripts"
-    / "run_from_manifest.py"
-)
-OUTLINE_REVIEW_BUDGET = {
-    "templateOutlineItems": 80,
-    "tenderCandidates": 260,
-    "draftItems": 120,
-    "scriptDecisions": 120,
-    "textChars": 180,
-    "stdoutTenderCandidates": 24,
-    "stdoutDraftItems": 24,
-    "stdoutScriptDecisions": 24,
-}
+TECH_OUTLINE_FINALIZE_COMMAND = "s2outline finalize"
+TECH_OUTLINE_FINALIZE_EARLY_COMMAND = "s2outline-finalize"
 PUBLIC_EVIDENCE_DECISION_LIMIT = 80
+TECHNICAL_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
 
 
 def _is_business_bid(bid_type: Any) -> bool:
@@ -62,14 +44,6 @@ def _is_business_bid(bid_type: Any) -> bool:
 
 def _outline_skill_name(bid_type: Any) -> str:
     return BUSINESS_OUTLINE_SKILL_NAME if _is_business_bid(bid_type) else OUTLINE_SKILL_NAME
-
-
-def _outline_skill_command(bid_type: Any) -> str:
-    return BUSINESS_OUTLINE_SKILL_COMMAND if _is_business_bid(bid_type) else OUTLINE_SKILL_COMMAND
-
-
-def _outline_skill_runner(skill_name: str) -> Path:
-    return BASE_DIR / "opencode" / "skills" / skill_name / "scripts" / "run_from_manifest.py"
 
 
 def generate_outline_for_project(project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -117,7 +91,10 @@ def generate_outline_for_project_with_progress(
     )
     publish_info = _publish_toc_skill_workspace(skill_workspace, toc_result)
     toc_result = publish_info["result"]
-    nodes = _nodes_from_generation_result(toc_result)
+    nodes = _nodes_from_generation_result(
+        toc_result,
+        compact_technical=not _is_business_bid(skill_workspace["bidType"]),
+    )
     summary = _summary_from_generation_result(toc_result)
     opencode_output = toc_result.get("opencodeOutput") if isinstance(toc_result.get("opencodeOutput"), dict) else {}
     if not opencode_output:
@@ -133,9 +110,11 @@ def generate_outline_for_project_with_progress(
             "stagingWorkDir": publish_info["stagingWorkDir"],
             "archiveRoot": publish_info["archiveRoot"],
             "tocJsonPath": str(toc_result.get("outputFile") or publish_info["outputFile"]),
-            "evidencePath": str(toc_result.get("evidenceFile") or publish_info["evidenceFile"]),
         }
     )
+    evidence_path = str(toc_result.get("evidenceFile") or publish_info.get("evidenceFile") or "").strip()
+    if evidence_path:
+        opencode_output["evidencePath"] = evidence_path
     if progress_callback:
         progress_callback(
             "normalizing_result",
@@ -170,7 +149,7 @@ def _run_outline_skill(
     prompt = _build_outline_prompt(manifest_path, bid_type)
     try:
         return _load_outline_result(
-            OpencodeClient().generate_outline_with_trace(
+            OpencodeClient(timeout_ms=int(settings.opencode_timeout_sec * 1000)).generate_outline_with_trace(
                 prompt,
                 session_ready_callback=(
                     (lambda details: progress_callback("outline_session_ready", details))
@@ -182,18 +161,20 @@ def _run_outline_skill(
                     if progress_callback
                     else None
                 ),
-                early_tool_command=_outline_skill_command(bid_type),
+                early_tool_command=TECH_OUTLINE_FINALIZE_EARLY_COMMAND,
             ),
             manifest_path,
         )
     except Exception as exc:
         if progress_callback:
             progress_callback(
-                "outline_fallback",
+                "outline_failed",
                 {"error": str(exc), "manifestPath": str(manifest_path)},
             )
-        fallback = _run_local_outline_skill(manifest_path)
-        return _load_outline_result(fallback, manifest_path)
+        raise RuntimeError(
+            "技术标目录生成失败：目录生成需要 opencode 自主决策，"
+            f"futurecode/opencode 执行失败：{exc}。"
+        ) from exc
 
 
 def _run_business_outline_skill(
@@ -232,34 +213,9 @@ def _run_business_outline_skill(
 
 
 def _run_local_outline_skill(manifest_path: Path) -> dict[str, Any]:
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    skill_name = _outline_skill_name(manifest.get("bidType"))
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(_outline_skill_runner(skill_name)),
-            "--manifest",
-            str(manifest_path),
-            "--response",
-            "summary",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=max(30, int(settings.opencode_timeout_sec)),
+    raise RuntimeError(
+        "目录生成需要 opencode 自主决策，本地 s2toc 兼容命令不再生成最终目录。"
     )
-    result = json.loads(completed.stdout)
-    result["opencodeOutput"] = {
-        "status": "received",
-        "sessionId": str(manifest_path),
-        "providerId": "local-skill",
-        "modelId": skill_name,
-        "receivedAt": now_iso(),
-        "parts": [{"type": "text", "text": completed.stdout.strip()}],
-    }
-    return result
 
 
 def _build_outline_prompt(manifest_path: Path, bid_type: Any) -> str:
@@ -270,34 +226,18 @@ def _build_outline_prompt(manifest_path: Path, bid_type: Any) -> str:
     if _is_business_bid(bid_type_text):
         return _build_business_outline_prompt(manifest_path)
     skill_name = _outline_skill_name(bid_type_text)
-    skill_command = _outline_skill_command(bid_type_text)
     return f"""
 Use the {skill_name} skill.
 
-你现在在做 S2 {bid_type_text}目录生成。后端已经准备好 manifest，其中只包含招标文件、投标模板、可选附表模板和输出路径。
+生成 S2 {bid_type_text}目录。所有目录学习、粒度收敛和增删建议必须由 Opencode 按 Skill 自主判断。
 
 manifest：{manifest_path}
 
-请先直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径：
+先执行 `s2outline prepare {manifest_path}`。按 Skill 循环调用 `s2outline next-batch`、`s2outline tables`、必要的 read/window/table 和 `s2outline review-batch`，不得跳过任何分块或未读完的表格。每批原文必须由模型判断；不得编写脚本自动生成或提交 review、requirements、disposition，不得直接读取 `tender_review_chunks.json`、状态文件或义务台账。每条 `target_node` 只能指向一个节点，跨节点义务拆成多条。执行 `s2outline status {manifest_path}`，确认 `pending_chunk_count=0` 且 `unfinished_table_count=0` 后，将最终 `technical-outline.v1` 写入 manifest.outputFile。只有确认最终版不再修改后，才执行：
 
-{skill_command} {manifest_path}
+{TECH_OUTLINE_FINALIZE_COMMAND} {manifest_path}
 
-命令会写入 outputFile/evidenceFile/agentReviewFile，并在 stdout 打印小型 JSON。stdout 已包含 agentReviewDigest，请只根据 stdout 里的 agentReviewDigest 做一次语义审核。
-不要读取、cat、head、tail、grep outputFile/evidenceFile/agentReviewFile；这些文件由后端读取并保存。
-1. 判断招标要求是否已被模板目录覆盖，把可靠依据绑定到对应目录项。
-2. 招标明确要求的附表/副表只能放在目录末尾，不要穿插进中间章节。
-3. 不确定的要求只写入 evidence/decisions，不强行新增目录。
-4. 保持 outputFile 是干净的 bid-toc-json-v1，items[] 里不要出现素材库字段以外的冗余解释；material_refs 固定为空数组。
-5. source_refs[] 必须保留可跳转字段，searchText 使用招标原文片段。
-
-如需调整，请直接修改 outputFile 和 evidenceFile。最后只返回严格 JSON，不要 Markdown，不要解释文字：
-{{
-  "schema_version": "bid-toc-json-v1",
-  "outputFile": "<outputFile from manifest>",
-  "evidenceFile": "<evidenceFile from manifest>",
-  "summary": {{"total_items": 0}},
-  "agentDecisions": []
-}}
+finalize 只校验结果，也是后端的完成信号。最后原样返回 finalize 的严格 JSON，不要 Markdown 或解释文字。
 """.strip()
 
 
@@ -412,33 +352,33 @@ outline.json 必须满足：
 def _load_outline_result(result: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     output_file = Path(str(result.get("outputFile") or manifest.get("outputFile") or "")).expanduser()
-    evidence_file = Path(str(result.get("evidenceFile") or manifest.get("evidenceFile") or "")).expanduser()
     is_business_bid = _is_business_bid(manifest.get("bidType"))
     if is_business_bid:
+        evidence_file = Path(str(result.get("evidenceFile") or manifest.get("evidenceFile") or "")).expanduser()
         return _load_business_outline_result(result, manifest, output_file, evidence_file)
 
     if not output_file.exists():
         raise RuntimeError(f"S2 目录 Skill 未生成 outputFile：{output_file}")
 
-    toc = json.loads(output_file.read_text(encoding="utf-8"))
-    if not isinstance(toc, dict) or not isinstance(toc.get("items"), list):
-        raise RuntimeError("S2 目录 Skill 输出不是有效 bid-toc-json-v1。")
-    if isinstance(result.get("items"), list):
-        toc["items"] = _clean_toc_items(result["items"])
-        _rewrite_toc_file(output_file, toc, evidence_file)
-    elif isinstance(result.get("agentDecisions"), list):
-        toc = _apply_agent_decisions(toc, result["agentDecisions"], evidence_file)
-        _rewrite_toc_file(output_file, toc, evidence_file, agent_decisions=result["agentDecisions"])
-    else:
-        toc["items"] = _clean_toc_items(toc["items"])
-        _rewrite_toc_file(output_file, toc, evidence_file)
+    outline = json.loads(output_file.read_text(encoding="utf-8"))
+    if (
+        not isinstance(outline, dict)
+        or outline.get("schema_version") != "technical-outline.v1"
+        or not isinstance(outline.get("nodes"), list)
+        or not outline["nodes"]
+    ):
+        raise RuntimeError("S2 目录 Skill 输出不是有效 technical-outline.v1。")
 
-    toc["outputFile"] = str(output_file)
-    toc["evidenceFile"] = str(evidence_file)
+    outline["outputFile"] = str(output_file)
     if isinstance(result.get("opencodeOutput"), dict):
-        toc["opencodeOutput"] = result["opencodeOutput"]
-    toc["ruleEvidence"] = _public_rule_evidence_from_file(evidence_file)
-    return toc
+        outline["opencodeOutput"] = result["opencodeOutput"]
+    outline["ruleEvidence"] = _technical_rule_evidence(outline["nodes"])
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    outline["summary"] = summary or {
+        "total_nodes": outline["ruleEvidence"]["nodeCount"],
+        "action_counts": outline["ruleEvidence"]["actionCounts"],
+    }
+    return outline
 
 
 def _load_business_outline_result(
@@ -698,7 +638,8 @@ def _rewrite_toc_file(
     *,
     agent_decisions: list[Any] | None = None,
 ) -> None:
-    items = _clean_toc_items(toc.get("items") if isinstance(toc.get("items"), list) else [])
+    raw_items = toc.get("items") if isinstance(toc.get("items"), list) else []
+    items = _clean_toc_items(raw_items)
     counts = Counter(str(item.get("annotation") or "") for item in items)
     toc["items"] = items
     summary = toc.get("summary") if isinstance(toc.get("summary"), dict) else {}
@@ -718,7 +659,6 @@ def _rewrite_toc_file(
             evidence["agentDecisions"] = [item for item in agent_decisions if isinstance(item, dict)]
         evidence_file.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
 
-
 def _clean_toc_items(items: list[Any]) -> list[dict[str, Any]]:
     cleaned: list[dict[str, Any]] = []
     for index, item in enumerate(items, start=1):
@@ -727,9 +667,6 @@ def _clean_toc_items(items: list[Any]) -> list[dict[str, Any]]:
         source_refs = item.get("source_refs")
         if not isinstance(source_refs, list):
             source_refs = item.get("sourceRefs") if isinstance(item.get("sourceRefs"), list) else []
-        material_refs = item.get("material_refs")
-        if not isinstance(material_refs, list):
-            material_refs = item.get("materialRefs") if isinstance(item.get("materialRefs"), list) else []
         annotation = str(item.get("annotation") or "").strip() or "保留"
         required_status = str(item.get("required_status") or item.get("requiredStatus") or "").strip()
         if not required_status:
@@ -750,7 +687,7 @@ def _clean_toc_items(items: list[Any]) -> list[dict[str, Any]]:
                 "source": str(item.get("source") or "").strip() or "template",
                 "reason": str(item.get("reason") or "").strip(),
                 "source_refs": [_clean_source_ref(ref) for ref in source_refs if isinstance(ref, dict)],
-                "material_refs": [ref for ref in material_refs if isinstance(ref, dict)],
+                "material_refs": [],
             }
         )
     return cleaned
@@ -872,13 +809,39 @@ def _load_json_dict(path: Path) -> dict[str, Any]:
 def _public_rule_evidence_from_file(path: Path) -> dict[str, Any]:
     evidence = _load_json_dict(path)
     decisions = evidence.get("decisions") if isinstance(evidence.get("decisions"), list) else []
+    if evidence.get("schema_version") == "bid-toc-evidence-v2":
+        action_counts = Counter(
+            str(item.get("action") or "")
+            for item in decisions
+            if isinstance(item, dict) and str(item.get("action") or "")
+        )
+        return {
+            "schemaVersion": "bid-toc-evidence-v2",
+            "engine": str(evidence.get("engine") or ""),
+            "ruleVersion": str(evidence.get("ruleVersion") or evidence.get("rule_version") or ""),
+            "decisionCount": len(decisions),
+            "reviewCount": sum(
+                1
+                for item in decisions
+                if isinstance(item, dict) and bool(item.get("review_required") or item.get("reviewRequired"))
+            ),
+            "actionCounts": dict(action_counts),
+        }
     candidates = evidence.get("tenderCandidates") if isinstance(evidence.get("tenderCandidates"), list) else []
     template_outline = evidence.get("templateOutline") if isinstance(evidence.get("templateOutline"), list) else []
+    item_sources = evidence.get("itemSources") if isinstance(evidence.get("itemSources"), list) else []
     return {
         "schemaVersion": str(evidence.get("schema_version") or ""),
         "engine": str(evidence.get("engine") or ""),
+        "ruleVersion": str(evidence.get("ruleVersion") or evidence.get("rule_version") or ""),
         "templateOutlineCount": len(template_outline),
         "tenderCandidateCount": len(candidates),
+        "itemSources": [
+            dict(item)
+            for item in item_sources
+            if isinstance(item, dict)
+        ][:PUBLIC_EVIDENCE_DECISION_LIMIT],
+        "itemSourceCount": len(item_sources),
         "decisions": [
             dict(item)
             for item in decisions
@@ -923,7 +886,6 @@ def _prepare_toc_skill_workspace(
     if template_path is None:
         raise ValueError("投标模板不存在，请先上传可读取的投标模板文件。")
     output_file = staging_work_dir / _safe_file_name(settings.s2_toc_output_file_name, "toc.json")
-    evidence_file = staging_work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json")
     manifest_path = staging_work_dir / "s2_input.json"
     manifest = {
         "projectId": project_id,
@@ -935,9 +897,11 @@ def _prepare_toc_skill_workspace(
         "templateFile": str(template_path) if template_path else "",
         "attachFile": str(attach_path) if attach_path else "",
         "outputFile": str(output_file),
-        "evidenceFile": str(evidence_file),
-        "reviewBudget": OUTLINE_REVIEW_BUDGET,
     }
+    if _is_business_bid(bid_type):
+        manifest["evidenceFile"] = str(
+            staging_work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json")
+        )
     manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2)
     manifest_path.write_text(manifest_text, encoding="utf-8")
     return {
@@ -963,37 +927,58 @@ def _publish_toc_skill_workspace(skill_workspace: dict[str, Any], toc_result: di
     replacements = {str(staging_work_dir): str(published_work_dir)}
     staging_manifest_path = staging_work_dir / "s2_input.json"
     manifest = _load_json_dict(staging_manifest_path)
+    is_business_bid = _is_business_bid(manifest.get("bidType"))
     staging_output_file = Path(
         str(manifest.get("outputFile") or staging_work_dir / _safe_file_name(settings.s2_toc_output_file_name, "toc.json"))
     ).expanduser()
-    staging_evidence_file = Path(
-        str(manifest.get("evidenceFile") or staging_work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json"))
-    ).expanduser()
+    staging_evidence_file = (
+        Path(str(manifest.get("evidenceFile") or "")).expanduser()
+        if is_business_bid
+        else None
+    )
     manifest = _remap_workspace_paths(manifest, replacements)
     manifest_path = published_work_dir / "s2_input.json"
     output_file = Path(
         str(manifest.get("outputFile") or published_work_dir / _safe_file_name(settings.s2_toc_output_file_name, "toc.json"))
     ).expanduser()
-    evidence_file = Path(
-        str(manifest.get("evidenceFile") or published_work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json"))
-    ).expanduser()
+    evidence_file = (
+        Path(
+            str(
+                manifest.get("evidenceFile")
+                or published_work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json")
+            )
+        ).expanduser()
+        if is_business_bid
+        else None
+    )
     business_outline_file = published_work_dir / "outline.json"
     tender_map_inputs_file = published_work_dir / "tender_map_inputs.json"
     history_bid_outline_inputs_file = published_work_dir / "history_bid_outline_inputs.json"
     manifest["workDir"] = str(published_work_dir)
     manifest["outputFile"] = str(output_file)
-    manifest["evidenceFile"] = str(evidence_file)
+    if evidence_file is not None:
+        manifest["evidenceFile"] = str(evidence_file)
+    else:
+        manifest.pop("evidenceFile", None)
     staging_manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    _remap_json_file(staging_output_file, replacements, {"outputFile": str(output_file), "evidenceFile": str(evidence_file)})
-    _remap_json_file(staging_evidence_file, replacements)
+    _remap_json_file(
+        staging_output_file,
+        replacements,
+        ({"outputFile": str(output_file), "evidenceFile": str(evidence_file)} if evidence_file is not None else None),
+    )
+    if staging_evidence_file is not None:
+        _remap_json_file(staging_evidence_file, replacements)
     _remap_json_file(staging_work_dir / "outline.json", replacements)
     _remap_json_file(staging_work_dir / "tender_map_inputs.json", replacements)
     _remap_json_file(staging_work_dir / "history_bid_outline_inputs.json", replacements)
 
     result = _remap_workspace_paths(toc_result, replacements)
     result["outputFile"] = str(output_file)
-    result["evidenceFile"] = str(evidence_file)
+    if evidence_file is not None:
+        result["evidenceFile"] = str(evidence_file)
+    else:
+        result.pop("evidenceFile", None)
     if (staging_work_dir / "outline.json").exists():
         result["businessOutlineFile"] = str(business_outline_file)
     if (staging_work_dir / "tender_map_inputs.json").exists():
@@ -1005,7 +990,10 @@ def _publish_toc_skill_workspace(skill_workspace: dict[str, Any], toc_result: di
         result["opencodeOutput"]["manifestPath"] = str(manifest_path)
         result["opencodeOutput"]["canonicalManifestPath"] = str(manifest_path)
         result["opencodeOutput"]["tocJsonPath"] = str(output_file)
-        result["opencodeOutput"]["evidencePath"] = str(evidence_file)
+        if evidence_file is not None:
+            result["opencodeOutput"]["evidencePath"] = str(evidence_file)
+        else:
+            result["opencodeOutput"].pop("evidencePath", None)
         if (staging_work_dir / "outline.json").exists():
             result["opencodeOutput"]["businessOutlinePath"] = str(business_outline_file)
         if (staging_work_dir / "tender_map_inputs.json").exists():
@@ -1024,7 +1012,7 @@ def _publish_toc_skill_workspace(skill_workspace: dict[str, Any], toc_result: di
             shutil.move(str(previous_archive_path), str(published_work_dir))
         raise
 
-    return {
+    publish_result = {
         "result": result,
         "workDir": str(published_work_dir),
         "stagingWorkDir": str(staging_work_dir),
@@ -1033,8 +1021,10 @@ def _publish_toc_skill_workspace(skill_workspace: dict[str, Any], toc_result: di
         "manifestPath": str(manifest_path),
         "canonicalManifestPath": str(manifest_path),
         "outputFile": str(output_file),
-        "evidenceFile": str(evidence_file),
     }
+    if evidence_file is not None:
+        publish_result["evidenceFile"] = str(evidence_file)
+    return publish_result
 
 
 def _archive_workspace_if_exists(target: Path, archive_root: Path, label: str) -> str:
@@ -1217,10 +1207,16 @@ def _outline_bid_type(value: str) -> str:
     )
 
 
-def _nodes_from_generation_result(result: dict[str, Any]) -> list[dict[str, Any]]:
+def _nodes_from_generation_result(
+    result: dict[str, Any],
+    *,
+    compact_technical: bool = False,
+) -> list[dict[str, Any]]:
+    if compact_technical and isinstance(result.get("nodes"), list):
+        return _clean_technical_outline_nodes(result["nodes"])
     if isinstance(result.get("items"), list):
         return _nodes_from_toc_items(result["items"])
-    raise ValueError("目录 JSON 缺少 items[]。")
+    raise ValueError("目录 JSON 缺少 nodes[] 或 items[]。")
 
 
 def _summary_from_generation_result(result: dict[str, Any]) -> str:
@@ -1228,18 +1224,70 @@ def _summary_from_generation_result(result: dict[str, Any]) -> str:
     if isinstance(summary, str) and summary.strip():
         return summary.strip()
     if isinstance(summary, dict):
-        total_items = summary.get("total_items")
-        annotation_counts = summary.get("annotation_counts") or {}
-        if isinstance(annotation_counts, dict) and annotation_counts:
+        total_items = summary.get("total_nodes") if "total_nodes" in summary else summary.get("total_items")
+        status_counts = (
+            summary.get("action_counts")
+            or summary.get("required_status_counts")
+            or summary.get("annotation_counts")
+            or {}
+        )
+        if isinstance(status_counts, dict) and status_counts:
             counts = "，".join(
                 f"{key}{value}"
-                for key, value in annotation_counts.items()
+                for key, value in status_counts.items()
                 if value
             )
             if counts:
                 return f"目录生成完成，共 {total_items or 0} 条目录项（{counts}）。"
         return f"目录生成完成，共 {total_items or 0} 条目录项。"
     return "目录生成完成。"
+
+
+def _clean_technical_outline_nodes(
+    nodes: list[Any],
+    *,
+    parent_id: str = "OL",
+) -> list[dict[str, Any]]:
+    cleaned: list[dict[str, Any]] = []
+    for index, raw_node in enumerate(nodes, start=1):
+        if not isinstance(raw_node, dict):
+            continue
+        node_id = f"{parent_id}-{index}"
+        action = str(raw_node.get("suggestion_action") or raw_node.get("suggestionAction") or "待确认").strip()
+        if action not in TECHNICAL_SUGGESTION_ACTIONS:
+            action = "待确认"
+        reason = str(raw_node.get("suggestion_reason") or raw_node.get("suggestionReason") or "").strip()
+        if action != "必要" and not reason:
+            reason = "该目录项需要人工确认。"
+        basis = raw_node.get("tender_basis")
+        if not isinstance(basis, dict):
+            basis = raw_node.get("tenderBasis") if isinstance(raw_node.get("tenderBasis"), dict) else None
+        clean_basis = _clean_tender_basis(basis)
+        number = str(raw_node.get("number") or raw_node.get("tocNumber") or "").strip()
+        raw_children = raw_node.get("children") if isinstance(raw_node.get("children"), list) else []
+        node = {
+            "id": node_id,
+            "number": number,
+            "tocNumber": number,
+            "title": str(raw_node.get("title") or "未命名章节").strip(),
+            "suggestionAction": action,
+            "suggestionReason": reason,
+            "children": _clean_technical_outline_nodes(raw_children, parent_id=node_id),
+        }
+        if clean_basis:
+            node["tenderBasis"] = clean_basis
+        cleaned.append(node)
+    return cleaned
+
+
+def _clean_tender_basis(value: dict[str, Any] | None) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    file_id = str(value.get("file_id") or value.get("fileId") or "").strip()
+    search_text = str(value.get("search_text") or value.get("searchText") or "").strip()
+    if not file_id or not search_text:
+        return None
+    return {"fileId": file_id, "searchText": search_text}
 
 
 def _nodes_from_toc_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1305,7 +1353,10 @@ def _coerce_toc_level(value: Any) -> int:
     return max(1, level)
 
 
-def _toc_item_title(item: dict[str, Any], fallback_order: int) -> str:
+def _toc_item_title(
+    item: dict[str, Any],
+    fallback_order: int,
+) -> str:
     title = str(item.get("title") or "").strip()
     number = str(item.get("number") or "").strip()
     if title:
@@ -1317,6 +1368,30 @@ def _toc_item_title(item: dict[str, Any], fallback_order: int) -> str:
     if number:
         return number
     return f"未命名章节{fallback_order}"
+
+def _technical_rule_evidence(nodes: list[Any]) -> dict[str, Any]:
+    action_counts: Counter[str] = Counter()
+    node_count = 0
+
+    def walk(items: list[Any]) -> None:
+        nonlocal node_count
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            node_count += 1
+            action = str(item.get("suggestion_action") or item.get("suggestionAction") or "待确认").strip()
+            action_counts[action if action in TECHNICAL_SUGGESTION_ACTIONS else "待确认"] += 1
+            children = item.get("children")
+            if isinstance(children, list):
+                walk(children)
+
+    walk(nodes)
+    return {
+        "schemaVersion": "technical-outline.v1",
+        "engine": OUTLINE_SKILL_NAME,
+        "nodeCount": node_count,
+        "actionCounts": dict(action_counts),
+    }
 
 
 def _toc_item_source_text(item: dict[str, Any]) -> str:

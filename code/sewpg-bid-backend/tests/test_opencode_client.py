@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.opencode_client import OpencodeClient
 
 
@@ -166,7 +167,40 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(parsed["itemCount"], 659)
         self.assertIn("投标文件-总目录.json", parsed["outputFile"])
 
-    def test_find_completed_s2toc_tool_output_ignores_later_running_reads(self) -> None:
+    def test_generate_outline_with_trace_defaults_to_no_early_tool_completion(self) -> None:
+        client = OpencodeClient()
+
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-outline"}),
+            patch.object(
+                client,
+                "_send_prompt_with_session_polling",
+                return_value={
+                    "parts": [
+                        {
+                            "type": "text",
+                            "text": (
+                                '{"schema_version":"bid-toc-json-v1",'
+                                '"summary":{"total_items":0},"items":[]}'
+                            ),
+                        }
+                    ]
+                },
+            ) as send_prompt,
+            patch.object(client, "_build_output_trace", return_value={"status": "received"}),
+        ):
+            result = client.generate_outline_with_trace("prompt")
+
+        send_prompt.assert_called_once()
+        self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "")
+        self.assertEqual(result["schema_version"], "bid-toc-json-v1")
+
+    def test_s2_outline_finalize_tool_output_is_terminal(self) -> None:
+        final_output = (
+            '{"schema_version":"technical-outline.v1",'
+            '"outputFile":"/data/documents/PRJ/technical-workspace/s2_toc_workdir.new/toc.json",'
+            '"summary":{"total_nodes":64,"workflowStage":"finalized"}}'
+        )
         messages = [
             {
                 "parts": [
@@ -175,45 +209,89 @@ class OpencodeClientTests(unittest.TestCase):
                         "tool": "bash",
                         "state": {
                             "status": "completed",
-                            "input": {"command": "s2toc /data/documents/PRJ/s2_input.json"},
-                            "output": '{"schema_version":"bid-toc-json-v1","outputFile":"/tmp/toc.json"}',
+                            "input": {"command": "s2outline finalize /data/documents/PRJ/technical-workspace/s2_toc_workdir.new/s2_input.json"},
                             "exit": 0,
+                            "output": final_output,
                         },
-                    },
-                ],
-            },
+                    }
+                ]
+            }
+        ]
+
+        output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+
+        self.assertIn('"total_nodes":64', output)
+
+    def test_s2_outline_non_finalize_commands_do_not_trigger_early_completion(self) -> None:
+        final_output = (
+            '{"schema_version":"technical-outline.v1",'
+            '"outputFile":"/data/documents/PRJ/toc.json",'
+            '"summary":{"total_nodes":64,"workflowStage":"finalized"}}'
+        )
+        for command in [
+            "s2outline prepare /data/documents/PRJ/s2_input.json",
+            "s2outline status /data/documents/PRJ/s2_input.json",
+            "s2outline validate /data/documents/PRJ/s2_input.json",
+            "s2toc /data/documents/PRJ/s2_input.json",
+        ]:
+            with self.subTest(command=command):
+                messages = [
+                    {
+                        "parts": [
+                            {
+                                "type": "tool",
+                                "tool": "bash",
+                                "state": {
+                                    "status": "completed",
+                                    "input": {"command": command},
+                                    "exit": 0,
+                                    "output": final_output,
+                                },
+                            }
+                        ]
+                    }
+                ]
+
+                output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+
+                self.assertEqual(output, "")
+
+    def test_s2_outline_finalize_requires_terminal_json_output(self) -> None:
+        messages = [
             {
                 "parts": [
                     {
                         "type": "tool",
-                        "tool": "read",
+                        "tool": "bash",
                         "state": {
-                            "status": "running",
-                            "input": {"filePath": "/tmp/toc.json"},
+                            "status": "completed",
+                            "input": {"command": "s2outline finalize /data/documents/PRJ/s2_input.json"},
+                            "exit": 0,
+                            "output": '{"status":"waiting","summary":{"total_items":0}}',
                         },
                     },
-                ],
-            },
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "s2outline finalize /data/documents/PRJ/s2_input.json"},
+                            "exit": 0,
+                            "output": (
+                                '{"schema_version":"technical-outline.v1",'
+                                '"outputFile":"/data/documents/PRJ/toc.json",'
+                                '"summary":{"total_nodes":64,"workflowStage":"finalized"}}'
+                            ),
+                        },
+                    },
+                ]
+            }
         ]
 
-        output = OpencodeClient._find_completed_bash_tool_output(messages, "s2toc")
+        output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
 
-        self.assertIn('"outputFile":"/tmp/toc.json"', output)
-
-    def test_build_output_trace_marks_early_s2_completion(self) -> None:
-        client = OpencodeClient()
-        response = client._tool_output_response(
-            session_id="ses-test",
-            output='{"schema_version":"bid-toc-json-v1","outputFile":"/tmp/toc.json"}',
-            trace_parts=[{"type": "text", "text": "s2toc 已完成"}],
-        )
-        response["_completionSource"] = "s2toc"
-
-        trace = client._build_output_trace("ses-test", response)
-
-        self.assertTrue(trace["earlyCompletion"])
-        self.assertEqual(trace["completionSource"], "s2toc")
-        self.assertEqual(trace["parts"][0]["text"], "s2toc 已完成")
+        self.assertIn('"outputFile"', output)
+        self.assertIn('"total_nodes":64', output)
 
     def test_build_output_trace_marks_early_wikibuild_completion(self) -> None:
         client = OpencodeClient()
@@ -395,6 +473,30 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(result["summary"]["templateCount"], 2)
         self.assertEqual(result["opencodeOutput"]["completionSource"], "btplnav-finalize")
 
+    def test_extract_business_templates_aborts_session_when_cancelled_after_session_ready(self) -> None:
+        client = OpencodeClient()
+        ready_events: list[dict[str, str]] = []
+
+        def session_ready(details: dict[str, str]) -> None:
+            ready_events.append(details)
+            raise ParseCancelledError("解析已取消。")
+
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-template-cancel"}),
+            patch.object(client, "send_prompt") as send_prompt,
+            patch.object(client, "abort_session", return_value=True) as abort_session,
+        ):
+            with self.assertRaisesRegex(ParseCancelledError, "解析已取消"):
+                client.extract_business_templates_with_trace(
+                    "prompt",
+                    session_ready_callback=session_ready,
+                    cancel_check=lambda: True,
+                )
+
+        self.assertEqual(ready_events[0]["sessionId"], "ses-template-cancel")
+        abort_session.assert_called_once_with("ses-template-cancel")
+        send_prompt.assert_not_called()
+
     def test_btplnav_finalize_tool_output_is_terminal(self) -> None:
         final_output = (
             '{"schemaVersion":"bid-business-template-extractor-v1",'
@@ -571,6 +673,79 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertTrue(response["_earlyCompletion"])
         self.assertEqual(response["_completionSource"], "s4gap")
         self.assertIn("bid-tech-gap-plan-v1", response["parts"][0]["text"])
+
+    def test_polling_emits_heartbeat_when_snapshot_does_not_change(self) -> None:
+        client = OpencodeClient()
+        events: list[dict] = []
+
+        def slow_send_prompt(session_id: str, prompt_text: str) -> dict:
+            time.sleep(1.2)
+            return {"parts": [{"type": "text", "text": '{"late":true}'}]}
+
+        messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-working"},
+                "parts": [{"type": "text", "text": "working"}],
+            }
+        ]
+
+        with (
+            patch.object(client, "send_prompt", side_effect=slow_send_prompt),
+            patch.object(client, "list_session_messages", return_value=messages),
+            patch("app.services.opencode_client.OPENCODE_PROGRESS_HEARTBEAT_SECONDS", 0.1),
+        ):
+            client._send_prompt_with_session_polling(
+                "ses-heartbeat",
+                "prompt",
+                stream_callback=events.append,
+            )
+
+        heartbeat_events = [event for event in events if event.get("heartbeat")]
+        self.assertTrue(heartbeat_events)
+        self.assertGreaterEqual(heartbeat_events[-1]["idleSeconds"], 1)
+        self.assertGreaterEqual(heartbeat_events[-1]["elapsedSeconds"], heartbeat_events[-1]["idleSeconds"])
+        self.assertEqual(heartbeat_events[-1]["sessionId"], "ses-heartbeat")
+
+    def test_polling_aborts_session_when_cancel_requested(self) -> None:
+        client = OpencodeClient()
+
+        def slow_send_prompt(session_id: str, prompt_text: str) -> dict:
+            time.sleep(2)
+            return {"parts": [{"type": "text", "text": '{"late":true}'}]}
+
+        with (
+            patch.object(client, "send_prompt", side_effect=slow_send_prompt),
+            patch.object(client, "abort_session", return_value=True) as abort_session,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "解析已取消"):
+                client._send_prompt_with_session_polling(
+                    "ses_cancel_polling_probe",
+                    "prompt",
+                    early_tool_command="s1parse-finalize",
+                    cancel_check=lambda: True,
+                )
+
+        abort_session.assert_called_once_with("ses_cancel_polling_probe")
+
+    def test_generate_tender_parse_aborts_session_when_cancelled_after_session_ready(self) -> None:
+        client = OpencodeClient()
+
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses_cancel_ready_probe"}),
+            patch.object(client, "send_prompt") as send_prompt,
+            patch.object(client, "abort_session", return_value=True) as abort_session,
+        ):
+            with self.assertRaisesRegex(ParseCancelledError, "解析已取消"):
+                client.generate_tender_parse_with_trace(
+                    "prompt",
+                    session_ready_callback=lambda _details: (_ for _ in ()).throw(
+                        ParseCancelledError("解析已取消。")
+                    ),
+                    cancel_check=lambda: True,
+                )
+
+        abort_session.assert_called_once_with("ses_cancel_ready_probe")
+        send_prompt.assert_not_called()
 
     def test_s1_parse_does_not_complete_on_prepare_stdout(self) -> None:
         client = OpencodeClient()
@@ -765,6 +940,72 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertIn('"templateCount":11', response["parts"][0]["text"])
         self.assertGreaterEqual(list_session_messages.call_count, 2)
 
+    def test_s2_outline_waits_for_finalize_after_prompt_timeout(self) -> None:
+        client = OpencodeClient()
+        finalize_output = (
+            '{"schema_version":"technical-outline.v1",'
+            '"outputFile":"/data/documents/PRJ/toc.json",'
+            '"summary":{"total_nodes":64,"workflowStage":"finalized"}}'
+        )
+        validation_messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-validate"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "s2outline validate /data/documents/PRJ/s2_input.json"},
+                            "exit": 0,
+                            "output": '{"status":"passed"}',
+                        },
+                    }
+                ],
+            }
+        ]
+        finalized_messages = [
+            *validation_messages,
+            {
+                "info": {"role": "assistant", "id": "msg-finalize"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "s2outline finalize /data/documents/PRJ/s2_input.json"},
+                            "exit": 0,
+                            "output": finalize_output,
+                        },
+                    }
+                ],
+            },
+        ]
+        snapshots = iter([validation_messages, finalized_messages])
+
+        def list_messages(session_id: str) -> list[dict]:
+            try:
+                return next(snapshots)
+            except StopIteration:
+                return finalized_messages
+
+        with (
+            patch.object(client, "send_prompt", side_effect=RuntimeError("futurecode generate timeout")),
+            patch.object(client, "list_session_messages", side_effect=list_messages) as list_session_messages,
+            patch("app.services.opencode_client.time.sleep", return_value=None),
+        ):
+            response = client._send_prompt_with_session_polling(
+                "ses-s2-outline",
+                "prompt",
+                early_tool_command="s2outline-finalize",
+            )
+
+        self.assertTrue(response["_earlyCompletion"])
+        self.assertEqual(response["_completionSource"], "s2outline-finalize")
+        self.assertIn('"total_nodes":64', response["parts"][0]["text"])
+        self.assertGreaterEqual(list_session_messages.call_count, 2)
+
     def test_btplnav_stalled_running_tool_reports_trace(self) -> None:
         client = OpencodeClient()
         messages = [
@@ -843,12 +1084,12 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(trace["lastMessageId"], "msg-read")
         self.assertIn("document_map.json", json.dumps(trace["lastToolInput"], ensure_ascii=False))
 
-    def test_early_s2_tool_output_does_not_repair_traceback_into_outline(self) -> None:
+    def test_early_tool_output_does_not_repair_traceback_into_outline(self) -> None:
         client = OpencodeClient()
         response = client._tool_output_response(
             session_id="ses-test",
             output='Traceback (most recent call last):\nzipfile.BadZipFile: File is not a zip file',
-            trace_parts=[{"type": "text", "text": "s2toc failed"}],
+            trace_parts=[{"type": "text", "text": "tool failed"}],
         )
 
         with patch.object(client, "_repair_json_payload") as repair:
@@ -857,7 +1098,7 @@ class OpencodeClientTests(unittest.TestCase):
 
         repair.assert_not_called()
 
-    def test_completed_s2_tool_output_must_be_json(self) -> None:
+    def test_completed_early_tool_output_must_be_json(self) -> None:
         messages = [
             {
                 "parts": [
@@ -866,7 +1107,7 @@ class OpencodeClientTests(unittest.TestCase):
                         "tool": "bash",
                         "state": {
                             "status": "completed",
-                            "input": {"command": "s2toc /tmp/s2_input.json"},
+                            "input": {"command": "wikibuild /tmp/wiki_input.json"},
                             "exit": None,
                             "output": "Traceback (most recent call last):\nzipfile.BadZipFile: File is not a zip file",
                         },
@@ -875,7 +1116,7 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        output = OpencodeClient._find_completed_bash_tool_output(messages, "s2toc")
+        output = OpencodeClient._find_completed_bash_tool_output(messages, "wikibuild")
 
         self.assertEqual(output, "")
 

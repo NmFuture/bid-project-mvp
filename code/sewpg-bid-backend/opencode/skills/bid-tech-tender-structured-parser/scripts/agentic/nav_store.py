@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = "bid-business-agentic-nav-v1"
+SCHEMA_VERSION = "bid-tech-agentic-nav-v1"
 
 
 def connect(path: Path) -> sqlite3.Connection:

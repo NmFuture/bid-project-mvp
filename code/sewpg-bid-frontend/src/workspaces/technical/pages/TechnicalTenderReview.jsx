@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { technicalParseAPI, technicalProjectsAPI } from '../../../api'
 import { PageError, PageLoading } from '../../../components/states/PageState'
@@ -12,9 +12,11 @@ import { normalizeBidType, projectRoute } from '../../../utils/workspace'
 import {
   isParseProgressFailed,
   isUploadAndRunTimeout,
+  mergeMonotonicParseProgress,
   pollParseProgressOnce,
   recoverUploadAndRunTimeout,
   shouldPollParseProgress,
+  summarizeParseProgress,
 } from '../technicalParseUploadRecovery'
 import {
   selectTechnicalParseProjectId,
@@ -39,6 +41,14 @@ const ALLOWED_EXTENSIONS = new Set([
 ])
 
 const EMPTY_APPENDICES = []
+const PROJECT_BASIC_FIELDS = [
+  ['projectName', '项目名称'],
+  ['tenderNo', '招标编号'],
+  ['projectUnit', '项目单位'],
+  ['tenderer', '招标人'],
+  ['tenderAgency', '招标代理机构'],
+  ['bidDeadline', '递交截止时间'],
+]
 
 const extensionOf = (name) => {
   const parts = String(name || '').split('.')
@@ -87,6 +97,19 @@ const groupValue = (field) => {
   const value = String(field.value || '').trim()
   return value || '未识别'
 }
+
+const displayValue = (value, emptyText = '-') => {
+  if (Array.isArray(value)) {
+    const text = value.map((item) => String(item || '').trim()).filter(Boolean).join('，')
+    return text || emptyText
+  }
+  const text = String(value ?? '').trim()
+  return text || emptyText
+}
+
+const sourceValue = (row = {}) => displayValue(
+  [row.sourceFile, row.section, row.evidenceLocation].filter(Boolean),
+)
 
 const presenceLabel = (status) => (status === 'present' ? '有明确要求' : '未识别')
 
@@ -477,6 +500,71 @@ function TechnicalInterpretationView({ groups = [] }) {
   )
 }
 
+const TECHNICAL_STOP_PARSE_MESSAGE = '已请求停止技术标解析任务。'
+const isStoppedParseStatus = (status) => status === 'stopped' || status === 'cancelled'
+
+const buildStoppedParseProgress = (previous, summary) => ({
+  status: previous?.status === 'cancelled' ? 'cancelled' : 'stopped',
+  percentage: Math.max(0, Math.min(100, Number(previous?.percentage || 0))),
+  summary,
+  events: [
+    ...(Array.isArray(previous?.events) ? previous.events : []),
+    { step: 'stop', level: 'warning', message: summary },
+  ].slice(-8),
+  opencodeOutput: previous?.opencodeOutput || { parts: [] },
+})
+
+function ProjectBasicsTable({ title, fields = [] }) {
+  const byKey = new Map(fields.map((field) => [field.key || field.fieldKey, field]))
+  const normalizedFields = PROJECT_BASIC_FIELDS.map(([key, label]) => {
+    const field = byKey.get(key) || {}
+    return {
+      key,
+      label,
+      ...field,
+      value: field.value ?? '',
+    }
+  })
+
+  return (
+    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
+      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low">
+        <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full table-fixed text-sm min-w-[720px]">
+          <colgroup>
+            <col className="w-44" />
+            <col className="w-[26rem]" />
+            <col className="w-72" />
+          </colgroup>
+          <thead>
+            <tr className="border-b border-surface-container-high">
+              <th className="px-4 py-2 text-center font-semibold text-on-surface">字段</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface">解析内容</th>
+              <th className="px-4 py-2 text-center font-semibold text-on-surface">来源</th>
+            </tr>
+          </thead>
+          <tbody>
+            {normalizedFields.map((field) => {
+              const found = Boolean(String(field.value || '').trim())
+              return (
+                <tr key={field.key} className="border-b border-surface-container-high last:border-b-0">
+                  <td className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">{field.label}</td>
+                  <td className={`px-4 py-2 ${found ? 'text-primary font-medium' : 'text-outline'}`}>
+                    {found ? displayValue(field.value) : '未识别'}
+                  </td>
+                  <td className="px-4 py-2 text-on-surface-variant">{sourceValue(field)}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 export default function TechnicalTenderReview({ showToast }) {
   const reviewConfig = TECHNICAL_REVIEW_CONFIG
   const navigate = useNavigate()
@@ -492,6 +580,7 @@ export default function TechnicalTenderReview({ showToast }) {
   const [uploadError, setUploadError] = useState('')
   const [tenderFiles, setTenderFiles] = useState([])
   const [uploading, setUploading] = useState(false)
+  const [parseStopRequested, setParseStopRequested] = useState(false)
   const [parseProgress, setParseProgress] = useState(null)
   const [deciding, setDeciding] = useState('')
   const [creatingReview, setCreatingReview] = useState(false)
@@ -501,6 +590,9 @@ export default function TechnicalTenderReview({ showToast }) {
   const [appendixPreview, setAppendixPreview] = useState(null)
   const [appendixPreviewLoading, setAppendixPreviewLoading] = useState(false)
   const [appendixPreviewError, setAppendixPreviewError] = useState('')
+  const parseAbortControllerRef = useRef(null)
+  const activeParseProjectIdRef = useRef('')
+  const parseStoppedRef = useRef(false)
   const [savingAppendixId, setSavingAppendixId] = useState('')
   const [savingAllAppendices, setSavingAllAppendices] = useState(false)
 
@@ -513,7 +605,7 @@ export default function TechnicalTenderReview({ showToast }) {
 
   const syncParsedProject = useCallback(async (targetProjectId) => {
     const latestProgress = await technicalParseAPI.progress(targetProjectId).catch(() => null)
-    if (latestProgress) setParseProgress(latestProgress)
+    if (latestProgress) setParseProgress((previous) => mergeMonotonicParseProgress(previous, latestProgress))
     const latestProject = await technicalProjectsAPI.get(targetProjectId)
     setSelectedProjectId(targetProjectId)
     setProject(latestProject)
@@ -573,7 +665,7 @@ export default function TechnicalTenderReview({ showToast }) {
       ])
       setProject(projectData)
       setParseData(parseResult)
-      setParseProgress(progressResult)
+      setParseProgress((previous) => mergeMonotonicParseProgress(previous, progressResult))
     } catch (e) {
       setError(e?.message || '解析详情加载失败')
     } finally {
@@ -632,10 +724,50 @@ export default function TechnicalTenderReview({ showToast }) {
   const parseProgressStatus = parseProgress?.status
   const parseProgressPercentage = parseProgress?.percentage
   const parseResultStatus = parseData?.status
+  const parseIsStoppable = shouldPollParseProgress({
+    uploading,
+    stopped: parseStopRequested,
+    progress: { status: parseProgressStatus, percentage: parseProgressPercentage },
+    result: { status: parseResultStatus },
+  })
+
+  const handleStopParse = useCallback(async () => {
+    const targetProjectId = activeParseProjectIdRef.current || selectedProjectId
+    const cancelRequest = targetProjectId
+      ? technicalParseAPI.cancel(targetProjectId).catch((error) => ({ error }))
+      : Promise.resolve(null)
+    parseStoppedRef.current = true
+    setParseStopRequested(true)
+    parseAbortControllerRef.current?.abort()
+    parseAbortControllerRef.current = null
+    setUploading(false)
+    setUploadError(TECHNICAL_STOP_PARSE_MESSAGE)
+    setParseProgress((previous) => buildStoppedParseProgress(previous, TECHNICAL_STOP_PARSE_MESSAGE))
+    showToast?.('正在请求停止技术标解析任务。')
+
+    const cancelled = await cancelRequest
+    if (cancelled?.error) {
+      activeParseProjectIdRef.current = ''
+      showToast?.(`停止请求失败：${cancelled.error?.message || '请稍后查看最新进度。'}`, 'error')
+      return
+    }
+    if (cancelled) {
+      const summary = cancelled.summary || cancelled.message || TECHNICAL_STOP_PARSE_MESSAGE
+      setUploadError(summary)
+      setParseProgress((previous) => buildStoppedParseProgress({ ...previous, ...cancelled }, summary))
+      showToast?.(summary)
+    }
+    activeParseProjectIdRef.current = ''
+  }, [selectedProjectId, showToast])
+
+  useEffect(() => () => {
+    parseAbortControllerRef.current?.abort()
+  }, [])
 
   useEffect(() => {
     if (!selectedProjectId || !shouldPollParseProgress({
       uploading,
+      stopped: parseStopRequested,
       progress: { status: parseProgressStatus, percentage: parseProgressPercentage },
       result: { status: parseResultStatus },
     })) return undefined
@@ -648,7 +780,7 @@ export default function TechnicalTenderReview({ showToast }) {
         })
         if (stopped) return
         const progress = snapshot.progress
-        setParseProgress(progress)
+        setParseProgress((previous) => mergeMonotonicParseProgress(previous, progress))
         if (snapshot.completed) {
           setParseData(snapshot.result)
           navigateToParseResult(selectedProjectId)
@@ -672,6 +804,7 @@ export default function TechnicalTenderReview({ showToast }) {
     parseProgressPercentage,
     parseProgressStatus,
     parseResultStatus,
+    parseStopRequested,
     selectedProjectId,
     uploading,
   ])
@@ -703,6 +836,7 @@ export default function TechnicalTenderReview({ showToast }) {
   )
   const hasTechnicalInterpretation = technicalInterpretationGroups.length > 0
   const fieldGroups = parseData?.structured?.fieldGroups || {}
+  const projectBasics = Array.isArray(fieldGroups.projectBasics) ? fieldGroups.projectBasics : []
   const structuredScoring = useMemo(
     () => parseData?.structured?.scoringCriteria || {},
     [parseData?.structured?.scoringCriteria],
@@ -851,6 +985,8 @@ export default function TechnicalTenderReview({ showToast }) {
     }
 
     setUploading(true)
+    setParseStopRequested(false)
+    parseStoppedRef.current = false
     setUploadError('')
     setParseProgress({
       status: 'running',
@@ -859,24 +995,46 @@ export default function TechnicalTenderReview({ showToast }) {
       events: [{ step: 'upload', level: 'info', message: '正在上传技术招标文件。' }],
       opencodeOutput: { parts: [] },
     })
+    const abortController = new AbortController()
+    parseAbortControllerRef.current = abortController
+    activeParseProjectIdRef.current = targetProjectId
     try {
       const formData = new FormData()
       tenderFiles.forEach((file) => formData.append('tenderFiles', file))
-      const response = await technicalParseAPI.uploadAndRun(targetProjectId, { formData })
+      const response = await technicalParseAPI.uploadAndRun(targetProjectId, {
+        formData,
+        signal: abortController.signal,
+      })
+      if (parseStoppedRef.current) return
       setParseData(response)
       await syncParsedProject(targetProjectId)
       navigateToParseResult(targetProjectId)
       setTenderFiles([])
       showToast?.(response?.message || `${reviewConfig.bidType}招标文件解析完成。`)
     } catch (e) {
+      if (parseStoppedRef.current || e?.code === 'ABORTED') {
+        setUploadError(TECHNICAL_STOP_PARSE_MESSAGE)
+        setParseProgress((previous) => buildStoppedParseProgress(previous, TECHNICAL_STOP_PARSE_MESSAGE))
+        return
+      }
       if (isUploadAndRunTimeout(e) && targetProjectId) {
         setUploadError('')
         showToast?.('解析仍在后台继续，正在同步最新进度。')
         const recovered = await recoverUploadAndRunTimeout({
           projectId: targetProjectId,
           parseClient: technicalParseAPI,
-          onProgress: (progress) => setParseProgress(progress),
+          signal: abortController.signal,
+          onProgress: (progress) => {
+            if (!parseStoppedRef.current) {
+              setParseProgress((previous) => mergeMonotonicParseProgress(previous, progress))
+            }
+          },
         })
+        if (parseStoppedRef.current || recovered.stopped) {
+          setUploadError(TECHNICAL_STOP_PARSE_MESSAGE)
+          setParseProgress((previous) => buildStoppedParseProgress(previous, TECHNICAL_STOP_PARSE_MESSAGE))
+          return
+        }
         if (recovered.completed) {
           setParseData(recovered.result)
           await syncParsedProject(targetProjectId)
@@ -899,7 +1057,13 @@ export default function TechnicalTenderReview({ showToast }) {
       setUploadError(message)
       showToast?.(message, 'error')
     } finally {
-      setUploading(false)
+      if (parseAbortControllerRef.current === abortController) {
+        parseAbortControllerRef.current = null
+        activeParseProjectIdRef.current = ''
+        setUploading(false)
+      } else if (parseStoppedRef.current) {
+        setUploading(false)
+      }
     }
   }
 
@@ -1010,34 +1174,52 @@ export default function TechnicalTenderReview({ showToast }) {
 
   const renderTechnicalCompactProgress = () => {
     if (!uploading && (!parseProgress || parseProgress.status === 'idle')) return null
-    const status = uploading ? 'running' : (parseProgress?.status || 'idle')
-    const percentage = Math.max(0, Math.min(100, Number(parseProgress?.percentage || (uploading ? 3 : 0))))
-    const statusText = status === 'completed' ? '解析完成' : status === 'failed' ? '解析失败' : status === 'running' ? '解析中' : '等待上传'
-    const summary = parseProgress?.summary === '尚未触发招标文件解析。'
+    const progress = uploading && (!parseProgress || parseProgress.status === 'idle')
+      ? {
+          status: 'running',
+          percentage: 3,
+          phaseLabel: '上传文件中',
+          phasePercent: 0,
+          summary: '正在上传并解析技术招标文件，请稍候。',
+        }
+      : parseProgress
+    const progressSummary = summarizeParseProgress(progress)
+    const status = progressSummary.status
+    const summary = progressSummary.summary === '尚未触发招标文件解析。'
       ? '正在上传并解析技术招标文件，请稍候。'
-      : (parseProgress?.summary || '正在上传并解析技术招标文件，请稍候。')
+      : (progressSummary.summary || '正在上传并解析技术招标文件，请稍候。')
+    const badgeClass = progressSummary.tone === 'danger'
+      ? 'bg-error-container text-error'
+      : progressSummary.tone === 'warning'
+        ? 'bg-tertiary-container text-on-tertiary-container'
+        : isStoppedParseStatus(status)
+          ? 'bg-surface-container-high text-on-surface-variant'
+          : progressSummary.tone === 'success'
+            ? 'bg-primary/10 text-primary'
+            : 'bg-primary/10 text-primary'
+    const barClass = progressSummary.tone === 'danger'
+      ? 'bg-error'
+      : progressSummary.tone === 'warning'
+        ? 'bg-tertiary'
+        : 'bg-primary'
 
     return (
       <div className="mt-4 rounded-md border border-surface-container-high bg-surface-container-low px-4 py-3">
         <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold text-on-surface">解析进度</p>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-on-surface">{progressSummary.title || '解析进度'}</p>
             <p className="mt-1 text-xs text-outline">{summary}</p>
+            {progressSummary.detail ? (
+              <p className="mt-1 text-xs font-medium text-on-surface-variant">{progressSummary.detail}</p>
+            ) : null}
           </div>
-          <span className={[
-            'shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold',
-            status === 'failed'
-              ? 'bg-error-container text-error'
-              : status === 'running'
-                ? 'bg-primary/10 text-primary'
-                : 'bg-surface-container-high text-on-surface-variant',
-          ].join(' ')}
+          <span className={['shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold', badgeClass].join(' ')}
           >
-            {statusText} · {percentage}%
+            {progressSummary.statusText} · {progressSummary.percentage}%
           </span>
         </div>
         <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-container-high">
-          <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${percentage}%` }} />
+          <div className={['h-full rounded-full transition-all', barClass].join(' ')} style={{ width: `${progressSummary.percentage}%` }} />
         </div>
       </div>
     )
@@ -1082,7 +1264,7 @@ export default function TechnicalTenderReview({ showToast }) {
             <div className="mt-3">
               {renderPickedFiles()}
             </div>
-            <div className="mt-4 flex justify-center">
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
               <Button
                 type="button"
                 onClick={handleUploadAndParse}
@@ -1092,6 +1274,17 @@ export default function TechnicalTenderReview({ showToast }) {
               >
                 {creatingReview ? '准备中...' : uploading ? '上传解析中...' : '上传并解析'}
               </Button>
+              {parseIsStoppable && (
+                <Button
+                  type="button"
+                  onClick={handleStopParse}
+                  size="stage"
+                  variant="dangerQuiet"
+                  icon="stop_circle"
+                >
+                  停止解析
+                </Button>
+              )}
             </div>
             {uploadError && (
               <div className="mt-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
@@ -1135,6 +1328,8 @@ export default function TechnicalTenderReview({ showToast }) {
           <div className="p-6 text-sm text-on-surface-variant">{reviewConfig.pendingParseHint}</div>
         ) : (
           <div className="flex flex-col gap-5">
+            <ProjectBasicsTable title="项目基础信息" fields={projectBasics} />
+
             {hasTechnicalInterpretation ? (
               <TechnicalInterpretationView groups={technicalInterpretationGroups} />
             ) : (
@@ -1158,7 +1353,7 @@ export default function TechnicalTenderReview({ showToast }) {
 
                 {reviewConfig.fieldGroupSections.length ? (
                   <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
-                    {reviewConfig.fieldGroupSections.map(([key, title]) => (
+                    {reviewConfig.fieldGroupSections.filter(([key]) => key !== 'projectBasics').map(([key, title]) => (
                       <FieldGroupTable
                         key={key}
                         title={title}

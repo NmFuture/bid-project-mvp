@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -152,6 +152,88 @@ class BusinessAgenticParserTests(unittest.TestCase):
             self.assertGreaterEqual(evidence_count, 10)
             self.assertEqual(table_row_count, 5)
             self.assertGreaterEqual(cell_count, 14)
+
+    def test_s1parse_prepare_reads_document_nav_for_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nav_path = root / "document_nav.json"
+            output_path = root / "s1_structured_result.json"
+            manifest_path = root / "s1_parse_manifest.json"
+            nav_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "business-document-nav-v1",
+                        "sourceEngine": "docling",
+                        "documents": [{"id": "DOC-1", "name": "sample.pdf", "sourcePath": "sample.pdf"}],
+                        "pages": [{"pageNo": 1, "textDensity": 0.9}],
+                        "blocks": [
+                            {
+                                "id": "DOC-1:B000001",
+                                "type": "heading",
+                                "text": "第六章 投标文件格式",
+                                "pageNo": 1,
+                                "evidenceId": "DOC-1:P0001:B000001",
+                            },
+                            {
+                                "id": "DOC-1:B000002",
+                                "type": "paragraph",
+                                "text": "一、投标函",
+                                "pageNo": 1,
+                                "evidenceId": "DOC-1:P0001:B000002",
+                            },
+                        ],
+                        "tables": [
+                            {
+                                "id": "DOC-1:T0001",
+                                "title": "商务偏差表",
+                                "pageNo": 1,
+                                "rows": [["条款", "响应"], ["商务偏差表", "无偏差"]],
+                                "evidenceId": "DOC-1:P0001:T000001",
+                            }
+                        ],
+                        "images": [],
+                        "evidence": [],
+                        "quality": {"status": "completed"},
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-DOCNAV-UNIT",
+                        "bidType": "business",
+                        "parseProfile": "business",
+                        "structuredResultPath": str(output_path),
+                        "documents": [
+                            {
+                                "id": "DOC-1",
+                                "name": "sample.pdf",
+                                "sourcePath": str(root / "sample.pdf"),
+                                "documentNavPath": str(nav_path),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            summary = json.loads(self.run_s1parse("prepare", str(manifest_path)).stdout)
+
+            conn = sqlite3.connect(summary["navStorePath"])
+            rows = conn.execute("SELECT block_type, text, table_id FROM blocks ORDER BY body_index").fetchall()
+            tables = conn.execute("SELECT title, row_count FROM tables").fetchall()
+            headings = json.loads(Path(summary["documentMapPath"]).read_text(encoding="utf-8"))["documents"][0]["headings"]
+            conn.close()
+            self.assertEqual([row[0] for row in rows], ["heading", "paragraph", "table"])
+            self.assertEqual(rows[0][1], "第六章 投标文件格式")
+            self.assertEqual(rows[2][2], "DOC-1:T0001")
+            self.assertEqual(tables[0], ("商务偏差表", 2))
+            self.assertEqual(headings[0]["title"], "第六章 投标文件格式")
 
     def test_navigation_commands_return_small_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -75,14 +75,12 @@ CATEGORIES: tuple[Category, ...] = (
 
 
 PROJECT_BASIC_FIELDS: tuple[FieldSpec, ...] = (
-    FieldSpec("projectName", "项目名称", ("项目名称",)),
-    FieldSpec("tenderNo", "招标编号", ("招标编号", "项目编号", "招标文件编号")),
-    FieldSpec("tenderer", "招标人", ("招标人", "业主", "建设单位", "项目单位")),
-    FieldSpec("managementUnit", "管理单位", ("管理单位",)),
-    FieldSpec("bidSectionScale", "标段规模", ("标段规模", "招标规模", "建设规模", "项目规模", "总装机容量")),
-    FieldSpec("deliveryPeriod", "交货周期", ("交货周期", "交货期", "交货进度", "供货周期")),
-    FieldSpec("warrantyPeriod", "质保期", ("质保期", "质量保证期", "质保")),
-    FieldSpec("technicalCommitment", "技术承诺", ("技术承诺", "项目技术承诺", "承诺要求")),
+    FieldSpec("projectName", "项目名称", ()),
+    FieldSpec("tenderNo", "招标编号", ()),
+    FieldSpec("projectUnit", "项目单位", ()),
+    FieldSpec("tenderer", "招标人", ()),
+    FieldSpec("tenderAgency", "招标代理机构", ()),
+    FieldSpec("bidDeadline", "递交截止时间", ()),
 )
 
 TURBINE_CORE_FIELDS: tuple[FieldSpec, ...] = (
@@ -775,25 +773,31 @@ def _field_candidate_score(item: dict[str, Any], spec: FieldSpec | None = None) 
                 score += 80
             if value in {"项目编号", "招标编号", "招标文件编号"}:
                 score -= 100
-        if spec.key in {"tenderer", "managementUnit"}:
+        if spec.key in {"tenderer", "projectUnit", "tenderAgency"}:
             if 0 < block_no <= 30:
                 score += 70
+            if section == "封面":
+                score += 100
+            if location.startswith("L"):
+                line_match = re.match(r"L(\d+)", location)
+                line_no = int(line_match.group(1)) if line_match else 0
+                if 0 < line_no <= 80:
+                    score += 90
+                else:
+                    score -= 80
+            if len(value) > 80:
+                score -= 120
+            if re.search(r"\d{1,4}$", value) and "责任" in value:
+                score -= 160
             if "意见" in value or "代表" in value:
                 score -= 60
-        if spec.key == "bidSectionScale" and any(keyword in context for keyword in ("招标机型要求", "总装机容量")):
-            score += 70
-        if spec.key == "deliveryPeriod":
-            if any(keyword in context for keyword in ("交货进度", "供货进度")):
-                score += 60
+        if spec.key == "bidDeadline":
+            if _is_bid_date_context(context):
+                score += 80
             if re.search(r"20\d{2}", value):
-                score += 60
-            if "详见" in value:
-                score -= 60
-        if spec.key == "warrantyPeriod":
-            if re.search(r"\d+(?:\.\d+)?\s*年", value):
-                score += 90
-            if "质保期" in context:
-                score += 30
+                score += 70
+            if any(keyword in context for keyword in NON_BID_DATE_KEYWORDS):
+                score -= 50
         if spec.key in {"singleCapacity", "rotorDiameter", "hubHeight", "bladeTipClearance", "towerType", "boxTransformerType"}:
             if any(keyword in context for keyword in ("招标机型要求", "表 14")):
                 score += 90
@@ -815,8 +819,14 @@ def _field_candidate_score(item: dict[str, Any], spec: FieldSpec | None = None) 
     return score
 
 
-def _build_fixed_field_group(items: list[dict[str, Any]], specs: tuple[FieldSpec, ...]) -> list[dict[str, Any]]:
+def _build_fixed_field_group(
+    items: list[dict[str, Any]],
+    specs: tuple[FieldSpec, ...],
+    *,
+    project_dates: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     fields: list[dict[str, Any]] = []
+    project_dates = project_dates or {}
     for spec in specs:
         candidates = [item for item in items if item.get("fieldKey") == spec.key]
         matched = max(candidates, key=lambda item: _field_candidate_score(item, spec)) if candidates else None
@@ -827,7 +837,15 @@ def _build_fixed_field_group(items: list[dict[str, Any]], specs: tuple[FieldSpec
                 if any(alias in str(item.get("keyEntity") or item.get("title") or item.get("evidence") or "") for alias in spec.aliases)
             ]
             matched = max(fallback_candidates, key=lambda item: _field_candidate_score(item, spec)) if fallback_candidates else None
-        fields.append(_field_from_item(spec, matched) if matched else _empty_field(spec))
+        if matched is not None:
+            fields.append(_field_from_item(spec, matched))
+        elif spec.key == "bidDeadline" and project_dates.get("endDate"):
+            field = _empty_field(spec)
+            field["value"] = str(project_dates.get("endDate") or "")
+            field["status"] = "found"
+            fields.append(field)
+        else:
+            fields.append(_empty_field(spec))
     return fields
 
 
@@ -945,6 +963,9 @@ def _extract_line_items(
         line = raw_line.strip()
         if not line:
             continue
+        if "目录" in line:
+            current_section = line
+            continue
         if line.startswith("#"):
             current_section = line.strip(" #")
             continue
@@ -954,22 +975,6 @@ def _extract_line_items(
             current_section = line
         dates = _find_dates(line)
         _record_project_date(line, dates, project_dates)
-        if dates and any(keyword in current_section for keyword in ("交货进度", "供货进度")):
-            spec = next(item for item in PROJECT_BASIC_FIELDS if item.key == "deliveryPeriod")
-            item = _new_item(
-                items,
-                category="project_basics",
-                label=spec.label,
-                value=line,
-                document=document,
-                evidence=line,
-                location=f"L{line_no}",
-                section=current_section,
-                field_key=spec.key,
-                field_group="projectBasics",
-            )
-            item["dates"] = dates
-            continue
         category = _first_category(line)
         raw_field_match = _field_matches(line)
         field_match: tuple[str, str, FieldSpec] | None = None
@@ -1001,6 +1006,13 @@ def _extract_line_items(
                 else:
                     continue
             field_key = spec.key
+            if group_key == "projectBasics":
+                if current_section == "目 录" or current_section == "目录":
+                    continue
+                if spec.key in {"tenderer", "projectUnit", "tenderAgency"} and line_no > 80 and not LABEL_VALUE_PATTERN.match(line):
+                    continue
+                if spec.key in {"tenderer", "projectUnit", "tenderAgency"} and len(value) > 80:
+                    continue
         item = _new_item(
             items,
             category=category.key,
@@ -1071,48 +1083,6 @@ def _extract_docx_table_items(
         )
 
 
-def _extract_cover_project_name(
-    items: list[dict[str, Any]],
-    *,
-    document: dict[str, Any],
-    blocks: list[dict[str, Any]],
-    seen_fields: set[tuple[str, str, str, str]],
-) -> None:
-    for block_index, block in enumerate(blocks[:18], start=1):
-        if block.get("type") != "paragraph":
-            continue
-        text = _clean(block.get("text"))
-        if not text:
-            continue
-        if "目录" in text or "招 标 文 件" in text or "招标文件" in text:
-            break
-        if "项目" not in text or len(text) < 6:
-            continue
-        if re.match(r"^\d+(?:\.\d+)*\s+", text):
-            continue
-        if any(keyword in text for keyword in ("风力发电机组", "招标编号", "第二卷", "技术规范")):
-            continue
-        spec = PROJECT_BASIC_FIELDS[0]
-        dedupe_key = (str(document.get("id") or ""), spec.key, text, text)
-        if dedupe_key in seen_fields:
-            return
-        seen_fields.add(dedupe_key)
-        _new_item(
-            items,
-            category="project_basics",
-            label=spec.label,
-            value=text,
-            document=document,
-            evidence=text,
-            location=f"B{block_index}",
-            section="封面",
-            confidence=0.9,
-            field_key=spec.key,
-            field_group="projectBasics",
-        )
-        return
-
-
 def parse_documents(documents: list[dict[str, Any]], texts_by_id: dict[str, str] | None = None, *, mode: str = "local-structured-parser") -> dict[str, Any]:
     texts_by_id = texts_by_id or {}
     items: list[dict[str, Any]] = []
@@ -1145,13 +1115,6 @@ def parse_documents(documents: list[dict[str, Any]], texts_by_id: dict[str, str]
                 "textLength": len(text),
             }
         )
-        if blocks:
-            _extract_cover_project_name(
-                items,
-                document=document,
-                blocks=blocks,
-                seen_fields=field_seen,
-            )
         _extract_line_items(items, document=document, text=text, project_dates=project_dates, seen=line_seen)
         if blocks:
             _extract_docx_table_items(
@@ -1174,7 +1137,11 @@ def parse_documents(documents: list[dict[str, Any]], texts_by_id: dict[str, str]
         if category_map[category.key]
     ]
     field_groups = {
-        key: _build_fixed_field_group(items, specs)
+        key: (
+            [_empty_field(spec) for spec in specs]
+            if key == "projectBasics"
+            else _build_fixed_field_group(items, specs)
+        )
         for key, (_, specs) in FIELD_GROUP_SPECS.items()
     }
     flat_scoring = [row for bucket in SCORING_BUCKETS for row in scoring[bucket]]

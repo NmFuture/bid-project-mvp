@@ -30,12 +30,15 @@ def _block_preview(block: dict[str, Any], *, limit: int = TEXT_LIMIT) -> dict[st
     }
     if block.get("rows"):
         item["rows"] = block.get("rows")
+    for key in ("sourceEvidenceId", "pageNo", "bbox", "sourceEngine"):
+        if key in block:
+            item[key] = block.get(key)
     return item
 
 
 def _document_meta(raw: dict[str, Any], source_path: Path, document_output: Path, blocks: list[dict[str, Any]], index: int) -> dict[str, Any]:
     document_id = str(raw.get("id") or f"DOC-{index}")
-    return {
+    item = {
         "id": document_id,
         "name": str(raw.get("name") or source_path.name),
         "sourcePath": str(source_path),
@@ -44,6 +47,54 @@ def _document_meta(raw: dict[str, Any], source_path: Path, document_output: Path
         "blocksPath": str(document_output / "blocks.json"),
         "blocksPreview": [_block_preview(block) for block in blocks[:80]],
     }
+    document_nav_path = str(raw.get("documentNavPath") or "").strip()
+    if document_nav_path:
+        item["documentNavPath"] = document_nav_path
+    document_parse_engine = str(raw.get("documentParseEngine") or "").strip()
+    if document_parse_engine:
+        item["documentParseEngine"] = document_parse_engine
+    return item
+
+
+def _load_document_nav_blocks(raw: dict[str, Any], nav_path: Path) -> tuple[Path, list[dict[str, Any]]]:
+    payload = paths.read_json(nav_path)
+    if not isinstance(payload, dict):
+        return nav_path, []
+    document_id = str(raw.get("id") or "DOC-1")
+    nav_documents = payload.get("documents") if isinstance(payload.get("documents"), list) else []
+    nav_document = next((item for item in nav_documents if isinstance(item, dict) and str(item.get("id") or "") == document_id), {})
+    source_path = Path(str(raw.get("sourcePath") or nav_document.get("sourcePath") or nav_path))
+    tables_by_id = {
+        str(table.get("id") or ""): table
+        for table in (payload.get("tables") if isinstance(payload.get("tables"), list) else [])
+        if isinstance(table, dict)
+    }
+    blocks: list[dict[str, Any]] = []
+    for index, raw_block in enumerate(payload.get("blocks") if isinstance(payload.get("blocks"), list) else [], start=1):
+        if not isinstance(raw_block, dict):
+            continue
+        table_id = str(raw_block.get("tableId") or "")
+        table = tables_by_id.get(table_id)
+        source_evidence_id = str(raw_block.get("evidenceId") or (table or {}).get("evidenceId") or "")
+        block = {
+            "blockId": index,
+            "bodyIndex": index,
+            "type": str(raw_block.get("type") or "paragraph"),
+            "text": str(raw_block.get("text") or ""),
+            "styleName": "DocumentNav",
+            "pageSegment": int(raw_block.get("pageNo") or 0),
+            "isPageFirstNonEmpty": index == 1,
+            "sourceEvidenceId": source_evidence_id,
+            "pageNo": raw_block.get("pageNo") or 0,
+            "bbox": raw_block.get("bbox") if isinstance(raw_block.get("bbox"), list) else [],
+            "sourceEngine": str(raw_block.get("sourceEngine") or payload.get("sourceEngine") or ""),
+        }
+        if table:
+            block["rows"] = table.get("rows") if isinstance(table.get("rows"), list) else []
+            block["sourceEvidenceId"] = str(table.get("evidenceId") or source_evidence_id)
+            block["sourceEngine"] = str(table.get("sourceEngine") or block["sourceEngine"])
+        blocks.append(block)
+    return source_path, blocks
 
 
 def prepare(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
@@ -61,11 +112,15 @@ def prepare(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(raw, dict):
             continue
         source_path = Path(str(raw.get("sourcePath") or "")).resolve()
-        if source_path.suffix.lower() != ".docx" or not source_path.is_file():
+        nav_path = Path(str(raw.get("documentNavPath") or ""))
+        if nav_path.is_file():
+            source_path, blocks = _load_document_nav_blocks(raw, nav_path)
+        elif source_path.suffix.lower() == ".docx" and source_path.is_file():
+            blocks = extract_blocks(source_path)
+        else:
             continue
         document_output = paths.document_output_dir(manifest_path, manifest, raw, index)
         document_output.mkdir(parents=True, exist_ok=True)
-        blocks = extract_blocks(source_path)
         paths.write_json(document_output / "blocks.json", blocks)
         documents.append(_document_meta(raw, source_path, document_output, blocks, index))
 

@@ -38,9 +38,9 @@ def complete_directory_generation_state(project: dict[str, Any], data: dict[str,
             build_directory_event("目录生成完成。", level="success", step="done", at=generated_at),
         ],
         "tasks": [
-            {"id": "task-1", "label": "准备目录候选", "status": "done"},
-            {"id": "task-2", "label": "futurecode 语义审核", "status": "done"},
-            {"id": "task-3", "label": "保存审核目录", "status": "done"},
+            {"id": "task-1", "label": "准备目录输入", "status": "done"},
+            {"id": "task-2", "label": "Opencode 生成目录", "status": "done"},
+            {"id": "task-3", "label": "保存目录结果", "status": "done"},
         ],
     }
     project["directory_state"] = payload
@@ -71,9 +71,9 @@ def start_directory_generation_state(project: dict[str, Any]) -> dict[str, Any]:
             ),
         ],
         "tasks": [
-            {"id": "task-1", "label": "准备目录候选", "status": "running"},
-            {"id": "task-2", "label": "futurecode 语义审核", "status": "pending"},
-            {"id": "task-3", "label": "保存审核目录", "status": "pending"},
+            {"id": "task-1", "label": "准备目录输入", "status": "running"},
+            {"id": "task-2", "label": "Opencode 生成目录", "status": "pending"},
+            {"id": "task-3", "label": "保存目录结果", "status": "pending"},
         ],
     }
     project["directory_state"] = payload
@@ -191,9 +191,9 @@ def save_generated_outline_state(
         "ruleEvidence": copy.deepcopy(rule_evidence or current_state.get("ruleEvidence") or {}),
         "events": current_events[-20:],
         "tasks": [
-            {"id": "task-1", "label": "准备目录候选", "status": "done"},
-            {"id": "task-2", "label": "futurecode 语义审核", "status": "done"},
-            {"id": "task-3", "label": "保存审核目录", "status": "done"},
+            {"id": "task-1", "label": "准备目录输入", "status": "done"},
+            {"id": "task-2", "label": "Opencode 生成目录", "status": "done"},
+            {"id": "task-3", "label": "保存目录结果", "status": "done"},
         ],
     }
     project["directory_state"] = payload
@@ -230,15 +230,43 @@ def load_directory_rule_evidence(state: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(evidence, dict):
         return {}
     decisions = evidence.get("decisions") if isinstance(evidence.get("decisions"), list) else []
+    if evidence.get("schema_version") == "bid-toc-evidence-v2":
+        action_counts: dict[str, int] = {}
+        for item in decisions:
+            if not isinstance(item, dict):
+                continue
+            action = str(item.get("action") or "").strip()
+            if action:
+                action_counts[action] = action_counts.get(action, 0) + 1
+        return {
+            "schemaVersion": "bid-toc-evidence-v2",
+            "engine": str(evidence.get("engine") or ""),
+            "ruleVersion": str(evidence.get("ruleVersion") or evidence.get("rule_version") or ""),
+            "decisionCount": len(decisions),
+            "reviewCount": sum(
+                1
+                for item in decisions
+                if isinstance(item, dict) and bool(item.get("review_required") or item.get("reviewRequired"))
+            ),
+            "actionCounts": action_counts,
+        }
     candidates = evidence.get("tenderCandidates") if isinstance(evidence.get("tenderCandidates"), list) else []
     template_outline = evidence.get("templateOutline") if isinstance(evidence.get("templateOutline"), list) else []
+    item_sources = evidence.get("itemSources") if isinstance(evidence.get("itemSources"), list) else []
     decision_limit = 80
     return {
         "schemaVersion": str(evidence.get("schema_version") or ""),
         "engine": str(evidence.get("engine") or ""),
+        "ruleVersion": str(evidence.get("ruleVersion") or evidence.get("rule_version") or ""),
         "ruleConfig": copy.deepcopy(evidence.get("ruleConfig") if isinstance(evidence.get("ruleConfig"), dict) else {}),
         "templateOutlineCount": len(template_outline),
         "tenderCandidateCount": len(candidates),
+        "itemSources": [
+            copy.deepcopy(item)
+            for item in item_sources
+            if isinstance(item, dict)
+        ][:decision_limit],
+        "itemSourceCount": len(item_sources),
         "decisionCount": len(decisions),
         "decisions": [
             copy.deepcopy(item)

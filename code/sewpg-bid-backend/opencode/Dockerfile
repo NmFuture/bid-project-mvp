@@ -50,6 +50,14 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       > /usr/local/bin/s2toc \
     && printf '%s\n' \
       '#!/bin/sh' \
+      'case "$1" in' \
+      '  prepare|template|next-batch|read|window|table|tables|review-batch|validate|status|finalize) ;;' \
+      '  *) echo "usage: s2outline [prepare|template|next-batch|read|window|table|tables|review-batch|validate|status|finalize] <manifest> [...]" >&2; exit 64 ;;' \
+      'esac' \
+      'exec python3 /workspace/.opencode/skills/bid-tech-outline-generator/scripts/run_from_manifest.py "$@"' \
+      > /usr/local/bin/s2outline \
+    && printf '%s\n' \
+      '#!/bin/sh' \
       'if [ "$#" -ne 1 ]; then' \
       '  echo "usage: business-outline <manifest>" >&2' \
       '  exit 64' \
@@ -136,7 +144,7 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       'fi' \
       'exec python3 /workspace/.opencode/skills/wikibuild_router.py "$1"' \
       > /usr/local/bin/wikibuild \
-    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/business-outline /usr/local/bin/btplnav /usr/local/bin/s7assemble /usr/local/bin/businessassemble /usr/local/bin/businessformat /usr/local/bin/s4gap /usr/local/bin/businessgap /usr/local/bin/businesstablefill /usr/local/bin/s4fill /usr/local/bin/s4wordfill /usr/local/bin/wikibuild
+    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/s2outline /usr/local/bin/business-outline /usr/local/bin/btplnav /usr/local/bin/s7assemble /usr/local/bin/businessassemble /usr/local/bin/businessformat /usr/local/bin/s4gap /usr/local/bin/businessgap /usr/local/bin/businesstablefill /usr/local/bin/s4fill /usr/local/bin/s4wordfill /usr/local/bin/wikibuild
 
 EXPOSE 4096
 

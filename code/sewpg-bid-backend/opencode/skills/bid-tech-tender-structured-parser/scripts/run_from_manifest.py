@@ -14,6 +14,20 @@ from agentic.run_agentic import main
 from parser_core import SKILL_NAME, parse_manifest
 
 
+AGENTIC_COMMANDS = {
+    "prepare",
+    "overview",
+    "search",
+    "read",
+    "table",
+    "window",
+    "submit",
+    "status",
+    "validate",
+    "finalize",
+}
+
+
 def _summary(result: dict[str, Any], output_path: Path) -> dict[str, Any]:
     structured = result.get("structured") if isinstance(result.get("structured"), dict) else {}
     scoring = structured.get("scoringCriteria") if isinstance(structured.get("scoringCriteria"), dict) else {}
@@ -38,17 +52,17 @@ def _summary(result: dict[str, Any], output_path: Path) -> dict[str, Any]:
 
 
 def _run_legacy_manifest(manifest_path: Path) -> int:
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     output_path = Path(str(manifest.get("structuredResultPath") or manifest_path.with_name("s1_structured_result.json")))
     result = parse_manifest(manifest, mode="opencode-skill")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(_summary(result, output_path), ensure_ascii=False))
+    print(json.dumps(_summary(result, output_path), ensure_ascii=True))
     return 0
 
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if len(args) == 1:
+    if len(args) == 1 and args[0].strip().lower() not in AGENTIC_COMMANDS:
         raise SystemExit(_run_legacy_manifest(Path(args[0]).expanduser().resolve()))
     raise SystemExit(main(args))

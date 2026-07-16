@@ -361,11 +361,13 @@ export const technicalStagesAPI = {
 export const technicalParseAPI = {
   results: (projectId) => request(`/technical/projects/${projectId}/parse-results`),
   progress: (projectId) => request(`/technical/projects/${projectId}/parse-results/progress`),
+  cancel: (projectId) => request(`/technical/projects/${projectId}/parse-results/cancel`, { method: 'POST' }),
   run: (projectId) => request(`/technical/projects/${projectId}/parse-results/run`, { method: 'POST' }),
   uploadAndRun: (projectId, data) =>
     request(`/technical/projects/${projectId}/parse-results/upload-and-run`, {
       method: 'POST',
       body: data?.formData || data,
+      signal: data?.signal,
       timeoutMs: 5 * 60 * 1000,
       retryCount: 0,
     }),
@@ -611,6 +613,7 @@ export const businessStagesAPI = {
 export const businessParseAPI = {
   results: (projectId) => request(`/business/projects/${projectId}/parse-results`),
   progress: (projectId) => request(`/business/projects/${projectId}/parse-results/progress`),
+  cancel: (projectId) => request(`/business/projects/${projectId}/parse-results/cancel`, { method: 'POST' }),
   appendixPreview: (projectId, appendixId) =>
     request(`/business/projects/${projectId}/parse-results/appendices/${encodeURIComponent(appendixId)}/preview`),
   approveAppendixAsset: (projectId, appendixId, data = {}) =>
@@ -654,6 +657,7 @@ export const businessParseAPI = {
     request(`/business/projects/${projectId}/parse-results/upload-and-run`, {
       method: 'POST',
       body: data?.formData || data,
+      signal: data?.signal,
       timeoutMs: 5 * 60 * 1000,
       retryCount: 0,
     }),

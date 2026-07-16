@@ -1,7 +1,7 @@
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const completedStatuses = new Set(['completed'])
-const failedStatuses = new Set(['failed', 'error'])
+const failedStatuses = new Set(['failed', 'error', 'stale'])
 
 const normalizeStatus = (progress) => String(progress?.status || '').toLowerCase()
 
@@ -14,7 +14,118 @@ export const isParseProgressFailed = (progress) => failedStatuses.has(normalizeS
 
 export const isParseResultCompleted = (result) => completedStatuses.has(normalizeStatus(result))
 
-export const shouldPollParseProgress = ({ uploading = false, progress = null, result = null } = {}) => {
+const clampPercentage = (value) => Math.max(0, Math.min(100, Number(value || 0)))
+const runningStatuses = new Set(['running', 'processing', 'queued'])
+const internalAiParseTextPattern = /opencode|S1|Skill|manifest|输出片段|AI/i
+
+const formatElapsedDuration = (value) => {
+  const seconds = Math.max(0, Math.floor(Number(value || 0)))
+  if (seconds <= 0) return ''
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  if (minutes > 0) return `${minutes} 分 ${remainingSeconds} 秒`
+  return `${seconds} 秒`
+}
+
+const getAiParseElapsedSeconds = (progress = {}) => {
+  const output = progress?.opencodeOutput || {}
+  return Math.max(
+    0,
+    Number(output?.elapsedSeconds || 0),
+    Number(output?.idleSeconds || 0),
+  )
+}
+
+const isAiParsePhase = (progress = {}) => {
+  const phaseKey = String(progress?.phaseKey || '').toLowerCase()
+  const phaseLabel = String(progress?.phaseLabel || '')
+  return phaseKey === 'opencode' || internalAiParseTextPattern.test(phaseLabel)
+}
+
+const buildAiParseSummary = (progress = {}, summary = '') => {
+  const elapsedText = formatElapsedDuration(getAiParseElapsedSeconds(progress))
+  if (elapsedText) {
+    return `正在识别招标文件中的技术要求和原文依据，已执行 ${elapsedText}。`
+  }
+  if (summary && !internalAiParseTextPattern.test(summary)) return summary
+  return '正在识别招标文件中的技术要求和原文依据，请稍候。'
+}
+
+export const mergeMonotonicParseProgress = (previous = null, incoming = null) => {
+  if (!incoming) return incoming
+  if (!previous) return incoming
+  const previousStatus = normalizeStatus(previous)
+  const incomingStatus = normalizeStatus(incoming)
+  if (!runningStatuses.has(previousStatus) || !runningStatuses.has(incomingStatus)) {
+    return incoming
+  }
+  const previousPercentage = clampPercentage(previous?.percentage)
+  const incomingPercentage = clampPercentage(incoming?.percentage)
+  const merged = { ...incoming }
+  if (incomingPercentage < previousPercentage) {
+    merged.percentage = previousPercentage
+  }
+
+  const previousPhaseKey = String(previous?.phaseKey || '')
+  const incomingPhaseKey = String(incoming?.phaseKey || '')
+  const samePhase = previousPhaseKey && incomingPhaseKey
+    ? previousPhaseKey === incomingPhaseKey
+    : String(previous?.phaseLabel || '') === String(incoming?.phaseLabel || '')
+  if (samePhase && previous?.phasePercent !== undefined && incoming?.phasePercent !== undefined) {
+    const previousPhasePercent = clampPercentage(previous.phasePercent)
+    const incomingPhasePercent = clampPercentage(incoming.phasePercent)
+    if (incomingPhasePercent < previousPhasePercent) {
+      merged.phasePercent = previousPhasePercent
+    }
+  }
+  return merged
+}
+
+const statusTextByStatus = {
+  completed: '解析完成',
+  failed: '解析失败',
+  error: '解析失败',
+  stale: '可能中断',
+  cancelled: '已停止',
+  running: '解析中',
+  processing: '解析中',
+  queued: '等待解析',
+  idle: '等待上传',
+}
+
+export const summarizeParseProgress = (progress = {}) => {
+  const status = normalizeStatus(progress) || 'idle'
+  const percentage = clampPercentage(progress?.percentage)
+  const phaseLabel = String(progress?.phaseLabel || '').trim()
+  const summary = String(progress?.summary || '').trim()
+  const aiParsePhase = status !== 'completed' && isAiParsePhase(progress)
+  const tone = status === 'stale' ? 'warning' : failedStatuses.has(status) ? 'danger' : status === 'completed' ? 'success' : 'running'
+
+  if (aiParsePhase) {
+    return {
+      status,
+      statusText: statusTextByStatus[status] || '解析中',
+      title: '结构化解析中',
+      detail: '',
+      summary: buildAiParseSummary(progress, summary),
+      percentage,
+      tone,
+    }
+  }
+
+  return {
+    status,
+    statusText: statusTextByStatus[status] || '解析中',
+    title: phaseLabel || summary || '解析进度',
+    detail: '',
+    summary,
+    percentage,
+    tone,
+  }
+}
+
+export const shouldPollParseProgress = ({ uploading = false, stopped = false, progress = null, result = null } = {}) => {
+  if (stopped) return false
   if (uploading) return true
   if (isParseResultCompleted(result)) return false
   const status = normalizeStatus(progress)
@@ -60,6 +171,7 @@ export const recoverUploadAndRunTimeout = async ({
   pollIntervalMs = 1000,
   maxPollMs = 2 * 60 * 1000,
   onProgress,
+  signal,
 } = {}) => {
   if (!projectId || !parseClient?.progress) {
     return { completed: false, progress: null }
@@ -72,16 +184,25 @@ export const recoverUploadAndRunTimeout = async ({
   let firstPoll = true
 
   while (firstPoll || Date.now() - startedAt < maxPollMs) {
+    if (signal?.aborted) {
+      return { completed: false, failed: false, stopped: true, progress: lastProgress, result: lastResult, error: lastError }
+    }
     firstPoll = false
     try {
       const snapshot = await pollParseProgressOnce({ projectId, parseClient, onProgress })
       lastProgress = snapshot.progress
       lastResult = snapshot.result
       lastError = snapshot.error || lastError
+      if (signal?.aborted) {
+        return { completed: false, failed: false, stopped: true, progress: lastProgress, result: lastResult, error: lastError }
+      }
       if (snapshot.completed) return snapshot
       if (snapshot.failed) return snapshot
     } catch (error) {
       lastError = error
+      if (signal?.aborted) {
+        return { completed: false, failed: false, stopped: true, progress: lastProgress, result: lastResult, error: lastError }
+      }
     }
 
     if (isParseProgressFailed(lastProgress)) {

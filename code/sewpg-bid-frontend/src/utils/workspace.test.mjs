@@ -6,6 +6,7 @@ import {
   parseRouteFromBidType,
   projectRoute,
   slugFromBidType,
+  workspaceSwitchRoute,
   workspaceRoute,
 } from './workspace.js'
 
@@ -32,4 +33,17 @@ test('invalid workspace slugs do not emit legacy root project paths', () => {
   assert.equal(workspaceRoute('unknown', '/materials/raw'), '/')
   assert.equal(projectRoute('P-1', '/outline', ''), '/')
   assert.equal(projectRoute('P-1', '/outline', 'tech'), '/workspace/tech/projects/P-1/outline')
+})
+
+test('workspace switcher keeps the current parse section on parse pages', () => {
+  assert.equal(workspaceSwitchRoute('/parse/business', 'tech'), '/parse/technical')
+  assert.equal(workspaceSwitchRoute('/parse/technical?projectId=PRJ-1', 'business'), '/parse/business')
+})
+
+test('workspace switcher preserves workspace page tail outside parse pages', () => {
+  assert.equal(
+    workspaceSwitchRoute('/workspace/business/projects/PRJ-1/outline', 'tech'),
+    '/workspace/tech/projects/PRJ-1/outline',
+  )
+  assert.equal(workspaceSwitchRoute('/dashboard', 'business'), '')
 })

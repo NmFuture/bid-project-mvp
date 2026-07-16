@@ -314,6 +314,8 @@ def _read_document(document_meta: dict[str, Any]) -> IndexedDocument:
     if source_path.suffix.lower() in {".md", ".txt"} and source_path.is_file():
         return _plain_text_blocks(document_meta, source_path, source_path.read_text(encoding="utf-8", errors="replace"))
     if source_path.suffix.lower() == ".pdf" and source_path.is_file():
+        if str(document_meta.get("documentParseEngine") or "").strip().lower() == "docling":
+            return _plain_text_blocks(document_meta, source_path, "")
         return _plain_text_blocks(document_meta, source_path, _extract_pdf_text(source_path))
     return _plain_text_blocks(document_meta, source_path, "")
 
@@ -337,55 +339,58 @@ def build_index(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any]
     store_path = nav_store_path(manifest_path, manifest)
     map_path = document_map_path(manifest_path, manifest)
     conn = nav_store.connect(store_path)
-    nav_store.reset_db(conn)
     indexed_docs: list[IndexedDocument] = []
     total_blocks = 0
     total_tables = 0
-    for raw_doc in manifest.get("documents") or []:
-        if not isinstance(raw_doc, dict):
-            continue
-        indexed = _read_document(raw_doc)
-        indexed_docs.append(indexed)
-        nav_store.insert_document(conn, indexed.document)
-        for block in indexed.blocks:
-            nav_store.insert_block(conn, block)
-        for table in indexed.tables:
-            table_for_store = {key: value for key, value in table.items() if key != "rows"}
-            nav_store.insert_table(conn, table_for_store)
-            for row_index, row in enumerate(table.get("rows") or [], start=1):
-                row_id = f"{table['id']}:R{row_index:04d}"
-                nav_store.insert_table_row(
-                    conn,
-                    {
-                        "id": row_id,
-                        "tableId": table["id"],
-                        "documentId": table["documentId"],
-                        "bodyIndex": table["bodyIndex"],
-                        "rowIndex": row_index,
-                        "text": " | ".join(row),
-                    },
-                )
-                for col_index, cell in enumerate(row, start=1):
-                    nav_store.insert_table_cell(
+    try:
+        nav_store.reset_db(conn)
+        for raw_doc in manifest.get("documents") or []:
+            if not isinstance(raw_doc, dict):
+                continue
+            indexed = _read_document(raw_doc)
+            indexed_docs.append(indexed)
+            nav_store.insert_document(conn, indexed.document)
+            for block in indexed.blocks:
+                nav_store.insert_block(conn, block)
+            for table in indexed.tables:
+                table_for_store = {key: value for key, value in table.items() if key != "rows"}
+                nav_store.insert_table(conn, table_for_store)
+                for row_index, row in enumerate(table.get("rows") or [], start=1):
+                    row_id = f"{table['id']}:R{row_index:04d}"
+                    nav_store.insert_table_row(
                         conn,
                         {
-                            "id": f"{row_id}:C{col_index:04d}",
+                            "id": row_id,
                             "tableId": table["id"],
                             "documentId": table["documentId"],
                             "bodyIndex": table["bodyIndex"],
                             "rowIndex": row_index,
-                            "colIndex": col_index,
-                            "text": cell,
+                            "text": " | ".join(row),
                         },
                     )
-        total_blocks += len(indexed.blocks)
-        total_tables += len(indexed.tables)
-    nav_store.set_meta(conn, "manifestPath", str(manifest_path))
-    nav_store.set_meta(conn, "documentMapPath", str(map_path))
-    nav_store.set_meta(conn, "navStorePath", str(store_path))
-    nav_store.set_meta(conn, "blockCount", total_blocks)
-    nav_store.set_meta(conn, "tableCount", total_tables)
-    conn.commit()
+                    for col_index, cell in enumerate(row, start=1):
+                        nav_store.insert_table_cell(
+                            conn,
+                            {
+                                "id": f"{row_id}:C{col_index:04d}",
+                                "tableId": table["id"],
+                                "documentId": table["documentId"],
+                                "bodyIndex": table["bodyIndex"],
+                                "rowIndex": row_index,
+                                "colIndex": col_index,
+                                "text": cell,
+                            },
+                        )
+            total_blocks += len(indexed.blocks)
+            total_tables += len(indexed.tables)
+        nav_store.set_meta(conn, "manifestPath", str(manifest_path))
+        nav_store.set_meta(conn, "documentMapPath", str(map_path))
+        nav_store.set_meta(conn, "navStorePath", str(store_path))
+        nav_store.set_meta(conn, "blockCount", total_blocks)
+        nav_store.set_meta(conn, "tableCount", total_tables)
+        conn.commit()
+    finally:
+        conn.close()
     document_map = {
         "schemaVersion": nav_store.SCHEMA_VERSION,
         "navStorePath": str(store_path),

@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.opencode_client import OpencodeClient
 
 
@@ -22,6 +24,11 @@ def btplnav_runner_path() -> Path:
     return backend_root() / "opencode" / "skills" / SKILL_NAME / "scripts" / "run_from_manifest.py"
 
 
+def _raise_if_cancelled(cancel_check: Callable[[], bool] | None) -> None:
+    if cancel_check is not None and cancel_check():
+        raise ParseCancelledError("解析已取消。")
+
+
 def build_business_template_extractor_manifest(
     *,
     project_id: str,
@@ -33,16 +40,23 @@ def build_business_template_extractor_manifest(
     manifest_documents: list[dict[str, Any]] = []
     for document in documents:
         source_path = Path(str(document.get("sourcePath") or ""))
-        if source_path.suffix.lower() != ".docx":
+        document_nav_path = str(document.get("documentNavPath") or "").strip()
+        is_docx = source_path.suffix.lower() == ".docx"
+        is_pdf_with_nav = source_path.suffix.lower() == ".pdf" and document_nav_path
+        if not is_docx and not is_pdf_with_nav:
             continue
-        manifest_documents.append(
-            {
-                "id": str(document.get("id") or ""),
-                "name": str(document.get("name") or source_path.name),
-                "sourcePath": str(source_path),
-                "textPath": str(document.get("textPath") or ""),
-            }
-        )
+        item = {
+            "id": str(document.get("id") or ""),
+            "name": str(document.get("name") or source_path.name),
+            "sourcePath": str(source_path),
+            "textPath": str(document.get("textPath") or ""),
+        }
+        if document_nav_path:
+            item["documentNavPath"] = document_nav_path
+        document_parse_engine = str(document.get("documentParseEngine") or "").strip()
+        if document_parse_engine:
+            item["documentParseEngine"] = document_parse_engine
+        manifest_documents.append(item)
     manifest: dict[str, Any] = {
         "schemaVersion": SCHEMA_VERSION,
         "skillName": SKILL_NAME,
@@ -61,17 +75,46 @@ def _write_manifest(path: Path, manifest: dict[str, Any]) -> None:
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _run_btplnav_command(command: str, manifest_path: Path, *args: object) -> dict[str, Any]:
+def _run_btplnav_command(
+    command: str,
+    manifest_path: Path,
+    *args: object,
+    cancel_check: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
     runner = btplnav_runner_path()
-    completed = subprocess.run(
-        [sys.executable, str(runner), command, str(manifest_path), *(str(arg) for arg in args)],
-        cwd=str(backend_root()),
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
+    command_args = [sys.executable, str(runner), command, str(manifest_path), *(str(arg) for arg in args)]
+    if cancel_check is None:
+        completed = subprocess.run(
+            command_args,
+            cwd=str(backend_root()),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+    else:
+        process = subprocess.Popen(
+            command_args,
+            cwd=str(backend_root()),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        while process.poll() is None:
+            if cancel_check():
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                raise ParseCancelledError("解析已取消。")
+            time.sleep(0.2)
+        stdout, stderr = process.communicate()
+        completed = subprocess.CompletedProcess(command_args, process.returncode, stdout, stderr)
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
         raise RuntimeError(f"btplnav {command} failed: {message}")
@@ -94,6 +137,75 @@ def _load_extraction_payload(output_dir: Path) -> dict[str, Any] | None:
     if not result_path.is_file():
         return None
     return json.loads(result_path.read_text(encoding="utf-8"))
+
+
+def _hydrate_payload_source_engines(payload: dict[str, Any], documents: list[dict[str, Any]]) -> bool:
+    engines_by_document = {
+        str(document.get("id") or "").strip(): str(
+            document.get("documentParseEngine") or document.get("sourceEngine") or ""
+        ).strip()
+        for document in documents
+        if str(document.get("id") or "").strip()
+    }
+    changed = False
+    for raw in payload.get("appendices") or []:
+        if not isinstance(raw, dict):
+            continue
+        document_id = str(raw.get("sourceDocumentId") or "").strip()
+        source_engine = str(raw.get("sourceEngine") or "").strip() or engines_by_document.get(document_id, "")
+        if not source_engine:
+            continue
+        if not str(raw.get("sourceEngine") or "").strip():
+            raw["sourceEngine"] = source_engine
+            changed = True
+        quality = raw.setdefault("quality", {})
+        if isinstance(quality, dict) and not str(quality.get("sourceEngine") or "").strip():
+            quality["sourceEngine"] = source_engine
+            changed = True
+    quality = payload.setdefault("quality", {})
+    payload_source_engine = ""
+    if isinstance(quality, dict):
+        payload_source_engine = str(quality.get("sourceEngine") or "").strip()
+    appendix_engines = {
+        str(raw.get("sourceEngine") or "").strip()
+        for raw in payload.get("appendices") or []
+        if isinstance(raw, dict) and str(raw.get("sourceEngine") or "").strip()
+    }
+    if isinstance(quality, dict) and not payload_source_engine and len(appendix_engines) == 1:
+        quality["sourceEngine"] = next(iter(appendix_engines))
+        changed = True
+    return changed
+
+
+def _existing_finalized_payload(
+    output_dir: Path,
+    documents: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    payload = _load_extraction_payload(output_dir)
+    if not payload or str(payload.get("stage") or "") != "finalize":
+        return None
+    changed = _hydrate_payload_source_engines(payload, documents)
+    appendices = convert_extractor_appendices(payload)
+    if not appendices:
+        return None
+
+    document_ids = {str(document.get("id") or "").strip() for document in documents}
+    document_ids.discard("")
+    if not document_ids:
+        return None
+    appendix_document_ids = {
+        str(appendix.get("sourceDocumentId") or "").strip()
+        for appendix in appendices
+        if str(appendix.get("sourceDocumentId") or "").strip()
+    }
+    if appendix_document_ids and not appendix_document_ids.issubset(document_ids):
+        return None
+    if any(not Path(str(appendix.get("docxPath") or "")).is_file() for appendix in appendices):
+        return None
+    if changed:
+        result_path = output_dir / "business_template_extraction.json"
+        result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return appendices, payload
 
 
 def build_business_template_navigation_prompt(
@@ -201,9 +313,16 @@ def run_business_template_extractor(
     documents: list[dict[str, Any]],
     project_dir: Path,
     progress_callback=None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, str]:
+    _raise_if_cancelled(cancel_check)
     output_dir = project_dir / "business_template_extraction"
     manifest_path = project_dir / "business_template_extraction_manifest.json"
+    existing = _existing_finalized_payload(output_dir, documents)
+    if existing is not None:
+        appendices, payload = existing
+        return appendices, payload, ""
+
     manifest = build_business_template_extractor_manifest(
         project_id=project_id,
         documents=documents,
@@ -215,19 +334,43 @@ def run_business_template_extractor(
         return [], None, "未找到可用于商务模板提取 skill 的 DOCX 招标文件。"
 
     try:
-        _run_btplnav_command("prepare", manifest_path)
+        _raise_if_cancelled(cancel_check)
+        _run_btplnav_command("prepare", manifest_path, cancel_check=cancel_check)
+        _raise_if_cancelled(cancel_check)
+    except ParseCancelledError:
+        raise
     except RuntimeError as exc:
         return [], None, f"商务模板提取 skill prepare 阶段失败：{exc}"
 
     prepare_payload = _load_extraction_payload(output_dir)
     fallback_reason = ""
     opencode_trace: dict[str, Any] | None = None
+
+    def emit_session_ready(details: dict[str, Any]) -> None:
+        if progress_callback:
+            progress_callback(
+                "business_template_extraction_agent",
+                {
+                    **details,
+                    "status": "running",
+                    "parts": [{"type": "text", "text": "opencode session 已建立，正在识别商务模板。"}],
+                },
+            )
+
     try:
+        _raise_if_cancelled(cancel_check)
         prompt = build_business_template_navigation_prompt(project_id=project_id, manifest_path=manifest_path)
-        agent_result = OpencodeClient(timeout_ms=TEMPLATE_EXTRACTION_AGENT_TIMEOUT_MS).extract_business_templates_with_trace(prompt)
+        agent_result = OpencodeClient(timeout_ms=TEMPLATE_EXTRACTION_AGENT_TIMEOUT_MS).extract_business_templates_with_trace(
+            prompt,
+            session_ready_callback=emit_session_ready,
+            cancel_check=cancel_check,
+        )
+        _raise_if_cancelled(cancel_check)
         opencode_trace = agent_result.get("opencodeOutput") if isinstance(agent_result.get("opencodeOutput"), dict) else None
         if opencode_trace and progress_callback:
             progress_callback("business_template_extraction_agent", opencode_trace)
+    except ParseCancelledError:
+        raise
     except Exception as exc:
         fallback_reason = str(exc)
         trace = _trace_from_exception(exc)
@@ -235,11 +378,16 @@ def run_business_template_extractor(
             progress_callback("business_template_extraction_agent", trace)
         opencode_trace = trace
 
+    _raise_if_cancelled(cancel_check)
     payload = _load_extraction_payload(output_dir)
     if payload is None:
         try:
-            _run_btplnav_command("finalize", manifest_path)
+            _raise_if_cancelled(cancel_check)
+            _run_btplnav_command("finalize", manifest_path, cancel_check=cancel_check)
+            _raise_if_cancelled(cancel_check)
             payload = _load_extraction_payload(output_dir)
+        except ParseCancelledError:
+            raise
         except RuntimeError as exc:
             return [], prepare_payload, f"商务模板提取 skill finalize 阶段失败：{exc}"
     if payload is None:

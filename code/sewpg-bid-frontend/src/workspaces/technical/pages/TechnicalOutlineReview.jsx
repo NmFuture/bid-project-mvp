@@ -11,7 +11,14 @@ import OnlyOfficeWorkspace from '../../../components/shared/OnlyOfficeWorkspace'
 import Button from '../../../components/ui/Button'
 import { getOutlineDisplayNumber } from '../../../utils/outlineNumber'
 import { projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
+import OutlineActionTag from '../components/OutlineActionTag'
 import { getTechnicalStageRoute } from '../technicalStageFlow'
+import {
+  markOutlineNodeEdited,
+  pickTenderBasis,
+  shouldPreserveOutlineNumber,
+  tenderBasisSearchText,
+} from '../utils/outlineEvidence'
 
 const cloneNodes = (nodes = []) => JSON.parse(JSON.stringify(nodes))
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -20,6 +27,8 @@ const createNode = (title = '新章节') => ({
   id: `OL-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   title,
   children: [],
+  suggestionAction: '待确认',
+  suggestionReason: '人工新增目录项，请确认其必要性和归属位置。',
 })
 
 const findNodeContext = (nodes, targetId, parent = null) => {
@@ -128,7 +137,9 @@ const renumberOutlineNodes = (items = []) => {
     (nodes || []).map((node, index) => {
       const position = index + 1
       const nextDecimalPrefix = decimalPrefix ? `${decimalPrefix}.${position}` : String(position)
-      const nextNumber = formatOutlineNumber(position, level, decimalPrefix, styles[level])
+      const nextNumber = shouldPreserveOutlineNumber(node)
+        ? getOutlineDisplayNumber(node)
+        : formatOutlineNumber(position, level, decimalPrefix, styles[level])
       const nextNode = {
         ...node,
         number: nextNumber,
@@ -148,45 +159,9 @@ const SEARCH_STORAGE_KEY = 'onlyoffice-search-bridge-message'
 const SEARCH_CHANNEL_NAME = 'onlyoffice-search-bridge'
 const SEARCH_RESULT_SOURCE = 'onlyoffice-search-bridge'
 
-const collectSourceRefs = (node) => {
-  if (Array.isArray(node?.sourceRefs)) return node.sourceRefs
-  if (Array.isArray(node?.source_refs)) return node.source_refs
-  return []
-}
-
-const pickTenderBasisRef = (node) => {
-  const refs = collectSourceRefs(node).filter((ref) => ref?.type === 'tender')
-  return refs.find((ref) => ref?.role === 'basis') || refs[0] || null
-}
-
-const sourceRefSearchText = (ref) =>
-  String(ref?.searchText || ref?.basisText || ref?.rawText || ref?.raw_text || ref?.title || '')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-const nodeSearchText = (node) => {
-  const refText = collectSourceRefs(node).map(sourceRefSearchText).find(Boolean) || ''
-  return String(node?.sourceText || node?.source_text || refText || node?.title || '')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-const requiredStatusLabel = (node) => {
-  const explicit = String(node?.requiredStatus || node?.required_status || '').trim()
+const suggestionActionLabel = (node) => {
+  const explicit = String(node?.suggestionAction || node?.suggestion_action || '').trim()
   return explicit
-}
-
-const requiredStatusClassName = (status) => {
-  if (status === '必要') {
-    return 'border-primary/20 bg-primary/10 text-primary'
-  }
-  if (status === '可选') {
-    return 'border-surface-container-high bg-surface-container-high text-on-surface-variant'
-  }
-  if (status === '待确认') {
-    return 'border-amber-200 bg-amber-50 text-amber-950'
-  }
-  return 'border-secondary/20 bg-secondary-container text-on-secondary-container'
 }
 
 const sendOnlyOfficeSearch = (text, onlyofficeEmbedRef = null, beforeSend = null) => {
@@ -312,14 +287,14 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     return () => window.removeEventListener('message', handleSearchResult)
   }, [markPendingSearch, showToast])
 
-  const focusSourceRef = useCallback(async (basisRef) => {
-    if (!basisRef) return
-    const searchText = sourceRefSearchText(basisRef)
+  const focusTenderBasis = useCallback(async (basis) => {
+    if (!basis) return
+    const searchText = tenderBasisSearchText(basis)
     if (!searchText) return
 
-    const refFileId = String(basisRef.fileId || '').trim()
+    const refFileId = String(basis.fileId || basis.file_id || '').trim()
     const activeFileId = String(tenderPreview?.activeFile?.id || '').trim()
-    if (basisRef?.type === 'tender' && refFileId && refFileId !== activeFileId) {
+    if (refFileId && refFileId !== activeFileId) {
       try {
         const payload = await technicalOutlineAPI.get(id, { fileId: refFileId })
         setTenderPreview(payload?.tenderPreview || null)
@@ -334,18 +309,6 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
 
     sendOnlyOfficeSearch(searchText, onlyofficeEmbedRef, markPendingSearch)
   }, [id, markPendingSearch, showToast, tenderPreview?.activeFile?.id])
-
-  const focusTenderBasis = useCallback(async (node) => {
-    const basisRef = pickTenderBasisRef(node)
-    if (basisRef) {
-      await focusSourceRef(basisRef)
-      return
-    }
-    const searchText = nodeSearchText(node)
-    if (searchText) {
-      sendOnlyOfficeSearch(searchText, onlyofficeEmbedRef, markPendingSearch)
-    }
-  }, [focusSourceRef, markPendingSearch])
 
   const handleSave = async () => {
     if (saving) return
@@ -513,7 +476,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       const next = cloneNodes(prev)
       const context = findNodeContext(next, targetId)
       if (!context) return prev
-      context.node.title = value
+      Object.assign(context.node, markOutlineNodeEdited(context.node, value))
       return next
     })
   }
@@ -547,17 +510,15 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
         const isDragTarget = dragOverNodeId === node.id
         const hasChildren = Array.isArray(node.children) && node.children.length > 0
         const isCollapsed = collapsedNodeIds.has(node.id)
-        const status = requiredStatusLabel(node)
-        const canFocusBasis = Boolean(pickTenderBasisRef(node) || nodeSearchText(node))
+        const action = suggestionActionLabel(node)
+        const tenderBasis = pickTenderBasis(node)
+        const canFocusBasis = Boolean(tenderBasis)
         const displayNumber = getOutlineDisplayNumber(node)
 
         return (
           <div key={node.id}>
             <div
-              onClick={() => {
-                setActiveNodeId(node.id)
-                focusTenderBasis(node)
-              }}
+              onClick={() => setActiveNodeId(node.id)}
               draggable
               onDragStart={(event) => handleDragStart(event, node.id)}
               onDragOver={(event) => handleDragOver(event, node.id)}
@@ -598,20 +559,16 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
                 className="flex-1 !min-h-0 h-8 px-1.5 border-0 bg-transparent text-sm text-on-surface focus:ring-0 focus:outline-none"
                 placeholder="输入章节标题"
               />
-              {status ? (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
+              {action ? (
+                <OutlineActionTag
+                  action={action}
+                  basis={canFocusBasis ? tenderBasis : null}
+                  reason={node.suggestionReason || node.suggestion_reason || ''}
+                  onFocusBasis={(basis) => {
                     setActiveNodeId(node.id)
-                    focusTenderBasis(node)
+                    focusTenderBasis(basis)
                   }}
-                  disabled={!canFocusBasis}
-                  className={`shrink-0 rounded border px-2 py-1 text-[11px] font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-secondary/30 disabled:cursor-default ${requiredStatusClassName(status)} ${canFocusBasis ? 'hover:brightness-95' : ''}`}
-                  title={canFocusBasis ? '点击定位招标依据' : ''}
-                >
-                  {status}
-                </button>
+                />
               ) : null}
               <button
                 onClick={(e) => {

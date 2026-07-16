@@ -41,9 +41,9 @@ _OUTLINE_PREVIEW_EXTENSIONS = {".doc", ".docx", ".pdf"}
 
 def _directory_tasks(step1: str, step2: str, step3: str) -> list[dict[str, Any]]:
     return [
-        {"id": "task-1", "label": "准备目录候选", "status": step1},
-        {"id": "task-2", "label": "futurecode 语义审核", "status": step2},
-        {"id": "task-3", "label": "保存审核目录", "status": step3},
+        {"id": "task-1", "label": "准备目录输入", "status": step1},
+        {"id": "task-2", "label": "Opencode 生成目录", "status": step2},
+        {"id": "task-3", "label": "保存目录结果", "status": step3},
     ]
 
 
@@ -139,6 +139,18 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
             event_message=f"futurecode 调用失败，已切换到本地 Skill 脚本：{meta.get('error') or ''}",
             event_level="error",
             event_step="futurecode_fallback",
+        )
+        return
+
+    if stage == "outline_failed":
+        _update_directory_state(
+            project_id,
+            percentage=60,
+            summary="futurecode/opencode 目录生成失败，技术标目录生成不会回退到本地脚本决策。",
+            tasks=_directory_tasks("done", "failed", "pending"),
+            event_message=f"futurecode/opencode 目录生成失败：{meta.get('error') or ''}",
+            event_level="error",
+            event_step="futurecode_failed",
         )
         return
 

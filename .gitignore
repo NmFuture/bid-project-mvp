@@ -18,6 +18,11 @@ start_checklist/*.local.json
 start_checklist/*.local.yaml
 .env.local
 .env.*.local
+/.venv/
+/node_modules/
+/tmp/
+/output/
+/_tmp_extract_bid/
 
 code/.env
 code/.env.local
