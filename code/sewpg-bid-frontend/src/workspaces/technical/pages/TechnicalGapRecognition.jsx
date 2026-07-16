@@ -18,10 +18,14 @@ import {
   defaultAiFillParseFieldIds,
   defaultAiFillReferenceMaterialIds,
   evidenceSegmentsForMaterial,
+  isStructuralItem,
   latestResolvedArtifact,
   matchedMaterialForItem,
   previewChoicesForItem,
   primaryBlankSource,
+  TECHNICAL_GAP_TAG_CONFIG,
+  technicalGapTagOf,
+  technicalMatchScore,
   uniqueStrings,
 } from './technicalGapRecognitionHelpers'
 
@@ -104,30 +108,6 @@ const normalizeItems = (payload) => {
   }))
 }
 
-const taskActionLabels = {
-  fixed_material: '固定素材',
-  material_match: '素材匹配',
-  manual_select: '人工指定',
-  manual_upload: '人工补料',
-  ignored: '忽略',
-  ai_table_fill: 'AI填写',
-}
-
-const taskActionVariant = (mode) => {
-  if (mode === 'ignored') return 'pending'
-  if (mode === 'ai_table_fill') return 'info'
-  if (mode === 'material_match') return 'warn'
-  if (mode === 'manual_upload') return 'error'
-  if (mode === 'manual_select') return 'warn'
-  return 'done'
-}
-
-const isStructuralItem = (item) => (
-  String(item?.status || '') === 'structural'
-    || String(item?.usage || '') === 'structural'
-    || asArray(item?.usages).includes('structural')
-)
-
 const isAppendixFillItem = (item) => (
   asObjectArray(item?.fillTasks).length > 0
     && (
@@ -151,35 +131,21 @@ const technicalActionMode = (item) => {
   return 'manual_upload'
 }
 
-// 候选素材匹配度（0~1），口径与商务标 numericMatchScore 一致：
-// 优先 score/matchScore/similarity/confidence，兜底 topicRelevance。
-// 后端已输出 0~1 归一化分（封顶 0.99）；值 >1 是旧版无界原始分（已入库的存量 plan），按百分制换算兼容。
-const technicalMatchScore = (material) => {
-  const raw = material?.score
-    ?? material?.matchScore
-    ?? material?.similarity
-    ?? material?.confidence
-    ?? material?.topicRelevance
-    ?? 0
-  const value = Number(raw)
-  if (!Number.isFinite(value)) return 0
-  return value > 1 ? value / 100 : value
-}
-
 const materialTierLabels = {
   standard: '通用素材',
   customer: '客户素材',
   project: '项目素材',
 }
 
-function TechnicalTocActionBadge({ item }) {
-  const mode = technicalActionMode(item)
-  if (!mode) {
+function TechnicalTocActionBadge({ item, items }) {
+  const tag = technicalGapTagOf(item, items)
+  const config = TECHNICAL_GAP_TAG_CONFIG[tag]
+  if (!config) {
     return <Badge className="business-toc-status-badge" shape="square" size="xs" variant="pending">空章节</Badge>
   }
   return (
-    <Badge className="business-toc-status-badge" shape="square" size="xs" variant={taskActionVariant(mode)}>
-      {taskActionLabels[mode]}
+    <Badge className="business-toc-status-badge" shape="square" size="xs" variant={config.variant}>
+      {config.label}
     </Badge>
   )
 }
@@ -222,7 +188,7 @@ function MaterialCandidateCard({ material, isSelected, busy, selecting, onPrevie
   const name = material.name || material.cleanedFileName || material.id || material.materialId
   const path = material.folderPath || material.path || material.id
   const reason = material.sourceRouting?.reasons?.[0] || material.matchReason
-  // 新口径 matchScore 已是 0~1（封顶 0.99）；Math.min 仅为存量旧版无界分兜底。
+  // 新口径 matchScore 已是 0~1（启发式封顶 0.98，0.99=文件名精确命中）；Math.min 仅为存量旧版无界分兜底。
   const matchPercent = Math.min(100, Math.round(technicalMatchScore(material) * 100))
   const tierLabel = materialTierLabels[String(material.materialTier || '')] || ''
   const cleanStatus = String(material.cleanStatus || '')
@@ -773,13 +739,17 @@ export default function TechnicalGapRecognition({ showToast }) {
     ...selectedCandidateMaterials.flatMap((item) => asArray(item?.placeholderLabels)),
   ], 10)
   const selectedBlankPath = selectedBlankSource?.docxPath || selectedBlankSource?.workspacePath || selectedBlankSource?.path || ''
-  const actionCounts = useMemo(() => ({
-    fixed_material: items.filter((item) => technicalActionMode(item) === 'fixed_material').length,
-    material_match: items.filter((item) => technicalActionMode(item) === 'material_match').length,
-    ai_table_fill: items.filter((item) => technicalActionMode(item) === 'ai_table_fill').length,
-    manual_upload: items.filter((item) => technicalActionMode(item) === 'manual_upload').length,
-    manual_select: items.filter((item) => technicalActionMode(item) === 'manual_select').length,
-  }), [items])
+  // 目录标签统计（v2 四标签口径）：标签由候选池 × 素材形态 × 人工操作派生，结构项不计入任务。
+  const tagCounts = useMemo(() => {
+    const counts = { needs_material: 0, needs_refine: 0, needs_fill: 0, ready: 0 }
+    items.forEach((item) => {
+      const tag = technicalGapTagOf(item, items)
+      if (tag) counts[tag] += 1
+    })
+    return counts
+  }, [items])
+  const taskItemCount = tagCounts.needs_material + tagCounts.needs_refine + tagCounts.needs_fill + tagCounts.ready
+  const pendingItemCount = tagCounts.needs_material + tagCounts.needs_refine + tagCounts.needs_fill
   const factConfirmed = factTable?.status === 'confirmed'
   const hasTechnicalGapPlan = data?.status === 'completed' && Boolean(data?.gapPlan || items.length)
   const generationRunning = generationStatus?.status === 'running'
@@ -1216,24 +1186,18 @@ export default function TechnicalGapRecognition({ showToast }) {
         <div className="grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.56fr)]">
           <div className="grid auto-rows-max gap-2 sm:grid-cols-2 lg:grid-cols-4">
             <StatCard label="目录节点" value={summary.totalTocItems ?? items.length} />
-            <StatCard label="处理任务" value={items.length} />
-            <StatCard label="待处理" value={(actionCounts.material_match || 0) + (actionCounts.manual_upload || 0) + (actionCounts.manual_select || 0)} />
-            <StatCard label="已就绪" value={actionCounts.fixed_material || 0} />
+            <StatCard label="处理任务" value={taskItemCount} />
+            <StatCard label="待处理" value={pendingItemCount} />
+            <StatCard label="已就绪" value={tagCounts.ready || 0} />
           </div>
           <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
             <div className="flex min-h-7 items-center gap-2">
-              <div className="shrink-0 text-xs font-semibold text-on-surface-variant">处理方式统计</div>
-              <div className="grid min-w-0 flex-1 grid-cols-5 gap-1.5 text-center">
-                {[
-                  ['fixed_material', '固定素材'],
-                  ['material_match', '素材匹配'],
-                  ['ai_table_fill', 'AI填写'],
-                  ['manual_upload', '人工补充'],
-                  ['manual_select', '人工指定'],
-                ].map(([key, label]) => (
+              <div className="shrink-0 text-xs font-semibold text-on-surface-variant">目录状态统计</div>
+              <div className="grid min-w-0 flex-1 grid-cols-4 gap-1.5 text-center">
+                {['needs_material', 'needs_refine', 'needs_fill', 'ready'].map((key) => (
                   <div key={key} className="flex min-h-7 items-center justify-center gap-1 rounded-md bg-surface-container-low px-2 py-0.5">
-                    <span className="text-[11px] text-on-surface-variant">{label}</span>
-                    <span className="text-sm font-headline font-bold tabular-nums text-primary">{actionCounts[key] || 0}</span>
+                    <span className="text-[11px] text-on-surface-variant">{TECHNICAL_GAP_TAG_CONFIG[key].label}</span>
+                    <span className="text-sm font-headline font-bold tabular-nums text-primary">{tagCounts[key] || 0}</span>
                   </div>
                 ))}
               </div>
@@ -1298,7 +1262,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                             <div className="text-[11px] font-medium text-outline">{item.number || item.section || '-'}</div>
                             <div className="mt-1 line-clamp-2 text-sm font-semibold leading-snug text-on-surface">{item.title}</div>
                           </div>
-                          <TechnicalTocActionBadge item={item} />
+                          <TechnicalTocActionBadge item={item} items={items} />
                         </div>
                       </button>
                     )

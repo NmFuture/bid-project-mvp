@@ -13,6 +13,96 @@ export const uniqueStrings = (items) => {
     })
 }
 
+// 候选素材匹配度（0~1），口径与商务标 numericMatchScore 一致：
+// 优先 score/matchScore/similarity/confidence，兜底 topicRelevance。
+// 后端输出 0~1 归一化分；99 分（0.99）专用于「文件名精确命中」，启发式分永远落在 98 及以下。
+// 值 >1 是旧版无界原始分（已入库的存量 plan），按百分制换算兼容。
+export const technicalMatchScore = (material) => {
+  const raw = material?.score
+    ?? material?.matchScore
+    ?? material?.similarity
+    ?? material?.confidence
+    ?? material?.topicRelevance
+    ?? 0
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return 0
+  return value > 1 ? value / 100 : value
+}
+
+export const isStructuralItem = (item) => (
+  String(item?.status || '') === 'structural'
+    || String(item?.usage || '') === 'structural'
+    || asArray(item?.usages).includes('structural')
+)
+
+// —— 目录标签（v2）：标签是「候选池 × 素材形态 × 人工操作」的派生视图 ——
+// 产品裁决（2026-07-16）：
+// - AI 填写是素材的二次编辑，不是目录项的状态；目录只看匹配到的素材。
+// - 待填写素材靠命名纪律识别：文件名前缀「待填写-」；解析生成的附表空表天然待填写。
+// - 99 分专用于「文件名精确命中」（自动定案并默认选中），30~98 为同档启发式匹配。
+// - 人操作过（上传/选用/确认）即已就绪。
+export const TECHNICAL_GAP_READY_SCORE = 0.99
+export const TECHNICAL_GAP_WEAK_SCORE = 0.3
+
+export const TECHNICAL_GAP_TAG_CONFIG = {
+  needs_material: { label: '人工补充', variant: 'error' },
+  needs_refine: { label: '已匹配，待完善', variant: 'warn' },
+  needs_fill: { label: '已匹配，待填写', variant: 'info' },
+  ready: { label: '已就绪', variant: 'done' },
+}
+
+// 待填写素材：严格按命名纪律，文件名（或清洗稿名）前缀「待填写-」。
+export const isFillTemplateMaterial = (material) => (
+  [material?.name, material?.cleanedFileName, material?.title]
+    .some((value) => String(value || '').trim().startsWith('待填写-'))
+)
+
+// 人操作过（或 AI 产物已过门禁）：口径对齐后端 technical_gap_artifact_is_s7_ready——
+// 非 AI 产物（人工上传/选用素材）直接算数；AI 产物需人工确认或质检通过。
+const hasReadyArtifact = (item) => asObjectArray(item?.resolvedArtifacts).some((artifact) => {
+  if (String(artifact?.source || '') !== 'ai_fill') return true
+  if (String(artifact?.qualityGate || '') === 'human_confirmed') return true
+  return String(artifact?.qualityReport?.status || '') === 'passed'
+})
+
+const candidatePool = (item) => [
+  ...asObjectArray(item?.matchedMaterials),
+  ...asObjectArray(item?.candidateMaterials),
+]
+
+// 匹配到待填写素材：附表空表/填写任务，或候选池里带「待填写-」前缀的素材。
+const hasFillMaterial = (item) => (
+  asObjectArray(item?.appendixTasks).length > 0
+    || asObjectArray(item?.fillTasks).length > 0
+    || candidatePool(item).some(isFillTemplateMaterial)
+)
+
+const ownTechnicalGapTag = (item) => {
+  if (!item || isStructuralItem(item) || String(item?.status || '') === 'ignored') return ''
+  if (hasReadyArtifact(item)) return 'ready'
+  if (hasFillMaterial(item)) return 'needs_fill'
+  const pool = candidatePool(item)
+  const decision = String(item?.decision || '')
+  if (decision === 'ready') {
+    // 后端仅在文件名精确命中时自动定案；无匹配也无覆盖来源的 ready 是空骨架，不算任务。
+    return pool.length ? 'ready' : ''
+  }
+  const best = pool.reduce((max, material) => Math.max(max, technicalMatchScore(material)), 0)
+  if (best >= TECHNICAL_GAP_READY_SCORE) return 'ready'
+  if (best >= TECHNICAL_GAP_WEAK_SCORE) return 'needs_refine'
+  return 'needs_material'
+}
+
+export const technicalGapTagOf = (item, allItems = []) => {
+  if (!item) return ''
+  const parentId = String(item?.coveredByParent || '').trim()
+  if (parentId && !hasReadyArtifact(item)) {
+    const parent = asObjectArray(allItems).find((entry) => String(entry?.id || '') === parentId)
+    if (parent) return ownTechnicalGapTag(parent)
+  }
+  return ownTechnicalGapTag(item)
+}
+
 export const appendixTaskForFillTask = (selected, task) => {
   const appendixTasks = asObjectArray(selected?.appendixTasks)
   const blankId = String(task?.blankSource?.id || '').trim()
