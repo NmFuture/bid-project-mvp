@@ -773,6 +773,7 @@ def extract_recipe_keywords(recipe_path: Path, prefix: str) -> list[str]:
                 keywords.extend(["机型投标参数表", "参数表"])
             if "项目风机各子系统专题" in text or any(k in text for k in component_keywords_for(prefix)):
                 keywords.extend(component_keywords_for(prefix))
+    wb.close()
     return sorted(set(keywords))
 
 
@@ -1227,10 +1228,12 @@ def extract_param_facts(source: Source, project: dict[str, Any]) -> tuple[dict[s
     wb = load_workbook(source.path, data_only=True, read_only=False)
     ws = choose_param_sheet(wb, project)
     if ws is None:
+        wb.close()
         return meta, facts
     col = choose_param_col(ws, project)
     if col is None:
         meta["warning"] = f"未在参数表找到机型列：{project.get('model') or ''}"
+        wb.close()
         return meta, facts
 
     meta.update(
@@ -1312,6 +1315,7 @@ def extract_param_facts(source: Source, project: dict[str, Any]) -> tuple[dict[s
         add_fact(facts, label="噪音（整个风力发电机组）", value=value, source="derived", confidence=0.86, concept="noise")
     if by_label_row.get(("叶尖速度", 24)) is None:
         add_fact(facts, label="叶尖速度", value="92.1533845053006", unit="m/s", source=source, row=24, sheet=ws.title, confidence=0.76, concept="tip_speed")
+    wb.close()
     return meta, facts
 
 
@@ -1443,7 +1447,9 @@ def extract_xlsx_generic_facts(source: Source) -> list[dict[str, Any]]:
                 notes="通用 Excel 键值抽取",
             )
             if len(facts) >= GENERIC_FACT_LIMIT_PER_FILE:
+                wb.close()
                 return facts
+    wb.close()
     return facts
 
 
