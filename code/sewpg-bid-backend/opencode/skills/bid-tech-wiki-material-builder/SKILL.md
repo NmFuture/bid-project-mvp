@@ -41,8 +41,7 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
           "projectId",               // project 档才有值
           "fileCount", "updatedAt",
           "files": [
-            { "id": "RAW-NNNN", "name", "path"(完整), "ext",
-              "cleanStatus": "cleaned|pending|original_only|failed" }
+            { "id": "RAW-NNNN", "name", "path"(完整), "ext" }
           ]
         }
       ]
@@ -76,9 +75,9 @@ root（技术标Wiki）
 ```
 
 - **一级（tier 节点）**：标题使用 JSON 的 `tier.name`，正文给出 tier 代码、真实 name、path、fileCount、3 级目录语义，并用一张表列出本档所有 3 级目录（目录名 / 身份 / 文件数）。
-- **二级（3 级目录节点）**：标题为目录真实名，正文给出目录 path、档位、身份（customerName / projectId）、fileCount、updatedAt，并用一张表列出全量文件清单（material_id / 文件名 / 相对路径 / 扩展名 / 清洗状态）。
+- **二级（3 级目录节点）**：标题为目录真实名，正文给出目录 path、档位、身份（customerName / projectId）、fileCount、updatedAt，并用一张表列出全量文件清单（material_id / 文件名 / 相对路径 / 扩展名）。
 - **深层子目录节点**：索引把深层文件归并进 3 级目录的 `files[]`，构建时按每个文件 `path` 相对 3 级目录的中间段重建子目录节点，层级与素材库完全一致；正文给出目录路径、直属文件清单和子目录数。
-- **文件卡片（叶子）**：标题为文件名，挂在其真实所属目录下；正文给出 material_id、完整路径、扩展名、清洗状态、所属档位与目录、身份字段。卡片只是结构索引，不承载正文。
+- **文件卡片（叶子）**：标题为文件名，挂在其真实所属目录下；正文给出 material_id、完整路径、扩展名、所属档位与目录、身份字段。卡片只是结构索引，不承载正文。
 
 身份信息写入 `tags`：tier 节点带档位中文名；customer/project 目录节点把 `customerName`/`projectId` 加入 tags，便于下游按身份过滤。
 

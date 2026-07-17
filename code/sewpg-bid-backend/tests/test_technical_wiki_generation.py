@@ -184,8 +184,8 @@ class TechnicalWikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                         {
                             "name": "EW5.0",
                             "files": [
-                                {"id": "RAW-0001", "name": "总体方案.docx", "cleanStatus": "cleaning"},
-                                {"id": "RAW-0002", "name": "载荷报告.docx", "cleanStatus": "cleaning", "preview": {"lead": "旧预览"}},
+                                {"id": "RAW-0001", "name": "总体方案.docx"},
+                                {"id": "RAW-0002", "name": "载荷报告.docx", "preview": {"lead": "旧预览"}},
                             ],
                         }
                     ],
@@ -257,10 +257,11 @@ class TechnicalWikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         files = index_payload["tiers"][0]["folders"][0]["files"]
         self.assertEqual(files[0]["preview"]["lead"], "总体方案导读")
         self.assertEqual(files[0]["evidenceSegments"][0]["materialId"], "RAW-0001")
-        self.assertEqual(files[0]["cleanStatus"], "cleaned")
+        # 索引不再承载 cleanStatus，预览元数据也不得把它写回索引。
+        self.assertNotIn("cleanStatus", files[0])
         self.assertEqual(files[1]["preview"]["lead"], "载荷报告本地 TLDR")
         self.assertEqual(files[1]["evidenceSegments"][0]["materialId"], "RAW-0002")
-        self.assertEqual(files[1]["cleanStatus"], "cleaned")
+        self.assertNotIn("cleanStatus", files[1])
         persist_payloads.assert_awaited_once()
         self.assertEqual(persist_payloads.await_args.args[0]["RAW-0001"], completed_payload)
         self.assertEqual(persist_payloads.await_args.args[0]["RAW-0002"], failed_payload)

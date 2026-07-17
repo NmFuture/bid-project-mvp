@@ -166,6 +166,8 @@ class BuildPayloadTests(unittest.TestCase):
         self.assertEqual(ids, {"RAW-0001", "RAW-0002"})
         deep = next(f for f in folder["files"] if f["id"] == "RAW-0002")
         self.assertEqual(deep["path"], "技术标/通用素材/公司介绍/2024/Q1/深层.docx")
+        # DB 侧仍带 cleanStatus，但索引不再承载它（清洗状态以 DB 实时值为准）。
+        self.assertNotIn("cleanStatus", deep)
 
     def test_customer_and_project_identity_backfill(self) -> None:
         payload = tmi._build_payload(_tree(), _files())

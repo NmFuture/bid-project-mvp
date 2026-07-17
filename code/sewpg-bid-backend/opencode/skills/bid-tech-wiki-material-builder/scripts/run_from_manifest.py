@@ -116,15 +116,6 @@ def folder_identity(folder: dict[str, Any], tier_code: str) -> str:
     return ""
 
 
-def clean_status_label(status: str) -> str:
-    return {
-        "cleaned": "已清洗",
-        "pending": "待清洗",
-        "original_only": "仅原稿",
-        "failed": "清洗失败",
-    }.get(str(status or "").strip(), str(status or "未知"))
-
-
 def node(
     title: str,
     markdown: str,
@@ -146,7 +137,6 @@ def build_file_card(file: dict[str, Any], tier_code: str, folder: dict[str, Any]
     name = str(file.get("name") or file_id or "未命名文件")
     path = str(file.get("path") or "")
     ext = str(file.get("ext") or "")
-    status = str(file.get("cleanStatus") or "")
 
     lines = [f"# {name}", ""]
     preview = file.get("preview") if isinstance(file.get("preview"), dict) else {}
@@ -157,7 +147,6 @@ def build_file_card(file: dict[str, Any], tier_code: str, folder: dict[str, Any]
         f"- material_id: {file_id}",
         f"- 完整路径: `{path}`",
         f"- 扩展名: {ext}",
-        f"- 清洗状态: {clean_status_label(status)} ({status})",
         "",
         "## 所属档位",
         f"- tier: {tier_code} ({TIER_LABELS.get(tier_code, '')})",
@@ -227,18 +216,17 @@ def build_subdir_node(
         "",
         "## 直属文件清单",
         "",
-        "| material_id | 文件名 | 扩展名 | 清洗状态 |",
-        "|---|---|---|---|",
+        "| material_id | 文件名 | 扩展名 |",
+        "|---|---|---|",
     ]
     if not direct_files:
-        lines.append("| - | （该目录暂无直属文件） | - | - |")
+        lines.append("| - | （该目录暂无直属文件） | - |")
     for f in direct_files:
         lines.append(
-            "| {fid} | {name} | {ext} | {status} |".format(
+            "| {fid} | {name} | {ext} |".format(
                 fid=md_escape(f.get("id")),
                 name=md_escape(f.get("name")),
                 ext=md_escape(f.get("ext")),
-                status=md_escape(clean_status_label(f.get("cleanStatus"))),
             )
         )
     lines.append("")
@@ -294,21 +282,20 @@ def build_folder_node(folder: dict[str, Any], tier_code: str) -> dict[str, Any]:
             "",
             "## 文件清单（含深层子目录文件）",
             "",
-            "| material_id | 文件名 | 相对路径 | 扩展名 | 清洗状态 |",
-            "|---|---|---|---|---|",
+            "| material_id | 文件名 | 相对路径 | 扩展名 |",
+            "|---|---|---|---|",
         ]
     )
     if not files:
-        lines.append("| - | （该目录暂无归并文件） | - | - | - |")
+        lines.append("| - | （该目录暂无归并文件） | - | - |")
     for f in files:
         rel_dir = "/".join(file_subdir_segments(f, path)) or "—"
         lines.append(
-            "| {fid} | {name} | {rel} | {ext} | {status} |".format(
+            "| {fid} | {name} | {rel} | {ext} |".format(
                 fid=md_escape(f.get("id")),
                 name=md_escape(f.get("name")),
                 rel=md_escape(rel_dir),
                 ext=md_escape(f.get("ext")),
-                status=md_escape(clean_status_label(f.get("cleanStatus"))),
             )
         )
 

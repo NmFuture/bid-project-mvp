@@ -54,7 +54,6 @@ class TechnicalWikiRunnerTests(unittest.TestCase):
                 "name": "总体方案.docx",
                 "path": "技术标/标准文件/EW5.0/总体方案.docx",
                 "ext": "docx",
-                "cleanStatus": "cleaned",
                 "preview": {
                     "lead": "用于 EW5.0 技术方案编制的总体说明。",
                     "points": ["覆盖设计依据", "包含关键参数"],
@@ -81,7 +80,6 @@ class TechnicalWikiRunnerTests(unittest.TestCase):
                 "name": "空白材料.pdf",
                 "path": "技术标/标准文件/EW5.0/空白材料.pdf",
                 "ext": "pdf",
-                "cleanStatus": "pending",
             },
             "standard",
             {"name": "EW5.0"},
@@ -103,21 +101,18 @@ class TechnicalWikiRunnerTests(unittest.TestCase):
                     "name": "直属文件.docx",
                     "path": "技术标/客户定制/华能/直属文件.docx",
                     "ext": "docx",
-                    "cleanStatus": "cleaned",
                 },
                 {
                     "id": "RAW-0102",
                     "name": "四级文件.docx",
                     "path": "技术标/客户定制/华能/北方公司/四级文件.docx",
                     "ext": "docx",
-                    "cleanStatus": "cleaned",
                 },
                 {
                     "id": "RAW-0103",
                     "name": "五级文件.pdf",
                     "path": "技术标/客户定制/华能/北方公司/风电项目/五级文件.pdf",
                     "ext": "pdf",
-                    "cleanStatus": "pending",
                 },
             ],
         }
@@ -153,7 +148,6 @@ class TechnicalWikiRunnerTests(unittest.TestCase):
                     "name": "总体方案.docx",
                     "path": "技术标/标准文件/EW5.0/总体方案.docx",
                     "ext": "docx",
-                    "cleanStatus": "cleaned",
                 },
             ],
         }

@@ -668,7 +668,6 @@ class TocSkillScriptTests(unittest.TestCase):
                                         "name": "总体方案.docx",
                                         "path": "技术标/标准文件/EW5.0/总体方案.docx",
                                         "ext": "docx",
-                                        "cleanStatus": "cleaned",
                                     }
                                 ],
                             }
