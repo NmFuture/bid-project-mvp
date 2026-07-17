@@ -2681,7 +2681,7 @@ def test_wiki_node_operations_are_outside_material_store() -> None:
     assert "请在此补充节点内容。" not in material_source
     assert "node_depths" not in material_source
     assert "def collect(current: WikiNode" not in material_source
-    assert "source.parent_id = target.id if mode == \"inside\"" not in material_source
+    assert "source.parent_id = new_parent_id" not in material_source
     assert "目标节点不存在。" not in material_source
     assert "def create_wiki_node" in node_source
     assert "def update_wiki_node" in node_source
@@ -2692,7 +2692,7 @@ def test_wiki_node_operations_are_outside_material_store() -> None:
     assert "请在此补充节点内容。" in node_source
     assert "node_depths" in node_source
     assert "def collect(current: WikiNode" in node_source
-    assert "source.parent_id = target.id if mode == \"inside\"" in node_source
+    assert "source.parent_id = new_parent_id" in node_source
     assert "目标节点不存在。" in node_source
 
 

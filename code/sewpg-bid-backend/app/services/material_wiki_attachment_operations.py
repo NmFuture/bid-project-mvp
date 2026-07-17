@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
 from typing import Any, Awaitable, Callable
@@ -11,12 +12,13 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.models import async_session
 from app.models.materials import WikiAttachment, WikiDoc
-from app.services.bid_type import GENERAL_BID_TYPE
 from app.services.filename_utils import short_filename
-from app.services.material_wiki_scope import normalize_wiki_bid_type
+from app.services.material_wiki_scope import normalize_wiki_bid_type, wiki_root_visible_for_bid_type
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
 from app.services.scoped_material_urls import INTERNAL_WIKI_URL_PREFIX
+
+logger = logging.getLogger(__name__)
 
 
 EnsureRuntimeTables = Callable[[Any], Awaitable[None]]
@@ -66,11 +68,15 @@ def purge_wiki_attachment_object(attachment: WikiAttachment) -> None:
 
 
 def wiki_doc_matches_bid_type(doc: WikiDoc | None, bid_type: str) -> bool:
+    # 附件 scope 判定复用树可见性同一标准，避免出现「树上不可见但附件接口放行」的矛盾。
     normalized_bid_type = normalize_wiki_bid_type(bid_type)
     if not normalized_bid_type or doc is None or doc.node is None:
         return False
-    type_set = {str(item) for item in (doc.node.bid_types or []) if str(item or "").strip()}
-    return normalized_bid_type in type_set or GENERAL_BID_TYPE in type_set
+    return wiki_root_visible_for_bid_type(
+        title=str(getattr(doc.node, "title", "") or ""),
+        bid_types=getattr(doc.node, "bid_types", None) or [],
+        bid_type=normalized_bid_type,
+    )
 
 
 async def upload_wiki_attachment(
@@ -179,9 +185,15 @@ async def delete_wiki_attachment(
         if not wiki_doc_matches_bid_type(attachment.doc, bid_type):
             raise PeripheralError(400, "该附件不属于当前素材库。", "WIKI_ATTACHMENT_SCOPE")
         node_id = int(attachment.doc.node_id) if attachment.doc else 0
-        purge_wiki_attachment_object(attachment)
+        pending_object = attachment
         await session.delete(attachment)
         await session.commit()
+
+    # DB 提交成功后再清理 MinIO 对象；失败只记警告，孤儿对象可接受，悬空记录不可接受。
+    try:
+        purge_wiki_attachment_object(pending_object)
+    except Exception:  # noqa: BLE001 - 对象清理失败不影响已提交的删除结果
+        logger.warning("wiki 附件删除清理 MinIO 对象失败：attachment_id=%s", numeric_id, exc_info=True)
 
     return {
         "message": "附件删除成功。",

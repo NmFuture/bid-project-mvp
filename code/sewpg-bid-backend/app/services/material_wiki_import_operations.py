@@ -1,22 +1,27 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import desc, select
 
 from app.models import async_session
 from app.models.materials import WikiAttachment, WikiDoc, WikiNode
+
+logger = logging.getLogger(__name__)
 from app.services.material_taxonomy import PLATFORM_WIKI_SECTION_TITLES
 from app.services.material_wiki_attachment_operations import purge_wiki_attachment_object
 from app.services.material_wiki_import import (
     AUTO_WIKI_DOC_SUMMARY,
     build_generated_wiki_root_spec,
     generated_wiki_import_message,
+    is_generated_wiki_doc,
     normalize_wiki_import_mode,
     wiki_import_node_bid_types,
     wiki_import_node_markdown,
     wiki_import_node_tags,
     wiki_import_node_title,
+    with_generated_wiki_tag,
 )
 from app.services.material_wiki_scope import normalize_wiki_bid_type
 from app.services.peripheral import PeripheralError
@@ -50,6 +55,9 @@ async def import_generated_wiki_blueprint_operation(
         if normalized_bid_type not in {str(item) for item in root_spec.get("applicableTypes") or []}:
             raise PeripheralError(400, "Wiki 根节点标类与当前素材库不一致。", "WIKI_IMPORT_SCOPE")
         normalized_root_title = str(root_spec["title"])
+        # 事务内先累积待清理的 MinIO 对象，提交成功后再统一删除；删对象失败只记警告，
+        # 保证不会出现「对象已删、DB 记录回滚保留」的悬空记录。
+        pending_object_purges: list[WikiAttachment] = []
 
         async def purge_wiki_root(root: WikiNode) -> None:
             all_nodes = (await session.execute(select(WikiNode))).scalars().all()
@@ -63,9 +71,13 @@ async def import_generated_wiki_blueprint_operation(
             node_depths: dict[int, int] = {}
 
             def collect(node: WikiNode, depth: int = 0) -> None:
-                node_ids.add(int(node.id))
-                node_depths[int(node.id)] = depth
-                for child in children_by_parent.get(node.id, []):
+                node_key = int(node.id)
+                if node_key in node_ids:  # visited 防护：环或重复父子关系不再无限递归
+                    logger.warning("wiki purge 检测到重复节点，已跳过防止无限递归：node_id=%s", node_key)
+                    return
+                node_ids.add(node_key)
+                node_depths[node_key] = depth
+                for child in children_by_parent.get(node_key, []):
                     collect(child, depth + 1)
 
             collect(root)
@@ -77,14 +89,22 @@ async def import_generated_wiki_blueprint_operation(
                         .where(WikiDoc.node_id.in_(node_ids))
                     )
                 ).scalars().all()
-                for attachment in attachments:
-                    purge_wiki_attachment_object(attachment)
+                pending_object_purges.extend(attachments)
             for node_id in sorted(node_ids - {int(root.id)}, key=lambda item: node_depths.get(item, 0), reverse=True):
                 node = nodes_by_id.get(node_id)
                 if node is not None:
                     await session.delete(node)
             await session.delete(root)
             await session.flush()
+
+        async def node_is_generated(node: WikiNode) -> bool:
+            """节点是否由 import 生成链路创建（依据其 WikiDoc 的来源标记 tag）。"""
+            doc_result = await session.execute(select(WikiDoc).where(WikiDoc.node_id == node.id))
+            docs = doc_result.scalars().all()
+            if not docs:
+                # 无 doc 的节点无法确认来源，保守视为手工节点予以保留。
+                return False
+            return any(is_generated_wiki_doc(doc.tags) for doc in docs)
 
         async def purge_orphaned_platform_sections() -> None:
             orphaned_roots = (
@@ -121,7 +141,7 @@ async def import_generated_wiki_blueprint_operation(
                 node_id=node.id,
                 markdown_content=wiki_import_node_markdown(spec, title),
                 ai_summary=AUTO_WIKI_DOC_SUMMARY,
-                tags=wiki_import_node_tags(spec),
+                tags=with_generated_wiki_tag(wiki_import_node_tags(spec)),
             )
             session.add(doc)
             await session.flush()
@@ -143,7 +163,15 @@ async def import_generated_wiki_blueprint_operation(
                 node = await create_node(spec, parent, sort_order=sort_order)
             else:
                 for duplicate_node in duplicate_nodes[1:]:
-                    await purge_wiki_root(duplicate_node)
+                    # 只清理自动生成的重复项；同名手工节点保留，避免刷新时误删人工内容。
+                    if await node_is_generated(duplicate_node):
+                        await purge_wiki_root(duplicate_node)
+                    else:
+                        logger.warning(
+                            "wiki upsert 保留同名手工节点，未删除：node_id=%s title=%s",
+                            int(duplicate_node.id),
+                            title,
+                        )
                 node.path = f"{parent.path}/{title}".lstrip("/")
                 node.bid_types = wiki_import_node_bid_types(spec, list(node.bid_types or []))
                 node.sort_order = sort_order
@@ -158,13 +186,13 @@ async def import_generated_wiki_blueprint_operation(
                             node_id=node.id,
                             markdown_content=wiki_import_node_markdown(spec, title),
                             ai_summary=AUTO_WIKI_DOC_SUMMARY,
-                            tags=wiki_import_node_tags(spec),
+                            tags=with_generated_wiki_tag(wiki_import_node_tags(spec)),
                         )
                     )
                 else:
                     doc.markdown_content = wiki_import_node_markdown(spec, title, doc.markdown_content or "")
                     doc.ai_summary = doc.ai_summary or AUTO_WIKI_DOC_SUMMARY
-                    doc.tags = wiki_import_node_tags(spec, list(doc.tags or []))
+                    doc.tags = with_generated_wiki_tag(wiki_import_node_tags(spec, list(doc.tags or [])))
                 await session.flush()
                 for child_index, child in enumerate(spec.get("children") or []):
                     if isinstance(child, dict):
@@ -185,8 +213,17 @@ async def import_generated_wiki_blueprint_operation(
                 await session.execute(select(WikiNode).where(WikiNode.parent_id == parent.id))
             ).scalars().all()
             for child in existing_children:
-                if child.title not in desired_titles:
+                if child.title in desired_titles:
+                    continue
+                # 只删除自动生成来源的落选节点；用户手工新建的节点一律保留并记警告。
+                if await node_is_generated(child):
                     await purge_wiki_root(child)
+                else:
+                    logger.warning(
+                        "wiki refresh 保留手工节点（不在本次蓝图内）：node_id=%s title=%s",
+                        int(child.id),
+                        child.title,
+                    )
 
         existing_roots = (
             await session.execute(
@@ -219,12 +256,12 @@ async def import_generated_wiki_blueprint_operation(
                             node_id=root_node.id,
                             markdown_content=root_spec["markdownContent"],
                             ai_summary=AUTO_WIKI_DOC_SUMMARY,
-                            tags=list(root_spec["tags"]),
+                            tags=with_generated_wiki_tag(list(root_spec["tags"])),
                         )
                     )
                 else:
                     root_doc.markdown_content = root_spec["markdownContent"]
-                    root_doc.tags = list(root_spec["tags"])
+                    root_doc.tags = with_generated_wiki_tag(list(root_spec["tags"]))
                 children = [child for child in (root_spec.get("children") or []) if isinstance(child, dict)]
                 if normalized_mode == "refresh":
                     await sync_children_to_specs(root_node, children)
@@ -243,5 +280,12 @@ async def import_generated_wiki_blueprint_operation(
 
         root_node_id = int(root_node.id)
         await session.commit()
+
+    # DB 提交成功后再清理 MinIO 对象；删对象失败只记警告，孤儿对象可接受，悬空记录不可接受。
+    for attachment in pending_object_purges:
+        try:
+            purge_wiki_attachment_object(attachment)
+        except Exception:  # noqa: BLE001 - 对象清理失败不影响已提交的删除结果
+            logger.warning("wiki import 清理 MinIO 附件对象失败：attachment_id=%s", getattr(attachment, "id", ""), exc_info=True)
 
     return {"message": message, "mode": normalized_mode, **await wiki_list(f"WIKI-{root_node_id:04d}", normalized_bid_type)}

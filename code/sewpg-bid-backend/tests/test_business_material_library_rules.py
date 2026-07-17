@@ -398,11 +398,13 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
             all_nodes=[tech_root, tech_child, business_root, business_child],
             node_id="WIKI-0004",
             bid_type="商务标",
+            tags_by_node_id={4: ["AI预览待重试"]},
         )
 
         self.assertEqual(context["normalizedBidType"], "商务标")
         self.assertEqual(context["tree"][0]["id"], "WIKI-0003")
         self.assertEqual(context["tree"][0]["children"][0]["id"], "WIKI-0004")
+        self.assertEqual(context["tree"][0]["children"][0]["tags"], ["AI预览待重试"])
         self.assertEqual(context["selectedNodeIds"], [4, 3])
         self.assertEqual(context["visibleNodeIds"], {3, 4})
 

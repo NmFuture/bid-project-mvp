@@ -10,8 +10,10 @@ def build_wiki_tree_context(
     all_nodes: list[Any],
     bid_type: str,
     node_id: str = "",
+    tags_by_node_id: dict[int, list[str]] | None = None,
 ) -> dict[str, Any]:
     normalized_bid_type = normalize_wiki_bid_type(bid_type)
+    normalized_tags = tags_by_node_id or {}
     children_by_parent: dict[int, list[Any]] = {}
     for node in all_nodes:
         parent_id = getattr(node, "parent_id", None)
@@ -37,6 +39,7 @@ def build_wiki_tree_context(
             "title": getattr(node, "title"),
             "icon": "folder" if has_children else "article",
             "expanded": True if has_children else None,
+            "tags": list(normalized_tags.get(node_id_int) or []),
             "children": [build_node(child) for child in child_nodes],
         }
 

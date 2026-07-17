@@ -357,11 +357,14 @@ def _match_folder(target_id: str, payload: dict[str, Any]) -> dict[str, Any] | N
     return None
 
 
-async def set_tags_for_node(*, target_id: str, tags: Any) -> dict[str, Any]:
+async def set_tags_for_node(*, target_id: str, tags: Any, merge: bool = False) -> dict[str, Any]:
     """对索引中某节点（文件 RAW-xxxx / 目录 folderId 或 path）设置 tag。
 
     tag 真值落 JSON：定位节点 -> normalize_material_tags 规整 -> 写回 -> 返回该节点。
     全程持写锁 + 原子写，与 rebuild 串行。
+
+    merge=True 时在锁内重新读取节点当前 tags 并与传入 tags 取并集后写入，
+    避免调用方用过期快照整条覆盖、丢失期间新增的标签（H4）。
     """
     target = str(target_id or "").strip()
     if not target:
@@ -382,6 +385,11 @@ async def set_tags_for_node(*, target_id: str, tags: Any) -> dict[str, Any]:
         if node is None:
             raise LookupError(f"未在索引中找到节点：{target}")
 
-        node["tags"] = normalized
+        if merge:
+            # 锁内 read-merge-write：与当前真值取并集，吸收 preview 后新增的标签（H4）
+            current = normalize_material_tags(node.get("tags"))
+            node["tags"] = normalize_material_tags([*current, *normalized])
+        else:
+            node["tags"] = normalized
         _write_index(payload)
         return node

@@ -194,7 +194,8 @@ class BusinessMaterialStore:
     async def raw_cleanup_project_folder(self, path: str) -> dict[str, Any]:
         normalized = self.ensure_path(path, "项目素材目录")
         parts = [part for part in normalized.split("/") if part]
-        if len(parts) != 3 or parts[:2] != [BUSINESS_BID_TYPE, "项目素材"]:
+        # 兼容旧目录名"项目定制"，与技术标一致（M3）
+        if len(parts) != 3 or parts[0] != BUSINESS_BID_TYPE or parts[1] not in {"项目素材", "项目定制"}:
             raise PeripheralError(400, "只能清理商务标项目素材目录。", "PROJECT_MATERIAL_PATH_REQUIRED")
         payload = await material_store.raw_cleanup_project_folder(
             normalized,
@@ -210,6 +211,7 @@ class BusinessMaterialStore:
         business_material_kind: str = "",
         tags: Any = None,
         update_tags: bool = False,
+        tag_mode: str = "overwrite",
     ) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)
         return self._with_urls(await material_store.raw_update_file(
@@ -219,11 +221,51 @@ class BusinessMaterialStore:
             business_material_kind=business_material_kind,
             tags=tags,
             update_tags=update_tags,
+            tag_mode=tag_mode,
         ))
 
     async def raw_delete_file(self, file_id: str) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)
         return self._with_urls(await material_store.raw_delete_file(file_id, bid_type=BUSINESS_BID_TYPE))
+
+    async def raw_batch_delete_files(self, file_ids: list[str]) -> dict[str, Any]:
+        """批量删除商务标素材文件，逐个删除并聚合成功/失败（M2）。"""
+        succeeded: list[str] = []
+        failed: list[dict[str, Any]] = []
+        for fid in file_ids:
+            try:
+                await self.ensure_raw_file(fid)
+                await material_store.raw_delete_file(fid, bid_type=BUSINESS_BID_TYPE)
+                succeeded.append(fid)
+            except PeripheralError as exc:
+                failed.append({"fileId": fid, "error": exc.detail})
+            except Exception as exc:  # pragma: no cover - 兜底
+                failed.append({"fileId": fid, "error": str(exc)})
+        total = len(file_ids)
+        return {
+            "succeeded": succeeded,
+            "failed": failed,
+            "message": f"批量删除完成：成功 {len(succeeded)} 个，失败 {total - len(succeeded)} 个",
+        }
+
+    async def raw_batch_tags(self, file_ids: list[str], *, tags: Any, tag_mode: str = "overwrite") -> dict[str, Any]:
+        """批量打标签：商务标 tag 存 DB，逐个走 raw_update_file，支持 append 合并（M2）。"""
+        succeeded: list[str] = []
+        failed: list[dict[str, Any]] = []
+        for fid in file_ids:
+            try:
+                await self.raw_update_file(fid, tags=tags, update_tags=True, tag_mode=tag_mode)
+                succeeded.append(fid)
+            except PeripheralError as exc:
+                failed.append({"fileId": fid, "error": exc.detail})
+            except Exception as exc:  # pragma: no cover - 兜底
+                failed.append({"fileId": fid, "error": str(exc)})
+        total = len(file_ids)
+        return {
+            "succeeded": succeeded,
+            "failed": failed,
+            "message": f"批量打标签完成：成功 {len(succeeded)} 个，失败 {total - len(succeeded)} 个",
+        }
 
     async def raw_download_file(self, file_id: str) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)

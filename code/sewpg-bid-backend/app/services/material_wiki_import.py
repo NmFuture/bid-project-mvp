@@ -13,6 +13,22 @@ from app.services.material_wiki_scope import (
 AUTO_WIKI_DOC_SUMMARY = "自动生成的 Wiki 初稿节点。"
 DEFAULT_WIKI_NODE_TITLE = "未命名节点"
 VALID_WIKI_IMPORT_MODES = {"create", "update", "replace", "refresh"}
+# 标记 import 生成链路创建的节点；refresh/upsert 只允许物理删除带此标记的节点，
+# 用户手工节点（无此标记）一律保留，避免刷新 Wiki 时静默删除人工内容。
+GENERATED_WIKI_SOURCE_TAG = "__auto_generated__"
+
+
+def is_generated_wiki_doc(tags: Any) -> bool:
+    """判断某 WikiDoc 是否由 import 生成链路创建（依据来源标记 tag）。"""
+    return GENERATED_WIKI_SOURCE_TAG in {str(item) for item in (tags or [])}
+
+
+def with_generated_wiki_tag(tags: list[str] | None) -> list[str]:
+    """给 import 生成节点的 tags 补上来源标记（去重保序）。"""
+    result = [str(item) for item in (tags or [])]
+    if GENERATED_WIKI_SOURCE_TAG not in result:
+        result.append(GENERATED_WIKI_SOURCE_TAG)
+    return result
 
 
 def safe_wiki_segment(value: str, fallback: str) -> str:

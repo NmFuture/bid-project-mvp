@@ -225,9 +225,29 @@ async def _upload_business_split_files(
 ) -> dict[str, Any]:
     if bid_type == TECHNICAL_BID_TYPE:
         from app.services.technical_material_store import technical_material_store
+        from app.services.technical_material_paths import (
+            TECHNICAL_BID_TYPE as _TECH_BID,
+            TECHNICAL_STANDARD_FOLDER_NAME,
+            ensure_technical_material_write_path,
+        )
+
+        # fragment 落盘与手工 confirm 走同一写目录白名单校验（M4）；
+        # 超出白名单时回落到"标准文件"根，并保留原始建议路径，避免整个切分失败。
+        safe_target = target_path
+        try:
+            safe_target = ensure_technical_material_write_path(target_path, "切分目标目录")
+        except PeripheralError:
+            safe_target = f"{_TECH_BID}/{TECHNICAL_STANDARD_FOLDER_NAME}"
+            for file in files:
+                ext = file.get("extFields")
+                if not isinstance(ext, dict):
+                    ext = {}
+                    file["extFields"] = ext
+                ext.setdefault("originalSuggestedPath", target_path)
+                ext["writePathFallback"] = safe_target
 
         return await technical_material_store.raw_upload(
-            target_path=target_path,
+            target_path=safe_target,
             on_conflict=on_conflict,
             files=files,
         )

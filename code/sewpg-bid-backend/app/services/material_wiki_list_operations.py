@@ -25,7 +25,17 @@ async def wiki_list_operation(
         await ensure_runtime_tables(session)
         nodes_result = await session.execute(select(WikiNode).order_by(WikiNode.sort_order, WikiNode.id))
         all_nodes = nodes_result.scalars().all()
-        tree_context = build_wiki_tree_context(all_nodes=list(all_nodes), node_id=node_id, bid_type=bid_type)
+        tags_result = await session.execute(select(WikiDoc.node_id, WikiDoc.tags))
+        tags_by_node_id = {
+            int(numeric_id): list(tags or [])
+            for numeric_id, tags in tags_result.all()
+        }
+        tree_context = build_wiki_tree_context(
+            all_nodes=list(all_nodes),
+            node_id=node_id,
+            bid_type=bid_type,
+            tags_by_node_id=tags_by_node_id,
+        )
         visible_node_ids = tree_context["visibleNodeIds"]
         normalized_bid_type = tree_context["normalizedBidType"]
 
