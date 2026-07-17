@@ -8,6 +8,11 @@ from sqlalchemy.orm import selectinload
 
 from app.models import async_session
 from app.models.materials import RawFile, RawFolder
+from app.services.bid_type import TECHNICAL_BID_TYPE
+from app.services.material_folder_scope import (
+    material_tier_folder_name_for_bid_type,
+    material_tier_folder_sort_order,
+)
 from app.services.material_folder_maintenance import ensure_business_customized_children_for_created_folder
 from app.services.material_raw_file_filter import raw_file_matches_bid_type, raw_folder_matches_bid_type
 from app.services.material_taxonomy import is_raw_material_protected_folder_path
@@ -47,6 +52,18 @@ async def create_raw_folder(
         parent = result.scalar_one_or_none()
         if parent is None or not raw_folder_matches_bid_type(parent, bid_type):
             raise PeripheralError(400, "父级目录不属于当前素材库。", "RAW_FOLDER_SCOPE")
+        if parent_path_text == TECHNICAL_BID_TYPE:
+            parent = await ensure_folder_path(
+                session,
+                material_tier_folder_name_for_bid_type(TECHNICAL_BID_TYPE, "standard"),
+                parent.id,
+                "standard",
+                TECHNICAL_BID_TYPE,
+                None,
+                material_tier_folder_sort_order("standard"),
+                customer_name="平台标准",
+            )
+            parent_path_text = str(parent.path)
         parent_id = parent.id if parent else None
         full_path = "/".join([p for p in [parent_path_text.strip("/"), name] if p])
 

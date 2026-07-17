@@ -273,25 +273,33 @@ async def clean_material_file(file_id: str, data: dict[str, Any] | None = None) 
         minio_client.upload_file(bucket, key, cleaned_path, WORD_MEDIA_TYPE)
         size = cleaned_path.stat().st_size
         detail = driver_detail or ("清洗完成" if proc.returncode == 0 else "已生成 Word，需复核清洗日志")
-        return await set_material_clean_status(
-            file_id,
-            "cleaned",
-            detail,
-            extra={
-                "cleanResultStatus": driver_status or ("OK" if proc.returncode == 0 else "REVIEW"),
-                "cleanedMinioBucket": bucket,
-                "cleanedMinioKey": key,
-                "cleanedFileName": f"{PurePosixPath(source_name).stem}.docx",
-                "cleanedSize": size,
-                "cleanedAt": _now_iso(),
-                "cleanLogTail": report_tail,
-                "cleanReport": _compact_cleaning_manifest(manifest, manifest_record),
-                "cleanRelativeSourcePath": str(manifest_record.get("relativeSourcePath") or source_name),
-                "cleanRelativeOutputPath": str(manifest_record.get("relativeOutputPath") or cleaned_path.name),
-                "cleanNeedsHumanReview": bool(manifest_record.get("needsHumanReview")),
-                "cleanUsableForRetrieval": bool(manifest_record.get("isUsableForRetrieval", True)),
-            },
-        )
+        try:
+            return await set_material_clean_status(
+                file_id,
+                "cleaned",
+                detail,
+                extra={
+                    "cleanResultStatus": driver_status or ("OK" if proc.returncode == 0 else "REVIEW"),
+                    "cleanedMinioBucket": bucket,
+                    "cleanedMinioKey": key,
+                    "cleanedFileName": f"{PurePosixPath(source_name).stem}.docx",
+                    "cleanedSize": size,
+                    "cleanedAt": _now_iso(),
+                    "cleanLogTail": report_tail,
+                    "cleanReport": _compact_cleaning_manifest(manifest, manifest_record),
+                    "cleanRelativeSourcePath": str(manifest_record.get("relativeSourcePath") or source_name),
+                    "cleanRelativeOutputPath": str(manifest_record.get("relativeOutputPath") or cleaned_path.name),
+                    "cleanNeedsHumanReview": bool(manifest_record.get("needsHumanReview")),
+                    "cleanUsableForRetrieval": bool(manifest_record.get("isUsableForRetrieval", True)),
+                },
+            )
+        except Exception:
+            # 状态写库失败时补偿删除刚上传的 cleaned 对象，避免孤儿文件（L6）
+            try:
+                minio_client.remove_object(bucket, key)
+            except Exception as cleanup_exc:  # pragma: no cover - 补偿删除失败仅告警
+                logger.warning("清洗状态写入失败后清理 cleaned 对象 %s/%s 失败：%s", bucket, key, cleanup_exc)
+            raise
 
 
 def clean_material_file_sync(file_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:

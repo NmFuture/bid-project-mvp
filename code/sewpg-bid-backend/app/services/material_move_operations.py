@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import PurePosixPath
 from typing import Any, Awaitable, Callable
 
@@ -21,6 +22,8 @@ from app.services.material_move_metadata import (
 from app.services.material_raw_file_filter import raw_file_matches_bid_type, raw_folder_matches_bid_type
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
+
+logger = logging.getLogger(__name__)
 
 
 EnsureRuntimeTables = Callable[[Any], Awaitable[None]]
@@ -99,11 +102,14 @@ async def move_raw_file(
             move_action = RAW_MOVE_FILE_ACTION
 
         next_key = raw_object_key(destination.path, item.name)
+        # 先 copy 到新 key（不删源）；DB commit 成功后再删旧源对象，避免"删源后 commit 失败"丢文件（H3）
+        stale_source_key = ""
         if item.minio_key and next_key != item.minio_key:
             minio_client.copy_object(item.minio_bucket, item.minio_key, next_key)
-            minio_client.remove_object(item.minio_bucket, item.minio_key)
+            stale_source_key = item.minio_key
 
         item.folder_id = destination.id
+        source_bucket = item.minio_bucket
         item.minio_key = next_key
         tier = infer_material_tier_from_folder(destination)
         item.ext_fields = build_raw_move_file_ext_fields(
@@ -118,13 +124,25 @@ async def move_raw_file(
             last_action=move_action,
         )
         await session.commit()
+        # commit 后立即取一份快照作为兜底，避免二次读时被并发删除导致误报失败（L2）
+        await session.refresh(item, attribute_names=["folder"])
+        committed_payload = item.to_dict()
+
+    # commit 成功后再删旧源对象；删除失败只告警（残留源对象可接受，丢文件不可接受）（H3）
+    if stale_source_key:
+        try:
+            minio_client.remove_object(source_bucket, stale_source_key)
+        except Exception as cleanup_exc:  # pragma: no cover - 源对象清理失败仅告警
+            logger.warning("移动文件后清理旧源对象 %s/%s 失败：%s", source_bucket, stale_source_key, cleanup_exc)
 
     async with async_session() as verify_session:
         refreshed = await verify_session.execute(
             select(RawFile).where(RawFile.id == numeric_id).options(selectinload(RawFile.folder))
         )
-        moved = refreshed.scalar_one()
-        return {"message": "移动成功", "item": moved.to_dict()}
+        # miss（并发删除）时返回已提交快照，不把已成功的移动误报为异常（L2）
+        moved = refreshed.scalar_one_or_none()
+        payload = moved.to_dict() if moved is not None else committed_payload
+        return {"message": "移动成功", "item": payload}
 
 
 async def move_raw_folder(
@@ -199,6 +217,8 @@ async def move_raw_folder(
             folder.customer_name = target_parent.customer_name or folder.customer_name
             folder.project_id = target_parent.project_id or folder.project_id
 
+        # 先把所有对象 copy 到新 key（不删源）并收集待删旧 key；commit 成功后再统一删源（H3）
+        stale_source_keys: list[tuple[str, str]] = []
         for item in files:
             old_key = item.minio_key
             new_folder_path = folder_id_to_new_path.get(int(item.folder_id))
@@ -207,7 +227,7 @@ async def move_raw_folder(
             next_key = raw_object_key(new_folder_path, item.name)
             if old_key and old_key != next_key:
                 minio_client.copy_object(item.minio_bucket, old_key, next_key)
-                minio_client.remove_object(item.minio_bucket, old_key)
+                stale_source_keys.append((item.minio_bucket, old_key))
             item.minio_key = next_key
             item.ext_fields = build_raw_move_folder_file_ext_fields(
                 item.ext_fields or {},
@@ -221,11 +241,19 @@ async def move_raw_folder(
             )
 
         await session.commit()
-        tree = await raw_tree()
-        return {
-            "message": "文件夹移动成功",
-            "sourcePath": source_path,
-            "folderPath": next_root_path,
-            "movedFileCount": len(files),
-            "tree": tree["tree"],
-        }
+
+    # commit 成功后再逐个删旧源对象；单个失败只告警，不影响整体成功（H3）
+    for bucket, old_key in stale_source_keys:
+        try:
+            minio_client.remove_object(bucket, old_key)
+        except Exception as cleanup_exc:  # pragma: no cover - 源对象清理失败仅告警
+            logger.warning("移动文件夹后清理旧源对象 %s/%s 失败：%s", bucket, old_key, cleanup_exc)
+
+    tree = await raw_tree()
+    return {
+        "message": "文件夹移动成功",
+        "sourcePath": source_path,
+        "folderPath": next_root_path,
+        "movedFileCount": len(files),
+        "tree": tree["tree"],
+    }

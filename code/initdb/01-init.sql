@@ -292,13 +292,10 @@ CREATE INDEX idx_audit_module_target ON audit_log (module_id, target);
 INSERT INTO raw_folders (id, parent_id, name, path, tier, bid_type, customer_name, project_id, sort_order)
 VALUES
     (1, NULL, '通用素材', '通用素材', 'standard', NULL, NULL, NULL, 1),
-    (2, 1, '技术标', '通用素材/技术标', 'standard', '技术标', '平台标准', NULL, 1),
     (3, 1, '商务标', '通用素材/商务标', 'standard', '商务标', '平台标准', NULL, 2),
     (4, NULL, '客户素材', '客户素材', 'customer', NULL, NULL, NULL, 2),
     (5, 4, '华能集团', '客户素材/华能集团', 'customer', NULL, '华能集团', NULL, 1),
-    (6, 5, '技术标', '客户素材/华能集团/技术标', 'customer', '技术标', '华能集团', NULL, 1),
     (7, 4, '大唐集团', '客户素材/大唐集团', 'customer', NULL, '大唐集团', NULL, 2),
-    (8, 7, '技术标', '客户素材/大唐集团/技术标', 'customer', '技术标', '大唐集团', NULL, 1),
     (9, NULL, '项目素材', '项目素材', 'project', NULL, NULL, NULL, 3),
     (10, 5, '商务标', '客户素材/华能集团/商务标', 'customer', '商务标', '华能集团', NULL, 2),
     (11, 7, '商务标', '客户素材/大唐集团/商务标', 'customer', '商务标', '大唐集团', NULL, 2);
@@ -312,19 +309,6 @@ VALUES
     (2, 'project_reference', '项目业绩', '{"columns": [{"name": "项目名称", "type": "text", "required": true}, {"name": "业主", "type": "text", "required": true}, {"name": "机型", "type": "text", "required": true}, {"name": "容量(MW)", "type": "number", "required": true}, {"name": "年份", "type": "number", "required": true}]}');
 
 SELECT setval('structured_tables_id_seq', 2);
-
--- Wiki nodes seed
-INSERT INTO wiki_nodes (id, parent_id, title, tier, path, bid_types, sort_order)
-VALUES
-    (1, NULL, '风资源', 'standard', '风资源', ARRAY['技术标','通用'], 1),
-    (2, 1, '测风塔布设说明', 'standard', '风资源/测风塔布设说明', ARRAY['技术标'], 1),
-    (3, NULL, '机组选型', 'standard', '机组选型', ARRAY['技术标','通用'], 2);
-
-SELECT setval('wiki_nodes_id_seq', 3);
-
-INSERT INTO wiki_docs (node_id, markdown_content, ai_summary, tags)
-VALUES
-    (2, '# 测风塔布设说明\n\n用于支撑风资源章节的测风布点说明。', '包含测风塔布设原则、数量与位置说明。', ARRAY['风资源', '技术标']);
 
 -- Audit log seed
 INSERT INTO audit_log (user_id, user_name, action, action_type, module_id, module_label, target, status, diff)

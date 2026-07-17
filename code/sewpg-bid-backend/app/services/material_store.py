@@ -206,6 +206,7 @@ class MaterialStore:
         business_material_kind: str = "",
         tags: Any = None,
         update_tags: bool = False,
+        tag_mode: str = "overwrite",
     ) -> dict[str, Any]:
         return await update_raw_file(
             file_id=file_id,
@@ -214,6 +215,7 @@ class MaterialStore:
             business_material_kind=business_material_kind,
             tags=tags,
             update_tags=update_tags,
+            tag_mode=tag_mode,
             ensure_runtime_tables=ensure_material_runtime_tables,
             raw_object_key=raw_object_key,
         )

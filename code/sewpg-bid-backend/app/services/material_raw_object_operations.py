@@ -83,6 +83,11 @@ async def purge_raw_file_objects(
         for version in version_rows
         if version.minio_key
     )
+    # 逐 key 容错：单个对象删除失败只告警并继续，避免整批 purge 因一个瞬时故障中断（L3）
     for bucket, key in keys:
-        if key:
+        if not key:
+            continue
+        try:
             minio_client.remove_object(bucket, key)
+        except Exception as exc:  # pragma: no cover - 单对象清理失败仅告警
+            logger.warning("purge 素材对象 %s/%s 失败：%s", bucket, key, exc)

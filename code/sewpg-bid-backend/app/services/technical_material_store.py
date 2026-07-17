@@ -302,7 +302,7 @@ class TechnicalMaterialStore:
         on_conflict: str = "",
         files: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        normalized_target_path = self.ensure_write_path(target_path, "目标目录") if target_path else ""
+        normalized_target_path = self.ensure_path(target_path, "目标目录") if target_path else ""
         normalized_material_tier = str(material_tier or "").strip()
         if not normalized_target_path and not normalized_material_tier:
             normalized_target_path = f"{TECHNICAL_BID_TYPE}/{TECHNICAL_STANDARD_FOLDER_NAME}"
@@ -436,7 +436,8 @@ class TechnicalMaterialStore:
                 failed.append({"fileId": file_id, "message": "缺少文件 ID。"})
                 continue
             try:
-                updated = await self.set_index_tags(file_id, tags)
+                # 锁内 read-merge-write，避免用 preview 快照覆盖丢失期间新增的标签（H4）
+                updated = await self.set_index_tags(file_id, tags, merge=True)
                 succeeded.append(
                     {
                         "fileId": file_id,
@@ -453,10 +454,10 @@ class TechnicalMaterialStore:
         )
         return {"message": message, "succeeded": succeeded, "failed": failed}
 
-    async def set_index_tags(self, target_id: str, tags: Any) -> dict[str, Any]:
+    async def set_index_tags(self, target_id: str, tags: Any, *, merge: bool = False) -> dict[str, Any]:
         from app.services.technical_material_index import set_tags_for_node
 
-        return await set_tags_for_node(target_id=target_id, tags=tags)
+        return await set_tags_for_node(target_id=target_id, tags=tags, merge=merge)
 
     async def preview_technical_split(self, file_id: str, *, target_path: str, ai_mode: str) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)
@@ -527,6 +528,53 @@ class TechnicalMaterialStore:
     async def raw_delete_file(self, file_id: str) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)
         return await self._refresh_index(self._with_urls(await material_store.raw_delete_file(file_id, bid_type=TECHNICAL_BID_TYPE)))
+
+    async def raw_batch_delete_files(self, file_ids: list[str]) -> dict[str, Any]:
+        """批量删除素材文件：逐个删除但只在最后统一重建一次索引，避免 gather 并发 rebuild（H5）。"""
+        succeeded: list[str] = []
+        failed: list[dict[str, Any]] = []
+        for fid in file_ids:
+            try:
+                await self.ensure_raw_file(fid)
+                await material_store.raw_delete_file(fid, bid_type=TECHNICAL_BID_TYPE)
+                succeeded.append(fid)
+            except PeripheralError as exc:
+                failed.append({"fileId": fid, "error": exc.detail})
+            except Exception as exc:  # pragma: no cover - 兜底
+                failed.append({"fileId": fid, "error": str(exc)})
+        if succeeded:
+            await self._refresh_index(None)
+        total = len(file_ids)
+        return {
+            "succeeded": succeeded,
+            "failed": failed,
+            "message": f"批量删除完成：成功 {len(succeeded)} 个，失败 {total - len(succeeded)} 个",
+        }
+
+    async def raw_batch_tags(self, file_ids: list[str], *, tags: Any, tag_mode: str = "overwrite") -> dict[str, Any]:
+        """批量打标签：逐个更新，只在最后统一重建一次索引，避免 gather 并发 rebuild（H5）。"""
+        succeeded: list[str] = []
+        failed: list[dict[str, Any]] = []
+        for fid in file_ids:
+            try:
+                # 直接走索引 tag 更新，跳过每次 rebuild；append 语义在 set_index_tags 内合并
+                if tag_mode == "append":
+                    await self.set_index_tags(fid, tags, merge=True)
+                else:
+                    await self.set_index_tags(fid, tags)
+                succeeded.append(fid)
+            except PeripheralError as exc:
+                failed.append({"fileId": fid, "error": exc.detail})
+            except Exception as exc:  # pragma: no cover - 兜底
+                failed.append({"fileId": fid, "error": str(exc)})
+        if succeeded:
+            await self._refresh_index(None)
+        total = len(file_ids)
+        return {
+            "succeeded": succeeded,
+            "failed": failed,
+            "message": f"批量打标签完成：成功 {len(succeeded)} 个，失败 {total - len(succeeded)} 个",
+        }
 
     async def raw_download_file(self, file_id: str) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)

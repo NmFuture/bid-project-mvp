@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import logging
 import re
 from typing import Any, Awaitable, Callable
 
@@ -28,6 +29,8 @@ from app.services.material_upload_target import (
 )
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
+
+logger = logging.getLogger(__name__)
 
 
 EnsureRuntimeTables = Callable[[Any], Awaitable[None]]
@@ -163,152 +166,185 @@ async def upload_raw_files(
 
         uploaded_items: list[dict[str, Any]] = []
         clean_job_targets: list[int] = []
-        for item in file_inputs:
-            relative_path = str(item.get("relativePath") or "").replace("\\", "/").strip("/")
-            relative_parts = [part for part in relative_path.split("/") if part]
-            relative_dir = "/".join(relative_parts[:-1]) if len(relative_parts) > 1 else ""
-            source_relative_path = "/".join(relative_parts) if relative_parts else ""
-            source_root_folder = relative_parts[0] if len(relative_parts) > 1 else ""
+        # 本次已写入 MinIO 的新对象；任一环节失败时补偿删除，避免孤儿对象（H1）
+        written_object_keys: list[tuple[str, str]] = []
+        # 覆盖上传时旧 cleaned 对象延后到 DB commit 成功后再删，写失败不动旧对象（H2）
+        pending_cleaned_removals: list[dict[str, Any]] = []
+        materials_bucket = settings.minio_buckets["materials"]
+        try:
+            for item in file_inputs:
+                relative_path = str(item.get("relativePath") or "").replace("\\", "/").strip("/")
+                relative_parts = [part for part in relative_path.split("/") if part]
+                relative_dir = "/".join(relative_parts[:-1]) if len(relative_parts) > 1 else ""
+                source_relative_path = "/".join(relative_parts) if relative_parts else ""
+                source_root_folder = relative_parts[0] if len(relative_parts) > 1 else ""
 
-            file_name = _safe_segment(relative_parts[-1] if relative_parts else item.get("name") or "", "")
-            if not file_name:
-                continue
-            # macOS 系统噪音文件（._* 前缀的 AppleDouble、.DS_Store），静默跳过，不入库
-            if file_name.startswith("._") or file_name.lower() == ".ds_store":
-                continue
-            suffix = material_suffix(file_name)
-            if suffix not in MATERIAL_LIBRARY_ALLOWED_SUFFIXES:
-                raise PeripheralError(
-                    400,
-                    f"文件 {file_name} 类型不支持。",
-                    "RAW_FILE_TYPE_NOT_ALLOWED",
-                )
-
-            folder = await ensure_nested_folder(session, base_folder, relative_dir)
-
-            result = await session.execute(
-                select(RawFile).where(RawFile.folder_id == folder.id, RawFile.name == file_name)
-            )
-            existing = result.scalar_one_or_none()
-
-            upload = item.get("upload")
-            mime_type = str(item.get("mimeType") or item.get("type") or getattr(upload, "content_type", "") or "")
-            minio_key = raw_object_key(folder.path, file_name)
-            common_ext, clean_status = build_raw_upload_ext_fields(
-                file_name=file_name,
-                folder_path=folder.path,
-                folder_tier=infer_material_tier_from_folder(folder),
-                folder_customer_name=str(folder.customer_name or ""),
-                folder_project_id=str(folder.project_id or ""),
-                requested_bid_type=normalized_bid_type,
-                requested_material_tier=normalized_tier,
-                business_material_kind=normalized_business_kind,
-                customer_id=customer_id,
-                customer_name=customer_name,
-                project_id=project_id,
-                project_code=project_code,
-                project_name=project_name,
-                source_minio_bucket=settings.minio_buckets["materials"],
-                source_minio_key=minio_key,
-                source_relative_path=source_relative_path or file_name,
-                source_root_folder=source_root_folder,
-                tags=item.get("tags", tags),
-            )
-            extra_ext_fields = item.get("extFields") if isinstance(item.get("extFields"), dict) else {}
-            if extra_ext_fields:
-                common_ext.update(copy.deepcopy(extra_ext_fields))
-
-            if upload is not None and hasattr(upload, "file"):
-                file_stream = upload.file
-                file_stream.seek(0, 2)
-                size = file_stream.tell()
-                file_stream.seek(0)
-
-                def upload_to_minio() -> str:
-                    return minio_client.put_object_stream(
-                        settings.minio_buckets["materials"],
-                        minio_key,
-                        file_stream,
-                        size,
-                        content_type=mime_type or "application/octet-stream",
+                file_name = _safe_segment(relative_parts[-1] if relative_parts else item.get("name") or "", "")
+                if not file_name:
+                    continue
+                # macOS 系统噪音文件（._* 前缀的 AppleDouble、.DS_Store），静默跳过，不入库
+                if file_name.startswith("._") or file_name.lower() == ".ds_store":
+                    continue
+                suffix = material_suffix(file_name)
+                if suffix not in MATERIAL_LIBRARY_ALLOWED_SUFFIXES:
+                    raise PeripheralError(
+                        400,
+                        f"文件 {file_name} 类型不支持。",
+                        "RAW_FILE_TYPE_NOT_ALLOWED",
                     )
 
-            else:
-                raw_data = item.get("data") or b""
-                if isinstance(raw_data, str):
-                    if raw_data.startswith("data:"):
-                        raw_data = raw_data.split(",", 1)[-1]
-                    file_data = base64.b64decode(raw_data)
+                folder = await ensure_nested_folder(session, base_folder, relative_dir)
+
+                result = await session.execute(
+                    select(RawFile).where(RawFile.folder_id == folder.id, RawFile.name == file_name)
+                )
+                existing = result.scalar_one_or_none()
+
+                upload = item.get("upload")
+                mime_type = str(item.get("mimeType") or item.get("type") or getattr(upload, "content_type", "") or "")
+                minio_key = raw_object_key(folder.path, file_name)
+                common_ext, clean_status = build_raw_upload_ext_fields(
+                    file_name=file_name,
+                    folder_path=folder.path,
+                    folder_tier=infer_material_tier_from_folder(folder),
+                    folder_customer_name=str(folder.customer_name or ""),
+                    folder_project_id=str(folder.project_id or ""),
+                    requested_bid_type=normalized_bid_type,
+                    requested_material_tier=normalized_tier,
+                    business_material_kind=normalized_business_kind,
+                    customer_id=customer_id,
+                    customer_name=customer_name,
+                    project_id=project_id,
+                    project_code=project_code,
+                    project_name=project_name,
+                    source_minio_bucket=materials_bucket,
+                    source_minio_key=minio_key,
+                    source_relative_path=source_relative_path or file_name,
+                    source_root_folder=source_root_folder,
+                    tags=item.get("tags", tags),
+                )
+                extra_ext_fields = item.get("extFields") if isinstance(item.get("extFields"), dict) else {}
+                if extra_ext_fields:
+                    common_ext.update(copy.deepcopy(extra_ext_fields))
+
+                if upload is not None and hasattr(upload, "file"):
+                    file_stream = upload.file
+                    file_stream.seek(0, 2)
+                    size = file_stream.tell()
+                    file_stream.seek(0)
+
+                    def upload_to_minio() -> str:
+                        return minio_client.put_object_stream(
+                            materials_bucket,
+                            minio_key,
+                            file_stream,
+                            size,
+                            content_type=mime_type or "application/octet-stream",
+                        )
+
                 else:
-                    file_data = raw_data if isinstance(raw_data, bytes) else b""
-                size = len(file_data)
+                    raw_data = item.get("data") or b""
+                    if isinstance(raw_data, str):
+                        if raw_data.startswith("data:"):
+                            raw_data = raw_data.split(",", 1)[-1]
+                        file_data = base64.b64decode(raw_data)
+                    else:
+                        file_data = raw_data if isinstance(raw_data, bytes) else b""
+                    size = len(file_data)
 
-                def upload_to_minio() -> str:
-                    return minio_client.put_object(
-                        settings.minio_buckets["materials"],
-                        minio_key,
-                        file_data,
-                        content_type=mime_type or "application/octet-stream",
+                    def upload_to_minio() -> str:
+                        return minio_client.put_object(
+                            materials_bucket,
+                            minio_key,
+                            file_data,
+                            content_type=mime_type or "application/octet-stream",
+                        )
+
+                if size > settings.max_upload_file_size_bytes:
+                    limit_mb = settings.max_upload_file_size_bytes // 1024 // 1024
+                    raise PeripheralError(
+                        413,
+                        f"文件 {file_name} 超过 {limit_mb}MB 上限。",
+                        "RAW_FILE_TOO_LARGE",
                     )
 
-            if size > settings.max_upload_file_size_bytes:
-                limit_mb = settings.max_upload_file_size_bytes // 1024 // 1024
-                raise PeripheralError(
-                    413,
-                    f"文件 {file_name} 超过 {limit_mb}MB 上限。",
-                    "RAW_FILE_TOO_LARGE",
-                )
+                if existing and on_conflict in RAW_UPLOAD_CONFLICT_ACTIONS:
+                    await archive_raw_file_version(session, existing)
+                    # 先写新对象成功再登记旧 cleaned 待删；写失败不清理旧对象（H2）
+                    upload_to_minio()
+                    written_object_keys.append((materials_bucket, minio_key))
+                    stale_cleaned = existing.ext_fields or {}
+                    stale_cleaned_key = str(stale_cleaned.get("cleanedMinioKey") or "")
+                    if stale_cleaned_key:
+                        pending_cleaned_removals.append(
+                            {
+                                "bucket": str(stale_cleaned.get("cleanedMinioBucket") or materials_bucket),
+                                "key": stale_cleaned_key,
+                            }
+                        )
+                    existing.size_bytes = size
+                    existing.minio_key = minio_key
+                    existing.mime_type = mime_type
+                    existing.version += 1
+                    existing.ext_fields = build_raw_upload_existing_ext_fields(
+                        existing.ext_fields or {},
+                        common_ext,
+                        last_action=on_conflict,
+                    )
+                    uploaded_items.append(existing.to_dict())
+                    if clean_status == "pending":
+                        clean_job_targets.append(int(existing.id))
+                    continue
 
-            if existing and on_conflict in RAW_UPLOAD_CONFLICT_ACTIONS:
-                await archive_raw_file_version(session, existing)
-                remove_cleaned_object_from_ext(existing.ext_fields or {})
+                if existing and not on_conflict:
+                    raise PeripheralError(
+                        409,
+                        "目标路径存在同名文件",
+                        "MATERIAL_CONFLICT",
+                        {
+                            "conflict": {
+                                "path": folder.path,
+                                "existingFileId": f"RAW-{existing.id:04d}",
+                                "existingFileName": existing.name,
+                                "allowedActions": ["overwrite", "version"],
+                            }
+                        },
+                    )
+
                 upload_to_minio()
-                existing.size_bytes = size
-                existing.minio_key = minio_key
-                existing.mime_type = mime_type
-                existing.version += 1
-                existing.ext_fields = build_raw_upload_existing_ext_fields(
-                    existing.ext_fields or {},
-                    common_ext,
-                    last_action=on_conflict,
+                written_object_keys.append((materials_bucket, minio_key))
+                record = RawFile(
+                    folder_id=folder.id,
+                    name=file_name,
+                    size_bytes=size,
+                    mime_type=mime_type,
+                    minio_key=minio_key,
+                    minio_bucket=materials_bucket,
+                    ext_fields=build_raw_upload_record_ext_fields(common_ext),
                 )
-                uploaded_items.append(existing.to_dict())
+                session.add(record)
+                await session.flush()
+                uploaded_items.append(record.to_dict())
                 if clean_status == "pending":
-                    clean_job_targets.append(int(existing.id))
-                continue
+                    clean_job_targets.append(int(record.id))
 
-            if existing and not on_conflict:
-                raise PeripheralError(
-                    409,
-                    "目标路径存在同名文件",
-                    "MATERIAL_CONFLICT",
-                    {
-                        "conflict": {
-                            "path": folder.path,
-                            "existingFileId": f"RAW-{existing.id:04d}",
-                            "existingFileName": existing.name,
-                            "allowedActions": ["overwrite", "version"],
-                        }
-                    },
-                )
+            await session.commit()
+        except Exception:
+            # 事务回滚后补偿删除本次已写入的新对象，避免孤儿文件（H1）
+            await session.rollback()
+            for bucket, key in written_object_keys:
+                try:
+                    minio_client.remove_object(bucket, key)
+                except Exception as cleanup_exc:  # pragma: no cover - 补偿删除失败仅告警
+                    logger.warning("上传失败回滚清理对象 %s/%s 失败：%s", bucket, key, cleanup_exc)
+            raise
 
-            upload_to_minio()
-            record = RawFile(
-                folder_id=folder.id,
-                name=file_name,
-                size_bytes=size,
-                mime_type=mime_type,
-                minio_key=minio_key,
-                minio_bucket=settings.minio_buckets["materials"],
-                ext_fields=build_raw_upload_record_ext_fields(common_ext),
-            )
-            session.add(record)
-            await session.flush()
-            uploaded_items.append(record.to_dict())
-            if clean_status == "pending":
-                clean_job_targets.append(int(record.id))
-
-        await session.commit()
+        # commit 成功后再清理被覆盖的旧 cleaned 对象（H2）
+        for removal in pending_cleaned_removals:
+            try:
+                minio_client.remove_object(removal["bucket"], removal["key"])
+            except Exception as cleanup_exc:  # pragma: no cover - 旧对象清理失败仅告警
+                logger.warning("覆盖上传清理旧 cleaned 对象 %s/%s 失败：%s", removal["bucket"], removal["key"], cleanup_exc)
         clean_jobs = [enqueue_cleaning_job(file_id) for file_id in clean_job_targets]
         return {
             "message": f"上传完成，共处理 {len(uploaded_items)} 个文件，已触发 {len(clean_job_targets)} 个清洗任务。",

@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from app.models import async_session
 from app.models.materials import RawFile
 from app.services.material_raw_file_filter import raw_file_matches_bid_type
+from app.services.material_tags import normalize_material_tags
 from app.services.material_update_metadata import build_raw_update_file_ext_fields
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
@@ -32,6 +33,7 @@ async def update_raw_file(
     business_material_kind: str = "",
     tags: Any = None,
     update_tags: bool = False,
+    tag_mode: str = "overwrite",
     ensure_runtime_tables: EnsureRuntimeTables,
     raw_object_key: RawObjectKeyBuilder,
 ) -> dict[str, Any]:
@@ -72,6 +74,12 @@ async def update_raw_file(
             minio_client.copy_object(item.minio_bucket, item.minio_key, next_key)
             minio_client.remove_object(item.minio_bucket, item.minio_key)
 
+        next_tags = tags
+        if update_tags and tag_mode == "append":
+            # append：在同一事务内读现有 DB tags 与传入 tags 取并集，避免覆盖丢标签（M1）
+            current_tags = normalize_material_tags((item.ext_fields or {}).get("tags"))
+            next_tags = normalize_material_tags([*current_tags, *normalize_material_tags(tags)])
+
         item.name = next_name
         item.minio_key = next_key
         item.ext_fields = build_raw_update_file_ext_fields(
@@ -79,7 +87,7 @@ async def update_raw_file(
             source_minio_key=next_key,
             source_file_name=next_name,
             business_material_kind=business_material_kind,
-            tags=tags,
+            tags=next_tags,
             update_tags=update_tags,
         )
         await session.commit()
