@@ -227,11 +227,16 @@ function MaterialCandidateCard({
               type="button"
               onClick={() => onAiFill?.(material)}
               disabled={busy || !onAiFill}
-              title={onAiFill ? '' : '本目录项暂无填写任务'}
+              title={onAiFill ? (aiFillCompleted ? '已完成，可再次发起 AI 填写' : '') : '本目录项暂无填写任务'}
               size="sm"
               variant="secondary"
             >
-              {aiFillBusy ? 'AI填写中...' : aiFillCompleted ? '重新AI填写' : 'AI填写'}
+              {aiFillBusy ? 'AI填写中...' : aiFillCompleted ? (
+                <>
+                  <span className="material-symbols-outlined align-[-3px] text-[14px] text-secondary">check_circle</span>
+                  已AI填写
+                </>
+              ) : 'AI填写'}
             </Button>
           ) : null}
         </div>
@@ -846,7 +851,6 @@ export default function TechnicalGapRecognition({ showToast }) {
     ...asArray(selectedBlankSource?.placeholderLabels),
     ...selectedCandidateMaterials.flatMap((item) => asArray(item?.placeholderLabels)),
   ], 10)
-  const selectedBlankPath = selectedBlankSource?.docxPath || selectedBlankSource?.workspacePath || selectedBlankSource?.path || ''
   // 目录标签统计（v2 四标签口径）：标签由候选池 × 素材形态 × 人工操作派生，结构项不计入任务。
   const tagCounts = useMemo(() => {
     const counts = { needs_material: 0, needs_refine: 0, needs_fill: 0, ready: 0 }
@@ -1507,22 +1511,10 @@ export default function TechnicalGapRecognition({ showToast }) {
 
                         {selectedIsAppendixFill ? (
                           <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
+                            {/* 「等待AI填写」红色状态徽章已移除（产品裁决）：填写状态由素材卡上的
+                                AI填写按钮承载（AI填写 → AI填写中... → ✓已AI填写）。 */}
                             <div className="flex flex-wrap items-start justify-between gap-3">
                               <span className="text-xs font-semibold text-on-surface">待填写对象</span>
-                              <span className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-semibold ${
-                                aiFillBusy
-                                  ? 'bg-primary/10 text-primary'
-                                  : selectedAiFillCompleted
-                                    ? 'bg-secondary-container text-on-secondary-container'
-                                    : factConfirmed
-                                      ? 'bg-tertiary-fixed text-on-tertiary-fixed'
-                                      : 'bg-error/10 text-error'
-                              }`}>
-                                <span className="material-symbols-outlined text-[15px]">
-                                  {selectedAiFillCompleted ? 'task_alt' : aiFillBusy ? 'pending' : factConfirmed ? 'edit_document' : 'rule_settings'}
-                                </span>
-                                {aiFillBusy ? 'AI填写中' : selectedAiFillCompleted ? 'AI已填写' : '等待AI填写'}
-                              </span>
                             </div>
                             {/* 空副表/待填写 Word 本身就是待填写素材：逐个渲染统一素材卡（预览+选择+AI填写）。
                                 解析空表不是素材库素材，选择按钮禁用；多任务项（如附表F.5）各卡填各自任务。 */}
@@ -1554,27 +1546,29 @@ export default function TechnicalGapRecognition({ showToast }) {
                                 )
                               })}
                             </div>
-                            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-surface-container-low px-3 py-2">
-                              <div className="min-w-0 text-xs">
-                                <div className="font-semibold text-on-surface">
-                                  {selectedAiFillCompleted ? '已生成填写结果' : '待执行 AI 填写'}
+                            {/* 「待执行 AI 填写 + 路径」冗余状态行已移除（产品裁决）：
+                                仅在已有填写产物时显示结果行，承载产物名与「确认可合并」验收动作。 */}
+                            {selectedResolvedArtifact ? (
+                              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-surface-container-low px-3 py-2">
+                                <div className="min-w-0 text-xs">
+                                  <div className="font-semibold text-on-surface">已生成填写结果</div>
+                                  <div className="mt-1 truncate text-outline" title={selectedResolvedArtifact?.fileName || ''}>
+                                    {selectedResolvedArtifact?.fileName || '-'}
+                                  </div>
                                 </div>
-                                <div className="mt-1 truncate text-outline" title={selectedResolvedArtifact?.fileName || selectedBlankPath || ''}>
-                                  {selectedResolvedArtifact?.fileName || selectedBlankPath || '尚未生成填写产物'}
-                                </div>
+                                {selectedAiFillNeedsConfirmation ? (
+                                  <button
+                                    type="button"
+                                    onClick={handleConfirmAiFillArtifact}
+                                    disabled={Boolean(busyAction)}
+                                    className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-tertiary-fixed px-3 text-xs font-semibold text-on-tertiary-fixed hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    <span className="material-symbols-outlined text-[16px]">fact_check</span>
+                                    {busyAction === `confirm-ai-fill:${selectedResolvedArtifact?.id}` ? '确认中...' : '确认可合并'}
+                                  </button>
+                                ) : null}
                               </div>
-                              {selectedAiFillNeedsConfirmation ? (
-                                <button
-                                  type="button"
-                                  onClick={handleConfirmAiFillArtifact}
-                                  disabled={Boolean(busyAction)}
-                                  className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-tertiary-fixed px-3 text-xs font-semibold text-on-tertiary-fixed hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  <span className="material-symbols-outlined text-[16px]">fact_check</span>
-                                  {busyAction === `confirm-ai-fill:${selectedResolvedArtifact?.id}` ? '确认中...' : '确认可合并'}
-                                </button>
-                              ) : null}
-                            </div>
+                            ) : null}
                             {selectedPlaceholderLabels.total ? (
                               <div className="mt-3">
                                 <div className="text-[11px] font-semibold text-on-surface">识别到的待填字段</div>
