@@ -298,8 +298,7 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
                 _safe_build_evidence_segments(file_id, str(raw.name or ""), file_path, profile),
             )
             should, skip_reason = _should_generate_preview(ext, profile)
-            file_entry = meta.get("file") if isinstance(meta.get("file"), dict) else {}
-            clean_status = str(ext_fields.get("cleanStatus") or file_entry.get("cleanStatus") or "")
+            clean_status = str(ext_fields.get("cleanStatus") or "")
             if not should:
                 preview = _local_preview_from_profile(
                     name=str(raw.name or ""),
@@ -419,10 +418,6 @@ def _apply_preview_payloads(index_payload: dict[str, Any], payload_by_id: dict[s
                 payload = payload_by_id.get(file_id)
                 if not isinstance(payload, dict):
                     continue
-                metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-                clean_status = str(metadata.get("cleanStatus") or "").strip()
-                if clean_status:
-                    file_item["cleanStatus"] = clean_status
                 preview = payload.get("preview")
                 if payload.get("status") in {"completed", "fallback"} and isinstance(preview, dict) and preview:
                     file_item["preview"] = preview

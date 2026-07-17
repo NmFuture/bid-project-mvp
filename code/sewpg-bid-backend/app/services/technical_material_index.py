@@ -151,7 +151,6 @@ def _file_entry(
         "name": name,
         "path": full_path,
         "ext": str(item.get("ext") or item.get("type") or ""),
-        "cleanStatus": str(item.get("cleanStatus") or ""),
         "tags": tags,
     }
 
