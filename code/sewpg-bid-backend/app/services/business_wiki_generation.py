@@ -28,7 +28,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import BASE_DIR, settings
 from app.models import async_session
-from app.models.materials import RawFile
+from app.models.materials import RawFile, RawFolder
 from app.services.bid_type import BUSINESS_BID_TYPE, GENERAL_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.business_material_store import business_material_store
 from app.services.business_wiki_blueprint import build_business_wiki_blueprint
@@ -662,20 +662,34 @@ async def _summarize_material_inventory() -> dict[str, Any]:
     parsed_count = 0
 
     async with async_session() as session:
-        result = await session.execute(select(RawFile).options(selectinload(RawFile.folder)))
+        # 商务标 Wiki 只需商务/通用素材：SQL 侧尽早排除「明确标为技术标」的文件夹，
+        # 避免全库扫描；folder.bid_type 为空的文件保留，交给 _profile_raw_file 按路径推断，
+        # 不改变原有归类结果。
+        result = await session.execute(
+            select(RawFile)
+            .join(RawFolder, RawFile.folder_id == RawFolder.id)
+            .where(
+                (RawFolder.bid_type.is_(None)) | (RawFolder.bid_type != TECHNICAL_BID_TYPE)
+            )
+            .options(selectinload(RawFile.folder))
+        )
         files = result.scalars().all()
+        ocr_dirty = False
         for item in files:
             material = _profile_raw_file(item)
             if material.get("bidType") == BUSINESS_BID_TYPE:
                 ocr_payload = await _ensure_business_wiki_ocr_cache(item, material)
                 _apply_business_wiki_ocr_to_profile(material, ocr_payload)
+                ocr_dirty = True
             items.append(material)
             groups.setdefault(f"{material['bidType']}/{material['scope']}/{material['group']}", []).append(material["name"])
             if material["scope"] == "定制":
                 custom_items.append(material["name"])
             if material["ext"] == "docx" and not material.get("parseError"):
                 parsed_count += 1
-        await session.commit()
+        # 仅在确有 OCR 缓存写回时提交，避免无谓写库。
+        if ocr_dirty:
+            await session.commit()
 
     return {
         "total": len(items),

@@ -154,13 +154,20 @@ def xml_paragraph_style(element: ET.Element) -> str:
     return str(p_style.attrib.get(f"{WORD_NS}val") or p_style.attrib.get("val") or "")
 
 
-def heading_level_from_style(style_id: str, text: str) -> int | None:
+def heading_level_from_explicit_style(style_id: str) -> int | None:
     style = str(style_id or "")
     match = HEADING_STYLE_RE.search(style)
     if match:
         return int(match.group(1) or match.group(2))
     if style in {"1", "2", "3", "4", "5", "6", "7", "8", "9"}:
         return int(style)
+    return None
+
+
+def heading_level_from_style(style_id: str, text: str) -> int | None:
+    explicit_level = heading_level_from_explicit_style(style_id)
+    if explicit_level is not None:
+        return explicit_level
     numbered = NUMBERED_HEADING_RE.match(text)
     if not numbered:
         return None
@@ -170,26 +177,52 @@ def heading_level_from_style(style_id: str, text: str) -> int | None:
     return 1
 
 
-def extract_docx_profile(data: bytes) -> dict[str, Any]:
+def extract_docx_profile(
+    data: bytes,
+    *,
+    heading_limit: int | None = MAX_CARD_HEADINGS,
+) -> dict[str, Any]:
     try:
         with zipfile.ZipFile(BytesIO(data)) as archive:
             document_xml = archive.read("word/document.xml")
     except Exception as exc:
-        return {"headings": [], "paragraphs": [], "tables": [], "tableCount": 0, "parseError": f"docx 读取失败：{exc}"}
+        return {
+            "headings": [],
+            "bodyHeadings": [],
+            "paragraphs": [],
+            "tables": [],
+            "tableCount": 0,
+            "parseError": f"docx 读取失败：{exc}",
+        }
 
     headings: list[dict[str, Any]] = []
+    body_headings: list[dict[str, Any]] = []
     paragraphs: list[str] = []
     table_previews: list[str] = []
     seen_paragraphs: set[str] = set()
     table_count = 0
+    table_depth = 0
     try:
-        for event, element in ET.iterparse(BytesIO(document_xml), events=("end",)):
+        for event, element in ET.iterparse(BytesIO(document_xml), events=("start", "end")):
+            if event == "start":
+                if element.tag == f"{WORD_NS}tbl":
+                    table_depth += 1
+                continue
             if element.tag == f"{WORD_NS}p":
                 text = xml_text(element)
                 if text:
-                    level = heading_level_from_style(xml_paragraph_style(element), text)
-                    if level is not None and len(headings) < MAX_CARD_HEADINGS:
-                        headings.append({"level": level, "title": text[:180]})
+                    style_id = xml_paragraph_style(element)
+                    explicit_level = heading_level_from_explicit_style(style_id)
+                    level = explicit_level or heading_level_from_style(style_id, text)
+                    if level is not None and (heading_limit is None or len(headings) < heading_limit):
+                        heading = {"level": level, "title": text[:180]}
+                        headings.append(heading)
+                        if (
+                            table_depth == 0
+                            and explicit_level is not None
+                            and (heading_limit is None or len(body_headings) < heading_limit)
+                        ):
+                            body_headings.append({"level": explicit_level, "title": text[:180]})
                     elif (
                         len(paragraphs) < MAX_CARD_EXCERPT_PARAGRAPHS
                         and len(text) >= 4
@@ -204,9 +237,11 @@ def extract_docx_profile(data: bytes) -> dict[str, Any]:
                     text = xml_text(element)
                     if text:
                         table_previews.append(text[:320])
+                table_depth = max(0, table_depth - 1)
                 element.clear()
             if (
-                len(headings) >= MAX_CARD_HEADINGS
+                heading_limit is not None
+                and len(headings) >= heading_limit
                 and len(paragraphs) >= MAX_CARD_EXCERPT_PARAGRAPHS
                 and len(table_previews) >= 6
             ):
@@ -214,6 +249,7 @@ def extract_docx_profile(data: bytes) -> dict[str, Any]:
     except Exception as exc:
         return {
             "headings": headings,
+            "bodyHeadings": body_headings,
             "paragraphs": paragraphs,
             "tables": table_previews,
             "tableCount": table_count,
@@ -221,7 +257,8 @@ def extract_docx_profile(data: bytes) -> dict[str, Any]:
         }
 
     return {
-        "headings": headings[:MAX_CARD_HEADINGS],
+        "headings": headings if heading_limit is None else headings[:heading_limit],
+        "bodyHeadings": body_headings if heading_limit is None else body_headings[:heading_limit],
         "paragraphs": paragraphs[:MAX_CARD_EXCERPT_PARAGRAPHS],
         "tables": table_previews,
         "tableCount": table_count,

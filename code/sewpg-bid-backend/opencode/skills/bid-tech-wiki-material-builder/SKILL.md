@@ -1,7 +1,7 @@
 ---
 name: bid-tech-wiki-material-builder
 description: 当需要根据技术标三级目录 JSON 索引重建素材 Wiki（用于缺口处理、来源选择或标书组装）时使用
-allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
+allowed-tools: [Read, Glob, Grep, Bash, Write]
 ---
 
 # 技术标素材 Wiki 构建器
@@ -41,7 +41,8 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
           "projectId",               // project 档才有值
           "fileCount", "updatedAt",
           "files": [
-            { "id": "RAW-NNNN", "name", "path"(完整), "ext" }
+            { "id": "RAW-NNNN", "name", "path"(完整), "ext",
+              "documentOutline": [{ "level": 1, "title": "..." }] }
           ]
         }
       ]
@@ -50,7 +51,7 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
 }
 ```
 
-详见 `doc/anbc_doc/20260618-技术标三级目录JSON索引-下游使用Handoff.md`。
+详见 `docs/archive/20260618-old-docs/20260618-技术标三级目录JSON索引-下游使用Handoff.md`（已归档，结构以本节 schema 说明为准）。
 
 ### 三个档位语义（以 `tier` 字段为准，勿靠中文名硬判）
 
@@ -77,7 +78,7 @@ root（技术标Wiki）
 - **一级（tier 节点）**：标题使用 JSON 的 `tier.name`，正文给出 tier 代码、真实 name、path、fileCount、3 级目录语义，并用一张表列出本档所有 3 级目录（目录名 / 身份 / 文件数）。
 - **二级（3 级目录节点）**：标题为目录真实名，正文给出目录 path、档位、身份（customerName / projectId）、fileCount、updatedAt，并用一张表列出全量文件清单（material_id / 文件名 / 相对路径 / 扩展名）。
 - **深层子目录节点**：索引把深层文件归并进 3 级目录的 `files[]`，构建时按每个文件 `path` 相对 3 级目录的中间段重建子目录节点，层级与素材库完全一致；正文给出目录路径、直属文件清单和子目录数。
-- **文件卡片（叶子）**：标题为文件名，挂在其真实所属目录下；正文给出 material_id、完整路径、扩展名、所属档位与目录、身份字段。卡片只是结构索引，不承载正文。
+- **文件卡片（叶子）**：标题为文件名，挂在其真实所属目录下；正文保留核心要点、检索提示和文件定位，不渲染重复的关键参数、所属档位；仅当原始文件为 Word 且存在至少 2 个表格外显式标题时，末尾按 `documentOutline` 完整渲染全文目录。卡片只是结构索引，不承载正文。
 
 身份信息写入 `tags`：tier 节点带档位中文名；customer/project 目录节点把 `customerName`/`projectId` 加入 tags，便于下游按身份过滤。
 
@@ -120,5 +121,5 @@ root（技术标Wiki）
 
 ## 文件卡片内容边界
 
-技术标 Wiki 文件卡片默认承载目录索引信息：文件定位、所属档位、3 级目录身份和结构说明。
+技术标 Wiki 文件卡片默认承载核心要点、检索提示和文件定位。仅对原始扩展名为 `doc`/`docx` 且存在至少 2 个表格外显式 Word Heading/标题样式的文件渲染全文目录；Excel、PDF、整篇仅有表格、只有文档标题或没有显式标题的 Word 均不渲染目录区。目录必须是卡片最后一节，按标题 `level` 保留层级，不截断、不重排，不得从普通编号正文或表格单元格臆造章节。
 若输入索引的文件节点带有 `preview` 字段，应在文件卡片渲染“内容预览”区；不得在 runner 内自行生成或臆造预览。

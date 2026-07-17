@@ -59,6 +59,35 @@ def _profile_blocks(profile: dict[str, Any]) -> tuple[str, str]:
     return heading_tree, paragraph_block
 
 
+def document_outline_from_profile(
+    profile: dict[str, Any],
+    *,
+    source_ext: str = "docx",
+) -> list[dict[str, Any]]:
+    """仅保留原始 Word 文档表格外的有效标题，供 Wiki 渲染目录。"""
+    if str(source_ext or "").lower().lstrip(".") not in {"doc", "docx"}:
+        return []
+
+    outline: list[dict[str, Any]] = []
+    headings = profile.get("bodyHeadings")
+    if not isinstance(headings, list):
+        headings = profile.get("headings") or []
+    for item in headings:
+        if not isinstance(item, dict):
+            continue
+        title = re.sub(r"\s+", " ", str(item.get("title") or "")).strip()
+        # 表格里的纯数值（如 131.88、9.08/5）可能被编号规则误判为标题，
+        # 它们不具备目录语义；含中文或字母的型号/标题正常保留。
+        if not title or not any(char.isalpha() for char in title):
+            continue
+        try:
+            level = int(item.get("level") or 1)
+        except (TypeError, ValueError):
+            level = 1
+        outline.append({"level": max(1, min(9, level)), "title": title[:180]})
+    return outline if len(outline) >= 2 else []
+
+
 # ---------------------------------------------------------------------------
 # 证据片段（evidenceSegments）确定性切分
 #

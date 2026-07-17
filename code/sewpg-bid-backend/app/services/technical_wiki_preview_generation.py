@@ -13,9 +13,10 @@ from app.services.technical_wiki_preview_prompt import (
     PREVIEW_SCHEMA_VERSION,
     build_batch_preview_prompt,
     build_evidence_segments,
+    document_outline_from_profile,
     parse_batch_preview_reply,
 )
-from app.services.wiki_blueprint_common import MAX_SYNC_DOCX_BYTES, extract_docx_profile
+from app.services.wiki_blueprint_common import MAX_CARD_HEADINGS, MAX_SYNC_DOCX_BYTES, extract_docx_profile
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,8 @@ def _preview_signature(name: str, profile: dict[str, Any]) -> str:
     basis = {
         "schema": PREVIEW_SCHEMA_VERSION,
         "name": str(name or ""),
-        "headings": [str(h.get("title") or "") for h in (profile.get("headings") or [])],
+        # 维持旧版预览签名边界；完整目录独立缓存，补齐目录不应触发 LLM 重算。
+        "headings": [str(h.get("title") or "") for h in (profile.get("headings") or [])[:MAX_CARD_HEADINGS]],
         "paragraphs": list(profile.get("paragraphs") or []),
         "tableCount": int(profile.get("tableCount") or 0),
     }
@@ -97,6 +99,7 @@ def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
     ext = "docx" if source_ext == "docx" or has_cleaned else source_ext
     empty: dict[str, Any] = {
         "headings": [],
+        "bodyHeadings": [],
         "paragraphs": [],
         "tables": [],
         "tableCount": 0,
@@ -120,7 +123,7 @@ def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
         data = minio_client.get_object(bucket, key)
     except Exception as exc:  # noqa: BLE001
         return ext, {**empty, "parseError": f"docx 读取失败：{exc}"}
-    return ext, extract_docx_profile(data)
+    return ext, extract_docx_profile(data, heading_limit=None)
 
 
 def _safe_build_evidence_segments(
@@ -139,11 +142,13 @@ def _safe_build_evidence_segments(
 def _base_payload(
     signature: str,
     evidence_segments: list[dict[str, Any]] | None = None,
+    document_outline: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "schemaVersion": PREVIEW_SCHEMA_VERSION,
         "signature": signature,
         "generatedAt": _now_display(),
+        "documentOutline": document_outline or [],
     }
     if evidence_segments:
         payload["evidenceSegments"] = evidence_segments
@@ -223,11 +228,12 @@ def _local_preview_from_profile(
     }
 
 
-def _fallback_payload(plan: dict[str, Any], reason: str) -> dict[str, Any]:
+def _fallback_payload(plan: dict[str, Any], reason: str, *, retryable: bool = True) -> dict[str, Any]:
     return {
         **plan["base"],
         "status": "fallback",
         "skipReason": reason,
+        "retryable": retryable,
         "metadata": {"cleanStatus": str(plan.get("clean_status") or "")},
         "preview": _local_preview_from_profile(
             name=str(plan.get("name") or plan.get("fileId") or ""),
@@ -238,6 +244,18 @@ def _fallback_payload(plan: dict[str, Any], reason: str) -> dict[str, Any]:
             profile=plan.get("profile") or {},
             reason=reason,
         ),
+    }
+
+
+def _failed_payload(reason: str, *, retryable: bool) -> dict[str, Any]:
+    return {
+        "schemaVersion": PREVIEW_SCHEMA_VERSION,
+        "signature": "",
+        "generatedAt": _now_display(),
+        "status": "failed",
+        "skipReason": reason,
+        "retryable": retryable,
+        "preview": {},
     }
 
 
@@ -267,8 +285,13 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
     found_ids = {int(raw.id) for raw in raw_items}
     for missing_id in sorted(set(wanted_ids) - found_ids):
         file_id = f"RAW-{missing_id:04d}"
-        stats["failed"] += 1
-        stats["errors"].append({"fileId": file_id, "message": "JSON 索引引用的原始文件不存在"})
+        plans.append(
+            {
+                "fileId": file_id,
+                "hit": False,
+                "payload": _failed_payload("JSON 索引引用的原始文件不存在", retryable=False),
+            }
+        )
 
     for raw in raw_items:
         file_id = f"RAW-{int(raw.id):04d}"
@@ -278,6 +301,8 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
         try:
             ext, profile = await asyncio.to_thread(_docx_profile_for_raw_file, raw)
             signature = _preview_signature(str(raw.name or ""), profile)
+            source_ext = Path(str(raw.name or "")).suffix.lower().lstrip(".")
+            document_outline = document_outline_from_profile(profile, source_ext=source_ext)
             ext_fields = dict(raw.ext_fields or {})
             cached = ext_fields.get(PREVIEW_EXT_FIELD) if isinstance(ext_fields.get(PREVIEW_EXT_FIELD), dict) else {}
             if (
@@ -287,7 +312,13 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
                 and isinstance(cached.get("preview"), dict)
                 and cached.get("preview")
             ):
-                plans.append({"fileId": file_id, "hit": True, "payload": cached})
+                plans.append(
+                    {
+                        "fileId": file_id,
+                        "hit": True,
+                        "payload": {**cached, "documentOutline": document_outline},
+                    }
+                )
                 stats["cached"] += 1
                 continue
 
@@ -296,6 +327,7 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
             base = _base_payload(
                 signature,
                 _safe_build_evidence_segments(file_id, str(raw.name or ""), file_path, profile),
+                document_outline,
             )
             should, skip_reason = _should_generate_preview(ext, profile)
             clean_status = str(ext_fields.get("cleanStatus") or "")
@@ -317,6 +349,7 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
                             **base,
                             "status": "fallback",
                             "skipReason": skip_reason,
+                            "retryable": False,
                             "metadata": {"cleanStatus": clean_status},
                             "preview": preview,
                         },
@@ -339,8 +372,13 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
                 }
             )
         except Exception as exc:  # noqa: BLE001
-            stats["failed"] += 1
-            stats["errors"].append({"fileId": file_id, "message": str(exc)[:200]})
+            plans.append(
+                {
+                    "fileId": file_id,
+                    "hit": False,
+                    "payload": _failed_payload(str(exc)[:200], retryable=True),
+                }
+            )
     return plans, stats
 
 
@@ -401,6 +439,7 @@ def _compute_batch_preview_payloads(plans: list[dict[str, Any]]) -> dict[str, di
                 **plan["base"],
                 "status": "completed",
                 "skipReason": "",
+                "retryable": False,
                 "model": model,
                 "metadata": {"cleanStatus": str(plan.get("clean_status") or "")},
                 "preview": preview,
@@ -419,6 +458,11 @@ def _apply_preview_payloads(index_payload: dict[str, Any], payload_by_id: dict[s
                 if not isinstance(payload, dict):
                     continue
                 preview = payload.get("preview")
+                preview_status = str(payload.get("status") or "").strip()
+                file_item["previewStatus"] = preview_status
+                file_item["previewRetryable"] = bool(payload.get("retryable"))
+                file_item["previewError"] = str(payload.get("skipReason") or "").strip()
+                file_item["previewGeneratedAt"] = str(payload.get("generatedAt") or "").strip()
                 if payload.get("status") in {"completed", "fallback"} and isinstance(preview, dict) and preview:
                     file_item["preview"] = preview
                 else:
@@ -428,6 +472,11 @@ def _apply_preview_payloads(index_payload: dict[str, Any], payload_by_id: dict[s
                     file_item["evidenceSegments"] = evidence_segments
                 else:
                     file_item.pop("evidenceSegments", None)
+                document_outline = payload.get("documentOutline")
+                if isinstance(document_outline, list):
+                    file_item["documentOutline"] = document_outline
+                else:
+                    file_item.pop("documentOutline", None)
 
 
 async def enrich_technical_wiki_previews(index_payload: dict[str, Any]) -> dict[str, Any]:
@@ -435,6 +484,7 @@ async def enrich_technical_wiki_previews(index_payload: dict[str, Any]) -> dict[
     index_files = _iter_index_files(index_payload)
     plans, stats = await _build_preview_plans(index_files)
     stats.setdefault("fallback", 0)
+    stats.setdefault("retryable", 0)
     stats.setdefault("errors", [])
     pending = [plan for plan in plans if not plan.get("hit") and not plan.get("payload")]
     payload_by_id = {
@@ -467,6 +517,8 @@ async def enrich_technical_wiki_previews(index_payload: dict[str, Any]) -> dict[
             stats["completed"] += 1
         elif status == "fallback":
             stats["fallback"] += 1
+            if payload.get("retryable"):
+                stats["retryable"] += 1
             reason = str(payload.get("skipReason") or "")
             if reason:
                 stats["errors"].append({"fileId": file_id, "message": reason[:200]})

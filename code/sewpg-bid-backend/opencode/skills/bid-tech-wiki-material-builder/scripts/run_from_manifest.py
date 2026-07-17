@@ -60,9 +60,8 @@ def md_inline(value: Any) -> str:
 def render_preview_block(preview: dict[str, Any]) -> list[str]:
     lead = md_inline(preview.get("lead"))
     points = [md_inline(item) for item in (preview.get("points") or []) if str(item).strip()]
-    key_params = [item for item in (preview.get("keyParams") or []) if isinstance(item, dict)]
     hints = [md_inline(item) for item in (preview.get("retrievalHints") or []) if str(item).strip()]
-    if not lead and not points and not key_params and not hints:
+    if not lead and not points and not hints:
         return []
 
     source = str(preview.get("source") or "").strip()
@@ -74,16 +73,30 @@ def render_preview_block(preview: dict[str, Any]) -> list[str]:
         lines += ["### 核心要点", ""]
         lines += [f"- {point}" for point in points[:6]]
         lines.append("")
-    if key_params:
-        lines += ["### 关键参数", "", "| 参数 | 值 |", "|---|---|"]
-        for item in key_params[:8]:
-            lines.append(f"| {md_escape(item.get('label'))} | {md_escape(item.get('value'))} |")
-        lines.append("")
     if hints:
         lines += ["### 检索提示", ""]
         lines += [f"- {hint}" for hint in hints[:6]]
         lines.append("")
     lines += ["---", ""]
+    return lines
+
+
+def render_document_outline(outline: Any) -> list[str]:
+    items = [item for item in (outline or []) if isinstance(item, dict) and str(item.get("title") or "").strip()]
+    if len(items) < 2:
+        return []
+
+    lines = ["## 全文目录", ""]
+    levels: list[int] = []
+    for item in items:
+        try:
+            levels.append(max(1, int(item.get("level") or 1)))
+        except (TypeError, ValueError):
+            levels.append(1)
+    min_level = min(levels)
+    for item, level in zip(items, levels):
+        indent = "    " * max(0, level - min_level)
+        lines.append(f"{indent}- {md_inline(item.get('title'))}")
     return lines
 
 
@@ -114,6 +127,19 @@ def folder_identity(folder: dict[str, Any], tier_code: str) -> str:
     if tier_code == "project":
         return str(folder.get("projectId") or "")
     return ""
+
+
+def preview_status_tag(file: dict[str, Any]) -> str:
+    status = str(file.get("previewStatus") or "").strip()
+    retryable = bool(file.get("previewRetryable"))
+    if status == "completed":
+        return "AI预览成功"
+    if status == "failed":
+        return "AI预览失败"
+    if status == "fallback":
+        return "AI预览待重试" if retryable else "本地TLDR"
+    preview = file.get("preview") if isinstance(file.get("preview"), dict) else {}
+    return "本地TLDR" if str(preview.get("source") or "") == "local" else ""
 
 
 def node(
@@ -148,23 +174,20 @@ def build_file_card(file: dict[str, Any], tier_code: str, folder: dict[str, Any]
         f"- 完整路径: `{path}`",
         f"- 扩展名: {ext}",
         "",
-        "## 所属档位",
-        f"- tier: {tier_code} ({TIER_LABELS.get(tier_code, '')})",
-        f"- 3 级目录: {folder.get('name') or ''}",
     ])
-    identity = folder_identity(folder, tier_code)
-    if tier_code == "customer":
-        lines.append(f"- customer_name: {identity}")
-    elif tier_code == "project":
-        lines.append(f"- project_id: {identity}")
-    lines.append("")
     if not preview_lines:
         lines.append("> 本卡片仅为三级目录结构索引，不承载文件正文。")
     lines.append("> 卡片在 Wiki 中的层级与素材库原始目录一一对应，完整路径见上方文件定位。")
+    outline_lines = render_document_outline(file.get("documentOutline")) if ext.lower() in {"doc", "docx"} else []
+    if outline_lines:
+        lines.extend(["", *outline_lines])
 
     tags = [BID_TYPE, "文件卡片", TIER_LABELS.get(tier_code, tier_code)]
     if preview:
         tags.append("内容预览")
+    status_tag = preview_status_tag(file)
+    if status_tag:
+        tags.append(status_tag)
     if ext:
         tags.append(ext)
     return node(name, "\n".join(lines) + "\n", tags=tags)

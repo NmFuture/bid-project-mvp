@@ -196,6 +196,7 @@ class TechnicalWikiGenerationTests(unittest.IsolatedAsyncioTestCase):
             "schemaVersion": 1,
             "signature": "sig-1",
             "status": "completed",
+            "retryable": False,
             "metadata": {"cleanStatus": "cleaned"},
             "evidenceSegments": [
                 {
@@ -204,6 +205,10 @@ class TechnicalWikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                     "title": "总体方案",
                     "summary": "设计依据",
                 }
+            ],
+            "documentOutline": [
+                {"level": 1, "title": "总体方案"},
+                {"level": 2, "title": "设计依据"},
             ],
             "preview": {
                 "lead": "总体方案导读",
@@ -217,6 +222,7 @@ class TechnicalWikiGenerationTests(unittest.IsolatedAsyncioTestCase):
             "signature": "sig-2",
             "status": "fallback",
             "skipReason": "LLM 批量回复缺该文件或无效",
+            "retryable": True,
             "metadata": {"cleanStatus": "cleaned"},
             "evidenceSegments": [
                 {
@@ -226,6 +232,7 @@ class TechnicalWikiGenerationTests(unittest.IsolatedAsyncioTestCase):
                     "summary": "载荷分析",
                 }
             ],
+            "documentOutline": [],
             "preview": {
                 "lead": "载荷报告本地 TLDR",
                 "points": ["AI 预览未完成，当前为本地 TLDR"],
@@ -259,15 +266,23 @@ class TechnicalWikiGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(files[0]["evidenceSegments"][0]["materialId"], "RAW-0001")
         # 索引不再承载 cleanStatus，预览元数据也不得把它写回索引。
         self.assertNotIn("cleanStatus", files[0])
+        self.assertEqual(files[0]["documentOutline"][1]["title"], "设计依据")
+        self.assertEqual(files[0]["previewStatus"], "completed")
+        self.assertFalse(files[0]["previewRetryable"])
         self.assertEqual(files[1]["preview"]["lead"], "载荷报告本地 TLDR")
         self.assertEqual(files[1]["evidenceSegments"][0]["materialId"], "RAW-0002")
         self.assertNotIn("cleanStatus", files[1])
+        self.assertEqual(files[1]["documentOutline"], [])
+        self.assertEqual(files[1]["previewStatus"], "fallback")
+        self.assertTrue(files[1]["previewRetryable"])
+        self.assertEqual(files[1]["previewError"], "LLM 批量回复缺该文件或无效")
         persist_payloads.assert_awaited_once()
         self.assertEqual(persist_payloads.await_args.args[0]["RAW-0001"], completed_payload)
         self.assertEqual(persist_payloads.await_args.args[0]["RAW-0002"], failed_payload)
         self.assertTrue(stats["enabled"])
         self.assertEqual(stats["completed"], 1)
         self.assertEqual(stats["fallback"], 1)
+        self.assertEqual(stats["retryable"], 1)
         self.assertEqual(stats["failed"], 0)
         self.assertEqual(stats["errors"][0]["fileId"], "RAW-0002")
 

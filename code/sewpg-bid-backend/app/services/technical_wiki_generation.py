@@ -111,11 +111,12 @@ def _summary_with_preview(summary: str, preview_stats: dict[str, Any] | None) ->
     completed = int(preview_stats.get("completed") or 0)
     cached = int(preview_stats.get("cached") or 0)
     fallback = int(preview_stats.get("fallback") or 0)
-    skipped = int(preview_stats.get("skipped") or 0)
+    retryable = int(preview_stats.get("retryable") or 0)
+    local_only = max(0, fallback - retryable)
     failed = int(preview_stats.get("failed") or 0)
     return (
         f"{summary} 内容预览：AI 成功 {completed} 个（缓存 {cached} 个），"
-        f"本地 TLDR {fallback} 个，跳过 {skipped} 个，失败 {failed} 个。"
+        f"待重试 {retryable} 个，本地 TLDR {local_only} 个，失败 {failed} 个。"
     )
 
 
