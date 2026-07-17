@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import unittest
+from io import BytesIO
+from zipfile import ZIP_DEFLATED, ZipFile
 
+from app.services.wiki_blueprint_common import extract_docx_profile
 from app.services.technical_wiki_preview_prompt import (
     PREVIEW_BATCH_SIZE,
     PREVIEW_SCHEMA_VERSION,
     build_batch_preview_prompt,
     build_evidence_segments,
     build_preview_prompt,
+    document_outline_from_profile,
     parse_batch_preview_reply,
     parse_preview_reply,
 )
@@ -44,6 +48,82 @@ class PreviewPromptModuleTests(unittest.TestCase):
         self.assertIn("供货范围", prompt)  # heading 树
         self.assertIn("额定功率 5.0MW", prompt)  # 正文摘录
         self.assertIn("严格 JSON", prompt)
+
+    def test_document_outline_preserves_all_headings_and_levels(self) -> None:
+        headings = [{"level": (index % 3) + 1, "title": f"章节 {index}"} for index in range(100)]
+        outline = document_outline_from_profile({"headings": headings})
+
+        self.assertEqual(len(outline), 100)
+        self.assertEqual(outline[0], {"level": 1, "title": "章节 0"})
+        self.assertEqual(outline[-1], {"level": 1, "title": "章节 99"})
+
+    def test_document_outline_drops_numeric_table_values(self) -> None:
+        outline = document_outline_from_profile(
+            {
+                "headings": [
+                    {"level": 1, "title": "6.25-220-160混合塔架参数"},
+                    {"level": 1, "title": "131.88"},
+                    {"level": 1, "title": "9.08/5"},
+                    {"level": 2, "title": "二、钢塔段（含法兰）"},
+                ]
+            }
+        )
+
+        self.assertEqual(
+            outline,
+            [
+                {"level": 1, "title": "6.25-220-160混合塔架参数"},
+                {"level": 2, "title": "二、钢塔段（含法兰）"},
+            ],
+        )
+
+    def test_document_outline_uses_body_headings_for_original_word_only(self) -> None:
+        profile = {
+            "headings": [
+                {"level": 1, "title": "正文方案"},
+                {"level": 2, "title": "表格参数"},
+                {"level": 2, "title": "实施计划"},
+            ],
+            "bodyHeadings": [
+                {"level": 1, "title": "正文方案"},
+                {"level": 2, "title": "实施计划"},
+            ],
+        }
+
+        self.assertEqual(
+            document_outline_from_profile(profile, source_ext="docx"),
+            [
+                {"level": 1, "title": "正文方案"},
+                {"level": 2, "title": "实施计划"},
+            ],
+        )
+        self.assertEqual(document_outline_from_profile(profile, source_ext="xlsx"), [])
+        self.assertEqual(document_outline_from_profile(profile, source_ext="pdf"), [])
+        self.assertEqual(
+            document_outline_from_profile(
+                {"bodyHeadings": [{"level": 1, "title": "只有文档标题"}]},
+                source_ext="docx",
+            ),
+            [],
+        )
+
+    def test_docx_profile_separates_table_headings_from_body_headings(self) -> None:
+        body_heading = '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>正文方案</w:t></w:r></w:p>'
+        table_heading = '<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>表格参数</w:t></w:r></w:p>'
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+            f'{body_heading}<w:tbl><w:tr><w:tc>{table_heading}</w:tc></w:tr></w:tbl>'
+            '</w:body></w:document>'
+        )
+        buffer = BytesIO()
+        with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
+            archive.writestr("word/document.xml", document_xml)
+
+        profile = extract_docx_profile(buffer.getvalue(), heading_limit=None)
+
+        self.assertEqual([item["title"] for item in profile["headings"]], ["正文方案", "表格参数"])
+        self.assertEqual(profile["bodyHeadings"], [{"level": 1, "title": "正文方案"}])
 
     def test_parse_preview_reply_normal_and_clip(self) -> None:
         reply = json.dumps(
