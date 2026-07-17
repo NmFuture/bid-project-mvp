@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -25,6 +24,7 @@ from app.services.bid_outline_state import (
 from app.services.bid_project_state import project_parse_input_records
 from app.services.bid_project_service import BidProjectService
 from app.services.job_queue import enqueue_generation_job, is_generation_locked
+from app.services.local_job_executor import submit_local_job
 from app.services.onlyoffice_documents import build_editor_session_key
 from app.services.outline_generation import generate_outline_for_project_with_progress
 from app.services.url_utils import absolute_url, onlyoffice_backend_base_url
@@ -198,13 +198,7 @@ def _schedule_directory_generation_job(project_id: str, data: dict[str, Any]) ->
     if queue_result.queued or queue_result.locked:
         return
 
-    worker = threading.Thread(
-        target=_run_directory_generation_job,
-        args=(project_id, data),
-        daemon=True,
-        name=f"directory-generation-{project_id}",
-    )
-    worker.start()
+    submit_local_job(_run_directory_generation_job, project_id, data)
 
 
 def _add_callback_token(url: str) -> str:

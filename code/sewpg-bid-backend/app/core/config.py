@@ -126,6 +126,7 @@ class Settings:
     # Redis / background jobs
     redis_url: str
     redis_job_lock_ttl_sec: int
+    redis_job_queue_lock_ttl_sec: int
     redis_job_result_ttl_sec: int
     redis_worker_poll_timeout_sec: int
 
@@ -212,6 +213,7 @@ settings = Settings(
     },
     redis_url=os.getenv("REDIS_URL", "").strip(),
     redis_job_lock_ttl_sec=_int_env("REDIS_JOB_LOCK_TTL_SEC", 2 * 60 * 60),
+    redis_job_queue_lock_ttl_sec=_int_env("REDIS_JOB_QUEUE_LOCK_TTL_SEC", 6 * 60 * 60),
     redis_job_result_ttl_sec=_int_env("REDIS_JOB_RESULT_TTL_SEC", 24 * 60 * 60),
     redis_worker_poll_timeout_sec=_int_env("REDIS_WORKER_POLL_TIMEOUT_SEC", 5),
     auth_admin_email=os.getenv("AUTH_ADMIN_EMAIL", "admin@sewpg.com").strip() or "admin@sewpg.com",
