@@ -5,13 +5,96 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import httpx
 
 from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.opencode_client import OpencodeClient
 
 
 class OpencodeClientTests(unittest.TestCase):
+    @staticmethod
+    def _http_client_with_post_side_effect(side_effect: object) -> MagicMock:
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.post.side_effect = side_effect
+        return client
+
+    def test_create_session_retries_connection_refused_until_service_recovers(self) -> None:
+        client = OpencodeClient()
+        request = httpx.Request("POST", "http://opencode:4096/session")
+        response = MagicMock()
+        response.json.return_value = {"id": "ses-recovered"}
+        http_client = self._http_client_with_post_side_effect(
+            [
+                httpx.ConnectError("[Errno 111] Connection refused", request=request),
+                httpx.ConnectError("[Errno 111] Connection refused", request=request),
+                response,
+            ]
+        )
+
+        with (
+            patch("app.services.opencode_client.httpx.Client", return_value=http_client),
+            patch("app.services.opencode_client.time.sleep") as sleep,
+        ):
+            session = client.create_session("技术标素材预览")
+
+        self.assertEqual(session["id"], "ses-recovered")
+        self.assertEqual(http_client.post.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.5, 1.0])
+
+    def test_create_session_retries_transient_service_unavailable(self) -> None:
+        client = OpencodeClient()
+        request = httpx.Request("POST", "http://opencode:4096/session")
+        unavailable = httpx.Response(503, request=request)
+        recovered = MagicMock()
+        recovered.json.return_value = {"id": "ses-after-503"}
+        http_client = self._http_client_with_post_side_effect([unavailable, recovered])
+
+        with (
+            patch("app.services.opencode_client.httpx.Client", return_value=http_client),
+            patch("app.services.opencode_client.time.sleep") as sleep,
+        ):
+            session = client.create_session("技术标素材预览")
+
+        self.assertEqual(session["id"], "ses-after-503")
+        self.assertEqual(http_client.post.call_count, 2)
+        sleep.assert_called_once_with(0.5)
+
+    def test_create_session_reports_error_after_transient_retry_budget_exhausted(self) -> None:
+        client = OpencodeClient()
+        request = httpx.Request("POST", "http://opencode:4096/session")
+        http_client = self._http_client_with_post_side_effect(
+            httpx.ConnectError("[Errno 111] Connection refused", request=request)
+        )
+
+        with (
+            patch("app.services.opencode_client.httpx.Client", return_value=http_client),
+            patch("app.services.opencode_client.time.sleep") as sleep,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Connection refused"):
+                client.create_session("技术标素材预览")
+
+        self.assertEqual(http_client.post.call_count, 7)
+        self.assertEqual(sleep.call_count, 6)
+
+    def test_create_session_does_not_retry_non_transient_http_error(self) -> None:
+        client = OpencodeClient()
+        request = httpx.Request("POST", "http://opencode:4096/session")
+        response = httpx.Response(400, request=request)
+        http_client = self._http_client_with_post_side_effect([response])
+
+        with (
+            patch("app.services.opencode_client.httpx.Client", return_value=http_client),
+            patch("app.services.opencode_client.time.sleep") as sleep,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "400 Bad Request"):
+                client.create_session("技术标素材预览")
+
+        self.assertEqual(http_client.post.call_count, 1)
+        sleep.assert_not_called()
+
     def test_extract_outline_json_repairs_invalid_json_once(self) -> None:
         client = OpencodeClient()
         response = {

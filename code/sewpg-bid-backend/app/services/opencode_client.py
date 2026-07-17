@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import time
@@ -15,7 +16,13 @@ from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.system_settings import system_settings_service
 
 
+logger = logging.getLogger(__name__)
+
 OPENCODE_PROGRESS_HEARTBEAT_SECONDS = 10.0
+
+_OPENCODE_REQUEST_SLOTS = threading.BoundedSemaphore(settings.opencode_max_concurrency)
+_SESSION_CREATE_RETRY_DELAYS_SEC = (0.5, 1.0, 2.0, 4.0, 8.0, 8.0)
+_SESSION_CREATE_RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
 
 
 class OpencodeClient:
@@ -36,23 +43,56 @@ class OpencodeClient:
         self.timeout = httpx.Timeout(timeout_sec, connect=10.0)
 
     def create_session(self, title: str) -> dict[str, Any]:
-        try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(
-                    f"{self.base_url}/session",
-                    json={"title": title},
-                )
-                response.raise_for_status()
-                return response.json()
-        except httpx.TimeoutException as exc:
-            raise RuntimeError(
-                f"futurecode 创建 session 超时（{self.base_url}/session）。"
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise RuntimeError(f"futurecode 创建 session 失败：{self._short_http_error(exc)}") from exc
+        for attempt in range(len(_SESSION_CREATE_RETRY_DELAYS_SEC) + 1):
+            try:
+                with _OPENCODE_REQUEST_SLOTS:
+                    with httpx.Client(timeout=self.timeout) as client:
+                        response = client.post(
+                            f"{self.base_url}/session",
+                            json={"title": title},
+                        )
+                        response.raise_for_status()
+                        return response.json()
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                if self._retry_session_create(exc, attempt):
+                    continue
+                if isinstance(exc, httpx.TimeoutException):
+                    raise RuntimeError(
+                        f"futurecode 创建 session 超时（{self.base_url}/session）。"
+                    ) from exc
+                raise RuntimeError(f"futurecode 创建 session 失败：{self._short_http_error(exc)}") from exc
+            except httpx.HTTPStatusError as exc:
+                if (
+                    exc.response.status_code in _SESSION_CREATE_RETRYABLE_STATUS_CODES
+                    and self._retry_session_create(exc, attempt)
+                ):
+                    continue
+                raise RuntimeError(f"futurecode 创建 session 失败：{self._short_http_error(exc)}") from exc
+            except httpx.TimeoutException as exc:
+                raise RuntimeError(
+                    f"futurecode 创建 session 超时（{self.base_url}/session）。"
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise RuntimeError(f"futurecode 创建 session 失败：{self._short_http_error(exc)}") from exc
+            except ValueError as exc:  # pragma: no cover
+                raise RuntimeError("futurecode 创建 session 返回了非 JSON 响应。") from exc
 
-        except ValueError as exc:  # pragma: no cover
-            raise RuntimeError("futurecode 创建 session 返回了非 JSON 响应。") from exc
+        raise RuntimeError("futurecode 创建 session 失败：重试流程异常结束。")  # pragma: no cover
+
+    @staticmethod
+    def _retry_session_create(exc: httpx.HTTPError, attempt: int) -> bool:
+        if attempt >= len(_SESSION_CREATE_RETRY_DELAYS_SEC):
+            return False
+        delay = _SESSION_CREATE_RETRY_DELAYS_SEC[attempt]
+        logger.warning(
+            "futurecode session create transient failure; retrying in %.1fs (attempt %d/%d): %s",
+            delay,
+            attempt + 1,
+            len(_SESSION_CREATE_RETRY_DELAYS_SEC) + 1,
+            OpencodeClient._short_http_error(exc),
+        )
+        time.sleep(delay)
+        return True
 
     def send_prompt(self, session_id: str, prompt_text: str) -> dict[str, Any]:
         payload = {
@@ -68,19 +108,21 @@ class OpencodeClient:
             ],
         }
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(
-                    f"{self.base_url}/session/{session_id}/message",
-                    json=payload,
-                )
-                response.raise_for_status()
-                if not response.text.strip():
-                    raise RuntimeError("futurecode 返回了空响应。")
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    raw = self._shorten_text(response.text, limit=420)
-                    raise RuntimeError(f"futurecode 返回了非 JSON 响应：{raw}") from exc
+            # Queue before creating the HTTP client so waiting does not consume the model timeout.
+            with _OPENCODE_REQUEST_SLOTS:
+                with httpx.Client(timeout=self.timeout) as client:
+                    response = client.post(
+                        f"{self.base_url}/session/{session_id}/message",
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    if not response.text.strip():
+                        raise RuntimeError("futurecode 返回了空响应。")
+                    try:
+                        return response.json()
+                    except ValueError as exc:
+                        raw = self._shorten_text(response.text, limit=420)
+                        raise RuntimeError(f"futurecode 返回了非 JSON 响应：{raw}") from exc
         except httpx.TimeoutException as exc:
             raise RuntimeError(
                 "futurecode 生成超时，请缩短输入或稍后重试。"
