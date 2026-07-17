@@ -411,6 +411,101 @@ const FactMaintenanceModal = ({
   )
 }
 
+// AI 填写参考素材选择弹窗（产品裁决：点素材卡上的 AI填写 → 弹窗选参考素材 → 执行）。
+// 弹窗内出现哪些素材的规则后续由匹配规则定义，当前沿用本目录项的推荐/召回候选池。
+function AiFillReferenceModal({
+  open,
+  blankTitle,
+  sourceRoutingSummary,
+  candidates,
+  referenceIds,
+  selectedMaterialIdSet,
+  busy,
+  onToggle,
+  onPreview,
+  onSelect,
+  onConfirm,
+  onClose,
+}) {
+  if (!open) return null
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
+      <div className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
+          <div className="min-w-0">
+            <h3 className="text-lg font-headline font-bold text-on-surface">AI 填写</h3>
+            <p className="mt-1 truncate text-xs text-on-surface-variant" title={blankTitle}>
+              待填写对象：{blankTitle || '待填写空表/Word'}
+            </p>
+          </div>
+          <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" />
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <div className="rounded-md border border-secondary/20 bg-secondary-container/30 px-3 py-2 text-[11px] text-on-secondary-container">
+            勾选结果会锁定为本次 AI 填写的唯一素材范围，不会自动扩大到其他素材。
+          </div>
+          {sourceRoutingSummary ? (
+            <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-[11px] leading-relaxed text-on-surface-variant">
+              {sourceRoutingSummary}
+            </div>
+          ) : null}
+          <div className="mt-3 space-y-2">
+            {candidates.length ? candidates.map((material) => {
+              const materialId = String(material.id || material.materialId || '').trim()
+              const checked = referenceIds.includes(materialId)
+              return (
+                <MaterialCandidateCard
+                  key={materialId || material.name}
+                  material={material}
+                  isSelected={selectedMaterialIdSet.has(materialId)}
+                  busy={busy || !materialId}
+                  selecting={false}
+                  onPreview={onPreview}
+                  onSelect={onSelect}
+                  fillable={false}
+                  leading={(
+                    <label className="flex shrink-0 items-center gap-1 pt-0.5" title="勾选后作为本次 AI 填写的参考素材">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={busy || !materialId}
+                        onChange={() => onToggle(materialId)}
+                        className="h-4 w-4 shrink-0 accent-primary"
+                        aria-label={`选择 ${material.name || material.cleanedFileName || materialId} 用于 AI 填写`}
+                      />
+                      {checked ? (
+                        <span className="rounded bg-secondary-container px-1.5 py-0.5 text-[10px] font-semibold text-on-secondary-container">
+                          用于AI
+                        </span>
+                      ) : null}
+                    </label>
+                  )}
+                />
+              )
+            }) : (
+              <div className="rounded-md bg-surface-container-low px-3 py-2 text-[11px] text-outline">
+                暂无推荐素材，可先在目录项底部搜索或上传素材后再发起 AI 填写。
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center justify-between border-t border-surface-container-high bg-surface-container-low px-5 py-4">
+          <span className="rounded bg-secondary-container px-2 py-0.5 text-[10px] font-semibold text-on-secondary-container">
+            已选 {referenceIds.length} 份参考素材
+          </span>
+          <div className="flex gap-2">
+            <Button type="button" onClick={onClose} disabled={busy} variant="quiet">取消</Button>
+            <Button type="button" onClick={onConfirm} disabled={busy} variant="primary">
+              {busy ? '处理中...' : '开始 AI 填写'}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
 function TechnicalGenerationProgressModal({
   open,
   status,
@@ -574,6 +669,8 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [generationStatus, setGenerationStatus] = useState(null)
   const [generationModalOpen, setGenerationModalOpen] = useState(false)
   const [aiFillReferenceSelections, setAiFillReferenceSelections] = useState({})
+  // AI 填写弹窗：点素材卡上的 AI填写 打开，选参考素材后执行；null=关闭。
+  const [aiFillModalTask, setAiFillModalTask] = useState(null)
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
     if (!silent) {
@@ -693,14 +790,16 @@ export default function TechnicalGapRecognition({ showToast }) {
     // 上限 20：兼顾「章节同名目录素材」拼装列表（可能 10+ 份，全部确定相关）与渲染开销。
     }).sort((a, b) => technicalMatchScore(b) - technicalMatchScore(a)).slice(0, 20)
   })()
-  const aiFillSelectionKey = selected && selectedFillTask
-    ? `${selected.id}:${selectedFillTask.id || selectedFillTask?.blankSource?.id || 'fill'}`
-    : ''
-  const defaultAiFillReferenceIds = defaultAiFillReferenceMaterialIds(selected, [], selectedFillTask)
-  const selectedAiFillReferenceIds = aiFillSelectionKey
-    && Object.prototype.hasOwnProperty.call(aiFillReferenceSelections, aiFillSelectionKey)
-    ? aiFillReferenceSelections[aiFillSelectionKey]
-    : defaultAiFillReferenceIds
+  // AI 填写参考素材勾选态按「目录项 × 填写任务」隔离；没勾选过时用该任务的推荐默认值。
+  const aiFillSelectionKeyFor = (task) => (selected && task
+    ? `${selected.id}:${task.id || task?.blankSource?.id || 'fill'}`
+    : '')
+  const aiFillReferenceIdsFor = (task) => {
+    const key = aiFillSelectionKeyFor(task)
+    return key && Object.prototype.hasOwnProperty.call(aiFillReferenceSelections, key)
+      ? aiFillReferenceSelections[key]
+      : defaultAiFillReferenceMaterialIds(selected, [], task)
+  }
   const selectedResolvedArtifact = latestResolvedArtifact(selected)
   const selectedAiFillNeedsConfirmation = Boolean(
     selectedResolvedArtifact?.source === 'ai_fill'
@@ -736,10 +835,10 @@ export default function TechnicalGapRecognition({ showToast }) {
     const materialId = String(material?.id || material?.materialId || '').trim()
     return isFillTemplateMaterial(material) || (Boolean(materialId) && fillTaskBlankMaterialIds.has(materialId))
   }
-  // AI填写按钮统一走本目录项的填写任务；无任务时按钮禁用（title 提示）。
+  // AI填写按钮统一打开参考素材选择弹窗（产品裁决：先选参考素材再执行）；无任务时按钮禁用。
   const cardAiFillProps = (material) => ({
     fillable: materialFillable(material),
-    onAiFill: selectedFillTask ? () => handleAiFill() : null,
+    onAiFill: selectedFillTask ? () => setAiFillModalTask(selectedFillTask) : null,
     aiFillBusy,
     aiFillCompleted: selectedAiFillCompleted,
   })
@@ -1093,10 +1192,7 @@ export default function TechnicalGapRecognition({ showToast }) {
     if (!factConfirmed && !(await ensureFactTableReady())) {
       return null
     }
-    // 非首任务没有人工勾选态，用该任务自身的推荐默认值。
-    const referenceIds = task === selectedFillTask
-      ? selectedAiFillReferenceIds
-      : defaultAiFillReferenceMaterialIds(selected, [], task)
+    const referenceIds = aiFillReferenceIdsFor(task)
     const referenceMaterials = selectedReferenceCandidates.filter((material) => (
       referenceIds.includes(String(material?.id || material?.materialId || '').trim())
     ))
@@ -1120,16 +1216,16 @@ export default function TechnicalGapRecognition({ showToast }) {
     return payload
   }
 
-  const handleToggleAiFillReference = (materialId) => {
-    if (!aiFillSelectionKey || !materialId || busyAction) return
+  const handleToggleAiFillReference = (task, materialId) => {
+    const key = aiFillSelectionKeyFor(task)
+    if (!key || !materialId || busyAction) return
+    const fallback = defaultAiFillReferenceMaterialIds(selected, [], task)
     setAiFillReferenceSelections((current) => {
-      const active = Object.prototype.hasOwnProperty.call(current, aiFillSelectionKey)
-        ? current[aiFillSelectionKey]
-        : defaultAiFillReferenceIds
+      const active = Object.prototype.hasOwnProperty.call(current, key) ? current[key] : fallback
       const next = active.includes(materialId)
         ? active.filter((id) => id !== materialId)
         : [...active, materialId]
-      return { ...current, [aiFillSelectionKey]: uniqueStrings(next) }
+      return { ...current, [key]: uniqueStrings(next) }
     })
   }
 
@@ -1303,6 +1399,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                           setPreviewError('')
                           setManualPreviewChoice(null)
                           setPreviewOpen(false)
+                          setAiFillModalTask(null)
                         }}
                         className={`business-toc-item mb-2 block h-auto w-full rounded-md border px-3 py-3 text-left transition-colors ${active ? 'border-primary bg-primary-fixed shadow-sm' : 'border-surface-container-high bg-surface-container-lowest hover:bg-surface-container-low'}`}
                         data-active={active ? 'true' : 'false'}
@@ -1450,7 +1547,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                                     onPreview={() => (isMaterialBlank ? handlePreviewMaterial(blankMaterial) : handlePreviewBlankFor(blank))}
                                     onSelect={isMaterialBlank ? handleSelectMaterial : null}
                                     fillable
-                                    onAiFill={() => handleAiFill(task)}
+                                    onAiFill={() => setAiFillModalTask(task)}
                                     aiFillBusy={aiFillBusy}
                                     aiFillCompleted={String(task?.status || '') === 'completed'}
                                   />
@@ -1493,68 +1590,6 @@ export default function TechnicalGapRecognition({ showToast }) {
                                     </span>
                                   ) : null}
                                 </div>
-                              </div>
-                            ) : null}
-                            {selectedSourceRoutingSummary || selectedReferenceCandidates.length ? (
-                              <div className="mt-3 space-y-2">
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <div className="text-[11px] font-semibold text-on-surface">填写来源素材</div>
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <span className="rounded bg-secondary-container px-2 py-0.5 text-[10px] font-semibold text-on-secondary-container">
-                                      已选 {selectedAiFillReferenceIds.length} 份
-                                    </span>
-                                    {selectedSourceRouting ? (
-                                      <span className="rounded bg-tertiary-fixed px-2 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed">
-                                        规则推荐
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                </div>
-                                <div className="rounded-md border border-secondary/20 bg-secondary-container/30 px-3 py-2 text-[11px] text-on-secondary-container">
-                                  勾选结果会锁定为本次 AI 填写的唯一素材范围，不会自动扩大到其他素材。
-                                </div>
-                                {selectedSourceRoutingSummary ? (
-                                  <div className="rounded-md bg-surface-container-low px-3 py-2 text-[11px] leading-relaxed text-on-surface-variant">
-                                    {selectedSourceRoutingSummary}
-                                  </div>
-                                ) : null}
-                                {selectedReferenceCandidates.length ? selectedReferenceCandidates.map((material) => {
-                                  const materialId = String(material.id || material.materialId || '').trim()
-                                  const checked = selectedAiFillReferenceIds.includes(materialId)
-                                  return (
-                                    <MaterialCandidateCard
-                                      key={materialId || material.name}
-                                      material={material}
-                                      isSelected={selectedMaterialIdSet.has(materialId)}
-                                      busy={Boolean(busyAction) || !materialId}
-                                      selecting={busyAction === `select-material:${selected.id}:${materialId}`}
-                                      onPreview={handlePreviewMaterial}
-                                      onSelect={handleSelectMaterial}
-                                      {...cardAiFillProps(material)}
-                                      leading={(
-                                        <label className="flex shrink-0 items-center gap-1 pt-0.5" title="勾选后作为本次 AI 填写的参考素材">
-                                          <input
-                                            type="checkbox"
-                                            checked={checked}
-                                            disabled={Boolean(busyAction) || !materialId}
-                                            onChange={() => handleToggleAiFillReference(materialId)}
-                                            className="h-4 w-4 shrink-0 accent-primary"
-                                            aria-label={`选择 ${material.name || material.cleanedFileName || materialId} 用于 AI 填写`}
-                                          />
-                                          {checked ? (
-                                            <span className="rounded bg-secondary-container px-1.5 py-0.5 text-[10px] font-semibold text-on-secondary-container">
-                                              用于AI
-                                            </span>
-                                          ) : null}
-                                        </label>
-                                      )}
-                                    />
-                                  )
-                                }) : (
-                                  <div className="rounded-md bg-surface-container-low px-3 py-2 text-[11px] text-outline">
-                                    暂未在素材库中找到对应来源。
-                                  </div>
-                                )}
                               </div>
                             ) : null}
                           </section>
@@ -1684,6 +1719,24 @@ export default function TechnicalGapRecognition({ showToast }) {
         status={generationStatus}
         progress={generationProgress}
         onClose={() => setGenerationModalOpen(false)}
+      />
+      <AiFillReferenceModal
+        open={Boolean(aiFillModalTask)}
+        blankTitle={aiFillModalTask?.blankSource?.title || aiFillModalTask?.blankSource?.id || ''}
+        sourceRoutingSummary={selectedSourceRoutingSummary}
+        candidates={selectedReferenceCandidates}
+        referenceIds={aiFillModalTask ? aiFillReferenceIdsFor(aiFillModalTask) : []}
+        selectedMaterialIdSet={selectedMaterialIdSet}
+        busy={Boolean(busyAction)}
+        onToggle={(materialId) => handleToggleAiFillReference(aiFillModalTask, materialId)}
+        onPreview={handlePreviewMaterial}
+        onSelect={handleSelectMaterial}
+        onConfirm={() => {
+          const task = aiFillModalTask
+          setAiFillModalTask(null)
+          handleAiFill(task)
+        }}
+        onClose={() => setAiFillModalTask(null)}
       />
       <TechnicalPreviewModal
         open={previewOpen}
