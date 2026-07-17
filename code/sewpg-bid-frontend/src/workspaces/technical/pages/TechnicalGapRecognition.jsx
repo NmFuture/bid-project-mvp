@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { technicalGapsAPI, technicalGenerateAPI, technicalMaterialsAPI, technicalParseAPI, technicalProjectsAPI, technicalStagesAPI } from '../../../api'
 import { PageLoading, PageError } from '../../../components/states/PageState'
@@ -676,6 +676,9 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [aiFillReferenceSelections, setAiFillReferenceSelections] = useState({})
   // AI 填写弹窗：点素材卡上的 AI填写 打开，选参考素材后执行；null=关闭。
   const [aiFillModalTask, setAiFillModalTask] = useState(null)
+  // 填表规则：上传 Excel 用于匹配 AI 填写规则；解析与匹配待后端接入，前端先记录文件。
+  const [fillRuleFile, setFillRuleFile] = useState(null)
+  const fillRuleInputRef = useRef(null)
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
     if (!silent) {
@@ -1290,6 +1293,18 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
   }
 
+  const handleFillRuleFile = (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    if (!/\.(xlsx|xls)$/i.test(file.name)) {
+      showToast?.('填表规则仅支持 Excel 文件（.xlsx / .xls）', 'error')
+      return
+    }
+    setFillRuleFile({ name: file.name, size: file.size })
+    showToast?.(`填表规则已接收：${file.name}（解析与 AI 填写规则匹配待后端接入）`)
+  }
+
   if (loading) return <PageLoading title="正在加载素材匹配..." />
   if (error) return <PageError title="素材匹配加载失败" description={error} onRetry={loadData} />
 
@@ -1300,6 +1315,23 @@ export default function TechnicalGapRecognition({ showToast }) {
       <PageHeader
         actions={(
           <Toolbar>
+            <input
+              ref={fillRuleInputRef}
+              type="file"
+              accept=".xlsx,.xls"
+              className="hidden"
+              onChange={handleFillRuleFile}
+            />
+            <Button
+              type="button"
+              onClick={() => fillRuleInputRef.current?.click()}
+              disabled={Boolean(busyAction) || data?.status !== 'completed'}
+              title={fillRuleFile ? `已上传：${fillRuleFile.name}` : '上传 Excel 填表规则，用于匹配 AI 填写规则'}
+              size="stage"
+              variant={fillRuleFile ? 'secondary' : 'quiet'}
+            >
+              {fillRuleFile ? '填表规则（已上传）' : '填表规则'}
+            </Button>
             <Button
               type="button"
               onClick={() => setFactModalOpen(true)}
