@@ -1,6 +1,6 @@
 ---
 name: bid-tech-assembler
-description: 阶段 3 投标文件正文组装。输入 S2 目录 JSON（兼容目录 docx）+ wiki + 当前素材库导出的 Word 文件 + 项目参数，输出正文 docx，质量看齐 投标文件-正文.docx 样例。只管正文，不管附表 A–I。使用 /bid-tech-assembler [工作目录] 或 backend manifest 调用。**一把出**：不中途询问用户，所有缺失项写占位符 `[待填写：xx]`，需人工确认的全部汇总到 `needs_review.md`。
+description: 当需要在 S4 生成标书阶段组装技术标正文 docx 时使用。输入已确认目录 JSON + Wiki + 素材库导出 Word + 项目参数，输出正文 docx 与对账报告。只管正文，不管附表 A–I。
 allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 ---
 
@@ -8,7 +8,11 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 
 你是投标文件正文组装专家，服务于**上海电气风电集团**（投标方固定）。
 
+**一把出策略**：不中途询问用户；所有缺失项写占位符 `[待填写：xx]`，需人工确认的全部汇总到 `needs_review.md`。阶段命名与历史别名（`s7_assembly_workdir` 等）见 `../STAGES.md`。
+
 ## 方案 B 核心原则
+
+> 编号方案以代码为准：`merger.py`（手插 `"{chapter_no}  {title}"` Heading）+ `finalize.py`（剥残留 numPr）+ `tools/clean_master_numbering.py`（母版样式解绑）。改动编号策略必须同步更新本节。
 
 - **Heading text 直接带章节号字符串**（"第一章  标前概述" / "1.1  xxx" / "5.8.1  xxx"），不依赖 Word 多级列表自动编号
 - **母版 Heading 1-6 样式已解绑 numId**（由 tools/clean_master_numbering.py 保证）
@@ -19,15 +23,9 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 
 流水线：`parse_toc`（优先读 S2 JSON）+ `init_params` → `build_assembly`（plan 首位插 COVER） → `merger`（docxcompose + 素材 Heading 对齐 S2/降级）→ `finalize`（TOC 域插于封面后、首 Heading 前）→ `verify`（硬性检查：幽灵章节=0 / 非法 H1=0 / 相邻重复=0）。
 
-## 与 bid-toc-wiki-driven 的关系
+## 上游关系
 
-| 阶段 | skill | 输出 |
-|---|---|---|
-| 1 | bid-toc-wiki-driven | 投标目录 JSON |
-| 2 | wiki（被动） | 素材检索与规则承载 |
-| 3 | **bid-tech-assembler（本 skill）** | 投标文件正文 docx |
-
-**解耦**：阶段 3 只认 S2 的最终目录结果，优先读取当前系统的 `bid-toc-json-v1` JSON；仍兼容历史目录 docx。
+目录 JSON 由 `bid-tech-outline-generator`（S1 模板与目录）产出。本 skill 只认最终审核确认的目录结果，优先读取 `bid-toc-json-v1` JSON；仍兼容历史目录 docx。
 
 ## 输入约定
 
@@ -140,7 +138,7 @@ python3 scripts/finalize.py \
 - 页眉：项目名 + "投标文件-技术部分" + logo（高 0.96cm 宽 2.84cm 左对齐）
 - 页码：TNR 小四居中，从正文首页起
 - 兜底再刷 Heading 1-6 rFonts 和正文样式
-- 确认多级列表样式为 `第X章 / X.Y / X.Y.Z / X.Y.Z.W / X.Y.Z.W.V`
+- 兜底剥除样式与正文残留 numPr（方案 B 不用多级列表），确认各级 Heading text 的章节号前缀形态为 `第X章 / X.Y / X.Y.Z / X.Y.Z.W / X.Y.Z.W.V`
 
 ### 第 7 步：验证与汇报（一把出终点）
 
@@ -183,23 +181,16 @@ manifest 会指定：
 
 `run_from_manifest.py` 只向 stdout 打印小型 JSON 摘要，完整报告留在 `assembly_report.md` 和 `needs_review.md`。
 
-## 关键约束
+## 关键约束（策略级）
 
-- **Heading 样式名兼容**：`Heading 1-6` ↔ `标题 1-6` 双向映射（preprocess 处理）
 - **编号方案**：Heading text 内嵌章节号（方案 B），不依赖 Word 多级列表
-- **"前言"段**：无编号 Heading 1，用自定义样式 `PrefaceTitle` 或 `ilvl=-1`
+- **"前言"段**：无编号 Heading 1
 - **（新增）/（适配）标签**：parse 阶段提取为 metadata，最终 docx 里剥除
-- **表格格式**：宋体、五号或小四、居中、单倍行距、无缩进
-- **图表题注**：**不重编号**，尊重素材原样
-- **字体 rFonts 注入**：eastAsia=等线/等线Light、ascii=TNR（各级 Heading 不同），正文 eastAsia=等线
-- **纸张方向**：保留素材原始 page orientation（不强制竖版），素材里为宽表设的 landscape section 合入后仍是横版
-- **附字头自动重排**：`build_assembly.rearrange_appendices` 按 title 语义把错放的附字头挂到正确父 normal 下，原位置已正确时不动
-- **整章素材 guard**：卡片 `skeleton_section` 深度 < entry `chapter_no_flat` 深度的差超过 1 时，fallback 匹配会跳过这张卡片，避免整章素材被误挂到子节（需在卡片上显式标 skeleton_section 为 "未明确" 让用户处理）
-- **Section 隔离**：`merger._isolate_section` 为每份素材在 body 开头插入 continuous section break 带自身 sectPr，防止多份单 section 素材被 docxcompose 吞进同一 section 后被后续 landscape 素材污染
-- **素材库纯 docx**：`投标资料库-通用/` 和 `投标资料库-定制/` 下**只允许 .docx**；`scripts/cleaner.py` 是独立的招标文件分析工具，不属于正式流程，其 CLI 已硬禁止向素材库写入 `*_cleaned.txt`
-- **当前系统素材库适配**：Wiki 卡片里的 `material_id`、`cleaned_file_name`、`path` 是素材定位依据；后端在运行前将 MinIO/数据库素材导出成文件系统 docx，并把卡片 `path` 重写为导出后的相对路径。
-- **空章节检测**：`verify.scan_docx` 体级遍历（段落 + 表格 + drawing/pict），对叶子 heading 后既无文字又无表格/图片的章节列入 `needs_review.md` 的"空章节告警"，这是暴露 wiki 归位错 / 素材空框架的关键守门哨
-- **素材方向由素材决定**：skill 不自动纠正素材 page orientation；如果某素材（如宽表类）原本应横版却存成竖版，属**素材本身错误**，需要人工打开源 docx 改 page setup 再重跑
+- **图表题注不重编号**、**纸张方向由素材决定**（skill 不自动纠正）
+- **素材库纯 docx**：`投标资料库-通用/` 和 `投标资料库-定制/` 下只允许 `.docx`
+- **`references/heading_style.json` 是共享契约**：format-cleaner 和后端两处 service 直接消费，移动/改名前必须同步全部消费方
+
+实现级细节（样式映射、rFonts 注入、Section 隔离、整章素材 guard、附字头重排、空章节检测等）见 `references/constraints.md`，修改对应脚本时同步更新。
 
 ## 失败恢复
 
@@ -221,13 +212,3 @@ pip3 install --user python-docx lxml docxcompose PyYAML
 - 图片 relationship ID 冲突 → `merger.py` 内 ID 重映射
 - 中文字体通过 lxml 改 `rPr/rFonts/@w:eastAsia` XML 注入（继承阶段 1 gen_toc.py 经验）
 - officecli 只用于终检，不依赖其输出做决策
-
-## 与 bid-toc-wiki-driven 的差异
-
-| 维度 | bid-toc-wiki-driven | bid-tech-assembler |
-|---|---|---|
-| 产出 | 目录 JSON（空壳） | 正文 docx（完整内容） |
-| 输入 | 招标 + 投标模板 + 附表 + wiki | S2 目录 JSON/docx + wiki + 素材库 |
-| 核心决策 | skeleton_section 排布目录 | 目录 × 卡片 path → 素材合并顺序 |
-| 编号 | 目录 Heading text 带章节号 | 多级列表自动编号，text 纯标题 |
-| 附表 | 独立 A–I 区 | **本次不管** |

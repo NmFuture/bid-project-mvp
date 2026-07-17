@@ -22,12 +22,17 @@ allowed-tools: [Read, Bash, Write]
 - 脚本负责读取 Word、识别段落和表格中的 `[字段，待填写]` / `[待填写：字段]` / `[字段，待补充]` 等占位符，从解析字段、项目机型和参考素材抽取候选事实，替换可确定内容并生成报告。
 - 该 Skill 只处理正文/表格单元格占位符；S0 解析出来的空副表仍由 `bid-tech-table-filler` 处理。
 
+占位符识别范围：`[xx]` / `【xx】` 括号内容，可带 `待填写：` 前缀或 `，待填写 / 待补充 / 待确认` 后缀（如 `[质保期，待填写]`、`【待填写：交货期】`）。段落和表格单元格都会扫描。
+
+单 manifest 只处理一个 `blankSource`，无批量模式（批量需求由上游 gap-planner 拆成多个 fillTask、逐个下发 manifest）。
+
 输出必须满足：
 
 - Word 写入 manifest 的 `outputFile`。
 - JSON schema 为 `bid-tech-word-placeholder-fill-v1`。
 - 返回 `outputFile`、`unfilledFields`、`evidenceRefs`、`fillReport`。
 - Word 必须保留原文档结构，不能重建说明型 Word。
+- 填写依据写入 `outputFile` 同名的 `.fill_report.json` 和 `.fill_report.md`（与 `bid-tech-table-filler` 同一命名约定），含占位符总数/已填/待人工计数和参考来源清单。
 
 后端 manifest 调用：
 

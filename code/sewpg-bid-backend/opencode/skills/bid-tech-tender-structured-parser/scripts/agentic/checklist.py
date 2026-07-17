@@ -45,8 +45,9 @@ def display_group(primary_category: str) -> str:
     return DISPLAY_GROUP_ALIASES.get(clean(primary_category), clean(primary_category) or "其他")
 
 
-def _skill_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "SKILL.md"
+def _checklist_path() -> Path:
+    # 清单数据文件：references/checklist.md（勿在 SKILL.md 内维护清单表）
+    return Path(__file__).resolve().parents[2] / "references" / "checklist.md"
 
 
 def _parse_table_line(line: str) -> dict[str, Any] | None:
@@ -72,7 +73,7 @@ def _parse_table_line(line: str) -> dict[str, Any] | None:
 
 @lru_cache(maxsize=1)
 def load_checklist() -> list[dict[str, Any]]:
-    content = _skill_path().read_text(encoding="utf-8")
+    content = _checklist_path().read_text(encoding="utf-8")
     rows = [_parse_table_line(line) for line in content.splitlines()]
     checklist = [row for row in rows if row is not None]
     if len(checklist) != 58:
