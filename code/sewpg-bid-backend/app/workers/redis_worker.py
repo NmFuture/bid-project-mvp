@@ -2,20 +2,29 @@ from __future__ import annotations
 
 import logging
 import signal
+import threading
 import time
 from typing import Any
 
 from app.core.config import settings
 from app.core.redis import redis_is_available
 from app.services.job_queue import (
+    clear_job_inflight,
     dequeue_generation_job,
+    mark_job_inflight,
     mark_job_status,
+    reclaim_stale_inflight_jobs,
     release_generation_lock,
+    renew_generation_lock,
 )
 from app.services.workspace_project_access import get_any_workspace_project_runtime_state
 
 logger = logging.getLogger(__name__)
 _stop_requested = False
+
+# 周期回收残留 in-flight job：不能只在启动时做一次，否则本 worker 存活期间
+# 其他 worker 崩溃留下的任务会一直卡在 running。
+RECLAIM_INTERVAL_SEC = 300
 
 
 def _request_stop(signum: int, _: Any) -> None:
@@ -36,6 +45,21 @@ def _run_job(job: dict[str, Any]) -> None:
     final_state: dict[str, Any] = {}
 
     mark_job_status(job, "running")
+    mark_job_inflight(job)
+    renew_generation_lock(job)
+    heartbeat_stop = threading.Event()
+
+    def renew_lock_until_done() -> None:
+        interval = max(1, settings.redis_job_lock_ttl_sec // 3)
+        while not heartbeat_stop.wait(interval):
+            renew_generation_lock(job)
+
+    heartbeat = threading.Thread(
+        target=renew_lock_until_done,
+        daemon=True,
+        name=f"job-lock-{job.get('id', '')}",
+    )
+    heartbeat.start()
     try:
         if job_type == "directory_generation":
             from app.services.bid_directory_flow import _run_directory_generation_job
@@ -75,6 +99,9 @@ def _run_job(job: dict[str, Any]) -> None:
         else:
             mark_job_status(job, "succeeded")
     finally:
+        heartbeat_stop.set()
+        heartbeat.join(timeout=1)
+        clear_job_inflight(job)
         release_generation_lock(job)
 
 
@@ -88,10 +115,15 @@ def main() -> None:
         return
 
     logger.info("Redis worker started. Queue polling timeout=%ss", settings.redis_worker_poll_timeout_sec)
+    next_reclaim_at = 0.0
     while not _stop_requested:
         if not redis_is_available():
             time.sleep(2)
             continue
+
+        if time.monotonic() >= next_reclaim_at:
+            reclaim_stale_inflight_jobs(settings.redis_job_lock_ttl_sec)
+            next_reclaim_at = time.monotonic() + RECLAIM_INTERVAL_SEC
 
         job = dequeue_generation_job()
         if not job:

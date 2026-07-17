@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import threading
 from datetime import UTC, datetime
 from typing import Any, Callable
 
@@ -19,6 +18,7 @@ from app.services.bid_project_service import BidProjectService
 from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE, require_bid_type
 from app.services.business_draft_generation import generate_business_draft_for_project_with_progress
 from app.services.job_queue import enqueue_generation_job, force_release_generation_lock, is_generation_locked
+from app.services.local_job_executor import submit_local_job
 from app.services.technical_draft_generation import generate_technical_draft_for_project_with_progress
 from app.services.workspace_project_access import (
     get_any_workspace_project_runtime_state,
@@ -547,14 +547,7 @@ def _schedule_fill_generation_job(
     if queue_result.queued or queue_result.locked:
         return
 
-    worker = threading.Thread(
-        target=_run_fill_generation_job,
-        args=(project_id, data, user),
-        kwargs={"bid_type": bid_type},
-        daemon=True,
-        name=f"fill-generation-{project_id}",
-    )
-    worker.start()
+    submit_local_job(_run_fill_generation_job, project_id, data, user, bid_type=bid_type)
 
 
 class BidGenerationService:
