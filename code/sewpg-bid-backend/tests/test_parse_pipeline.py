@@ -10,7 +10,7 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -388,10 +388,16 @@ class ParsePipelineTests(unittest.TestCase):
 
         store.reset_for_tests()
         store._ensure_db()
+        self.technical_appendix_sync_patcher = patch(
+            "app.services.bid_project_service.sync_technical_parse_appendices",
+            new=AsyncMock(return_value={"status": "synced", "syncedCount": 0}),
+        )
+        self.technical_appendix_sync_patcher.start()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
 
     def tearDown(self) -> None:
         self.client.close()
+        self.technical_appendix_sync_patcher.stop()
         self.temp_dir.cleanup()
 
     def test_long_running_parse_step_emits_progress_heartbeats_until_done(self) -> None:

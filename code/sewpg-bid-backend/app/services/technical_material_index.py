@@ -295,20 +295,21 @@ async def _rebuild_payload(
     return _build_payload(tree, file_items, prev=prev)
 
 
+async def rebuild_technical_material_index_strict() -> dict[str, Any]:
+    """从数据库严格重建索引；失败时向调用方暴露异常。"""
+
+    async with _INDEX_WRITE_LOCK:
+        prev = load_technical_material_index()
+        payload = await _rebuild_payload(prev)
+        _write_index(payload)
+        return payload
+
+
 async def rebuild_technical_material_index() -> dict[str, Any]:
-    """从数据库实时结构重建技术标三级目录 JSON 索引并写盘。
+    """以 best-effort 方式重建索引，避免普通素材操作被索引异常阻断。"""
 
-    结构真值在 DB，tag 真值在旧 JSON：按 id 认领把 tag 贴回新树（merge-preserve），
-    全程持写锁 + 原子写，避免与人工打 tag 互相覆写。
-
-    best-effort：内部异常被捕获并记录，绝不向上抛出，以免影响主素材操作。
-    """
     try:
-        async with _INDEX_WRITE_LOCK:
-            prev = load_technical_material_index()
-            payload = await _rebuild_payload(prev)
-            _write_index(payload)
-            return payload
+        return await rebuild_technical_material_index_strict()
     except Exception:  # noqa: BLE001 - 钩子是 best-effort，失败不阻断主流程
         logger.warning("technical material index rebuild failed", exc_info=True)
         return {}

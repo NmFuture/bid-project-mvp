@@ -9,6 +9,7 @@ from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE, require
 from app.services.business_parse_assets import BusinessParseAssetError, sync_approved_business_parse_assets
 from app.services.identity import build_project_material_scope
 from app.services.template_store import template_fallback_payload
+from app.services.technical_parse_assets import sync_technical_parse_appendices
 from app.services.workspace_project_access import (
     create_workspace_project,
     delete_workspace_project,
@@ -34,6 +35,7 @@ class BidProjectService:
         delete_message: str,
         clear_turbine_model: bool = False,
         sync_business_parse_assets: bool = False,
+        sync_technical_parse_assets: bool = False,
     ) -> None:
         self.bid_type = bid_type
         self.not_found_message = not_found_message
@@ -41,6 +43,7 @@ class BidProjectService:
         self.delete_message = delete_message
         self.clear_turbine_model = clear_turbine_model
         self.sync_business_parse_assets = sync_business_parse_assets
+        self.sync_technical_parse_assets = sync_technical_parse_assets
 
     def ensure_project(self, project_id: str) -> dict[str, Any]:
         return get_workspace_project_runtime_state(
@@ -112,6 +115,17 @@ class BidProjectService:
                     for key, value in sync_result.items()
                     if key != "parseResult"
                 }
+        if self.sync_technical_parse_assets and decision == "participate":
+            runtime_project = self.ensure_project(project_id)
+            parse_result = (
+                runtime_project.get("parse_result")
+                if isinstance(runtime_project.get("parse_result"), dict)
+                else {}
+            )
+            project["technicalParseAssetSync"] = await sync_technical_parse_appendices(
+                runtime_project,
+                parse_result,
+            )
         return project
 
     async def delete(self, project_id: str) -> dict[str, str]:
@@ -211,4 +225,5 @@ technical_project_service = BidProjectService(
     not_found_message="技术标项目不存在。",
     wrong_type_message="该接口仅支持技术标项目。",
     delete_message="技术标项目已删除",
+    sync_technical_parse_assets=True,
 )

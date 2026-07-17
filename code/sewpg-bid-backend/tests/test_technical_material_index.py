@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.services import technical_material_index as tmi
 from app.services.bid_type import TECHNICAL_BID_TYPE
@@ -289,6 +290,22 @@ class WriteAndLoadTests(unittest.TestCase):
             index_path = Path(tmp) / "missing.json"
             with patch.object(tmi, "TECHNICAL_MATERIAL_INDEX_PATH", index_path):
                 self.assertEqual(tmi.load_technical_material_index(), {})
+
+    def test_strict_rebuild_raises_while_best_effort_rebuild_stays_compatible(self) -> None:
+        with patch.object(
+            tmi,
+            "_rebuild_payload",
+            new=AsyncMock(side_effect=RuntimeError("index rebuild failed")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "index rebuild failed"):
+                asyncio.run(tmi.rebuild_technical_material_index_strict())
+
+        with patch.object(
+            tmi,
+            "rebuild_technical_material_index_strict",
+            new=AsyncMock(side_effect=RuntimeError("index rebuild failed")),
+        ):
+            self.assertEqual(asyncio.run(tmi.rebuild_technical_material_index()), {})
 
 
 @unittest.skipUnless(os.getenv("BID_RUN_INTEGRATION") == "1", "requires PostgreSQL, MinIO, and Redis")
