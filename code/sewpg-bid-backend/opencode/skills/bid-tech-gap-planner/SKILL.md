@@ -18,7 +18,7 @@ allowed-tools: [Read, Bash, Write]
 s4gap /data/documents/<projectId>/technical-workspace/s4_gap_workdir/s4_gap_input.json
 ```
 
-`s4gap` 和 `s4_gap_workdir` 是历史内部名；用户-facing 阶段是当前 `S3 缺口处理`。
+`s4gap` 和 `s4_gap_workdir` 是历史内部名，用户侧阶段是 `S3 缺口处理`；完整映射见 `../STAGES.md`。
 
 ## 输入边界
 
@@ -108,3 +108,15 @@ s4gap <manifest>
 不要先 `pwd/ls/cat`，不要改写 manifest 路径，不要输出解释文字或 Markdown。命令会把完整 `gap_plan.json` 写到 manifest 的 `outputFile`，stdout 只打印小型摘要 JSON。
 
 stdout 必须包含 `tocItemCount`、`itemCount`、`coverageStatus`。正常情况下 `tocItemCount == itemCount` 且 `coverageStatus == "passed"`。如果不是，视为本次缺口识别失败。
+
+## 评估（golden eval）
+
+对拿到正式中标技术卷的项目，可用金标反评基线验证路由决策质量：
+
+```bash
+python scripts/eval_golden_baseline.py \
+    --answer-docx <技术卷.docx> --answer-docx <技术附表.docx> \
+    --gaps gaps.json --manifest s4_gap_input.json --out report.json
+```
+
+产出逐项对照行、分类计数和路由一致率。正式标书留在本地，不入库；修改判断规则前后各跑一次，看一致率涨跌，歧义项需人工复核。

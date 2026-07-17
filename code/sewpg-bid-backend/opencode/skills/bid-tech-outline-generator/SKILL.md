@@ -1,11 +1,14 @@
 ---
 name: bid-tech-outline-generator
-description: Use when 需要根据历史投标模板与当前招标文件生成、调整或审核风电设备技术标目录。
+description: 当用户要求「生成目录」「S1 模板与目录」「技术标目录生成」，或需要根据招标文件和投标模板生成带证据、可在 OnlyOffice 跳转高亮的目录 JSON 时使用。
+allowed-tools: [Read, Bash]
 ---
 
 # 技术标目录生成
 
 你是风力发电设备领域的技术标专家。历史投标模板目录决定基本骨架，当前招标文件只负责校正适用性、补齐独立响应义务和提供可定位依据。目录判断由 Opencode 完成，固定程序只提取结构事实、导航原文并验证完整性。
+
+命令别名 `s2outline`（历史兼容名 `s2toc`）和工作区 `s2_toc_workdir` 是内部名，用户侧阶段是 `S1 模板与目录`；完整映射见 `../STAGES.md`。
 
 ## 核心原则
 

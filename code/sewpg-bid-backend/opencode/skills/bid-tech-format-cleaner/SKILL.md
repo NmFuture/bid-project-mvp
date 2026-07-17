@@ -1,11 +1,12 @@
 ---
 name: bid-tech-format-cleaner
 description: 当用户要求清洗已成稿技术标 Word 格式、根据技术标目录提升标题样式、插入目录、统一页眉或清理技术标正文样式时使用。
+allowed-tools: [Read, Bash]
 ---
 
 # 技术标成稿 Word 格式清洗
 
-本 skill 只处理已经成稿的技术标 `.docx`。它根据 S2/S5 准备好的技术标目录 JSON 定位标题，统一 Word 标题、目录、页眉、页面方向和正文基础格式。
+本 skill 只处理已经成稿的技术标 `.docx`，属于成稿后处理阶段。它根据后端在 `s5_format_switch_workdir` 准备的技术标目录 JSON（由 S1 目录阶段产物转换而来）定位标题，统一 Word 标题、目录、页眉、页面方向和正文基础格式。历史目录编号映射见 `../STAGES.md`。
 
 ## 输入
 
@@ -15,7 +16,7 @@ manifest 必须包含：
 - `outlineFile`：技术标目录 JSON，支持 `sections/children` 或后端转换后的技术标 outline。
 - `outputFile`：清洗后 `.docx` 输出路径，不能与 `inputFile` 相同。
 - `projectName`：项目名称，用于页眉。
-- `styleSpecPath`：可选。后端默认传入 `bid-tech-assembler/references/heading_style.json`。
+- `styleSpecPath`：可选。后端默认传入 `bid-tech-assembler/references/heading_style.json`——该文件是技术标标题样式的共享契约（本 skill 脚本无此参数时也回退到同一路径，并 import assembler 的 `numbering_fixer` 模块）；assembler 重构目录时必须同步本 skill，消费方清单见 `bid-tech-assembler/references/constraints.md`。
 
 ## 执行命令
 

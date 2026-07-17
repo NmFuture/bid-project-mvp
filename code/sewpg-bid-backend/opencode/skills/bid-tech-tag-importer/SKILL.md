@@ -1,7 +1,7 @@
 ---
 name: bid-tech-tag-importer
 description: 技术标素材库「导入标签」的模糊匹配兜底。输入未精确命中的 Excel 行（文件名 + 目录层级 + 待打标签）和目标子树内的候选文件索引，输出 bid-tech-tag-match-v1 JSON，为每行给出最可能的候选文件 ID、置信度和理由。仅做匹配，不写库。
-allowed-tools: [Read, Bash, Write]
+allowed-tools: [Read]
 ---
 
 # 技术标标签导入 · 模糊匹配
