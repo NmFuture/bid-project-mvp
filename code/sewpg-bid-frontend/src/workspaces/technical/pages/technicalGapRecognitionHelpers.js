@@ -44,10 +44,11 @@ export const isStructuralItem = (item) => (
 export const TECHNICAL_GAP_READY_SCORE = 0.99
 export const TECHNICAL_GAP_WEAK_SCORE = 0.3
 
+// 标签命名规范（产品意见 2026-07-17）：组合状态用短横线连接，不用逗号；「待完善」统一改叫「待确认」。
 export const TECHNICAL_GAP_TAG_CONFIG = {
   needs_material: { label: '人工补充', variant: 'error' },
-  needs_refine: { label: '已匹配，待完善', variant: 'warn' },
-  needs_fill: { label: '已匹配，待填写', variant: 'info' },
+  needs_refine: { label: '已匹配-待确认', variant: 'warn' },
+  needs_fill: { label: '已匹配-待填写', variant: 'info' },
   ready: { label: '已就绪', variant: 'done' },
 }
 

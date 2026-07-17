@@ -66,7 +66,7 @@ test('目录标签：无候选或全部低于30%判人工补充', () => {
   )
 })
 
-test('目录标签：30~98分候选且无待填写素材判已匹配待完善', () => {
+test('目录标签：30~98分候选且无待填写素材判已匹配-待确认', () => {
   assert.equal(
     technicalGapTagOf({ id: 'G1', decision: 'review_required', candidateMaterials: [{ id: 'M1', matchScore: 0.6 }] }),
     'needs_refine',

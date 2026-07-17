@@ -18,7 +18,6 @@ import {
   defaultAiFillParseFieldIds,
   defaultAiFillReferenceMaterialIds,
   isFillTemplateMaterial,
-  isStructuralItem,
   latestResolvedArtifact,
   matchedMaterialForItem,
   previewChoicesForItem,
@@ -28,13 +27,6 @@ import {
   technicalMatchScore,
   uniqueStrings,
 } from './technicalGapRecognitionHelpers'
-
-const decisionConfig = {
-  ready: true,
-  fill_required: true,
-  material_required: true,
-  review_required: true,
-}
 
 const previewKindLabels = {
   material: '素材预览',
@@ -86,11 +78,6 @@ const sourceRoutingText = (routing) => {
   return parts.join('；')
 }
 
-const decisionOf = (item) => {
-  const decision = String(item?.decision || '').trim()
-  return decisionConfig[decision] ? decision : ''
-}
-
 const normalizeItems = (payload) => {
   const planItems = payload?.gapPlan?.items
   if (Array.isArray(planItems) && planItems.length) return planItems
@@ -108,29 +95,6 @@ const normalizeItems = (payload) => {
   }))
 }
 
-const isAppendixFillItem = (item) => (
-  asObjectArray(item?.fillTasks).length > 0
-    && (
-      decisionOf(item) === 'fill_required'
-      || asObjectArray(item?.resolvedArtifacts).some((artifact) => artifact?.source === 'ai_fill')
-    )
-)
-
-const technicalActionMode = (item) => {
-  if (!item || isStructuralItem(item)) return ''
-  const decision = decisionOf(item)
-  if (decision === 'fill_required') return isAppendixFillItem(item) ? 'ai_table_fill' : 'material_match'
-  // review_required：候选素材已召回但用户还没选定（对齐商务标「候选≠决策」），
-  // 复用素材匹配的候选卡片交互，选中后由后端终审直接翻成 ready。
-  // 已有 AI 填写产物的应归入 AI 填写统计。
-  if (decision === 'review_required') return isAppendixFillItem(item) ? 'ai_table_fill' : 'material_match'
-  if (decision === 'material_required') return 'manual_upload'
-  if (decision === 'ready') return 'fixed_material'
-  if (String(item.status || '') === 'ignored') return 'ignored'
-  if (String(item.status || '') === 'resolved' || String(item.status || '') === 'matched') return 'fixed_material'
-  return 'manual_upload'
-}
-
 const materialTierLabels = {
   standard: '通用素材',
   customer: '客户素材',
@@ -140,9 +104,8 @@ const materialTierLabels = {
 function TechnicalTocActionBadge({ item, items }) {
   const tag = technicalGapTagOf(item, items)
   const config = TECHNICAL_GAP_TAG_CONFIG[tag]
-  if (!config) {
-    return <Badge className="business-toc-status-badge" shape="square" size="xs" variant="pending">空章节</Badge>
-  }
+  // 结构项/空章节无标签（v2 裁决 + 产品意见 2026-07-17：删除「空章节」等冗余提示）。
+  if (!config) return null
   return (
     <Badge className="business-toc-status-badge" shape="square" size="xs" variant={config.variant}>
       {config.label}
@@ -150,20 +113,10 @@ function TechnicalTocActionBadge({ item, items }) {
   )
 }
 
-function StatCard({ label, value }) {
-  return (
-    <div className="business-metric rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
-      <div className="flex min-h-7 items-center justify-between gap-3">
-        <div className="min-w-0 truncate text-xs font-semibold text-on-surface-variant">{label}</div>
-        <div className="shrink-0 text-lg font-headline font-bold tabular-nums text-primary">{value || 0}</div>
-      </div>
-    </div>
-  )
-}
-
 // 素材卡（产品裁决 2026-07-16 统一交互）：所有素材一律 预览 + 选择 两个按钮；
 // 待填写素材（命名纪律「待填写-」前缀，或本目录项填写任务的空白模板）额外有 AI填写。
 // leading 用于前置控件（如 AI 参考素材勾选框）。系统召回、来源推荐、搜索结果共用此卡片。
+// coverageLabel：父级覆盖等场景的说明标签，只加标签不改变卡片基础结构（产品意见 2026-07-17）。
 function MaterialCandidateCard({
   material,
   isSelected,
@@ -176,6 +129,7 @@ function MaterialCandidateCard({
   aiFillBusy,
   aiFillCompleted,
   leading,
+  coverageLabel,
 }) {
   const name = material.name || material.cleanedFileName || material.id || material.materialId
   const path = material.folderPath || material.path || material.id
@@ -195,7 +149,8 @@ function MaterialCandidateCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate font-medium text-on-surface">{name}</span>
-            {isSelected ? <Badge size="xs" variant="done">已选择素材</Badge> : null}
+            {isSelected ? <Badge size="xs" variant="done">已选中素材</Badge> : null}
+            {coverageLabel ? <Badge size="xs" variant="pending">{coverageLabel}</Badge> : null}
             {isFillable ? <Badge size="xs" variant="info">待填写</Badge> : null}
             {tierLabel ? <Badge size="xs" variant="pending">{tierLabel}</Badge> : null}
           </div>
@@ -220,7 +175,7 @@ function MaterialCandidateCard({
             size="sm"
             variant={isSelected ? 'secondary' : 'primary'}
           >
-            {selecting ? '选择中...' : isSelected ? '已选择' : '选择'}
+            {selecting ? '选择中...' : isSelected ? '已选中' : '选择'}
           </Button>
           {isFillable ? (
             <Button
@@ -743,8 +698,6 @@ export default function TechnicalGapRecognition({ showToast }) {
     [readableScopes],
   )
   const projectTurbineModel = data?.gapPlan?.projectTurbineModel || data?.projectTurbineModel || materialScope?.turbineModel || null
-  const selectedActionMode = technicalActionMode(selected)
-  const selectedIsAppendixFill = isAppendixFillItem(selected)
   const selectedAppendixTasks = asArray(selected?.appendixTasks)
   const selectedCandidateMaterials = asObjectArray(selected?.candidateMaterials)
   const selectedMaterialMatch = matchedMaterialForItem(selected, items)
@@ -809,16 +762,6 @@ export default function TechnicalGapRecognition({ showToast }) {
       : defaultAiFillReferenceMaterialIds(selected, [], task)
   }
   const selectedResolvedArtifact = latestResolvedArtifact(selected)
-  const selectedAiFillNeedsConfirmation = Boolean(
-    selectedResolvedArtifact?.source === 'ai_fill'
-    && (
-      selectedResolvedArtifact?.s7Ready === false
-      || (
-        selectedResolvedArtifact?.qualityReport?.status !== 'passed'
-        && selectedResolvedArtifact?.qualityGate !== 'human_confirmed'
-      )
-    ),
-  )
   // 已选用素材 id 集合：选用产物 source=material_library，对齐商务标已选高亮。
   const selectedMaterialIdSet = new Set(
     asObjectArray(selected?.resolvedArtifacts)
@@ -850,6 +793,62 @@ export default function TechnicalGapRecognition({ showToast }) {
     aiFillBusy,
     aiFillCompleted: selectedAiFillCompleted,
   })
+  // 待填写素材（解析空表/待填写模板）与普通参考素材平级进入统一候选池（产品意见 2026-07-17），
+  // 不再单独一套「待填写对象」区块；每张卡绑定各自的填写任务。
+  const fillBlankEntries = selectedFillTasks.map((task) => {
+    const blank = task?.blankSource || {}
+    const isMaterialBlank = blank.sourceType === 'material_fill_template'
+      || String(blank.materialId || blank.id || '').startsWith('RAW-')
+    return {
+      key: String(blank.materialId || blank.id || task.id || '').trim(),
+      task,
+      blank,
+      isMaterialBlank,
+      material: {
+        id: blank.materialId || blank.id,
+        name: blank.title || blank.cleanedFileName || blank.id || '待填写空表/Word',
+        folderPath: blank.folderPath || blank.sourceFile || blank.workspacePath || '招标文件解析产物',
+        cleanedFileName: blank.cleanedFileName,
+      },
+    }
+  })
+  // 默认选中规则（产品意见 2026-07-17）：人选/后端定案素材优先；待填写章节默认选中待填写素材；
+  // 否则默认选中匹配度最高的候选。仅前端展示默认——不自动持久化，人操作过才算已就绪。
+  const defaultSelection = (() => {
+    if (selectedMaterialMatch?.material) {
+      return {
+        kind: 'material',
+        material: selectedMaterialMatch.material,
+        inherited: selectedMaterialMatch.inherited,
+        sourceItem: selectedMaterialMatch.sourceItem,
+      }
+    }
+    if (fillBlankEntries.length) return { kind: 'blank', entry: fillBlankEntries[0] }
+    const top = selectedReferenceCandidates[0]
+    return top ? { kind: 'material', material: top, inherited: false } : null
+  })()
+  const selectedCardMaterialId = defaultSelection?.kind === 'material'
+    ? String(defaultSelection.material?.id || defaultSelection.material?.materialId || '').trim()
+    : ''
+  // 备选素材 = 统一候选池剔除已选中项（已选中的素材不再重复出现在备选列表中）。
+  const backupEntries = (() => {
+    const seen = new Set()
+    if (defaultSelection?.kind === 'blank') seen.add(defaultSelection.entry.key)
+    if (selectedCardMaterialId) seen.add(selectedCardMaterialId)
+    const wrappers = [
+      ...fillBlankEntries.map((entry) => ({ kind: 'blank', entry, key: entry.key })),
+      ...selectedReferenceCandidates.map((material) => ({
+        kind: 'material',
+        material,
+        key: String(material?.id || material?.materialId || '').trim(),
+      })),
+    ]
+    return wrappers.filter((wrapper) => {
+      if (!wrapper.key || seen.has(wrapper.key)) return false
+      seen.add(wrapper.key)
+      return true
+    })
+  })()
   const selectedPlaceholderLabels = compactList([
     ...asArray(selectedBlankSource?.placeholderLabels),
     ...selectedCandidateMaterials.flatMap((item) => asArray(item?.placeholderLabels)),
@@ -863,8 +862,6 @@ export default function TechnicalGapRecognition({ showToast }) {
     })
     return counts
   }, [items])
-  const taskItemCount = tagCounts.needs_material + tagCounts.needs_refine + tagCounts.needs_fill + tagCounts.ready
-  const pendingItemCount = tagCounts.needs_material + tagCounts.needs_refine + tagCounts.needs_fill
   const factConfirmed = factTable?.status === 'confirmed'
   const hasTechnicalGapPlan = data?.status === 'completed' && Boolean(data?.gapPlan || items.length)
   const generationRunning = generationStatus?.status === 'running'
@@ -1219,6 +1216,22 @@ export default function TechnicalGapRecognition({ showToast }) {
       setPreviewSession(null)
       setPreviewError('')
       setManualPreviewChoice(null)
+      // 产品意见 2026-07-17：用户主动发起 AI 填写即视为人工操作，产物直接进入选中/就绪状态，
+      // 不再保留「确认可合并」二次确认；质检未通过的产物由前端自动确认补齐门禁。
+      const artifact = payload?.artifact
+      const artifactId = String(artifact?.id || '').trim()
+      const autoConfirmNeeded = artifactId
+        && String(artifact?.source || '') === 'ai_fill'
+        && String(artifact?.qualityGate || '') !== 'human_confirmed'
+        && String(artifact?.qualityReport?.status || '') !== 'passed'
+      if (autoConfirmNeeded) {
+        try {
+          const confirmed = await technicalGapsAPI.confirmAiFillArtifact(id, selected.id, artifactId, { operator: '当前用户' })
+          if (confirmed) updatePayload(confirmed)
+        } catch {
+          // 自动确认失败不阻塞：产物已生成，刷新后可重新发起 AI 填写。
+        }
+      }
     }
     return payload
   }
@@ -1236,14 +1249,12 @@ export default function TechnicalGapRecognition({ showToast }) {
     })
   }
 
-  const handleConfirmAiFillArtifact = () => {
-    const artifactId = String(selectedResolvedArtifact?.id || '').trim()
-    if (!selected || !artifactId) return null
-    return runAction(
-      `confirm-ai-fill:${artifactId}`,
-      () => technicalGapsAPI.confirmAiFillArtifact(id, selected.id, artifactId, { operator: '当前用户' }),
-      (payload) => payload?.message || '已确认 AI 填写产物可用于合并',
-    )
+  // AI 已填写结果直达预览：预览弹窗内仍可切换参考素材/待填写原始素材/AI 结果三类视图。
+  const handlePreviewArtifact = () => {
+    const choice = selectedPreviewChoices.find((item) => item.kind === 'artifact')
+    if (!choice) return
+    setPreviewChoiceKey(choice.key)
+    setPreviewOpen(true)
   }
 
   useEffect(() => {
@@ -1364,25 +1375,22 @@ export default function TechnicalGapRecognition({ showToast }) {
         )}
       />
 
+      {/* 单条统计栏（产品意见 2026-07-17）：处理任务/待处理/已就绪卡片与四标签统计冗余，
+          仅保留目录节点总数 + 四标签明细（待处理 = 前三项之和，处理任务 = 四项之和）。 */}
       {isCompleted ? (
-        <div className="grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.56fr)]">
-          <div className="grid auto-rows-max gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            <StatCard label="目录节点" value={summary.totalTocItems ?? items.length} />
-            <StatCard label="处理任务" value={taskItemCount} />
-            <StatCard label="待处理" value={pendingItemCount} />
-            <StatCard label="已就绪" value={tagCounts.ready || 0} />
-          </div>
-          <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
-            <div className="flex min-h-7 items-center gap-2">
-              <div className="shrink-0 text-xs font-semibold text-on-surface-variant">目录状态统计</div>
-              <div className="grid min-w-0 flex-1 grid-cols-4 gap-1.5 text-center">
-                {['needs_material', 'needs_refine', 'needs_fill', 'ready'].map((key) => (
-                  <div key={key} className="flex min-h-7 items-center justify-center gap-1 rounded-md bg-surface-container-low px-2 py-0.5">
-                    <span className="text-[11px] text-on-surface-variant">{TECHNICAL_GAP_TAG_CONFIG[key].label}</span>
-                    <span className="text-sm font-headline font-bold tabular-nums text-primary">{tagCounts[key] || 0}</span>
-                  </div>
-                ))}
-              </div>
+        <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+          <div className="flex min-h-7 flex-wrap items-center gap-3">
+            <div className="flex shrink-0 items-center gap-2 border-r border-surface-container-high pr-3">
+              <span className="text-xs font-semibold text-on-surface-variant">目录节点</span>
+              <span className="text-lg font-headline font-bold tabular-nums text-primary">{summary.totalTocItems ?? items.length}</span>
+            </div>
+            <div className="grid min-w-0 flex-1 grid-cols-2 gap-1.5 text-center sm:grid-cols-4">
+              {['needs_material', 'needs_refine', 'needs_fill', 'ready'].map((key) => (
+                <div key={key} className="flex min-h-7 items-center justify-center gap-1 rounded-md bg-surface-container-low px-2 py-0.5">
+                  <span className="text-[11px] text-on-surface-variant">{TECHNICAL_GAP_TAG_CONFIG[key].label}</span>
+                  <span className="text-sm font-headline font-bold tabular-nums text-primary">{tagCounts[key] || 0}</span>
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -1473,188 +1481,131 @@ export default function TechnicalGapRecognition({ showToast }) {
 
                   <div className="min-h-0 flex-1 overflow-y-auto bg-surface-container-low">
                     <div className="space-y-4 p-4">
-                      {!selectedActionMode ? (
-                        <div className="business-dropzone rounded-md border border-dashed border-surface-container-high p-8 text-center">
-                          <span className="material-symbols-outlined text-4xl text-outline">inventory_2</span>
-                          <h3 className="mt-3 text-base font-headline font-bold text-on-surface">当前章节暂无系统任务</h3>
-                          <p className="mt-2 text-sm text-on-surface-variant">结构性目录项不需要单独匹配素材。</p>
-                        </div>
-                      ) : (
-                        <>
-                        {selectedMaterialMatch?.material ? (
-                          <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
-                            <div className="flex items-start gap-2">
-                              <div className="text-xs font-semibold text-on-surface">
-                                {selectedMaterialMatch.inherited ? '父章覆盖素材' : '最终匹配素材'}
+                      {/* 已选中素材（产品意见 2026-07-17）：每章默认展示一项选中素材——人选/后端定案优先，
+                          待填写章节默认为待填写素材，否则取匹配度最高候选（仅前端展示默认，不持久化）。
+                          空章节不渲染任何「未匹配到素材」提示，仅保留底部搜索/上传兜底。 */}
+                      {defaultSelection || selectedResolvedArtifact ? (
+                        <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
+                          <div className="text-xs font-semibold text-on-surface">已选中素材</div>
+                          {defaultSelection ? (
+                            <div className="mt-2">
+                              {defaultSelection.kind === 'blank' ? (
+                                <MaterialCandidateCard
+                                  material={defaultSelection.entry.material}
+                                  isSelected
+                                  busy={Boolean(busyAction)}
+                                  selecting={false}
+                                  onPreview={() => (defaultSelection.entry.isMaterialBlank
+                                    ? handlePreviewMaterial(defaultSelection.entry.material)
+                                    : handlePreviewBlankFor(defaultSelection.entry.blank))}
+                                  onSelect={defaultSelection.entry.isMaterialBlank ? handleSelectMaterial : null}
+                                  fillable
+                                  onAiFill={() => setAiFillModalTask(defaultSelection.entry.task)}
+                                  aiFillBusy={aiFillBusy}
+                                  aiFillCompleted={String(defaultSelection.entry.task?.status || '') === 'completed'}
+                                />
+                              ) : (
+                                <MaterialCandidateCard
+                                  material={defaultSelection.material}
+                                  isSelected
+                                  coverageLabel={defaultSelection.inherited
+                                    ? `父级覆盖 · ${defaultSelection.sourceItem?.number || defaultSelection.sourceItem?.title || '父章节'}`
+                                    : ''}
+                                  busy={Boolean(busyAction)}
+                                  selecting={busyAction === `select-material:${selected.id}:${selectedCardMaterialId}`}
+                                  onPreview={handlePreviewMaterial}
+                                  onSelect={handleSelectMaterial}
+                                  {...cardAiFillProps(defaultSelection.material)}
+                                />
+                              )}
+                            </div>
+                          ) : null}
+                          {/* AI 已填写结果/人工产物结果行：与参考素材、待填写原始素材区分展示，可直达预览。
+                              「确认可合并」二次确认已移除（产品意见 2026-07-17：填写完成直接进入选中状态）。 */}
+                          {selectedResolvedArtifact ? (
+                            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-surface-container-low px-3 py-2">
+                              <div className="min-w-0 text-xs">
+                                <div className="font-semibold text-on-surface">
+                                  {selectedResolvedArtifact?.source === 'ai_fill' ? 'AI 已填写结果' : '已生成结果'}
+                                </div>
+                                <div className="mt-1 truncate text-outline" title={selectedResolvedArtifact?.fileName || ''}>
+                                  {selectedResolvedArtifact?.fileName || '-'}
+                                </div>
+                              </div>
+                              <Button type="button" onClick={handlePreviewArtifact} disabled={Boolean(busyAction)} size="sm" variant="quiet">
+                                预览
+                              </Button>
+                            </div>
+                          ) : null}
+                          {selectedPlaceholderLabels.total ? (
+                            <div className="mt-3">
+                              <div className="text-[11px] font-semibold text-on-surface">识别到的待填字段</div>
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                {selectedPlaceholderLabels.visible.map((label) => (
+                                  <span key={label} className="rounded bg-surface-container-low px-2 py-0.5 text-[11px] text-on-surface-variant">
+                                    {label}
+                                  </span>
+                                ))}
+                                {selectedPlaceholderLabels.overflow ? (
+                                  <span className="rounded bg-surface-container-high px-2 py-0.5 text-[11px] text-outline">
+                                    +{selectedPlaceholderLabels.overflow}
+                                  </span>
+                                ) : null}
                               </div>
                             </div>
-                            <div className="mt-2">
-                              <MaterialCandidateCard
-                                material={selectedMaterialMatch.material}
-                                isSelected
-                                busy={Boolean(busyAction)}
-                                selecting={false}
-                                onPreview={handlePreviewMaterial}
-                                onSelect={handleSelectMaterial}
-                                {...cardAiFillProps(selectedMaterialMatch.material)}
-                              />
-                            </div>
-                          </section>
-                        ) : null}
+                          ) : null}
+                        </section>
+                      ) : null}
 
-                        {selectedSourceRouting && !selectedIsAppendixFill ? (
-                          <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="text-xs font-semibold text-on-surface">目录来源素材</div>
+                      {/* 备选素材：待填写素材与参考素材平级的统一候选池（已剔除选中项，无候选则整块不渲染）；
+                          被父章覆盖的子节不再单独展示匹配，避免重复匹配和重复拼接。 */}
+                      {!defaultSelection?.inherited && backupEntries.length ? (
+                        <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-xs font-semibold text-on-surface">备选素材</div>
+                            {selectedSourceRouting ? (
                               <span className="rounded bg-tertiary-fixed px-2 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed">
                                 规则规定
                               </span>
-                            </div>
-                            {selectedSourceRoutingSummary ? (
-                              <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-[11px] leading-relaxed text-on-surface-variant">
-                                {selectedSourceRoutingSummary}
-                              </div>
                             ) : null}
-                            {selectedReferenceCandidates.length ? (
-                              <div className="mt-2 space-y-2">
-                                {selectedReferenceCandidates.map((material) => {
-                                  const materialId = String(material?.id || material?.materialId || '').trim()
-                                  return (
-                                    <MaterialCandidateCard
-                                      key={materialId || material.name}
-                                      material={material}
-                                      isSelected={selectedMaterialIdSet.has(materialId)}
-                                      busy={Boolean(busyAction) || !materialId}
-                                      selecting={busyAction === `select-material:${selected.id}:${materialId}`}
-                                      onPreview={handlePreviewMaterial}
-                                      onSelect={handleSelectMaterial}
-                                      {...cardAiFillProps(material)}
-                                    />
-                                  )
-                                })}
-                              </div>
+                          </div>
+                          {selectedSourceRoutingSummary ? (
+                            <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-[11px] leading-relaxed text-on-surface-variant">
+                              {selectedSourceRoutingSummary}
+                            </div>
+                          ) : null}
+                          <div className="mt-2 space-y-2">
+                            {backupEntries.map((wrapper) => (wrapper.kind === 'blank' ? (
+                              <MaterialCandidateCard
+                                key={wrapper.key}
+                                material={wrapper.entry.material}
+                                isSelected={false}
+                                busy={Boolean(busyAction)}
+                                selecting={false}
+                                onPreview={() => (wrapper.entry.isMaterialBlank
+                                  ? handlePreviewMaterial(wrapper.entry.material)
+                                  : handlePreviewBlankFor(wrapper.entry.blank))}
+                                onSelect={wrapper.entry.isMaterialBlank ? handleSelectMaterial : null}
+                                fillable
+                                onAiFill={() => setAiFillModalTask(wrapper.entry.task)}
+                                aiFillBusy={aiFillBusy}
+                                aiFillCompleted={String(wrapper.entry.task?.status || '') === 'completed'}
+                              />
                             ) : (
-                              <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-[11px] text-outline">
-                                暂未在素材库中找到对应来源。
-                              </div>
-                            )}
-                          </section>
-                        ) : null}
-
-                        {selectedIsAppendixFill ? (
-                          <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
-                            {/* 「等待AI填写」红色状态徽章已移除（产品裁决）：填写状态由素材卡上的
-                                AI填写按钮承载（AI填写 → AI填写中... → ✓已AI填写）。 */}
-                            <div className="flex flex-wrap items-start justify-between gap-3">
-                              <span className="text-xs font-semibold text-on-surface">待填写对象</span>
-                            </div>
-                            {/* 空副表/待填写 Word 本身就是待填写素材：逐个渲染统一素材卡（预览+选择+AI填写）。
-                                解析空表不是素材库素材，选择按钮禁用；多任务项（如附表F.5）各卡填各自任务。 */}
-                            <div className="mt-2 space-y-2">
-                              {selectedFillTasks.map((task) => {
-                                const blank = task?.blankSource || {}
-                                const isMaterialBlank = blank.sourceType === 'material_fill_template'
-                                  || String(blank.materialId || blank.id || '').startsWith('RAW-')
-                                const blankMaterial = {
-                                  id: blank.materialId || blank.id,
-                                  name: blank.title || blank.cleanedFileName || blank.id || '待填写空表/Word',
-                                  folderPath: blank.folderPath || blank.sourceFile || blank.workspacePath || '招标文件解析产物',
-                                  cleanedFileName: blank.cleanedFileName,
-                                }
-                                return (
-                                  <MaterialCandidateCard
-                                    key={task.id || blank.id || blankMaterial.name}
-                                    material={blankMaterial}
-                                    isSelected={false}
-                                    busy={Boolean(busyAction)}
-                                    selecting={false}
-                                    onPreview={() => (isMaterialBlank ? handlePreviewMaterial(blankMaterial) : handlePreviewBlankFor(blank))}
-                                    onSelect={isMaterialBlank ? handleSelectMaterial : null}
-                                    fillable
-                                    onAiFill={() => setAiFillModalTask(task)}
-                                    aiFillBusy={aiFillBusy}
-                                    aiFillCompleted={String(task?.status || '') === 'completed'}
-                                  />
-                                )
-                              })}
-                            </div>
-                            {/* 「待执行 AI 填写 + 路径」冗余状态行已移除（产品裁决）：
-                                仅在已有填写产物时显示结果行，承载产物名与「确认可合并」验收动作。 */}
-                            {selectedResolvedArtifact ? (
-                              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-surface-container-low px-3 py-2">
-                                <div className="min-w-0 text-xs">
-                                  <div className="font-semibold text-on-surface">已生成填写结果</div>
-                                  <div className="mt-1 truncate text-outline" title={selectedResolvedArtifact?.fileName || ''}>
-                                    {selectedResolvedArtifact?.fileName || '-'}
-                                  </div>
-                                </div>
-                                {selectedAiFillNeedsConfirmation ? (
-                                  <button
-                                    type="button"
-                                    onClick={handleConfirmAiFillArtifact}
-                                    disabled={Boolean(busyAction)}
-                                    className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-tertiary-fixed px-3 text-xs font-semibold text-on-tertiary-fixed hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    <span className="material-symbols-outlined text-[16px]">fact_check</span>
-                                    {busyAction === `confirm-ai-fill:${selectedResolvedArtifact?.id}` ? '确认中...' : '确认可合并'}
-                                  </button>
-                                ) : null}
-                              </div>
-                            ) : null}
-                            {selectedPlaceholderLabels.total ? (
-                              <div className="mt-3">
-                                <div className="text-[11px] font-semibold text-on-surface">识别到的待填字段</div>
-                                <div className="mt-2 flex flex-wrap gap-1.5">
-                                  {selectedPlaceholderLabels.visible.map((label) => (
-                                    <span key={label} className="rounded bg-surface-container-low px-2 py-0.5 text-[11px] text-on-surface-variant">
-                                      {label}
-                                    </span>
-                                  ))}
-                                  {selectedPlaceholderLabels.overflow ? (
-                                    <span className="rounded bg-surface-container-high px-2 py-0.5 text-[11px] text-outline">
-                                      +{selectedPlaceholderLabels.overflow}
-                                    </span>
-                                  ) : null}
-                                </div>
-                              </div>
-                            ) : null}
-                          </section>
-                        ) : null}
-
-                        {!selectedIsAppendixFill && selectedReferenceCandidates.length ? (
-                          <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
-                            <div>
-                              <div className="text-xs font-semibold text-on-surface">
-                                {selectedActionMode === 'fixed_material' ? '备选素材' : '候选素材匹配'}
-                              </div>
-                              <div className="mt-1 text-[11px] text-outline">
-                                {selectedActionMode === 'fixed_material'
-                                  ? '已自动选定主素材；本章需要多份素材拼装或替换时，可从备选中加选，选用即并入合并列表。'
-                                  : '系统在当前项目、客户和通用素材边界内召回的候选，选用后作为该目录项的可合入素材。'}
-                              </div>
-                            </div>
-                            <div className="mt-3 space-y-2">
-                              {selectedReferenceCandidates.map((material) => {
-                                const materialId = String(material?.id || material?.materialId || '').trim()
-                                return (
-                                  <MaterialCandidateCard
-                                    key={materialId || material.name}
-                                    material={material}
-                                    isSelected={selectedMaterialIdSet.has(materialId)}
-                                    busy={Boolean(busyAction) || !materialId}
-                                    selecting={busyAction === `select-material:${selected.id}:${materialId}`}
-                                    onPreview={handlePreviewMaterial}
-                                    onSelect={handleSelectMaterial}
-                                    {...cardAiFillProps(material)}
-                                  />
-                                )
-                              })}
-                            </div>
-                          </section>
-                        ) : null}
-
-                        </>
-                      )}
+                              <MaterialCandidateCard
+                                key={wrapper.key}
+                                material={wrapper.material}
+                                isSelected={selectedMaterialIdSet.has(wrapper.key)}
+                                busy={Boolean(busyAction)}
+                                selecting={busyAction === `select-material:${selected.id}:${wrapper.key}`}
+                                onPreview={handlePreviewMaterial}
+                                onSelect={handleSelectMaterial}
+                                {...cardAiFillProps(wrapper.material)}
+                              />
+                            )))}
+                          </div>
+                        </section>
+                      ) : null}
 
                       {/* 统一兜底入口（产品裁决）：所有目录项底部都可搜索限定素材库、或直接上传素材；
                           上传成功即选用为本目录项的匹配素材（人工产物，终审直接就绪）。 */}
