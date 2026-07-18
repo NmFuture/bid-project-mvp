@@ -553,7 +553,7 @@ class SystemSettingsService:
                 asset_type="default_template",
                 table_key=template_type,
                 file_name=clean_name,
-                version=version or datetime.now().strftime("%Y.%m"),
+                version=version or datetime.now().strftime("%Y.%m.%d"),
                 minio_key=key,
                 minio_bucket=bucket,
                 size_bytes=size,

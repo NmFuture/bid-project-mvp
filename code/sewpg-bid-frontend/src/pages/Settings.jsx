@@ -22,6 +22,13 @@ const safeMessage = (error, fallback) => {
 const deepEqualByKeys = (left, right, keys) =>
   keys.every((key) => JSON.stringify(left?.[key]) === JSON.stringify(right?.[key]))
 
+const todayVersionLabel = () => {
+  const now = new Date()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${now.getFullYear()}.${month}.${day}`
+}
+
 export default function Settings({ showToast = () => {} }) {
   const [activeSection, setActiveSection] = useState('defaultTemplates')
   const [loading, setLoading] = useState(true)
@@ -63,7 +70,7 @@ export default function Settings({ showToast = () => {} }) {
   const [defaultTemplates, setDefaultTemplates] = useState([])
   const [defaultTemplateTypes, setDefaultTemplateTypes] = useState([])
   const [defaultTemplateUploadType, setDefaultTemplateUploadType] = useState('technical')
-  const [defaultTemplateUploadVersion, setDefaultTemplateUploadVersion] = useState('2026.05')
+  const [defaultTemplateUploadVersion, setDefaultTemplateUploadVersion] = useState(todayVersionLabel)
   const [defaultTemplateUploading, setDefaultTemplateUploading] = useState(false)
   const [defaultTemplateActivatingId, setDefaultTemplateActivatingId] = useState('')
   const [defaultTemplateDeletingId, setDefaultTemplateDeletingId] = useState('')
@@ -294,7 +301,7 @@ export default function Settings({ showToast = () => {} }) {
       formData.append('file', file)
       formData.append('fileName', file.name)
       formData.append('templateType', defaultTemplateUploadType)
-      formData.append('version', defaultTemplateUploadVersion || '2026.05')
+      formData.append('version', defaultTemplateUploadVersion || todayVersionLabel())
       const result = await settingsAPI.defaultTemplates.upload(formData)
       setDefaultTemplates(result.items || [])
       showToast('系统默认模板上传成功')
