@@ -101,6 +101,13 @@ const materialTierLabels = {
   project: '项目素材',
 }
 
+// 合并清单条目的来源标签：resolvedArtifacts 的先后顺序即正文合并顺序。
+const artifactSourceLabels = {
+  material_library: '选用素材',
+  manual_upload: '人工上传',
+  ai_fill: 'AI填写',
+}
+
 function TechnicalTocActionBadge({ item, items }) {
   const tag = technicalGapTagOf(item, items)
   const config = TECHNICAL_GAP_TAG_CONFIG[tag]
@@ -117,6 +124,8 @@ function TechnicalTocActionBadge({ item, items }) {
 // 待填写素材（命名纪律「待填写-」前缀，或本目录项填写任务的空白模板）额外有 AI填写。
 // leading 用于前置控件（如 AI 参考素材勾选框）。系统召回、来源推荐、搜索结果共用此卡片。
 // coverageLabel：父级覆盖等场景的说明标签，只加标签不改变卡片基础结构（产品意见 2026-07-17）。
+// onSelect 为空时不渲染「选择」按钮（如解析空表、AI 参考素材弹窗）；
+// onCardClick 使整卡可点（AI 弹窗里点卡即勾选参考素材），卡内按钮均阻断冒泡。
 function MaterialCandidateCard({
   material,
   isSelected,
@@ -130,6 +139,7 @@ function MaterialCandidateCard({
   aiFillCompleted,
   leading,
   coverageLabel,
+  onCardClick,
 }) {
   const name = material.name || material.cleanedFileName || material.id || material.materialId
   const path = material.folderPath || material.path || material.id
@@ -140,9 +150,10 @@ function MaterialCandidateCard({
   // 展示极简口径（产品裁决）：文件名 + 匹配度 + 路径，不展示召回原因/清洗状态/证据片段。
   return (
     <div
+      onClick={onCardClick || undefined}
       className={`rounded-md border px-3 py-2 text-xs ${
         isSelected ? 'border-secondary bg-secondary-container/50' : 'border-surface-container-high bg-surface-container-lowest'
-      }`}
+      }${onCardClick ? ' cursor-pointer hover:border-primary/40' : ''}`}
     >
       <div className="flex items-start justify-between gap-3">
         {leading || null}
@@ -165,22 +176,39 @@ function MaterialCandidateCard({
           <span className="mt-1 block truncate text-[11px] text-outline" title={path}>{path}</span>
         </div>
         <div className="flex shrink-0 flex-col gap-2">
-          <Button type="button" onClick={() => onPreview(material)} disabled={busy} size="sm" variant="quiet">
-            预览
-          </Button>
           <Button
             type="button"
-            onClick={() => onSelect?.(material)}
-            disabled={busy || !onSelect}
+            onClick={(event) => {
+              event.stopPropagation()
+              onPreview(material)
+            }}
+            disabled={busy}
             size="sm"
-            variant={isSelected ? 'secondary' : 'primary'}
+            variant="quiet"
           >
-            {selecting ? '选择中...' : isSelected ? '已选中' : '选择'}
+            预览
           </Button>
+          {onSelect ? (
+            <Button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                onSelect(material)
+              }}
+              disabled={busy}
+              size="sm"
+              variant={isSelected ? 'secondary' : 'primary'}
+            >
+              {selecting ? '选择中...' : isSelected ? '已选中' : '选择'}
+            </Button>
+          ) : null}
           {isFillable ? (
             <Button
               type="button"
-              onClick={() => onAiFill?.(material)}
+              onClick={(event) => {
+                event.stopPropagation()
+                onAiFill?.(material)
+              }}
               disabled={busy || !onAiFill}
               title={onAiFill ? (aiFillCompleted ? '已完成，可再次发起 AI 填写' : '') : '本目录项暂无填写任务'}
               size="sm"
@@ -373,17 +401,17 @@ const FactMaintenanceModal = ({
 
 // AI 填写参考素材选择弹窗（产品裁决：点素材卡上的 AI填写 → 弹窗选参考素材 → 执行）。
 // 弹窗内出现哪些素材的规则后续由匹配规则定义，当前沿用本目录项的推荐/召回候选池。
+// 单一职责（产品意见 2026-07-17）：弹窗只做「挑 AI 参考素材」一件事——卡上不出现
+// 「选择（选用为章节素材）」按钮，整卡点击即勾选/取消，避免「勾选」与「选择」两个概念混淆。
 function AiFillReferenceModal({
   open,
   blankTitle,
   sourceRoutingSummary,
   candidates,
   referenceIds,
-  selectedMaterialIdSet,
   busy,
   onToggle,
   onPreview,
-  onSelect,
   onConfirm,
   onClose,
 }) {
@@ -417,21 +445,26 @@ function AiFillReferenceModal({
                 <MaterialCandidateCard
                   key={materialId || material.name}
                   material={material}
-                  isSelected={selectedMaterialIdSet.has(materialId)}
+                  isSelected={false}
                   busy={busy || !materialId}
                   selecting={false}
                   onPreview={onPreview}
-                  onSelect={onSelect}
+                  onSelect={null}
                   fillable={false}
+                  onCardClick={materialId && !busy ? () => onToggle(materialId) : null}
                   leading={(
-                    <label className="flex shrink-0 items-center gap-1 pt-0.5" title="勾选后作为本次 AI 填写的参考素材">
+                    <label
+                      className="flex shrink-0 items-center gap-1 pt-0.5"
+                      title="勾选后作为本次 AI 填写的参考素材"
+                      onClick={(event) => event.stopPropagation()}
+                    >
                       <input
                         type="checkbox"
                         checked={checked}
                         disabled={busy || !materialId}
                         onChange={() => onToggle(materialId)}
                         className="h-4 w-4 shrink-0 accent-primary"
-                        aria-label={`选择 ${material.name || material.cleanedFileName || materialId} 用于 AI 填写`}
+                        aria-label={`勾选 ${material.name || material.cleanedFileName || materialId} 用于 AI 填写`}
                       />
                       {checked ? (
                         <span className="rounded bg-secondary-container px-1.5 py-0.5 text-[10px] font-semibold text-on-secondary-container">
@@ -610,6 +643,8 @@ export default function TechnicalGapRecognition({ showToast }) {
   const workspaceSlug = useWorkspaceSlug()
   const [data, setData] = useState(null)
   const [selectedId, setSelectedId] = useState('')
+  // 目录标签筛选（产品意见 2026-07-17）：点顶部统计标签只看对应目录项，再点一次取消。
+  const [tagFilter, setTagFilter] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [busyAction, setBusyAction] = useState('')
@@ -679,7 +714,9 @@ export default function TechnicalGapRecognition({ showToast }) {
   }, [loadData, loadGenerationStatus])
 
   const items = useMemo(() => normalizeItems(data), [data])
-  const filteredItems = items
+  const filteredItems = useMemo(() => (
+    tagFilter ? items.filter((item) => technicalGapTagOf(item, items) === tagFilter) : items
+  ), [items, tagFilter])
   const effectiveSelectedId = filteredItems.some((item) => item.id === selectedId)
     ? selectedId
     : (filteredItems[0]?.id || '')
@@ -762,6 +799,9 @@ export default function TechnicalGapRecognition({ showToast }) {
       : defaultAiFillReferenceMaterialIds(selected, [], task)
   }
   const selectedResolvedArtifact = latestResolvedArtifact(selected)
+  // 本章合并清单（产品意见 2026-07-17 方案A）：全部已选用素材/上传/AI 产物按选用先后
+  // （即正文合并顺序）展示，替代只显示最新一条产物的旧结果行。
+  const mergeArtifacts = asObjectArray(selected?.resolvedArtifacts)
   // 已选用素材 id 集合：选用产物 source=material_library，对齐商务标已选高亮。
   const selectedMaterialIdSet = new Set(
     asObjectArray(selected?.resolvedArtifacts)
@@ -835,6 +875,8 @@ export default function TechnicalGapRecognition({ showToast }) {
     const seen = new Set()
     if (defaultSelection?.kind === 'blank') seen.add(defaultSelection.entry.key)
     if (selectedCardMaterialId) seen.add(selectedCardMaterialId)
+    // 已并入合并清单的素材不再出现在备选（方案A：清单是唯一的已选用视图）。
+    selectedMaterialIdSet.forEach((materialId) => seen.add(materialId))
     const wrappers = [
       ...fillBlankEntries.map((entry) => ({ kind: 'blank', entry, key: entry.key })),
       ...selectedReferenceCandidates.map((material) => ({
@@ -1232,6 +1274,12 @@ export default function TechnicalGapRecognition({ showToast }) {
           // 自动确认失败不阻塞：产物已生成，刷新后可重新发起 AI 填写。
         }
       }
+      // 产品意见 2026-07-17（二）：填写完成直接弹出结果预览——当场检查，有问题立刻重新填写，
+      // 弥补免二次确认后缺失的验收环节。
+      if (artifactId) {
+        setPreviewChoiceKey(`artifact:${artifactId}`)
+        setPreviewOpen(true)
+      }
     }
     return payload
   }
@@ -1249,12 +1297,18 @@ export default function TechnicalGapRecognition({ showToast }) {
     })
   }
 
-  // AI 已填写结果直达预览：预览弹窗内仍可切换参考素材/待填写原始素材/AI 结果三类视图。
-  const handlePreviewArtifact = () => {
-    const choice = selectedPreviewChoices.find((item) => item.kind === 'artifact')
-    if (!choice) return
-    setPreviewChoiceKey(choice.key)
-    setPreviewOpen(true)
+  // 合并清单条目预览：优先该产物的 OnlyOffice 会话（AI 填写/上传产物），
+  // 选用素材类产物无会话时回退到素材本体预览。
+  const handlePreviewMergeArtifact = (artifact) => {
+    const key = `artifact:${String(artifact?.id || '').trim()}`
+    const choice = selectedPreviewChoices.find((item) => item.kind === 'artifact' && item.key === key)
+    if (choice) {
+      setPreviewChoiceKey(choice.key)
+      setPreviewOpen(true)
+      return
+    }
+    const materialId = String(artifact?.materialId || '').trim()
+    if (materialId) handlePreviewMaterial({ id: materialId, name: artifact?.fileName || materialId })
   }
 
   useEffect(() => {
@@ -1385,12 +1439,23 @@ export default function TechnicalGapRecognition({ showToast }) {
               <span className="text-lg font-headline font-bold tabular-nums text-primary">{summary.totalTocItems ?? items.length}</span>
             </div>
             <div className="grid min-w-0 flex-1 grid-cols-2 gap-1.5 text-center sm:grid-cols-4">
-              {['needs_material', 'needs_refine', 'needs_fill', 'ready'].map((key) => (
-                <div key={key} className="flex min-h-7 items-center justify-center gap-1 rounded-md bg-surface-container-low px-2 py-0.5">
-                  <span className="text-[11px] text-on-surface-variant">{TECHNICAL_GAP_TAG_CONFIG[key].label}</span>
-                  <span className="text-sm font-headline font-bold tabular-nums text-primary">{tagCounts[key] || 0}</span>
-                </div>
-              ))}
+              {['needs_material', 'needs_refine', 'needs_fill', 'ready'].map((key) => {
+                const active = tagFilter === key
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setTagFilter(active ? '' : key)}
+                    title={active ? '再点一次取消筛选' : `只看「${TECHNICAL_GAP_TAG_CONFIG[key].label}」目录项`}
+                    className={`flex min-h-7 items-center justify-center gap-1 rounded-md px-2 py-0.5 transition-colors ${
+                      active ? 'bg-primary-fixed ring-1 ring-primary' : 'bg-surface-container-low hover:bg-surface-container-high'
+                    }`}
+                  >
+                    <span className="text-[11px] text-on-surface-variant">{TECHNICAL_GAP_TAG_CONFIG[key].label}</span>
+                    <span className="text-sm font-headline font-bold tabular-nums text-primary">{tagCounts[key] || 0}</span>
+                  </button>
+                )
+              })}
             </div>
           </div>
         </div>
@@ -1424,8 +1489,19 @@ export default function TechnicalGapRecognition({ showToast }) {
           <div className="grid h-[min(78vh,900px)] min-h-[520px] gap-4 overflow-hidden p-3 xl:grid-cols-[460px_minmax(0,1fr)] 2xl:grid-cols-[520px_minmax(0,1fr)]">
             <div className="min-h-0 flex flex-col overflow-hidden">
               <div className="h-12 shrink-0 px-2 py-3">
-                <div className="text-xs font-semibold text-on-surface">
-                  目录项 · {filteredItems.length}/{items.length}
+                <div className="flex items-center gap-2 text-xs font-semibold text-on-surface">
+                  <span>目录项 · {filteredItems.length}/{items.length}</span>
+                  {tagFilter ? (
+                    <button
+                      type="button"
+                      onClick={() => setTagFilter('')}
+                      title="取消筛选"
+                      className="inline-flex items-center gap-0.5 rounded bg-surface-container-high px-1.5 py-0.5 text-[11px] font-semibold text-on-surface-variant hover:bg-surface-dim"
+                    >
+                      {TECHNICAL_GAP_TAG_CONFIG[tagFilter]?.label}
+                      <span className="material-symbols-outlined text-[13px]">close</span>
+                    </button>
+                  ) : null}
                 </div>
               </div>
               <div className="min-h-0 flex-1 overflow-auto">
@@ -1481,13 +1557,23 @@ export default function TechnicalGapRecognition({ showToast }) {
 
                   <div className="min-h-0 flex-1 overflow-y-auto bg-surface-container-low">
                     <div className="space-y-4 p-4">
-                      {/* 已选中素材（产品意见 2026-07-17）：每章默认展示一项选中素材——人选/后端定案优先，
-                          待填写章节默认为待填写素材，否则取匹配度最高候选（仅前端展示默认，不持久化）。
-                          空章节不渲染任何「未匹配到素材」提示，仅保留底部搜索/上传兜底。 */}
-                      {defaultSelection || selectedResolvedArtifact ? (
+                      {/* 已选中素材 / 本章合并清单（产品意见 2026-07-17）：
+                          - 尚无已选用产物时，展示一项默认选中素材（人选/定案优先→待填写素材→最高分候选，
+                            仅前端展示不持久化）；空章节不渲染任何「未匹配到素材」提示，仅留底部搜索/上传兜底。
+                          - 已有选用产物时，升级为合并清单：全部产物按合并顺序编号列出（方案A）。 */}
+                      {defaultSelection || mergeArtifacts.length ? (
                         <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
-                          <div className="text-xs font-semibold text-on-surface">已选中素材</div>
-                          {defaultSelection ? (
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-xs font-semibold text-on-surface">
+                              {mergeArtifacts.length ? '本章合并清单' : '已选中素材'}
+                            </div>
+                            {mergeArtifacts.length ? (
+                              <span className="text-[11px] text-outline">
+                                正文将按以下顺序合并 {mergeArtifacts.length} 份
+                              </span>
+                            ) : null}
+                          </div>
+                          {!mergeArtifacts.length && defaultSelection ? (
                             <div className="mt-2">
                               {defaultSelection.kind === 'blank' ? (
                                 <MaterialCandidateCard
@@ -1520,21 +1606,37 @@ export default function TechnicalGapRecognition({ showToast }) {
                               )}
                             </div>
                           ) : null}
-                          {/* AI 已填写结果/人工产物结果行：与参考素材、待填写原始素材区分展示，可直达预览。
+                          {/* 合并清单：每条产物按合并顺序编号，带来源标签与直达预览。
                               「确认可合并」二次确认已移除（产品意见 2026-07-17：填写完成直接进入选中状态）。 */}
-                          {selectedResolvedArtifact ? (
-                            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-surface-container-low px-3 py-2">
-                              <div className="min-w-0 text-xs">
-                                <div className="font-semibold text-on-surface">
-                                  {selectedResolvedArtifact?.source === 'ai_fill' ? 'AI 已填写结果' : '已生成结果'}
+                          {mergeArtifacts.length ? (
+                            <div className="mt-2 space-y-1.5">
+                              {mergeArtifacts.map((artifact, index) => (
+                                <div
+                                  key={artifact.id || `${artifact.fileName || ''}-${index}`}
+                                  className="flex items-center justify-between gap-2 rounded-md bg-surface-container-low px-3 py-2"
+                                >
+                                  <div className="flex min-w-0 items-center gap-2 text-xs">
+                                    <span className="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-on-surface-variant">
+                                      {index + 1}
+                                    </span>
+                                    <span className="truncate font-medium text-on-surface" title={artifact.fileName || ''}>
+                                      {artifact.fileName || artifact.title || artifact.id || '-'}
+                                    </span>
+                                    <Badge size="xs" variant={artifact.source === 'ai_fill' ? 'info' : 'done'}>
+                                      {artifactSourceLabels[artifact.source] || '产物'}
+                                    </Badge>
+                                  </div>
+                                  <Button
+                                    type="button"
+                                    onClick={() => handlePreviewMergeArtifact(artifact)}
+                                    disabled={Boolean(busyAction)}
+                                    size="sm"
+                                    variant="quiet"
+                                  >
+                                    预览
+                                  </Button>
                                 </div>
-                                <div className="mt-1 truncate text-outline" title={selectedResolvedArtifact?.fileName || ''}>
-                                  {selectedResolvedArtifact?.fileName || '-'}
-                                </div>
-                              </div>
-                              <Button type="button" onClick={handlePreviewArtifact} disabled={Boolean(busyAction)} size="sm" variant="quiet">
-                                预览
-                              </Button>
+                              ))}
                             </div>
                           ) : null}
                           {selectedPlaceholderLabels.total ? (
@@ -1595,7 +1697,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                               <MaterialCandidateCard
                                 key={wrapper.key}
                                 material={wrapper.material}
-                                isSelected={selectedMaterialIdSet.has(wrapper.key)}
+                                isSelected={false}
                                 busy={Boolean(busyAction)}
                                 selecting={busyAction === `select-material:${selected.id}:${wrapper.key}`}
                                 onPreview={handlePreviewMaterial}
@@ -1703,11 +1805,9 @@ export default function TechnicalGapRecognition({ showToast }) {
         sourceRoutingSummary={selectedSourceRoutingSummary}
         candidates={selectedReferenceCandidates}
         referenceIds={aiFillModalTask ? aiFillReferenceIdsFor(aiFillModalTask) : []}
-        selectedMaterialIdSet={selectedMaterialIdSet}
         busy={Boolean(busyAction)}
         onToggle={(materialId) => handleToggleAiFillReference(aiFillModalTask, materialId)}
         onPreview={handlePreviewMaterial}
-        onSelect={handleSelectMaterial}
         onConfirm={() => {
           const task = aiFillModalTask
           setAiFillModalTask(null)
