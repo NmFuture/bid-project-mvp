@@ -112,7 +112,7 @@ async def settings_default_templates_upload(
         return await system_settings_service.default_template_upload(
             template_type=str(form.get("templateType") or ""),
             file_name=str(getattr(upload, "filename", "") or form.get("fileName") or ""),
-            version=str(form.get("version") or "2026.04"),
+            version=str(form.get("version") or ""),
             upload=upload,
             mime_type=str(getattr(upload, "content_type", "") or ""),
             user=user,
@@ -121,7 +121,7 @@ async def settings_default_templates_upload(
     return await system_settings_service.default_template_upload(
         template_type=str(data.get("templateType") or ""),
         file_name=str(data.get("fileName") or ""),
-        version=str(data.get("version") or "2026.04"),
+        version=str(data.get("version") or ""),
         data=_decode_request_bytes(data.get("data")),
         mime_type=str(data.get("mimeType") or ""),
         user=user,
@@ -134,6 +134,14 @@ async def settings_default_templates_activate(
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     return await system_settings_service.default_template_activate(template_id, user=user)
+
+
+@router.delete("/api/settings/default-templates/{template_id}")
+async def settings_default_templates_delete(
+    template_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    return await system_settings_service.default_template_delete(template_id, user=user)
 
 
 @router.get("/api/settings/health")

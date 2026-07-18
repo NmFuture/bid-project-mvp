@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import logging
 import threading
 import time
 from datetime import datetime
@@ -23,6 +24,8 @@ from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
 from app.services.template_store import is_valid_docx_bytes, is_valid_docx_stream
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TEMPLATE_TYPES = {
     "technical": "技术标",
@@ -480,11 +483,11 @@ class SystemSettingsService:
     async def default_templates_list(self) -> dict[str, Any]:
         await self._ensure_tables()
         async with async_session() as session:
+            # 返回全部版本（含未生效的历史模板），前端才能对旧版本执行“设为默认”或删除
             rows = (
                 await session.execute(
                     select(TemplateAsset)
                     .where(TemplateAsset.asset_type == "default_template")
-                    .where(TemplateAsset.is_active.is_(True))
                     .order_by(TemplateAsset.table_key, desc(TemplateAsset.created_at), desc(TemplateAsset.id))
                 )
             ).scalars().all()
@@ -550,7 +553,7 @@ class SystemSettingsService:
                 asset_type="default_template",
                 table_key=template_type,
                 file_name=clean_name,
-                version=version or datetime.now().strftime("%Y.%m"),
+                version=version or datetime.now().strftime("%Y.%m.%d"),
                 minio_key=key,
                 minio_bucket=bucket,
                 size_bytes=size,
@@ -614,6 +617,64 @@ class SystemSettingsService:
         )
         payload = await self.default_templates_list()
         payload.update({"message": "Activated", "item": next(item for item in payload["items"] if item["id"] == template_id)})
+        return payload
+
+    async def default_template_delete(self, template_id: str, *, user: dict[str, Any] | None = None) -> dict[str, Any]:
+        await self._ensure_tables()
+        numeric_id = int(str(template_id).replace("TPL-", ""))
+        async with async_session() as session:
+            target = (
+                await session.execute(
+                    select(TemplateAsset).where(
+                        TemplateAsset.id == numeric_id,
+                        TemplateAsset.asset_type == "default_template",
+                    )
+                )
+            ).scalar_one_or_none()
+            if target is None:
+                raise PeripheralError(404, "默认模板不存在", "DEFAULT_TEMPLATE_NOT_FOUND")
+            before = self._template_asset_to_dict(target)
+            was_active = bool(target.is_active)
+            table_key = str(target.table_key or "")
+            minio_bucket = target.minio_bucket or settings.minio_buckets["templates"]
+            minio_key = target.minio_key or ""
+            await session.delete(target)
+            fallback: TemplateAsset | None = None
+            if was_active:
+                # 删除的是当前默认模板时，回退启用同类型最新的历史版本，避免该类型无默认模板可用
+                fallback = (
+                    await session.execute(
+                        select(TemplateAsset)
+                        .where(
+                            TemplateAsset.asset_type == "default_template",
+                            TemplateAsset.table_key == table_key,
+                            TemplateAsset.id != numeric_id,
+                        )
+                        .order_by(desc(TemplateAsset.created_at), desc(TemplateAsset.id))
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if fallback is not None:
+                    fallback.is_active = True
+            await session.commit()
+
+        if minio_key:
+            try:
+                minio_client.remove_object(minio_bucket, minio_key)
+            except Exception:
+                logger.warning("默认模板 MinIO 对象删除失败：%s/%s", minio_bucket, minio_key, exc_info=True)
+
+        await audit_service.record(
+            action="删除系统默认模板",
+            action_type="config",
+            module_id="settings",
+            module_label="系统设置",
+            target=f"{DEFAULT_TEMPLATE_TYPES.get(table_key, table_key)} / {before.get('name', '')}",
+            user=user,
+            diff={"before": before, "after": {}},
+        )
+        payload = await self.default_templates_list()
+        payload.update({"message": "Deleted"})
         return payload
 
     async def backups_list(self) -> dict[str, Any]:
@@ -770,22 +831,30 @@ class SystemSettingsService:
             return {"id": item_id, "name": name, "status": "offline", "latency": "-", "uptime": "-", "detail": "未启用。"}
         if not base_url or not model:
             return {"id": item_id, "name": name, "status": "offline", "latency": "-", "uptime": "-", "detail": "未配置 Base URL 或模型。"}
-        try:
-            result = await self.test_model_config(
-                kind,
-                {"timeoutMs": min(int(config.get("timeoutMs") or 30000), 5000)},
-                record_audit=False,
-            )
-            return {
-                "id": item_id,
-                "name": name,
-                "status": "online",
-                "latency": f"{int(result.get('latencyMs') or 0)}ms",
-                "uptime": "-",
-                "detail": f"模型可用：{model}",
-            }
-        except Exception as exc:
-            return {"id": item_id, "name": name, "status": "offline", "latency": "-", "uptime": "-", "detail": str(exc)}
+        # LLM 首 token 延迟常超过 5s，过紧的超时会让状态在刷新间在线/离线跳变；
+        # 放宽上限并在单次失败后重试一次，只有连续两次失败才判离线。
+        timeout_ms = min(int(config.get("timeoutMs") or 30000), 15000)
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                result = await self.test_model_config(
+                    kind,
+                    {"timeoutMs": timeout_ms},
+                    record_audit=False,
+                )
+                return {
+                    "id": item_id,
+                    "name": name,
+                    "status": "online",
+                    "latency": f"{int(result.get('latencyMs') or 0)}ms",
+                    "uptime": "-",
+                    "detail": f"模型可用：{model}",
+                }
+            except Exception as exc:
+                last_error = exc
+                if attempt == 0:
+                    await asyncio.sleep(0.5)
+        return {"id": item_id, "name": name, "status": "offline", "latency": "-", "uptime": "-", "detail": str(last_error)}
 
 
 system_settings_service = SystemSettingsService()

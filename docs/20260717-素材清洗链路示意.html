@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>素材清洗链路示意</title>
+<style>
+  :root {
+    --bg: #F6F8F9;
+    --surface: #FFFFFF;
+    --ink: #16232B;
+    --muted: #5B6B74;
+    --line: #DCE4E7;
+    --accent: #0E7C86;
+    --accent-soft: #E3F0F1;
+    --ok: #2E7D4F;
+    --ok-soft: #E4F1E9;
+    --warn: #B07818;
+    --warn-soft: #F7EEDB;
+    --fail: #B3402E;
+    --fail-soft: #F8E7E3;
+    --skip: #5B6B74;
+    --skip-soft: #EBEFF1;
+    --code-bg: #EDF2F4;
+    --shadow: 0 1px 3px rgba(22, 35, 43, 0.07);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111B21;
+      --surface: #1A2730;
+      --ink: #E4ECEF;
+      --muted: #93A6AF;
+      --line: #2C3C46;
+      --accent: #4FB3BC;
+      --accent-soft: #163B40;
+      --ok: #6CC392;
+      --ok-soft: #17352A;
+      --warn: #D9A84E;
+      --warn-soft: #3A2F17;
+      --fail: #E08872;
+      --fail-soft: #3E241E;
+      --skip: #93A6AF;
+      --skip-soft: #24323A;
+      --code-bg: #22313A;
+      --shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #111B21;
+    --surface: #1A2730;
+    --ink: #E4ECEF;
+    --muted: #93A6AF;
+    --line: #2C3C46;
+    --accent: #4FB3BC;
+    --accent-soft: #163B40;
+    --ok: #6CC392;
+    --ok-soft: #17352A;
+    --warn: #D9A84E;
+    --warn-soft: #3A2F17;
+    --fail: #E08872;
+    --fail-soft: #3E241E;
+    --skip: #93A6AF;
+    --skip-soft: #24323A;
+    --code-bg: #22313A;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  }
+  :root[data-theme="light"] {
+    --bg: #F6F8F9;
+    --surface: #FFFFFF;
+    --ink: #16232B;
+    --muted: #5B6B74;
+    --line: #DCE4E7;
+    --accent: #0E7C86;
+    --accent-soft: #E3F0F1;
+    --ok: #2E7D4F;
+    --ok-soft: #E4F1E9;
+    --warn: #B07818;
+    --warn-soft: #F7EEDB;
+    --fail: #B3402E;
+    --fail-soft: #F8E7E3;
+    --skip: #5B6B74;
+    --skip-soft: #EBEFF1;
+    --code-bg: #EDF2F4;
+    --shadow: 0 1px 3px rgba(22, 35, 43, 0.07);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    font-size: 15px;
+    line-height: 1.75;
+  }
+  code, .mono {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+  }
+  main {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 48px 24px 96px;
+  }
+
+  /* ---------- header ---------- */
+  header { margin-bottom: 40px; }
+  .eyebrow {
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  h1 {
+    font-size: 30px;
+    font-weight: 700;
+    margin: 0 0 10px;
+    letter-spacing: 0.01em;
+    text-wrap: balance;
+  }
+  .subtitle { color: var(--muted); max-width: 40em; margin: 0; }
+
+  /* ---------- TLDR strip ---------- */
+  .tldr {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin: 28px 0 0;
+  }
+  .tldr-item {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    box-shadow: var(--shadow);
+  }
+  .tldr-item .k {
+    font-size: 12px;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+  }
+  .tldr-item .v { font-weight: 600; font-size: 14px; line-height: 1.5; }
+
+  /* ---------- sections ---------- */
+  section { margin-top: 56px; }
+  h2 {
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0 0 6px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  h2 .sec-no {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .sec-desc { color: var(--muted); margin: 0 0 22px; max-width: 42em; }
+
+  /* ---------- flow ---------- */
+  .flow { position: relative; padding-left: 34px; }
+  .flow::before {
+    content: "";
+    position: absolute;
+    left: 11px;
+    top: 14px;
+    bottom: 14px;
+    width: 2px;
+    background: var(--line);
+  }
+  .step { position: relative; padding-bottom: 22px; }
+  .step:last-child { padding-bottom: 0; }
+  .step::before {
+    content: "";
+    position: absolute;
+    left: -30px;
+    top: 8px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 3px solid var(--bg);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+  .step-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px;
+    box-shadow: var(--shadow);
+  }
+  .step-title {
+    font-weight: 700;
+    font-size: 15px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .step-file {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--muted);
+    background: var(--code-bg);
+    padding: 2px 8px;
+    border-radius: 999px;
+  }
+  .step-body { margin-top: 6px; color: var(--ink); font-size: 14px; }
+  .step-body p { margin: 0 0 6px; }
+  .step-body p:last-child { margin-bottom: 0; }
+
+  /* suffix routing table inside step 1 */
+  .routes { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+  .route {
+    display: grid;
+    grid-template-columns: minmax(150px, 220px) auto 1fr;
+    gap: 10px;
+    align-items: center;
+    font-size: 13.5px;
+  }
+  .route .arrow { color: var(--muted); }
+  .route .ext { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; }
+  @media (max-width: 560px) {
+    .route { grid-template-columns: 1fr; gap: 2px; }
+    .route .arrow { display: none; }
+  }
+
+  /* ---------- pills ---------- */
+  .pill {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 10px;
+    border-radius: 999px;
+    line-height: 1.6;
+    white-space: nowrap;
+  }
+  .pill.ok    { background: var(--ok-soft);   color: var(--ok); }
+  .pill.warn  { background: var(--warn-soft); color: var(--warn); }
+  .pill.fail  { background: var(--fail-soft); color: var(--fail); }
+  .pill.skip  { background: var(--skip-soft); color: var(--skip); }
+  .pill.acc   { background: var(--accent-soft); color: var(--accent); }
+
+  /* ---------- branch cards ---------- */
+  .branches {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 14px;
+  }
+  .branch {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-top: 3px solid var(--accent);
+    border-radius: 10px;
+    padding: 16px 18px;
+    box-shadow: var(--shadow);
+  }
+  .branch h3 { margin: 0 0 2px; font-size: 15px; }
+  .branch .b-ext {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .branch ul { margin: 10px 0 0; padding-left: 18px; font-size: 13.5px; }
+  .branch li { margin-bottom: 5px; }
+  .branch li:last-child { margin-bottom: 0; }
+
+  /* ---------- status grid ---------- */
+  .status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 12px;
+  }
+  .status {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    box-shadow: var(--shadow);
+    font-size: 13.5px;
+  }
+  .status .st-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .status .st-name { font-weight: 700; }
+  .status p { margin: 0; color: var(--muted); }
+
+  /* ---------- file table ---------- */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 13.5px; }
+  th, td { text-align: left; padding: 10px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  th {
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    font-weight: 600;
+    background: var(--code-bg);
+  }
+  td code { white-space: nowrap; }
+
+  /* ---------- note ---------- */
+  .note {
+    border-left: 3px solid var(--warn);
+    background: var(--warn-soft);
+    border-radius: 0 10px 10px 0;
+    padding: 14px 18px;
+    font-size: 14px;
+  }
+  .note strong { color: var(--warn); }
+
+  footer {
+    margin-top: 64px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+</style>
+
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">bid-project-mvp · 后端架构示意</div>
+    <h1>素材文件清洗链路</h1>
+    <p class="subtitle">上传即触发、Redis 异步执行、由 skill 内置的确定性脚本完成清洗 —— 线上链路没有 AI 参与判断，输出稳定可复现。</p>
+    <div class="tldr">
+      <div class="tldr-item">
+        <div class="k">触发时机</div>
+        <div class="v">上传素材时自动入队<br>（含覆盖 / 新版本上传）</div>
+      </div>
+      <div class="tldr-item">
+        <div class="k">执行方式</div>
+        <div class="v">Redis 队列 + 后台 worker<br>异步消费，不阻塞上传</div>
+      </div>
+      <div class="tldr-item">
+        <div class="k">实现载体</div>
+        <div class="v">skill 目录里的脚本<br><code>driver.py</code>（subprocess 调用）</div>
+      </div>
+      <div class="tldr-item">
+        <div class="k">清洗产物</div>
+        <div class="v">标准 <code>.docx</code> 清洗稿<br>+ <code>cleaning_manifest.json</code></div>
+      </div>
+    </div>
+  </header>
+
+  <section>
+    <h2><span class="sec-no">01</span>主流程：从上传到清洗稿入库</h2>
+    <p class="sec-desc">六步链路，前两步在上传请求内同步完成，其余全部在后台 worker 中异步执行。</p>
+    <div class="flow">
+
+      <div class="step">
+        <div class="step-card">
+          <div class="step-title">用户上传素材，按后缀分流 <span class="step-file">material_upload_operations.py · material_taxonomy.py</span></div>
+          <div class="step-body">
+            <p>文件写入 MinIO <code>raw/</code> 路径并建库记录，同时按后缀给出初始清洗状态：</p>
+            <div class="routes">
+              <div class="route"><span class="ext">.pdf / .xlsx / .xls / .xlsm / .docx</span><span class="arrow">→</span><span><span class="pill acc">pending</span>&nbsp;等待清洗转换为 Word</span></div>
+              <div class="route"><span class="ext">png / jpg / gif / webp / tif …</span><span class="arrow">→</span><span><span class="pill skip">original_only</span>&nbsp;图片原件直接保留，不清洗</span></div>
+              <div class="route"><span class="ext">其他后缀（含 .doc）</span><span class="arrow">→</span><span><span class="pill fail">failed</span>&nbsp;暂不支持自动清洗</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-card">
+          <div class="step-title">清洗任务入队 <span class="step-file">material_raw_object_operations.py</span></div>
+          <div class="step-body">
+            <p>上传事务提交后，对每个 <span class="pill acc">pending</span> 文件调用 <code>enqueue_cleaning_job</code>，往 Redis 塞一个 <code>material_cleaning</code> 任务。覆盖 / 新版本上传会先删旧清洗稿，再重新入队。队列故障只告警、不阻断上传。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-card">
+          <div class="step-title">后台 worker 消费任务 <span class="step-file">workers/redis_worker.py</span></div>
+          <div class="step-body">
+            <p>worker 取出 <code>material_cleaning</code> 任务，执行 <code>clean_material_file_sync</code>，把素材状态置为「cleaning · 正在清洗素材并转换为 Word」。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-card">
+          <div class="step-title">下载原件，subprocess 调用 skill 脚本 <span class="step-file">services/material_cleaning.py</span></div>
+          <div class="step-body">
+            <p>从 MinIO 下载原件到临时目录，然后直接以子进程运行 <code>opencode/skills/bid-material-format-cleaner/scripts/driver.py</code>（固定带 <code>--no-feishu</code>，默认 30 分钟超时）。skill 定位是「AI 编排 + 确定性脚本」，但后端这条线跳过 AI 编排，直接跑脚本。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-card">
+          <div class="step-title">driver 按类型路由到三个清洗分支 <span class="step-file">driver.py → pdf_to_word / excel_to_word / word 事务</span></div>
+          <div class="step-body">
+            <p>递归扫描源目录，按后缀走 PDF / Excel / Word 分支（详见下节），产物统一为标准 <code>.docx</code>，并写出结构化清单 <code>cleaning_manifest.json</code>。原始文件全程只读，绝不修改。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-card">
+          <div class="step-title">清洗稿回传 MinIO，状态写入素材元数据 <span class="step-file">services/material_cleaning.py</span></div>
+          <div class="step-body">
+            <p>清洗稿上传到 <code>cleaned/RAW-xxxx/</code>，manifest 里的状态、日志尾部、<code>cleanNeedsHumanReview</code>（需人工复核）、<code>cleanUsableForRetrieval</code>（可否检索）等写进素材 <code>ext_fields</code>，供商务 Wiki 和素材匹配等下游使用。前端通过 <code>/materials/raw/{id}/cleaned/preview·content</code> 查看清洗稿。</p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="sec-no">02</span>三个清洗分支各做什么</h2>
+    <p class="sec-desc">目标一致：剥离封面、目录、前言等无用内容，只保留正文及其标题层级、图片和排版，统一收口为 Word。</p>
+    <div class="branches">
+      <div class="branch">
+        <h3>PDF 转 Word</h3>
+        <div class="b-ext">.pdf</div>
+        <ul>
+          <li>整体转换为 <code>.docx</code>，图片抽取到同名子文件夹</li>
+          <li>插入的标题默认带 <strong>Heading&nbsp;1</strong></li>
+          <li>源目录不留任何图片或中间文件</li>
+        </ul>
+      </div>
+      <div class="branch">
+        <h3>Excel 转 Word</h3>
+        <div class="b-ext">.xlsx / .xls / .xlsm</div>
+        <ul>
+          <li>每个 sheet 生成 <strong>Heading&nbsp;2</strong> + 标准表格</li>
+          <li>保留原始行列结构</li>
+          <li>输出落到镜像目录同名 <code>.docx</code></li>
+        </ul>
+      </div>
+      <div class="branch">
+        <h3>Word 规范化</h3>
+        <div class="b-ext">.docx</div>
+        <ul>
+          <li>「单临时副本事务 + 预检快路径」：先探针判断正文起点</li>
+          <li>有封面 / 目录 / 前言 / 审批页 → 最多一次 trim 切掉</li>
+          <li>normalize：标题去前置数字编号，保留或补齐 Heading 层级</li>
+          <li>验证失败最多纠偏一次，仍异常则标 REVIEW，不做无上限试错</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="sec-no">03</span>清洗结果四态</h2>
+    <p class="sec-desc">driver 把每个文件固定归入四种状态之一，状态与详情随 manifest 回写到素材元数据。</p>
+    <div class="status-grid">
+      <div class="status">
+        <div class="st-head"><span class="pill ok">OK</span><span class="st-name">已清洗</span></div>
+        <p>完成转换 / 切割并规范化，清洗稿可直接使用。</p>
+      </div>
+      <div class="status">
+        <div class="st-head"><span class="pill skip">SKIP</span><span class="st-name">无需切割</span></div>
+        <p>前部已是正文，跳过 trim，只做规范化 + 验证。</p>
+      </div>
+      <div class="status">
+        <div class="st-head"><span class="pill warn">REVIEW</span><span class="st-name">需人工复核</span></div>
+        <p>已完成事务内处理，但结果不确定，标记 <code>cleanNeedsHumanReview</code>。</p>
+      </div>
+      <div class="status">
+        <div class="st-head"><span class="pill fail">FAIL</span><span class="st-name">硬失败</span></div>
+        <p>依赖缺失、文件损坏等，不产出清洗稿，错误信息进报告。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="sec-no">04</span>关键文件对照</h2>
+    <div class="table-wrap">
+      <table>
+        <tr><th>环节</th><th>位置</th><th>职责</th></tr>
+        <tr>
+          <td>上传分流</td>
+          <td><code>app/services/material_upload_operations.py</code></td>
+          <td>上传落库 + 按后缀定初始清洗状态，提交后批量入队</td>
+        </tr>
+        <tr>
+          <td>状态判定</td>
+          <td><code>app/services/material_taxonomy.py</code></td>
+          <td><code>clean_status_for_new_file</code>：pending / original_only / failed</td>
+        </tr>
+        <tr>
+          <td>入队</td>
+          <td><code>app/services/material_raw_object_operations.py</code></td>
+          <td><code>enqueue_cleaning_job</code>，任务类型 <code>material_cleaning</code></td>
+        </tr>
+        <tr>
+          <td>消费</td>
+          <td><code>app/workers/redis_worker.py</code></td>
+          <td>后台 worker 分发到清洗服务</td>
+        </tr>
+        <tr>
+          <td>清洗编排</td>
+          <td><code>app/services/material_cleaning.py</code></td>
+          <td>下载原件 → 跑 driver → 解析 manifest → 回传 MinIO + 写状态</td>
+        </tr>
+        <tr>
+          <td>清洗实现</td>
+          <td><code>opencode/skills/bid-material-format-cleaner/</code></td>
+          <td><code>scripts/driver.py</code> 总控三分支，输出 docx + manifest</td>
+        </tr>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="sec-no">05</span>目前的边界</h2>
+    <div class="note">
+      <p style="margin:0"><strong>没有手动「重新清洗」接口。</strong>路由里只有查看清洗稿的 GET 接口，触发全靠上传自动入队。清洗失败后想重试，目前只能通过覆盖上传（overwrite / version）重新触发；如需人工重触发能力，需要单独加接口。</p>
+    </div>
+  </section>
+
+  <footer>整理自 bid-project-mvp 代码现状（sewpg-bid-backend）· 2026-07-17</footer>
+</main>
+</body>
+</html>
