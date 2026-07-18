@@ -711,6 +711,14 @@ class TocSkillScriptTests(unittest.TestCase):
 
         for principle in (
             "历史投标模板目录",
+            "三级以内尽可能细",
+            "最多三级",
+            "模板存在三级目录时",
+            "必须学习到第三级",
+            "尽可能保留三级结构",
+            "第四级及更深层级",
+            "只作为对应第三级节点的内容参考",
+            "再结合招标文件",
             "自动目录",
             "目录页",
             "正文标题结构",
@@ -779,6 +787,62 @@ class TocSkillScriptTests(unittest.TestCase):
             "未读完的表格",
         ):
             self.assertNotIn(redundant_contract, content)
+
+    def test_bid_outline_finalize_allows_three_levels_and_rejects_fourth_level(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(output)}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            payload = {
+                "schema_version": "technical-outline.v1",
+                "nodes": [
+                    {
+                        "number": "1",
+                        "title": "总体技术方案",
+                        "suggestion_action": "必要",
+                        "suggestion_reason": "",
+                        "children": [
+                            {
+                                "number": "1.1",
+                                "title": "机组设计",
+                                "suggestion_action": "必要",
+                                "suggestion_reason": "",
+                                "children": [
+                                    {
+                                        "number": "1.1.1",
+                                        "title": "关键部件设计",
+                                        "suggestion_action": "必要",
+                                        "suggestion_reason": "",
+                                        "children": [],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+            output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            result = outline_runner.finalize_manifest(manifest, manifest_path)
+            self.assertEqual(result["summary"]["total_nodes"], 3)
+
+            payload["nodes"][0]["children"][0]["children"][0]["children"].append(
+                {
+                    "number": "1.1.1.1",
+                    "title": "叶片设计参数",
+                    "suggestion_action": "必要",
+                    "suggestion_reason": "",
+                    "children": [],
+                }
+            )
+            output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(SystemExit, "技术标目录最多三级"):
+                outline_runner.finalize_manifest(manifest, manifest_path)
 
     def test_bid_outline_docker_command_exposes_review_navigation(self) -> None:
         dockerfile = (BACKEND_ROOT / "opencode" / "Dockerfile").read_text(encoding="utf-8")

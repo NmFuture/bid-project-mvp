@@ -562,10 +562,18 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
     }
 
 
-def validate_nodes(nodes: list[Any], *, action_counts: Counter[str], path: str = "nodes") -> int:
+def validate_nodes(
+    nodes: list[Any],
+    *,
+    action_counts: Counter[str],
+    path: str = "nodes",
+    depth: int = 1,
+) -> int:
     total = 0
     for index, raw_node in enumerate(nodes):
         node_path = f"{path}[{index}]"
+        if depth > 3:
+            raise SystemExit(f"技术标目录最多三级，{node_path} 为第{depth}级目录节点")
         if not isinstance(raw_node, dict):
             raise SystemExit(f"{node_path} must be an object")
         node = raw_node
@@ -590,7 +598,12 @@ def validate_nodes(nodes: list[Any], *, action_counts: Counter[str], path: str =
         if not isinstance(node["children"], list):
             raise SystemExit(f"{node_path}.children must be a list")
         action_counts[action] += 1
-        total += 1 + validate_nodes(node["children"], action_counts=action_counts, path=f"{node_path}.children")
+        total += 1 + validate_nodes(
+            node["children"],
+            action_counts=action_counts,
+            path=f"{node_path}.children",
+            depth=depth + 1,
+        )
     return total
 
 

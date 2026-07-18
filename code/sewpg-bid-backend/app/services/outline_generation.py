@@ -233,6 +233,8 @@ Use the {skill_name} skill.
 
 manifest：{manifest_path}
 
+历史投标模板是目录主骨架：模板存在三级目录时必须学习到第三级，并尽可能保留三级结构；最终目录三级以内尽可能细，最终目录最多三级。第四级及更深层级只作为对应第三级节点的内容参考，不单独输出。再结合招标文件仅做有证据的增加或删除校正，不得把参数、逐条条款或表格字段机械扩成目录。
+
 先执行 `s2outline prepare {manifest_path}`，再执行 `s2outline headings {manifest_path}`，优先读取招标全文的自动目录项、正文标题和附表标题。随后由 Opencode 根据模板适用性和目录判断需要，自主选择调用 `s2outline next-batch`、`s2outline read`、`s2outline window`、`s2outline table`、`s2outline tables` 和 `s2outline review-batch` 详读重点章节；不要求读完所有正文分块、表格或附表内容。不得编写脚本自动生成或提交 review、requirements、disposition，不得直接读取 `tender_review_chunks.json`、状态文件或义务台账。每条 `target_node` 只能指向一个节点，跨节点义务拆成多条。执行 `s2outline status {manifest_path}` 了解阅读覆盖情况，但 `pending_chunk_count` 和 `unfinished_table_count` 不作为完成门禁。将最终 `technical-outline.v1` 写入 manifest.outputFile，确认最终版不再修改后执行：
 
 {TECH_OUTLINE_FINALIZE_COMMAND} {manifest_path}
