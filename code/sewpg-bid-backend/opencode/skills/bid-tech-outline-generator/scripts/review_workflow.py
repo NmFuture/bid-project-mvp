@@ -18,6 +18,9 @@ CHUNKS_SCHEMA_VERSION = "tender-review-chunks.v1"
 STATE_SCHEMA_VERSION = "tender-review-state.v1"
 LEDGER_SCHEMA_VERSION = "tender-requirement-ledger.v1"
 DEFAULT_CHUNK_CHAR_LIMIT = 12_000
+STRUCTURAL_TITLE_PATTERN = re.compile(
+    r"^(?:第\s*[一二三四五六七八九十百千万零〇两0-9]+\s*[章节篇卷]|\d+(?:\.\d+)*[.、]?\s+)\S+"
+)
 ALLOWED_DISPOSITIONS = {
     "map_existing",
     "suggest_add",
@@ -54,6 +57,20 @@ def _heading_level(paragraph: Paragraph) -> int:
     style_name = str(getattr(paragraph.style, "name", "") or "")
     match = re.search(r"(?:Heading|标题)\s*(\d+)", style_name, re.IGNORECASE)
     return max(1, min(9, int(match.group(1)))) if match else 0
+
+
+def _toc_level(paragraph: Paragraph) -> int:
+    style_name = str(getattr(paragraph.style, "name", "") or "")
+    match = re.search(r"(?:TOC|目录)\s*(\d+)", style_name, re.IGNORECASE)
+    return max(1, min(9, int(match.group(1)))) if match else 0
+
+
+def _structural_title_level(text: str) -> int:
+    value = clean_text(text)
+    if not STRUCTURAL_TITLE_PATTERN.match(value):
+        return 0
+    decimal = re.match(r"^(\d+(?:\.\d+)*)", value)
+    return min(9, decimal.group(1).count(".") + 1) if decimal else 1
 
 
 def _table_rows(table: Table, *, file_id: str, table_id: str) -> list[dict[str, Any]]:
@@ -94,6 +111,8 @@ def _source_blocks(source: dict[str, Any]) -> list[dict[str, Any]]:
                     "type": "paragraph",
                     "text": text,
                     "heading_level": _heading_level(item),
+                    "toc_level": _toc_level(item),
+                    "structural_title_level": _structural_title_level(text),
                 }
             )
             continue
@@ -244,6 +263,80 @@ def _review_artifacts(work_dir: Path) -> tuple[dict[str, Any], dict[str, Any], d
     state = _load_payload(work_dir / "tender_review_state.json", STATE_SCHEMA_VERSION)
     ledger = _load_payload(work_dir / "requirement_ledger.json", LEDGER_SCHEMA_VERSION)
     return chunks, state, ledger
+
+
+def tender_headings(work_dir: Path) -> dict[str, Any]:
+    chunks = _load_payload(work_dir / "tender_review_chunks.json", CHUNKS_SCHEMA_VERSION)
+    files_by_id: dict[str, dict[str, Any]] = {}
+    paragraph_locations: dict[tuple[str, str], dict[str, Any]] = {}
+    for chunk in chunks.get("chunks") or []:
+        if not isinstance(chunk, dict):
+            continue
+        file_id = clean_text(chunk.get("file_id"))
+        if not file_id:
+            continue
+        file_entry = files_by_id.setdefault(
+            file_id,
+            {
+                "file_id": file_id,
+                "file_name": clean_text(chunk.get("file_name")) or file_id,
+                "items": [],
+            },
+        )
+        for block in chunk.get("blocks") or []:
+            if not isinstance(block, dict) or block.get("type") != "paragraph":
+                continue
+            paragraph_locations.setdefault(
+                (file_id, clean_text(block.get("text"))),
+                {
+                    "evidence_id": clean_text(block.get("evidence_id")),
+                    "body_index": int(block.get("body_index") or 0),
+                },
+            )
+            toc_level = int(block.get("toc_level") or 0)
+            heading_level = int(block.get("heading_level") or 0)
+            title_level = int(block.get("structural_title_level") or 0)
+            if not toc_level and not heading_level and not title_level:
+                continue
+            file_entry["items"].append(
+                {
+                    "kind": "toc" if toc_level else "heading" if heading_level else "title",
+                    "level": toc_level or heading_level or title_level,
+                    "text": clean_text(block.get("text")),
+                    "evidence_id": clean_text(block.get("evidence_id")),
+                    "body_index": int(block.get("body_index") or 0),
+                }
+            )
+
+    appendices: list[dict[str, Any]] = []
+    inventory_path = work_dir / "tender_appendix_inventory.json"
+    if inventory_path.is_file():
+        try:
+            inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"tender appendix inventory is invalid: {inventory_path}: {exc}") from exc
+        if not isinstance(inventory, dict) or inventory.get("schema_version") != "tender-appendix-inventory.v1":
+            raise SystemExit(f"tender appendix inventory schema is invalid: {inventory_path}")
+        for item in inventory.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            public_item = deepcopy(item)
+            location = paragraph_locations.get(
+                (clean_text(item.get("file_id")), clean_text(item.get("raw_text")))
+            )
+            if location:
+                public_item.update(location)
+            appendices.append(public_item)
+
+    files = list(files_by_id.values())
+    return {
+        "schema_version": "tender-headings.v1",
+        "file_count": len(files),
+        "heading_count": sum(len(item["items"]) for item in files),
+        "appendix_count": len(appendices),
+        "files": files,
+        "appendices": appendices,
+    }
 
 
 def _state_by_chunk_id(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -885,10 +978,6 @@ def _evidence_texts(chunks: dict[str, Any]) -> dict[str, str]:
 def validate_review_completion(work_dir: Path, nodes: list[dict[str, Any]]) -> dict[str, Any]:
     chunks, state, ledger = _review_artifacts(work_dir)
     status = review_status(work_dir)
-    if status["pending_chunk_count"]:
-        raise SystemExit(f"仍有未审阅分块: {status['pending_chunk_count']}")
-    if status["unfinished_table_count"]:
-        raise SystemExit(f"仍有未完整读取表格: {status['unfinished_table_count']}")
 
     flat_nodes = _flatten_nodes(nodes)
     evidence_by_id = _evidence_texts(chunks)

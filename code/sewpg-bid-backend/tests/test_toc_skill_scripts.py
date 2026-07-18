@@ -730,7 +730,7 @@ class TocSkillScriptTests(unittest.TestCase):
             "tender_appendix_inventory.json",
             "following_table_count",
             "父子标题不得同时输出",
-            "逐项核对",
+            "掌握全部附表标题",
             "technical-outline.v1",
             "suggestion_action",
             "suggestion_reason",
@@ -740,6 +740,7 @@ class TocSkillScriptTests(unittest.TestCase):
             "children",
             "固定程序只提取结构事实",
             "s2outline prepare",
+            "s2outline headings",
             "s2outline next-batch",
             "s2outline read",
             "s2outline window",
@@ -747,8 +748,8 @@ class TocSkillScriptTests(unittest.TestCase):
             "s2outline tables",
             "s2outline review-batch",
             "s2outline status",
-            "pending_chunk_count",
-            "unfinished_table_count",
+            "自主选择",
+            "按需详读",
             "requirement_ledger.json",
             "map_existing",
             "suggest_add",
@@ -773,6 +774,9 @@ class TocSkillScriptTests(unittest.TestCase):
             "toc_evidence.json",
             "当前环境不提供 `read` 工具",
             "用 `bash` 调用 `python-docx`",
+            "全文审阅是完成条件",
+            "不得跳过任何分块",
+            "未读完的表格",
         ):
             self.assertNotIn(redundant_contract, content)
 
@@ -780,7 +784,7 @@ class TocSkillScriptTests(unittest.TestCase):
         dockerfile = (BACKEND_ROOT / "opencode" / "Dockerfile").read_text(encoding="utf-8")
 
         commands = (
-            "prepare|template|next-batch|read|window|table|tables|"
+            "prepare|template|headings|next-batch|read|window|table|tables|"
             "review-batch|validate|status|finalize"
         )
         self.assertIn(f"  {commands}) ;;", dockerfile)
@@ -913,6 +917,64 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(state["schema_version"], "tender-review-state.v1")
         self.assertEqual(state["reviewed_chunk_count"], 0)
         self.assertEqual(state["pending_chunk_count"], len(chunks["chunks"]))
+
+    def test_bid_outline_headings_returns_toc_body_and_appendix_titles_without_marking_reviewed(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+        review_workflow = load_outline_script("review_workflow")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+
+            tender_doc = Document()
+            if "TOC 1" not in [style.name for style in tender_doc.styles]:
+                tender_doc.styles.add_style("TOC 1", WD_STYLE_TYPE.PARAGRAPH)
+            tender_doc.add_paragraph("第1章 总体要求 ........ 1", style="TOC 1")
+            tender_doc.add_paragraph("第1章 总体要求", style="Heading 1")
+            tender_doc.add_paragraph("投标人应提供总体技术方案。")
+            tender_doc.add_paragraph("2. 专题方案")
+            tender_doc.add_paragraph("附表A.1 技术参数表")
+            table = tender_doc.add_table(rows=2, cols=2)
+            table.cell(0, 0).text = "参数"
+            table.cell(0, 1).text = "要求"
+            table.cell(1, 0).text = "额定功率"
+            table.cell(1, 1).text = "投标人填写"
+            tender_doc.save(tender)
+
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": "tender.docx", "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+
+            result = outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+            status = review_workflow.review_status(root)
+
+        self.assertEqual(result["schema_version"], "tender-headings.v1")
+        self.assertEqual(
+            [(item["kind"], item["text"]) for item in result["files"][0]["items"]],
+            [
+                ("toc", "第1章 总体要求 ........ 1"),
+                ("heading", "第1章 总体要求"),
+                ("title", "2. 专题方案"),
+            ],
+        )
+        self.assertEqual(
+            [(item["number"], item["title"]) for item in result["appendices"]],
+            [("附表A.1", "技术参数表")],
+        )
+        self.assertTrue(result["appendices"][0]["evidence_id"].startswith("TEN-1:B"))
+        self.assertEqual(status["reviewed_chunk_count"], 0)
+        self.assertEqual(status["pending_chunk_count"], status["chunk_count"])
 
     def test_bid_outline_review_navigation_resumes_from_first_pending_chunk(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -1088,7 +1150,7 @@ class TocSkillScriptTests(unittest.TestCase):
         )
         self.assertEqual(ledger["requirements"][1]["proposed_title"], "项目场址安全适应性报告")
 
-    def test_bid_outline_finalize_requires_full_review_and_realizes_dynamic_additions(self) -> None:
+    def test_bid_outline_finalize_allows_selective_review_and_realizes_dynamic_additions(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
         review_workflow = load_outline_script("review_workflow")
 
@@ -1126,8 +1188,8 @@ class TocSkillScriptTests(unittest.TestCase):
             }
             output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-            with self.assertRaisesRegex(SystemExit, "未审阅分块"):
-                outline_runner.finalize_manifest(manifest, manifest_path)
+            selective_result = outline_runner.finalize_manifest(manifest, manifest_path)
+            self.assertEqual(selective_result["summary"]["reviewCoverage"], 0.0)
 
             chunk = review_workflow.next_review_chunk(root)["chunk"]
             evidence_id = chunk["blocks"][0]["evidence_id"]
@@ -1170,6 +1232,76 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(result["summary"]["reviewCoverage"], 1.0)
         self.assertEqual(result["summary"]["requirementCount"], 1)
         self.assertEqual(result["summary"]["unfinishedTableCount"], 0)
+
+    def test_bid_outline_finalize_does_not_require_reading_appendix_table_contents(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+            tender_doc = Document()
+            tender_doc.add_paragraph("附表A.1 技术参数表")
+            table = tender_doc.add_table(rows=2, cols=2)
+            table.cell(0, 0).text = "参数"
+            table.cell(0, 1).text = "要求"
+            table.cell(1, 0).text = "额定功率"
+            table.cell(1, 1).text = "投标人填写"
+            tender_doc.save(tender)
+
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": "tender.docx", "path": str(tender)}],
+                "outputFile": str(output),
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+            output.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "technical-outline.v1",
+                        "nodes": [
+                            {
+                                "number": "第1章",
+                                "title": "技术方案",
+                                "suggestion_action": "必要",
+                                "suggestion_reason": "",
+                                "children": [],
+                            },
+                            {
+                                "number": "第2章",
+                                "title": "技术附表",
+                                "suggestion_action": "建议增加",
+                                "suggestion_reason": "招标文件包含独立附表。",
+                                "children": [
+                                    {
+                                        "number": "附表A.1",
+                                        "title": "技术参数表",
+                                        "suggestion_action": "建议增加",
+                                        "suggestion_reason": "招标文件包含独立填写表格。",
+                                        "children": [],
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = outline_runner.finalize_manifest(manifest, manifest_path)
+
+        self.assertEqual(result["summary"]["workflowStage"], "finalized")
+        self.assertEqual(result["summary"]["reviewCoverage"], 0.0)
+        self.assertEqual(result["summary"]["unfinishedTableCount"], 1)
 
     def test_bid_outline_finalize_rejects_missing_positive_appendix_inventory_items(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")

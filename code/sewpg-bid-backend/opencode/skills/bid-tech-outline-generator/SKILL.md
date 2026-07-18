@@ -11,7 +11,7 @@ description: Use when 需要根据历史投标模板与当前招标文件生成�
 
 1. 先学模板，后审招标；不得从招标文件凭空重建另一套目录。
 2. 目录止于可独立填报单元；不是把正文要求逐条改写成标题。
-3. 全文审阅是完成条件；不能用关键词命中代替阅读全部段落和表格。
+3. 先掌握招标全文结构，再自主选择详读范围；目录、正文标题和附表标题优先读取，正文与表格按目录判断需要详读。
 4. 脚本不得准备或写死目录候选，也不得替代专业判断。
 5. 最终文件保持 `technical-outline.v1` 极简 Schema；审阅状态和义务台账不进入前端。
 
@@ -21,6 +21,7 @@ description: Use when 需要根据历史投标模板与当前招标文件生成�
 
 ```bash
 s2outline prepare <manifest>
+s2outline headings <manifest>
 s2outline next-batch <manifest> [--max-chunks 8] [--max-chars 24000]
 s2outline read <manifest> <evidenceId> [--max-chars 4000]
 s2outline window <manifest> <evidenceId> [--before 4] [--after 6]
@@ -38,6 +39,8 @@ s2outline finalize <manifest>
 - `tender_review_chunks.json`、`tender_review_state.json`：按正文顺序建立的段落/表格分块和可恢复进度。
 - `requirement_ledger.json`：由你的逐块判断累积形成的招标义务台账。
 
+`headings` 返回招标全文的自动目录项、正文标题和附表标题，不读取表格内容，也不改变审阅进度。先用它掌握全文结构，再决定需要详读的章节。
+
 不要绕过这些命令自由扫描原始 DOCX、XML 或全量审阅 JSON。不得直接读取 `tender_review_chunks.json`、`tender_review_state.json` 或 `requirement_ledger.json`；它们只供受控命令维护。受控导航把正文顺序、表格续读和已读覆盖变成可验证状态；是否构成目录节点仍由你判断。
 
 ## 执行流程
@@ -52,16 +55,16 @@ s2outline finalize <manifest>
 
 先将模板收敛为可独立填报的骨架，但暂不因招标未提及而删除模板节点。
 
-### 2. 逐块审阅全部招标文件
+### 2. 先读全文结构，再自主详读
 
-重复执行 `s2outline next-batch`。每次逐个阅读返回批次中的全部 `chunks`：
+执行 `s2outline headings`，完整查看其返回的自动目录项、正文标题和附表标题。先理解招标文件的章节体系、专题分布和附表范围，再根据模板目录适用性、独立响应义务、评分点、专题方案和异常条款自主选择需要详读的章节。
 
-- 段落分块：阅读全部 `blocks`；需要更完整原文时用 `s2outline read`，需要上下文时用 `s2outline window`。
-- 表格分块：收集本批全部 `table_id`，先用 `s2outline tables` 批量读取第 1～24 行；再对长表逐一调用 `s2outline table`，沿 `next_range` 读到 `has_more=false`。
-- 若 `truncated_rows` 非空，逐行提高 `--max-chars` 重读，直到该行不再截断。
-- 不得只看标题、目录、搜索命中或表格首屏就提交审阅。
+- 用 `s2outline window` 从标题 evidenceId 展开上下文；需要完整段落时用 `s2outline read`。
+- 需要连续审阅一组正文时用 `s2outline next-batch`；判断完成后可用 `s2outline review-batch` 记录义务和处置。
+- 只有当表格内容会影响目录节点、附表归属或独立填报判断时，才用 `s2outline table/tables` 读取必要行；不要求读完所有表格或所有附表内容。
+- 阅读范围和深度由你自主判断。不能仅凭关键词机械新增目录，也不能编造未读取的具体要求或依据。
 
-逐项判断整个批次后执行一次 `s2outline review-batch`，`chunk_ids` 必须与最近一次 `next-batch` 返回值完全一致，不得扩大、缩小、跳过或重排。即使没有投标人义务，也提交非空 `review_summary` 和空 `requirements`；只有成功提交后才能进入下一批。
+使用 `review-batch` 时，`chunk_ids` 必须与最近一次 `next-batch` 返回值完全一致。没有必要连续扫完所有批次；未选择详读的分块保持 pending 即可。
 
 不得编写批处理脚本自动生成或提交 `requirements`、`disposition`、`review_summary` 或空审阅结果。脚本只能提供确定性的原文导航；每批原文必须由模型当场阅读并完成专业判断，不能用关键词规则、循环占位或统一空数组代替。
 
@@ -99,13 +102,11 @@ s2outline finalize <manifest>
 
 `evidence_ids` 必须来自当前批次。`map_existing`、`covered_by_parent` 要写 `target_node`；`target_node` 只能指向一个节点编号或完整标题，跨多个节点的义务必须拆成多条 requirement。`suggest_add` 要写 `proposed_title` 和理由；`pending_confirmation` 要说明用户需确认的问题。不要手工编辑 `requirement_ledger.json`。
 
-### 4. 确认审阅完成
+### 4. 确认判断充分
 
-当 `s2outline next-batch` 返回 `chunks=[]` 后执行 `s2outline status`。只有同时满足以下条件才可编制最终目录：
+编制最终目录前执行 `s2outline status`，了解已审阅覆盖率、待审分块和未详读表格。`pending_chunk_count`、`unfinished_table_count` 只用于过程追踪，不是完成门禁，也不要求清零。
 
-- `pending_chunk_count=0`；
-- `unfinished_table_count=0`；
-- 每项义务均已有明确 disposition。
+确认已读取全文目录、正文标题和附表标题；已对影响目录结构的重点章节充分详读；已记录的每项义务均有明确 disposition。证据不足时保守沿用模板或标记待确认，不得用猜测补齐未读内容。
 
 ## 可独立填报单元
 
@@ -147,7 +148,7 @@ s2outline finalize <manifest>
 - 最后一个根节点统一为“技术附表”，编号沿用模板末章样式。
 - 以独立表号、独立表名和独立填写区域识别实际表单；每张表作为“技术附表”的直接子节点并保留原编号。
 - 若“技术附表 A/B”只是容纳多张表的分组，分组标题本身不输出；所有实际表单扁平放入 `children`。
-- 逐项核对 `tender_appendix_inventory.json` 和审阅原文。`following_table_count` 表示到下一附表标题前的 Word 表格数；父子标题不得同时输出，除非二者各有独立填写区域。
+- 先通过 `s2outline headings` 和 `tender_appendix_inventory.json` 掌握全部附表标题。`following_table_count` 是结构事实，不要求为此读取全部附表内容；只有附表内容影响目录判断时才按需详读。父子标题不得同时输出，除非二者各有独立填写区域。
 - 模板已有且适用的附表标为必要；招标新增且模板没有的附表标为建议增加；招标方参考表不输出。
 - 表内栏目、参数行和小计分组不得展开为目录子节点。
 
@@ -163,4 +164,4 @@ s2outline finalize <manifest>
 s2outline finalize <manifest>
 ```
 
-`finalize` 只校验，不生成或修改目录。它会拒绝未审阅分块、未读完表格、未落实的新增/待确认义务、无效承接节点、不可定位依据和遗漏实际附表。最后只返回其严格 JSON 输出。
+`finalize` 只校验，不生成或修改目录。未审阅分块、未读完正文或表格不会阻止完成；覆盖率与未详读表格数仅作为摘要信息。它仍会校验已记录义务的承接、目录节点结构、可定位依据和附表结构。最后只返回其严格 JSON 输出。

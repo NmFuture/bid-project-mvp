@@ -233,7 +233,7 @@ Use the {skill_name} skill.
 
 manifest：{manifest_path}
 
-先执行 `s2outline prepare {manifest_path}`。按 Skill 循环调用 `s2outline next-batch`、`s2outline tables`、必要的 read/window/table 和 `s2outline review-batch`，不得跳过任何分块或未读完的表格。每批原文必须由模型判断；不得编写脚本自动生成或提交 review、requirements、disposition，不得直接读取 `tender_review_chunks.json`、状态文件或义务台账。每条 `target_node` 只能指向一个节点，跨节点义务拆成多条。执行 `s2outline status {manifest_path}`，确认 `pending_chunk_count=0` 且 `unfinished_table_count=0` 后，将最终 `technical-outline.v1` 写入 manifest.outputFile。只有确认最终版不再修改后，才执行：
+先执行 `s2outline prepare {manifest_path}`，再执行 `s2outline headings {manifest_path}`，优先读取招标全文的自动目录项、正文标题和附表标题。随后由 Opencode 根据模板适用性和目录判断需要，自主选择调用 `s2outline next-batch`、`s2outline read`、`s2outline window`、`s2outline table`、`s2outline tables` 和 `s2outline review-batch` 详读重点章节；不要求读完所有正文分块、表格或附表内容。不得编写脚本自动生成或提交 review、requirements、disposition，不得直接读取 `tender_review_chunks.json`、状态文件或义务台账。每条 `target_node` 只能指向一个节点，跨节点义务拆成多条。执行 `s2outline status {manifest_path}` 了解阅读覆盖情况，但 `pending_chunk_count` 和 `unfinished_table_count` 不作为完成门禁。将最终 `technical-outline.v1` 写入 manifest.outputFile，确认最终版不再修改后执行：
 
 {TECH_OUTLINE_FINALIZE_COMMAND} {manifest_path}
 

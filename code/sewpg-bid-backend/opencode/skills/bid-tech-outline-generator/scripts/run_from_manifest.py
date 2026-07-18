@@ -21,6 +21,7 @@ import review_workflow
 AGENTIC_COMMANDS = {
     "prepare",
     "template",
+    "headings",
     "next",
     "next-batch",
     "read",
@@ -91,7 +92,7 @@ def resolve_invocation(manifest_option: str | None, positional_args: list[str]) 
         command = args.pop(0)
     elif args and args[0] not in AGENTIC_COMMANDS and len(args) > 1:
         raise SystemExit(
-            "usage: s2outline [prepare|template|next|next-batch|read|window|table|tables|review-chunk|review-batch|validate|status|finalize] <manifest> [...]"
+            "usage: s2outline [prepare|template|headings|next|next-batch|read|window|table|tables|review-chunk|review-batch|validate|status|finalize] <manifest> [...]"
         )
     manifest_text = str(manifest_option or (args[0] if args else "")).strip()
     if args and not manifest_option:
@@ -124,6 +125,8 @@ def dispatch_command(
     work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
     if command in {"prepare", "template"}:
         return write_template_structure(manifest, manifest_path)
+    if command == "headings":
+        return review_workflow.tender_headings(work_dir)
     if command == "next":
         return review_workflow.next_review_chunk(work_dir)
     if command == "next-batch":
