@@ -222,12 +222,124 @@ class OpencodeClientTests(unittest.TestCase):
 
         self.assertIn('"total_nodes":64', output)
 
-    def test_s2_outline_non_finalize_commands_do_not_trigger_early_completion(self) -> None:
+    def test_s2_outline_terminal_output_does_not_depend_on_agent_command(self) -> None:
         final_output = (
             '{"schema_version":"technical-outline.v1",'
-            '"outputFile":"/data/documents/PRJ/toc.json",'
+            '"outputFile":"/data/documents/PRJ/technical-workspace/s2_toc_workdir.new/toc.json",'
             '"summary":{"total_nodes":64,"workflowStage":"finalized"}}'
         )
+        commands = [
+            (
+                "cd /workspace/.opencode/skills/bid-tech-outline-generator && "
+                "python3 -m scripts.run_from_manifest finalize "
+                "/data/documents/PRJ/technical-workspace/s2_toc_workdir.new/s2_input.json 2>&1"
+            ),
+            "python3 /opt/agent-tools/custom_outline_writer.py --project PRJ",
+        ]
+
+        for command in commands:
+            with self.subTest(command=command):
+                messages = [
+                    {
+                        "parts": [
+                            {
+                                "type": "tool",
+                                "tool": "bash",
+                                "state": {
+                                    "status": "completed",
+                                    "input": {"command": command},
+                                    "exit": 0,
+                                    "output": final_output,
+                                },
+                            }
+                        ]
+                    }
+                ]
+
+                output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+
+                self.assertIn('"workflowStage":"finalized"', output)
+
+    def test_s2_outline_terminal_output_accepts_tool_metadata_stdout(self) -> None:
+        final_output = (
+            '{"schema_version":"technical-outline.v1",'
+            '"outputFile":"/data/documents/PRJ/technical-workspace/s2_toc_workdir.new/toc.json",'
+            '"summary":{"total_nodes":64,"workflowStage":"finalized"}}'
+        )
+        messages = [
+            {
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "agent-defined-command --emit-outline"},
+                            "metadata": {"exit": 0, "output": final_output},
+                        },
+                    }
+                ]
+            }
+        ]
+
+        output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+
+        self.assertIn('"workflowStage":"finalized"', output)
+
+    def test_s2_outline_terminal_output_does_not_depend_on_tool_name(self) -> None:
+        final_output = (
+            '{"schema_version":"technical-outline.v1",'
+            '"outputFile":"/data/documents/PRJ/technical-workspace/s2_toc_workdir.new/toc.json",'
+            '"summary":{"total_nodes":64,"workflowStage":"finalized"}}'
+        )
+        messages = [
+            {
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "agent-outline-writer",
+                        "state": {
+                            "status": "completed",
+                            "input": {"projectId": "PRJ"},
+                            "metadata": {"exit": 0, "output": final_output},
+                        },
+                    }
+                ]
+            }
+        ]
+
+        output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+
+        self.assertIn('"workflowStage":"finalized"', output)
+
+    def test_s2_outline_terminal_output_rejects_failed_tool_metadata_exit(self) -> None:
+        final_output = (
+            '{"schema_version":"technical-outline.v1",'
+            '"outputFile":"/data/documents/PRJ/technical-workspace/s2_toc_workdir.new/toc.json",'
+            '"summary":{"total_nodes":64,"workflowStage":"finalized"}}'
+        )
+        messages = [
+            {
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "agent-defined-command --emit-outline"},
+                            "metadata": {"exit": 1, "output": final_output},
+                        },
+                    }
+                ]
+            }
+        ]
+
+        output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+
+        self.assertEqual(output, "")
+
+    def test_s2_outline_non_terminal_outputs_do_not_trigger_early_completion(self) -> None:
+        non_terminal_output = '{"status":"passed","summary":{"workflowStage":"validated"}}'
         for command in [
             "s2outline prepare /data/documents/PRJ/s2_input.json",
             "s2outline status /data/documents/PRJ/s2_input.json",
@@ -245,7 +357,7 @@ class OpencodeClientTests(unittest.TestCase):
                                     "status": "completed",
                                     "input": {"command": command},
                                     "exit": 0,
-                                    "output": final_output,
+                                    "output": non_terminal_output,
                                 },
                             }
                         ]

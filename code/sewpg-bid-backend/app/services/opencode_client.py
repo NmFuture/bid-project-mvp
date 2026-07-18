@@ -1562,19 +1562,22 @@ class OpencodeClient:
             for part in reversed(message.get("parts") or []):
                 if not isinstance(part, dict) or part.get("type") != "tool":
                     continue
-                if str(part.get("tool") or "") != "bash":
+                if expected != "s2outline-finalize" and str(part.get("tool") or "") != "bash":
                     continue
                 state = part.get("state") if isinstance(part.get("state"), dict) else {}
                 if state.get("status") != "completed":
                     continue
                 raw_input = state.get("input") if isinstance(state.get("input"), dict) else {}
                 command = str(raw_input.get("command") or "").strip()
-                if not OpencodeClient._matches_completed_command(command, expected):
+                if expected != "s2outline-finalize" and not OpencodeClient._matches_completed_command(command, expected):
                     continue
+                metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
                 exit_code = state.get("exit")
+                if exit_code is None:
+                    exit_code = metadata.get("exit")
                 if exit_code not in (None, 0):
                     continue
-                output = str(state.get("output") or "").strip()
+                output = str(state.get("output") or metadata.get("output") or "").strip()
                 if expected == "s1parse-finalize":
                     if OpencodeClient._s1_finalize_output_is_terminal(output):
                         return output
