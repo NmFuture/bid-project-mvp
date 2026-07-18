@@ -831,22 +831,30 @@ class SystemSettingsService:
             return {"id": item_id, "name": name, "status": "offline", "latency": "-", "uptime": "-", "detail": "未启用。"}
         if not base_url or not model:
             return {"id": item_id, "name": name, "status": "offline", "latency": "-", "uptime": "-", "detail": "未配置 Base URL 或模型。"}
-        try:
-            result = await self.test_model_config(
-                kind,
-                {"timeoutMs": min(int(config.get("timeoutMs") or 30000), 5000)},
-                record_audit=False,
-            )
-            return {
-                "id": item_id,
-                "name": name,
-                "status": "online",
-                "latency": f"{int(result.get('latencyMs') or 0)}ms",
-                "uptime": "-",
-                "detail": f"模型可用：{model}",
-            }
-        except Exception as exc:
-            return {"id": item_id, "name": name, "status": "offline", "latency": "-", "uptime": "-", "detail": str(exc)}
+        # LLM 首 token 延迟常超过 5s，过紧的超时会让状态在刷新间在线/离线跳变；
+        # 放宽上限并在单次失败后重试一次，只有连续两次失败才判离线。
+        timeout_ms = min(int(config.get("timeoutMs") or 30000), 15000)
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                result = await self.test_model_config(
+                    kind,
+                    {"timeoutMs": timeout_ms},
+                    record_audit=False,
+                )
+                return {
+                    "id": item_id,
+                    "name": name,
+                    "status": "online",
+                    "latency": f"{int(result.get('latencyMs') or 0)}ms",
+                    "uptime": "-",
+                    "detail": f"模型可用：{model}",
+                }
+            except Exception as exc:
+                last_error = exc
+                if attempt == 0:
+                    await asyncio.sleep(0.5)
+        return {"id": item_id, "name": name, "status": "offline", "latency": "-", "uptime": "-", "detail": str(last_error)}
 
 
 system_settings_service = SystemSettingsService()
