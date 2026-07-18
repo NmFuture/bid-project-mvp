@@ -186,7 +186,8 @@ class MaterialInitSqlTests(TestCase):
 
         self.assertNotIn("INSERT INTO wiki_nodes", sql)
         self.assertNotIn("INSERT INTO wiki_docs", sql)
-        self.assertIn("刷新Wiki", page_source)
+        # 刷新入口随预览重试功能改名为「刷新并重试」，重建入口保持不变
+        self.assertIn("刷新并重试", page_source)
         self.assertIn("重建Wiki", page_source)
         self.assertIn("/technical/materials/wiki/bootstrap", api_source)
         self.assertIn("technical_wiki_bootstrap", route_source)

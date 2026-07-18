@@ -562,6 +562,7 @@ async def business_raw_update_file(file_id: str, data: dict[str, Any] = Body(def
         business_material_kind=str(data.get("businessMaterialKind") or ""),
         tags=data.get("tags"),
         update_tags="tags" in data,
+        tag_mode=str(data.get("tagMode") or "overwrite"),
     )
 
 
@@ -583,12 +584,31 @@ async def business_raw_download_content(file_id: str) -> StreamingResponse:
 
 @router.post("/api/business/materials/raw/move")
 async def business_raw_move_file(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    file_id = str(data.get("id") or data.get("fileId") or "")
+    # 统一 fileId/id 优先级为 fileId 优先，与技术标一致（L4）
+    file_id = str(data.get("fileId") or data.get("id") or "")
     return await business_material_store.raw_move_file(
         file_id=file_id,
         target_path=str(data.get("targetPath") or ""),
         on_conflict=str(data.get("onConflict") or ""),
     )
+
+
+@router.post("/api/business/materials/raw/batch-delete")
+async def business_raw_batch_delete(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    file_ids: list[str] = [str(fid) for fid in (data.get("fileIds") or []) if fid]
+    if not file_ids:
+        return {"succeeded": [], "failed": [], "message": "未提供文件 ID"}
+    return await business_material_store.raw_batch_delete_files(file_ids)
+
+
+@router.post("/api/business/materials/raw/batch-tags")
+async def business_raw_batch_tags(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    file_ids: list[str] = [str(fid) for fid in (data.get("fileIds") or []) if fid]
+    tags: Any = data.get("tags") or []
+    tag_mode: str = str(data.get("tagMode") or "overwrite")
+    if not file_ids:
+        return {"succeeded": [], "failed": [], "message": "未提供文件 ID"}
+    return await business_material_store.raw_batch_tags(file_ids, tags=tags, tag_mode=tag_mode)
 
 
 @router.post("/api/business/materials/raw/folders/move")

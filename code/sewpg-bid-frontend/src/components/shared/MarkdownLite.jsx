@@ -36,6 +36,36 @@ function renderInline(text = '') {
   return nodes.length ? nodes : source
 }
 
+function nestListItems(items = []) {
+  const roots = []
+  const stack = []
+  items.forEach((item) => {
+    const node = { text: item.text, children: [] }
+    const depth = Math.min(Math.max(0, item.depth), stack.length)
+    if (depth === 0) {
+      roots.push(node)
+    } else {
+      stack[depth - 1].children.push(node)
+    }
+    stack[depth] = node
+    stack.length = depth + 1
+  })
+  return roots
+}
+
+function renderListItems(items = []) {
+  return items.map((item, index) => (
+    <li key={index}>
+      {renderInline(item.text)}
+      {item.children.length > 0 ? (
+        <ul className="mt-1 list-disc space-y-1 pl-5">
+          {renderListItems(item.children)}
+        </ul>
+      ) : null}
+    </li>
+  ))
+}
+
 function parseMarkdownLite(content = '') {
   const lines = String(content).split(/\r?\n/)
   const blocks = []
@@ -51,7 +81,7 @@ function parseMarkdownLite(content = '') {
 
   const flushList = () => {
     if (!listItems.length) return
-    blocks.push({ type: 'ul', items: listItems })
+    blocks.push({ type: 'ul', items: nestListItems(listItems) })
     listItems = []
   }
 
@@ -152,10 +182,12 @@ function parseMarkdownLite(content = '') {
       continue
     }
 
-    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+    const listMatch = rawLine.match(/^(\s*)[-*]\s+(.+)$/)
+    if (listMatch) {
       flushParagraph()
       flushQuote()
-      listItems.push(trimmed.slice(2).trim())
+      const indentation = listMatch[1].replace(/\t/g, '    ').length
+      listItems.push({ text: listMatch[2].trim(), depth: Math.floor(indentation / 4) })
       continue
     }
 
@@ -232,9 +264,7 @@ export default function MarkdownLite({ content = '', compact = false }) {
         if (block.type === 'ul') {
           return (
             <ul key={index} className="list-disc pl-5 space-y-1">
-              {block.items.map((item, itemIndex) => (
-                <li key={itemIndex}>{renderInline(item)}</li>
-              ))}
+              {renderListItems(block.items)}
             </ul>
           )
         }

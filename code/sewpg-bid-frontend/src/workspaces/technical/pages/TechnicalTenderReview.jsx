@@ -8,7 +8,7 @@ import OnlyOfficeWorkspace from '../../../components/shared/OnlyOfficeWorkspace'
 import PageHeader from '../../../components/shared/PageHeader'
 import TechnicalProjectWizardModal from './TechnicalProjectWizardModal'
 import Button from '../../../components/ui/Button'
-import { normalizeBidType, projectRoute } from '../../../utils/workspace'
+import { normalizeBidType, workspaceRoute } from '../../../utils/workspace'
 import {
   isParseProgressFailed,
   isUploadAndRunTimeout,
@@ -1578,7 +1578,7 @@ export default function TechnicalTenderReview({ showToast }) {
             size="stage"
             variant="primary"
           >
-            {deciding === 'participate' ? '提交中...' : '参与该项目并进入工作区'}
+            {deciding === 'participate' ? '提交中...' : '参与该项目并进入素材库'}
           </Button>
         </div>
         {reviewDecision === 'abandon' && (
@@ -1602,8 +1602,11 @@ export default function TechnicalTenderReview({ showToast }) {
             setProjects((prev) => prev.map((item) => (
               item.id === updatedProject.id ? { ...item, ...updatedProject } : item
             )))
-            showToast?.('已确认参与投标，正在进入对应工作区。')
-            navigate(projectRoute(updatedProject.id, '/template-directory', 'tech'))
+            showToast?.('已确认参与投标，请先在素材库归集该项目的定制素材。')
+            const materialParams = new URLSearchParams({ projectId: updatedProject.id })
+            const materialFolderPath = updatedProject?.materialFolderBootstrap?.path || ''
+            if (materialFolderPath) materialParams.set('folder', materialFolderPath)
+            navigate(`${workspaceRoute('tech', '/materials/raw')}?${materialParams.toString()}`)
           }}
         />
       )}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import HTTPException
@@ -8,6 +9,8 @@ from starlette.concurrency import run_in_threadpool
 from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE, require_bid_type
 from app.services.business_parse_assets import BusinessParseAssetError, sync_approved_business_parse_assets
 from app.services.identity import build_project_material_scope
+from app.services.material_folder_scope import project_material_root_path
+from app.services.peripheral import PeripheralError
 from app.services.template_store import template_fallback_payload
 from app.services.technical_parse_assets import sync_technical_parse_appendices
 from app.services.workspace_project_access import (
@@ -36,6 +39,7 @@ class BidProjectService:
         clear_turbine_model: bool = False,
         sync_business_parse_assets: bool = False,
         sync_technical_parse_assets: bool = False,
+        bootstrap_material_folder: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self.bid_type = bid_type
         self.not_found_message = not_found_message
@@ -44,6 +48,7 @@ class BidProjectService:
         self.clear_turbine_model = clear_turbine_model
         self.sync_business_parse_assets = sync_business_parse_assets
         self.sync_technical_parse_assets = sync_technical_parse_assets
+        self.bootstrap_material_folder = bootstrap_material_folder
 
     def ensure_project(self, project_id: str) -> dict[str, Any]:
         return get_workspace_project_runtime_state(
@@ -100,6 +105,29 @@ class BidProjectService:
             not_found_error=lambda _project_id: HTTPException(status_code=404, detail=self.not_found_message),
         )
         decision = str((data or {}).get("reviewDecision") or "").strip().lower()
+        if self.bootstrap_material_folder is not None and decision == "participate":
+            material_project_id = str(
+                build_project_material_scope(project)["identity"].get("projectId") or project_id
+            )
+            try:
+                await self.bootstrap_material_folder(material_project_id)
+            except PeripheralError as exc:
+                project["materialFolderBootstrap"] = {
+                    "status": "failed",
+                    "message": exc.detail,
+                    "statusCode": exc.status_code,
+                }
+            except Exception as exc:  # noqa: BLE001 - 参与决策已落库，目录创建失败以响应字段显式暴露，不回滚决策
+                project["materialFolderBootstrap"] = {
+                    "status": "failed",
+                    "message": str(exc),
+                }
+            else:
+                project["materialFolderBootstrap"] = {
+                    "status": "ok",
+                    "projectId": material_project_id,
+                    "path": project_material_root_path(self.bid_type, material_project_id),
+                }
         if self.sync_business_parse_assets and decision == "participate":
             try:
                 sync_result = await sync_approved_business_parse_assets(project_id)
@@ -211,6 +239,13 @@ class BidProjectService:
         }
 
 
+async def _bootstrap_technical_material_folder(material_project_id: str) -> dict[str, Any]:
+    # 延迟导入：technical_material_store 依赖链较重，避免模块加载期循环引用。
+    from app.services.technical_material_store import technical_material_store
+
+    return await technical_material_store.raw_bootstrap_folders(material_project_id)
+
+
 business_project_service = BidProjectService(
     bid_type=BUSINESS_BID_TYPE,
     not_found_message="商务标项目不存在。",
@@ -226,4 +261,5 @@ technical_project_service = BidProjectService(
     wrong_type_message="该接口仅支持技术标项目。",
     delete_message="技术标项目已删除",
     sync_technical_parse_assets=True,
+    bootstrap_material_folder=_bootstrap_technical_material_folder,
 )
