@@ -854,7 +854,7 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertIn(f"  {commands}) ;;", dockerfile)
         self.assertIn(f"usage: s2outline [{commands}] <manifest> [...]", dockerfile)
 
-    def test_bid_outline_template_structure_prefers_automatic_toc(self) -> None:
+    def test_bid_outline_template_structure_supplements_anchored_body_level_three(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -866,7 +866,16 @@ class TocSkillScriptTests(unittest.TestCase):
                 doc.styles.add_style("TOC 2", WD_STYLE_TYPE.PARAGRAPH)
             doc.add_paragraph("第1章 总体技术方案 ........ 1", style="TOC 1")
             doc.add_paragraph("1.1 机组选型 ........ 2", style="TOC 2")
+            doc.add_paragraph("1.2 供货范围 ........ 3", style="TOC 2")
+            doc.add_paragraph("第1章 总体技术方案", style="Heading 1")
+            doc.add_paragraph("1.1 机组选型", style="Heading 2")
+            doc.add_paragraph("1.1.1 关键部件选型", style="Heading 3")
+            doc.add_paragraph("1.1.1.1 叶片设计参数", style="Heading 4")
+            doc.add_paragraph("1.2 供货范围", style="Heading 2")
+            doc.add_paragraph("1.2.1 主机供货范围", style="Heading 3")
             doc.add_paragraph("第9章 正文噪声", style="Heading 1")
+            doc.add_paragraph("9.1 非模板章节", style="Heading 2")
+            doc.add_paragraph("9.1.1 不应补充", style="Heading 3")
             doc.save(template)
 
             result = outline_runner.extract_template_structure(template)
@@ -874,7 +883,101 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(result["source"], "automatic_toc")
         self.assertEqual(
             [(item["number"], item["title"], item["level"]) for item in result["items"]],
-            [("第1章", "总体技术方案", 1), ("1.1", "机组选型", 2)],
+            [
+                ("第1章", "总体技术方案", 1),
+                ("1.1", "机组选型", 2),
+                ("1.1.1", "关键部件选型", 3),
+                ("1.2", "供货范围", 2),
+                ("1.2.1", "主机供货范围", 3),
+            ],
+        )
+
+    def test_bid_outline_template_structure_deduplicates_existing_level_three(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "template.docx"
+            doc = Document()
+            for style_name in ("TOC 1", "TOC 2", "TOC 3"):
+                if style_name not in [style.name for style in doc.styles]:
+                    doc.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
+            doc.add_paragraph("第1章 总体技术方案 ........ 1", style="TOC 1")
+            doc.add_paragraph("1.1 机组选型 ........ 2", style="TOC 2")
+            doc.add_paragraph("1.1.1 关键部件选型 ........ 3", style="TOC 3")
+            doc.add_paragraph("总体技术方案", style="Heading 1")
+            doc.add_paragraph("机组选型", style="Heading 2")
+            doc.add_paragraph("关键部件选型", style="Heading 3")
+            doc.save(template)
+
+            result = outline_runner.extract_template_structure(template)
+
+        self.assertEqual(
+            [(item["number"], item["title"], item["level"]) for item in result["items"]],
+            [
+                ("第1章", "总体技术方案", 1),
+                ("1.1", "机组选型", 2),
+                ("1.1.1", "关键部件选型", 3),
+            ],
+        )
+
+    def test_bid_outline_template_structure_preserves_same_title_with_different_numbers(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "template.docx"
+            doc = Document()
+            for style_name in ("TOC 1", "TOC 2"):
+                if style_name not in [style.name for style in doc.styles]:
+                    doc.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
+            doc.add_paragraph("第1章 总体技术方案 ........ 1", style="TOC 1")
+            doc.add_paragraph("1.1 认证情况 ........ 2", style="TOC 2")
+            doc.add_paragraph("第1章 总体技术方案", style="Heading 1")
+            doc.add_paragraph("1.1 认证情况", style="Heading 2")
+            doc.add_paragraph("1.1.1 认证未完成或存在待解决项", style="Heading 3")
+            doc.add_paragraph("1.1.2 认证未完成或存在待解决项", style="Heading 3")
+            doc.save(template)
+
+            result = outline_runner.extract_template_structure(template)
+
+        self.assertEqual(
+            [item["number"] for item in result["items"] if item["level"] == 3],
+            ["1.1.1", "1.1.2"],
+        )
+
+    def test_bid_outline_template_structure_interleaves_supplemented_level_three(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "template.docx"
+            doc = Document()
+            for style_name in ("TOC 1", "TOC 2", "TOC 3", "TOC 4"):
+                if style_name not in [style.name for style in doc.styles]:
+                    doc.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
+            doc.add_paragraph("第1章 总体技术方案 ........ 1", style="TOC 1")
+            doc.add_paragraph("1.1 机组选型 ........ 2", style="TOC 2")
+            doc.add_paragraph("1.1.1 叶片专题 ........ 3", style="TOC 3")
+            doc.add_paragraph("1.1.1.1 叶片参数 ........ 4", style="TOC 4")
+            doc.add_paragraph("1.1.3 齿轮箱专题 ........ 5", style="TOC 3")
+            doc.add_paragraph("第1章 总体技术方案", style="Heading 1")
+            doc.add_paragraph("1.1 机组选型", style="Heading 2")
+            doc.add_paragraph("1.1.1 叶片专题", style="Heading 3")
+            doc.add_paragraph("1.1.1.1 叶片参数", style="Heading 4")
+            doc.add_paragraph("1.1.2 变桨系统专题", style="Heading 3")
+            doc.add_paragraph("1.1.3 齿轮箱专题", style="Heading 3")
+            doc.save(template)
+
+            result = outline_runner.extract_template_structure(template)
+
+        self.assertEqual(
+            [(item["number"], item["level"]) for item in result["items"]],
+            [
+                ("第1章", 1),
+                ("1.1", 2),
+                ("1.1.1", 3),
+                ("1.1.1.1", 4),
+                ("1.1.2", 3),
+                ("1.1.3", 3),
+            ],
         )
 
     def test_bid_outline_template_command_writes_tender_appendix_heading_inventory(self) -> None:

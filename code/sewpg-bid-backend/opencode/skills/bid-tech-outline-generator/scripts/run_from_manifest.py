@@ -257,7 +257,10 @@ def extract_template_structure(path: Path) -> dict[str, Any]:
     automatic_toc = automatic_toc_items(paragraphs)
     if automatic_toc:
         source = "automatic_toc"
-        items = automatic_toc
+        items = supplement_automatic_toc_with_body_level_three(
+            automatic_toc,
+            body_heading_items(paragraphs),
+        )
     else:
         toc_page = toc_page_items(paragraphs)
         if toc_page:
@@ -274,6 +277,129 @@ def extract_template_structure(path: Path) -> dict[str, Any]:
         "template_file": str(path),
         "items": items,
     }
+
+
+def supplement_automatic_toc_with_body_level_three(
+    automatic_toc: list[dict[str, Any]],
+    body_headings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    level_two_records: list[tuple[int, dict[str, Any], dict[str, Any] | None]] = []
+    automatic_level_one: dict[str, Any] | None = None
+    for index, item in enumerate(automatic_toc):
+        level = int(item.get("level") or 1)
+        if level == 1:
+            automatic_level_one = item
+        elif level == 2:
+            level_two_records.append((index, item, automatic_level_one))
+    if not level_two_records:
+        return automatic_toc
+
+    body_level_three: dict[int, list[dict[str, Any]]] = {}
+    body_level_one: dict[str, Any] | None = None
+    anchor_index: int | None = None
+    for item in body_headings:
+        level = int(item.get("level") or 1)
+        if level == 1:
+            body_level_one = item
+            anchor_index = None
+        elif level == 2:
+            anchor_index = match_level_two_anchor(item, body_level_one, level_two_records)
+        elif level == 3 and anchor_index is not None:
+            seen = body_level_three.setdefault(anchor_index, [])
+            if any(headings_match(item, existing) for existing in seen):
+                continue
+            seen.append(item)
+    if not body_level_three:
+        return automatic_toc
+
+    merged: list[dict[str, Any]] = []
+    index = 0
+    while index < len(automatic_toc):
+        item = automatic_toc[index]
+        merged.append(item)
+        if int(item.get("level") or 1) != 2:
+            index += 1
+            continue
+        next_index = index + 1
+        while next_index < len(automatic_toc) and int(automatic_toc[next_index].get("level") or 1) > 2:
+            next_index += 1
+        merged.extend(
+            merge_level_three_descendants(
+                automatic_toc[index + 1 : next_index],
+                body_level_three.get(index, []),
+            )
+        )
+        index = next_index
+    return merged
+
+
+def merge_level_three_descendants(
+    automatic_descendants: list[dict[str, Any]],
+    body_level_three: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not body_level_three:
+        return automatic_descendants
+
+    prefix: list[dict[str, Any]] = []
+    automatic_groups: list[list[dict[str, Any]]] = []
+    current_group: list[dict[str, Any]] | None = None
+    for item in automatic_descendants:
+        if int(item.get("level") or 1) == 3:
+            if current_group:
+                automatic_groups.append(current_group)
+            current_group = [item]
+        elif current_group is None:
+            prefix.append(item)
+        else:
+            current_group.append(item)
+    if current_group:
+        automatic_groups.append(current_group)
+
+    merged = list(prefix)
+    used_group_indexes: set[int] = set()
+    for body_item in body_level_three:
+        matching_index = next(
+            (
+                index
+                for index, group in enumerate(automatic_groups)
+                if index not in used_group_indexes and headings_match(body_item, group[0])
+            ),
+            None,
+        )
+        if matching_index is None:
+            merged.append(body_item)
+            continue
+        merged.extend(automatic_groups[matching_index])
+        used_group_indexes.add(matching_index)
+    for index, group in enumerate(automatic_groups):
+        if index not in used_group_indexes:
+            merged.extend(group)
+    return merged
+
+
+def match_level_two_anchor(
+    body_level_two: dict[str, Any],
+    body_level_one: dict[str, Any] | None,
+    automatic_records: list[tuple[int, dict[str, Any], dict[str, Any] | None]],
+) -> int | None:
+    candidates = [record for record in automatic_records if headings_match(body_level_two, record[1])]
+    if body_level_one is not None:
+        candidates = [
+            record
+            for record in candidates
+            if record[2] is None or headings_match(body_level_one, record[2])
+        ]
+    return candidates[0][0] if len(candidates) == 1 else None
+
+
+def headings_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_number = normalize_outline_identity(left.get("number"))
+    right_number = normalize_outline_identity(right.get("number"))
+    if left_number and right_number:
+        return left_number == right_number
+    left_title = normalize_outline_identity(left.get("title"))
+    right_title = normalize_outline_identity(right.get("title"))
+    return bool(left_title and right_title and left_title == right_title)
 
 
 def extract_tender_appendix_inventory(tender_files: list[dict[str, Any]]) -> dict[str, Any]:
