@@ -136,6 +136,14 @@ async def settings_default_templates_activate(
     return await system_settings_service.default_template_activate(template_id, user=user)
 
 
+@router.delete("/api/settings/default-templates/{template_id}")
+async def settings_default_templates_delete(
+    template_id: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    return await system_settings_service.default_template_delete(template_id, user=user)
+
+
 @router.get("/api/settings/health")
 async def settings_health(_: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
     return await system_settings_service.health()

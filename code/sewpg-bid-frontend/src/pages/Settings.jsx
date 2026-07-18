@@ -66,6 +66,7 @@ export default function Settings({ showToast = () => {} }) {
   const [defaultTemplateUploadVersion, setDefaultTemplateUploadVersion] = useState('2026.05')
   const [defaultTemplateUploading, setDefaultTemplateUploading] = useState(false)
   const [defaultTemplateActivatingId, setDefaultTemplateActivatingId] = useState('')
+  const [defaultTemplateDeletingId, setDefaultTemplateDeletingId] = useState('')
 
   const [health, setHealth] = useState([])
 
@@ -316,6 +317,26 @@ export default function Settings({ showToast = () => {} }) {
       showToast(safeMessage(e, '默认模板启用失败'), 'error')
     } finally {
       setDefaultTemplateActivatingId('')
+    }
+  }
+
+  const handleDeleteDefaultTemplate = async (item) => {
+    const ok = window.confirm(
+      item.isActive
+        ? `确认删除当前默认模板「${item.name}」？删除后将自动回退启用同类型最近的历史版本（如有）。`
+        : `确认删除模板「${item.name}」？该操作不可恢复。`
+    )
+    if (!ok) return
+    setDefaultTemplateDeletingId(item.id)
+    try {
+      const result = await settingsAPI.defaultTemplates.remove(item.id)
+      setDefaultTemplates(result.items || [])
+      showToast('系统默认模板已删除')
+    } catch (e) {
+      console.error(e)
+      showToast(safeMessage(e, '默认模板删除失败'), 'error')
+    } finally {
+      setDefaultTemplateDeletingId('')
     }
   }
 
@@ -663,16 +684,29 @@ export default function Settings({ showToast = () => {} }) {
                           <td className="px-3 py-3 font-mono text-xs">{item.version}</td>
                           <td className="px-3 py-3 text-xs text-outline">{item.uploadedBy} · {item.uploadedAt}</td>
                           <td className="px-3 py-3">
-                            <span className="text-xs px-2 py-1 rounded bg-secondary-container text-on-secondary-container">默认生效</span>
+                            {item.isActive ? (
+                              <span className="text-xs px-2 py-1 rounded bg-secondary-container text-on-secondary-container">默认生效</span>
+                            ) : (
+                              <span className="text-xs px-2 py-1 rounded bg-surface-container-high text-on-surface-variant">未生效</span>
+                            )}
                           </td>
                           <td className="px-3 py-3">
-                            <button
-                              onClick={() => handleActivateDefaultTemplate(item.id)}
-                              disabled={item.isActive || defaultTemplateActivatingId === item.id}
-                              className="text-xs text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              {defaultTemplateActivatingId === item.id ? '启用中...' : item.isActive ? '当前默认' : '设为默认'}
-                            </button>
+                            <div className="flex items-center gap-3">
+                              <button
+                                onClick={() => handleActivateDefaultTemplate(item.id)}
+                                disabled={item.isActive || defaultTemplateActivatingId === item.id}
+                                className="text-xs text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {defaultTemplateActivatingId === item.id ? '启用中...' : item.isActive ? '当前默认' : '设为默认'}
+                              </button>
+                              <button
+                                onClick={() => handleDeleteDefaultTemplate(item)}
+                                disabled={defaultTemplateDeletingId === item.id}
+                                className="text-xs text-error hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {defaultTemplateDeletingId === item.id ? '删除中...' : '删除'}
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}

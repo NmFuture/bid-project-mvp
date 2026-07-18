@@ -841,6 +841,7 @@ export const settingsAPI = {
     list: () => request('/settings/default-templates'),
     upload: (data) => request('/settings/default-templates', { method: 'POST', body: data }),
     activate: (id) => request(`/settings/default-templates/${id}/activate`, { method: 'POST' }),
+    remove: (id) => request(`/settings/default-templates/${id}`, { method: 'DELETE' }),
   },
   health: () => request('/settings/health'),
 }
