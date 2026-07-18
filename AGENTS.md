@@ -50,8 +50,10 @@
 - Skill 位于 `code/sewpg-bid-backend/opencode/skills/<skill-name>/`，命名按 `bid-tech-*`、`bid-business-*`、`bid-material-*` 管理。
 - 开发某个 Skill 时，默认只改对应 Skill 目录；发现输入、接口或调用链问题时，先记录并单独提出代码改动。
 - `SKILL.md` 建议控制在 100~200 行，原则上不要超过 500 行；详细说明、示例和长流程拆到 `references/`。
+- frontmatter：`description` 用中文、触发条件式，只回答「何时用本 skill」，不写策略与用法（范例见 `bid-tech-tag-importer`）；`allowed-tools` 必填并按最小权限收敛。
+- 阶段命名、命令别名与历史工作目录的对应关系统一引用 `opencode/skills/STAGES.md`，不要在各 SKILL.md 里各自解释。
 - AI/Skill 输出必须可验证，关键结论要保留来源、证据或可追踪中间结果。
-- 不能按单个样本硬编码文件名、字段值或答案。
+- 不能按单个样本硬编码文件名、字段值或答案。判断边界：业主固定模板的**结构特征**（列名、附表编号、章节框架、同义词典）可以硬编码，但须在代码处注明模板来源；单个项目的**内容值**（数值、日期、项目名）不可以。
 
 ## 本地运行预检（必须）
 
