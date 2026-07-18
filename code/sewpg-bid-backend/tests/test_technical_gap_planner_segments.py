@@ -106,6 +106,116 @@ class AttachSegmentsTests(unittest.TestCase):
         self.assertLessEqual(out[0]["matchScore"], 0.99)
 
 
+class ScoreCapPolicyTests(unittest.TestCase):
+    """展示分口径（产品裁决 2026-07-16）：0.99 只留文件名精确命中，启发式封顶 0.98。"""
+
+    def test_exact_file_name_hit_scores_099(self) -> None:
+        material = _material_with_segments()
+        material["name"] = "混塔塔筒制造单位要求.docx"
+        out = planner.attach_recalled_segments([material], "混塔塔筒制造单位要求")
+        self.assertEqual(out[0]["matchScore"], 0.99)
+
+    def test_heuristic_scores_capped_at_098(self) -> None:
+        # 目录名命中章节标题（文件名不含标题）：原始分远超 1，但展示分必须 ≤0.98。
+        material = _material_with_segments()
+        material["folderPath"] = "技术标/客户素材/混塔塔筒制造单位要求"
+        material["path"] = "技术标/客户素材/混塔塔筒制造单位要求/混塔解决方案专题.docx"
+        material["materialTier"] = "project"
+        material["topicRelevance"] = 0.98
+        material["nameSimilarity"] = 0.98
+        material["segmentRecallScore"] = 0.98
+        out = planner.attach_recalled_segments([material], "混塔塔筒制造单位要求")
+        self.assertLessEqual(out[0]["matchScore"], 0.98)
+        for segment in out[0].get("recalledSegments") or []:
+            self.assertLessEqual(segment["matchScore"], 0.98)
+
+    def test_weak_recall_sub_scores_capped_at_098(self) -> None:
+        # 素材名/主题/片段与标题完全一致（原始相似度 1.0）时，三路子分均封顶 0.98。
+        twin = {
+            "id": "RAW-TWIN",
+            "name": "风资源评估与机位排布方案.docx",
+            "folderPath": "技术标/通用素材",
+            "materialTier": "standard",
+            "evidenceSegments": [{"title": "风资源评估与机位排布方案"}],
+        }
+        title = "风资源评估与机位排布方案"
+        for field, pool in (
+            ("topicRelevance", planner.topic_match_materials([dict(twin)], title)),
+            ("nameSimilarity", planner.approx_name_match_materials([dict(twin)], title)),
+            ("segmentRecallScore", planner.segment_recall_materials([dict(twin)], title)),
+        ):
+            self.assertTrue(pool, field)
+            self.assertTrue(all(m[field] <= 0.98 for m in pool), field)
+
+
+class TrailingAppendixCoverageTests(unittest.TestCase):
+    """整章覆盖延伸：chapter_master 章后的正文型附表按证据分级归入父章覆盖。"""
+
+    def _items(self) -> list[dict]:
+        master = {
+            "id": "M-CH3",
+            "name": "风资源评估与机位排布方案.docx",
+            "evidenceSegments": [
+                {"title": "总体方案概览"},
+                {"title": "附表2 推荐机型各机位发电量成果表"},
+            ],
+        }
+        return [
+            {"id": "GAP-1", "number": "第3章", "title": "风资源评估与机位排布方案", "level": 1,
+             "coverageRole": "chapter_master", "decision": "ready", "matchedMaterials": [master]},
+            {"id": "GAP-2", "number": "3.1", "title": "总体方案概览", "level": 2,
+             "decision": "ready", "coveredByParent": "GAP-1"},
+            {"id": "GAP-3", "number": "附表1", "title": "风资源评估与机位排布方案", "level": 1,
+             "decision": "fill_required", "candidateMaterials": [{"id": "M-X"}]},
+            {"id": "GAP-4", "number": "附表2", "title": "推荐机型各机位发电量成果表", "level": 1,
+             "decision": "fill_required", "candidateMaterials": [{"id": "M-Y"}]},
+            {"id": "GAP-5", "number": "附表3", "title": "投标机型安全等级统计", "level": 1,
+             "decision": "fill_required", "gapReason": "弱关联召回命中。", "candidateMaterials": [{"id": "M-Z"}]},
+            {"id": "GAP-6", "number": "第4章", "title": "项目技术承诺函", "level": 1,
+             "decision": "fill_required"},
+            {"id": "GAP-7", "number": "附表A.1", "title": "投标机型总方案信息表", "level": 1,
+             "decision": "fill_required", "appendixTasks": [{"id": "APPX-A1"}]},
+        ]
+
+    def test_same_name_and_segment_hit_covered(self) -> None:
+        items = self._items()
+        planner.extend_chapter_master_to_trailing_appendices(items)
+        by_id = {item["id"]: item for item in items}
+        # 附表1 同名 → 覆盖；附表2 片段命中 → 覆盖
+        for gid in ("GAP-3", "GAP-4"):
+            self.assertEqual(by_id[gid]["coveredByParent"], "GAP-1", gid)
+            self.assertEqual(by_id[gid]["decision"], "ready", gid)
+            self.assertEqual(by_id[gid]["candidateMaterials"], [], gid)
+
+    def test_no_evidence_only_suggests(self) -> None:
+        items = self._items()
+        planner.extend_chapter_master_to_trailing_appendices(items)
+        by_id = {item["id"]: item for item in items}
+        appx3 = by_id["GAP-5"]
+        # 附表3 无同名/片段证据 → 不改判，只挂疑似覆盖提示
+        self.assertEqual(appx3["decision"], "fill_required")
+        self.assertEqual(appx3["suspectedParentCoverage"]["gapId"], "GAP-1")
+        self.assertIn("疑似由同一份整章素材覆盖", appx3["gapReason"])
+        self.assertIn("弱关联召回命中", appx3["gapReason"])
+
+    def test_matrix_appendix_and_next_chapter_untouched(self) -> None:
+        items = self._items()
+        planner.extend_chapter_master_to_trailing_appendices(items)
+        by_id = {item["id"]: item for item in items}
+        self.assertNotIn("coveredByParent", by_id["GAP-6"])
+        self.assertNotIn("coveredByParent", by_id["GAP-7"])
+        self.assertNotIn("suspectedParentCoverage", by_id["GAP-7"])
+
+    def test_appendix_with_own_resolution_skipped_but_scan_continues(self) -> None:
+        items = self._items()
+        items[2]["matchedMaterials"] = [{"id": "M-OWN", "name": "附表1成品.docx"}]
+        planner.extend_chapter_master_to_trailing_appendices(items)
+        by_id = {item["id"]: item for item in items}
+        # 附表1 有自有定案 → 不吸收；附表2 仍被覆盖（扫描继续）
+        self.assertNotIn("coveredByParent", by_id["GAP-3"])
+        self.assertEqual(by_id["GAP-4"]["coveredByParent"], "GAP-1")
+
+
 class ManifestPassThroughTests(unittest.TestCase):
     def test_material_index_passes_evidence_segments(self) -> None:
         idx = planner.material_index_from_manifest({"materialIndex": [_material_with_segments()]})

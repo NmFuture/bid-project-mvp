@@ -344,6 +344,85 @@ def test_technical_gap_material_index_uses_technical_material_store() -> None:
     assert items[0]["id"] == "RAW-TECH-0001"
 
 
+def test_technical_gap_material_index_scopes_customer_and_project_by_identity() -> None:
+    async def fake_raw_files(**kwargs):
+        tier = str(kwargs.get("material_tier") or "")
+        if tier == "standard":
+            return {
+                "items": [
+                    {
+                        "id": "RAW-STANDARD",
+                        "name": "EW10.0-220 技术方案.docx",
+                        "folderPath": "技术标/标准文件/EW10.0-220上置",
+                        "materialTier": "standard",
+                    }
+                ],
+                "total": 1,
+            }
+        if tier == "customer" and kwargs.get("customer_name") == "华能集团":
+            return {
+                "items": [
+                    {
+                        "id": "RAW-CUSTOMER",
+                        "name": "与华能集团签署的战略合作协议.docx",
+                        "folderPath": "技术标/客户定制/华能",
+                        "materialTier": "customer",
+                    }
+                ],
+                "total": 1,
+            }
+        if tier == "project" and kwargs.get("project_id") == "MATPRJ-001":
+            return {
+                "items": [
+                    {
+                        "id": "RAW-PROJECT",
+                        "name": "项目风资源评估报告.docx",
+                        "folderPath": "技术标/项目定制/项目全名/风资源评估报告",
+                        "materialTier": "project",
+                    }
+                ],
+                "total": 1,
+            }
+        return {"items": [], "total": 0}
+
+    material_scope = {
+        "bidType": "技术标",
+        "readableScopes": [
+            {
+                "path": "技术标/标准文件",
+                "materialTier": "standard",
+            },
+            {
+                "path": "技术标/客户定制/华能集团",
+                "materialTier": "customer",
+                "customerName": "华能集团",
+            },
+            {
+                "path": "技术标/项目定制/MATPRJ-001",
+                "materialTier": "project",
+                "projectId": "MATPRJ-001",
+            },
+        ],
+    }
+
+    with patch(
+        "app.services.technical_gap_planner.technical_material_store.raw_files",
+        side_effect=fake_raw_files,
+    ) as raw_files:
+        items = _allowed_technical_material_index(material_scope, {"model": "EW10.0-220上置"})
+
+    assert [item["id"] for item in items] == ["RAW-STANDARD", "RAW-CUSTOMER", "RAW-PROJECT"]
+    assert raw_files.call_args_list[0].kwargs["folder_path"] == "技术标/标准文件"
+    assert raw_files.call_args_list[1].kwargs["folder_path"] == "技术标/客户定制"
+    assert raw_files.call_args_list[1].kwargs["customer_name"] == "华能集团"
+    assert raw_files.call_args_list[2].kwargs["folder_path"] == "技术标/项目定制"
+    assert raw_files.call_args_list[2].kwargs["project_id"] == "MATPRJ-001"
+    assert all(
+        call.kwargs["turbine_model"]["model"] == "EW10.0-220上置"
+        for call in raw_files.call_args_list
+    )
+
+
 def test_technical_material_raw_files_use_index_tags_as_source_of_truth() -> None:
     db_payload = {
         "items": [
