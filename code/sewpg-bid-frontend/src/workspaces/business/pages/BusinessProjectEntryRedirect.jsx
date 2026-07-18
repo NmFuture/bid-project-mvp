@@ -35,7 +35,8 @@ export default function BusinessProjectEntryRedirect() {
     setError('')
     try {
       const project = await businessProjectsAPI.get(id)
-      const reviewDecision = String(project?.reviewDecision || 'participate')
+      // 缺字段时默认按未参与处理，避免临时/暂存项目被误放行进入撰写流程
+      const reviewDecision = String(project?.reviewDecision || 'pending')
       if (reviewDecision !== 'participate') {
         navigate(businessParseRoute(id), { replace: true })
         return

@@ -9,7 +9,7 @@ import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import { bidTypeFromWorkspace, projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
 
-const MAX_FILE_SIZE = 1024 * 1024 * 1024
+const MAX_FILE_SIZE = 500 * 1024 * 1024
 const MAX_BATCH_FILES = 5
 const FILE_ACCEPT = '.pdf,.doc,.docx,.md,.xls,.xlsx,.zip,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
 const ALLOWED_EXTENSIONS = new Set([
@@ -170,9 +170,11 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
   const fallbackAvailable = Boolean(fallbackTemplate?.available)
   const fallbackWillBeUsed = fallbackEnabled && fallbackAvailable && uploadedTemplateFiles.length === 0
 
-  const reviewDecision = String(project?.reviewDecision || 'participate')
+  // 缺字段时默认按未参与处理，避免临时/暂存项目被误判为已参与
+  const reviewDecision = String(project?.reviewDecision || 'pending')
   const isParseCompleted = data?.status === 'completed'
-  const isReviewApproved = reviewDecision === 'participate' || (isParseCompleted && sourceFiles.length > 0)
+  // 只认后端明确的参与决策，不再以"解析完成+有源文件"放宽，否则参与闸门被旁路
+  const isReviewApproved = reviewDecision === 'participate'
   const isProjectInfoComplete = Boolean(
     String(project?.name || '').trim()
     && String(project?.customerName || '').trim()
@@ -308,15 +310,16 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
       showToast?.('请先在“解析”模块完成招标文件解析。', 'error')
       return
     }
+    // 目录未生成完成时不推进阶段，避免出现"阶段已完成但目录未生成"的不一致状态
+    if (!isDirectoryCompleted) {
+      showToast?.('请先在当前页生成目录')
+      return
+    }
     setAdvancing(true)
     try {
       await technicalStagesAPI.update(id, 1, { status: 'completed' })
-      if (isDirectoryCompleted) {
-        showToast?.('已进入目录确认')
-        navigate(projectRoute(id, '/outline', workspaceSlug))
-      } else {
-        showToast?.('请先在当前页生成目录')
-      }
+      showToast?.('已进入目录确认')
+      navigate(projectRoute(id, '/outline', workspaceSlug))
     } catch (e) {
       showToast?.(e?.message || '进入下一阶段失败', 'error')
     } finally {
@@ -339,10 +342,11 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
         showToast?.(`请先上传${bidLabel}模板文件。`, 'error')
         return
       }
-      setAutoAdvanceAfterDirectory(true)
-      await technicalStagesAPI.update(id, 1, { status: 'completed' })
+      // 目录 run 成功后再由完成轮询触发阶段推进（见 autoAdvanceAfterDirectory effect），
+      // 不在 run 之前提前置阶段 completed，避免 run 失败时阶段已被错误推进
       const payload = await technicalDirectoryAPI.run(id)
       setDirectoryState(payload)
+      setAutoAdvanceAfterDirectory(true)
       showToast?.(payload?.message || '已开始生成目录。')
     } catch (e) {
       setAutoAdvanceAfterDirectory(false)

@@ -771,6 +771,8 @@ export const businessMaterialsAPI = {
     updateFile: (id, data) => request(`/business/materials/raw/${id}`, { method: 'PATCH', body: data }),
     moveFile: (data) => request('/business/materials/raw/move', { method: 'POST', body: data }),
     deleteFile: (id) => request(`/business/materials/raw/${id}`, { method: 'DELETE' }),
+    batchDelete: (data) => request('/business/materials/raw/batch-delete', { method: 'POST', body: data }),
+    batchTags: (data) => request('/business/materials/raw/batch-tags', { method: 'POST', body: data }),
     previewBusinessSplit: (id, data) =>
       request(`/business/materials/raw/${id}/business-split/preview`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
     confirmBusinessSplit: (id, data) =>

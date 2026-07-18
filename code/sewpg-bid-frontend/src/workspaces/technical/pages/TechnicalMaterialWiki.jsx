@@ -10,6 +10,51 @@ const safeMessage = (error, fallback) =>
 
 const TECHNICAL_BID_TYPE = '技术标'
 const TECHNICAL_WORKSPACE = 'tech'
+const PREVIEW_STATUS_META = {
+  AI预览成功: {
+    label: 'AI 预览成功',
+    shortLabel: '成功',
+    icon: 'check_circle',
+    className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  },
+  AI预览待重试: {
+    label: 'AI 预览待重试',
+    shortLabel: '待重试',
+    icon: 'refresh',
+    className: 'border-amber-200 bg-amber-50 text-amber-800',
+  },
+  本地TLDR: {
+    label: '本地 TLDR',
+    shortLabel: '本地',
+    icon: 'info',
+    className: 'border-outline-variant bg-surface-container-low text-on-surface-variant',
+  },
+  AI预览失败: {
+    label: 'AI 预览失败',
+    shortLabel: '失败',
+    icon: 'error',
+    className: 'border-rose-200 bg-rose-50 text-rose-700',
+  },
+}
+
+const normalizeTags = (tags) => (
+  Array.isArray(tags) ? tags.map((tag) => String(tag || '').trim()).filter(Boolean) : []
+)
+
+const previewStatusForTags = (tags) => {
+  const normalized = normalizeTags(tags)
+  const tag = normalized.find((item) => PREVIEW_STATUS_META[item])
+  return tag ? { tag, ...PREVIEW_STATUS_META[tag] } : null
+}
+
+const countPreviewStatuses = (nodes, counts = {}) => {
+  for (const node of nodes || []) {
+    const status = previewStatusForTags(node?.tags)
+    if (status) counts[status.tag] = (counts[status.tag] || 0) + 1
+    countPreviewStatuses(node?.children, counts)
+  }
+  return counts
+}
 
 // 后端对所有节点都返回 children 数组（叶子为 []），不能用 Array.isArray 判断文件夹，
 // 否则每个叶子节点也会被当成文件夹渲染（带展开箭头 + folder 图标）。
@@ -24,6 +69,7 @@ const normalizeNode = (node) => {
     path: String(node.path || ''),
     pathText: String(node.pathText || node.path || ''),
     updatedAt: String(node.updatedAt || ''),
+    tags: normalizeTags(node.tags),
   }
 }
 
@@ -92,6 +138,13 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const selectedNode = useMemo(() => normalizeNode(data?.selectedNode), [data])
   const selectedNodeId = selectedNode?.id || ''
   const tree = data?.tree || []
+  const previewStatusCounts = useMemo(() => countPreviewStatuses(tree), [tree])
+  const previewStatusItems = useMemo(
+    () => Object.entries(PREVIEW_STATUS_META)
+      .map(([tag, meta]) => ({ tag, ...meta, count: previewStatusCounts[tag] || 0 }))
+      .filter((item) => item.count > 0),
+    [previewStatusCounts],
+  )
 
   // 展开/收起以 collapsedMap 为唯一本地真相：未记录的节点回退到服务端 node.expanded，
   // 已被用户操作过的节点保留本地值。重新拉取树时不会覆盖（避免闪烁 / 收起后回弹）。
@@ -130,7 +183,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   }
 
   const handleRefreshWiki = async () => {
-    const ok = window.confirm(`确认刷新${activeBidType} Wiki？系统会读取当前 JSON 索引，并同步新增、更新、删除自动生成的 Wiki 节点。`)
+    const ok = window.confirm(`确认刷新${activeBidType} Wiki？系统会同步目录，并重新尝试“AI 预览待重试”项；已成功预览继续使用缓存。`)
     if (!ok) return
     setRefreshingWiki(true)
     try {
@@ -172,6 +225,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       const folder = isFolderNode(node)
       const expanded = folder ? isExpanded(node) : false
       const selected = node.id === selectedNodeId
+      const previewStatus = previewStatusForTags(node.tags)
       return (
         <div key={node.id}>
           <div
@@ -211,7 +265,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
               {folder ? (expanded ? 'folder_open' : 'folder') : 'article'}
             </span>
             <span
-              className={`truncate ${
+              className={`min-w-0 flex-1 truncate ${
                 selected
                   ? 'font-semibold text-primary'
                   : folder
@@ -221,6 +275,17 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
             >
               {node.title}
             </span>
+            {!folder && previewStatus && (
+              <span
+                title={previewStatus.label}
+                className={`inline-flex h-6 shrink-0 items-center gap-1 rounded border px-1.5 text-[11px] leading-none ${previewStatus.className}`}
+              >
+                <span aria-hidden="true" className="material-symbols-outlined text-[14px]">
+                  {previewStatus.icon}
+                </span>
+                {previewStatus.shortLabel}
+              </span>
+            )}
             {folder && (
               <span className="ml-auto shrink-0 text-xs text-outline">{node.children.length}</span>
             )}
@@ -246,15 +311,6 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
     )
   }
 
-  if (!selectedNode && !tree.length) {
-    return (
-      <PageEmpty
-        title="Wiki 暂无节点"
-        description="当前还没有可展示的 Wiki 内容。"
-      />
-    )
-  }
-
   return (
     <>
     <div className="flex flex-col gap-3 animate-fade-in">
@@ -268,7 +324,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
               disabled={refreshingWiki || rebuildingWiki}
               className="h-9 whitespace-nowrap rounded-lg bg-primary px-3 text-[13px] leading-[1.6] font-medium text-on-primary transition-colors hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {refreshingWiki ? '刷新中...' : '刷新Wiki'}
+              {refreshingWiki ? '刷新并重试中...' : '刷新并重试'}
             </button>
             <button
               onClick={handleRebuildWiki}
@@ -281,6 +337,24 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         )}
         basePath={materialsBasePath}
       />
+      {previewStatusItems.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-y border-outline-variant/45 px-1 py-2 text-xs">
+          <span className="font-medium text-on-surface">AI 预览状态</span>
+          {previewStatusItems.map((item) => (
+            <span key={item.tag} className={`inline-flex h-7 items-center gap-1.5 rounded border px-2 ${item.className}`}>
+              <span aria-hidden="true" className="material-symbols-outlined text-[15px]">{item.icon}</span>
+              <span>{item.label}</span>
+              <span className="font-semibold tabular-nums">{item.count}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {!selectedNode && !tree.length ? (
+        <PageEmpty
+          title="Wiki 暂无节点"
+          description="当前还没有可展示的 Wiki 内容。"
+        />
+      ) : (
       <div className="grid grid-cols-1 gap-6 xl:h-[calc(100dvh-12rem)] xl:grid-cols-12 xl:items-stretch">
         <div className="xl:col-span-3 bg-surface-container-lowest rounded-lg border border-outline-variant/45 flex min-h-[320px] max-h-[60vh] flex-col overflow-hidden xl:min-h-0 xl:max-h-none">
           <div className="shrink-0 px-4 py-4 border-b border-surface-container-high">
@@ -297,6 +371,25 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
 
         <div className="xl:col-span-9 flex min-w-0 flex-col">
           <div className="flex min-h-[520px] max-h-[75vh] flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest xl:max-h-none">
+            {selectedNode?.tags?.length > 0 && (
+              <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-surface-container-high px-5 py-3">
+                {selectedNode.tags.map((tag) => {
+                  const status = PREVIEW_STATUS_META[tag]
+                  return (
+                    <span
+                      key={tag}
+                      className={`inline-flex h-7 items-center rounded border px-2 text-xs ${
+                        status
+                          ? status.className
+                          : 'border-outline-variant/60 bg-surface-container-low text-on-surface-variant'
+                      }`}
+                    >
+                      {status?.label || tag}
+                    </span>
+                  )
+                })}
+              </div>
+            )}
             <div className="min-h-0 flex-1 overflow-y-auto bg-white p-6">
               {selectedNode?.markdownContent ? (
                 <MarkdownLite content={selectedNode.markdownContent} compact />
@@ -312,6 +405,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
           </div>
         </div>
       </div>
+      )}
     </div>
     </>
   )

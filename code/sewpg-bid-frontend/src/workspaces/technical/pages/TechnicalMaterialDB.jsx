@@ -1,30 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { technicalMaterialsAPI } from '../../../api'
 import MaterialsViewSwitch from '../components/TechnicalMaterialsViewSwitch'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import { PageError, PageLoading } from '../../../components/states/PageState'
-import { workspaceRoute } from '../../../utils/workspace'
+import { projectRoute, workspaceRoute } from '../../../utils/workspace'
 
 const MAX_FILE_SIZE = 30 * 1024 * 1024 * 1024
 const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
 const UPLOAD_KIND_STORAGE_KEY = 'materials.raw.upload.kind'
-const MATERIAL_TIER_OPTIONS = [
-  {
-    value: 'standard',
-    label: '标准文件',
-    description: '大部分标书都会复用的基础资料。',
-  },
-  {
-    value: 'customer',
-    label: '客户定制',
-    description: '只面向某个客户复用的专属资料。',
-  },
-  {
-    value: 'project',
-    label: '项目定制',
-    description: '只在当前项目使用的补充资料。',
-  },
-]
 const TECHNICAL_MATERIAL_USAGE_OPTIONS = [
   {
     value: 'fixed',
@@ -86,9 +70,6 @@ const bidTypeTabMeta = (value) =>
   value === TECHNICAL_BID_TYPE
     ? { value: TECHNICAL_BID_TYPE, label: TECHNICAL_BID_TYPE, icon: 'engineering', rootPath: TECHNICAL_ROOT_PATH }
     : { value: TECHNICAL_BID_TYPE, label: TECHNICAL_BID_TYPE, icon: 'engineering', rootPath: TECHNICAL_ROOT_PATH }
-
-const materialTierMeta = (value) =>
-  MATERIAL_TIER_OPTIONS.find((item) => item.value === value) || MATERIAL_TIER_OPTIONS[0]
 
 const materialUsageMeta = (value) =>
   TECHNICAL_MATERIAL_USAGE_OPTIONS.find((item) => item.value === value) || TECHNICAL_MATERIAL_USAGE_OPTIONS[2]
@@ -184,22 +165,6 @@ const extOf = (name) => {
   const parts = String(name || '').split('.')
   if (parts.length < 2) return ''
   return String(parts.pop() || '').toLowerCase()
-}
-
-const materialTierFromRootPath = (path) => {
-  const normalized = String(path || '').replace(/^\/+|\/+$/g, '')
-  const parts = normalized.split('/').filter(Boolean)
-  const tierName = MATERIAL_ROOT_PATHS.includes(parts[0]) ? parts[1] : parts[0]
-  if (tierName === '标准文件' || tierName === '通用素材') return 'standard'
-  if (tierName === '客户定制' || tierName === '客户素材') return 'customer'
-  if (tierName === '项目定制' || tierName === '项目素材') return 'project'
-  return ''
-}
-
-const isTechnicalWritablePath = (path) => {
-  const normalized = String(path || '').replace(/^\/+|\/+$/g, '')
-  const parts = normalized.split('/').filter(Boolean)
-  return parts[0] === TECHNICAL_BID_TYPE && ['标准文件', '客户定制', '项目定制', '客户素材', '项目素材'].includes(parts[1])
 }
 
 const normalizeTreeNodes = (nodes = []) =>
@@ -359,110 +324,6 @@ const statusColor = (status) => {
   if (status === 'success') return 'bg-secondary-container text-on-secondary-container'
   if (status === 'failed') return 'bg-error-container text-on-error-container'
   return 'bg-surface-container-high text-on-surface-variant'
-}
-
-const listItems = (payload) => {
-  if (Array.isArray(payload)) return payload
-  if (Array.isArray(payload?.items)) return payload.items
-  return []
-}
-
-const IDENTITY_IGNORED_CHARS = new Set([
-  ',', '，', '、', '.', '。', ':', '：', ';', '；', '(', ')', '（', '）',
-  '[', ']', '【', '】', '{', '}', '<', '>', '《', '》', '"', "'", '`',
-  '·', '_', '-', '—', '/', '\\', '|',
-])
-
-const identityKey = (value) =>
-  String(value || '')
-    .trim()
-    .toLowerCase()
-    .split('')
-    .filter((char) => char !== '\u3000' && !/\s/.test(char) && !IDENTITY_IGNORED_CHARS.has(char))
-    .join('')
-
-const normalizeCustomerOptions = (customersPayload, projectsPayload) => {
-  const byKey = new Map()
-  const add = (candidate = {}) => {
-    const customerId = String(candidate.customerId || '').trim()
-    const name = String(candidate.name || candidate.customerCanonicalName || candidate.customerName || '').trim()
-    if (!customerId && !name) return
-    const key = customerId || identityKey(name)
-    if (!key) return
-    const existing = byKey.get(key) || {}
-    byKey.set(key, {
-      customerId: customerId || existing.customerId || '',
-      name: name || existing.name || customerId,
-      customerCanonicalName: String(candidate.customerCanonicalName || existing.customerCanonicalName || name || '').trim(),
-      aliases: Array.from(new Set([
-        ...(existing.aliases || []),
-        ...(Array.isArray(candidate.aliases) ? candidate.aliases : []),
-        ...(Array.isArray(candidate.customerAliases) ? candidate.customerAliases : []),
-      ].filter(Boolean))),
-    })
-  }
-
-  listItems(customersPayload).forEach((item) => add({
-    customerId: item.customerId || item.id,
-    name: item.name || item.customerCanonicalName,
-    customerCanonicalName: item.customerCanonicalName || item.name,
-    aliases: item.aliases || item.customerAliases || [],
-  }))
-
-  listItems(projectsPayload).forEach((project) => {
-    const identity = project.identity || {}
-    add({
-      customerId: project.customerId || identity.customerId,
-      name: project.customerCanonicalName || identity.customerCanonicalName || project.customerName || project.owner,
-      customerCanonicalName: project.customerCanonicalName || identity.customerCanonicalName || project.customerName || project.owner,
-      aliases: project.customerAliases || identity.customerAliases || [],
-    })
-  })
-
-  return Array.from(byKey.values()).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
-}
-
-const normalizeProjectOptions = (payload) =>
-  listItems(payload).map((project) => {
-    const identity = project.identity || {}
-    const id = String(project.projectId || project.id || identity.projectId || '').trim()
-    if (!id) return null
-    return {
-      id,
-      projectCode: String(project.projectCode || identity.projectCode || id).trim(),
-      name: String(project.projectName || project.name || identity.projectName || id).trim(),
-      bidType: String(project.bidType || identity.bidType || '').trim(),
-      customerId: String(project.customerId || identity.customerId || '').trim(),
-      customerName: String(project.customerName || identity.customerName || project.owner || '').trim(),
-      customerCanonicalName: String(project.customerCanonicalName || identity.customerCanonicalName || project.customerName || project.owner || '').trim(),
-    }
-  }).filter(Boolean)
-
-const customerOptionMatches = (option, value) => {
-  const key = identityKey(value)
-  if (!key) return false
-  return [
-    option.name,
-    option.customerCanonicalName,
-    ...(option.aliases || []),
-  ].some((candidate) => {
-    const candidateKey = identityKey(candidate)
-    return candidateKey && (candidateKey === key || candidateKey.includes(key) || key.includes(candidateKey))
-  })
-}
-
-const customerLabel = (option) => {
-  const id = option.customerId ? ` / ${option.customerId}` : ''
-  return `${option.name}${id}`
-}
-
-const projectLabel = (option) => {
-  const parts = [
-    option.id,
-    option.projectCode && option.projectCode !== option.id ? option.projectCode : '',
-    option.customerCanonicalName || option.customerName,
-  ].filter(Boolean)
-  return `${option.name}（${parts.join(' / ')}）`
 }
 
 function IconButton({
@@ -1113,15 +974,20 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   const activeBidType = TECHNICAL_BID_TYPE
   const uploadBidType = TECHNICAL_BID_TYPE
   const materialsBasePath = workspaceRoute(TECHNICAL_WORKSPACE, '/materials')
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  // 解析页「确认参与」跳转带过来的定位参数：folder 定位项目定制目录，projectId 用于回到项目工作区。
+  const locateFolderPath = normalizePath(searchParams.get('folder') || '')
+  const linkedProjectId = String(searchParams.get('projectId') || '').trim()
   const uploadPickerRef = useRef(null)
   const libraryLoadedRef = useRef(false)
-  const selectedFolderPathRef = useRef('')
+  const selectedFolderPathRef = useRef(locateFolderPath)
   const [tree, setTree] = useState([])
   const [collapsedMap, setCollapsedMap] = useState({})
   const [dragTargetPath, setDragTargetPath] = useState('')
   const [filesPayload, setFilesPayload] = useState({ items: [], total: 0, page: 1, pageSize: 20 })
   const [parseStatus, setParseStatus] = useState(null)
-  const [selectedFolderPath, setSelectedFolderPath] = useState('')
+  const [selectedFolderPath, setSelectedFolderPath] = useState(locateFolderPath)
   const [filters, setFilters] = useState({
     title: '',
     tags: [],
@@ -1133,17 +999,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
 
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [uploadKind, setUploadKind] = useState(() => readStoredUploadKind())
-  const [uploadMode, setUploadMode] = useState('tier')
   const [uploadPath, setUploadPath] = useState('')
-  const [uploadMaterialTier, setUploadMaterialTier] = useState('standard')
-  const [customerOptions, setCustomerOptions] = useState([])
-  const [projectOptions, setProjectOptions] = useState([])
-  const [loadingIdentityOptions, setLoadingIdentityOptions] = useState(false)
-  const [uploadCustomerId, setUploadCustomerId] = useState('')
-  const [uploadCustomerName, setUploadCustomerName] = useState('')
-  const [uploadProjectId, setUploadProjectId] = useState('')
-  const [uploadProjectCode, setUploadProjectCode] = useState('')
-  const [uploadProjectName, setUploadProjectName] = useState('')
   const [uploadTags, setUploadTags] = useState([])
   const [uploadTagsInput, setUploadTagsInput] = useState('')
   const [uploadFiles, setUploadFiles] = useState([])
@@ -1209,8 +1065,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
         : previewItem
           ? '未开放'
           : '未选择'
-  const selectedUploadCustomer = customerOptions.find((option) => option.customerId === uploadCustomerId)
-  const selectedUploadProject = projectOptions.find((option) => option.id === uploadProjectId)
   const selectedFilterTags = useMemo(() => normalizeTagList(filters.tags || []), [filters.tags])
   const activeFilterCount = [
     filters.title,
@@ -1282,22 +1136,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     selectedFolderPathRef.current = selectedFolderPath
   }, [selectedFolderPath])
 
-  const loadUploadIdentityOptions = useCallback(async () => {
-    setLoadingIdentityOptions(true)
-    try {
-      const identityPayload = await technicalMaterialsAPI.identityOptions({ bidType: activeBidType }) || {}
-      const normalizedProjects = normalizeProjectOptions(identityPayload.projects || [])
-      setProjectOptions(normalizedProjects)
-      setCustomerOptions(normalizeCustomerOptions(identityPayload.customers || [], identityPayload.projects || []))
-    } catch (e) {
-      setCustomerOptions([])
-      setProjectOptions([])
-      setUploadError(safeMessage(e, '客户/项目列表加载失败，请刷新后重试。'))
-    } finally {
-      setLoadingIdentityOptions(false)
-    }
-  }, [activeBidType])
-
   useEffect(() => {
     const timer = setTimeout(() => {
       setFilters((prev) => ({ ...prev, title: titleInput }))
@@ -1315,25 +1153,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   useEffect(() => {
     persistUploadKind(uploadKind)
   }, [uploadKind])
-
-  useEffect(() => {
-    if (!showUploadModal) return
-    const timer = setTimeout(() => {
-      loadUploadIdentityOptions()
-    }, 0)
-    return () => clearTimeout(timer)
-  }, [showUploadModal, loadUploadIdentityOptions])
-
-  useEffect(() => {
-    if (!showUploadModal || uploadCustomerId || !uploadCustomerName.trim()) return
-    const matchedCustomer = customerOptions.find((option) => customerOptionMatches(option, uploadCustomerName))
-    if (!matchedCustomer) return
-    const timer = setTimeout(() => {
-      setUploadCustomerId(matchedCustomer.customerId)
-      setUploadCustomerName(matchedCustomer.name)
-    }, 0)
-    return () => clearTimeout(timer)
-  }, [customerOptions, showUploadModal, uploadCustomerId, uploadCustomerName])
 
   useEffect(() => {
     if (!previewFullscreen) return undefined
@@ -1372,19 +1191,9 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
 
   const openUploadModal = (options = {}) => {
     const targetPath = options.targetPath || selectedFolderPath
-    const rootTier = materialTierFromRootPath(targetPath)
-    const mode = options.mode || (rootTier ? 'tier' : 'tier')
-    const nextTier = options.materialTier || rootTier || 'standard'
     setShowUploadModal(true)
     setUploadKind(options.kind || 'files')
-    setUploadMode(mode)
     setUploadPath(targetPath)
-    setUploadMaterialTier(nextTier)
-    setUploadCustomerId(options.customerId || '')
-    setUploadCustomerName(options.customerName || '')
-    setUploadProjectId(options.projectId || '')
-    setUploadProjectCode(options.projectCode || '')
-    setUploadProjectName(options.projectName || '')
     setUploadTags([])
     setUploadTagsInput('')
     setUploadFiles([])
@@ -1475,59 +1284,29 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
 
     const payload = new FormData()
     try {
-      const targetPath = uploadMode === 'path' ? uploadPath.trim() : ''
-      const selectedCustomer = customerOptions.find((option) => option.customerId === uploadCustomerId)
-      const selectedProject = projectOptions.find((option) => option.id === uploadProjectId)
-      const projectId = uploadMode === 'tier' && uploadMaterialTier === 'project' ? uploadProjectId.trim() : ''
-      const projectCode = uploadMode === 'tier' && uploadMaterialTier === 'project'
-        ? String(selectedProject?.projectCode || uploadProjectCode || projectId).trim()
-        : ''
-      const projectName = uploadMode === 'tier' && uploadMaterialTier === 'project'
-        ? String(selectedProject?.name || uploadProjectName || '').trim()
-        : ''
-      const customerId = uploadMode === 'tier' && uploadMaterialTier === 'customer'
-        ? String(selectedCustomer?.customerId || uploadCustomerId || '').trim()
-        : uploadMode === 'tier' && uploadMaterialTier === 'project'
-          ? String(selectedProject?.customerId || uploadCustomerId || '').trim()
-          : ''
-      const customerName = uploadMode === 'tier' && uploadMaterialTier === 'customer'
-        ? String(selectedCustomer?.name || uploadCustomerName || '').trim()
-        : uploadMode === 'tier' && uploadMaterialTier === 'project'
-          ? String(selectedProject?.customerCanonicalName || selectedProject?.customerName || uploadCustomerName || '').trim()
-          : ''
-      const materialTier = uploadMode === 'tier' ? uploadMaterialTier : ''
+      const targetPath = uploadPath.trim()
 
-      if (uploadMode === 'path' && !targetPath) {
+      if (!targetPath) {
         setUploadError('请填写目标目录。')
         setUploading(false)
         return
       }
-      if (uploadMode === 'path' && !isTechnicalWritablePath(targetPath)) {
-        setUploadError('目标目录只能位于 技术标/标准文件、技术标/客户定制、技术标/项目定制 之一。')
-        setUploading(false)
-        return
-      }
-      if (uploadMode === 'tier' && uploadMaterialTier === 'customer' && !customerId) {
-        setUploadError('请选择客户。')
-        setUploading(false)
-        return
-      }
-      if (uploadMode === 'tier' && uploadMaterialTier === 'project' && !projectId) {
-        setUploadError('请选择项目。')
+      if (normalizePath(targetPath) !== TECHNICAL_BID_TYPE && !normalizePath(targetPath).startsWith(`${TECHNICAL_BID_TYPE}/`)) {
+        setUploadError('目标目录必须位于技术标素材库。')
         setUploading(false)
         return
       }
 
       payload.append('targetPath', targetPath)
-      payload.append('projectId', projectId)
-      payload.append('projectCode', projectCode)
-      payload.append('projectName', projectName)
+      payload.append('projectId', '')
+      payload.append('projectCode', '')
+      payload.append('projectName', '')
       payload.append('bidType', uploadBidType)
-      payload.append('materialTier', materialTier)
+      payload.append('materialTier', '')
       payload.append('businessMaterialKind', uploadBidType === '技术标' ? 'other' : '')
       tagInputPreview(uploadTags, uploadTagsInput).forEach((tag) => payload.append('tags', tag))
-      payload.append('customerId', customerId)
-      payload.append('customerName', customerName)
+      payload.append('customerId', '')
+      payload.append('customerName', '')
       if (onConflict) {
         payload.append('onConflict', onConflict)
       }
@@ -2185,7 +1964,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
           </button>
           <button
             type="button"
-            onClick={() => openUploadModal({ mode: 'path', targetPath: selectedFolderPath })}
+            onClick={() => openUploadModal({ targetPath: selectedFolderPath })}
             disabled={!canManageCurrentFolder || !selectedFolderPath}
             className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-45"
           >
@@ -2246,6 +2025,33 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
         subtitle={error || ''}
         basePath={materialsBasePath}
       />
+
+      {linkedProjectId && (
+        <div className="rounded-xl border border-surface-container-high p-4 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="material-symbols-outlined text-primary">folder_special</span>
+            <span className="text-sm text-on-surface">
+              已确认参与投标，项目定制目录{locateFolderPath ? `「${locateFolderPath}」` : ''}已就绪，可先在此归集该项目的素材。
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => navigate(projectRoute(linkedProjectId, '/template-directory', 'tech'))}
+              className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-container"
+            >
+              进入项目工作区
+            </button>
+            <button
+              type="button"
+              onClick={() => setSearchParams({}, { replace: true })}
+              className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim"
+            >
+              知道了
+            </button>
+          </div>
+        </div>
+      )}
 
       {parseStatus && (
         <div className="rounded-xl border border-surface-container-high p-4 flex flex-wrap items-center justify-between gap-2">
@@ -2410,122 +2216,18 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
               </button>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-5 sm:p-6 space-y-4">
-              <div className="max-w-sm">
-                <div className="text-sm text-on-surface-variant">
-                  <span className="block mb-1">落位方式</span>
-                  <div className="grid h-10 grid-cols-2 rounded-lg bg-surface-container-highest p-1" role="group" aria-label="落位方式">
-                    {[
-                      ['tier', '素材层级'],
-                      ['path', '当前目录'],
-                    ].map(([value, label]) => {
-                      const active = uploadMode === value
-                      return (
-                        <button
-                          key={value}
-                          type="button"
-                          onClick={() => setUploadMode(value)}
-                          aria-pressed={active}
-                          className={`rounded-lg text-sm font-semibold transition-colors ${active ? 'bg-white text-primary shadow-[0_1px_2px_rgba(17,34,51,0.08)]' : 'text-on-surface-variant hover:bg-surface-container-high'}`}
-                        >
-                          {label}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              </div>
-
-              {uploadMode === 'path' ? (
-                <label className="text-sm text-on-surface-variant block">
-                  <span className="block mb-1">目标目录</span>
-                  <input
-                    value={uploadPath}
-                    onChange={(e) => setUploadPath(e.target.value)}
-                    className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                    placeholder={`例如：${activeBidType}/标准文件/EW6.25`}
-                  />
-                </label>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <label className="text-sm text-on-surface-variant">
-                    <span className="block mb-1">素材层级</span>
-                    <select
-                      value={uploadMaterialTier}
-                      onChange={(e) => {
-                        setUploadMaterialTier(e.target.value)
-                        setUploadError('')
-                      }}
-                      className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                    >
-                      {MATERIAL_TIER_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                  {uploadMaterialTier === 'customer' ? (
-                    <label className="text-sm text-on-surface-variant">
-                      <span className="block mb-1">选择客户</span>
-                      <select
-                        value={uploadCustomerId}
-                        onChange={(e) => {
-                          const customerId = e.target.value
-                          const customer = customerOptions.find((option) => option.customerId === customerId)
-                          setUploadCustomerId(customerId)
-                          setUploadCustomerName(customer?.name || '')
-                          setUploadError('')
-                        }}
-                        disabled={loadingIdentityOptions}
-                        className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                      >
-                        <option value="">{loadingIdentityOptions ? '正在加载客户...' : '选择客户'}</option>
-                        {customerOptions.map((option) => (
-                          <option key={option.customerId || option.name} value={option.customerId}>
-                            {customerLabel(option)}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="block mt-1 text-xs text-outline">
-                        {selectedUploadCustomer?.customerId ? `系统ID：${selectedUploadCustomer.customerId}` : '客户ID由系统写入'}
-                      </span>
-                    </label>
-                  ) : uploadMaterialTier === 'project' ? (
-                    <label className="text-sm text-on-surface-variant">
-                      <span className="block mb-1">选择项目</span>
-                      <select
-                        value={uploadProjectId}
-                        onChange={(e) => {
-                          const projectId = e.target.value
-                          const project = projectOptions.find((option) => option.id === projectId)
-                          setUploadProjectId(projectId)
-                          setUploadProjectCode(project?.projectCode || '')
-                          setUploadProjectName(project?.name || '')
-                          setUploadCustomerId(project?.customerId || '')
-                          setUploadCustomerName(project?.customerCanonicalName || project?.customerName || '')
-                          setUploadError('')
-                        }}
-                        disabled={loadingIdentityOptions}
-                        className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                      >
-                        <option value="">{loadingIdentityOptions ? '正在加载项目...' : '选择项目'}</option>
-                        {projectOptions.map((option) => (
-                          <option key={option.id} value={option.id}>
-                            {projectLabel(option)}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="block mt-1 text-xs text-outline">
-                        {selectedUploadProject
-                          ? `素材项目ID：${selectedUploadProject.id}${selectedUploadProject.projectCode ? `；项目编号：${selectedUploadProject.projectCode}` : ''}`
-                          : '素材项目ID由系统写入'}
-                      </span>
-                    </label>
-                  ) : (
-                    <div className="rounded-lg bg-surface-container-highest px-3 py-2 text-xs text-on-surface-variant leading-5">
-                      {materialTierMeta(uploadMaterialTier).description}
-                    </div>
-                  )}
-                </div>
-              )}
+              <label className="block text-sm text-on-surface-variant">
+                <span className="mb-1 block">目标目录</span>
+                <input
+                  value={uploadPath}
+                  onChange={(e) => {
+                    setUploadPath(e.target.value)
+                    setUploadError('')
+                  }}
+                  className="h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm"
+                  placeholder="技术标"
+                />
+              </label>
 
               {uploadBidType === '技术标' && (
                 <div className="text-sm text-on-surface-variant block">
@@ -2537,9 +2239,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                     onInputChange={setUploadTagsInput}
                     placeholder="例如：资质，承诺函，商务附件"
                   />
-                  <span className="mt-1 block text-xs text-outline">
-                    支持中文逗号、中文分号、英文逗号、英文分号、换行或 Enter 拆分，最多 20 个。
-                  </span>
                 </div>
               )}
 
@@ -2614,12 +2313,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                 </div>
               </div>
 
-              <div className="text-xs text-outline">
-                {uploadKind === 'folder'
-                  ? '浏览器原生一次通常只能选择一个文件夹，但你可以连续点击“继续添加文件夹”，同一次上传会合并这些目录。'
-                  : '支持一次选择多个文件。'}
-              </div>
-
               <div className="text-sm text-on-surface-variant block">
                 <span className="block mb-1">当前选择</span>
                 <input
@@ -2640,10 +2333,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                   ))}
                 </div>
               )}
-
-              <p className="text-xs text-outline">
-                白名单：pdf/doc/docx/xls/xlsx/xlsm/png/jpg/jpeg/webp/bmp/tif/tiff；单文件 30GB。图片类素材仅保留原件，不触发自动清洗。其他格式及系统隐藏文件自动忽略。
-              </p>
 
               {uploadError && (
                 <div className="text-sm text-error bg-error-container/30 border border-error/30 rounded-lg px-3 py-2 whitespace-pre-line">

@@ -9,6 +9,13 @@ import { parseRouteFromBidType, projectRoute, useWorkspaceSlug } from '../../../
 import { getTechnicalCompactStageLabel, getTechnicalStageRoute } from '../technicalStageFlow'
 import { technicalProjectParseResultMenuRoute } from '../technicalProjectRoutes'
 
+// 与 EntryRedirect 保持一致：阶段值 clamp 到 1-6，异常值不落到空路由
+const resolveStage = (value) => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 1
+  return Math.max(1, Math.min(6, Math.floor(parsed)))
+}
+
 export default function TechnicalProjectList({ showToast, viewMode = 'projects', workspaceKind = 'tech' }) {
   const navigate = useNavigate()
   const routeWorkspaceSlug = useWorkspaceSlug()
@@ -61,7 +68,7 @@ export default function TechnicalProjectList({ showToast, viewMode = 'projects',
     const reviewDecision = String(project?.reviewDecision || 'participate')
     if (reviewDecision !== 'participate') return parseRouteFromBidType('技术标', project?.id || '')
     const routeWorkspaceSlug = workspaceSlug || 'tech'
-    const stage = Number(project?.currentStage) || 1
+    const stage = resolveStage(project?.currentStage)
     const stageRoute = getTechnicalStageRoute(project?.id, stage, routeWorkspaceSlug)
     if (stageRoute) return stageRoute
     return projectRoute(project.id, '', routeWorkspaceSlug)

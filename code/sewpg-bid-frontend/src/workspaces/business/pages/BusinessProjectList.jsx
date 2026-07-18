@@ -17,6 +17,13 @@ const businessParseRoute = (projectId = '') => {
   return `/parse/business?projectId=${encodeURIComponent(projectId)}`
 }
 
+// 与 EntryRedirect 保持一致：阶段值 clamp 到 1-6，异常值不落到空路由
+const resolveStage = (value) => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 1
+  return Math.max(1, Math.min(6, Math.floor(parsed)))
+}
+
 const formatDateTime = (value) => {
   if (!value) return '-'
   const date = new Date(value)
@@ -81,7 +88,7 @@ export default function BusinessProjectList({ showToast }) {
   const getProjectEntryRoute = (project) => {
     const reviewDecision = String(project?.reviewDecision || 'participate')
     if (reviewDecision !== 'participate') return businessParseRoute(project?.id || '')
-    const stage = Number(project?.currentStage) || 1
+    const stage = resolveStage(project?.currentStage)
     const stageRoute = getBusinessStageRoute(project?.id, stage)
     if (stageRoute) return stageRoute
     return projectRoute(project.id, '', BUSINESS_WORKSPACE)

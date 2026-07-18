@@ -645,7 +645,7 @@ async def technical_raw_upload(request: Request) -> dict[str, Any]:
         relative_paths = [str(value or "") for value in form.getlist("relativePaths")]
         target_path = str(form.get("targetPath") or "")
         data = {
-            "targetPath": technical_material_store.ensure_write_path(target_path, "目标目录") if target_path else "",
+            "targetPath": technical_material_store.ensure_path(target_path, "目标目录") if target_path else "",
             "projectId": str(form.get("projectId") or ""),
             "projectCode": str(form.get("projectCode") or ""),
             "projectName": str(form.get("projectName") or ""),
@@ -671,7 +671,7 @@ async def technical_raw_upload(request: Request) -> dict[str, Any]:
         except Exception:
             data = {}
         target_path = str(data.get("targetPath") or "")
-        data["targetPath"] = technical_material_store.ensure_write_path(target_path, "目标目录") if target_path else ""
+        data["targetPath"] = technical_material_store.ensure_path(target_path, "目标目录") if target_path else ""
 
     return await technical_material_store.raw_upload(
         target_path=str(data.get("targetPath") or ""),
@@ -726,61 +726,20 @@ async def technical_raw_update_file(file_id: str, data: dict[str, Any] = Body(de
 
 @router.post("/api/technical/materials/raw/batch-delete")
 async def technical_raw_batch_delete(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    import asyncio
     file_ids: list[str] = [str(fid) for fid in (data.get("fileIds") or []) if fid]
     if not file_ids:
         return {"succeeded": [], "failed": [], "message": "未提供文件 ID"}
-    succeeded: list[str] = []
-    failed: list[dict[str, Any]] = []
-
-    async def _delete_one(fid: str) -> None:
-        try:
-            await technical_material_store.raw_delete_file(fid)
-            succeeded.append(fid)
-        except Exception as exc:
-            failed.append({"fileId": fid, "error": str(exc)})
-
-    await asyncio.gather(*[_delete_one(fid) for fid in file_ids])
-    total = len(file_ids)
-    ok = len(succeeded)
-    return {
-        "succeeded": succeeded,
-        "failed": failed,
-        "message": f"批量删除完成：成功 {ok} 个，失败 {total - ok} 个",
-    }
+    return await technical_material_store.raw_batch_delete_files(file_ids)
 
 
 @router.post("/api/technical/materials/raw/batch-tags")
 async def technical_raw_batch_tags(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    import asyncio
     file_ids: list[str] = [str(fid) for fid in (data.get("fileIds") or []) if fid]
     tags: Any = data.get("tags") or []
     tag_mode: str = str(data.get("tagMode") or "overwrite")
     if not file_ids:
         return {"succeeded": [], "failed": [], "message": "未提供文件 ID"}
-    succeeded: list[str] = []
-    failed: list[dict[str, Any]] = []
-
-    async def _tag_one(fid: str) -> None:
-        try:
-            await technical_material_store.raw_update_file(
-                file_id=fid,
-                tags=tags,
-                update_tags=True,
-                tag_mode=tag_mode,
-            )
-            succeeded.append(fid)
-        except Exception as exc:
-            failed.append({"fileId": fid, "error": str(exc)})
-
-    await asyncio.gather(*[_tag_one(fid) for fid in file_ids])
-    total = len(file_ids)
-    ok = len(succeeded)
-    return {
-        "succeeded": succeeded,
-        "failed": failed,
-        "message": f"批量打标签完成：成功 {ok} 个，失败 {total - ok} 个",
-    }
+    return await technical_material_store.raw_batch_tags(file_ids, tags=tags, tag_mode=tag_mode)
 
 
 @router.post("/api/technical/materials/raw/certificate-time/batch")

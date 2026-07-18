@@ -115,16 +115,19 @@ class TechnicalAgenticParserTests(unittest.TestCase):
             env=env,
         )
 
-    def test_skill_md_contains_the_fixed_excel_checklist(self) -> None:
+    def test_skill_references_contain_the_fixed_checklist(self) -> None:
+        # 固定清单已从 SKILL.md 拆到 references/checklist.md，SKILL.md 只保留引用
         content = self.skill_path().read_text(encoding="utf-8")
-
         self.assertIn("技术标解读清单", content)
-        self.assertIn("设备选型适配", content)
-        self.assertIn("CMS振动监测系统", content)
-        self.assertIn("二次安防系统", content)
+        self.assertIn("references/checklist.md", content)
+
+        checklist = (self.skill_path().parent / "references" / "checklist.md").read_text(encoding="utf-8")
+        self.assertIn("设备选型适配", checklist)
+        self.assertIn("CMS振动监测系统", checklist)
+        self.assertIn("二次安防系统", checklist)
         checklist_rows = [
             line
-            for line in content.splitlines()
+            for line in checklist.splitlines()
             if line.startswith("| ") and line.count("|") >= 4 and line.split("|")[1].strip().isdigit()
         ]
         self.assertEqual(len(checklist_rows), 58)
@@ -134,9 +137,9 @@ class TechnicalAgenticParserTests(unittest.TestCase):
 
         self.assertIn("你是风力发电设备领域的招投标技术标解读专家", content)
         self.assertIn("本 Skill 只有两个提交目标", content)
-        self.assertIn("技术解读清单只约束 `technicalInterpretation`，不替代基础信息字段，也不是额外 Excel 输入", content)
-        self.assertNotIn("s1_parse_manifest.json", content)
-        self.assertNotIn("历史文件名", content)
+        self.assertIn("只约束 `technicalInterpretation`，不替代基础信息字段", content)
+        # 历史命名映射统一收敛到 STAGES.md，SKILL.md 引用而不各自解释
+        self.assertIn("../STAGES.md", content)
         self.assertNotIn("58 条技术标解读清单就是解析范围", content)
         self.assertNotIn("58 条清单只限定技术解读目标，基础信息不受该清单限制", content)
         self.assertIn("## 输出目标一：基础信息 projectBasics", content)
