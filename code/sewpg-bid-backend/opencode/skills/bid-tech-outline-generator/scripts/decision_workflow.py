@@ -134,6 +134,8 @@ def submit_decision_batch(
     work_dir: Path,
     structure: dict[str, Any],
     payload: dict[str, Any],
+    *,
+    appendix_items: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     annotated, items = _annotated_items(structure)
     fingerprint = annotated["input_fingerprint"]
@@ -184,6 +186,11 @@ def submit_decision_batch(
     existing_ids = {
         str(item.get("node_id") or "") for item in state.get("additions") or []
     }
+    appendices_by_id = {
+        str(item.get("appendix_id") or ""): item
+        for item in appendix_items or []
+        if isinstance(item, dict) and str(item.get("appendix_id") or "")
+    }
     for index, addition in enumerate(additions):
         if not isinstance(addition, dict):
             raise SystemExit(f"decision-batch additions[{index}] must be an object")
@@ -195,12 +202,35 @@ def submit_decision_batch(
             )
         if not reason:
             raise SystemExit(f"decision-batch additions[{index}].reason is required")
+        appendix_id = str(addition.get("appendix_id") or "").strip()
+        if appendix_id:
+            appendix = appendices_by_id.get(appendix_id)
+            if appendix is None:
+                raise SystemExit(
+                    f"decision-batch additions[{index}].appendix_id is unknown: {appendix_id}"
+                )
+            unsupported = set(addition) - {
+                "node_id",
+                "parent_id",
+                "appendix_id",
+                "reason",
+                "tender_basis",
+            }
+            if unsupported:
+                raise SystemExit(
+                    f"decision-batch additions[{index}] appendix has unsupported fields"
+                )
+            number = str(appendix.get("number") or "")
+            title = str(appendix.get("title") or "")
+        else:
+            number = str(addition.get("number") or "")
+            title = str(addition.get("title") or "")
         change = {
             "operation": "add",
             "node_id": node_id,
             "parent_id": addition.get("parent_id"),
-            "number": str(addition.get("number") or ""),
-            "title": str(addition.get("title") or ""),
+            "number": number,
+            "title": title,
             "suggestion_action": "建议增加",
             "suggestion_reason": reason,
         }

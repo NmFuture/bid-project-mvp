@@ -774,6 +774,7 @@ class TocSkillScriptTests(unittest.TestCase):
             "独立填写区域",
             "tender_appendix_inventory.json",
             "following_table_count",
+            "appendix_id",
             "父子标题不得同时输出",
             "掌握全部附表标题",
             "technical-outline.v1",
@@ -1760,6 +1761,33 @@ class TocSkillScriptTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            (root / "tender_appendix_inventory.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "tender-appendix-inventory.v1",
+                        "items": [
+                            {
+                                "file_id": "TEN-1",
+                                "file_name": "当前项目招标文件.docx",
+                                "number": "技术附表A",
+                                "title": "技术附表A",
+                                "raw_text": "技术附表A",
+                                "following_table_count": 0,
+                            },
+                            {
+                                "file_id": "TEN-1",
+                                "file_name": "当前项目招标文件.docx",
+                                "number": "附表A.1",
+                                "title": "投标机型总方案信息表",
+                                "raw_text": "附表A.1 投标机型总方案信息表",
+                                "following_table_count": 1,
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
 
             batch = outline_runner.dispatch_command(
                 "decision-next", manifest, manifest_path, []
@@ -1784,6 +1812,96 @@ class TocSkillScriptTests(unittest.TestCase):
                 }
             ],
         )
+        self.assertEqual(
+            batch["comparison_context"]["appendices"],
+            [
+                {
+                    "appendix_id": "APP-0001",
+                    "file_id": "TEN-1",
+                    "number": "附表A.1",
+                    "title": "投标机型总方案信息表",
+                    "following_table_count": 1,
+                }
+            ],
+        )
+
+    def test_bid_outline_appendix_addition_copies_number_and_title_from_inventory(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(root / "toc.json")}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [{"number": "第1章", "title": "技术方案", "level": 1}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (root / "tender_appendix_inventory.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "tender-appendix-inventory.v1",
+                        "items": [
+                            {
+                                "file_id": "TEN-1",
+                                "file_name": "招标文件.docx",
+                                "number": "附表A.1",
+                                "title": "投标机型总方案信息表",
+                                "raw_text": "附表A.1 投标机型总方案信息表",
+                                "following_table_count": 1,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            batch = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": batch["batch_token"],
+                            "items": [
+                                {"target_id": batch["items"][0]["target_id"], "decision": "retain"}
+                            ],
+                            "additions": [
+                                {
+                                    "node_id": "ADD-TECH-APPENDIX",
+                                    "parent_id": None,
+                                    "number": "第2章",
+                                    "title": "技术附表",
+                                    "reason": "招标包含实际技术附表。",
+                                },
+                                {
+                                    "node_id": "ADD-APPENDIX-A1",
+                                    "parent_id": "ADD-TECH-APPENDIX",
+                                    "appendix_id": "APP-0001",
+                                    "reason": "招标结构化清单中的实际表单。",
+                                },
+                            ],
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+            state = json_load(root / "outline_decision_state.json")
+
+        appendix_change = state["additions"][1]
+        self.assertEqual(appendix_change["number"], "附表A.1")
+        self.assertEqual(appendix_change["title"], "投标机型总方案信息表")
 
     def test_bid_outline_decisions_reject_add_or_move_under_collapsed_parent(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -2585,7 +2703,7 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(result["summary"]["reviewCoverage"], 0.0)
         self.assertEqual(result["summary"]["unfinishedTableCount"], 1)
 
-    def test_bid_outline_finalize_rejects_missing_positive_appendix_inventory_items(self) -> None:
+    def test_bid_outline_finalize_allows_missing_appendices_and_free_number_title_split(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2644,8 +2762,8 @@ class TocSkillScriptTests(unittest.TestCase):
                                 "suggestion_reason": "招标文件新增独立附表章节。",
                                 "children": [
                                     {
-                                        "number": "附表A.1",
-                                        "title": "机型信息表",
+                                        "number": "A.1",
+                                        "title": "附表A.1 机型信息表",
                                         "suggestion_action": "建议增加",
                                         "suggestion_reason": "招标文件新增独立表格。",
                                         "children": [],
@@ -2659,8 +2777,14 @@ class TocSkillScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(SystemExit, "遗漏实际表单.*附表A.2"):
-                outline_runner.finalize_manifest(manifest, manifest_path)
+            result = outline_runner.finalize_manifest(manifest, manifest_path)
+            payload = json_load(output)
+            payload["nodes"] = payload["nodes"][:1]
+            output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            result_without_appendix = outline_runner.finalize_manifest(manifest, manifest_path)
+
+        self.assertEqual(result["summary"]["workflowStage"], "finalized")
+        self.assertEqual(result_without_appendix["summary"]["workflowStage"], "finalized")
 
     def test_bid_outline_agentic_commands_drive_review_without_raw_file_reads(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")

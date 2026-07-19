@@ -323,12 +323,14 @@ def _collect_heading_files(
 
 
 def decision_comparison_context(work_dir: Path) -> dict[str, Any]:
+    appendices = decision_appendix_items(work_dir)
     chunks_path = work_dir / "tender_review_chunks.json"
     if not chunks_path.is_file():
         return {
             "schema_version": "outline-comparison-context.v1",
             "heading_count": 0,
             "files": [],
+            "appendices": appendices,
         }
     chunks = _load_payload(chunks_path, CHUNKS_SCHEMA_VERSION)
     files_by_id, _ = _collect_heading_files(chunks)
@@ -355,7 +357,37 @@ def decision_comparison_context(work_dir: Path) -> dict[str, Any]:
         "schema_version": "outline-comparison-context.v1",
         "heading_count": sum(len(item["items"]) for item in files),
         "files": files,
+        "appendices": appendices,
     }
+
+
+def decision_appendix_items(work_dir: Path) -> list[dict[str, Any]]:
+    inventory_path = work_dir / "tender_appendix_inventory.json"
+    if not inventory_path.is_file():
+        return []
+    try:
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"tender appendix inventory is invalid: {inventory_path}: {exc}") from exc
+    if (
+        not isinstance(inventory, dict)
+        or inventory.get("schema_version") != "tender-appendix-inventory.v1"
+    ):
+        raise SystemExit(f"tender appendix inventory schema is invalid: {inventory_path}")
+    result: list[dict[str, Any]] = []
+    for item in inventory.get("items") or []:
+        if not isinstance(item, dict) or int(item.get("following_table_count") or 0) < 1:
+            continue
+        result.append(
+            {
+                "appendix_id": f"APP-{len(result) + 1:04d}",
+                "file_id": clean_text(item.get("file_id")),
+                "number": clean_text(item.get("number")),
+                "title": clean_text(item.get("title")),
+                "following_table_count": int(item.get("following_table_count") or 0),
+            }
+        )
+    return result
 
 
 def tender_headings(

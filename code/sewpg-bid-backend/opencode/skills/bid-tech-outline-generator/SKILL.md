@@ -123,7 +123,8 @@ s2outline finalize <manifest>
     {"target_id": "TPL-0002", "decision": "suggest_delete", "reason": "招标明确排除该供货范围"}
   ],
   "additions": [
-    {"node_id": "ADD-0001", "parent_id": "TPL-0003", "number": "1.2.3", "title": "专项报告", "reason": "招标明确要求独立提交"}
+    {"node_id": "ADD-0001", "parent_id": "TPL-0003", "number": "1.2.3", "title": "专项报告", "reason": "招标明确要求独立提交"},
+    {"node_id": "ADD-APP-0001", "parent_id": "ADD-TECH-APPENDIX", "appendix_id": "APP-0001", "reason": "招标结构化清单中的实际表单"}
   ]
 }
 ```
@@ -132,6 +133,7 @@ s2outline finalize <manifest>
 - 每批先完整读取 `comparison_context`，不得脱离当前招标目录仅凭模板标题连续提交统一结论。
 - `retain` 不写理由；`suggest_delete` 必须写明确理由，可按需写 `tender_basis`。
 - `additions` 表示 `suggest_add`，必须给出唯一 `node_id`、父节点、编号、标题和理由；可靠招标依据按需写 `tender_basis`。
+- 附表新增只提交 `comparison_context.appendices` 中的 `appendix_id`，不要重写表号和标题；固定程序从现有结构化附表清单原样复制。
 - 沿用模板编号，不自动全局重编号；新增编号由你的专业判断显式提交。
 
 重复执行 `decision-next` 和 `decision-batch`，直到 `remaining_count=0`。然后执行不带 JSON 参数的 `s2outline decisions <manifest>`，由固定程序汇总 decisions；再执行 `s2outline compose <manifest>`。未完成逐项判断时 `decisions` 必须失败，不能把漏判节点自动写成必要。
@@ -172,7 +174,7 @@ s2outline finalize <manifest>
 - 最后一个根节点统一为“技术附表”，编号沿用模板末章样式。
 - 以独立表号、独立表名和独立填写区域识别实际表单；每张表作为“技术附表”的直接子节点并保留原编号。
 - 若“技术附表 A/B”只是容纳多张表的分组，分组标题本身不输出；所有实际表单扁平放入 `children`。
-- 先通过 `s2outline headings` 和 `tender_appendix_inventory.json` 掌握全部附表标题。`following_table_count` 是结构事实，不要求为此读取全部附表内容；只有附表内容影响目录判断时才按需详读。父子标题不得同时输出，除非二者各有独立填写区域。
+- 通过 `decision-next` 的 `comparison_context.appendices` 掌握全部附表标题；它直接来自 `tender_appendix_inventory.json`，只包含 `following_table_count > 0` 的实际表单。按 `appendix_id` 提交即可，不要求读取全部附表内容；只有附表内容影响目录判断时才按需详读。父子标题不得同时输出。
 - 模板已有且适用的附表标为必要；招标新增且模板没有的附表标为建议增加；招标方参考表不输出。
 - 表内栏目、参数行和小计分组不得展开为目录子节点。
 

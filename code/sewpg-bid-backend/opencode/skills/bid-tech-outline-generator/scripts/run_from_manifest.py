@@ -245,6 +245,7 @@ def dispatch_command(
             work_dir,
             structure,
             decision_batch,
+            appendix_items=review_workflow.decision_appendix_items(work_dir),
         )
     if command == "compose":
         return compose_manifest(manifest, manifest_path)
@@ -976,9 +977,6 @@ def validate_technical_appendix(nodes: list[dict[str, Any]], *, work_dir: Path) 
         item for item in inventory_items if int(item.get("following_table_count") or 0) > 0
     ]
     if not indexes:
-        if positive_inventory_items:
-            labels = ", ".join(str(item.get("number") or item.get("title") or "") for item in positive_inventory_items)
-            raise SystemExit(f"技术附表遗漏实际表单: {labels}")
         return
     if indexes != [len(nodes) - 1]:
         raise SystemExit("技术附表 must be the single last root node")
@@ -1034,21 +1032,6 @@ def validate_technical_appendix(nodes: list[dict[str, Any]], *, work_dir: Path) 
         ]
         if matches and not any(int(item.get("following_table_count") or 0) > 0 for item in matches):
             raise SystemExit(f"技术附表.children[{index}] 没有独立填写表格，不应作为附表节点输出")
-
-    appendix_children = [item for item in appendix.get("children") or [] if isinstance(item, dict)]
-    missing_items = []
-    for item in positive_inventory_items:
-        number = normalize_outline_identity(item.get("number"))
-        title = normalize_outline_identity(item.get("title"))
-        if not any(
-            (number and normalize_outline_identity(child.get("number")) == number)
-            or (title and normalize_outline_identity(child.get("title")) == title)
-            for child in appendix_children
-        ):
-            missing_items.append(str(item.get("number") or item.get("title") or ""))
-    if missing_items:
-        raise SystemExit("技术附表遗漏实际表单: " + ", ".join(missing_items))
-
 
 def normalize_outline_identity(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).casefold()
