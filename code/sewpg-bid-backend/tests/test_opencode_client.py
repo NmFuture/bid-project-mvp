@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -222,7 +223,7 @@ class OpencodeClientTests(unittest.TestCase):
 
         self.assertIn('"total_nodes":64', output)
 
-    def test_s2_outline_terminal_output_does_not_depend_on_agent_command(self) -> None:
+    def test_s2_outline_terminal_output_rejects_noncanonical_agent_commands(self) -> None:
         final_output = (
             '{"schema_version":"technical-outline.v1",'
             '"outputFile":"/data/documents/PRJ/technical-workspace/s2_toc_workdir.new/toc.json",'
@@ -233,6 +234,11 @@ class OpencodeClientTests(unittest.TestCase):
                 "cd /workspace/.opencode/skills/bid-tech-outline-generator && "
                 "python3 -m scripts.run_from_manifest finalize "
                 "/data/documents/PRJ/technical-workspace/s2_toc_workdir.new/s2_input.json 2>&1"
+            ),
+            (
+                "python3 /workspace/.opencode/skills/bid-tech-outline-generator/"
+                "scripts/run_from_manifest.py finalize "
+                "/data/documents/PRJ/technical-workspace/s2_toc_workdir.new/s2_input.json"
             ),
             "python3 /opt/agent-tools/custom_outline_writer.py --project PRJ",
         ]
@@ -258,7 +264,48 @@ class OpencodeClientTests(unittest.TestCase):
 
                 output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
 
-                self.assertIn('"workflowStage":"finalized"', output)
+                self.assertEqual(output, "")
+
+    def test_s2_outline_terminal_output_rejects_finalize_command_suffixes(self) -> None:
+        final_output = (
+            '{"schema_version":"technical-outline.v1",'
+            '"outputFile":"/data/documents/PRJ/technical-workspace/s2_toc_workdir.new/toc.json",'
+            '"summary":{"total_nodes":64,"workflowStage":"finalized"}}'
+        )
+        manifest = "/data/documents/PRJ/technical-workspace/s2_toc_workdir.new/s2_input.json"
+        commands = [
+            f"s2outline finalize {manifest} && python3 /tmp/fake.py",
+            f"s2outline finalize {manifest} || python3 /tmp/fake.py",
+            f"s2outline finalize {manifest} ; python3 /tmp/fake.py",
+            f"s2outline finalize {manifest};true",
+            f"s2outline finalize {manifest}>/tmp/final.json",
+            f"/tmp/s2outline finalize {manifest}",
+            f"s2outline finalize {manifest} --force",
+            f"s2outline finalize {manifest} 2>&1",
+        ]
+
+        for command in commands:
+            with self.subTest(command=command):
+                messages = [
+                    {
+                        "parts": [
+                            {
+                                "type": "tool",
+                                "tool": "bash",
+                                "state": {
+                                    "status": "completed",
+                                    "input": {"command": command},
+                                    "exit": 0,
+                                    "output": final_output,
+                                },
+                            }
+                        ]
+                    }
+                ]
+
+                output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+
+                self.assertEqual(output, "")
 
     def test_s2_outline_terminal_output_accepts_tool_metadata_stdout(self) -> None:
         final_output = (
@@ -274,7 +321,9 @@ class OpencodeClientTests(unittest.TestCase):
                         "tool": "bash",
                         "state": {
                             "status": "completed",
-                            "input": {"command": "agent-defined-command --emit-outline"},
+                            "input": {
+                                "command": "s2outline finalize /data/documents/PRJ/technical-workspace/s2_toc_workdir.new/s2_input.json"
+                            },
                             "metadata": {"exit": 0, "output": final_output},
                         },
                     }
@@ -286,7 +335,7 @@ class OpencodeClientTests(unittest.TestCase):
 
         self.assertIn('"workflowStage":"finalized"', output)
 
-    def test_s2_outline_terminal_output_does_not_depend_on_tool_name(self) -> None:
+    def test_s2_outline_terminal_output_requires_bash_tool_name(self) -> None:
         final_output = (
             '{"schema_version":"technical-outline.v1",'
             '"outputFile":"/data/documents/PRJ/technical-workspace/s2_toc_workdir.new/toc.json",'
@@ -300,7 +349,9 @@ class OpencodeClientTests(unittest.TestCase):
                         "tool": "agent-outline-writer",
                         "state": {
                             "status": "completed",
-                            "input": {"projectId": "PRJ"},
+                            "input": {
+                                "command": "s2outline finalize /data/documents/PRJ/technical-workspace/s2_toc_workdir.new/s2_input.json"
+                            },
                             "metadata": {"exit": 0, "output": final_output},
                         },
                     }
@@ -310,7 +361,7 @@ class OpencodeClientTests(unittest.TestCase):
 
         output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
 
-        self.assertIn('"workflowStage":"finalized"', output)
+        self.assertEqual(output, "")
 
     def test_s2_outline_terminal_output_rejects_failed_tool_metadata_exit(self) -> None:
         final_output = (
@@ -326,7 +377,9 @@ class OpencodeClientTests(unittest.TestCase):
                         "tool": "bash",
                         "state": {
                             "status": "completed",
-                            "input": {"command": "agent-defined-command --emit-outline"},
+                            "input": {
+                                "command": "s2outline finalize /data/documents/PRJ/technical-workspace/s2_toc_workdir.new/s2_input.json"
+                            },
                             "metadata": {"exit": 1, "output": final_output},
                         },
                     }
@@ -1105,6 +1158,7 @@ class OpencodeClientTests(unittest.TestCase):
         with (
             patch.object(client, "send_prompt", side_effect=RuntimeError("futurecode generate timeout")),
             patch.object(client, "list_session_messages", side_effect=list_messages) as list_session_messages,
+            patch.object(client, "abort_session", return_value=True) as abort_session,
             patch("app.services.opencode_client.time.sleep", return_value=None),
         ):
             response = client._send_prompt_with_session_polling(
@@ -1117,6 +1171,66 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(response["_completionSource"], "s2outline-finalize")
         self.assertIn('"total_nodes":64', response["parts"][0]["text"])
         self.assertGreaterEqual(list_session_messages.call_count, 2)
+        abort_session.assert_called_once_with("ses-s2-outline")
+
+    def test_s2_outline_early_completion_aborts_and_waits_for_active_prompt_worker(self) -> None:
+        client = OpencodeClient()
+        release_worker = threading.Event()
+        worker_finished = threading.Event()
+        finalize_output = (
+            '{"schema_version":"technical-outline.v1",'
+            '"outputFile":"/data/documents/PRJ/toc.json",'
+            '"summary":{"total_nodes":64,"workflowStage":"finalized"}}'
+        )
+        finalized_messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-finalize"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "s2outline finalize /data/documents/PRJ/s2_input.json"},
+                            "exit": 0,
+                            "output": finalize_output,
+                        },
+                    }
+                ],
+            }
+        ]
+
+        def blocked_send_prompt(_session_id: str, _prompt: str) -> dict:
+            release_worker.wait(timeout=5)
+            worker_finished.set()
+            return {"parts": [{"type": "text", "text": finalize_output}]}
+
+        def abort_session(_session_id: str) -> bool:
+            release_worker.set()
+            return True
+
+        try:
+            with (
+                patch.object(client, "send_prompt", side_effect=blocked_send_prompt),
+                patch.object(client, "list_session_messages", return_value=finalized_messages),
+                patch.object(
+                    client,
+                    "_get_session_output_snapshot",
+                    return_value={"signature": ("finalized", ())},
+                ),
+                patch.object(client, "abort_session", side_effect=abort_session) as abort_session_mock,
+            ):
+                response = client._send_prompt_with_session_polling(
+                    "ses-s2-active",
+                    "prompt",
+                    early_tool_command="s2outline-finalize",
+                )
+        finally:
+            release_worker.set()
+
+        self.assertTrue(response["_earlyCompletion"])
+        abort_session_mock.assert_called_once_with("ses-s2-active")
+        self.assertTrue(worker_finished.is_set())
 
     def test_btplnav_stalled_running_tool_reports_trace(self) -> None:
         client = OpencodeClient()

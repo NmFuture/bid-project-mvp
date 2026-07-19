@@ -12,7 +12,7 @@ description: Use when 需要根据历史投标模板与当前招标文件生成�
 1. 先学模板，后审招标；不得从招标文件凭空重建另一套目录。
 2. 目录在三级以内尽可能细，但最多三级；细化仍止于可独立填报单元，不把正文要求逐条改写成标题。
 3. 先掌握招标全文结构，再自主选择详读范围；目录、正文标题和附表标题优先读取，正文与表格按目录判断需要详读。
-4. 脚本不得准备或写死目录候选，也不得替代专业判断。
+4. 模板节点默认继承；模型只提交增量决策，固定程序机械合成结果。不得用脚本准备或写死目录候选，也不得替代专业判断。
 5. 最终文件保持 `technical-outline.v1` 极简 Schema；审阅状态和义务台账不进入前端。
 
 ## 输入与受控导航
@@ -29,12 +29,14 @@ s2outline table <manifest> <tableId> --rows 1-24 [--max-chars 8000]
 s2outline tables <manifest> '<tableIds-json>' --rows 1-24 [--max-chars 8000]
 s2outline review-batch <manifest> '<review-json>'
 s2outline status <manifest>
+s2outline decisions <manifest> '<decisions-json>'
+s2outline compose <manifest>
 s2outline finalize <manifest>
 ```
 
 `prepare` 生成：
 
-- `template_structure.json`：模板目录结构；依次优先采用 Word 自动目录、可见目录页、正文标题结构。
+- `template_structure.json`：模板目录结构；依次优先采用 Word 自动目录、可见目录页、正文标题结构，并提供本次输入稳定的 `template_id`、`parent_id` 和 `input_fingerprint`。
 - `tender_appendix_inventory.json`：招标附表标题及 `following_table_count`。
 - `tender_review_chunks.json`、`tender_review_state.json`：按正文顺序建立的段落/表格分块和可恢复进度。
 - `requirement_ledger.json`：由你的逐块判断累积形成的招标义务台账。
@@ -108,6 +110,26 @@ s2outline finalize <manifest>
 
 确认已读取全文目录、正文标题和附表标题；已对影响目录结构的重点章节充分详读；已记录的每项义务均有明确 disposition。证据不足时保守沿用模板或标记待确认，不得用猜测补齐未读内容。
 
+### 5. 提交增量并机械合成
+
+不得直接写入 `outputFile`，不得现场编写临时 Python、Shell 或其他脚本拼装完整目录。只把相对模板的变化提交给 `s2outline decisions`，再执行 `s2outline compose`。未出现在 `changes` 中的一至三级模板节点默认原样继承。
+
+```json
+{"schema_version":"technical-outline-decisions.v1","input_fingerprint":"<prepare 返回值>","changes":[
+  {"operation":"collapse","target_id":"TPL-0003","reason":"由父节点统一承载"},
+  {"operation":"add","node_id":"ADD-0001","parent_id":"TPL-0002","number":"1.1.3","title":"专项报告","suggestion_action":"建议增加","suggestion_reason":"招标明确要求独立提交"}
+]}
+```
+
+- `collapse` 只表示粒度收敛，必须逐节点写理由；有活动子节点的父节点不能整体收敛。
+- `suggest_delete` 保留节点并标为“建议删除”；不能用 `collapse` 代替。
+- `update` 用于重命名、移动、编号或建议状态调整，必须写理由；新增/移动后的层级仍不得超过三级。
+- `add` 必须给出唯一 `node_id`、父节点、编号、标题和建议增加理由；可靠招标依据按需写 `tender_basis`。
+- 不自动全局重编号；沿用模板编号，变更和新增编号由你的专业判断显式提交。
+- `input_fingerprint` 必须使用本次 `prepare` 返回值；即使没有变化也要提交空 `changes`，不得跳过 `decisions`。
+
+`compose` 从模板骨架应用上述决策，生成 `outputFile` 和 `outline_compose_report.json`。报告按每个二级节点给出三级对照：模板数、保留数、收敛数、移入移出数、新增数和未解释缺失数；这些数据用于检查，不按三级数量设置完成门禁。
+
 ## 可独立填报单元
 
 保留节点的标准不是固定层级，而是能否作为一个统一素材独立编制、分工和审核。
@@ -158,10 +180,10 @@ s2outline finalize <manifest>
 
 `tender_basis` 只含 `file_id` 和 `search_text`。`search_text` 必须摘取已审阅 evidenceId 中真实、连续、可由 OnlyOffice 稳定定位的原文；无可靠原文时省略，不得编造。
 
-完成编号、粒度、四类建议、义务承接和技术附表检查后写入最终文件，再执行：
+完成编号、粒度、四类建议、义务承接和技术附表检查后，依次执行 `decisions`、`compose`，再执行：
 
 ```bash
 s2outline finalize <manifest>
 ```
 
-`finalize` 只校验，不生成或修改目录。未审阅分块、未读完正文或表格不会阻止完成；覆盖率与未详读表格数仅作为摘要信息。它仍会校验已记录义务的承接、目录节点结构、可定位依据和附表结构。最后只返回其严格 JSON 输出。
+`finalize` 只校验，不生成或修改目录；生产工作流还会校验结果确由 `compose` 生成且之后未被改写。未审阅分块、未读完正文或表格不会阻止完成；覆盖率、三级对照与未详读表格数仅作为摘要信息。它仍会校验已记录义务的承接、目录节点结构、可定位依据和附表结构。最后只返回其严格 JSON 输出。

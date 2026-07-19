@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import importlib.util
 import json
 import re
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +38,21 @@ def skill_script_path(skill_name: str, script_name: str) -> Path:
         if candidate.exists():
             return candidate
     return BACKEND_ROOT / "opencode" / "skills" / skill_name / "scripts" / script_name
+
+
+def load_technical_outline_runner():
+    module_name = "directory_generation_technical_outline_runner"
+    loaded = sys.modules.get(module_name)
+    if loaded is not None:
+        return loaded
+    script_path = skill_script_path("bid-tech-outline-generator", "run_from_manifest.py")
+    spec = importlib.util.spec_from_file_location(module_name, script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载技术标目录 Skill：{script_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 class DirectoryGenerationTests(unittest.TestCase):
@@ -212,6 +230,8 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertIn("s2outline tables", prompt)
         self.assertIn("s2outline review-batch", prompt)
         self.assertIn("s2outline status", prompt)
+        self.assertIn("s2outline decisions", prompt)
+        self.assertIn("s2outline compose", prompt)
         self.assertIn("自主选择", prompt)
         self.assertIn("模板存在三级目录时必须学习到第三级", prompt)
         self.assertIn("尽可能保留三级结构", prompt)
@@ -238,58 +258,97 @@ class DirectoryGenerationTests(unittest.TestCase):
         self,
         manifest_path: Path,
         *,
-        node_overrides: list[dict] | None = None,
+        first_root_title: str = "投标响应概述",
     ) -> dict:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        output_file = Path(manifest["outputFile"])
         tender_file = manifest["tenderFiles"][0]
-        nodes = node_overrides or [
+        runner = load_technical_outline_runner()
+        runner.write_template_structure(manifest, manifest_path)
+        structure = json.loads(
+            (manifest_path.parent / "template_structure.json").read_text(encoding="utf-8")
+        )
+        items = structure["items"]
+        roots = [item for item in items if item.get("parent_id") is None]
+        self.assertGreaterEqual(len(roots), 2)
+
+        changes = [
             {
-                "number": "第一章",
-                "title": "投标响应概述",
-                "suggestion_action": "必要",
-                "suggestion_reason": "",
-                "children": [],
-            },
-            {
-                "number": "第二章",
-                "title": "项目实施方案",
-                "suggestion_action": "建议增加",
-                "suggestion_reason": "招标文件要求单独编制项目实施方案。",
-                "tender_basis": {
-                    "file_id": tender_file["id"],
-                    "search_text": "投标人应提供实施方案。",
-                },
-                "children": [],
-            },
-            {
-                "number": "第三章",
-                "title": "技术附表",
-                "suggestion_action": "必要",
-                "suggestion_reason": "",
-                "children": [
-                    {
-                        "number": "附表D.7",
-                        "title": "性能及考核承诺保证表",
-                        "suggestion_action": "建议增加",
-                        "suggestion_reason": "招标文件新增需填写技术附表。",
-                        "tender_basis": {
-                            "file_id": tender_file["id"],
-                            "search_text": "附表D.7 性能及考核承诺保证表",
-                        },
-                        "children": [],
-                    }
-                ],
-            },
+                "operation": "collapse",
+                "target_id": item["template_id"],
+                "reason": "测试场景由根节点统一承载。",
+            }
+            for item in sorted(items, key=lambda item: int(item["level"]), reverse=True)
+            if item.get("parent_id") is not None
         ]
-        toc = {"schema_version": "technical-outline.v1", "nodes": nodes}
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        output_file.write_text(json.dumps(toc, ensure_ascii=False, indent=2), encoding="utf-8")
-        return {
-            "schema_version": "technical-outline.v1",
-            "outputFile": str(output_file),
-            "summary": {"total_nodes": 4, "action_counts": {"必要": 2, "建议增加": 2}},
-        }
+        changes.extend(
+            {
+                "operation": "collapse",
+                "target_id": item["template_id"],
+                "reason": "测试场景不需要额外根节点。",
+            }
+            for item in roots[2:]
+        )
+        first_root_id = roots[0]["template_id"]
+        appendix_root_id = roots[1]["template_id"]
+        changes.extend(
+            [
+                {
+                    "operation": "update",
+                    "target_id": first_root_id,
+                    "number": "第一章",
+                    "title": first_root_title,
+                    "suggestion_action": "必要",
+                    "suggestion_reason": "",
+                    "reason": "测试保留首个模板根节点。",
+                },
+                {
+                    "operation": "update",
+                    "target_id": appendix_root_id,
+                    "number": "第三章",
+                    "title": "技术附表",
+                    "suggestion_action": "必要",
+                    "suggestion_reason": "",
+                    "reason": "测试将第二个模板根节点调整为附表章节。",
+                },
+                {
+                    "operation": "add",
+                    "node_id": "ADD-MOCK-IMPLEMENTATION",
+                    "parent_id": None,
+                    "after_id": first_root_id,
+                    "number": "第二章",
+                    "title": "项目实施方案",
+                    "suggestion_action": "建议增加",
+                    "suggestion_reason": "招标文件要求单独编制项目实施方案。",
+                    "tender_basis": {
+                        "file_id": tender_file["id"],
+                        "search_text": "投标人应提供实施方案。",
+                    },
+                },
+                {
+                    "operation": "add",
+                    "node_id": "ADD-MOCK-APPENDIX-D7",
+                    "parent_id": appendix_root_id,
+                    "number": "附表D.7",
+                    "title": "性能及考核承诺保证表",
+                    "suggestion_action": "建议增加",
+                    "suggestion_reason": "招标文件新增需填写技术附表。",
+                    "tender_basis": {
+                        "file_id": tender_file["id"],
+                        "search_text": "附表D.7 性能及考核承诺保证表",
+                    },
+                },
+            ]
+        )
+        runner.submit_outline_decisions(
+            manifest,
+            manifest_path,
+            {
+                "schema_version": "technical-outline-decisions.v1",
+                "input_fingerprint": structure["input_fingerprint"],
+                "changes": changes,
+            },
+        )
+        return runner.compose_manifest(manifest, manifest_path)
 
     def _mock_futurecode_outline(self, prompt: str, *args, **kwargs) -> dict:
         manifest_path = self._technical_manifest_from_prompt(prompt, kwargs)
@@ -853,6 +912,8 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertIn("s2outline tables", prompt)
         self.assertIn("s2outline review-batch", prompt)
         self.assertIn("s2outline status", prompt)
+        self.assertIn("s2outline decisions", prompt)
+        self.assertIn("s2outline compose", prompt)
         self.assertIn("自主选择", prompt)
         self.assertIn("模板存在三级目录时必须学习到第三级", prompt)
         self.assertIn("尽可能保留三级结构", prompt)
@@ -864,11 +925,173 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertIn("tender_review_chunks.json", prompt)
         self.assertIn("target_node", prompt)
         self.assertIn("一个节点", prompt)
+        self.assertIn("不得自行写入", prompt)
         self.assertIn("s2outline finalize", prompt)
         self.assertIn("technical-outline.v1", prompt)
         self.assertNotIn("required_status", prompt)
         self.assertNotIn("source_refs", prompt)
         self.assertLess(len(prompt), 1200)
+
+    def test_technical_outline_loader_does_not_trust_agent_modified_manifest_gate(self) -> None:
+        from app.services.outline_generation import _load_outline_result
+
+        root = Path(self.temp_dir.name) / "compose-gate"
+        root.mkdir(parents=True, exist_ok=True)
+        output = root / "toc.json"
+        manifest_path = root / "s2_input.json"
+        output.write_text(
+            json.dumps(
+                {
+                    "schema_version": "technical-outline.v1",
+                    "nodes": [
+                        {
+                            "number": "第1章",
+                            "title": "技术方案",
+                            "suggestion_action": "必要",
+                            "suggestion_reason": "",
+                            "children": [],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "bidType": "商务标",
+                    "workDir": str(root),
+                    "outputFile": str(output),
+                    "requireComposedOutline": False,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "compose report"):
+            _load_outline_result(
+                {"outputFile": str(output)},
+                manifest_path,
+                expected_bid_type="技术标",
+            )
+
+        (root / "outline_compose_report.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "technical-outline-compose-report.v1",
+                    "outputFile": str(output),
+                    "outputSha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "compose report"):
+            _load_outline_result(
+                {"outputFile": str(output)},
+                manifest_path,
+                expected_bid_type="技术标",
+            )
+
+    def test_technical_outline_rejects_agent_rebased_artifacts_after_template_tamper(self) -> None:
+        from app.services.outline_generation import _run_outline_skill
+
+        root = Path(self.temp_dir.name) / "compose-template-tamper"
+        root.mkdir(parents=True, exist_ok=True)
+        template = root / "template.docx"
+        tender = root / "tender.docx"
+        output = root / "toc.json"
+        manifest_path = root / "s2_input.json"
+        self._write_docx(template, [("第一章 原始技术方案", "Heading 1")])
+        self._write_docx(tender, [("第一章 招标技术要求", "Heading 1")])
+        manifest = {
+            "bidType": "技术标",
+            "workDir": str(root),
+            "templateFile": str(template),
+            "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+            "outputFile": str(output),
+            "requireComposedOutline": True,
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        runner = load_technical_outline_runner()
+
+        def write_rebased_artifacts(_prompt: str, *args, **kwargs) -> dict:
+            self._write_docx(template, [("第一章 被篡改的技术方案", "Heading 1")])
+            runner.write_template_structure(manifest, manifest_path)
+            structure = json.loads((root / "template_structure.json").read_text(encoding="utf-8"))
+            runner.submit_outline_decisions(
+                manifest,
+                manifest_path,
+                {
+                    "schema_version": "technical-outline-decisions.v1",
+                    "input_fingerprint": structure["input_fingerprint"],
+                    "changes": [],
+                },
+            )
+            return runner.compose_manifest(manifest, manifest_path)
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=write_rebased_artifacts,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "模板|template"):
+                _run_outline_skill(manifest_path, bid_type="技术标")
+
+    def test_generate_outline_rejects_agent_modified_manifest_before_publish(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result()
+
+        def write_valid_artifacts_then_mutate_manifest(prompt: str, *args, **kwargs) -> dict:
+            manifest_path = self._technical_manifest_from_prompt(prompt, kwargs)
+            result = self._write_mock_technical_toc_outputs(manifest_path)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["outputFile"] = str(manifest_path.parent / "agent-selected-output.json")
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            return result
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=write_valid_artifacts_then_mutate_manifest,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "manifest.*修改"):
+                generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+    def test_publish_preserves_verified_technical_semantics_and_output_hash(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result()
+        staging_paths: list[str] = []
+
+        def write_semantic_path_artifacts(prompt: str, *args, **kwargs) -> dict:
+            manifest_path = self._technical_manifest_from_prompt(prompt, kwargs)
+            staging_path = str(manifest_path.parent)
+            staging_paths.append(staging_path)
+            return self._write_mock_technical_toc_outputs(
+                manifest_path,
+                first_root_title=f"路径原文 {staging_path}",
+            )
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=write_semantic_path_artifacts,
+        ):
+            payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        expected_title = f"路径原文 {staging_paths[0]}"
+        outline = self._outline_state_for_tests(project_id)
+        self.assertEqual(outline["nodes"][0]["title"], expected_title)
+        published_work_dir = Path(payload["opencodeOutput"]["workDir"])
+        output_file = Path(payload["opencodeOutput"]["tocJsonPath"])
+        output_payload = json.loads(output_file.read_text(encoding="utf-8"))
+        report = json.loads(
+            (published_work_dir / "outline_compose_report.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(output_payload["nodes"][0]["title"], expected_title)
+        self.assertEqual(report["outputFile"], str(output_file))
+        self.assertEqual(report["outputSha256"], hashlib.sha256(output_file.read_bytes()).hexdigest())
 
     def test_clean_technical_outline_nodes_uses_frontend_contract(self) -> None:
         from app.services.outline_generation import _clean_technical_outline_nodes
@@ -1063,6 +1286,11 @@ class DirectoryGenerationTests(unittest.TestCase):
         manifest = json.loads((Path(workspace) / "s2_input.json").read_text(encoding="utf-8"))
         self.assertEqual(Path(manifest["templateFile"]).suffix, ".docx")
         self.assertEqual(Path(manifest["tenderFiles"][0]["path"]).suffix, ".docx")
+        self.assertIs(manifest["requireComposedOutline"], True)
+        compose_report = json.loads(
+            (Path(workspace) / "outline_compose_report.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(compose_report["outputFile"], manifest["outputFile"])
         self.assertEqual(payload["opencodeOutput"]["engine"], "bid-tech-outline-generator")
         self.assertEqual(payload["opencodeOutput"]["skill"], "bid-tech-outline-generator")
         self.assertTrue(payload["opencodeOutput"]["parts"])

@@ -16,6 +16,7 @@ from app.services.system_settings import system_settings_service
 
 
 OPENCODE_PROGRESS_HEARTBEAT_SECONDS = 10.0
+OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS = 10.0
 
 
 class OpencodeClient:
@@ -547,6 +548,21 @@ class OpencodeClient:
         except (httpx.HTTPError, ValueError):
             return False
 
+    def _stop_s2_outline_session_after_finalize(
+        self,
+        session_id: str,
+        *,
+        finished: threading.Event | None = None,
+    ) -> None:
+        aborted = self.abort_session(session_id)
+        if finished is not None:
+            if finished.wait(OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS):
+                return
+            status = "已发送 abort" if aborted else "abort 失败"
+            raise RuntimeError(f"s2outline finalize 后 Opencode worker 未停止（{status}）。")
+        if not aborted:
+            raise RuntimeError("s2outline finalize 后无法确认 Opencode session 已停止。")
+
     def _extract_outline_json(self, response: dict[str, Any]) -> dict[str, Any]:
         parsed = self._extract_json_response(
             response,
@@ -838,6 +854,11 @@ class OpencodeClient:
                 self._raise_session_error_if_present(session_id, messages)
                 tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
                 if tool_output:
+                    if early_tool_command == "s2outline-finalize":
+                        self._stop_s2_outline_session_after_finalize(
+                            session_id,
+                            finished=finished,
+                        )
                     snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
                     trace_parts = list(snapshot.get("parts") or [])
                     trace_parts.append(
@@ -1268,6 +1289,7 @@ class OpencodeClient:
             self._raise_session_error_if_present(session_id, messages)
             tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
             if tool_output:
+                self._stop_s2_outline_session_after_finalize(session_id)
                 snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
                 trace_parts = list(snapshot.get("parts") or [])
                 trace_parts.append(
@@ -1496,6 +1518,13 @@ class OpencodeClient:
 
     @staticmethod
     def _matches_completed_command(command: str, expected: str) -> bool:
+        if expected == "s2outline-finalize":
+            return bool(
+                re.fullmatch(
+                    r"s2outline[ \t]+finalize[ \t]+/[A-Za-z0-9._/-]+",
+                    command,
+                )
+            )
         words = command.split()
         if not words:
             return False
@@ -1504,8 +1533,6 @@ class OpencodeClient:
             return first_word in {"s1parse", "s1parse_router.py"} and len(words) >= 3 and words[1] == "finalize"
         if expected == "btplnav-finalize":
             return first_word in {"btplnav", "run_from_manifest.py"} and len(words) >= 3 and words[1] == "finalize"
-        if expected == "s2outline-finalize":
-            return first_word in {"s2outline", "run_from_manifest.py"} and len(words) >= 3 and words[1] == "finalize"
         return first_word == expected
 
     @staticmethod
@@ -1562,14 +1589,14 @@ class OpencodeClient:
             for part in reversed(message.get("parts") or []):
                 if not isinstance(part, dict) or part.get("type") != "tool":
                     continue
-                if expected != "s2outline-finalize" and str(part.get("tool") or "") != "bash":
+                if str(part.get("tool") or "") != "bash":
                     continue
                 state = part.get("state") if isinstance(part.get("state"), dict) else {}
                 if state.get("status") != "completed":
                     continue
                 raw_input = state.get("input") if isinstance(state.get("input"), dict) else {}
                 command = str(raw_input.get("command") or "").strip()
-                if expected != "s2outline-finalize" and not OpencodeClient._matches_completed_command(command, expected):
+                if not OpencodeClient._matches_completed_command(command, expected):
                     continue
                 metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
                 exit_code = state.get("exit")

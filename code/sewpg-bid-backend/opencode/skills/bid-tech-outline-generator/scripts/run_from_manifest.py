@@ -16,6 +16,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import review_workflow
+import outline_composer
 
 
 AGENTIC_COMMANDS = {
@@ -30,6 +31,8 @@ AGENTIC_COMMANDS = {
     "tables",
     "review-chunk",
     "review-batch",
+    "decisions",
+    "compose",
     "validate",
     "status",
     "finalize",
@@ -68,6 +71,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Inspect and validate S2 technical outline artifacts.")
     parser.add_argument("args", nargs="*")
     parser.add_argument("--manifest", dest="manifest_option")
+    parser.add_argument("--require-compose", action="store_true")
     parser.add_argument("--response", choices=("summary", "review"), default="summary")
     parsed_args, command_options = parser.parse_known_args()
 
@@ -79,6 +83,8 @@ def main() -> int:
     if not manifest_path.exists():
         raise SystemExit(f"manifest not found: {manifest_path}")
     manifest = load_json_dict(manifest_path, "manifest")
+    if parsed_args.require_compose:
+        manifest["_runtimeRequireComposedOutline"] = True
 
     result = dispatch_command(command, manifest, manifest_path, command_args)
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -92,7 +98,7 @@ def resolve_invocation(manifest_option: str | None, positional_args: list[str]) 
         command = args.pop(0)
     elif args and args[0] not in AGENTIC_COMMANDS and len(args) > 1:
         raise SystemExit(
-            "usage: s2outline [prepare|template|headings|next|next-batch|read|window|table|tables|review-chunk|review-batch|validate|status|finalize] <manifest> [...]"
+            "usage: s2outline [prepare|template|headings|next|next-batch|read|window|table|tables|review-chunk|review-batch|decisions|compose|validate|status|finalize] <manifest> [...]"
         )
     manifest_text = str(manifest_option or (args[0] if args else "")).strip()
     if args and not manifest_option:
@@ -200,6 +206,17 @@ def dispatch_command(
         if not isinstance(chunk_ids, list):
             raise SystemExit("review JSON chunk_ids must be a list")
         return review_workflow.submit_batch_review(work_dir, chunk_ids, review)
+    if command == "decisions":
+        decisions_text = _required_arg(command_args, 0, "decisions JSON")
+        try:
+            decisions = json.loads(decisions_text)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"decisions JSON is invalid: {exc}") from exc
+        if not isinstance(decisions, dict):
+            raise SystemExit("decisions JSON must be an object")
+        return submit_outline_decisions(manifest, manifest_path, decisions)
+    if command == "compose":
+        return compose_manifest(manifest, manifest_path)
     if command in {"validate", "status"}:
         return review_workflow.review_status(work_dir)
     if command == "finalize":
@@ -245,6 +262,7 @@ def write_template_structure(manifest: dict[str, Any], manifest_path: Path) -> d
         "schema_version": "template-structure.v1",
         "source": structure["source"],
         "item_count": len(structure["items"]),
+        "inputFingerprint": structure["input_fingerprint"],
         "templateStructureFile": str(output_path),
         "tenderAppendixItemCount": len(appendix_inventory["items"]),
         "tenderAppendixInventoryFile": str(appendix_inventory_path),
@@ -271,12 +289,12 @@ def extract_template_structure(path: Path) -> dict[str, Any]:
             items = body_heading_items(paragraphs)
     if not items:
         raise SystemExit(f"no usable outline structure found in templateFile: {path}")
-    return {
+    return outline_composer.annotate_template_structure({
         "schema_version": "template-structure.v1",
         "source": source,
         "template_file": str(path),
         "items": items,
-    }
+    })
 
 
 def supplement_automatic_toc_with_body_level_three(
@@ -657,9 +675,98 @@ def normalize_space(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").replace("\u3000", " ")).strip()
 
 
+def submit_outline_decisions(
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    decisions: dict[str, Any],
+) -> dict[str, Any]:
+    work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
+    structure = load_json_dict(work_dir / "template_structure.json", "templateStructureFile")
+    try:
+        return outline_composer.submit_decisions(
+            work_dir=work_dir,
+            structure=structure,
+            decisions=decisions,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def compose_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
+    work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
+    output_file = Path(str(manifest.get("outputFile") or work_dir / "technical_outline.json")).expanduser()
+    structure = load_json_dict(work_dir / "template_structure.json", "templateStructureFile")
+    try:
+        decisions = outline_composer.load_decisions(work_dir, structure)
+        outline, _ = outline_composer.build_composition(structure, decisions)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    action_counts: Counter[str] = Counter()
+    total_nodes = validate_nodes(outline["nodes"], action_counts=action_counts)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(json.dumps(outline, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        level_three_report = outline_composer.build_level_three_report(
+            structure,
+            decisions,
+            outline["nodes"],
+        )
+        report_path = outline_composer.write_compose_report(
+            work_dir=work_dir,
+            output_file=output_file,
+            structure=structure,
+            decisions=decisions,
+            level_three_report=level_three_report,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    return {
+        "schema_version": "technical-outline.v1",
+        "outputFile": str(output_file),
+        "decisionsFile": str(work_dir / outline_composer.DECISIONS_FILE_NAME),
+        "composeReportFile": str(report_path),
+        "summary": {
+            "workflowStage": "composed",
+            "total_nodes": total_nodes,
+            "action_counts": dict(action_counts),
+            "templateLevel3": level_three_report,
+        },
+    }
+
+
 def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
     work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
     output_file = Path(str(manifest.get("outputFile") or work_dir / "technical_outline.json")).expanduser()
+    template_structure_path = work_dir / "template_structure.json"
+    structure = (
+        load_json_dict(template_structure_path, "templateStructureFile")
+        if template_structure_path.exists()
+        else None
+    )
+    decisions: dict[str, Any] | None = None
+    if structure is not None:
+        try:
+            require_composed = bool(
+                manifest.get("_runtimeRequireComposedOutline")
+                or manifest.get("requireComposedOutline")
+            )
+            decisions = outline_composer.load_decisions(
+                work_dir,
+                structure,
+                required=require_composed,
+            )
+            if require_composed:
+                outline_composer.validate_compose_report(
+                    work_dir=work_dir,
+                    output_file=output_file,
+                    structure=structure,
+                    decisions=decisions,
+                )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+    elif manifest.get("_runtimeRequireComposedOutline") or manifest.get("requireComposedOutline"):
+        raise SystemExit("requireComposedOutline 已启用，但 template_structure.json 不存在")
     outline = load_json_dict(output_file, "outputFile")
     if outline.get("schema_version") != "technical-outline.v1":
         raise SystemExit("outputFile schema_version must be technical-outline.v1")
@@ -676,6 +783,18 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
         if manifest.get("tenderFiles")
         else {"reviewCoverage": 1.0, "requirementCount": 0, "unfinishedTableCount": 0}
     )
+    level_three_summary: dict[str, Any] = {}
+    if structure is not None and decisions is not None:
+        try:
+            level_three_summary = {
+                "templateLevel3": outline_composer.build_level_three_report(
+                    structure,
+                    decisions,
+                    nodes,
+                )
+            }
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
     return {
         "schema_version": "technical-outline.v1",
         "outputFile": str(output_file),
@@ -684,6 +803,7 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
             "total_nodes": total_nodes,
             "action_counts": dict(action_counts),
             **review_summary,
+            **level_three_summary,
         },
     }
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-import json
 import copy
+import hashlib
+import importlib.util
+import json
 import re
 import shutil
+import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +36,49 @@ TECH_OUTLINE_FINALIZE_COMMAND = "s2outline finalize"
 TECH_OUTLINE_FINALIZE_EARLY_COMMAND = "s2outline-finalize"
 PUBLIC_EVIDENCE_DECISION_LIMIT = 80
 TECHNICAL_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
+
+
+def _load_technical_outline_runner() -> Any:
+    module_name = "_sewpg_bid_technical_outline_runner"
+    loaded = sys.modules.get(module_name)
+    if loaded is not None:
+        return loaded
+    script_path = (
+        Path(__file__).resolve().parents[2]
+        / "opencode"
+        / "skills"
+        / OUTLINE_SKILL_NAME
+        / "scripts"
+        / "run_from_manifest.py"
+    )
+    spec = importlib.util.spec_from_file_location(module_name, script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载技术标目录 Skill：{script_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _capture_trusted_technical_outline_input(manifest_path: Path) -> dict[str, Any]:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    template_file = Path(str(manifest.get("templateFile") or "")).expanduser()
+    output_file = Path(str(manifest.get("outputFile") or "")).expanduser()
+    if not template_file.is_file():
+        raise RuntimeError(f"技术标历史模板不存在：{template_file}")
+    if not str(manifest.get("outputFile") or "").strip():
+        raise RuntimeError("技术标目录 manifest 缺少 outputFile。")
+    runner = _load_technical_outline_runner()
+    try:
+        structure = runner.extract_template_structure(template_file)
+    except SystemExit as exc:
+        raise RuntimeError(f"技术标历史模板结构提取失败：{exc}") from exc
+    return {
+        "templateFile": str(template_file.resolve()),
+        "templateFileSha256": hashlib.sha256(template_file.read_bytes()).hexdigest(),
+        "outputFile": str(output_file.resolve()),
+        "templateStructure": copy.deepcopy(structure),
+    }
 
 
 def _is_business_bid(bid_type: Any) -> bool:
@@ -148,6 +194,7 @@ def _run_outline_skill(
 
     prompt = _build_outline_prompt(manifest_path, bid_type)
     try:
+        trusted_input = _capture_trusted_technical_outline_input(manifest_path)
         return _load_outline_result(
             OpencodeClient(timeout_ms=int(settings.opencode_timeout_sec * 1000)).generate_outline_with_trace(
                 prompt,
@@ -164,6 +211,8 @@ def _run_outline_skill(
                 early_tool_command=TECH_OUTLINE_FINALIZE_EARLY_COMMAND,
             ),
             manifest_path,
+            expected_bid_type=bid_type,
+            trusted_technical_input=trusted_input,
         )
     except Exception as exc:
         if progress_callback:
@@ -209,7 +258,7 @@ def _run_business_outline_skill(
             f"futurecode 执行失败：{exc}。"
             "本地 bid-business-outline-generator 只负责准备候选材料，不能兜底生成最终 outline.json。"
         ) from exc
-    return _load_outline_result(result, manifest_path)
+    return _load_outline_result(result, manifest_path, expected_bid_type=BUSINESS_BID_TYPE)
 
 
 def _run_local_outline_skill(manifest_path: Path) -> dict[str, Any]:
@@ -233,9 +282,9 @@ Use the {skill_name} skill.
 
 manifest：{manifest_path}
 
-历史投标模板是目录主骨架：模板存在三级目录时必须学习到第三级，并尽可能保留三级结构；最终目录三级以内尽可能细，最终目录最多三级。第四级及更深层级只作为对应第三级节点的内容参考，不单独输出。再结合招标文件仅做有证据的增加或删除校正，不得把参数、逐条条款或表格字段机械扩成目录。
+历史投标模板是主骨架：模板存在三级目录时必须学习到第三级并尽可能保留三级结构；最终目录三级以内尽可能细，最终目录最多三级。第四级及更深层级只作为对应第三级节点的内容参考。再结合招标文件有证据地增删，不把参数、条款或表格字段机械扩成目录。
 
-先执行 `s2outline prepare {manifest_path}`，再执行 `s2outline headings {manifest_path}`，优先读取招标全文的自动目录项、正文标题和附表标题。随后由 Opencode 根据模板适用性和目录判断需要，自主选择调用 `s2outline next-batch`、`s2outline read`、`s2outline window`、`s2outline table`、`s2outline tables` 和 `s2outline review-batch` 详读重点章节；不要求读完所有正文分块、表格或附表内容。不得编写脚本自动生成或提交 review、requirements、disposition，不得直接读取 `tender_review_chunks.json`、状态文件或义务台账。每条 `target_node` 只能指向一个节点，跨节点义务拆成多条。执行 `s2outline status {manifest_path}` 了解阅读覆盖情况，但 `pending_chunk_count` 和 `unfinished_table_count` 不作为完成门禁。将最终 `technical-outline.v1` 写入 manifest.outputFile，确认最终版不再修改后执行：
+先执行 `s2outline prepare {manifest_path}` 和 `s2outline headings {manifest_path}`，优先读取全文目录、正文标题和附表标题。随后由 Opencode 自主选择 `s2outline next-batch`、`s2outline read`、`s2outline window`、`s2outline table`、`s2outline tables`、`s2outline review-batch` 详读重点；不要求读完所有正文、表格或附表。不得自动生成审阅结果，不得直接读取 `tender_review_chunks.json`、状态文件或义务台账；每条 `target_node` 只能指向一个节点。执行 `s2outline status {manifest_path}`，未读状态不作为完成门禁。把相对模板的增量通过 `s2outline decisions {manifest_path} '<decisions-json>'` 提交，再执行 `s2outline compose {manifest_path}` 生成 `technical-outline.v1`；不得自行写入 manifest.outputFile 或编写临时目录脚本。最后执行：
 
 {TECH_OUTLINE_FINALIZE_COMMAND} {manifest_path}
 
@@ -351,18 +400,39 @@ outline.json 必须满足：
 }}
 """.strip()
 
-def _load_outline_result(result: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
+def _load_outline_result(
+    result: dict[str, Any],
+    manifest_path: Path,
+    *,
+    expected_bid_type: Any | None = None,
+    trusted_technical_input: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    output_file = Path(str(result.get("outputFile") or manifest.get("outputFile") or "")).expanduser()
-    is_business_bid = _is_business_bid(manifest.get("bidType"))
+    resolved_bid_type = expected_bid_type if expected_bid_type is not None else manifest.get("bidType")
+    is_business_bid = _is_business_bid(resolved_bid_type)
+    trusted_output = (
+        trusted_technical_input.get("outputFile")
+        if isinstance(trusted_technical_input, dict) and not is_business_bid
+        else None
+    )
+    output_file = Path(
+        str(trusted_output or result.get("outputFile") or manifest.get("outputFile") or "")
+    ).expanduser()
     if is_business_bid:
         evidence_file = Path(str(result.get("evidenceFile") or manifest.get("evidenceFile") or "")).expanduser()
         return _load_business_outline_result(result, manifest, output_file, evidence_file)
 
     if not output_file.exists():
         raise RuntimeError(f"S2 目录 Skill 未生成 outputFile：{output_file}")
+    validated_outline: dict[str, Any] | None = None
+    if expected_bid_type is not None:
+        validated_outline = _validate_technical_compose_report(
+            manifest_path.parent,
+            output_file,
+            trusted_input=trusted_technical_input,
+        )
 
-    outline = json.loads(output_file.read_text(encoding="utf-8"))
+    outline = validated_outline or json.loads(output_file.read_text(encoding="utf-8"))
     if (
         not isinstance(outline, dict)
         or outline.get("schema_version") != "technical-outline.v1"
@@ -381,6 +451,79 @@ def _load_outline_result(result: dict[str, Any], manifest_path: Path) -> dict[st
         "action_counts": outline["ruleEvidence"]["actionCounts"],
     }
     return outline
+
+
+def _validate_technical_compose_report(
+    work_dir: Path,
+    output_file: Path,
+    *,
+    trusted_input: dict[str, Any] | None,
+) -> dict[str, Any]:
+    report_path = work_dir / "outline_compose_report.json"
+    if not report_path.exists():
+        raise RuntimeError("技术标目录缺少 compose report，拒绝接收直接写入的 outputFile。")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("技术标目录 compose report 无法读取。") from exc
+    if not isinstance(report, dict) or report.get("schema_version") != "technical-outline-compose-report.v1":
+        raise RuntimeError("技术标目录 compose report Schema 无效。")
+    required_fields = {
+        "inputFingerprint",
+        "decisionsDigest",
+        "outputSha256",
+        "outputFile",
+    }
+    if any(not str(report.get(field) or "").strip() for field in required_fields):
+        raise RuntimeError("技术标目录 compose report 字段不完整。")
+    reported_output = Path(str(report.get("outputFile") or "")).expanduser()
+    if reported_output.resolve() != output_file.resolve():
+        raise RuntimeError("技术标目录 compose report 指向了不同的 outputFile。")
+    try:
+        output_bytes = output_file.read_bytes()
+        actual_outline = json.loads(output_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("技术标目录 outputFile 无法读取。") from exc
+    output_sha256 = hashlib.sha256(output_bytes).hexdigest()
+    if report.get("outputSha256") != output_sha256:
+        raise RuntimeError("技术标目录 outputFile 在 compose 后被修改。")
+    if not isinstance(trusted_input, dict):
+        raise RuntimeError("技术标目录缺少后端可信模板快照。")
+
+    template_file = Path(str(trusted_input.get("templateFile") or "")).expanduser()
+    expected_template_sha256 = str(trusted_input.get("templateFileSha256") or "")
+    trusted_structure = trusted_input.get("templateStructure")
+    if not template_file.is_file() or not expected_template_sha256 or not isinstance(trusted_structure, dict):
+        raise RuntimeError("技术标目录后端可信模板快照无效。")
+    current_template_sha256 = hashlib.sha256(template_file.read_bytes()).hexdigest()
+    if current_template_sha256 != expected_template_sha256:
+        raise RuntimeError("技术标历史模板在 Opencode 执行期间被修改。")
+
+    runner = _load_technical_outline_runner()
+    composer = runner.outline_composer
+    try:
+        trusted_fingerprint = composer.template_fingerprint(
+            composer.annotate_template_structure(trusted_structure)
+        )
+        structure_path = work_dir / "template_structure.json"
+        current_structure = json.loads(structure_path.read_text(encoding="utf-8"))
+        current_fingerprint = composer.template_fingerprint(
+            composer.annotate_template_structure(current_structure)
+        )
+        decisions = composer.load_decisions(work_dir, trusted_structure, required=True)
+        expected_outline, context = composer.build_composition(trusted_structure, decisions)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(f"技术标目录 compose 可信校验失败：{exc}") from exc
+
+    if current_fingerprint != trusted_fingerprint:
+        raise RuntimeError("技术标模板结构与后端可信快照不一致。")
+    if report.get("inputFingerprint") != trusted_fingerprint:
+        raise RuntimeError("技术标目录 compose report 的模板指纹不可信。")
+    if report.get("decisionsDigest") != context["decisionsDigest"]:
+        raise RuntimeError("技术标目录 compose report 的 decisions 摘要不一致。")
+    if actual_outline != expected_outline:
+        raise RuntimeError("技术标目录输出无法由可信模板与 decisions 确定性重组。")
+    return copy.deepcopy(expected_outline)
 
 
 def _load_business_outline_result(
@@ -904,10 +1047,13 @@ def _prepare_toc_skill_workspace(
         manifest["evidenceFile"] = str(
             staging_work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json")
         )
+    else:
+        manifest["requireComposedOutline"] = True
     manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2)
     manifest_path.write_text(manifest_text, encoding="utf-8")
     return {
         **manifest,
+        "_trustedManifest": copy.deepcopy(manifest),
         "manifestPath": str(manifest_path),
         "canonicalManifestPath": str(manifest_path),
         "publishedWorkDir": str(published_work_dir),
@@ -928,8 +1074,15 @@ def _publish_toc_skill_workspace(skill_workspace: dict[str, Any], toc_result: di
 
     replacements = {str(staging_work_dir): str(published_work_dir)}
     staging_manifest_path = staging_work_dir / "s2_input.json"
-    manifest = _load_json_dict(staging_manifest_path)
-    is_business_bid = _is_business_bid(manifest.get("bidType"))
+    current_manifest = _load_json_dict(staging_manifest_path)
+    is_business_bid = _is_business_bid(skill_workspace.get("bidType"))
+    trusted_manifest = skill_workspace.get("_trustedManifest")
+    if not is_business_bid:
+        if not isinstance(trusted_manifest, dict) or current_manifest != trusted_manifest:
+            raise RuntimeError("技术标目录 manifest 在 Opencode 执行期间被修改。")
+        manifest = copy.deepcopy(trusted_manifest)
+    else:
+        manifest = current_manifest
     staging_output_file = Path(
         str(manifest.get("outputFile") or staging_work_dir / _safe_file_name(settings.s2_toc_output_file_name, "toc.json"))
     ).expanduser()
@@ -938,7 +1091,20 @@ def _publish_toc_skill_workspace(skill_workspace: dict[str, Any], toc_result: di
         if is_business_bid
         else None
     )
-    manifest = _remap_workspace_paths(manifest, replacements)
+    if is_business_bid:
+        manifest = _remap_workspace_paths(manifest, replacements)
+    else:
+        manifest["workDir"] = str(published_work_dir)
+        manifest["outputFile"] = str(published_work_dir / staging_output_file.name)
+        for key in ("templateFile", "attachFile"):
+            if str(manifest.get(key) or ""):
+                manifest[key] = _remap_workspace_paths(manifest[key], replacements)
+        for tender_file in manifest.get("tenderFiles") or []:
+            if not isinstance(tender_file, dict):
+                continue
+            for key in ("path", "originalPath"):
+                if str(tender_file.get(key) or ""):
+                    tender_file[key] = _remap_workspace_paths(tender_file[key], replacements)
     manifest_path = published_work_dir / "s2_input.json"
     output_file = Path(
         str(manifest.get("outputFile") or published_work_dir / _safe_file_name(settings.s2_toc_output_file_name, "toc.json"))
@@ -964,18 +1130,28 @@ def _publish_toc_skill_workspace(skill_workspace: dict[str, Any], toc_result: di
         manifest.pop("evidenceFile", None)
     staging_manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    _remap_json_file(
-        staging_output_file,
-        replacements,
-        ({"outputFile": str(output_file), "evidenceFile": str(evidence_file)} if evidence_file is not None else None),
-    )
+    if is_business_bid:
+        _remap_json_file(
+            staging_output_file,
+            replacements,
+            ({"outputFile": str(output_file), "evidenceFile": str(evidence_file)} if evidence_file is not None else None),
+        )
     if staging_evidence_file is not None:
         _remap_json_file(staging_evidence_file, replacements)
     _remap_json_file(staging_work_dir / "outline.json", replacements)
     _remap_json_file(staging_work_dir / "tender_map_inputs.json", replacements)
     _remap_json_file(staging_work_dir / "history_bid_outline_inputs.json", replacements)
+    compose_report_path = staging_work_dir / "outline_compose_report.json"
+    if is_business_bid:
+        _remap_json_file(compose_report_path, replacements)
+    else:
+        _remap_json_file(compose_report_path, {}, {"outputFile": str(output_file)})
 
-    result = _remap_workspace_paths(toc_result, replacements)
+    result = (
+        _remap_workspace_paths(toc_result, replacements)
+        if is_business_bid
+        else copy.deepcopy(toc_result)
+    )
     result["outputFile"] = str(output_file)
     if evidence_file is not None:
         result["evidenceFile"] = str(evidence_file)
