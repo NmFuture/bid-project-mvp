@@ -16,7 +16,7 @@ QUEUE_KEY = "bid:jobs"
 JOB_KEY_PREFIX = "bid:job:"
 LOCK_KEY_PREFIX = "bid:lock:"
 INFLIGHT_KEY = "bid:jobs:inflight"
-KNOWN_JOB_TYPES = {"directory_generation", "fill_generation", "material_cleaning"}
+KNOWN_JOB_TYPES = {"directory_generation", "fill_generation", "material_cleaning", "s1_parse"}
 
 # 锁的续期/释放必须校验 owner 且原子执行：GET 之后再 EXPIRE/DEL 存在竞态，
 # 可能把同一项目里后来任务刚拿到的锁误续期或误删。
@@ -247,6 +247,8 @@ def mark_job_inflight(job: dict[str, Any]) -> None:
         "type": str(job.get("type") or ""),
         "projectId": str(job.get("projectId") or ""),
         "startedAt": _now_iso(),
+        # data 一并登记：全局互斥提示需要展示正在处理的任务信息（如解析文件名）。
+        "data": job.get("data") if isinstance(job.get("data"), dict) else {},
     }
     try:
         client.hset(INFLIGHT_KEY, job_id, json.dumps(entry, ensure_ascii=False, separators=(",", ":")))
@@ -272,6 +274,68 @@ def _parse_iso(value: str) -> datetime | None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
+
+
+def find_active_jobs_of_type(job_type: str) -> list[dict[str, Any]]:
+    """扫描 in-flight 登记表与等待队列，返回指定类型、尚未进入终态的任务。
+
+    用于全局互斥提示（如同一时间只允许一个 S1 解析）。Redis 不可用时返回空，
+    调用方按「无全局冲突」降级处理（本地兜底执行本来就是串行的）。
+    注意这是提示级检查，扫描与入队之间存在竞态窗口；同项目冲突仍由项目锁兜底。
+    """
+
+    if job_type not in KNOWN_JOB_TYPES:
+        raise ValueError(f"Unknown job type: {job_type}")
+
+    client = get_redis_client()
+    if client is None:
+        return []
+
+    active: list[dict[str, Any]] = []
+    try:
+        entries = client.hgetall(INFLIGHT_KEY)
+    except RedisError as exc:
+        logger.warning("Failed to scan in-flight jobs: %s", exc)
+        entries = {}
+    for raw in (entries or {}).values():
+        try:
+            entry = json.loads(str(raw))
+        except ValueError:
+            continue
+        if str(entry.get("type") or "") != job_type:
+            continue
+        active.append(
+            {
+                "id": str(entry.get("id") or ""),
+                "projectId": str(entry.get("projectId") or ""),
+                "data": entry.get("data") if isinstance(entry.get("data"), dict) else {},
+            }
+        )
+
+    inflight_ids = {job["id"] for job in active if job["id"]}
+    try:
+        queued_items = client.lrange(QUEUE_KEY, 0, -1)
+    except RedisError as exc:
+        logger.warning("Failed to scan queued jobs: %s", exc)
+        queued_items = []
+    for raw in queued_items or []:
+        try:
+            payload = json.loads(str(raw))
+        except ValueError:
+            continue
+        if str(payload.get("type") or "") != job_type:
+            continue
+        job_id = str(payload.get("id") or "")
+        if job_id and job_id in inflight_ids:
+            continue
+        active.append(
+            {
+                "id": job_id,
+                "projectId": str(payload.get("projectId") or ""),
+                "data": payload.get("data") if isinstance(payload.get("data"), dict) else {},
+            }
+        )
+    return active
 
 
 def reclaim_stale_inflight_jobs(max_age_sec: int) -> int:

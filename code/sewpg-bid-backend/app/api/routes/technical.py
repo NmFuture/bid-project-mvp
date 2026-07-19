@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Query, Request, UploadFile, File
+from fastapi import APIRouter, Body, Depends, Query, Request, Response, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.api.utils import minio_streaming_response, onlyoffice_backend_base_url
@@ -164,21 +164,28 @@ async def cancel_technical_parse(project_id: str) -> dict[str, Any]:
 
 
 @router.post("/api/technical/projects/{project_id}/parse-results/run")
-async def run_technical_parse(project_id: str) -> dict[str, Any]:
-    return await technical_parse_service.run_without_upload(project_id)
+async def run_technical_parse(project_id: str, response: Response) -> dict[str, Any]:
+    payload = await technical_parse_service.run_without_upload(project_id)
+    if str(payload.get("status") or "") == "queued":
+        response.status_code = 202
+    return payload
 
 
 @router.post("/api/technical/projects/{project_id}/parse-results/upload-and-run")
 async def upload_and_parse_technical(
     project_id: str,
+    response: Response,
     tenderFiles: list[UploadFile] | None = File(default=None),
     templateFiles: list[UploadFile] | None = File(default=None),
 ) -> dict[str, Any]:
-    return await technical_parse_service.upload_and_parse(
+    payload = await technical_parse_service.upload_and_parse(
         project_id,
         tender_files=tenderFiles,
         template_files=templateFiles,
     )
+    if str(payload.get("status") or "") == "queued":
+        response.status_code = 202
+    return payload
 
 
 @router.post("/api/technical/projects/{project_id}/template-files/upload")

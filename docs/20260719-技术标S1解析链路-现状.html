@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>技术标 S1 解析 · 现状链路（2026-07-19）</title>
+<style>
+  :root {
+    --blue: #2563eb; --blue-bg: #eff6ff;
+    --green: #059669; --green-bg: #ecfdf5;
+    --purple: #7c3aed; --purple-bg: #f5f3ff;
+    --amber: #d97706; --amber-bg: #fffbeb;
+    --red: #dc2626; --red-bg: #fef2f2;
+    --gray: #475569; --gray-bg: #f8fafc;
+    --line: #cbd5e1;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; background: #f1f5f9; color: #1e293b; line-height: 1.6; padding: 32px 16px; }
+  .page { max-width: 1080px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 28px; }
+  header h1 { font-size: 24px; margin-bottom: 6px; }
+  header p { color: var(--gray); font-size: 13px; }
+  .badge { display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: 12px; background: var(--red-bg); color: var(--red); border: 1px solid #fecaca; margin-left: 8px; vertical-align: middle; }
+  h2 { font-size: 17px; margin: 28px 0 12px; padding-left: 10px; border-left: 4px solid var(--blue); }
+  h2.red { border-left-color: var(--red); }
+  h2.gray { border-left-color: var(--gray); }
+
+  .flow { display: flex; flex-direction: column; align-items: center; }
+  .node { width: 100%; max-width: 860px; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; box-shadow: 0 1px 2px rgba(15,23,42,.05); }
+  .node .title { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; margin-bottom: 6px; flex-wrap: wrap; }
+  .num { flex: none; width: 26px; height: 26px; border-radius: 50%; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; background: var(--gray); }
+  .node.frontend { border-left: 5px solid var(--blue); } .node.frontend .num { background: var(--blue); }
+  .node.backend  { border-left: 5px solid var(--green); } .node.backend .num { background: var(--green); }
+  .node.ai       { border-left: 5px solid var(--purple);} .node.ai .num { background: var(--purple); }
+  .node.store    { border-left: 5px solid var(--amber); } .node.store .num { background: var(--amber); }
+  .node.warn     { background: var(--amber-bg); border: 1px dashed var(--amber); }
+  .tag { font-size: 11px; padding: 0 8px; border-radius: 4px; background: var(--gray-bg); color: var(--gray); border: 1px solid var(--line); font-weight: 400; }
+  .tag.red { background: var(--red-bg); color: var(--red); border-color: #fecaca; }
+  .tag.purple { background: var(--purple-bg); color: var(--purple); border-color: #ddd6fe; }
+  .arrow { color: #94a3b8; font-size: 20px; line-height: 1; padding: 6px 0; }
+  .detail { font-size: 13px; color: #334155; }
+  .detail li { margin-left: 18px; }
+  .detail code, .inline { background: var(--gray-bg); border: 1px solid #e2e8f0; border-radius: 4px; padding: 0 4px; font-size: 12px; color: #0f172a; }
+
+  .stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin-top: 10px; }
+  .stage { background: var(--gray-bg); border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px; font-size: 12.5px; }
+  .stage b { display: block; font-size: 13px; margin-bottom: 2px; }
+  .stage .pct { color: var(--blue); font-weight: 600; }
+  .stage.ai-stage { background: var(--purple-bg); border-color: #ddd6fe; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; font-size: 13px; }
+  .card h3 { font-size: 14px; margin-bottom: 6px; }
+  .card li { margin-left: 18px; margin-bottom: 3px; }
+  .card.pain { background: var(--red-bg); border-color: #fecaca; }
+  .card.pain h3 { color: var(--red); }
+
+  table { width: 100%; border-collapse: collapse; background: #fff; font-size: 13px; border-radius: 8px; overflow: hidden; }
+  th, td { border: 1px solid #e2e8f0; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--gray-bg); }
+  footer { margin-top: 30px; font-size: 12px; color: #64748b; text-align: center; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <h1>技术标 S1 解析 · 现状链路<span class="badge">同步长请求</span></h1>
+  <p>页面 <code>/parse/technical</code>（TechnicalTenderReview）｜ 快照日期 2026-07-19 ｜ 事实来源：sewpg-bid-backend / sewpg-bid-frontend 代码</p>
+</header>
+
+<h2>一、主链路（上传 → 解析 → 落盘）</h2>
+<div class="flow">
+
+  <div class="node frontend">
+    <div class="title"><span class="num">1</span>用户上传并触发解析 <span class="tag">前端 TechnicalTenderReview.jsx</span></div>
+    <div class="detail">
+      选择招标文件后点「上传并解析」→ <code>POST /api/technical/projects/{id}/parse-results/upload-and-run</code>。
+      请求超时 5 分钟、<b>不重试</b>（api/index.js:366）；随后进入 1s 轮询进度。
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node backend">
+    <div class="title"><span class="num">2</span>保存上传文件（请求协程内） <span class="tag">bid_parse_service.py:2015</span></div>
+    <div class="detail">校验后缀、写入 uploads 卷；图片类标记延后 OCR。</div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node backend">
+    <div class="title"><span class="num">3</span>同步执行 S1 解析 <span class="tag red">HTTP 请求挂起直到结束</span></div>
+    <div class="detail">
+      <code>await asyncio.to_thread(parse_tender_documents)</code>（bid_parse_service.py:60-75）——线程在后台跑，但协程被 await 住，<b>客户端要一直等到全部阶段完成</b>。
+      <div class="stages">
+        <div class="stage"><b>① 文本抽取 extract <span class="pct">8→24/42%</span></b>docx 段落+表格 / PDF 分页 / 图片走 OCR</div>
+        <div class="stage"><b>② 线索整理 local_structure <span class="pct">24→34%</span></b>关键词类目抽取项目字段、评分细则表</div>
+        <div class="stage"><b>③ 附表切分 appendix <span class="pct">34→62%</span></b>定位附表并物化 blankDocx（后续 AI 填表载体）</div>
+        <div class="stage"><b>④ 准备 prepare <span class="pct">62→68%</span></b>构建 manifest 与 s1parse 导航索引</div>
+        <div class="stage ai-stage"><b>⑤ AI 结构化解读 structured <span class="pct">68→96%</span></b>Skill bid-tech-tender-structured-parser：固定 <b>58 条技术解读清单逐条检索取证</b>（found/partial/missing/needs_spec）+ projectBasics 6 字段；opencode 全局并发=1（进程内信号量）；失败「恢复重试」1 次，技术标再失败降级本地兜底</div>
+        <div class="stage"><b>⑥ 落盘 finalize <span class="pct">96→100%</span></b>结构化结果 + blankDocx 资产写入 parsed 卷 / 项目状态</div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node backend">
+    <div class="title"><span class="num">4</span>返回 HTTP 响应</div>
+    <div class="detail">全部完成才返回。若超过前端 5 分钟超时 → 前端进入 2 分钟「恢复轮询」，仍不完则提示「解析仍在后台运行」。</div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node frontend">
+    <div class="title"><span class="num">5</span>拉取结果并跳转</div>
+    <div class="detail">进度 completed 后 GET <code>parse-results</code>，跳转 <code>/template-directory</code> 逐项确认附表。</div>
+  </div>
+
+</div>
+
+<h2 class="gray">二、伴随机制（与主链路并行）</h2>
+<div class="cards">
+  <div class="card">
+    <h3>进度跟踪</h3>
+    <ul>
+      <li>前端 <b>1s 轮询</b> <code>GET .../parse-results/progress</code></li>
+      <li>进度存项目 JSONB，<b>每次事件整行 upsert Postgres</b></li>
+      <li>心跳 10s；阶段超时无心跳 → <code>stale</code>「可能中断」</li>
+      <li>前后端双单调保护，进度不回退</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>取消</h3>
+    <ul>
+      <li><code>POST .../parse-results/cancel</code> → 置 cancelRequested + opencode abort_session</li>
+      <li>解析线程在心跳/阶段边界协作式抛 ParseCancelledError</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>断连行为</h3>
+    <ul>
+      <li>页面切换只 abort HTTP 等待，<b>后端解析线程继续跑</b>；重进页面可恢复轮询</li>
+      <li>但进程重启 → 线程丢失，只剩 Postgres 里的 stale 标记，<b>无续跑</b></li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>并发</h3>
+    <ul>
+      <li>同项目解析<b>无锁</b>：仅靠前端按钮 disabled，多标签/竞态会并发覆盖同一项目状态</li>
+      <li>opencode 进程内信号量=1：所有 AI 调用（解析/目录/生成/gap）串行排队</li>
+    </ul>
+  </div>
+</div>
+
+<h2 class="red">三、现状痛点（改造动因）</h2>
+<div class="cards">
+  <div class="card pain"><h3>① 同步长请求</h3>用户体验是「必须停留等待」；5 分钟超时后提示割裂，实际任务还在跑。</div>
+  <div class="card pain"><h3>② 重启即丢任务</h3>解析线程随进程死亡，无恢复/续跑，只剩 stale 标记。</div>
+  <div class="card pain"><h3>③ 无解析锁</h3>重复点击/多标签可并发解析同一项目，互相覆盖状态。</div>
+  <div class="card pain"><h3>④ 进度写放大</h3>每次进度事件都整行 JSONB upsert Postgres，高频小写。</div>
+  <div class="card pain"><h3>⑤ 两套异步范式</h3>目录/正文生成已走 Redis 队列 + worker，S1 解析仍是请求内同步，架构不一致。</div>
+  <div class="card pain"><h3>⑥ 重试薄弱</h3>仅 opencode 层 1 次恢复重试；无任务级重试；商务标连「重新解析」端点/入口都没有。</div>
+</div>
+
+<footer>
+  关键代码：app/api/routes/technical.py:171 ｜ app/services/bid_parse_service.py:2003 ｜ app/services/parsing.py ｜ app/services/bid_parse_state.py ｜ opencode/skills/bid-tech-tender-structured-parser
+</footer>
+
+</div>
+</body>
+</html>

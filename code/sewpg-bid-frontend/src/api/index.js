@@ -614,6 +614,7 @@ export const businessParseAPI = {
   results: (projectId) => request(`/business/projects/${projectId}/parse-results`),
   progress: (projectId) => request(`/business/projects/${projectId}/parse-results/progress`),
   cancel: (projectId) => request(`/business/projects/${projectId}/parse-results/cancel`, { method: 'POST' }),
+  run: (projectId) => request(`/business/projects/${projectId}/parse-results/run`, { method: 'POST' }),
   appendixPreview: (projectId, appendixId) =>
     request(`/business/projects/${projectId}/parse-results/appendices/${encodeURIComponent(appendixId)}/preview`),
   approveAppendixAsset: (projectId, appendixId, data = {}) =>

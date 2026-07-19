@@ -1,7 +1,7 @@
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const completedStatuses = new Set(['completed'])
-const failedStatuses = new Set(['failed', 'error'])
+const failedStatuses = new Set(['failed', 'error', 'stale'])
 
 const normalizeStatus = (progress) => String(progress?.status || '').toLowerCase()
 
@@ -13,6 +13,39 @@ export const isParseProgressCompleted = (progress) =>
 export const isParseProgressFailed = (progress) => failedStatuses.has(normalizeStatus(progress))
 
 export const isParseResultCompleted = (result) => completedStatuses.has(normalizeStatus(result))
+
+const clampPercentage = (value) => Math.max(0, Math.min(100, Number(value || 0)))
+const runningStatuses = new Set(['running', 'processing', 'queued'])
+
+export const mergeMonotonicParseProgress = (previous = null, incoming = null) => {
+  if (!incoming) return incoming
+  if (!previous) return incoming
+  const previousStatus = normalizeStatus(previous)
+  const incomingStatus = normalizeStatus(incoming)
+  if (!runningStatuses.has(previousStatus) || !runningStatuses.has(incomingStatus)) {
+    return incoming
+  }
+  const previousPercentage = clampPercentage(previous?.percentage)
+  const incomingPercentage = clampPercentage(incoming?.percentage)
+  const merged = { ...incoming }
+  if (incomingPercentage < previousPercentage) {
+    merged.percentage = previousPercentage
+  }
+
+  const previousPhaseKey = String(previous?.phaseKey || '')
+  const incomingPhaseKey = String(incoming?.phaseKey || '')
+  const samePhase = previousPhaseKey && incomingPhaseKey
+    ? previousPhaseKey === incomingPhaseKey
+    : String(previous?.phaseLabel || '') === String(incoming?.phaseLabel || '')
+  if (samePhase && previous?.phasePercent !== undefined && incoming?.phasePercent !== undefined) {
+    const previousPhasePercent = clampPercentage(previous.phasePercent)
+    const incomingPhasePercent = clampPercentage(incoming.phasePercent)
+    if (incomingPhasePercent < previousPhasePercent) {
+      merged.phasePercent = previousPhasePercent
+    }
+  }
+  return merged
+}
 
 export const shouldPollParseProgress = ({ uploading = false, stopped = false, progress = null, result = null } = {}) => {
   if (stopped) return false
