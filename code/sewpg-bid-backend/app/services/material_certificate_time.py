@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import re
 import tempfile
+from calendar import monthrange
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -34,11 +39,32 @@ DATE_TOKEN_RE = re.compile(
     r"(?P<year>(?:19|20)\d{2})\s*(?:年|[-/.])\s*(?P<month>\d{1,2})\s*(?:月|[-/.])\s*(?P<day>\d{1,2})\s*日?"
 )
 ISO_DATE_RE = re.compile(r"^(?:19|20)\d{2}-\d{2}-\d{2}$")
+FIELD_LABELS_PATTERN = (
+    r"发证日期|签发日期|颁发日期|发证时间|签发时间|颁发时间|"
+    r"有效期至|有效期到|有效期截止|有效期|有效日期至|有效至|截止日期"
+)
 FIELD_DATE_RE = re.compile(
-    r"(?P<label>发证日期|签发日期|颁发日期|发证时间|签发时间|颁发时间|"
-    r"有效期至|有效期到|有效期截止|有效期|有效日期至|有效至|截止日期)"
+    rf"(?P<label>{FIELD_LABELS_PATTERN})"
     r"\s*[:：]?\s*(?P<date>(?:19|20)\d{2}\s*(?:年|[-/.])\s*\d{1,2}\s*(?:月|[-/.])\s*\d{1,2}\s*日?)"
 )
+# 只写到年月的模糊日期（如“有效期至：2027年4月”），只在整行完整日期被掩掉后匹配
+FIELD_YEAR_MONTH_RE = re.compile(
+    rf"(?P<label>{FIELD_LABELS_PATTERN})"
+    r"\s*[:：]?\s*(?P<year>(?:19|20)\d{2})\s*(?:年|[-/.])\s*(?P<month>\d{1,2})\s*月?"
+)
+CN_NUMERALS = {
+    "一": 1, "壹": 1, "二": 2, "贰": 2, "两": 2, "三": 3, "叁": 3,
+    "四": 4, "肆": 4, "五": 5, "伍": 5, "六": 6, "陆": 6,
+    "七": 7, "柒": 7, "八": 8, "捌": 8, "九": 9, "玖": 9, "十": 10, "拾": 10,
+}
+VALIDITY_DURATION_RE = re.compile(
+    r"有效期\s*[为:：]?\s*(?P<num>\d{1,2}|[一壹二贰两三叁四肆五伍六陆七柒八捌九玖十拾])\s*(?P<unit>个月|年|月)"
+)
+LONG_TERM_RE = re.compile(r"长期有效|永久有效|有效期\s*[为:：]?\s*(?:长期|永久)")
+DATE_ORDER_WARNING = "发证日期晚于有效期至，请人工复核"
+CERTIFICATE_AI_TEXT_LIMIT = 6000
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -197,9 +223,55 @@ def _normalize_date(value: str) -> str:
     year = int(match.group("year"))
     month = int(match.group("month"))
     day = int(match.group("day"))
-    if not (1 <= month <= 12 and 1 <= day <= 31):
+    try:
+        date(year, month, day)
+    except ValueError:
         return ""
     return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def _add_months(base: date, months: int) -> date:
+    total = base.year * 12 + (base.month - 1) + months
+    year, month = divmod(total, 12)
+    month += 1
+    return date(year, month, min(base.day, monthrange(year, month)[1]))
+
+
+def _derive_expiry_from_duration(issue_iso: str, num: int, unit: str) -> str:
+    try:
+        base = date.fromisoformat(issue_iso)
+    except ValueError:
+        return ""
+    months = num * 12 if unit == "年" else num
+    if months <= 0:
+        return ""
+    return (_add_months(base, months) - timedelta(days=1)).isoformat()
+
+
+def _duration_number(token: str) -> int:
+    text = str(token or "").strip()
+    if text.isdigit():
+        return int(text)
+    return CN_NUMERALS.get(text, 0)
+
+
+def _pick_candidate(
+    candidates: list[CertificateDateCandidate],
+    *,
+    prefer_latest: bool,
+    floor: str = "",
+) -> CertificateDateCandidate | None:
+    """同分候选按语义择优：发证取最早，有效期取最晚且尽量晚于发证日期。"""
+    if not candidates:
+        return None
+    top = max(candidate.score for candidate in candidates)
+    pool = [candidate for candidate in candidates if candidate.score == top]
+    if floor:
+        later = [candidate for candidate in pool if candidate.value > floor]
+        if later:
+            pool = later
+    picker = max if prefer_latest else min
+    return picker(pool, key=lambda candidate: candidate.value)
 
 
 def _line_window(lines: list[str], index: int) -> str:
@@ -211,9 +283,9 @@ def _line_window(lines: list[str], index: int) -> str:
 def extract_certificate_time_fields(text: str) -> dict[str, Any]:
     """Extract certificate issue and expiry dates from OCR/plain text.
 
-    The rule is deliberately conservative: label-near dates win. If labels are
-    missing, the first two dates are returned as low-confidence candidates so a
-    human can still review the evidence.
+    The rule is deliberately conservative: label-near dates win. Fuzzy forms
+    (year-month only, "有效期 N 年", "长期有效") are resolved with lower scores,
+    and issue/expiry ordering is cross-checked so a human can review conflicts.
     """
 
     raw_text = str(text or "")
@@ -223,14 +295,17 @@ def extract_certificate_time_fields(text: str) -> dict[str, Any]:
     expiry_candidates: list[CertificateDateCandidate] = []
     all_dates: list[CertificateDateCandidate] = []
     seen_dates: set[str] = set()
+    duration_hits: list[tuple[int, str, str]] = []
+    long_term_sources: list[str] = []
 
     for line_index, line in enumerate(lines):
+        window = _line_window(lines, line_index)
         for match in DATE_TOKEN_RE.finditer(line):
             normalized = _normalize_date(match.group(0))
             if not normalized or normalized in seen_dates:
                 continue
             seen_dates.add(normalized)
-            all_dates.append(CertificateDateCandidate(normalized, _line_window(lines, line_index), 20))
+            all_dates.append(CertificateDateCandidate(normalized, window, 20))
 
         for match in FIELD_DATE_RE.finditer(line):
             label = match.group("label")
@@ -239,51 +314,104 @@ def extract_certificate_time_fields(text: str) -> dict[str, Any]:
             normalized = _normalize_date(picked_date)
             if not normalized:
                 continue
-            candidate = CertificateDateCandidate(normalized, _line_window(lines, line_index), 95)
+            candidate = CertificateDateCandidate(normalized, window, 95)
             if "有效" in label or "截止" in label:
                 expiry_candidates.append(candidate)
             else:
                 issue_candidates.append(candidate)
 
+        # 掩掉完整日期后再找“年月”模糊日期，避免把完整日期的前半截当成年月
+        masked = DATE_TOKEN_RE.sub(" ", line)
+        for match in FIELD_YEAR_MONTH_RE.finditer(masked):
+            label = match.group("label")
+            year = int(match.group("year"))
+            month = int(match.group("month"))
+            if not 1 <= month <= 12:
+                continue
+            if "有效" in label or "截止" in label:
+                day = monthrange(year, month)[1]
+                expiry_candidates.append(
+                    CertificateDateCandidate(f"{year:04d}-{month:02d}-{day:02d}", f"{window}（按月末推定）", 70)
+                )
+            else:
+                issue_candidates.append(
+                    CertificateDateCandidate(f"{year:04d}-{month:02d}-01", f"{window}（按月初推定）", 70)
+                )
+
+        for match in VALIDITY_DURATION_RE.finditer(line):
+            num = _duration_number(match.group("num"))
+            if num > 0:
+                duration_hits.append((num, "年" if match.group("unit") == "年" else "月", window))
+
+        if LONG_TERM_RE.search(line):
+            long_term_sources.append(window)
+
+    # 邻行窗口兜底时，跳过已被明确标签认领的日期，避免发证日期串到有效期（反之亦然）
+    labeled_issue_values = {candidate.value for candidate in issue_candidates if candidate.score >= 95}
+    labeled_expiry_values = {candidate.value for candidate in expiry_candidates if candidate.score >= 95}
     for index, line in enumerate(lines):
         if "发证" in line or "签发" in line or "颁发" in line:
             for match in DATE_TOKEN_RE.finditer(_line_window(lines, index)):
                 normalized = _normalize_date(match.group(0))
-                if normalized:
+                if normalized and normalized not in labeled_expiry_values:
                     issue_candidates.append(CertificateDateCandidate(normalized, _line_window(lines, index), 78))
         if "有效" in line or "截止" in line:
             for match in DATE_TOKEN_RE.finditer(_line_window(lines, index)):
                 normalized = _normalize_date(match.group(0))
-                if normalized:
+                if normalized and normalized not in labeled_issue_values:
                     expiry_candidates.append(CertificateDateCandidate(normalized, _line_window(lines, index), 82))
 
+    # 无标签兜底只补发证日期（取最早）；有效期必须来自明确表述（标签/年限/长期），不用散落日期猜测
     if not issue_candidates and all_dates:
-        issue_candidates.append(all_dates[0])
-    if not expiry_candidates and len(all_dates) >= 2:
-        expiry_candidates.append(all_dates[1])
-    elif not expiry_candidates and len(all_dates) == 1 and not issue_candidates:
-        expiry_candidates.append(all_dates[0])
+        issue_candidates.append(min(all_dates, key=lambda item: item.value))
+    issue = _pick_candidate(issue_candidates, prefer_latest=False)
 
-    issue = max(issue_candidates, key=lambda item: item.score, default=None)
-    expiry = max(expiry_candidates, key=lambda item: item.score, default=None)
+    if not expiry_candidates and duration_hits and issue:
+        num, unit, source = duration_hits[0]
+        derived = _derive_expiry_from_duration(issue.value, num, unit)
+        if derived:
+            expiry_candidates.append(
+                CertificateDateCandidate(derived, f"{source}（按发证日期加{num}{unit}推算）", 72)
+            )
+
+    expiry = _pick_candidate(expiry_candidates, prefer_latest=True, floor=issue.value if issue else "")
+
+    long_term = False
+    if long_term_sources and (expiry is None or expiry.score < 70):
+        expiry = None
+        long_term = True
+
+    warnings: list[str] = []
+    if issue and expiry and issue.value > expiry.value:
+        warnings.append(DATE_ORDER_WARNING)
+
     confidence = 0
-    if issue:
-        confidence += 45 if issue.score >= 75 else 20
-    if expiry:
-        confidence += 45 if expiry.score >= 75 else 20
-    if issue and expiry:
+    for candidate in (issue, expiry):
+        if candidate:
+            confidence += 45 if candidate.score >= 75 else 32 if candidate.score >= 55 else 20
+    if long_term:
+        confidence += 30
+    if issue and (expiry or long_term):
         confidence += 10
+    if warnings:
+        confidence = min(confidence, 40)
+
+    evidence = {
+        "issueDate": issue.source_text if issue else "",
+        "expiryDate": expiry.source_text if expiry else "",
+    }
+    if long_term:
+        evidence["expiryDate"] = f"{long_term_sources[0]}（长期有效）"
 
     return {
         "issueDate": issue.value if issue else "",
         "expiryDate": expiry.value if expiry else "",
+        "longTerm": long_term,
+        "warnings": warnings,
         "confidence": min(confidence, 100),
-        "evidence": {
-            "issueDate": issue.source_text if issue else "",
-            "expiryDate": expiry.source_text if expiry else "",
-        },
+        "evidence": evidence,
         "dates": [candidate.value for candidate in all_dates[:12]],
-        "status": "extracted" if issue or expiry else "not_found",
+        "status": "extracted" if issue or expiry or long_term else "not_found",
     }
 
 
@@ -319,6 +447,8 @@ def _certificate_payload_from_item(item: RawFile) -> dict[str, Any]:
         "source": str(meta.get("source") or ""),
         "evidence": meta.get("evidence") if isinstance(meta.get("evidence"), dict) else {},
         "dates": meta.get("dates") if isinstance(meta.get("dates"), list) else [],
+        "longTerm": bool(meta.get("longTerm")),
+        "warnings": [str(item) for item in meta.get("warnings") or [] if item] if isinstance(meta.get("warnings"), list) else [],
         "updatedAt": str(meta.get("updatedAt") or ""),
         "errorMessage": str(meta.get("errorMessage") or ""),
     }
@@ -525,6 +655,11 @@ def _validate_manual_date(value: Any, label: str) -> str:
     raise PeripheralError(400, f"{label}格式应为 YYYY-MM-DD。", "CERTIFICATE_DATE_INVALID")
 
 
+def _ensure_manual_date_order(issue_date: str, expiry_date: str) -> None:
+    if issue_date and expiry_date and issue_date > expiry_date:
+        raise PeripheralError(400, "发证日期不能晚于有效期至。", "CERTIFICATE_DATE_ORDER")
+
+
 async def update_certificate_time_record(
     *,
     bid_type: str,
@@ -544,12 +679,18 @@ async def update_certificate_time_record(
         if not raw_file_matches_bid_type(item, bid_type):
             raise PeripheralError(400, "该文件不属于当前素材库。", "RAW_FILE_SCOPE")
 
+        normalized_issue = _validate_manual_date(issue_date, "发证日期")
+        normalized_expiry = _validate_manual_date(expiry_date, "有效期至")
+        _ensure_manual_date_order(normalized_issue, normalized_expiry)
+
         ext = dict(item.ext_fields or {})
         previous = ext.get("certificateMeta") if isinstance(ext.get("certificateMeta"), dict) else {}
         meta = {
             **previous,
-            "issueDate": _validate_manual_date(issue_date, "发证日期"),
-            "expiryDate": _validate_manual_date(expiry_date, "有效期至"),
+            "issueDate": normalized_issue,
+            "expiryDate": normalized_expiry,
+            "longTerm": bool(previous.get("longTerm")) if not normalized_expiry else False,
+            "warnings": [],
             "status": "manual",
             "source": "manual",
             "confidence": 100,
@@ -606,6 +747,106 @@ async def _extract_source_text(item: RawFile) -> tuple[str, dict[str, Any]]:
     return text, {"source": "ocr", **info}
 
 
+def _needs_ai_assist(meta: dict[str, Any]) -> bool:
+    if meta.get("warnings"):
+        return True
+    if str(meta.get("status") or "") != "extracted":
+        return True
+    if not meta.get("issueDate"):
+        return True
+    if not meta.get("expiryDate") and not meta.get("longTerm"):
+        return True
+    return int(meta.get("confidence") or 0) < 60
+
+
+def _parse_ai_certificate_reply(reply: str) -> dict[str, Any]:
+    match = re.search(r"\{.*\}", str(reply or ""), re.S)
+    if not match:
+        return {}
+    try:
+        payload = json.loads(match.group(0))
+    except ValueError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    issue = _normalize_date(str(payload.get("issueDate") or ""))
+    expiry = _normalize_date(str(payload.get("expiryDate") or ""))
+    long_term = bool(payload.get("longTerm"))
+    if issue and expiry and issue > expiry:
+        return {}
+    if not issue and not expiry and not long_term:
+        return {}
+    return {
+        "issueDate": issue,
+        "expiryDate": expiry,
+        "longTerm": long_term,
+        "reason": str(payload.get("reason") or "").strip()[:200],
+    }
+
+
+def _ai_extract_certificate_time(text: str) -> dict[str, Any]:
+    from app.services.opencode_client import OpencodeClient
+
+    snippet = str(text or "").strip()[:CERTIFICATE_AI_TEXT_LIMIT]
+    if not snippet:
+        return {}
+    prompt = (
+        "你是证书台账助手。请从下面的证书文本中提取发证日期和有效期截止日期。\n"
+        "要求：\n"
+        "1. 只输出一个 JSON 对象，不要输出其他内容；\n"
+        '2. 格式：{"issueDate": "YYYY-MM-DD", "expiryDate": "YYYY-MM-DD", "longTerm": false, "reason": "一句话依据"}；\n'
+        "3. 无法确定的字段用空字符串；证书长期/永久有效时 longTerm 为 true 且 expiryDate 留空；\n"
+        "4. expiryDate 只能来自文本中明确的有效期表述（有效期至/截止日期/有效期 N 年/长期有效等）；"
+        "文本没有明确写有效期时 expiryDate 必须留空，严禁用文中其他日期猜测；\n"
+        "5. 只写“有效期 N 年”时，用发证日期加 N 年减 1 天推算 expiryDate；\n"
+        "6. 发证日期必须早于有效期截止日期，不确定时宁可留空。\n"
+        f"证书文本：\n{snippet}"
+    )
+    result = OpencodeClient().send_text_prompt("证书时间识别", prompt)
+    return _parse_ai_certificate_reply(str(result.get("reply") or ""))
+
+
+def _merge_ai_certificate_result(rule_meta: dict[str, Any], ai_meta: dict[str, Any]) -> dict[str, Any]:
+    """规则结果优先；AI 只补空缺，或在顺序冲突时用一致的完整结果替换。"""
+    merged = dict(rule_meta)
+    ai_issue = str(ai_meta.get("issueDate") or "")
+    ai_expiry = str(ai_meta.get("expiryDate") or "")
+    ai_long_term = bool(ai_meta.get("longTerm"))
+    changed = False
+
+    if merged.get("warnings") and ai_issue and (ai_expiry or ai_long_term):
+        merged["issueDate"] = ai_issue
+        merged["expiryDate"] = ai_expiry
+        merged["longTerm"] = ai_long_term
+        merged["warnings"] = []
+        changed = True
+    else:
+        if not merged.get("issueDate") and ai_issue:
+            merged["issueDate"] = ai_issue
+            changed = True
+        if not merged.get("expiryDate") and not merged.get("longTerm"):
+            if ai_expiry:
+                merged["expiryDate"] = ai_expiry
+                changed = True
+            elif ai_long_term:
+                merged["longTerm"] = True
+                changed = True
+
+    if not changed:
+        return rule_meta
+    if merged.get("issueDate") and merged.get("expiryDate") and merged["issueDate"] > merged["expiryDate"]:
+        return rule_meta
+
+    merged["status"] = "extracted"
+    merged["confidence"] = max(int(merged.get("confidence") or 0), 70)
+    evidence = dict(merged.get("evidence") or {})
+    if ai_meta.get("reason"):
+        evidence["aiReason"] = str(ai_meta["reason"])
+    merged["evidence"] = evidence
+    merged["aiAssisted"] = True
+    return merged
+
+
 async def run_certificate_time_batch(
     *,
     bid_type: str,
@@ -627,9 +868,21 @@ async def run_certificate_time_batch(
                 raise PeripheralError(400, "仅支持 PDF、DOCX 和图片证书。", "CERTIFICATE_FILE_TYPE_UNSUPPORTED")
             text, source_info = await _extract_source_text(item)
             extracted = extract_certificate_time_fields(text)
+            source = str(source_info.get("source") or "")
+            if _needs_ai_assist(extracted) and text.strip():
+                try:
+                    ai_result = await asyncio.to_thread(_ai_extract_certificate_time, text)
+                except Exception as ai_exc:  # noqa: BLE001 - AI 兜底失败时保留规则结果
+                    logger.warning("certificate ai assist failed for %s: %s", raw_id, ai_exc)
+                    ai_result = {}
+                if ai_result:
+                    merged = _merge_ai_certificate_result(extracted, ai_result)
+                    if merged is not extracted:
+                        extracted = merged
+                        source = f"{source}+ai" if source else "ai"
             meta = {
                 **extracted,
-                "source": str(source_info.get("source") or ""),
+                "source": source,
                 "pageCount": source_info.get("pageCount") or 0,
                 "updatedAt": now_iso(),
                 "errorMessage": "",
@@ -638,6 +891,8 @@ async def run_certificate_time_batch(
             meta = {
                 "issueDate": "",
                 "expiryDate": "",
+                "longTerm": False,
+                "warnings": [],
                 "confidence": 0,
                 "status": "unsupported" if suffix not in SUPPORTED_SUFFIXES else "failed",
                 "source": "",
