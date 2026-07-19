@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, useEffect } from 'react'
+import { useCallback, useMemo, useState, useEffect, useRef } from 'react'
 import { technicalMaterialsAPI } from '../../../api'
 import MaterialsViewSwitch from '../components/TechnicalMaterialsViewSwitch'
 import MarkdownLite from '../../../components/shared/MarkdownLite'
@@ -10,27 +10,29 @@ const safeMessage = (error, fallback) =>
 
 const TECHNICAL_BID_TYPE = '技术标'
 const TECHNICAL_WORKSPACE = 'tech'
+// key 是后端打在 wiki_docs.tags 上的原始状态 tag（run_from_manifest.py），
+// 只在此映射成用户可读的展示文案；其余内部 tag（__auto_generated__、文件卡片、扩展名等）不展示。
 const PREVIEW_STATUS_META = {
   AI预览成功: {
-    label: 'AI 预览成功',
+    label: '解析成功',
     shortLabel: '成功',
     icon: 'check_circle',
     className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
   },
   AI预览待重试: {
-    label: 'AI 预览待重试',
+    label: '待重试',
     shortLabel: '待重试',
     icon: 'refresh',
     className: 'border-amber-200 bg-amber-50 text-amber-800',
   },
   本地TLDR: {
-    label: '本地 TLDR',
+    label: '本地摘要',
     shortLabel: '本地',
     icon: 'info',
     className: 'border-outline-variant bg-surface-container-low text-on-surface-variant',
   },
   AI预览失败: {
-    label: 'AI 预览失败',
+    label: '解析失败',
     shortLabel: '失败',
     icon: 'error',
     className: 'border-rose-200 bg-rose-50 text-rose-700',
@@ -60,6 +62,13 @@ const countPreviewStatuses = (nodes, counts = {}) => {
 // 否则每个叶子节点也会被当成文件夹渲染（带展开箭头 + folder 图标）。
 const isFolderNode = (node) => Array.isArray(node?.children) && node.children.length > 0
 
+// 左侧目录树可拖拽宽度（仅 xl 断点生效；移动端上下堆叠不限制宽度）。
+const TREE_WIDTH_DEFAULT = 320
+const TREE_WIDTH_MIN = 240
+const TREE_WIDTH_MAX = 560
+// 拖拽时给右侧内容区保留的最小宽度，避免把右栏挤没。
+const CONTENT_WIDTH_MIN = 480
+
 const normalizeNode = (node) => {
   if (!node) return null
   return {
@@ -83,6 +92,39 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const [refreshingWiki, setRefreshingWiki] = useState(false)
   const [rebuildingWiki, setRebuildingWiki] = useState(false)
   const [collapsedMap, setCollapsedMap] = useState({})
+
+  const splitContainerRef = useRef(null)
+  const [treeWidth, setTreeWidth] = useState(TREE_WIDTH_DEFAULT)
+  const [resizing, setResizing] = useState(false)
+
+  const startTreeResize = useCallback((event) => {
+    if (event.button !== 0) return
+    const container = splitContainerRef.current
+    if (!container) return
+    event.preventDefault()
+    const containerLeft = container.getBoundingClientRect().left
+    setResizing(true)
+    const handleMove = (moveEvent) => {
+      const maxByContainer = Math.max(
+        TREE_WIDTH_MIN,
+        container.getBoundingClientRect().width - CONTENT_WIDTH_MIN,
+      )
+      const next = Math.round(moveEvent.clientX - containerLeft)
+      setTreeWidth(Math.min(Math.max(next, TREE_WIDTH_MIN), Math.min(TREE_WIDTH_MAX, maxByContainer)))
+    }
+    const handleUp = () => {
+      setResizing(false)
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+    }
+    // 拖拽期间禁止文本选中、锁定光标，避免拖动时页面文本被刷蓝。
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
+  }, [])
 
   const applyPayload = useCallback((payload, options = {}) => {
     // 选中节点（preserveTree）时只更新 selectedNode，保留现有 tree 引用，
@@ -137,6 +179,8 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
 
   const selectedNode = useMemo(() => normalizeNode(data?.selectedNode), [data])
   const selectedNodeId = selectedNode?.id || ''
+  // 右侧只派生一个用户可读的状态小 tag，后端原始 tags 不再透出到界面。
+  const selectedStatus = useMemo(() => previewStatusForTags(selectedNode?.tags), [selectedNode])
   const tree = data?.tree || []
   const previewStatusCounts = useMemo(() => countPreviewStatuses(tree), [tree])
   const previewStatusItems = useMemo(
@@ -183,7 +227,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   }
 
   const handleRefreshWiki = async () => {
-    const ok = window.confirm(`确认刷新${activeBidType} Wiki？系统会同步目录，并重新尝试“AI 预览待重试”项；已成功预览继续使用缓存。`)
+    const ok = window.confirm(`确认刷新${activeBidType} Wiki？系统会同步目录，并重新尝试“待重试”项；已成功解析的继续使用缓存。`)
     if (!ok) return
     setRefreshingWiki(true)
     try {
@@ -339,7 +383,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       />
       {previewStatusItems.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-y border-outline-variant/45 px-1 py-2 text-xs">
-          <span className="font-medium text-on-surface">AI 预览状态</span>
+          <span className="font-medium text-on-surface">解析状态</span>
           {previewStatusItems.map((item) => (
             <span key={item.tag} className={`inline-flex h-7 items-center gap-1.5 rounded border px-2 ${item.className}`}>
               <span aria-hidden="true" className="material-symbols-outlined text-[15px]">{item.icon}</span>
@@ -355,8 +399,14 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
           description="当前还没有可展示的 Wiki 内容。"
         />
       ) : (
-      <div className="grid grid-cols-1 gap-6 xl:h-[calc(100dvh-12rem)] xl:grid-cols-12 xl:items-stretch">
-        <div className="xl:col-span-3 bg-surface-container-lowest rounded-lg border border-outline-variant/45 flex min-h-[320px] max-h-[60vh] flex-col overflow-hidden xl:min-h-0 xl:max-h-none">
+      <div
+        ref={splitContainerRef}
+        className="flex flex-col gap-6 xl:h-[calc(100dvh-12rem)] xl:flex-row xl:items-stretch xl:gap-0"
+      >
+        <div
+          style={{ '--tree-w': `${treeWidth}px` }}
+          className="w-full xl:w-[var(--tree-w)] xl:shrink-0 bg-surface-container-lowest rounded-lg border border-outline-variant/45 flex min-h-[320px] max-h-[60vh] flex-col overflow-hidden xl:min-h-0 xl:max-h-none"
+        >
           <div className="shrink-0 px-4 py-4 border-b border-surface-container-high">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
@@ -369,25 +419,28 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
           </div>
         </div>
 
-        <div className="xl:col-span-9 flex min-w-0 flex-col">
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          title="拖动调整目录树宽度"
+          onMouseDown={startTreeResize}
+          className={`hidden xl:block w-1 shrink-0 mx-2.5 my-1 cursor-col-resize rounded-full transition-colors ${
+            resizing ? 'bg-primary/50' : 'bg-outline-variant/30 hover:bg-primary/40'
+          }`}
+        />
+
+        <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex min-h-[520px] max-h-[75vh] flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest xl:max-h-none">
-            {selectedNode?.tags?.length > 0 && (
-              <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-surface-container-high px-5 py-3">
-                {selectedNode.tags.map((tag) => {
-                  const status = PREVIEW_STATUS_META[tag]
-                  return (
-                    <span
-                      key={tag}
-                      className={`inline-flex h-7 items-center rounded border px-2 text-xs ${
-                        status
-                          ? status.className
-                          : 'border-outline-variant/60 bg-surface-container-low text-on-surface-variant'
-                      }`}
-                    >
-                      {status?.label || tag}
-                    </span>
-                  )
-                })}
+            {selectedStatus && (
+              <div className="flex shrink-0 items-center border-b border-surface-container-high px-5 py-3">
+                <span
+                  className={`inline-flex h-7 items-center gap-1 rounded border px-2 text-xs ${selectedStatus.className}`}
+                >
+                  <span aria-hidden="true" className="material-symbols-outlined text-[14px]">
+                    {selectedStatus.icon}
+                  </span>
+                  {selectedStatus.label}
+                </span>
               </div>
             )}
             <div className="min-h-0 flex-1 overflow-y-auto bg-white p-6">
