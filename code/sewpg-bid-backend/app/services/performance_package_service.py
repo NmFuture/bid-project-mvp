@@ -17,7 +17,7 @@ from xml.etree import ElementTree as ET
 
 from docx import Document
 from docx.shared import Pt
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from app.core.config import settings
 from app.models import async_session
@@ -180,6 +180,161 @@ class PerformancePackageService:
             "pageSize": current_page_size,
         }
 
+    async def list_items(
+        self,
+        *,
+        keyword: str = "",
+        turbine_model: str = "",
+        time_keyword: str = "",
+        contract_year: str = "",
+        delivery_year: str = "",
+        operation_year: str = "",
+        category_id: str = "",
+        status: str = "enabled",
+        sort_by: str = "updatedAt",
+        sort_order: str = "desc",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict[str, Any]:
+        current_page = max(1, int(page or 1))
+        current_page_size = max(1, min(100, int(page_size or 20)))
+        offset = (current_page - 1) * current_page_size
+        filters, params = self._item_filters(
+            keyword=keyword,
+            turbine_model=turbine_model,
+            time_keyword=time_keyword,
+            contract_year=contract_year,
+            delivery_year=delivery_year,
+            operation_year=operation_year,
+            category_id=category_id,
+            status=status,
+        )
+        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+        order_sql = _item_order_sql(sort_by, sort_order)
+        async with async_session() as session:
+            await ensure_material_runtime_tables(session)
+            await self._backfill_derived_item_fields(session)
+            total_result = await session.execute(
+                text(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM performance_items i
+                    JOIN performance_categories c ON c.id = i.category_id
+                    {where_sql}
+                    """
+                ),
+                params,
+            )
+            total = int(total_result.scalar_one() or 0)
+            rows = await session.execute(
+                text(
+                    f"""
+                    SELECT
+                        i.*,
+                        c.name AS category_name,
+                        COALESCE(c.status, CASE WHEN c.review_status = 'disabled' THEN 'disabled' ELSE 'enabled' END) AS category_status
+                    FROM performance_items i
+                    JOIN performance_categories c ON c.id = i.category_id
+                    {where_sql}
+                    {order_sql}
+                    LIMIT :limit OFFSET :offset
+                    """
+                ),
+                {**params, "limit": current_page_size, "offset": offset},
+            )
+            item_payload: list[dict[str, Any]] = []
+            numeric_ids: list[int] = []
+            for row in rows:
+                row_dict = self._item_row_to_dict(row._mapping)
+                row_dict["categoryName"] = row._mapping.get("category_name") or ""
+                row_dict["categoryStatus"] = row._mapping.get("category_status") or "enabled"
+                row_dict["attachments"] = []
+                item_payload.append(row_dict)
+                numeric_ids.append(int(row._mapping.get("id") or 0))
+            if numeric_ids:
+                attachment_rows = await session.execute(
+                    text(
+                        """
+                        SELECT *
+                        FROM performance_item_attachments
+                        WHERE item_id IN :item_ids
+                        ORDER BY item_id ASC, created_at DESC, id DESC
+                        """
+                    ).bindparams(bindparam("item_ids", expanding=True)),
+                    {"item_ids": numeric_ids},
+                )
+                attachments_by_item: dict[int, list[dict[str, Any]]] = {}
+                for row in attachment_rows:
+                    attachments_by_item.setdefault(int(row._mapping.get("item_id") or 0), []).append(
+                        self._item_attachment_row_to_dict(row._mapping)
+                    )
+                for row_dict, numeric_item_id in zip(item_payload, numeric_ids):
+                    row_dict["attachments"] = attachments_by_item.get(numeric_item_id, [])
+        return {
+            "items": item_payload,
+            "total": total,
+            "page": current_page,
+            "pageSize": current_page_size,
+        }
+
+    def _item_filters(
+        self,
+        *,
+        keyword: str,
+        turbine_model: str,
+        time_keyword: str,
+        contract_year: str,
+        delivery_year: str,
+        operation_year: str,
+        category_id: str,
+        status: str,
+    ) -> tuple[list[str], dict[str, Any]]:
+        filters: list[str] = []
+        params: dict[str, Any] = {}
+        selected_status = str(status or "").strip()
+        if selected_status in PERFORMANCE_CATEGORY_STATUSES:
+            filters.append("COALESCE(c.status, CASE WHEN c.review_status = 'disabled' THEN 'disabled' ELSE 'enabled' END) = :status")
+            params["status"] = selected_status
+        kw = str(keyword or "").strip()
+        if kw:
+            filters.append(
+                "("
+                "i.project_name ILIKE :keyword OR i.customer_name ILIKE :keyword OR "
+                "i.turbine_model ILIKE :keyword OR i.row_values::text ILIKE :keyword OR "
+                "c.name ILIKE :keyword"
+                ")"
+            )
+            params["keyword"] = f"%{kw}%"
+        selected_model = str(turbine_model or "").strip()
+        if selected_model:
+            filters.append(
+                "(i.turbine_model ILIKE :turbine_model OR i.turbine_models::text ILIKE :turbine_model OR i.row_values::text ILIKE :turbine_model)"
+            )
+            params["turbine_model"] = f"%{selected_model}%"
+        selected_time = str(time_keyword or "").strip()
+        if selected_time:
+            filters.append(
+                "(i.delivery_or_operation_time ILIKE :time_keyword OR i.time_facts::text ILIKE :time_keyword OR i.row_values::text ILIKE :time_keyword)"
+            )
+            params["time_keyword"] = f"%{selected_time}%"
+        contract_year_value = _parse_year_filter(contract_year)
+        if contract_year_value is not None:
+            filters.append("i.contract_year = :contract_year")
+            params["contract_year"] = contract_year_value
+        delivery_year_value = _parse_year_filter(delivery_year)
+        if delivery_year_value is not None:
+            filters.append("i.delivery_year = :delivery_year")
+            params["delivery_year"] = delivery_year_value
+        operation_year_value = _parse_year_filter(operation_year)
+        if operation_year_value is not None:
+            filters.append("i.operation_year = :operation_year")
+            params["operation_year"] = operation_year_value
+        selected_category = str(category_id or "").strip()
+        if selected_category:
+            filters.append("i.category_id = :category_id")
+            params["category_id"] = self._numeric_category_id(selected_category)
+        return filters, params
+
     async def get_category(self, category_id: str) -> dict[str, Any]:
         numeric_id = self._numeric_category_id(category_id)
         async with async_session() as session:
@@ -308,6 +463,7 @@ class PerformancePackageService:
         self,
         upload: Any,
         *,
+        contract_uploads: list[Any] | None = None,
         category_name: str = "",
         scene: str = "",
         power_rating: str = "",
@@ -316,6 +472,15 @@ class PerformancePackageService:
         review_status: str = "draft",
     ) -> dict[str, Any]:
         content, file_name, mime_type = await _read_upload(upload)
+        contract_files: list[tuple[bytes, str, str]] = []
+        for contract_upload in contract_uploads or []:
+            contract_files.append(await _read_upload(contract_upload))
+        if not contract_files:
+            raise PeripheralError(
+                400,
+                "请同时上传合同附件：汇总表与合同需一次导入，不能拆开提交。",
+                "PERFORMANCE_CONTRACT_FILES_REQUIRED",
+            )
         parsed = parse_performance_summary_docx(content, file_name=file_name)
         category_name = str(category_name or parsed.get("categoryName") or Path(file_name).stem).strip()
         if not category_name:
@@ -399,14 +564,12 @@ class PerformancePackageService:
                     ],
                 )
 
+            bucket = settings.minio_buckets["materials"]
             object_key = f"performance-categories/PERCAT-{numeric_id:04d}/summary/{_safe_file_name(file_name)}"
+            uploaded_objects: list[tuple[str, str]] = []
             try:
-                minio_client.put_object(
-                    settings.minio_buckets["materials"],
-                    object_key,
-                    content,
-                    content_type=mime_type,
-                )
+                minio_client.put_object(bucket, object_key, content, content_type=mime_type)
+                uploaded_objects.append((bucket, object_key))
                 await session.execute(
                     text(
                         """
@@ -425,14 +588,62 @@ class PerformancePackageService:
                         "attachment_type": SUMMARY_ATTACHMENT_TYPE,
                         "file_name": file_name,
                         "minio_key": object_key,
-                        "minio_bucket": settings.minio_buckets["materials"],
+                        "minio_bucket": bucket,
                         "mime_type": mime_type,
                         "size_bytes": len(content),
                     },
                 )
+                for contract_index, (contract_content, contract_file_name, contract_mime_type) in enumerate(contract_files):
+                    contract_object_key = (
+                        f"performance-categories/PERCAT-{numeric_id:04d}/{CONTRACT_ATTACHMENT_TYPE}/"
+                        f"{contract_index + 1:02d}-{_safe_file_name(contract_file_name)}"
+                    )
+                    minio_client.put_object(bucket, contract_object_key, contract_content, content_type=contract_mime_type)
+                    uploaded_objects.append((bucket, contract_object_key))
+                    contract_attachment_result = await session.execute(
+                        text(
+                            """
+                            INSERT INTO performance_attachments (
+                                category_id, attachment_type, file_name, minio_key, minio_bucket,
+                                mime_type, size_bytes
+                            )
+                            VALUES (
+                                :category_id, :attachment_type, :file_name, :minio_key, :minio_bucket,
+                                :mime_type, :size_bytes
+                            )
+                            RETURNING id
+                            """
+                        ),
+                        {
+                            "category_id": numeric_id,
+                            "attachment_type": CONTRACT_ATTACHMENT_TYPE,
+                            "file_name": contract_file_name,
+                            "minio_key": contract_object_key,
+                            "minio_bucket": bucket,
+                            "mime_type": contract_mime_type,
+                            "size_bytes": len(contract_content),
+                        },
+                    )
+                    contract_attachment_row = contract_attachment_result.first()
+                    if contract_attachment_row is None:
+                        raise PeripheralError(500, "业绩合同附件保存失败。", "PERFORMANCE_ATTACHMENT_CREATE_FAILED")
+                    if contract_file_name.lower().endswith(".docx"):
+                        uploaded_objects.extend(
+                            await self._replace_contract_item_attachments_for_source(
+                                session,
+                                category_id=numeric_id,
+                                source_attachment_id=int(contract_attachment_row._mapping["id"]),
+                                content=contract_content,
+                                source_file_name=contract_file_name,
+                            )
+                        )
                 await session.commit()
             except Exception:
-                minio_client.remove_object(settings.minio_buckets["materials"], object_key)
+                for uploaded_bucket, uploaded_key in uploaded_objects:
+                    try:
+                        minio_client.remove_object(uploaded_bucket, uploaded_key)
+                    except Exception as exc:  # pragma: no cover - cleanup should not mask original error
+                        logger.warning("Failed to remove performance import object %s/%s: %s", uploaded_bucket, uploaded_key, exc)
                 raise
         return {
             "message": "业绩包已导入",
@@ -1161,6 +1372,8 @@ class PerformancePackageService:
             "timeFacts": dict(row_dict.get("time_facts") or {}),
             "contactInfo": row_dict.get("contact_info") or "",
             "values": dict(row_dict.get("row_values") or {}),
+            "createdAt": row_dict.get("created_at").isoformat() if row_dict.get("created_at") else "",
+            "updatedAt": row_dict.get("updated_at").isoformat() if row_dict.get("updated_at") else "",
         }
 
     def _attachment_row_to_dict(self, row: Any) -> dict[str, Any]:
@@ -2213,6 +2426,24 @@ def _category_order_sql(sort_by: str, sort_order: str) -> str:
     }
     expression = order_map.get(str(sort_by or "").strip(), "c.updated_at")
     return f"ORDER BY {expression} {direction} NULLS LAST, c.id DESC"
+
+
+def _item_order_sql(sort_by: str, sort_order: str) -> str:
+    direction = "ASC" if str(sort_order or "").lower() == "asc" else "DESC"
+    order_map = {
+        "projectName": "i.project_name",
+        "customerName": "i.customer_name",
+        "turbineModel": "i.turbine_model",
+        "contractYear": "i.contract_year",
+        "deliveryYear": "i.delivery_year",
+        "operationYear": "i.operation_year",
+        "categoryName": "c.name",
+        "rowIndex": "i.row_index",
+        "updatedAt": "i.updated_at",
+        "createdAt": "i.created_at",
+    }
+    expression = order_map.get(str(sort_by or "").strip(), "i.updated_at")
+    return f"ORDER BY {expression} {direction} NULLS LAST, i.id DESC"
 
 
 def _safe_file_name(value: str) -> str:

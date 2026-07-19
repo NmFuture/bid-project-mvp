@@ -726,6 +726,10 @@ export const performanceAPI = {
     const qs = new URLSearchParams(cleanQuery(params)).toString()
     return request(`/materials/performance/categories${qs ? `?${qs}` : ''}`)
   },
+  items: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/materials/performance/items${qs ? `?${qs}` : ''}`)
+  },
   previewCategory: (data) =>
     request('/materials/performance/categories/preview', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
   importCategory: (data) =>
