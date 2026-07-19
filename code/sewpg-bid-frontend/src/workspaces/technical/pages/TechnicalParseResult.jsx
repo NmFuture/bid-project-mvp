@@ -8,6 +8,14 @@ import TechnicalProjectStageProgress from '../components/TechnicalProjectStagePr
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import { bidTypeFromWorkspace, projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
+import {
+  directoryElapsedSeconds,
+  estimateDirectoryDisplayPercentage,
+  isDirectoryProgressFailed,
+  isDirectoryProgressRunning,
+  mergeMonotonicDirectoryProgress,
+  summarizeDirectoryProgress,
+} from '../technicalDirectoryProgress'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -46,59 +54,6 @@ const fileSizeLabel = (size) => {
   return `${(value / 1024 / 1024).toFixed(1)} MB`
 }
 
-const directoryGenerationSourceMeta = (output = {}, status = 'idle') => {
-  const providerId = String(output?.providerId || output?.providerID || '').trim()
-  const modelId = String(output?.modelId || output?.modelID || output?.skill || output?.engine || '').trim()
-  const outputStatus = String(output?.status || '').trim()
-  const hasSession = Boolean(output?.sessionId)
-  const detailParts = [
-    providerId ? `provider: ${providerId}` : '',
-    modelId ? `model/skill: ${modelId}` : '',
-    outputStatus ? `status: ${outputStatus}` : '',
-  ].filter(Boolean)
-  const detail = detailParts.length ? detailParts.join(' / ') : '暂无生成来源信息'
-
-  if (providerId === 'local-skill') {
-    return {
-      label: '本地兜底',
-      title: `${detail}。AI 调用不可用或失败时，由本地目录 runner 生成。`,
-      className: 'border-amber-200 bg-amber-50 text-amber-950',
-    }
-  }
-
-  if (status === 'running') {
-    return {
-      label: hasSession || providerId || modelId ? 'AI生成中' : '生成中',
-      title: detail,
-      className: 'border-primary/20 bg-primary/10 text-primary',
-    }
-  }
-
-  if (providerId || modelId || hasSession) {
-    return {
-      label: outputStatus === 'failed' || status === 'failed' ? 'AI失败' : 'AI生成',
-      title: detail,
-      className: outputStatus === 'failed' || status === 'failed'
-        ? 'border-error/30 bg-error-container/20 text-error'
-        : 'border-secondary/20 bg-secondary-container text-on-secondary-container',
-    }
-  }
-
-  if (status === 'idle') {
-    return {
-      label: '未生成',
-      title: detail,
-      className: 'border-surface-container-high bg-surface-container-high text-on-surface-variant',
-    }
-  }
-
-  return {
-    label: '来源待确认',
-    title: detail,
-    className: 'border-surface-container-high bg-surface-container-high text-on-surface-variant',
-  }
-}
-
 const validatePickedFiles = (picked = []) => {
   if (picked.length > MAX_BATCH_FILES) return `单次最多上传 ${MAX_BATCH_FILES} 个文件。`
   for (const file of picked) {
@@ -128,6 +83,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
   const [directoryState, setDirectoryState] = useState(null)
   const [generatingDirectory, setGeneratingDirectory] = useState(false)
   const [autoAdvanceAfterDirectory, setAutoAdvanceAfterDirectory] = useState(false)
+  const [directoryProgressClock, setDirectoryProgressClock] = useState(() => Date.now())
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -142,7 +98,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
       setProject(projectResponse)
       setData(parseResponse)
       setTemplateFallback(fallbackResponse)
-      setDirectoryState(directoryResponse)
+      setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, directoryResponse))
     } catch (e) {
       setError(e?.message || 'S1 模板上传信息加载失败')
     } finally {
@@ -184,30 +140,62 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
   )
   const canGoNextStage = isReviewApproved && isParseCompleted && isProjectInfoComplete
   const directoryStatus = directoryState?.status || 'idle'
-  const isDirectoryRunning = directoryStatus === 'running'
+  const isDirectoryRunning = isDirectoryProgressRunning(directoryState)
   const isDirectoryCompleted = directoryStatus === 'completed'
-  const isDirectoryFailed = directoryStatus === 'failed'
-  const directoryProgress = Math.max(0, Math.min(100, Number(directoryState?.percentage) || 0))
-  const directoryStatusLabel = isDirectoryCompleted
-    ? '已完成'
-    : isDirectoryFailed
-      ? '失败'
-      : isDirectoryRunning
-        ? '生成中'
-        : '待生成'
-  const directorySourceMeta = directoryGenerationSourceMeta(directoryState?.opencodeOutput || {}, directoryStatus)
+  const isDirectoryFailed = isDirectoryProgressFailed(directoryState)
+  const directoryProgressSummary = summarizeDirectoryProgress(directoryState || {})
+  const directoryProgressBadgeClass = directoryProgressSummary.tone === 'danger'
+    ? 'bg-error-container text-error'
+    : directoryProgressSummary.tone === 'success'
+      ? 'bg-secondary-container text-on-secondary-container'
+      : directoryProgressSummary.tone === 'running'
+        ? 'bg-primary/10 text-primary'
+        : 'bg-surface-container-high text-on-surface-variant'
+  const directoryProgressBarClass = directoryProgressSummary.tone === 'danger'
+    ? 'bg-error'
+    : directoryProgressSummary.tone === 'success'
+      ? 'bg-secondary'
+      : 'bg-primary'
+  const elapsedDirectorySeconds = directoryElapsedSeconds(directoryState || {}, directoryProgressClock)
+  const runningDisplayPercentage = estimateDirectoryDisplayPercentage({
+    status: 'running',
+    elapsedSeconds: elapsedDirectorySeconds,
+  })
+  const directoryDisplayPercentage = estimateDirectoryDisplayPercentage({
+    status: directoryStatus,
+    elapsedSeconds: elapsedDirectorySeconds,
+    fallbackPercentage: isDirectoryFailed ? runningDisplayPercentage : directoryProgressSummary.percentage,
+  })
 
   useEffect(() => {
     if (!isDirectoryRunning) return undefined
-    const timer = window.setInterval(async () => {
+    const timer = window.setInterval(() => setDirectoryProgressClock(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [isDirectoryRunning])
+
+  useEffect(() => {
+    if (!isDirectoryRunning) return undefined
+    let cancelled = false
+    let timer = null
+
+    const pollDirectoryStatus = async () => {
       try {
         const payload = await technicalDirectoryAPI.status(id)
-        setDirectoryState(payload)
+        if (!cancelled) {
+          setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, payload))
+        }
       } catch {
         // 保持页面可操作，用户可手动刷新查看失败原因
+      } finally {
+        if (!cancelled) timer = window.setTimeout(pollDirectoryStatus, 1000)
       }
-    }, 1000)
-    return () => window.clearInterval(timer)
+    }
+
+    timer = window.setTimeout(pollDirectoryStatus, 1000)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
   }, [id, isDirectoryRunning])
 
   useEffect(() => {
@@ -467,7 +455,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
         <div className="flex h-[34px] justify-center">
           <Button
             onClick={handleUploadTemplateFiles}
-            disabled={uploading || !templateFiles.length}
+            disabled={uploading || isDirectoryRunning || !templateFiles.length}
             size="stage"
             variant="primary"
           >
@@ -484,45 +472,54 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
           </div>
 
           <div className="flex min-h-[388px] flex-col gap-4 p-6">
-        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-base font-headline font-bold text-on-surface">目录生成</h3>
-                <span
-                  className={[
-                    'inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-semibold',
-                    directorySourceMeta.className,
-                  ].join(' ')}
-                  title={directorySourceMeta.title}
-                >
-                  {directorySourceMeta.label}
-                </span>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-              <span className={[
-                'rounded-md px-2.5 py-1 text-xs font-semibold',
-                isDirectoryCompleted
-                  ? 'bg-secondary-container text-on-secondary-container'
-                  : isDirectoryFailed
-                    ? 'bg-error-container text-error'
-                    : isDirectoryRunning
-                      ? 'bg-primary/10 text-primary'
-                      : 'bg-surface-container-high text-on-surface-variant',
-              ].join(' ')}
-              >
-                {directoryStatusLabel}
-              </span>
-          </div>
-        </div>
+            <h3 className="text-base font-headline font-bold text-on-surface">目录生成</h3>
 
-          <div className="flex min-h-[164px] items-center">
+          <div className="flex min-h-[132px] items-center">
             {(isDirectoryRunning || isDirectoryCompleted || isDirectoryFailed) ? (
-              <div className="business-panel flex w-full items-center gap-3 rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-3">
-                <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-[#e8eef2]">
-                  <div className={`h-full transition-all duration-700 ${isDirectoryFailed ? 'bg-error' : 'bg-primary'}`} style={{ width: `${directoryProgress}%` }} />
+              <div className={[
+                'w-full border-y px-4 py-4',
+                isDirectoryFailed
+                  ? 'border-error/30 bg-error-container/10'
+                  : 'border-surface-container-high bg-surface-container-low',
+              ].join(' ')}>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <span
+                      aria-hidden="true"
+                      className={[
+                        'material-symbols-outlined mt-0.5 text-[20px]',
+                        isDirectoryFailed
+                          ? 'text-error'
+                          : isDirectoryCompleted
+                            ? 'text-secondary'
+                            : 'animate-spin-slow text-primary',
+                      ].join(' ')}
+                    >
+                      {isDirectoryFailed ? 'error' : isDirectoryCompleted ? 'check_circle' : 'progress_activity'}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-on-surface">{directoryProgressSummary.title}</p>
+                      <p className="mt-1 text-xs leading-5 text-outline">{directoryProgressSummary.summary}</p>
+                    </div>
+                  </div>
+                  <span className={[
+                    'shrink-0 self-start rounded-md px-2.5 py-1 text-xs font-semibold tabular-nums',
+                    directoryProgressBadgeClass,
+                  ].join(' ')}>
+                    {directoryProgressSummary.statusText} · {Math.floor(directoryDisplayPercentage)}%
+                  </span>
                 </div>
-                <span className="whitespace-nowrap text-xs text-outline">{directoryProgress}%</span>
+
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-container-high">
+                  <div
+                    className={[
+                      'h-full rounded-full transition-all duration-1000 ease-linear',
+                      directoryProgressBarClass,
+                      isDirectoryRunning ? 'bg-stripes' : '',
+                    ].join(' ')}
+                    style={{ width: `${directoryDisplayPercentage}%` }}
+                  />
+                </div>
               </div>
             ) : null}
           </div>
@@ -541,12 +538,6 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
                 : '生成目录'}
             </Button>
           </div>
-
-        {isDirectoryFailed ? (
-          <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
-            {directoryState?.summary || '目录生成失败，请检查模板文件后重新生成。'}
-          </div>
-        ) : null}
 
           </div>
         </div>

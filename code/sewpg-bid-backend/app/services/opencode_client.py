@@ -19,6 +19,7 @@ from app.services.system_settings import system_settings_service
 logger = logging.getLogger(__name__)
 
 OPENCODE_PROGRESS_HEARTBEAT_SECONDS = 10.0
+OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS = 10.0
 
 _OPENCODE_REQUEST_SLOTS = threading.BoundedSemaphore(settings.opencode_max_concurrency)
 _SESSION_CREATE_RETRY_DELAYS_SEC = (0.5, 1.0, 2.0, 4.0, 8.0, 8.0)
@@ -158,6 +159,7 @@ class OpencodeClient:
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
         early_tool_command: str = "",
+        terminal_validator: Callable[[], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         session = self.create_session("S2 目录生成")
         session_id = str(session.get("id") or "")
@@ -174,6 +176,7 @@ class OpencodeClient:
             prompt_text,
             stream_callback=stream_callback,
             early_tool_command=early_tool_command,
+            terminal_validator=terminal_validator,
         )
         parsed = self._extract_outline_json(response)
         return {
@@ -589,6 +592,21 @@ class OpencodeClient:
         except (httpx.HTTPError, ValueError):
             return False
 
+    def _stop_s2_outline_session_after_finalize(
+        self,
+        session_id: str,
+        *,
+        finished: threading.Event | None = None,
+    ) -> None:
+        aborted = self.abort_session(session_id)
+        if finished is not None:
+            if finished.wait(OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS):
+                return
+            status = "已发送 abort" if aborted else "abort 失败"
+            raise RuntimeError(f"s2outline finalize 后 Opencode worker 未停止（{status}）。")
+        if not aborted:
+            raise RuntimeError("s2outline finalize 后无法确认 Opencode session 已停止。")
+
     def _extract_outline_json(self, response: dict[str, Any]) -> dict[str, Any]:
         parsed = self._extract_json_response(
             response,
@@ -780,6 +798,7 @@ class OpencodeClient:
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
         early_tool_command: str = "",
         cancel_check: Callable[[], bool] | None = None,
+        terminal_validator: Callable[[], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if stream_callback is None and not early_tool_command:
             return self.send_prompt(session_id, prompt_text)
@@ -879,7 +898,14 @@ class OpencodeClient:
                 messages = self.list_session_messages(session_id)
                 self._raise_session_error_if_present(session_id, messages)
                 tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
-                if tool_output:
+                if tool_output and not (
+                    early_tool_command == "s2outline-finalize" and terminal_validator is not None
+                ):
+                    if early_tool_command == "s2outline-finalize":
+                        self._stop_s2_outline_session_after_finalize(
+                            session_id,
+                            finished=finished,
+                        )
                     snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
                     trace_parts = list(snapshot.get("parts") or [])
                     trace_parts.append(
@@ -910,6 +936,45 @@ class OpencodeClient:
                                 "completionSource": early_tool_command,
                             }
                     )
+                    return early_response
+                if (
+                    early_tool_command == "s2outline-finalize"
+                    and terminal_validator is not None
+                    and self._session_messages_show_assistant_stop(messages)
+                ):
+                    self._stop_s2_outline_session_after_finalize(
+                        session_id,
+                        finished=finished,
+                    )
+                    validated_output = self._run_s2_terminal_validator(terminal_validator)
+                    snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+                    trace_parts = list(snapshot.get("parts") or [])
+                    trace_parts.append(
+                        {
+                            "type": "text",
+                            "text": "Opencode 已停止，后端对当前 staging 产物完成确定性 finalize 校验。",
+                        }
+                    )
+                    early_response = self._tool_output_response(
+                        session_id=session_id,
+                        output=validated_output,
+                        trace_parts=trace_parts,
+                    )
+                    completion_source = "s2outline-terminal-validator"
+                    early_response["_completionSource"] = completion_source
+                    if stream_callback is not None:
+                        stream_callback(
+                            {
+                                "status": "received",
+                                "sessionId": session_id,
+                                "providerId": self.provider_id,
+                                "modelId": self.model_id,
+                                "receivedAt": early_response["_traceReceivedAt"],
+                                "parts": self._normalize_output_parts(trace_parts),
+                                "earlyCompletion": True,
+                                "completionSource": completion_source,
+                            }
+                        )
                     return early_response
 
         if early_tool_command == "s1parse-finalize":
@@ -1062,6 +1127,7 @@ class OpencodeClient:
                 stream_callback=stream_callback,
                 cancel_check=cancel_check,
                 progress_started_at=progress_started_at,
+                terminal_validator=terminal_validator,
             )
             if pending_response:
                 return pending_response
@@ -1288,6 +1354,7 @@ class OpencodeClient:
         stream_callback: Callable[[dict[str, Any]], None] | None,
         cancel_check: Callable[[], bool] | None = None,
         progress_started_at: float | None = None,
+        terminal_validator: Callable[[], dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         early_tool_command = "s2outline-finalize"
         messages: list[dict[str, Any]] = []
@@ -1309,7 +1376,8 @@ class OpencodeClient:
             messages = self.list_session_messages(session_id)
             self._raise_session_error_if_present(session_id, messages)
             tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
-            if tool_output:
+            if tool_output and terminal_validator is None:
+                self._stop_s2_outline_session_after_finalize(session_id)
                 snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
                 trace_parts = list(snapshot.get("parts") or [])
                 trace_parts.append(
@@ -1335,6 +1403,38 @@ class OpencodeClient:
                             "parts": self._normalize_output_parts(trace_parts),
                             "earlyCompletion": True,
                             "completionSource": early_tool_command,
+                            "elapsedSeconds": max(0, int(time.monotonic() - progress_started_at)),
+                        }
+                    )
+                return early_response
+            if terminal_validator is not None and self._session_messages_show_assistant_stop(messages):
+                validated_output = self._run_s2_terminal_validator(terminal_validator)
+                snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+                trace_parts = list(snapshot.get("parts") or [])
+                trace_parts.append(
+                    {
+                        "type": "text",
+                        "text": "Opencode 已停止，后端对当前 staging 产物完成确定性 finalize 校验。",
+                    }
+                )
+                early_response = self._tool_output_response(
+                    session_id=session_id,
+                    output=validated_output,
+                    trace_parts=trace_parts,
+                )
+                completion_source = "s2outline-terminal-validator"
+                early_response["_completionSource"] = completion_source
+                if stream_callback is not None:
+                    stream_callback(
+                        {
+                            "status": "received",
+                            "sessionId": session_id,
+                            "providerId": self.provider_id,
+                            "modelId": self.model_id,
+                            "receivedAt": early_response["_traceReceivedAt"],
+                            "parts": self._normalize_output_parts(trace_parts),
+                            "earlyCompletion": True,
+                            "completionSource": completion_source,
                             "elapsedSeconds": max(0, int(time.monotonic() - progress_started_at)),
                         }
                     )
@@ -1538,6 +1638,13 @@ class OpencodeClient:
 
     @staticmethod
     def _matches_completed_command(command: str, expected: str) -> bool:
+        if expected == "s2outline-finalize":
+            return bool(
+                re.fullmatch(
+                    r"s2outline[ \t]+finalize[ \t]+/[A-Za-z0-9._/-]+",
+                    command,
+                )
+            )
         words = command.split()
         if not words:
             return False
@@ -1546,8 +1653,6 @@ class OpencodeClient:
             return first_word in {"s1parse", "s1parse_router.py"} and len(words) >= 3 and words[1] == "finalize"
         if expected == "btplnav-finalize":
             return first_word in {"btplnav", "run_from_manifest.py"} and len(words) >= 3 and words[1] == "finalize"
-        if expected == "s2outline-finalize":
-            return first_word in {"s2outline", "run_from_manifest.py"} and len(words) >= 3 and words[1] == "finalize"
         return first_word == expected
 
     @staticmethod
@@ -1613,10 +1718,13 @@ class OpencodeClient:
                 command = str(raw_input.get("command") or "").strip()
                 if not OpencodeClient._matches_completed_command(command, expected):
                     continue
+                metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
                 exit_code = state.get("exit")
+                if exit_code is None:
+                    exit_code = metadata.get("exit")
                 if exit_code not in (None, 0):
                     continue
-                output = str(state.get("output") or "").strip()
+                output = str(state.get("output") or metadata.get("output") or "").strip()
                 if expected == "s1parse-finalize":
                     if OpencodeClient._s1_finalize_output_is_terminal(output):
                         return output
@@ -1658,6 +1766,28 @@ class OpencodeClient:
         if not trace:
             return False
         return str(trace.get("lastToolStatus") or "").lower() in {"running", "pending", "started"}
+
+    @staticmethod
+    def _session_messages_show_assistant_stop(messages: list[dict[str, Any]]) -> bool:
+        for message in reversed(messages):
+            info = message.get("info") if isinstance(message.get("info"), dict) else {}
+            if str(info.get("role") or "") != "assistant":
+                continue
+            if str(info.get("finish") or "").strip().lower() != "stop":
+                return False
+            return not OpencodeClient._last_tool_is_running(OpencodeClient._last_tool_trace(messages))
+        return False
+
+    @staticmethod
+    def _run_s2_terminal_validator(validator: Callable[[], dict[str, Any]]) -> str:
+        try:
+            payload = validator()
+        except Exception as exc:
+            raise RuntimeError(f"Opencode 已停止，但当前技术标目录未通过 finalize 校验：{exc}") from exc
+        output = json.dumps(payload, ensure_ascii=False)
+        if not OpencodeClient._s2_outline_finalize_output_is_terminal(output):
+            raise RuntimeError("Opencode 已停止，但技术标目录 finalize 校验未返回 finalized。")
+        return output
 
     @staticmethod
     def _session_polling_idle_timeout(early_tool_command: str = "") -> float:

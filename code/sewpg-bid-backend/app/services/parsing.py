@@ -6449,6 +6449,48 @@ def _project_basics_bid_deadline(structured: dict[str, Any]) -> str:
     return ""
 
 
+def _project_basics_project_prefill(structured: dict[str, Any]) -> dict[str, Any]:
+    field_groups = structured.get("fieldGroups") if isinstance(structured.get("fieldGroups"), dict) else {}
+    project_basics = field_groups.get("projectBasics") if isinstance(field_groups.get("projectBasics"), list) else []
+    field_map = {
+        "projectName": "name",
+        "tenderNo": "projectCode",
+        "bidDeadline": "endDate",
+    }
+    prefill: dict[str, Any] = {}
+    sources: dict[str, Any] = {}
+    for row in project_basics:
+        if not isinstance(row, dict):
+            continue
+        field_key = str(row.get("key") or row.get("fieldKey") or "").strip()
+        target_key = field_map.get(field_key)
+        status = str(row.get("status") or "").strip()
+        value = str(row.get("value") or "").strip()
+        if not target_key or status not in {"found", "partial"} or not value:
+            continue
+        if field_key == "bidDeadline":
+            normalized = _normalize_bid_deadline(value)
+            if not _is_normalized_bid_deadline(normalized):
+                continue
+            value = normalized[:10]
+        evidence_ids = [
+            str(item).strip()
+            for item in row.get("evidenceIds") or []
+            if str(item).strip()
+        ]
+        prefill[target_key] = value
+        sources[target_key] = {
+            "fieldKey": field_key,
+            "status": status,
+            "evidenceIds": evidence_ids,
+        }
+        if target_key == "endDate":
+            prefill["deadline"] = value
+    if sources:
+        prefill["sources"] = sources
+    return prefill
+
+
 def parse_tender_documents(
     project_id: str,
     tender_files: list[dict[str, Any]],
@@ -6850,6 +6892,7 @@ def parse_tender_documents(
     structured = structured_result.get("structured") if isinstance(structured_result.get("structured"), dict) else {}
     project_dates = structured.get("projectDates") if isinstance(structured.get("projectDates"), dict) else {}
     project_deadline = _project_basics_bid_deadline(structured)
+    project_prefill = _project_basics_project_prefill(structured)
 
     summary = {
         "fileCount": len(tender_files),
@@ -6900,4 +6943,5 @@ def parse_tender_documents(
         "items": items,
         "structured": structured,
         "projectUpdates": project_updates,
+        "projectPrefill": project_prefill,
     }

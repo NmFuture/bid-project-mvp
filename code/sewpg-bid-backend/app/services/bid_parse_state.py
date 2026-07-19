@@ -288,6 +288,9 @@ def complete_parse_state(
 ) -> dict[str, Any]:
     parsed_at = now_iso()
     project_updates = parse_storage.get("projectUpdates") if isinstance(parse_storage, dict) else {}
+    project_prefill = parse_storage.get("projectPrefill") if isinstance(parse_storage, dict) else {}
+    if not isinstance(project_prefill, dict):
+        project_prefill = {}
     if isinstance(project_updates, dict):
         for field in ["startDate", "endDate", "deadline"]:
             value = str(project_updates.get(field) or "").strip()
@@ -345,6 +348,7 @@ def complete_parse_state(
         "sourceFiles": source_files,
         "items": items,
         "structured": structured,
+        "projectPrefill": copy.deepcopy(project_prefill),
         "summary": summary or {
             "fileCount": len(source_files),
             "extractedCount": len(items),

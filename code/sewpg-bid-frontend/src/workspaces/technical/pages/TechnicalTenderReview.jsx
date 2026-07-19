@@ -700,6 +700,7 @@ export default function TechnicalTenderReview({ showToast }) {
         manager: '',
         bidType: reviewConfig.bidType,
         deadline: '',
+        isParseDraft: true,
         reviewDecision: 'pending',
       })
       await loadProjects()
@@ -1694,6 +1695,8 @@ export default function TechnicalTenderReview({ showToast }) {
         <TechnicalProjectWizardModal
           mode="update"
           project={projectToComplete}
+          prefill={parseData?.projectPrefill}
+          allowParsePrefill
           forceReviewDecision="participate"
           onClose={() => {
             setShowProjectInfoModal(false)

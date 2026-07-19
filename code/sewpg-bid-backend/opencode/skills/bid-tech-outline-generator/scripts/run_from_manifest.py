@@ -16,11 +16,14 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import review_workflow
+import outline_composer
+import decision_workflow
 
 
 AGENTIC_COMMANDS = {
     "prepare",
     "template",
+    "headings",
     "next",
     "next-batch",
     "read",
@@ -29,6 +32,10 @@ AGENTIC_COMMANDS = {
     "tables",
     "review-chunk",
     "review-batch",
+    "decision-next",
+    "decision-batch",
+    "decisions",
+    "compose",
     "validate",
     "status",
     "finalize",
@@ -67,6 +74,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Inspect and validate S2 technical outline artifacts.")
     parser.add_argument("args", nargs="*")
     parser.add_argument("--manifest", dest="manifest_option")
+    parser.add_argument("--require-compose", action="store_true")
     parser.add_argument("--response", choices=("summary", "review"), default="summary")
     parsed_args, command_options = parser.parse_known_args()
 
@@ -78,6 +86,8 @@ def main() -> int:
     if not manifest_path.exists():
         raise SystemExit(f"manifest not found: {manifest_path}")
     manifest = load_json_dict(manifest_path, "manifest")
+    if parsed_args.require_compose:
+        manifest["_runtimeRequireComposedOutline"] = True
 
     result = dispatch_command(command, manifest, manifest_path, command_args)
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -91,7 +101,7 @@ def resolve_invocation(manifest_option: str | None, positional_args: list[str]) 
         command = args.pop(0)
     elif args and args[0] not in AGENTIC_COMMANDS and len(args) > 1:
         raise SystemExit(
-            "usage: s2outline [prepare|template|next|next-batch|read|window|table|tables|review-chunk|review-batch|validate|status|finalize] <manifest> [...]"
+            "usage: s2outline [prepare|template|headings|next|next-batch|read|window|table|tables|review-chunk|review-batch|decision-next|decision-batch|decisions|compose|validate|status|finalize] <manifest> [...]"
         )
     manifest_text = str(manifest_option or (args[0] if args else "")).strip()
     if args and not manifest_option:
@@ -115,6 +125,22 @@ def _required_arg(args: list[str], index: int, label: str) -> str:
     return str(args[index]).strip()
 
 
+def _requires_composed_outline(manifest: dict[str, Any]) -> bool:
+    return bool(
+        manifest.get("_runtimeRequireComposedOutline")
+        or manifest.get("requireComposedOutline")
+    )
+
+
+def _strict_workflow_binding(
+    manifest: dict[str, Any],
+    work_dir: Path,
+) -> dict[str, str] | None:
+    if not _requires_composed_outline(manifest) or not manifest.get("tenderFiles"):
+        return None
+    return review_workflow.require_headings_complete(work_dir, tender_inputs(manifest))
+
+
 def dispatch_command(
     command: str,
     manifest: dict[str, Any],
@@ -124,6 +150,14 @@ def dispatch_command(
     work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
     if command in {"prepare", "template"}:
         return write_template_structure(manifest, manifest_path)
+    if command == "headings":
+        cursor = int(_option_value(command_args, "--cursor", "0"))
+        page_size = int(_option_value(command_args, "--page-size", "200"))
+        return review_workflow.tender_headings(
+            work_dir,
+            cursor=cursor,
+            page_size=page_size,
+        )
     if command == "next":
         return review_workflow.next_review_chunk(work_dir)
     if command == "next-batch":
@@ -197,6 +231,51 @@ def dispatch_command(
         if not isinstance(chunk_ids, list):
             raise SystemExit("review JSON chunk_ids must be a list")
         return review_workflow.submit_batch_review(work_dir, chunk_ids, review)
+    if command in {"decision-next", "decision-batch", "decisions"}:
+        workflow_binding = _strict_workflow_binding(manifest, work_dir)
+        if (
+            workflow_binding is None
+            and manifest.get("tenderFiles")
+            and not review_workflow.headings_complete(work_dir)
+        ):
+            raise SystemExit("必须先完整读取招标目录或分页 headings")
+        structure = load_json_dict(
+            work_dir / "template_structure.json",
+            "templateStructureFile",
+        )
+        if command == "decision-next":
+            max_items = int(_option_value(command_args, "--max-items", "50"))
+            return decision_workflow.next_decision_batch(
+                work_dir,
+                structure,
+                max_items=max_items,
+                comparison_context=review_workflow.decision_comparison_context(work_dir),
+                workflow_binding=workflow_binding,
+            )
+        if command == "decisions":
+            if command_args:
+                raise SystemExit("decisions 不接受 JSON；请使用 decision-next 和 decision-batch")
+            return decision_workflow.finalize_decisions(
+                work_dir,
+                structure,
+                workflow_binding=workflow_binding,
+            )
+        decisions_text = _required_arg(command_args, 0, "decision batch JSON")
+        try:
+            decision_batch = json.loads(decisions_text)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"decision batch JSON is invalid: {exc}") from exc
+        if not isinstance(decision_batch, dict):
+            raise SystemExit("decision batch JSON must be an object")
+        return decision_workflow.submit_decision_batch(
+            work_dir,
+            structure,
+            decision_batch,
+            appendix_items=review_workflow.decision_appendix_items(work_dir),
+            workflow_binding=workflow_binding,
+        )
+    if command == "compose":
+        return compose_manifest(manifest, manifest_path)
     if command in {"validate", "status"}:
         return review_workflow.review_status(work_dir)
     if command == "finalize":
@@ -227,6 +306,12 @@ def run_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any
 def write_template_structure(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
     work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
     work_dir.mkdir(parents=True, exist_ok=True)
+    for stale_name in (
+        decision_workflow.STATE_FILE_NAME,
+        outline_composer.DECISIONS_FILE_NAME,
+        outline_composer.REPORT_FILE_NAME,
+    ):
+        (work_dir / stale_name).unlink(missing_ok=True)
     template_file = existing_path(manifest.get("templateFile"), "templateFile")
     structure = extract_template_structure(template_file)
     output_path = work_dir / "template_structure.json"
@@ -242,6 +327,7 @@ def write_template_structure(manifest: dict[str, Any], manifest_path: Path) -> d
         "schema_version": "template-structure.v1",
         "source": structure["source"],
         "item_count": len(structure["items"]),
+        "inputFingerprint": structure["input_fingerprint"],
         "templateStructureFile": str(output_path),
         "tenderAppendixItemCount": len(appendix_inventory["items"]),
         "tenderAppendixInventoryFile": str(appendix_inventory_path),
@@ -254,7 +340,10 @@ def extract_template_structure(path: Path) -> dict[str, Any]:
     automatic_toc = automatic_toc_items(paragraphs)
     if automatic_toc:
         source = "automatic_toc"
-        items = automatic_toc
+        items = supplement_automatic_toc_with_body_level_three(
+            automatic_toc,
+            body_heading_items(paragraphs),
+        )
     else:
         toc_page = toc_page_items(paragraphs)
         if toc_page:
@@ -265,12 +354,166 @@ def extract_template_structure(path: Path) -> dict[str, Any]:
             items = body_heading_items(paragraphs)
     if not items:
         raise SystemExit(f"no usable outline structure found in templateFile: {path}")
-    return {
+    return outline_composer.annotate_template_structure({
         "schema_version": "template-structure.v1",
         "source": source,
         "template_file": str(path),
         "items": items,
+    })
+
+
+def supplement_automatic_toc_with_body_level_three(
+    automatic_toc: list[dict[str, Any]],
+    body_headings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    level_two_records: list[tuple[int, dict[str, Any], dict[str, Any] | None]] = []
+    automatic_level_one: dict[str, Any] | None = None
+    for index, item in enumerate(automatic_toc):
+        level = int(item.get("level") or 1)
+        if level == 1:
+            automatic_level_one = item
+        elif level == 2:
+            level_two_records.append((index, item, automatic_level_one))
+    if not level_two_records:
+        return automatic_toc
+
+    body_level_three: dict[int, list[dict[str, Any]]] = {}
+    body_level_one: dict[str, Any] | None = None
+    anchor_index: int | None = None
+    for item in body_headings:
+        level = int(item.get("level") or 1)
+        if level == 1:
+            body_level_one = item
+            anchor_index = None
+        elif level == 2:
+            anchor_index = match_level_two_anchor(item, body_level_one, level_two_records)
+        elif level == 3 and anchor_index is not None:
+            seen = body_level_three.setdefault(anchor_index, [])
+            if any(headings_match(item, existing) for existing in seen):
+                continue
+            seen.append(item)
+    if not body_level_three:
+        return automatic_toc
+
+    merged: list[dict[str, Any]] = []
+    index = 0
+    while index < len(automatic_toc):
+        item = automatic_toc[index]
+        merged.append(item)
+        if int(item.get("level") or 1) != 2:
+            index += 1
+            continue
+        next_index = index + 1
+        while next_index < len(automatic_toc) and int(automatic_toc[next_index].get("level") or 1) > 2:
+            next_index += 1
+        merged.extend(
+            merge_level_three_descendants(
+                str(item.get("number") or ""),
+                automatic_toc[index + 1 : next_index],
+                body_level_three.get(index, []),
+            )
+        )
+        index = next_index
+    return merged
+
+
+def merge_level_three_descendants(
+    parent_number: str,
+    automatic_descendants: list[dict[str, Any]],
+    body_level_three: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not body_level_three:
+        return number_blank_level_three(parent_number, automatic_descendants)
+
+    prefix: list[dict[str, Any]] = []
+    automatic_groups: list[list[dict[str, Any]]] = []
+    current_group: list[dict[str, Any]] | None = None
+    for item in automatic_descendants:
+        if int(item.get("level") or 1) == 3:
+            if current_group:
+                automatic_groups.append(current_group)
+            current_group = [item]
+        elif current_group is None:
+            prefix.append(item)
+        else:
+            current_group.append(item)
+    if current_group:
+        automatic_groups.append(current_group)
+
+    merged = list(prefix)
+    used_group_indexes: set[int] = set()
+    for body_item in body_level_three:
+        matching_index = next(
+            (
+                index
+                for index, group in enumerate(automatic_groups)
+                if index not in used_group_indexes and headings_match(body_item, group[0])
+            ),
+            None,
+        )
+        if matching_index is None:
+            merged.append(body_item)
+            continue
+        merged.extend(automatic_groups[matching_index])
+        used_group_indexes.add(matching_index)
+    for index, group in enumerate(automatic_groups):
+        if index not in used_group_indexes:
+            merged.extend(group)
+    return number_blank_level_three(parent_number, merged)
+
+
+def number_blank_level_three(
+    parent_number: str,
+    descendants: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    compact_parent = re.sub(r"\s+", "", parent_number)
+    if not re.fullmatch(r"\d+(?:\.\d+)*", compact_parent):
+        return descendants
+
+    child_pattern = re.compile(rf"{re.escape(compact_parent)}\.(\d+)")
+    used_suffixes = {
+        int(match.group(1))
+        for item in descendants
+        if int(item.get("level") or 1) == 3
+        if (match := child_pattern.fullmatch(re.sub(r"\s+", "", str(item.get("number") or ""))))
     }
+    next_suffix = 1
+    numbered: list[dict[str, Any]] = []
+    for item in descendants:
+        current = dict(item)
+        if int(current.get("level") or 1) == 3 and not str(current.get("number") or "").strip():
+            while next_suffix in used_suffixes:
+                next_suffix += 1
+            current["number"] = f"{compact_parent}.{next_suffix}"
+            used_suffixes.add(next_suffix)
+            next_suffix += 1
+        numbered.append(current)
+    return numbered
+
+
+def match_level_two_anchor(
+    body_level_two: dict[str, Any],
+    body_level_one: dict[str, Any] | None,
+    automatic_records: list[tuple[int, dict[str, Any], dict[str, Any] | None]],
+) -> int | None:
+    candidates = [record for record in automatic_records if headings_match(body_level_two, record[1])]
+    if body_level_one is not None:
+        candidates = [
+            record
+            for record in candidates
+            if record[2] is None or headings_match(body_level_one, record[2])
+        ]
+    return candidates[0][0] if len(candidates) == 1 else None
+
+
+def headings_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_number = normalize_outline_identity(left.get("number"))
+    right_number = normalize_outline_identity(right.get("number"))
+    if left_number and right_number:
+        return left_number == right_number
+    left_title = normalize_outline_identity(left.get("title"))
+    right_title = normalize_outline_identity(right.get("title"))
+    return bool(left_title and right_title and left_title == right_title)
 
 
 def extract_tender_appendix_inventory(tender_files: list[dict[str, Any]]) -> dict[str, Any]:
@@ -528,9 +771,117 @@ def normalize_space(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").replace("\u3000", " ")).strip()
 
 
+def submit_outline_decisions(
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    decisions: dict[str, Any],
+) -> dict[str, Any]:
+    work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
+    structure = load_json_dict(work_dir / "template_structure.json", "templateStructureFile")
+    try:
+        return outline_composer.submit_decisions(
+            work_dir=work_dir,
+            structure=structure,
+            decisions=decisions,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def compose_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
+    work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
+    output_file = Path(str(manifest.get("outputFile") or work_dir / "technical_outline.json")).expanduser()
+    structure = load_json_dict(work_dir / "template_structure.json", "templateStructureFile")
+    workflow_proof = _strict_workflow_binding(manifest, work_dir) or {}
+    try:
+        decisions = outline_composer.load_decisions(work_dir, structure)
+        if workflow_proof:
+            workflow_proof.update(
+                decision_workflow.validate_finalized_decisions(
+                    work_dir,
+                    structure,
+                    decisions,
+                    workflow_binding=workflow_proof,
+                )
+            )
+        outline, _ = outline_composer.build_composition(structure, decisions)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    action_counts: Counter[str] = Counter()
+    total_nodes = validate_nodes(outline["nodes"], action_counts=action_counts)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(json.dumps(outline, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        level_three_report = outline_composer.build_level_three_report(
+            structure,
+            decisions,
+            outline["nodes"],
+        )
+        report_path = outline_composer.write_compose_report(
+            work_dir=work_dir,
+            output_file=output_file,
+            structure=structure,
+            decisions=decisions,
+            level_three_report=level_three_report,
+            workflow_proof=workflow_proof,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    return {
+        "schema_version": "technical-outline.v1",
+        "outputFile": str(output_file),
+        "decisionsFile": str(work_dir / outline_composer.DECISIONS_FILE_NAME),
+        "composeReportFile": str(report_path),
+        "summary": {
+            "workflowStage": "composed",
+            "total_nodes": total_nodes,
+            "action_counts": dict(action_counts),
+            "templateLevel3": level_three_report,
+        },
+    }
+
+
 def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
     work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
     output_file = Path(str(manifest.get("outputFile") or work_dir / "technical_outline.json")).expanduser()
+    template_structure_path = work_dir / "template_structure.json"
+    structure = (
+        load_json_dict(template_structure_path, "templateStructureFile")
+        if template_structure_path.exists()
+        else None
+    )
+    decisions: dict[str, Any] | None = None
+    if structure is not None:
+        try:
+            require_composed = _requires_composed_outline(manifest)
+            decisions = outline_composer.load_decisions(
+                work_dir,
+                structure,
+                required=require_composed,
+            )
+            if require_composed:
+                workflow_proof = _strict_workflow_binding(manifest, work_dir) or {}
+                if workflow_proof:
+                    workflow_proof.update(
+                        decision_workflow.validate_finalized_decisions(
+                            work_dir,
+                            structure,
+                            decisions,
+                            workflow_binding=workflow_proof,
+                        )
+                    )
+                outline_composer.validate_compose_report(
+                    work_dir=work_dir,
+                    output_file=output_file,
+                    structure=structure,
+                    decisions=decisions,
+                    workflow_proof=workflow_proof,
+                )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+    elif manifest.get("_runtimeRequireComposedOutline") or manifest.get("requireComposedOutline"):
+        raise SystemExit("requireComposedOutline 已启用，但 template_structure.json 不存在")
     outline = load_json_dict(output_file, "outputFile")
     if outline.get("schema_version") != "technical-outline.v1":
         raise SystemExit("outputFile schema_version must be technical-outline.v1")
@@ -547,6 +898,18 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
         if manifest.get("tenderFiles")
         else {"reviewCoverage": 1.0, "requirementCount": 0, "unfinishedTableCount": 0}
     )
+    level_three_summary: dict[str, Any] = {}
+    if structure is not None:
+        try:
+            level_three_summary = {
+                "templateLevel3": outline_composer.build_level_three_report(
+                    structure,
+                    decisions,
+                    nodes,
+                )
+            }
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
     return {
         "schema_version": "technical-outline.v1",
         "outputFile": str(output_file),
@@ -555,14 +918,23 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
             "total_nodes": total_nodes,
             "action_counts": dict(action_counts),
             **review_summary,
+            **level_three_summary,
         },
     }
 
 
-def validate_nodes(nodes: list[Any], *, action_counts: Counter[str], path: str = "nodes") -> int:
+def validate_nodes(
+    nodes: list[Any],
+    *,
+    action_counts: Counter[str],
+    path: str = "nodes",
+    depth: int = 1,
+) -> int:
     total = 0
     for index, raw_node in enumerate(nodes):
         node_path = f"{path}[{index}]"
+        if depth > 3:
+            raise SystemExit(f"技术标目录最多三级，{node_path} 为第{depth}级目录节点")
         if not isinstance(raw_node, dict):
             raise SystemExit(f"{node_path} must be an object")
         node = raw_node
@@ -587,7 +959,12 @@ def validate_nodes(nodes: list[Any], *, action_counts: Counter[str], path: str =
         if not isinstance(node["children"], list):
             raise SystemExit(f"{node_path}.children must be a list")
         action_counts[action] += 1
-        total += 1 + validate_nodes(node["children"], action_counts=action_counts, path=f"{node_path}.children")
+        total += 1 + validate_nodes(
+            node["children"],
+            action_counts=action_counts,
+            path=f"{node_path}.children",
+            depth=depth + 1,
+        )
     return total
 
 
@@ -646,9 +1023,6 @@ def validate_technical_appendix(nodes: list[dict[str, Any]], *, work_dir: Path) 
         item for item in inventory_items if int(item.get("following_table_count") or 0) > 0
     ]
     if not indexes:
-        if positive_inventory_items:
-            labels = ", ".join(str(item.get("number") or item.get("title") or "") for item in positive_inventory_items)
-            raise SystemExit(f"技术附表遗漏实际表单: {labels}")
         return
     if indexes != [len(nodes) - 1]:
         raise SystemExit("技术附表 must be the single last root node")
@@ -704,21 +1078,6 @@ def validate_technical_appendix(nodes: list[dict[str, Any]], *, work_dir: Path) 
         ]
         if matches and not any(int(item.get("following_table_count") or 0) > 0 for item in matches):
             raise SystemExit(f"技术附表.children[{index}] 没有独立填写表格，不应作为附表节点输出")
-
-    appendix_children = [item for item in appendix.get("children") or [] if isinstance(item, dict)]
-    missing_items = []
-    for item in positive_inventory_items:
-        number = normalize_outline_identity(item.get("number"))
-        title = normalize_outline_identity(item.get("title"))
-        if not any(
-            (number and normalize_outline_identity(child.get("number")) == number)
-            or (title and normalize_outline_identity(child.get("title")) == title)
-            for child in appendix_children
-        ):
-            missing_items.append(str(item.get("number") or item.get("title") or ""))
-    if missing_items:
-        raise SystemExit("技术附表遗漏实际表单: " + ", ".join(missing_items))
-
 
 def normalize_outline_identity(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).casefold()

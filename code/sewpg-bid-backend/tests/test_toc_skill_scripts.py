@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import re
@@ -97,6 +98,44 @@ def load_word_filler_script(name: str):
 
 def json_load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def submit_outline_changes(outline_runner, manifest: dict, manifest_path: Path, changes: list[dict]):
+    structure = json_load(Path(manifest["workDir"]) / "template_structure.json")
+    annotated = outline_runner.outline_composer.annotate_template_structure(structure)
+    fingerprint = annotated["input_fingerprint"]
+    deleted = {
+        str(change.get("target_id") or ""): change
+        for change in changes
+        if change.get("operation") == "suggest_delete"
+    }
+    template_decisions = []
+    for item in annotated["items"]:
+        if int(item.get("level") or 1) > 3:
+            continue
+        target_id = item["template_id"]
+        change = deleted.get(target_id)
+        if change:
+            decision = {
+                "target_id": target_id,
+                "decision": "suggest_delete",
+                "reason": change["reason"],
+            }
+            if "tender_basis" in change:
+                decision["tender_basis"] = change["tender_basis"]
+        else:
+            decision = {"target_id": target_id, "decision": "retain"}
+        template_decisions.append(decision)
+    return outline_runner.submit_outline_decisions(
+        manifest,
+        manifest_path,
+        {
+            "schema_version": "technical-outline-decisions.v1",
+            "input_fingerprint": fingerprint,
+            "template_decisions": template_decisions,
+            "changes": changes,
+        },
+    )
 
 
 class TocSkillScriptTests(unittest.TestCase):
@@ -710,16 +749,22 @@ class TocSkillScriptTests(unittest.TestCase):
 
         for principle in (
             "历史投标模板目录",
+            "最多三级",
+            "模板存在三级目录时",
+            "必须学习到第三级",
+            "完整学习模板一至三级目录",
+            "模板已有第三级目录统一进入结果供用户确认",
+            "逐项判断",
+            "案例、具体项目、产品或系统说明",
+            "第四级及更深层级",
+            "只作为对应第三级节点的内容参考",
+            "再结合招标文件",
             "自动目录",
             "目录页",
             "正文标题结构",
-            "可独立填报单元",
-            "直接不进入最终目录",
-            "不属于建议删除",
-            "仅因招标未提及不能建议删除",
+            "同批对照",
             "建议增加",
             "建议删除",
-            "待确认",
             "技术附表",
             "表内栏目",
             "分组标题本身不输出",
@@ -728,8 +773,9 @@ class TocSkillScriptTests(unittest.TestCase):
             "独立填写区域",
             "tender_appendix_inventory.json",
             "following_table_count",
+            "appendix_id",
             "父子标题不得同时输出",
-            "逐项核对",
+            "掌握全部附表标题",
             "technical-outline.v1",
             "suggestion_action",
             "suggestion_reason",
@@ -739,6 +785,7 @@ class TocSkillScriptTests(unittest.TestCase):
             "children",
             "固定程序只提取结构事实",
             "s2outline prepare",
+            "s2outline headings",
             "s2outline next-batch",
             "s2outline read",
             "s2outline window",
@@ -746,22 +793,33 @@ class TocSkillScriptTests(unittest.TestCase):
             "s2outline tables",
             "s2outline review-batch",
             "s2outline status",
-            "pending_chunk_count",
-            "unfinished_table_count",
+            "s2outline decision-next",
+            "s2outline decision-batch",
+            "s2outline decisions",
+            "s2outline compose",
+            "自主选择",
+            "按需详读",
+            "不得把“未判断”自动当成“必要”",
+            "不得直接写入 `outputFile`",
+            "不得现场编写临时 Python",
+            "三级对照",
             "requirement_ledger.json",
-            "map_existing",
+            "retain",
             "suggest_add",
-            "covered_by_parent",
-            "reference_only",
-            "not_applicable",
-            "pending_confirmation",
+            "suggest_delete",
             "不得编写批处理脚本",
             "自动生成或提交",
             "不得直接读取 `tender_review_chunks.json`",
-            "target_node` 只能指向一个节点",
+            "items` 必须与最近一次 `decision-next`",
             "s2outline finalize",
         ):
             self.assertIn(principle, content)
+
+        self.assertNotIn('"operation":"collapse"', content)
+        self.assertNotIn("由父节点统一承载", content)
+        self.assertNotIn("模板是主骨架", content)
+        self.assertNotIn("仅因招标未提及不能建议删除", content)
+        self.assertNotIn("确认没有不适用证据后选择 `retain`", content)
 
         for redundant_contract in (
             "required_status",
@@ -772,20 +830,1183 @@ class TocSkillScriptTests(unittest.TestCase):
             "toc_evidence.json",
             "当前环境不提供 `read` 工具",
             "用 `bash` 调用 `python-docx`",
+            "全文审阅是完成条件",
+            "不得跳过任何分块",
+            "未读完的表格",
         ):
             self.assertNotIn(redundant_contract, content)
+
+    def test_bid_outline_finalize_allows_three_levels_and_rejects_fourth_level(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(output)}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            payload = {
+                "schema_version": "technical-outline.v1",
+                "nodes": [
+                    {
+                        "number": "1",
+                        "title": "总体技术方案",
+                        "suggestion_action": "必要",
+                        "suggestion_reason": "",
+                        "children": [
+                            {
+                                "number": "1.1",
+                                "title": "机组设计",
+                                "suggestion_action": "必要",
+                                "suggestion_reason": "",
+                                "children": [
+                                    {
+                                        "number": "1.1.1",
+                                        "title": "关键部件设计",
+                                        "suggestion_action": "必要",
+                                        "suggestion_reason": "",
+                                        "children": [],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+            output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            result = outline_runner.finalize_manifest(manifest, manifest_path)
+            self.assertEqual(result["summary"]["total_nodes"], 3)
+
+            payload["nodes"][0]["children"][0]["children"][0]["children"].append(
+                {
+                    "number": "1.1.1.1",
+                    "title": "叶片设计参数",
+                    "suggestion_action": "必要",
+                    "suggestion_reason": "",
+                    "children": [],
+                }
+            )
+            output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(SystemExit, "技术标目录最多三级"):
+                outline_runner.finalize_manifest(manifest, manifest_path)
 
     def test_bid_outline_docker_command_exposes_review_navigation(self) -> None:
         dockerfile = (BACKEND_ROOT / "opencode" / "Dockerfile").read_text(encoding="utf-8")
 
         commands = (
-            "prepare|template|next-batch|read|window|table|tables|"
-            "review-batch|validate|status|finalize"
+            "prepare|template|headings|next-batch|read|window|table|tables|"
+            "review-batch|decision-next|decision-batch|decisions|compose|validate|status|finalize"
         )
         self.assertIn(f"  {commands}) ;;", dockerfile)
         self.assertIn(f"usage: s2outline [{commands}] <manifest> [...]", dockerfile)
+        self.assertIn('run_from_manifest.py --require-compose "$@"', dockerfile)
 
-    def test_bid_outline_template_structure_prefers_automatic_toc(self) -> None:
+    def test_bid_outline_cli_runtime_compose_gate_cannot_be_disabled_by_manifest(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+            manifest = {
+                "workDir": str(root),
+                "outputFile": str(output),
+                "requireComposedOutline": False,
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [{"number": "第1章", "title": "技术方案", "level": 1}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            submit_outline_changes(outline_runner, manifest, manifest_path, [])
+            output.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "technical-outline.v1",
+                        "nodes": [
+                            {
+                                "number": "第1章",
+                                "title": "技术方案",
+                                "suggestion_action": "必要",
+                                "suggestion_reason": "",
+                                "children": [],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                sys,
+                "argv",
+                ["run_from_manifest.py", "--require-compose", "finalize", str(manifest_path)],
+            ), self.assertRaisesRegex(SystemExit, "尚未执行 s2outline compose"):
+                outline_runner.main()
+
+    def test_bid_outline_compose_keeps_all_explicitly_retained_template_level_three(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(output)}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [
+                            {"number": "第1章", "title": "技术方案", "level": 1},
+                            {"number": "1.1", "title": "总体设计", "level": 2},
+                            {"number": "1.1.1", "title": "设计原则", "level": 3},
+                            {"number": "1.1.2", "title": "设计边界", "level": 3},
+                            {"number": "1.2", "title": "供货方案", "level": 2},
+                            {"number": "1.2.1", "title": "供货范围", "level": 3},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            submit_outline_changes(outline_runner, manifest, manifest_path, [])
+            result = outline_runner.compose_manifest(manifest, manifest_path)
+            outline = json_load(output)
+
+        first_root = outline["nodes"][0]
+        self.assertEqual(
+            [child["title"] for parent in first_root["children"] for child in parent["children"]],
+            ["设计原则", "设计边界", "供货范围"],
+        )
+        self.assertEqual(result["summary"]["templateLevel3"]["templateCount"], 3)
+        self.assertEqual(result["summary"]["templateLevel3"]["retainedCount"], 3)
+        self.assertEqual(result["summary"]["templateLevel3"]["unexplainedMissingCount"], 0)
+
+    def test_bid_outline_compose_preserves_realistic_6_48_150_template_structure(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "s2_input.json"
+            output = root / "toc.json"
+            manifest = {"workDir": str(root), "outputFile": str(output)}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            items = []
+            expected_children_by_parent: dict[str, list[tuple[str, str]]] = {}
+            parent_index = 0
+            for chapter_index in range(1, 7):
+                items.append(
+                    {
+                        "number": f"第{chapter_index}章",
+                        "title": f"技术方案{chapter_index}",
+                        "level": 1,
+                    }
+                )
+                for section_index in range(1, 9):
+                    parent_index += 1
+                    parent_number = f"{chapter_index}.{section_index}"
+                    items.append(
+                        {
+                            "number": parent_number,
+                            "title": f"二级专题{parent_index}",
+                            "level": 2,
+                        }
+                    )
+                    child_count = 5 if parent_index <= 14 else 4 if parent_index <= 34 else 0
+                    expected_children_by_parent[parent_number] = []
+                    for child_index in range(1, child_count + 1):
+                        child_number = f"{parent_number}.{child_index}"
+                        child_title = f"三级专题{parent_index}-{child_index}"
+                        items.append(
+                            {
+                                "number": child_number,
+                                "title": child_title,
+                                "level": 3,
+                            }
+                        )
+                        expected_children_by_parent[parent_number].append(
+                            (child_number, child_title)
+                        )
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {"schema_version": "template-structure.v1", "items": items},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            submit_outline_changes(outline_runner, manifest, manifest_path, [])
+            result = outline_runner.compose_manifest(manifest, manifest_path)
+            outline = json_load(output)
+
+        parents = [parent for root_node in outline["nodes"] for parent in root_node["children"]]
+        coverage = result["summary"]["templateLevel3"]
+        coverage_by_parent = {item["number"]: item for item in coverage["parents"]}
+        self.assertEqual(len(outline["nodes"]), 6)
+        self.assertEqual(len(parents), 48)
+        self.assertEqual(sum(len(parent["children"]) for parent in parents), 150)
+        self.assertEqual(coverage["templateCount"], 150)
+        self.assertEqual(coverage["retainedCount"], 150)
+        self.assertEqual(coverage["unexplainedMissingCount"], 0)
+        self.assertEqual(len(coverage["parents"]), 48)
+        for parent in parents:
+            expected_children = expected_children_by_parent[parent["number"]]
+            self.assertEqual(
+                [(child["number"], child["title"]) for child in parent["children"]],
+                expected_children,
+            )
+            self.assertTrue(
+                all(
+                    child["number"].startswith(f'{parent["number"]}.')
+                    for child in parent["children"]
+                )
+            )
+            self.assertEqual(
+                coverage_by_parent[parent["number"]]["finalCount"],
+                len(expected_children),
+            )
+
+    def test_bid_outline_compose_applies_explicit_collapse_and_addition(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(output)}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [
+                            {"number": "第1章", "title": "技术方案", "level": 1},
+                            {"number": "1.1", "title": "总体设计", "level": 2},
+                            {"number": "1.1.1", "title": "设计原则", "level": 3},
+                            {"number": "1.1.2", "title": "设计边界", "level": 3},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            decisions = {
+                "schema_version": "technical-outline-decisions.v1",
+                "changes": [
+                    {
+                        "operation": "collapse",
+                        "target_id": "TPL-0003",
+                        "reason": "内容由总体设计统一承载，不需要独立分工和审核。",
+                    },
+                    {
+                        "operation": "add",
+                        "node_id": "ADD-0001",
+                        "parent_id": "TPL-0002",
+                        "after_id": "TPL-0004",
+                        "number": "1.1.3",
+                        "title": "专项计算报告",
+                        "suggestion_action": "建议增加",
+                        "suggestion_reason": "招标明确要求独立提交专项计算报告。",
+                    },
+                ],
+            }
+
+            submit_outline_changes(outline_runner, manifest, manifest_path, decisions["changes"])
+            result = outline_runner.compose_manifest(manifest, manifest_path)
+            outline = json_load(output)
+
+        children = outline["nodes"][0]["children"][0]["children"]
+        self.assertEqual([child["title"] for child in children], ["设计边界", "专项计算报告"])
+        self.assertEqual(result["summary"]["templateLevel3"]["collapsedCount"], 1)
+        self.assertEqual(result["summary"]["templateLevel3"]["addedCount"], 1)
+        self.assertEqual(result["summary"]["templateLevel3"]["unexplainedMissingCount"], 0)
+
+    def test_bid_outline_finalize_reports_missing_template_level_three_without_blocking(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(output)}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [
+                            {"number": "第1章", "title": "技术方案", "level": 1},
+                            {"number": "1.1", "title": "总体设计", "level": 2},
+                            {"number": "1.1.1", "title": "设计原则", "level": 3},
+                            {"number": "1.1.2", "title": "设计边界", "level": 3},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "technical-outline.v1",
+                        "nodes": [
+                            {
+                                "number": "第1章",
+                                "title": "技术方案",
+                                "suggestion_action": "必要",
+                                "suggestion_reason": "",
+                                "children": [
+                                    {
+                                        "number": "1.1",
+                                        "title": "总体设计",
+                                        "suggestion_action": "必要",
+                                        "suggestion_reason": "",
+                                        "children": [
+                                            {
+                                                "number": "1.1.1",
+                                                "title": "设计原则",
+                                                "suggestion_action": "必要",
+                                                "suggestion_reason": "",
+                                                "children": [],
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = outline_runner.finalize_manifest(manifest, manifest_path)
+
+        coverage = result["summary"]["templateLevel3"]
+        self.assertEqual(coverage["templateCount"], 2)
+        self.assertEqual(coverage["retainedCount"], 1)
+        self.assertEqual(coverage["unexplainedMissingCount"], 1)
+        self.assertEqual(coverage["parentsWithUnexplainedMissing"], 1)
+
+    def test_bid_outline_finalize_requires_unchanged_composed_output_when_enabled(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+            manifest = {
+                "workDir": str(root),
+                "outputFile": str(output),
+                "requireComposedOutline": True,
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [{"number": "第1章", "title": "技术方案", "level": 1}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            submit_outline_changes(outline_runner, manifest, manifest_path, [])
+            outline_runner.compose_manifest(manifest, manifest_path)
+            result = outline_runner.finalize_manifest(manifest, manifest_path)
+            payload = json_load(output)
+            payload["nodes"][0]["title"] = "被临时脚本改写的目录"
+            output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(SystemExit, "compose 后被修改"):
+                outline_runner.finalize_manifest(manifest, manifest_path)
+
+        self.assertEqual(result["summary"]["workflowStage"], "finalized")
+
+    def test_bid_outline_compose_keeps_suggested_delete_and_tracks_level_three_move(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(output)}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [
+                            {"number": "第1章", "title": "技术方案", "level": 1},
+                            {"number": "1.1", "title": "总体设计", "level": 2},
+                            {"number": "1.1.1", "title": "原设计专题", "level": 3},
+                            {"number": "1.2", "title": "专项方案", "level": 2},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            decisions = {
+                "schema_version": "technical-outline-decisions.v1",
+                "changes": [
+                    {
+                        "operation": "suggest_delete",
+                        "target_id": "TPL-0002",
+                        "reason": "当前项目供货边界不包含该总体设计工作。",
+                    },
+                    {
+                        "operation": "update",
+                        "target_id": "TPL-0003",
+                        "parent_id": "TPL-0004",
+                        "number": "1.2.1",
+                        "title": "调整后的设计专题",
+                        "reason": "该专题应归入专项方案并独立编制。",
+                    },
+                ],
+            }
+
+            submit_outline_changes(outline_runner, manifest, manifest_path, decisions["changes"])
+            result = outline_runner.compose_manifest(manifest, manifest_path)
+            outline = json_load(output)
+
+        first_parent, second_parent = outline["nodes"][0]["children"]
+        self.assertEqual(first_parent["suggestion_action"], "建议删除")
+        self.assertEqual(first_parent["suggestion_reason"], "当前项目供货边界不包含该总体设计工作。")
+        self.assertEqual(first_parent["children"], [])
+        self.assertEqual(second_parent["children"][0]["number"], "1.2.1")
+        self.assertEqual(second_parent["children"][0]["title"], "调整后的设计专题")
+        parents = {
+            item["parentId"]: item for item in result["summary"]["templateLevel3"]["parents"]
+        }
+        self.assertEqual(parents["TPL-0002"]["retainedCount"], 0)
+        self.assertEqual(parents["TPL-0002"]["movedOutCount"], 1)
+        self.assertEqual(parents["TPL-0004"]["movedInCount"], 1)
+        self.assertEqual(parents["TPL-0004"]["finalCount"], 1)
+
+    def test_bid_outline_level_three_report_includes_added_parent(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(root / "toc.json")}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [{"number": "第1章", "title": "技术方案", "level": 1}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            changes = [
+                {
+                    "operation": "add",
+                    "node_id": "ADD-L2",
+                    "parent_id": "TPL-0001",
+                    "number": "1.1",
+                    "title": "新增专项",
+                    "suggestion_action": "建议增加",
+                    "suggestion_reason": "招标要求新增专项。",
+                },
+                {
+                    "operation": "add",
+                    "node_id": "ADD-L3",
+                    "parent_id": "ADD-L2",
+                    "number": "1.1.1",
+                    "title": "新增专项报告",
+                    "suggestion_action": "建议增加",
+                    "suggestion_reason": "招标要求独立提交报告。",
+                },
+            ]
+
+            submit_outline_changes(outline_runner, manifest, manifest_path, changes)
+            result = outline_runner.compose_manifest(manifest, manifest_path)
+
+        parents = {
+            item["parentId"]: item for item in result["summary"]["templateLevel3"]["parents"]
+        }
+        self.assertEqual(parents["ADD-L2"]["templateCount"], 0)
+        self.assertEqual(parents["ADD-L2"]["addedCount"], 1)
+        self.assertEqual(parents["ADD-L2"]["finalCount"], 1)
+
+    def test_bid_outline_level_three_report_distinguishes_cross_level_move_from_addition(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(root / "toc.json")}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [
+                            {"number": "第1章", "title": "技术方案", "level": 1},
+                            {"number": "1.1", "title": "总体设计", "level": 2},
+                            {"number": "1.1.1", "title": "原三级专题", "level": 3},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            changes = [
+                {
+                    "operation": "update",
+                    "target_id": "TPL-0003",
+                    "parent_id": None,
+                    "number": "第2章",
+                    "reason": "该专题调整为独立根章节。",
+                },
+                {
+                    "operation": "add",
+                    "node_id": "ADD-L3",
+                    "parent_id": "TPL-0002",
+                    "number": "1.1.2",
+                    "title": "新增三级报告",
+                    "suggestion_action": "建议增加",
+                    "suggestion_reason": "招标要求独立提交。",
+                },
+            ]
+
+            submit_outline_changes(outline_runner, manifest, manifest_path, changes)
+            result = outline_runner.compose_manifest(manifest, manifest_path)
+
+        coverage = result["summary"]["templateLevel3"]
+        self.assertEqual(coverage["templateCount"], 1)
+        self.assertEqual(coverage["outputCount"], 1)
+        self.assertEqual(coverage["retainedCount"], 0)
+        self.assertEqual(coverage["movedOutOfLevel3Count"], 1)
+        self.assertEqual(coverage["addedCount"], 1)
+        self.assertEqual(coverage["unexplainedMissingCount"], 0)
+
+    def test_bid_outline_level_three_report_counts_template_node_moved_into_level_three(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(root / "toc.json")}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [
+                            {"number": "第1章", "title": "技术方案", "level": 1},
+                            {"number": "1.1", "title": "原二级叶节点", "level": 2},
+                            {"number": "1.2", "title": "目标二级节点", "level": 2},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            changes = [
+                {
+                    "operation": "update",
+                    "target_id": "TPL-0002",
+                    "parent_id": "TPL-0003",
+                    "number": "1.2.1",
+                    "reason": "调整为目标二级节点下的独立三级专题。",
+                }
+            ]
+
+            submit_outline_changes(outline_runner, manifest, manifest_path, changes)
+            result = outline_runner.compose_manifest(manifest, manifest_path)
+
+        coverage = result["summary"]["templateLevel3"]
+        parents = {item["parentId"]: item for item in coverage["parents"]}
+        self.assertEqual(coverage["outputCount"], 1)
+        self.assertEqual(coverage["retainedCount"], 0)
+        self.assertEqual(coverage["addedCount"], 0)
+        self.assertEqual(coverage["movedIntoLevel3Count"], 1)
+        self.assertEqual(parents["TPL-0003"]["movedInCount"], 1)
+        self.assertEqual(parents["TPL-0003"]["finalCount"], 1)
+
+    def test_bid_outline_finalize_rejects_missing_or_stale_compose_receipt(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+            manifest = {
+                "workDir": str(root),
+                "outputFile": str(output),
+                "requireComposedOutline": True,
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [{"number": "第1章", "title": "技术方案", "level": 1}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "technical-outline.v1",
+                        "nodes": [
+                            {
+                                "number": "第1章",
+                                "title": "技术方案",
+                                "suggestion_action": "必要",
+                                "suggestion_reason": "",
+                                "children": [],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            submit_outline_changes(outline_runner, manifest, manifest_path, [])
+            with self.assertRaisesRegex(SystemExit, "尚未执行 s2outline compose"):
+                outline_runner.finalize_manifest(manifest, manifest_path)
+
+            outline_runner.compose_manifest(manifest, manifest_path)
+            decisions_path = root / "outline_authoring_decisions.json"
+            changed_decisions = json_load(decisions_path)
+            changed_decisions["changes"] = [
+                {
+                    "operation": "add",
+                    "node_id": "ADD-STALE",
+                    "parent_id": None,
+                    "number": "第2章",
+                    "title": "新增章节",
+                    "suggestion_action": "建议增加",
+                    "suggestion_reason": "用于验证决策变更后回执失效。",
+                }
+            ]
+            decisions_path.write_text(json.dumps(changed_decisions, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "decisions.*compose 后被修改"):
+                outline_runner.finalize_manifest(manifest, manifest_path)
+
+    def test_bid_outline_compose_requires_current_explicit_decisions(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(root / "toc.json")}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            structure_path = root / "template_structure.json"
+            structure_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [{"number": "第1章", "title": "技术方案", "level": 1}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(SystemExit, "必须先执行 s2outline decisions"):
+                outline_runner.compose_manifest(manifest, manifest_path)
+
+            with self.assertRaisesRegex(SystemExit, "input_fingerprint.*required"):
+                outline_runner.submit_outline_decisions(
+                    manifest,
+                    manifest_path,
+                    {"schema_version": "technical-outline-decisions.v1", "changes": []},
+                )
+
+            structure = json_load(structure_path)
+            fingerprint = outline_runner.outline_composer.annotate_template_structure(structure)[
+                "input_fingerprint"
+            ]
+            with self.assertRaisesRegex(SystemExit, "does not match"):
+                outline_runner.submit_outline_decisions(
+                    manifest,
+                    manifest_path,
+                    {
+                        "schema_version": "technical-outline-decisions.v1",
+                        "input_fingerprint": "stale-template-fingerprint",
+                        "template_decisions": [],
+                        "changes": [],
+                    },
+                )
+
+            outline_runner.submit_outline_decisions(
+                manifest,
+                manifest_path,
+                {
+                    "schema_version": "technical-outline-decisions.v1",
+                    "input_fingerprint": fingerprint,
+                    "template_decisions": [
+                        {"target_id": "TPL-0001", "decision": "retain"}
+                    ],
+                    "changes": [],
+                },
+            )
+            result = outline_runner.compose_manifest(manifest, manifest_path)
+
+        self.assertEqual(result["summary"]["total_nodes"], 1)
+
+    def test_bid_outline_decisions_require_an_explicit_choice_for_every_template_node(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(root / "toc.json")}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            structure = {
+                "schema_version": "template-structure.v1",
+                "items": [
+                    {"number": "Chapter 1", "title": "Overview", "level": 1},
+                    {"number": "1.1", "title": "Legacy topic", "level": 2},
+                ],
+            }
+            (root / "template_structure.json").write_text(
+                json.dumps(structure), encoding="utf-8"
+            )
+            annotated = outline_runner.outline_composer.annotate_template_structure(structure)
+            incomplete = {
+                "schema_version": "technical-outline-decisions.v1",
+                "input_fingerprint": annotated["input_fingerprint"],
+                "template_decisions": [
+                    {"target_id": "TPL-0001", "decision": "retain"},
+                ],
+                "changes": [],
+            }
+
+            with self.assertRaisesRegex(SystemExit, "TPL-0002"):
+                outline_runner.submit_outline_decisions(manifest, manifest_path, incomplete)
+
+            complete = {
+                **incomplete,
+                "template_decisions": [
+                    {"target_id": "TPL-0001", "decision": "retain"},
+                    {
+                        "target_id": "TPL-0002",
+                        "decision": "suggest_delete",
+                        "reason": "The tender explicitly excludes this scope.",
+                    },
+                ],
+            }
+            outline_runner.submit_outline_decisions(manifest, manifest_path, complete)
+            outline_runner.compose_manifest(manifest, manifest_path)
+            outline = json_load(root / "toc.json")
+
+        self.assertEqual(outline["nodes"][0]["suggestion_action"], "必要")
+        self.assertEqual(
+            outline["nodes"][0]["children"][0]["suggestion_action"],
+            "建议删除",
+        )
+
+    def test_bid_outline_controlled_decision_batches_build_final_decisions(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(root / "toc.json")}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [
+                            {"number": "Chapter 1", "title": "Overview", "level": 1},
+                            {"number": "1.1", "title": "Design", "level": 2},
+                            {"number": "1.1.1", "title": "Legacy case", "level": 3},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            first = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, ["--max-items", "2"]
+            )
+            first_result = outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": first["batch_token"],
+                            "items": [
+                                {"target_id": item["target_id"], "decision": "retain"}
+                                for item in first["items"]
+                            ],
+                        }
+                    )
+                ],
+            )
+            second = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, ["--max-items", "2"]
+            )
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": second["batch_token"],
+                            "items": [
+                                {
+                                    "target_id": second["items"][0]["target_id"],
+                                    "decision": "suggest_delete",
+                                    "reason": "The tender excludes project cases.",
+                                }
+                            ],
+                        }
+                    )
+                ],
+            )
+            finalized = outline_runner.dispatch_command(
+                "decisions", manifest, manifest_path, []
+            )
+
+        self.assertEqual(first_result["decided_count"], 2)
+        self.assertEqual(finalized["templateDecisionCount"], 3)
+        self.assertEqual(finalized["remainingTemplateDecisionCount"], 0)
+
+    def test_bid_outline_decision_batch_includes_compact_tender_outline_for_comparison(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "s2_input.json"
+            manifest = {
+                "workDir": str(root),
+                "outputFile": str(root / "toc.json"),
+                "tenderFiles": [{"id": "TEN-1", "path": str(root / "tender.docx")}],
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [
+                            {"number": "第1章", "title": "历史项目方案", "level": 1},
+                            {"number": "1.1", "title": "海上专项", "level": 2},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (root / "tender_review_chunks.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "tender-review-chunks.v1",
+                        "chunks": [
+                            {
+                                "file_id": "TEN-1",
+                                "file_name": "当前项目招标文件.docx",
+                                "blocks": [
+                                    {
+                                        "type": "paragraph",
+                                        "evidence_id": "TEN-1:B000001",
+                                        "body_index": 1,
+                                        "text": "1 陆上风电项目技术要求",
+                                        "toc_level": 1,
+                                        "heading_level": 0,
+                                        "structural_title_level": 1,
+                                    },
+                                    {
+                                        "type": "paragraph",
+                                        "evidence_id": "TEN-1:B000002",
+                                        "body_index": 2,
+                                        "text": "1.1 正文标题不应覆盖可靠目录",
+                                        "toc_level": 0,
+                                        "heading_level": 2,
+                                        "structural_title_level": 2,
+                                    },
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (root / "tender_headings_state.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "tender-headings-state.v1",
+                        "next_cursor": 0,
+                        "complete": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "tender_appendix_inventory.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "tender-appendix-inventory.v1",
+                        "items": [
+                            {
+                                "file_id": "TEN-1",
+                                "file_name": "当前项目招标文件.docx",
+                                "number": "技术附表A",
+                                "title": "技术附表A",
+                                "raw_text": "技术附表A",
+                                "following_table_count": 0,
+                            },
+                            {
+                                "file_id": "TEN-1",
+                                "file_name": "当前项目招标文件.docx",
+                                "number": "附表A.1",
+                                "title": "投标机型总方案信息表",
+                                "raw_text": "附表A.1 投标机型总方案信息表",
+                                "following_table_count": 1,
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            batch = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+
+        self.assertEqual(len(batch["items"]), 2)
+        self.assertEqual(batch["comparison_context"]["heading_count"], 1)
+        self.assertEqual(
+            batch["comparison_context"]["files"],
+            [
+                {
+                    "file_id": "TEN-1",
+                    "file_name": "当前项目招标文件.docx",
+                    "source": "toc",
+                    "items": [
+                        {
+                            "evidence_id": "TEN-1:B000001",
+                            "level": 1,
+                            "text": "1 陆上风电项目技术要求",
+                        }
+                    ],
+                }
+            ],
+        )
+        self.assertEqual(
+            batch["comparison_context"]["appendices"],
+            [
+                {
+                    "appendix_id": "APP-0001",
+                    "file_id": "TEN-1",
+                    "number": "附表A.1",
+                    "title": "投标机型总方案信息表",
+                    "following_table_count": 1,
+                }
+            ],
+        )
+
+    def test_bid_outline_appendix_addition_copies_number_and_title_from_inventory(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(root / "toc.json")}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [{"number": "第1章", "title": "技术方案", "level": 1}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (root / "tender_appendix_inventory.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "tender-appendix-inventory.v1",
+                        "items": [
+                            {
+                                "file_id": "TEN-1",
+                                "file_name": "招标文件.docx",
+                                "number": "附表A.1",
+                                "title": "投标机型总方案信息表",
+                                "raw_text": "附表A.1 投标机型总方案信息表",
+                                "following_table_count": 1,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            batch = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": batch["batch_token"],
+                            "items": [
+                                {"target_id": batch["items"][0]["target_id"], "decision": "retain"}
+                            ],
+                            "additions": [
+                                {
+                                    "node_id": "ADD-TECH-APPENDIX",
+                                    "parent_id": None,
+                                    "number": "第2章",
+                                    "title": "技术附表",
+                                    "reason": "招标包含实际技术附表。",
+                                },
+                                {
+                                    "node_id": "ADD-APPENDIX-A1",
+                                    "parent_id": "ADD-TECH-APPENDIX",
+                                    "appendix_id": "APP-0001",
+                                    "reason": "招标结构化清单中的实际表单。",
+                                },
+                            ],
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+            state = json_load(root / "outline_decision_state.json")
+
+        appendix_change = state["additions"][1]
+        self.assertEqual(appendix_change["number"], "附表A.1")
+        self.assertEqual(appendix_change["title"], "投标机型总方案信息表")
+
+    def test_bid_outline_decisions_reject_add_or_move_under_collapsed_parent(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(root / "toc.json")}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            structure = {
+                "schema_version": "template-structure.v1",
+                "items": [
+                    {"number": "第1章", "title": "技术方案", "level": 1},
+                    {"number": "1.1", "title": "待收敛节点", "level": 2},
+                    {"number": "1.2", "title": "保留节点", "level": 2},
+                    {"number": "1.2.1", "title": "待移动专题", "level": 3},
+                ],
+            }
+            structure_path = root / "template_structure.json"
+            structure_path.write_text(json.dumps(structure, ensure_ascii=False), encoding="utf-8")
+            invalid_changes = [
+                [
+                    {
+                        "operation": "collapse",
+                        "target_id": "TPL-0002",
+                        "reason": "由根节点统一承载。",
+                    },
+                    {
+                        "operation": "add",
+                        "node_id": "ADD-0001",
+                        "parent_id": "TPL-0002",
+                        "number": "1.1.1",
+                        "title": "新增专题",
+                        "suggestion_action": "建议增加",
+                        "suggestion_reason": "招标要求独立提交。",
+                    },
+                ],
+                [
+                    {
+                        "operation": "collapse",
+                        "target_id": "TPL-0002",
+                        "reason": "由根节点统一承载。",
+                    },
+                    {
+                        "operation": "update",
+                        "target_id": "TPL-0004",
+                        "parent_id": "TPL-0002",
+                        "reason": "调整专题归属。",
+                    },
+                ],
+            ]
+
+            for changes in invalid_changes:
+                with self.subTest(operation=changes[-1]["operation"]), self.assertRaisesRegex(
+                    SystemExit, "collapsed"
+                ):
+                    submit_outline_changes(outline_runner, manifest, manifest_path, changes)
+
+    def test_bid_outline_finalize_rejects_output_not_reproducible_from_decisions(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+            manifest = {
+                "workDir": str(root),
+                "outputFile": str(output),
+                "requireComposedOutline": True,
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            structure = {
+                "schema_version": "template-structure.v1",
+                "items": [{"number": "第1章", "title": "技术方案", "level": 1}],
+            }
+            (root / "template_structure.json").write_text(
+                json.dumps(structure, ensure_ascii=False), encoding="utf-8"
+            )
+            fingerprint = outline_runner.outline_composer.annotate_template_structure(structure)[
+                "input_fingerprint"
+            ]
+            outline_runner.submit_outline_decisions(
+                manifest,
+                manifest_path,
+                {
+                    "schema_version": "technical-outline-decisions.v1",
+                    "input_fingerprint": fingerprint,
+                    "template_decisions": [
+                        {"target_id": "TPL-0001", "decision": "retain"}
+                    ],
+                    "changes": [],
+                },
+            )
+            outline_runner.compose_manifest(manifest, manifest_path)
+            payload = json_load(output)
+            payload["nodes"][0]["title"] = "硬编码改写结果"
+            output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            report_path = root / "outline_compose_report.json"
+            report = json_load(report_path)
+            report["outputSha256"] = hashlib.sha256(output.read_bytes()).hexdigest()
+            report_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(SystemExit, "与 decisions 合成结果不一致"):
+                outline_runner.finalize_manifest(manifest, manifest_path)
+
+    def test_bid_outline_template_structure_supplements_anchored_body_level_three(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -797,7 +2018,16 @@ class TocSkillScriptTests(unittest.TestCase):
                 doc.styles.add_style("TOC 2", WD_STYLE_TYPE.PARAGRAPH)
             doc.add_paragraph("第1章 总体技术方案 ........ 1", style="TOC 1")
             doc.add_paragraph("1.1 机组选型 ........ 2", style="TOC 2")
+            doc.add_paragraph("1.2 供货范围 ........ 3", style="TOC 2")
+            doc.add_paragraph("第1章 总体技术方案", style="Heading 1")
+            doc.add_paragraph("1.1 机组选型", style="Heading 2")
+            doc.add_paragraph("1.1.1 关键部件选型", style="Heading 3")
+            doc.add_paragraph("1.1.1.1 叶片设计参数", style="Heading 4")
+            doc.add_paragraph("1.2 供货范围", style="Heading 2")
+            doc.add_paragraph("1.2.1 主机供货范围", style="Heading 3")
             doc.add_paragraph("第9章 正文噪声", style="Heading 1")
+            doc.add_paragraph("9.1 非模板章节", style="Heading 2")
+            doc.add_paragraph("9.1.1 不应补充", style="Heading 3")
             doc.save(template)
 
             result = outline_runner.extract_template_structure(template)
@@ -805,7 +2035,132 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(result["source"], "automatic_toc")
         self.assertEqual(
             [(item["number"], item["title"], item["level"]) for item in result["items"]],
-            [("第1章", "总体技术方案", 1), ("1.1", "机组选型", 2)],
+            [
+                ("第1章", "总体技术方案", 1),
+                ("1.1", "机组选型", 2),
+                ("1.1.1", "关键部件选型", 3),
+                ("1.2", "供货范围", 2),
+                ("1.2.1", "主机供货范围", 3),
+            ],
+        )
+
+    def test_bid_outline_template_structure_numbers_blank_body_level_three_in_document_order(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "template.docx"
+            doc = Document()
+            for style_name in ("TOC 1", "TOC 2"):
+                if style_name not in [style.name for style in doc.styles]:
+                    doc.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
+            doc.add_paragraph("\u7b2c1\u7ae0 Overview ........ 1", style="TOC 1")
+            doc.add_paragraph("5.18 Digital Wind Farm ........ 2", style="TOC 2")
+            doc.add_paragraph("\u7b2c1\u7ae0 Overview", style="Heading 1")
+            doc.add_paragraph("5.18 Digital Wind Farm", style="Heading 2")
+            doc.add_paragraph("SCADA System", style="Heading 3")
+            doc.add_paragraph("Wind Farm Control", style="Heading 3")
+            doc.save(template)
+
+            result = outline_runner.extract_template_structure(template)
+
+        self.assertEqual(
+            [
+                (item["number"], item["title"])
+                for item in result["items"]
+                if item["level"] == 3
+            ],
+            [
+                ("5.18.1", "SCADA System"),
+                ("5.18.2", "Wind Farm Control"),
+            ],
+        )
+
+    def test_bid_outline_template_structure_deduplicates_existing_level_three(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "template.docx"
+            doc = Document()
+            for style_name in ("TOC 1", "TOC 2", "TOC 3"):
+                if style_name not in [style.name for style in doc.styles]:
+                    doc.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
+            doc.add_paragraph("第1章 总体技术方案 ........ 1", style="TOC 1")
+            doc.add_paragraph("1.1 机组选型 ........ 2", style="TOC 2")
+            doc.add_paragraph("1.1.1 关键部件选型 ........ 3", style="TOC 3")
+            doc.add_paragraph("总体技术方案", style="Heading 1")
+            doc.add_paragraph("机组选型", style="Heading 2")
+            doc.add_paragraph("关键部件选型", style="Heading 3")
+            doc.save(template)
+
+            result = outline_runner.extract_template_structure(template)
+
+        self.assertEqual(
+            [(item["number"], item["title"], item["level"]) for item in result["items"]],
+            [
+                ("第1章", "总体技术方案", 1),
+                ("1.1", "机组选型", 2),
+                ("1.1.1", "关键部件选型", 3),
+            ],
+        )
+
+    def test_bid_outline_template_structure_preserves_same_title_with_different_numbers(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "template.docx"
+            doc = Document()
+            for style_name in ("TOC 1", "TOC 2"):
+                if style_name not in [style.name for style in doc.styles]:
+                    doc.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
+            doc.add_paragraph("第1章 总体技术方案 ........ 1", style="TOC 1")
+            doc.add_paragraph("1.1 认证情况 ........ 2", style="TOC 2")
+            doc.add_paragraph("第1章 总体技术方案", style="Heading 1")
+            doc.add_paragraph("1.1 认证情况", style="Heading 2")
+            doc.add_paragraph("1.1.1 认证未完成或存在待解决项", style="Heading 3")
+            doc.add_paragraph("1.1.2 认证未完成或存在待解决项", style="Heading 3")
+            doc.save(template)
+
+            result = outline_runner.extract_template_structure(template)
+
+        self.assertEqual(
+            [item["number"] for item in result["items"] if item["level"] == 3],
+            ["1.1.1", "1.1.2"],
+        )
+
+    def test_bid_outline_template_structure_interleaves_supplemented_level_three(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "template.docx"
+            doc = Document()
+            for style_name in ("TOC 1", "TOC 2", "TOC 3", "TOC 4"):
+                if style_name not in [style.name for style in doc.styles]:
+                    doc.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
+            doc.add_paragraph("第1章 总体技术方案 ........ 1", style="TOC 1")
+            doc.add_paragraph("1.1 机组选型 ........ 2", style="TOC 2")
+            doc.add_paragraph("1.1.1 叶片专题 ........ 3", style="TOC 3")
+            doc.add_paragraph("1.1.1.1 叶片参数 ........ 4", style="TOC 4")
+            doc.add_paragraph("1.1.3 齿轮箱专题 ........ 5", style="TOC 3")
+            doc.add_paragraph("第1章 总体技术方案", style="Heading 1")
+            doc.add_paragraph("1.1 机组选型", style="Heading 2")
+            doc.add_paragraph("1.1.1 叶片专题", style="Heading 3")
+            doc.add_paragraph("1.1.1.1 叶片参数", style="Heading 4")
+            doc.add_paragraph("1.1.2 变桨系统专题", style="Heading 3")
+            doc.add_paragraph("1.1.3 齿轮箱专题", style="Heading 3")
+            doc.save(template)
+
+            result = outline_runner.extract_template_structure(template)
+
+        self.assertEqual(
+            [(item["number"], item["level"]) for item in result["items"]],
+            [
+                ("第1章", 1),
+                ("1.1", 2),
+                ("1.1.1", 3),
+                ("1.1.1.1", 4),
+                ("1.1.2", 3),
+                ("1.1.3", 3),
+            ],
         )
 
     def test_bid_outline_template_command_writes_tender_appendix_heading_inventory(self) -> None:
@@ -847,8 +2202,11 @@ class TocSkillScriptTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
             result = outline_runner.write_template_structure(manifest, manifest_path)
+            structure = json_load(root / "template_structure.json")
             inventory = json_load(root / "tender_appendix_inventory.json")
 
+        self.assertEqual(result["inputFingerprint"], structure["input_fingerprint"])
+        self.assertRegex(result["inputFingerprint"], r"^[0-9a-f]{64}$")
         self.assertEqual(result["tenderAppendixItemCount"], 5)
         self.assertEqual(result["tenderAppendixInventoryFile"], str(root / "tender_appendix_inventory.json"))
         self.assertEqual(inventory["schema_version"], "tender-appendix-inventory.v1")
@@ -912,6 +2270,247 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(state["schema_version"], "tender-review-state.v1")
         self.assertEqual(state["reviewed_chunk_count"], 0)
         self.assertEqual(state["pending_chunk_count"], len(chunks["chunks"]))
+
+    def test_bid_outline_headings_prefers_toc_and_skips_body_titles_without_marking_reviewed(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+        review_workflow = load_outline_script("review_workflow")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+
+            tender_doc = Document()
+            if "TOC 1" not in [style.name for style in tender_doc.styles]:
+                tender_doc.styles.add_style("TOC 1", WD_STYLE_TYPE.PARAGRAPH)
+            tender_doc.add_paragraph("第1章 总体要求 ........ 1", style="TOC 1")
+            tender_doc.add_paragraph("第1章 总体要求", style="Heading 1")
+            tender_doc.add_paragraph("投标人应提供总体技术方案。")
+            tender_doc.add_paragraph("2. 专题方案")
+            tender_doc.add_paragraph("附表A.1 技术参数表")
+            table = tender_doc.add_table(rows=2, cols=2)
+            table.cell(0, 0).text = "参数"
+            table.cell(0, 1).text = "要求"
+            table.cell(1, 0).text = "额定功率"
+            table.cell(1, 1).text = "投标人填写"
+            tender_doc.save(tender)
+
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": "tender.docx", "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+
+            result = outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+            status = review_workflow.review_status(root)
+
+        self.assertEqual(result["schema_version"], "tender-headings.v1")
+        self.assertEqual(
+            [(item["kind"], item["text"]) for item in result["files"][0]["items"]],
+            [
+                ("toc", "第1章 总体要求 ........ 1"),
+            ],
+        )
+        self.assertEqual(result["files"][0]["source"], "toc")
+        self.assertTrue(result["complete"])
+        self.assertEqual(
+            [(item["number"], item["title"]) for item in result["appendices"]],
+            [("附表A.1", "技术参数表")],
+        )
+        self.assertTrue(result["appendices"][0]["evidence_id"].startswith("TEN-1:B"))
+        self.assertEqual(status["reviewed_chunk_count"], 0)
+        self.assertEqual(status["pending_chunk_count"], status["chunk_count"])
+
+    def test_bid_outline_headings_pages_body_titles_when_toc_is_missing(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+
+            template_doc = Document()
+            template_doc.add_paragraph("Template", style="Heading 1")
+            template_doc.save(template)
+
+            tender_doc = Document()
+            tender_doc.add_paragraph("Section one", style="Heading 1")
+            tender_doc.add_paragraph("Section two", style="Heading 1")
+            tender_doc.add_paragraph("Section three", style="Heading 1")
+            tender_doc.save(tender)
+
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": "tender.docx", "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+
+            first = outline_runner.dispatch_command(
+                "headings", manifest, manifest_path, ["--page-size", "2"]
+            )
+            second = outline_runner.dispatch_command(
+                "headings",
+                manifest,
+                manifest_path,
+                ["--cursor", first["next_cursor"], "--page-size", "2"],
+            )
+
+        self.assertEqual(first["files"][0]["source"], "body_headings")
+        self.assertEqual(
+            [item["text"] for item in first["files"][0]["items"]],
+            ["Section one", "Section two"],
+        )
+        self.assertFalse(first["complete"])
+        self.assertEqual(first["next_cursor"], "2")
+        self.assertEqual(
+            [item["text"] for item in second["files"][0]["items"]],
+            ["Section three"],
+        )
+        self.assertTrue(second["complete"])
+        self.assertEqual(second["next_cursor"], "")
+
+    def test_bid_outline_headings_requires_full_review_when_no_structure_exists(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+            tender_doc = Document()
+            tender_doc.add_paragraph("本项目位于沿海区域。")
+            tender_doc.add_paragraph("投标人应提交完整技术响应文件。")
+            tender_doc.save(tender)
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+                "requireComposedOutline": True,
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+
+            first = outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+            with self.assertRaisesRegex(SystemExit, "全文审阅"):
+                outline_runner.dispatch_command("decision-next", manifest, manifest_path, [])
+            batch = outline_runner.dispatch_command("next-batch", manifest, manifest_path, [])
+            outline_runner.dispatch_command(
+                "review-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "chunk_ids": batch["chunk_ids"],
+                            "review_summary": "已逐段审阅无结构招标文件。",
+                            "requirements": [],
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+            second = outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+
+        self.assertEqual(first["heading_count"], 0)
+        self.assertTrue(first["requires_full_review"])
+        self.assertFalse(first["complete"])
+        self.assertGreater(first["full_review_pending_chunk_count"], 0)
+        self.assertTrue(second["complete"])
+        self.assertEqual(second["full_review_pending_chunk_count"], 0)
+
+    def test_bid_outline_strict_compose_requires_controlled_decisions_and_binds_state(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+            tender_doc = Document()
+            tender_doc.add_paragraph("第1章 招标技术要求", style="Heading 1")
+            tender_doc.save(tender)
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+                "outputFile": str(output),
+                "requireComposedOutline": True,
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+            with self.assertRaisesRegex(SystemExit, "完整读取招标目录"):
+                outline_runner.compose_manifest(manifest, manifest_path)
+            outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+            structure = json_load(root / "template_structure.json")
+            outline_runner.submit_outline_decisions(
+                manifest,
+                manifest_path,
+                {
+                    "schema_version": "technical-outline-decisions.v1",
+                    "input_fingerprint": structure["input_fingerprint"],
+                    "template_decisions": [
+                        {"target_id": "TPL-0001", "decision": "retain"}
+                    ],
+                    "changes": [],
+                },
+            )
+            with self.assertRaisesRegex(SystemExit, "受控决策"):
+                outline_runner.compose_manifest(manifest, manifest_path)
+
+            decision_batch = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": decision_batch["batch_token"],
+                            "items": [
+                                {"target_id": "TPL-0001", "decision": "retain"}
+                            ],
+                            "additions": [],
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+            outline_runner.dispatch_command("decisions", manifest, manifest_path, [])
+            outline_runner.compose_manifest(manifest, manifest_path)
+            report = json_load(root / "outline_compose_report.json")
+
+            state_path = root / "outline_decision_state.json"
+            state = json_load(state_path)
+            state["tampered"] = True
+            state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "decisionStateDigest"):
+                outline_runner.finalize_manifest(manifest, manifest_path)
+
+        self.assertTrue(report["tenderInputsDigest"])
+        self.assertTrue(report["headingsStateDigest"])
+        self.assertTrue(report["decisionStateDigest"])
 
     def test_bid_outline_review_navigation_resumes_from_first_pending_chunk(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -1087,7 +2686,7 @@ class TocSkillScriptTests(unittest.TestCase):
         )
         self.assertEqual(ledger["requirements"][1]["proposed_title"], "项目场址安全适应性报告")
 
-    def test_bid_outline_finalize_requires_full_review_and_realizes_dynamic_additions(self) -> None:
+    def test_bid_outline_finalize_allows_selective_review_and_realizes_dynamic_additions(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
         review_workflow = load_outline_script("review_workflow")
 
@@ -1125,8 +2724,8 @@ class TocSkillScriptTests(unittest.TestCase):
             }
             output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-            with self.assertRaisesRegex(SystemExit, "未审阅分块"):
-                outline_runner.finalize_manifest(manifest, manifest_path)
+            selective_result = outline_runner.finalize_manifest(manifest, manifest_path)
+            self.assertEqual(selective_result["summary"]["reviewCoverage"], 0.0)
 
             chunk = review_workflow.next_review_chunk(root)["chunk"]
             evidence_id = chunk["blocks"][0]["evidence_id"]
@@ -1170,7 +2769,82 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(result["summary"]["requirementCount"], 1)
         self.assertEqual(result["summary"]["unfinishedTableCount"], 0)
 
-    def test_bid_outline_finalize_rejects_missing_positive_appendix_inventory_items(self) -> None:
+    def test_bid_outline_finalize_does_not_require_reading_appendix_table_contents(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+            tender_doc = Document()
+            tender_doc.add_paragraph("附表A.1 技术参数表")
+            table = tender_doc.add_table(rows=2, cols=2)
+            table.cell(0, 0).text = "参数"
+            table.cell(0, 1).text = "要求"
+            table.cell(1, 0).text = "额定功率"
+            table.cell(1, 1).text = "投标人填写"
+            tender_doc.save(tender)
+
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": "tender.docx", "path": str(tender)}],
+                "outputFile": str(output),
+                "requireComposedOutline": True,
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+            headings = outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+            self.assertTrue(headings["complete"])
+            batch = outline_runner.dispatch_command("decision-next", manifest, manifest_path, [])
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": batch["batch_token"],
+                            "items": [
+                                {"target_id": item["target_id"], "decision": "retain"}
+                                for item in batch["items"]
+                            ],
+                            "additions": [
+                                {
+                                    "node_id": "ADD-APPENDIX",
+                                    "parent_id": None,
+                                    "number": "第2章",
+                                    "title": "技术附表",
+                                    "reason": "招标文件包含独立附表。",
+                                },
+                                {
+                                    "node_id": "ADD-APPENDIX-A1",
+                                    "parent_id": "ADD-APPENDIX",
+                                    "appendix_id": "APP-0001",
+                                    "reason": "招标文件包含独立填写表格。",
+                                },
+                            ],
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+            outline_runner.dispatch_command("decisions", manifest, manifest_path, [])
+            outline_runner.compose_manifest(manifest, manifest_path)
+
+            result = outline_runner.finalize_manifest(manifest, manifest_path)
+
+        self.assertEqual(result["summary"]["workflowStage"], "finalized")
+        self.assertEqual(result["summary"]["reviewCoverage"], 0.0)
+        self.assertEqual(result["summary"]["unfinishedTableCount"], 1)
+
+    def test_bid_outline_finalize_allows_missing_appendices_and_free_number_title_split(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1229,8 +2903,8 @@ class TocSkillScriptTests(unittest.TestCase):
                                 "suggestion_reason": "招标文件新增独立附表章节。",
                                 "children": [
                                     {
-                                        "number": "附表A.1",
-                                        "title": "机型信息表",
+                                        "number": "A.1",
+                                        "title": "附表A.1 机型信息表",
                                         "suggestion_action": "建议增加",
                                         "suggestion_reason": "招标文件新增独立表格。",
                                         "children": [],
@@ -1244,8 +2918,14 @@ class TocSkillScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(SystemExit, "遗漏实际表单.*附表A.2"):
-                outline_runner.finalize_manifest(manifest, manifest_path)
+            result = outline_runner.finalize_manifest(manifest, manifest_path)
+            payload = json_load(output)
+            payload["nodes"] = payload["nodes"][:1]
+            output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            result_without_appendix = outline_runner.finalize_manifest(manifest, manifest_path)
+
+        self.assertEqual(result["summary"]["workflowStage"], "finalized")
+        self.assertEqual(result_without_appendix["summary"]["workflowStage"], "finalized")
 
     def test_bid_outline_agentic_commands_drive_review_without_raw_file_reads(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")

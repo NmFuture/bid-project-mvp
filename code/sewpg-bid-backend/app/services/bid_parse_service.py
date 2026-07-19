@@ -48,6 +48,7 @@ from app.services.local_job_executor import submit_local_job
 from app.services.url_utils import absolute_url, onlyoffice_backend_base_url
 from app.services.parsing import (
     IMAGE_SUFFIXES,
+    _project_basics_project_prefill,
     extract_docx_text,
     materialize_appendix_docx,
     materialize_business_commitment_letter_docx,
@@ -1734,7 +1735,11 @@ class BidParseService:
         )
 
     def parse_result(self, project_id: str) -> dict[str, Any]:
-        return copy.deepcopy(self.ensure_project(project_id)["parse_result"])
+        result = copy.deepcopy(self.ensure_project(project_id)["parse_result"])
+        if self.project_service.bid_type == TECHNICAL_PARSE_PROFILE.bid_type and not result.get("projectPrefill"):
+            structured = result.get("structured") if isinstance(result.get("structured"), dict) else {}
+            result["projectPrefill"] = _project_basics_project_prefill(structured)
+        return result
 
     def _refresh_business_parse_result_from_structured_file(self, project_id: str) -> dict[str, Any]:
         project = self.require_project_for_update(project_id)

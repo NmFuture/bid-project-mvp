@@ -49,6 +49,7 @@ def normalize_project_identity_state(project: dict[str, Any]) -> dict[str, Any]:
     project["startDate"] = str(project.get("startDate") or "")
     project["endDate"] = str(project.get("endDate") or project.get("deadline") or "")
     project["deadline"] = str(project.get("deadline") or project.get("endDate") or "")
+    project["isParseDraft"] = bool(project.get("isParseDraft"))
     identity = build_project_identity(project)
     project["identity"] = identity
     project["customerId"] = identity.get("customerId") or ""
@@ -107,6 +108,7 @@ def project_summary_state(project: dict[str, Any]) -> dict[str, Any]:
         "reviewDecision": review_decision,
         "reviewDecisionLabel": REVIEW_DECISION_LABELS[review_decision],
         "reviewDecidedAt": project.get("reviewDecidedAt") or "",
+        "isParseDraft": bool(project.get("isParseDraft")),
         "updatedAt": project["updatedAt"],
         "identity": copy.deepcopy(identity),
     }
@@ -323,6 +325,7 @@ def create_project_state(project_id: str, data: dict[str, Any]) -> dict[str, Any
         "reviewDecision": review_decision,
         "reviewDecidedAt": created_at if review_decision in {"participate", "abandon"} else "",
         "reviewComment": str(data.get("reviewComment") or ""),
+        "isParseDraft": bool(data.get("isParseDraft")),
         "appendixSourceMatrixPath": str(data.get("appendixSourceMatrixPath") or ""),
         "technicalAppendixSourceMatrixPath": str(data.get("technicalAppendixSourceMatrixPath") or ""),
         "technicalAppendixSourceMatrix": copy.deepcopy(data.get("technicalAppendixSourceMatrix"))
@@ -397,6 +400,8 @@ def update_project_state(project: dict[str, Any], project_id: str, data: dict[st
         update_review_decision_state(project, project_id, data.get("reviewDecision"))
     if "reviewComment" in data:
         project["reviewComment"] = str(data.get("reviewComment") or "")
+    if "isParseDraft" in data:
+        project["isParseDraft"] = bool(data.get("isParseDraft"))
     project["updatedAt"] = now_iso()
     return project
 
