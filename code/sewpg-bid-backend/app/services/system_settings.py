@@ -109,7 +109,7 @@ class SystemSettingsService:
                     "modelId": settings.default_llm_model or settings.opencode_model_id,
                     "modelOptions": DEFAULT_LLM_MODEL_OPTIONS,
                     "timeoutMs": 30000,
-                    "maxTokens": 4096,
+                    "maxTokens": 32768,
                 },
                 "ocr": {
                     "enabled": bool(settings.default_ocr_base_url or settings.default_ocr_api_key),
@@ -171,7 +171,7 @@ class SystemSettingsService:
             config["modelId"] = model_id
             config["modelOptions"] = self._model_options(config)
             config["timeoutMs"] = int(config.get("timeoutMs") or 30000)
-            config["maxTokens"] = int(config.get("maxTokens") or 4096)
+            config["maxTokens"] = int(config.get("maxTokens") or 32768)
             config["enabled"] = bool(config.get("enabled"))
             return config
         config["baseUrl"] = str(config.get("baseUrl") or config.get("endpoint") or "").strip()
@@ -261,7 +261,7 @@ class SystemSettingsService:
                 "model": settings.default_llm_model or settings.opencode_model_id,
                 "modelId": settings.default_llm_model or settings.opencode_model_id,
                 "timeoutMs": 30000,
-                "maxTokens": 4096,
+                "maxTokens": 32768,
             },
         )
         try:
@@ -300,7 +300,7 @@ class SystemSettingsService:
             "baseUrl": str(data.get("baseUrl") or data.get("endpoint") or current.get("baseUrl") or "").strip(),
             "model": model_value,
             "timeoutMs": int(data.get("timeoutMs") or current.get("timeoutMs") or (30000 if kind == "llm" else 60000)),
-            "maxTokens": int(data.get("maxTokens") or current.get("maxTokens") or (4096 if kind == "llm" else 2048)),
+            "maxTokens": int(data.get("maxTokens") or current.get("maxTokens") or (32768 if kind == "llm" else 2048)),
         }
         if kind == "llm":
             next_config.update(

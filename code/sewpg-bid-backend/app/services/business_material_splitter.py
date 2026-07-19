@@ -487,7 +487,7 @@ def _send_openai_compatible_prompt(config: dict[str, Any], prompt: str) -> dict[
     timeout_ms = min(300_000, max(90_000, int(config.get("timeoutMs") or 90_000)))
     # The global settings page may use a very small value for connection tests.
     # Material splitting needs enough room to return many JSON fragments.
-    max_tokens = min(8192, max(2048, int(config.get("maxTokens") or 4096)))
+    max_tokens = min(32768, max(2048, int(config.get("maxTokens") or 32768)))
     headers = {"Content-Type": "application/json"}
     api_key = str(config.get("apiKey") or "").strip()
     if api_key:
