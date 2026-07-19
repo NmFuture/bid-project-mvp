@@ -24,6 +24,20 @@ const TECHNICAL_PROJECT_WIZARD_DRAFT_VERSION = 1
 const TECHNICAL_PROJECT_WIZARD_DRAFT_PREFIX = 'sewpg.technicalProjectWizardDraft'
 const FORM_REQUIRED_STEP = 0
 
+// 表单控件统一样式：白底圆角 + 主色聚焦环，替代旧版灰蓝填充直角风格。
+const FIELD_INPUT_CLASS =
+  'w-full h-10 rounded-lg border border-outline-variant/80 bg-white px-3 text-sm text-on-surface placeholder:text-outline/70 transition-colors hover:border-outline focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/15 disabled:cursor-not-allowed disabled:bg-surface-container-low disabled:text-on-surface-variant'
+const FIELD_SELECT_CLASS = `${FIELD_INPUT_CLASS} cursor-pointer`
+
+function FieldLabel({ children, required = false }) {
+  return (
+    <label className="mb-1.5 block text-xs font-medium text-on-surface-variant">
+      {children}
+      {required ? <span className="ml-0.5 text-error">*</span> : null}
+    </label>
+  )
+}
+
 const normalizeMaterialProjects = (list = []) =>
   (Array.isArray(list) ? list : [])
     .map((item) => ({
@@ -345,15 +359,6 @@ export default function TechnicalProjectWizardModal({
   const canSubmit = missingRequiredItems.length === 0
   const nextDisabledReason = missingRequiredItems.length ? `请先补全：${missingRequiredItems.join('、')}` : ''
 
-  const archivePathPreview = useMemo(() => {
-    const bidType = form.bidType || '标书类型'
-    const customer = form.customerName.trim() || '客户名'
-    const projectIdentity = materialProjectMode === 'library'
-      ? selectedMaterialProject?.projectId || selectedMaterialProjectId || '项目ID'
-      : project?.materialProjectId || '系统生成项目ID'
-    return `${bidType}/客户素材/${customer}；${bidType}/项目素材/${projectIdentity}`
-  }, [form.bidType, form.customerName, materialProjectMode, project?.materialProjectId, selectedMaterialProject?.projectId, selectedMaterialProjectId])
-
   const handleCreate = async () => {
     setCreating(true)
     setCreateError('')
@@ -400,15 +405,18 @@ export default function TechnicalProjectWizardModal({
   return (
     <div className="dialog-overlay bg-[rgba(23,33,43,0.28)] backdrop-blur-0" onClick={onClose}>
       <div
-        className="dialog-content wizard-modal-surface w-full max-w-[760px] animate-fade-in border border-[#d1d9e4]"
+        className="dialog-content wizard-modal-surface flex max-h-[90vh] w-full max-w-[760px] animate-fade-in flex-col border border-surface-container-high"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#d8e0ea] bg-white">
-          <div className="flex items-center gap-3">
-            <h2 className="text-[18px] font-headline font-semibold text-on-surface">
+        <div className="flex shrink-0 items-start justify-between border-b border-surface-container-high px-6 py-4">
+          <div>
+            <h2 className="font-headline text-xl font-semibold text-on-surface">
               {isUpdateMode ? '完善项目信息' : '新建技术标项目'}
             </h2>
+            <p className="mt-1 text-xs text-outline">
+              {isUpdateMode ? '请核对并补全以下项目信息，带 * 为必填项。' : '填写以下项目基础信息，带 * 为必填项。'}
+            </p>
           </div>
           <button
             onClick={onClose}
@@ -419,323 +427,324 @@ export default function TechnicalProjectWizardModal({
           </button>
         </div>
 
-        {/* Step Content */}
-        <div className="px-5 py-5 min-h-[410px] bg-white">
-            <div className="flex flex-col gap-4 animate-fade-in">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">标书类型</label>
-                  <select
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
-                    value={form.bidType}
-                    onChange={(e) => updateForm('bidType', e.target.value)}
-                    disabled={lockBidType}
-                  >
-                    {resolvedBidTypeOptions.length
-                      ? resolvedBidTypeOptions.map((item) => <option key={item}>{item}</option>)
-                      : <option>{form.bidType || '请选择标书类型'}</option>}
-                  </select>
-                </div>
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-semibold text-on-surface mb-2">项目名称 *</label>
-                  <input
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                    placeholder="输入项目名称，例如：甘肃华能100MW风电项目"
-                    value={form.name}
-                    onChange={(e) => updateForm('name', e.target.value)}
-                  />
-                </div>
+        {/* Form Content */}
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+          <div className="flex flex-col gap-4 animate-fade-in">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              <div>
+                <FieldLabel>标书类型</FieldLabel>
+                <select
+                  className={FIELD_SELECT_CLASS}
+                  value={form.bidType}
+                  onChange={(e) => updateForm('bidType', e.target.value)}
+                  disabled={lockBidType}
+                >
+                  {resolvedBidTypeOptions.length
+                    ? resolvedBidTypeOptions.map((item) => <option key={item}>{item}</option>)
+                    : <option>{form.bidType || '请选择标书类型'}</option>}
+                </select>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">业务项目编号</label>
-                  <input
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                    placeholder="例如：招标编号、项目编号"
-                    value={form.projectCode}
-                    onChange={(e) => updateForm('projectCode', e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">负责人 *</label>
-                  <input
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                    placeholder="张建国"
-                    value={form.manager}
-                    onChange={(e) => updateForm('manager', e.target.value)}
-                  />
-                </div>
+              <div className="md:col-span-2">
+                <FieldLabel required>项目名称</FieldLabel>
+                <input
+                  className={FIELD_INPUT_CLASS}
+                  placeholder="输入项目名称，例如：甘肃华能100MW风电项目"
+                  value={form.name}
+                  onChange={(e) => updateForm('name', e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div>
+                <FieldLabel>业务项目编号</FieldLabel>
+                <input
+                  className={FIELD_INPUT_CLASS}
+                  placeholder="例如：招标编号、项目编号"
+                  value={form.projectCode}
+                  onChange={(e) => updateForm('projectCode', e.target.value)}
+                />
               </div>
               <div>
-                <label className="block text-sm font-semibold text-on-surface mb-2">客户 *</label>
-                {customerIsOther ? (
-                  <div className="flex items-center gap-2">
-                    <input
-                      className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                      placeholder="输入客户名称"
-                      autoFocus
-                      value={form.customerName}
-                      onChange={(e) => {
-                        const customerName = e.target.value
-                        setForm((prev) => ({
-                          ...prev,
-                          customerName,
-                          customerId: '',
-                          customerCanonicalName: customerName,
-                        }))
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCustomerIsOther(false)
-                        setForm((prev) => ({ ...prev, customerName: '', customerId: '', customerCanonicalName: '' }))
-                      }}
-                      className="h-9 px-3 shrink-0 border border-[#b8c7d8] bg-white text-xs font-semibold text-primary hover:bg-[#eef5fb] transition-colors"
-                    >
-                      选候选
-                    </button>
-                  </div>
-                ) : (
-                  <select
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                <FieldLabel required>负责人</FieldLabel>
+                <input
+                  className={FIELD_INPUT_CLASS}
+                  placeholder="张建国"
+                  value={form.manager}
+                  onChange={(e) => updateForm('manager', e.target.value)}
+                />
+              </div>
+            </div>
+            <div>
+              <FieldLabel required>客户</FieldLabel>
+              {customerIsOther ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    className={FIELD_INPUT_CLASS}
+                    placeholder="输入客户名称"
+                    autoFocus
                     value={form.customerName}
                     onChange={(e) => {
-                      const value = e.target.value
-                      if (value === OTHER_OPTION_LABEL) {
-                        setCustomerIsOther(true)
-                        setForm((prev) => ({ ...prev, customerName: '', customerId: '', customerCanonicalName: '' }))
-                        return
-                      }
+                      const customerName = e.target.value
                       setForm((prev) => ({
                         ...prev,
-                        customerName: value,
+                        customerName,
                         customerId: '',
-                        customerCanonicalName: value,
+                        customerCanonicalName: customerName,
                       }))
                     }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomerIsOther(false)
+                      setForm((prev) => ({ ...prev, customerName: '', customerId: '', customerCanonicalName: '' }))
+                    }}
+                    className="h-10 shrink-0 rounded-lg bg-surface-container-high px-3 text-xs font-semibold text-on-surface-variant transition-colors hover:bg-surface-dim hover:text-primary"
                   >
-                    <option value="">选择客户</option>
-                    {customerOptions.map((item) => (
-                      <option key={item} value={item}>{item}</option>
-                    ))}
-                  </select>
-                )}
-                {(identityError || loadingIdentities) && (
-                  <p className={`text-xs mt-2 ${identityError ? 'text-error' : 'text-outline'}`}>
-                    {identityError || '正在加载技术标项目...'}
-                  </p>
-                )}
+                    选候选
+                  </button>
+                </div>
+              ) : (
+                <select
+                  className={FIELD_SELECT_CLASS}
+                  value={form.customerName}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    if (value === OTHER_OPTION_LABEL) {
+                      setCustomerIsOther(true)
+                      setForm((prev) => ({ ...prev, customerName: '', customerId: '', customerCanonicalName: '' }))
+                      return
+                    }
+                    setForm((prev) => ({
+                      ...prev,
+                      customerName: value,
+                      customerId: '',
+                      customerCanonicalName: value,
+                    }))
+                  }}
+                >
+                  <option value="">选择客户</option>
+                  {customerOptions.map((item) => (
+                    <option key={item} value={item}>{item}</option>
+                  ))}
+                </select>
+              )}
+              {(identityError || loadingIdentities) && (
+                <p className={`mt-1.5 text-xs ${identityError ? 'text-error' : 'text-outline'}`}>
+                  {identityError || '正在加载技术标项目...'}
+                </p>
+              )}
+            </div>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div>
+                <FieldLabel>项目来源</FieldLabel>
+                <select
+                  className={FIELD_SELECT_CLASS}
+                  value={materialProjectMode}
+                  onChange={(e) => {
+                    const nextMode = e.target.value
+                    setMaterialProjectMode(nextMode)
+                    if (nextMode === 'library') {
+                      const selected = materialProjects.find((item) => item.id === selectedMaterialProjectId) || materialProjects[0]
+                      if (selected) {
+                        setSelectedMaterialProjectId(selected.id)
+                        setForm((prev) => ({
+                          ...prev,
+                          materialProjectName: selected.name,
+                          projectCode: prev.projectCode || selected.projectCode,
+                        }))
+                      }
+                    }
+                  }}
+                  disabled={loadingIdentities}
+                >
+                  <option value="library" disabled={!materialProjects.length}>重点项目</option>
+                  <option value="ordinary">普通项目</option>
+                </select>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">项目来源</label>
+              <div>
+                <FieldLabel required={materialProjectMode === 'library'}>
+                  {materialProjectMode === 'library' ? '重点项目' : '普通项目'}
+                </FieldLabel>
+                {materialProjectMode === 'library' && materialProjects.length > 0 ? (
                   <select
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
-                    value={materialProjectMode}
+                    className={FIELD_SELECT_CLASS}
+                    value={selectedMaterialProjectId}
                     onChange={(e) => {
-                      const nextMode = e.target.value
-                      setMaterialProjectMode(nextMode)
-                      if (nextMode === 'library') {
-                        const selected = materialProjects.find((item) => item.id === selectedMaterialProjectId) || materialProjects[0]
-                        if (selected) {
-                          setSelectedMaterialProjectId(selected.id)
-                          setForm((prev) => ({
-                            ...prev,
-                            materialProjectName: selected.name,
-                            projectCode: prev.projectCode || selected.projectCode,
-                          }))
-                        }
+                      const nextId = e.target.value
+                      setSelectedMaterialProjectId(nextId)
+                      const selected = materialProjects.find((item) => item.id === nextId)
+                      if (selected) {
+                        setForm((prev) => ({
+                          ...prev,
+                          materialProjectName: selected.name,
+                          projectCode: prev.projectCode || selected.projectCode,
+                        }))
                       }
                     }}
-                    disabled={loadingIdentities}
                   >
-                    <option value="library" disabled={!materialProjects.length}>重点项目</option>
-                    <option value="ordinary">普通项目</option>
+                    <option value="">选择项目</option>
+                    {materialProjects.map((item) => (
+                      <option key={item.id} value={item.id}>{materialProjectLabel(item)}</option>
+                    ))}
                   </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">
-                    {materialProjectMode === 'library' ? '重点项目 *' : '普通项目'}
-                  </label>
-                  {materialProjectMode === 'library' && materialProjects.length > 0 ? (
-                    <select
-                      className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
-                      value={selectedMaterialProjectId}
-                      onChange={(e) => {
-                        const nextId = e.target.value
-                        setSelectedMaterialProjectId(nextId)
-                        const selected = materialProjects.find((item) => item.id === nextId)
-                        if (selected) {
-                          setForm((prev) => ({
-                            ...prev,
-                            materialProjectName: selected.name,
-                            projectCode: prev.projectCode || selected.projectCode,
-                          }))
-                        }
-                      }}
-                    >
-                      <option value="">选择项目</option>
-                      {materialProjects.map((item) => (
-                        <option key={item.id} value={item.id}>{materialProjectLabel(item)}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                      placeholder="项目名称，不填则使用投标项目名称"
-                      value={form.materialProjectName}
-                      onChange={(e) => updateForm('materialProjectName', e.target.value)}
-                    />
-                  )}
-                </div>
+                ) : (
+                  <input
+                    className={FIELD_INPUT_CLASS}
+                    placeholder="项目名称，不填则使用投标项目名称"
+                    value={form.materialProjectName}
+                    onChange={(e) => updateForm('materialProjectName', e.target.value)}
+                  />
+                )}
               </div>
-              {requiresTurbineModel && (
-                <div className="border border-[#d2dce8] bg-[#f8fbfd] p-3">
-                  <div className="flex items-center justify-between mb-3">
-                    <label className="block text-sm font-semibold text-on-surface">风机机型明细 *</label>
-                    <button
-                      type="button"
-                      onClick={addTurbineRow}
-                      className="h-8 px-3 border border-[#b8c7d8] bg-white text-xs font-semibold text-primary hover:bg-[#eef5fb] transition-colors"
-                    >
-                      添加机型
-                    </button>
+            </div>
+            {requiresTurbineModel && (
+              <div className="rounded-xl border border-surface-container-high bg-surface-container-low/50 p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="flex items-center gap-0.5 text-sm font-semibold text-on-surface">
+                    风机机型明细<span className="text-error">*</span>
                   </div>
-                  <div className="flex flex-col gap-3">
-                    {form.turbineModels.map((row, index) => (
-                      <div key={row.id} className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.5fr)_110px_minmax(0,1fr)_40px] gap-3 items-end">
-                        <div>
-                          <label className="block text-xs font-semibold text-outline mb-1">风机机型</label>
-                          {otherTurbineRowIds.has(row.id) ? (
-                            <div className="flex items-center gap-2">
-                              <input
-                                className="w-full min-h-0 h-9 px-3 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                                placeholder="输入风机机型"
-                                autoFocus
-                                value={row.model}
-                                onChange={(e) => updateTurbineRow(row.id, 'model', e.target.value)}
-                              />
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setOtherTurbineRowIds((prev) => {
-                                    const next = new Set(prev)
-                                    next.delete(row.id)
-                                    return next
-                                  })
-                                  updateTurbineRow(row.id, 'model', '')
-                                }}
-                                className="h-9 px-2 shrink-0 border border-[#b8c7d8] bg-white text-xs font-semibold text-primary hover:bg-[#eef5fb] transition-colors"
-                                title="返回候选选择"
-                              >
-                                候选
-                              </button>
-                            </div>
-                          ) : (
-                            <select
-                              className="w-full min-h-0 h-9 px-3 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                  <button
+                    type="button"
+                    onClick={addTurbineRow}
+                    className="inline-flex h-8 items-center gap-1 rounded-md bg-primary-fixed px-3 text-xs font-semibold text-primary transition-colors hover:bg-primary-fixed-dim"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">add</span>
+                    添加机型
+                  </button>
+                </div>
+                <div className="flex flex-col gap-3">
+                  {form.turbineModels.map((row, index) => (
+                    <div key={row.id} className="grid grid-cols-1 items-end gap-3 lg:grid-cols-[minmax(0,1.5fr)_110px_minmax(0,1fr)_40px]">
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-outline">风机机型</label>
+                        {otherTurbineRowIds.has(row.id) ? (
+                          <div className="flex items-center gap-2">
+                            <input
+                              className={FIELD_INPUT_CLASS}
+                              placeholder="输入风机机型"
+                              autoFocus
                               value={row.model}
-                              onChange={(e) => {
-                                const value = e.target.value
-                                if (value === OTHER_OPTION_LABEL) {
-                                  setOtherTurbineRowIds((prev) => new Set(prev).add(row.id))
-                                  updateTurbineRow(row.id, 'model', '')
-                                  return
-                                }
-                                updateTurbineRow(row.id, 'model', value)
+                              onChange={(e) => updateTurbineRow(row.id, 'model', e.target.value)}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOtherTurbineRowIds((prev) => {
+                                  const next = new Set(prev)
+                                  next.delete(row.id)
+                                  return next
+                                })
+                                updateTurbineRow(row.id, 'model', '')
                               }}
+                              className="h-10 shrink-0 rounded-lg bg-white px-2.5 text-xs font-semibold text-primary transition-colors hover:bg-primary-fixed"
+                              title="返回候选选择"
                             >
-                              <option value="">选择风机机型</option>
-                              {turbineModelOptions.map((item) => (
-                                <option key={item} value={item}>{item}</option>
-                              ))}
-                            </select>
-                          )}
-                        </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-outline mb-1">风机台数</label>
-                          <input
-                            inputMode="numeric"
-                            pattern="[1-9][0-9]*"
-                            className="w-full min-h-0 h-9 px-3 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                            placeholder="正整数"
-                            value={row.turbineCount}
-                            onChange={(e) => {
-                              const value = e.target.value.replace(/\D/g, '')
-                              updateTurbineRow(row.id, 'turbineCount', value)
-                            }}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-outline mb-1">基础形式</label>
+                              候选
+                            </button>
+                          </div>
+                        ) : (
                           <select
-                            className="w-full min-h-0 h-9 px-3 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
-                            value={row.foundationType}
-                            onChange={(e) => updateTurbineRow(row.id, 'foundationType', e.target.value)}
+                            className={FIELD_SELECT_CLASS}
+                            value={row.model}
+                            onChange={(e) => {
+                              const value = e.target.value
+                              if (value === OTHER_OPTION_LABEL) {
+                                setOtherTurbineRowIds((prev) => new Set(prev).add(row.id))
+                                updateTurbineRow(row.id, 'model', '')
+                                return
+                              }
+                              updateTurbineRow(row.id, 'model', value)
+                            }}
                           >
-                            <option value="">选择基础形式</option>
-                            {STATIC_FOUNDATION_TYPE_OPTIONS.map((item) => (
+                            <option value="">选择风机机型</option>
+                            {turbineModelOptions.map((item) => (
                               <option key={item} value={item}>{item}</option>
                             ))}
                           </select>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => removeTurbineRow(row.id)}
-                          className="h-9 border border-[#d6dee9] bg-white text-on-surface-variant hover:text-error hover:border-error/40 transition-colors"
-                          aria-label={`删除第 ${index + 1} 个风机机型`}
-                          title="删除"
-                        >
-                          <span className="material-symbols-outlined text-[18px]">delete</span>
-                        </button>
+                        )}
                       </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">起始日期 *</label>
-                  <input
-                    type="date"
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                    value={form.startDate}
-                    onChange={(e) => updateForm('startDate', e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-on-surface mb-2">截止日期 *</label>
-                  <input
-                    type="date"
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
-                    value={form.endDate}
-                    onChange={(e) => updateForm('endDate', e.target.value)}
-                  />
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-outline">风机台数</label>
+                        <input
+                          inputMode="numeric"
+                          pattern="[1-9][0-9]*"
+                          className={FIELD_INPUT_CLASS}
+                          placeholder="正整数"
+                          value={row.turbineCount}
+                          onChange={(e) => {
+                            const value = e.target.value.replace(/\D/g, '')
+                            updateTurbineRow(row.id, 'turbineCount', value)
+                          }}
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-outline">基础形式</label>
+                        <select
+                          className={FIELD_SELECT_CLASS}
+                          value={row.foundationType}
+                          onChange={(e) => updateTurbineRow(row.id, 'foundationType', e.target.value)}
+                        >
+                          <option value="">选择基础形式</option>
+                          {STATIC_FOUNDATION_TYPE_OPTIONS.map((item) => (
+                            <option key={item} value={item}>{item}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeTurbineRow(row.id)}
+                        className="flex h-10 items-center justify-center rounded-lg bg-white text-outline transition-colors hover:bg-error-container hover:text-error"
+                        aria-label={`删除第 ${index + 1} 个风机机型`}
+                        title="删除"
+                      >
+                        <span className="material-symbols-outlined text-[18px]">delete</span>
+                      </button>
+                    </div>
+                  ))}
                 </div>
               </div>
-              {missingRequiredItems.length > 0 && (
-                <div
-                id="technical-project-required-hint"
-                  className="border border-[#f2c169] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a4d00]"
-                >
-                  {nextDisabledReason}
-                </div>
-              )}
-              <div className="rounded-md border border-[#d2dce8] bg-[#f8fbfd] px-3 py-2">
-                <p className="text-xs text-outline">材料归档路径预览</p>
-                <p className="mt-1 text-sm font-medium text-on-surface">{archivePathPreview}</p>
+            )}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <FieldLabel required>起始日期</FieldLabel>
+                <input
+                  type="date"
+                  className={FIELD_INPUT_CLASS}
+                  value={form.startDate}
+                  onChange={(e) => updateForm('startDate', e.target.value)}
+                />
               </div>
-              {createError && (
-                <div className="bg-error-container/30 border border-error/30 rounded-[4px] p-3 text-sm text-error">
-                  {createError}
-                </div>
-              )}
+              <div>
+                <FieldLabel required>截止日期</FieldLabel>
+                <input
+                  type="date"
+                  className={FIELD_INPUT_CLASS}
+                  value={form.endDate}
+                  onChange={(e) => updateForm('endDate', e.target.value)}
+                />
+              </div>
             </div>
+            {missingRequiredItems.length > 0 && (
+              <div
+                id="technical-project-required-hint"
+                className="flex items-center gap-2 rounded-lg border border-[#f2c169]/50 bg-[#fff8e6] px-3 py-2 text-xs text-[#7a4d00]"
+              >
+                <span className="material-symbols-outlined shrink-0 text-[16px]">info</span>
+                <span>{nextDisabledReason}</span>
+              </div>
+            )}
+            {createError && (
+              <div className="flex items-center gap-2 rounded-lg border border-error/25 bg-error-container/40 px-3 py-2 text-sm text-error">
+                <span className="material-symbols-outlined shrink-0 text-[18px]">error</span>
+                <span>{createError}</span>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Footer */}
-        <div className="flex justify-between items-center px-5 py-4 border-t border-[#d7e0ea] bg-white">
+        <div className="flex shrink-0 items-center justify-between border-t border-surface-container-high bg-surface-container-low/60 px-6 py-3.5">
           <Button
             onClick={onClose}
             size="sm"
