@@ -547,7 +547,7 @@ class BusinessMaterialSplitterTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result["reply"], '{"fragments":[]}')
-        self.assertEqual(captured["payload"]["max_tokens"], 8192)
+        self.assertEqual(captured["payload"]["max_tokens"], 32768)
 
 
 if __name__ == "__main__":
