@@ -26,9 +26,25 @@ BUSINESS_MATERIAL_KIND_LABELS = {
     "ai_fill": "AI填写",
     "other": "其他",
 }
-CLEANABLE_MATERIAL_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm", ".docx", ".doc"}
-ORIGINAL_ONLY_MATERIAL_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
-MATERIAL_LIBRARY_ALLOWED_SUFFIXES = CLEANABLE_MATERIAL_SUFFIXES | ORIGINAL_ONLY_MATERIAL_SUFFIXES | {".md"}
+CLEANABLE_MATERIAL_SUFFIXES = {".docx"}
+ORIGINAL_ONLY_MATERIAL_SUFFIXES = {
+    ".pdf",
+    ".xlsx",
+    ".xls",
+    ".xlsm",
+    ".doc",
+    ".md",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".bmp",
+    ".tif",
+    ".tiff",
+}
+MATERIAL_LIBRARY_ALLOWED_SUFFIXES = CLEANABLE_MATERIAL_SUFFIXES | ORIGINAL_ONLY_MATERIAL_SUFFIXES
+# 快捷方式类文件没有实质内容，上传时直接过滤不入库
+SHORTCUT_MATERIAL_SUFFIXES = {".lnk", ".url", ".webloc", ".desktop"}
 RAW_MATERIAL_ROOTS = (
     {"name": TECHNICAL_BID_TYPE, "tier": "standard", "bid_type": TECHNICAL_BID_TYPE, "sort_order": 1},
     {"name": BUSINESS_BID_TYPE, "tier": "standard", "bid_type": BUSINESS_BID_TYPE, "sort_order": 2},
@@ -546,10 +562,8 @@ def infer_business_material_category(folder_path: str = "", file_name: str = "",
 def clean_status_for_new_file(file_name: str) -> tuple[str, str]:
     suffix = material_suffix(str(file_name or ""))
     if suffix in CLEANABLE_MATERIAL_SUFFIXES:
-        return "pending", "等待清洗转换为 Word。"
-    if suffix in ORIGINAL_ONLY_MATERIAL_SUFFIXES:
-        return "original_only", "图片类原件直接保留，不触发自动清洗。"
-    return "failed", "当前格式暂不支持自动清洗转换。"
+        return "pending", "等待清洗规范化 Word。"
+    return "original_only", "非 Word 素材保留原件，不触发自动清洗。"
 
 
 def bid_type_sort_order(bid_type: str) -> int:

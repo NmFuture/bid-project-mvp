@@ -14,6 +14,7 @@ from app.models.materials import RawFile, RawFolder
 from app.services.material_folder_maintenance import ensure_material_target_folder
 from app.services.material_taxonomy import (
     MATERIAL_LIBRARY_ALLOWED_SUFFIXES,
+    SHORTCUT_MATERIAL_SUFFIXES,
     material_suffix,
     normalize_business_material_kind,
 )
@@ -166,6 +167,8 @@ async def upload_raw_files(
 
         uploaded_items: list[dict[str, Any]] = []
         clean_job_targets: list[int] = []
+        # 无实质内容的文件（快捷方式、0 字节）不入库，记录原因回传给用户
+        skipped_items: list[dict[str, str]] = []
         # 本次已写入 MinIO 的新对象；任一环节失败时补偿删除，避免孤儿对象（H1）
         written_object_keys: list[tuple[str, str]] = []
         # 覆盖上传时旧 cleaned 对象延后到 DB commit 成功后再删，写失败不动旧对象（H2）
@@ -186,6 +189,9 @@ async def upload_raw_files(
                 if file_name.startswith("._") or file_name.lower() == ".ds_store":
                     continue
                 suffix = material_suffix(file_name)
+                if suffix in SHORTCUT_MATERIAL_SUFFIXES:
+                    skipped_items.append({"name": file_name, "reason": "快捷方式文件没有实质内容，未存入素材库。"})
+                    continue
                 if suffix not in MATERIAL_LIBRARY_ALLOWED_SUFFIXES:
                     raise PeripheralError(
                         400,
@@ -260,6 +266,9 @@ async def upload_raw_files(
                             content_type=mime_type or "application/octet-stream",
                         )
 
+                if size <= 0:
+                    skipped_items.append({"name": file_name, "reason": "文件内容为空（0 字节），未存入素材库。"})
+                    continue
                 if size > settings.max_upload_file_size_bytes:
                     limit_mb = settings.max_upload_file_size_bytes // 1024 // 1024
                     raise PeripheralError(
@@ -346,8 +355,16 @@ async def upload_raw_files(
             except Exception as cleanup_exc:  # pragma: no cover - 旧对象清理失败仅告警
                 logger.warning("覆盖上传清理旧 cleaned 对象 %s/%s 失败：%s", removal["bucket"], removal["key"], cleanup_exc)
         clean_jobs = [enqueue_cleaning_job(file_id) for file_id in clean_job_targets]
+        message = f"上传完成，共处理 {len(uploaded_items)} 个文件，已触发 {len(clean_job_targets)} 个清洗任务。"
+        if skipped_items:
+            shown = skipped_items[:5]
+            detail = "；".join(f"{item['name']}（{item['reason'].rstrip('。')}）" for item in shown)
+            if len(skipped_items) > len(shown):
+                detail += f"；另有 {len(skipped_items) - len(shown)} 个文件同样被过滤"
+            message += f"已过滤 {len(skipped_items)} 个文件：{detail}。"
         return {
-            "message": f"上传完成，共处理 {len(uploaded_items)} 个文件，已触发 {len(clean_job_targets)} 个清洗任务。",
+            "message": message,
             "items": uploaded_items,
+            "skipped": skipped_items,
             "cleaning": {"queued": sum(1 for job in clean_jobs if job.get("queued")), "jobs": clean_jobs},
         }
