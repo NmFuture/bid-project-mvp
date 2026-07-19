@@ -51,8 +51,8 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
     && printf '%s\n' \
       '#!/bin/sh' \
       'case "$1" in' \
-      '  prepare|template|headings|next-batch|read|window|table|tables|review-batch|decisions|compose|validate|status|finalize) ;;' \
-      '  *) echo "usage: s2outline [prepare|template|headings|next-batch|read|window|table|tables|review-batch|decisions|compose|validate|status|finalize] <manifest> [...]" >&2; exit 64 ;;' \
+      '  prepare|template|headings|next-batch|read|window|table|tables|review-batch|decision-next|decision-batch|decisions|compose|validate|status|finalize) ;;' \
+      '  *) echo "usage: s2outline [prepare|template|headings|next-batch|read|window|table|tables|review-batch|decision-next|decision-batch|decisions|compose|validate|status|finalize] <manifest> [...]" >&2; exit 64 ;;' \
       'esac' \
       'exec python3 /workspace/.opencode/skills/bid-tech-outline-generator/scripts/run_from_manifest.py --require-compose "$@"' \
       > /usr/local/bin/s2outline \

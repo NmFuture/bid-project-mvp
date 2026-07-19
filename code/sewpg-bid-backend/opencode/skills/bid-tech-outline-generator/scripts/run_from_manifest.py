@@ -17,6 +17,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import review_workflow
 import outline_composer
+import decision_workflow
 
 
 AGENTIC_COMMANDS = {
@@ -31,6 +32,8 @@ AGENTIC_COMMANDS = {
     "tables",
     "review-chunk",
     "review-batch",
+    "decision-next",
+    "decision-batch",
     "decisions",
     "compose",
     "validate",
@@ -98,7 +101,7 @@ def resolve_invocation(manifest_option: str | None, positional_args: list[str]) 
         command = args.pop(0)
     elif args and args[0] not in AGENTIC_COMMANDS and len(args) > 1:
         raise SystemExit(
-            "usage: s2outline [prepare|template|headings|next|next-batch|read|window|table|tables|review-chunk|review-batch|decisions|compose|validate|status|finalize] <manifest> [...]"
+            "usage: s2outline [prepare|template|headings|next|next-batch|read|window|table|tables|review-chunk|review-batch|decision-next|decision-batch|decisions|compose|validate|status|finalize] <manifest> [...]"
         )
     manifest_text = str(manifest_option or (args[0] if args else "")).strip()
     if args and not manifest_option:
@@ -132,7 +135,13 @@ def dispatch_command(
     if command in {"prepare", "template"}:
         return write_template_structure(manifest, manifest_path)
     if command == "headings":
-        return review_workflow.tender_headings(work_dir)
+        cursor = int(_option_value(command_args, "--cursor", "0"))
+        page_size = int(_option_value(command_args, "--page-size", "200"))
+        return review_workflow.tender_headings(
+            work_dir,
+            cursor=cursor,
+            page_size=page_size,
+        )
     if command == "next":
         return review_workflow.next_review_chunk(work_dir)
     if command == "next-batch":
@@ -206,15 +215,37 @@ def dispatch_command(
         if not isinstance(chunk_ids, list):
             raise SystemExit("review JSON chunk_ids must be a list")
         return review_workflow.submit_batch_review(work_dir, chunk_ids, review)
-    if command == "decisions":
-        decisions_text = _required_arg(command_args, 0, "decisions JSON")
+    if command in {"decision-next", "decision-batch", "decisions"}:
+        if manifest.get("tenderFiles") and not review_workflow.headings_complete(work_dir):
+            raise SystemExit("必须先完整读取招标目录或分页 headings")
+        structure = load_json_dict(
+            work_dir / "template_structure.json",
+            "templateStructureFile",
+        )
+        if command == "decision-next":
+            max_items = int(_option_value(command_args, "--max-items", "50"))
+            return decision_workflow.next_decision_batch(
+                work_dir,
+                structure,
+                max_items=max_items,
+                comparison_context=review_workflow.decision_comparison_context(work_dir),
+            )
+        if command == "decisions":
+            if command_args:
+                raise SystemExit("decisions 不接受 JSON；请使用 decision-next 和 decision-batch")
+            return decision_workflow.finalize_decisions(work_dir, structure)
+        decisions_text = _required_arg(command_args, 0, "decision batch JSON")
         try:
-            decisions = json.loads(decisions_text)
+            decision_batch = json.loads(decisions_text)
         except json.JSONDecodeError as exc:
-            raise SystemExit(f"decisions JSON is invalid: {exc}") from exc
-        if not isinstance(decisions, dict):
-            raise SystemExit("decisions JSON must be an object")
-        return submit_outline_decisions(manifest, manifest_path, decisions)
+            raise SystemExit(f"decision batch JSON is invalid: {exc}") from exc
+        if not isinstance(decision_batch, dict):
+            raise SystemExit("decision batch JSON must be an object")
+        return decision_workflow.submit_decision_batch(
+            work_dir,
+            structure,
+            decision_batch,
+        )
     if command == "compose":
         return compose_manifest(manifest, manifest_path)
     if command in {"validate", "status"}:
@@ -247,6 +278,12 @@ def run_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any
 def write_template_structure(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
     work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
     work_dir.mkdir(parents=True, exist_ok=True)
+    for stale_name in (
+        decision_workflow.STATE_FILE_NAME,
+        outline_composer.DECISIONS_FILE_NAME,
+        outline_composer.REPORT_FILE_NAME,
+    ):
+        (work_dir / stale_name).unlink(missing_ok=True)
     template_file = existing_path(manifest.get("templateFile"), "templateFile")
     structure = extract_template_structure(template_file)
     output_path = work_dir / "template_structure.json"

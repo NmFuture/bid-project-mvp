@@ -289,13 +289,13 @@ def _build_outline_prompt(manifest_path: Path, bid_type: Any) -> str:
     return f"""
 Use the {skill_name} skill.
 
-生成 S2 {bid_type_text}目录。目录学习、招标新增项和适用性建议由 Opencode 按 Skill 判断；不得进行粒度收敛。
+生成 S2 {bid_type_text}目录。目录学习、招标新增项和适用性建议由 Opencode 按 Skill 逐项判断；不得进行粒度收敛，也不得把未判断节点自动当成必要。
 
 manifest：{manifest_path}
 
-历史投标模板是主骨架：完整学习并继承模板一至三级目录，模板已有第三级目录统一输出，不得因案例、具体项目、产品或系统说明可由父节点承载而省略。最终目录最多三级，第四级及更深层级只作为对应第三级节点的内容参考。再结合招标文件有证据地新增目录或标记适用性，不把参数、条款或表格字段机械扩成目录。
+历史投标模板提供目录经验，当前招标文件提供本项目要求。完整学习模板一至三级目录，模板已有第三级目录统一进入结果供用户确认，但不预设任何模板节点必须保留。每个模板节点由 Opencode 自主选择保留或建议删除，并自主判断建议增加项；建议删除的节点仍保留供用户确认。最终目录最多三级，第四级及更深层级只作为对应第三级节点的内容参考，不把参数、条款或表格字段机械扩成目录。
 
-先执行 `s2outline prepare {manifest_path}` 和 `s2outline headings {manifest_path}`，优先读取全文目录、正文标题和附表标题。随后由 Opencode 自主选择 `s2outline next-batch`、`s2outline read`、`s2outline window`、`s2outline table`、`s2outline tables`、`s2outline review-batch` 详读重点；不要求读完所有正文、表格或附表。不得自动生成审阅结果，不得直接读取 `tender_review_chunks.json`、状态文件或义务台账；每条 `target_node` 只能指向一个节点。执行 `s2outline status {manifest_path}`，未读状态不作为完成门禁。把相对模板的增量通过 `s2outline decisions {manifest_path} '<decisions-json>'` 提交，再执行 `s2outline compose {manifest_path}` 生成 `technical-outline.v1`；不得自行写入 manifest.outputFile 或编写临时目录脚本。最后执行：
+先执行 `s2outline prepare {manifest_path}` 和 `s2outline headings {manifest_path}`。招标文件存在可靠目录时只读目录；不存在目录时按返回的 `next_cursor` 分页调用 headings，直到 `complete=true`。随后由 Opencode 自主选择 `s2outline next-batch`、`s2outline read`、`s2outline window`、`s2outline table`、`s2outline tables`、`s2outline review-batch` 详读重点；不要求读完所有正文、表格或附表，`requirementCount` 不作为完成门禁。执行 `s2outline status {manifest_path}` 后，循环执行 `s2outline decision-next {manifest_path} --max-items 50` 和 `s2outline decision-batch {manifest_path} '<batch-json>'`。`decision-next` 会把模板目录与招标目录在同一批输入中，Opencode 必须现场对照并自主完成保留、建议增加、建议删除三类判断，不设置默认保留或默认删除；不得编写 Python、Shell、heredoc、循环或临时 JSON 文件批量拼装判断。`remaining_count=0` 后执行不带 JSON 的 `s2outline decisions {manifest_path}`，再执行 `s2outline compose {manifest_path}` 生成 `technical-outline.v1`；不得自行写入 manifest.outputFile 或决策状态文件。最后执行：
 
 {TECH_OUTLINE_FINALIZE_COMMAND} {manifest_path}
 

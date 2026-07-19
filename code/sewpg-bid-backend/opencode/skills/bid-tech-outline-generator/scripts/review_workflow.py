@@ -17,6 +17,7 @@ from docx.text.paragraph import Paragraph
 CHUNKS_SCHEMA_VERSION = "tender-review-chunks.v1"
 STATE_SCHEMA_VERSION = "tender-review-state.v1"
 LEDGER_SCHEMA_VERSION = "tender-requirement-ledger.v1"
+HEADINGS_STATE_SCHEMA_VERSION = "tender-headings-state.v1"
 DEFAULT_CHUNK_CHAR_LIMIT = 12_000
 STRUCTURAL_TITLE_PATTERN = re.compile(
     r"^(?:第\s*[一二三四五六七八九十百千万零〇两0-9]+\s*[章节篇卷]|\d+(?:\.\d+)*[.、]?\s+)\S+"
@@ -200,6 +201,7 @@ def build_review_workspace(
     chunks_path = work_dir / "tender_review_chunks.json"
     state_path = work_dir / "tender_review_state.json"
     ledger_path = work_dir / "requirement_ledger.json"
+    headings_state_path = work_dir / "tender_headings_state.json"
     write_json(
         chunks_path,
         {
@@ -237,6 +239,14 @@ def build_review_workspace(
             "requirements": [],
         },
     )
+    write_json(
+        headings_state_path,
+        {
+            "schema_version": HEADINGS_STATE_SCHEMA_VERSION,
+            "next_cursor": 0,
+            "complete": False,
+        },
+    )
     return {
         "tenderReviewChunksFile": str(chunks_path),
         "tenderReviewStateFile": str(state_path),
@@ -265,8 +275,9 @@ def _review_artifacts(work_dir: Path) -> tuple[dict[str, Any], dict[str, Any], d
     return chunks, state, ledger
 
 
-def tender_headings(work_dir: Path) -> dict[str, Any]:
-    chunks = _load_payload(work_dir / "tender_review_chunks.json", CHUNKS_SCHEMA_VERSION)
+def _collect_heading_files(
+    chunks: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
     files_by_id: dict[str, dict[str, Any]] = {}
     paragraph_locations: dict[tuple[str, str], dict[str, Any]] = {}
     for chunk in chunks.get("chunks") or []:
@@ -280,7 +291,8 @@ def tender_headings(work_dir: Path) -> dict[str, Any]:
             {
                 "file_id": file_id,
                 "file_name": clean_text(chunk.get("file_name")) or file_id,
-                "items": [],
+                "toc_items": [],
+                "body_items": [],
             },
         )
         for block in chunk.get("blocks") or []:
@@ -298,15 +310,66 @@ def tender_headings(work_dir: Path) -> dict[str, Any]:
             title_level = int(block.get("structural_title_level") or 0)
             if not toc_level and not heading_level and not title_level:
                 continue
-            file_entry["items"].append(
-                {
-                    "kind": "toc" if toc_level else "heading" if heading_level else "title",
-                    "level": toc_level or heading_level or title_level,
-                    "text": clean_text(block.get("text")),
-                    "evidence_id": clean_text(block.get("evidence_id")),
-                    "body_index": int(block.get("body_index") or 0),
-                }
-            )
+            item = {
+                "kind": "toc" if toc_level else "heading" if heading_level else "title",
+                "level": toc_level or heading_level or title_level,
+                "text": clean_text(block.get("text")),
+                "evidence_id": clean_text(block.get("evidence_id")),
+                "body_index": int(block.get("body_index") or 0),
+            }
+            destination = "toc_items" if toc_level else "body_items"
+            file_entry[destination].append(item)
+    return files_by_id, paragraph_locations
+
+
+def decision_comparison_context(work_dir: Path) -> dict[str, Any]:
+    chunks_path = work_dir / "tender_review_chunks.json"
+    if not chunks_path.is_file():
+        return {
+            "schema_version": "outline-comparison-context.v1",
+            "heading_count": 0,
+            "files": [],
+        }
+    chunks = _load_payload(chunks_path, CHUNKS_SCHEMA_VERSION)
+    files_by_id, _ = _collect_heading_files(chunks)
+    files: list[dict[str, Any]] = []
+    for file_entry in files_by_id.values():
+        source = "toc" if file_entry["toc_items"] else "body_headings"
+        selected = file_entry["toc_items"] or file_entry["body_items"]
+        files.append(
+            {
+                "file_id": file_entry["file_id"],
+                "file_name": file_entry["file_name"],
+                "source": source,
+                "items": [
+                    {
+                        "evidence_id": item["evidence_id"],
+                        "level": item["level"],
+                        "text": item["text"],
+                    }
+                    for item in selected
+                ],
+            }
+        )
+    return {
+        "schema_version": "outline-comparison-context.v1",
+        "heading_count": sum(len(item["items"]) for item in files),
+        "files": files,
+    }
+
+
+def tender_headings(
+    work_dir: Path,
+    *,
+    cursor: int = 0,
+    page_size: int = 200,
+) -> dict[str, Any]:
+    if cursor < 0:
+        raise SystemExit("headings cursor must be zero or greater")
+    if page_size < 1 or page_size > 500:
+        raise SystemExit("headings page_size must be between 1 and 500")
+    chunks = _load_payload(work_dir / "tender_review_chunks.json", CHUNKS_SCHEMA_VERSION)
+    files_by_id, paragraph_locations = _collect_heading_files(chunks)
 
     appendices: list[dict[str, Any]] = []
     inventory_path = work_dir / "tender_appendix_inventory.json"
@@ -328,15 +391,76 @@ def tender_headings(work_dir: Path) -> dict[str, Any]:
                 public_item.update(location)
             appendices.append(public_item)
 
-    files = list(files_by_id.values())
+    state_path = work_dir / "tender_headings_state.json"
+    state = _load_payload(state_path, HEADINGS_STATE_SCHEMA_VERSION)
+    fallback_items: list[tuple[str, dict[str, Any]]] = []
+    toc_files: list[dict[str, Any]] = []
+    body_file_names: dict[str, str] = {}
+    for file_entry in files_by_id.values():
+        if file_entry["toc_items"]:
+            toc_files.append(
+                {
+                    "file_id": file_entry["file_id"],
+                    "file_name": file_entry["file_name"],
+                    "source": "toc",
+                    "items": file_entry["toc_items"],
+                }
+            )
+            continue
+        body_file_names[file_entry["file_id"]] = file_entry["file_name"]
+        fallback_items.extend(
+            (file_entry["file_id"], item) for item in file_entry["body_items"]
+        )
+
+    expected_cursor = int(state.get("next_cursor") or 0)
+    if fallback_items and cursor != expected_cursor:
+        raise SystemExit(f"headings cursor must be {expected_cursor}")
+    page = fallback_items[cursor : cursor + page_size]
+    next_cursor_value = cursor + len(page)
+    complete = next_cursor_value >= len(fallback_items)
+    body_files_by_id: dict[str, dict[str, Any]] = {}
+    for file_id, item in page:
+        body_files_by_id.setdefault(
+            file_id,
+            {
+                "file_id": file_id,
+                "file_name": body_file_names[file_id],
+                "source": "body_headings",
+                "items": [],
+            },
+        )["items"].append(item)
+    files = [*toc_files, *body_files_by_id.values()]
+    write_json(
+        state_path,
+        {
+            "schema_version": HEADINGS_STATE_SCHEMA_VERSION,
+            "next_cursor": next_cursor_value if not complete else 0,
+            "complete": complete,
+        },
+    )
     return {
         "schema_version": "tender-headings.v1",
-        "file_count": len(files),
-        "heading_count": sum(len(item["items"]) for item in files),
+        "file_count": len(files_by_id),
+        "heading_count": sum(
+            len(item["toc_items"] or item["body_items"])
+            for item in files_by_id.values()
+        ),
+        "returned_heading_count": sum(len(item["items"]) for item in files),
         "appendix_count": len(appendices),
+        "cursor": str(cursor),
+        "next_cursor": "" if complete else str(next_cursor_value),
+        "complete": complete,
         "files": files,
         "appendices": appendices,
     }
+
+
+def headings_complete(work_dir: Path) -> bool:
+    state = _load_payload(
+        work_dir / "tender_headings_state.json",
+        HEADINGS_STATE_SCHEMA_VERSION,
+    )
+    return bool(state.get("complete"))
 
 
 def _state_by_chunk_id(state: dict[str, Any]) -> dict[str, dict[str, Any]]:

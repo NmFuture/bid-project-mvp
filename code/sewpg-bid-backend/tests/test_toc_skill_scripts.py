@@ -102,15 +102,37 @@ def json_load(path: Path) -> dict:
 
 def submit_outline_changes(outline_runner, manifest: dict, manifest_path: Path, changes: list[dict]):
     structure = json_load(Path(manifest["workDir"]) / "template_structure.json")
-    fingerprint = outline_runner.outline_composer.annotate_template_structure(structure)[
-        "input_fingerprint"
-    ]
+    annotated = outline_runner.outline_composer.annotate_template_structure(structure)
+    fingerprint = annotated["input_fingerprint"]
+    deleted = {
+        str(change.get("target_id") or ""): change
+        for change in changes
+        if change.get("operation") == "suggest_delete"
+    }
+    template_decisions = []
+    for item in annotated["items"]:
+        if int(item.get("level") or 1) > 3:
+            continue
+        target_id = item["template_id"]
+        change = deleted.get(target_id)
+        if change:
+            decision = {
+                "target_id": target_id,
+                "decision": "suggest_delete",
+                "reason": change["reason"],
+            }
+            if "tender_basis" in change:
+                decision["tender_basis"] = change["tender_basis"]
+        else:
+            decision = {"target_id": target_id, "decision": "retain"}
+        template_decisions.append(decision)
     return outline_runner.submit_outline_decisions(
         manifest,
         manifest_path,
         {
             "schema_version": "technical-outline-decisions.v1",
             "input_fingerprint": fingerprint,
+            "template_decisions": template_decisions,
             "changes": changes,
         },
     )
@@ -731,9 +753,9 @@ class TocSkillScriptTests(unittest.TestCase):
             "最多三级",
             "模板存在三级目录时",
             "必须学习到第三级",
-            "完整学习并继承模板一至三级目录",
+            "完整学习模板一至三级目录",
             "模板已有第三级目录统一输出",
-            "不得提交 `collapse`",
+            "逐项判断",
             "案例、具体项目、产品或系统说明",
             "第四级及更深层级",
             "只作为对应第三级节点的内容参考",
@@ -741,10 +763,9 @@ class TocSkillScriptTests(unittest.TestCase):
             "自动目录",
             "目录页",
             "正文标题结构",
-            "仅因招标未提及不能建议删除",
+            "同批对照",
             "建议增加",
             "建议删除",
-            "待确认",
             "技术附表",
             "表内栏目",
             "分组标题本身不输出",
@@ -772,31 +793,33 @@ class TocSkillScriptTests(unittest.TestCase):
             "s2outline tables",
             "s2outline review-batch",
             "s2outline status",
+            "s2outline decision-next",
+            "s2outline decision-batch",
             "s2outline decisions",
             "s2outline compose",
             "自主选择",
             "按需详读",
-            "模板节点默认继承",
+            "不得把“未判断”自动当成“必要”",
             "不得直接写入 `outputFile`",
             "不得现场编写临时 Python",
             "三级对照",
             "requirement_ledger.json",
-            "map_existing",
+            "retain",
             "suggest_add",
-            "covered_by_parent",
-            "reference_only",
-            "not_applicable",
-            "pending_confirmation",
+            "suggest_delete",
             "不得编写批处理脚本",
             "自动生成或提交",
             "不得直接读取 `tender_review_chunks.json`",
-            "target_node` 只能指向一个节点",
+            "items` 必须与最近一次 `decision-next`",
             "s2outline finalize",
         ):
             self.assertIn(principle, content)
 
         self.assertNotIn('"operation":"collapse"', content)
         self.assertNotIn("由父节点统一承载", content)
+        self.assertNotIn("模板是主骨架", content)
+        self.assertNotIn("仅因招标未提及不能建议删除", content)
+        self.assertNotIn("确认没有不适用证据后选择 `retain`", content)
 
         for redundant_contract in (
             "required_status",
@@ -874,7 +897,7 @@ class TocSkillScriptTests(unittest.TestCase):
 
         commands = (
             "prepare|template|headings|next-batch|read|window|table|tables|"
-            "review-batch|decisions|compose|validate|status|finalize"
+            "review-batch|decision-next|decision-batch|decisions|compose|validate|status|finalize"
         )
         self.assertIn(f"  {commands}) ;;", dockerfile)
         self.assertIn(f"usage: s2outline [{commands}] <manifest> [...]", dockerfile)
@@ -930,7 +953,7 @@ class TocSkillScriptTests(unittest.TestCase):
             ), self.assertRaisesRegex(SystemExit, "尚未执行 s2outline compose"):
                 outline_runner.main()
 
-    def test_bid_outline_compose_inherits_all_template_level_three_by_default(self) -> None:
+    def test_bid_outline_compose_keeps_all_explicitly_retained_template_level_three(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1523,6 +1546,7 @@ class TocSkillScriptTests(unittest.TestCase):
                     {
                         "schema_version": "technical-outline-decisions.v1",
                         "input_fingerprint": "stale-template-fingerprint",
+                        "template_decisions": [],
                         "changes": [],
                     },
                 )
@@ -1533,12 +1557,233 @@ class TocSkillScriptTests(unittest.TestCase):
                 {
                     "schema_version": "technical-outline-decisions.v1",
                     "input_fingerprint": fingerprint,
+                    "template_decisions": [
+                        {"target_id": "TPL-0001", "decision": "retain"}
+                    ],
                     "changes": [],
                 },
             )
             result = outline_runner.compose_manifest(manifest, manifest_path)
 
         self.assertEqual(result["summary"]["total_nodes"], 1)
+
+    def test_bid_outline_decisions_require_an_explicit_choice_for_every_template_node(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(root / "toc.json")}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            structure = {
+                "schema_version": "template-structure.v1",
+                "items": [
+                    {"number": "Chapter 1", "title": "Overview", "level": 1},
+                    {"number": "1.1", "title": "Legacy topic", "level": 2},
+                ],
+            }
+            (root / "template_structure.json").write_text(
+                json.dumps(structure), encoding="utf-8"
+            )
+            annotated = outline_runner.outline_composer.annotate_template_structure(structure)
+            incomplete = {
+                "schema_version": "technical-outline-decisions.v1",
+                "input_fingerprint": annotated["input_fingerprint"],
+                "template_decisions": [
+                    {"target_id": "TPL-0001", "decision": "retain"},
+                ],
+                "changes": [],
+            }
+
+            with self.assertRaisesRegex(SystemExit, "TPL-0002"):
+                outline_runner.submit_outline_decisions(manifest, manifest_path, incomplete)
+
+            complete = {
+                **incomplete,
+                "template_decisions": [
+                    {"target_id": "TPL-0001", "decision": "retain"},
+                    {
+                        "target_id": "TPL-0002",
+                        "decision": "suggest_delete",
+                        "reason": "The tender explicitly excludes this scope.",
+                    },
+                ],
+            }
+            outline_runner.submit_outline_decisions(manifest, manifest_path, complete)
+            outline_runner.compose_manifest(manifest, manifest_path)
+            outline = json_load(root / "toc.json")
+
+        self.assertEqual(outline["nodes"][0]["suggestion_action"], "必要")
+        self.assertEqual(
+            outline["nodes"][0]["children"][0]["suggestion_action"],
+            "建议删除",
+        )
+
+    def test_bid_outline_controlled_decision_batches_build_final_decisions(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(root / "toc.json")}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [
+                            {"number": "Chapter 1", "title": "Overview", "level": 1},
+                            {"number": "1.1", "title": "Design", "level": 2},
+                            {"number": "1.1.1", "title": "Legacy case", "level": 3},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            first = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, ["--max-items", "2"]
+            )
+            first_result = outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": first["batch_token"],
+                            "items": [
+                                {"target_id": item["target_id"], "decision": "retain"}
+                                for item in first["items"]
+                            ],
+                        }
+                    )
+                ],
+            )
+            second = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, ["--max-items", "2"]
+            )
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": second["batch_token"],
+                            "items": [
+                                {
+                                    "target_id": second["items"][0]["target_id"],
+                                    "decision": "suggest_delete",
+                                    "reason": "The tender excludes project cases.",
+                                }
+                            ],
+                        }
+                    )
+                ],
+            )
+            finalized = outline_runner.dispatch_command(
+                "decisions", manifest, manifest_path, []
+            )
+
+        self.assertEqual(first_result["decided_count"], 2)
+        self.assertEqual(finalized["templateDecisionCount"], 3)
+        self.assertEqual(finalized["remainingTemplateDecisionCount"], 0)
+
+    def test_bid_outline_decision_batch_includes_compact_tender_outline_for_comparison(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "s2_input.json"
+            manifest = {
+                "workDir": str(root),
+                "outputFile": str(root / "toc.json"),
+                "tenderFiles": [{"id": "TEN-1", "path": str(root / "tender.docx")}],
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [
+                            {"number": "第1章", "title": "历史项目方案", "level": 1},
+                            {"number": "1.1", "title": "海上专项", "level": 2},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (root / "tender_review_chunks.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "tender-review-chunks.v1",
+                        "chunks": [
+                            {
+                                "file_id": "TEN-1",
+                                "file_name": "当前项目招标文件.docx",
+                                "blocks": [
+                                    {
+                                        "type": "paragraph",
+                                        "evidence_id": "TEN-1:B000001",
+                                        "body_index": 1,
+                                        "text": "1 陆上风电项目技术要求",
+                                        "toc_level": 1,
+                                        "heading_level": 0,
+                                        "structural_title_level": 1,
+                                    },
+                                    {
+                                        "type": "paragraph",
+                                        "evidence_id": "TEN-1:B000002",
+                                        "body_index": 2,
+                                        "text": "1.1 正文标题不应覆盖可靠目录",
+                                        "toc_level": 0,
+                                        "heading_level": 2,
+                                        "structural_title_level": 2,
+                                    },
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (root / "tender_headings_state.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "tender-headings-state.v1",
+                        "next_cursor": 0,
+                        "complete": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            batch = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+
+        self.assertEqual(len(batch["items"]), 2)
+        self.assertEqual(batch["comparison_context"]["heading_count"], 1)
+        self.assertEqual(
+            batch["comparison_context"]["files"],
+            [
+                {
+                    "file_id": "TEN-1",
+                    "file_name": "当前项目招标文件.docx",
+                    "source": "toc",
+                    "items": [
+                        {
+                            "evidence_id": "TEN-1:B000001",
+                            "level": 1,
+                            "text": "1 陆上风电项目技术要求",
+                        }
+                    ],
+                }
+            ],
+        )
 
     def test_bid_outline_decisions_reject_add_or_move_under_collapsed_parent(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -1559,9 +1804,6 @@ class TocSkillScriptTests(unittest.TestCase):
             }
             structure_path = root / "template_structure.json"
             structure_path.write_text(json.dumps(structure, ensure_ascii=False), encoding="utf-8")
-            fingerprint = outline_runner.outline_composer.annotate_template_structure(structure)[
-                "input_fingerprint"
-            ]
             invalid_changes = [
                 [
                     {
@@ -1598,15 +1840,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 with self.subTest(operation=changes[-1]["operation"]), self.assertRaisesRegex(
                     SystemExit, "collapsed"
                 ):
-                    outline_runner.submit_outline_decisions(
-                        manifest,
-                        manifest_path,
-                        {
-                            "schema_version": "technical-outline-decisions.v1",
-                            "input_fingerprint": fingerprint,
-                            "changes": changes,
-                        },
-                    )
+                    submit_outline_changes(outline_runner, manifest, manifest_path, changes)
 
     def test_bid_outline_finalize_rejects_output_not_reproducible_from_decisions(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -1637,6 +1871,9 @@ class TocSkillScriptTests(unittest.TestCase):
                 {
                     "schema_version": "technical-outline-decisions.v1",
                     "input_fingerprint": fingerprint,
+                    "template_decisions": [
+                        {"target_id": "TPL-0001", "decision": "retain"}
+                    ],
                     "changes": [],
                 },
             )
@@ -1917,7 +2154,7 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(state["reviewed_chunk_count"], 0)
         self.assertEqual(state["pending_chunk_count"], len(chunks["chunks"]))
 
-    def test_bid_outline_headings_returns_toc_body_and_appendix_titles_without_marking_reviewed(self) -> None:
+    def test_bid_outline_headings_prefers_toc_and_skips_body_titles_without_marking_reviewed(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
         review_workflow = load_outline_script("review_workflow")
 
@@ -1963,10 +2200,10 @@ class TocSkillScriptTests(unittest.TestCase):
             [(item["kind"], item["text"]) for item in result["files"][0]["items"]],
             [
                 ("toc", "第1章 总体要求 ........ 1"),
-                ("heading", "第1章 总体要求"),
-                ("title", "2. 专题方案"),
             ],
         )
+        self.assertEqual(result["files"][0]["source"], "toc")
+        self.assertTrue(result["complete"])
         self.assertEqual(
             [(item["number"], item["title"]) for item in result["appendices"]],
             [("附表A.1", "技术参数表")],
@@ -1974,6 +2211,58 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertTrue(result["appendices"][0]["evidence_id"].startswith("TEN-1:B"))
         self.assertEqual(status["reviewed_chunk_count"], 0)
         self.assertEqual(status["pending_chunk_count"], status["chunk_count"])
+
+    def test_bid_outline_headings_pages_body_titles_when_toc_is_missing(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+
+            template_doc = Document()
+            template_doc.add_paragraph("Template", style="Heading 1")
+            template_doc.save(template)
+
+            tender_doc = Document()
+            tender_doc.add_paragraph("Section one", style="Heading 1")
+            tender_doc.add_paragraph("Section two", style="Heading 1")
+            tender_doc.add_paragraph("Section three", style="Heading 1")
+            tender_doc.save(tender)
+
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": "tender.docx", "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+
+            first = outline_runner.dispatch_command(
+                "headings", manifest, manifest_path, ["--page-size", "2"]
+            )
+            second = outline_runner.dispatch_command(
+                "headings",
+                manifest,
+                manifest_path,
+                ["--cursor", first["next_cursor"], "--page-size", "2"],
+            )
+
+        self.assertEqual(first["files"][0]["source"], "body_headings")
+        self.assertEqual(
+            [item["text"] for item in first["files"][0]["items"]],
+            ["Section one", "Section two"],
+        )
+        self.assertFalse(first["complete"])
+        self.assertEqual(first["next_cursor"], "2")
+        self.assertEqual(
+            [item["text"] for item in second["files"][0]["items"]],
+            ["Section three"],
+        )
+        self.assertTrue(second["complete"])
+        self.assertEqual(second["next_cursor"], "")
 
     def test_bid_outline_review_navigation_resumes_from_first_pending_chunk(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")

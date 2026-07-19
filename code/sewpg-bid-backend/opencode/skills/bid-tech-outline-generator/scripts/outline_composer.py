@@ -90,6 +90,8 @@ def submit_decisions(
         "schema_version": DECISIONS_SCHEMA,
         "decisionsFile": str(output_path),
         "changeCount": len(normalized.get("changes") or []),
+        "templateDecisionCount": len(normalized.get("template_decisions") or []),
+        "remainingTemplateDecisionCount": 0,
         "inputFingerprint": annotated["input_fingerprint"],
     }
 
@@ -99,17 +101,13 @@ def load_decisions(
     structure: dict[str, Any],
     *,
     required: bool = True,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     annotated = annotate_template_structure(structure)
     path = work_dir / DECISIONS_FILE_NAME
     if not path.exists():
         if required:
             raise ValueError("必须先执行 s2outline decisions，再执行 s2outline compose")
-        return {
-            "schema_version": DECISIONS_SCHEMA,
-            "input_fingerprint": annotated["input_fingerprint"],
-            "changes": [],
-        }
+        return None
     decisions = _load_json_dict(path, "outlineAuthoringDecisionsFile")
     build_composition(annotated, decisions)
     return decisions
@@ -122,6 +120,7 @@ def build_composition(
     annotated = annotate_template_structure(structure)
     _validate_decisions_header(annotated, decisions)
     roots, records = _build_template_records(annotated)
+    _apply_template_decisions(records, decisions.get("template_decisions") or [])
     _apply_changes(roots, records, decisions.get("changes") or [])
     outline = {
         "schema_version": "technical-outline.v1",
@@ -351,7 +350,12 @@ def decisions_digest(decisions: dict[str, Any]) -> str:
 def _validate_decisions_header(structure: dict[str, Any], decisions: dict[str, Any]) -> None:
     if not isinstance(decisions, dict):
         raise ValueError("outline decisions must be an object")
-    extra_keys = set(decisions) - {"schema_version", "input_fingerprint", "changes"}
+    extra_keys = set(decisions) - {
+        "schema_version",
+        "input_fingerprint",
+        "template_decisions",
+        "changes",
+    }
     if extra_keys:
         raise ValueError("outline decisions has unsupported fields: " + ", ".join(sorted(extra_keys)))
     if decisions.get("schema_version") != DECISIONS_SCHEMA:
@@ -365,6 +369,59 @@ def _validate_decisions_header(structure: dict[str, Any], decisions: dict[str, A
         raise ValueError("outline decisions input_fingerprint is required")
     if actual != expected:
         raise ValueError("outline decisions input_fingerprint does not match template_structure")
+    _validate_template_decisions(structure, decisions.get("template_decisions"))
+
+
+def _validate_template_decisions(structure: dict[str, Any], raw_decisions: Any) -> None:
+    if not isinstance(raw_decisions, list):
+        raise ValueError("outline decisions template_decisions must be a list")
+    expected_ids = {
+        str(item.get("template_id") or "")
+        for item in structure.get("items") or []
+        if isinstance(item, dict) and int(item.get("level") or 1) <= 3
+    }
+    seen: set[str] = set()
+    for index, item in enumerate(raw_decisions):
+        if not isinstance(item, dict):
+            raise ValueError(f"template_decisions[{index}] must be an object")
+        target_id = _required_text(
+            item.get("target_id"),
+            f"template_decisions[{index}].target_id",
+        )
+        if target_id not in expected_ids:
+            raise ValueError(f"template_decisions[{index}].target_id is unknown: {target_id}")
+        if target_id in seen:
+            raise ValueError(f"duplicate template decision target_id: {target_id}")
+        seen.add(target_id)
+        decision = str(item.get("decision") or "").strip()
+        if decision == "retain":
+            _assert_template_decision_keys(item, {"target_id", "decision"}, index)
+        elif decision == "suggest_delete":
+            _assert_template_decision_keys(
+                item,
+                {"target_id", "decision", "reason", "tender_basis"},
+                index,
+            )
+            _required_text(item.get("reason"), f"template_decisions[{index}].reason")
+        else:
+            raise ValueError(
+                f"template_decisions[{index}].decision must be retain or suggest_delete"
+            )
+    missing = sorted(expected_ids - seen)
+    if missing:
+        raise ValueError("template decisions missing: " + ", ".join(missing[:20]))
+
+
+def _assert_template_decision_keys(
+    decision: dict[str, Any],
+    allowed: set[str],
+    index: int,
+) -> None:
+    extra = set(decision) - allowed
+    if extra:
+        raise ValueError(
+            f"template_decisions[{index}] has unsupported fields: {', '.join(sorted(extra))}"
+        )
 
 
 def _build_template_records(
@@ -392,7 +449,7 @@ def _build_template_records(
             "node": {
                 "number": str(raw_item.get("number") or ""),
                 "title": str(raw_item.get("title") or ""),
-                "suggestion_action": "必要",
+                "suggestion_action": "",
                 "suggestion_reason": "",
             },
             "parent": parent,
@@ -414,6 +471,22 @@ def _build_template_records(
     if not roots:
         raise ValueError("template_structure has no level 1-3 nodes")
     return roots, records
+
+
+def _apply_template_decisions(
+    records: dict[str, dict[str, Any]],
+    decisions: list[Any],
+) -> None:
+    for item in decisions:
+        target = records[str(item["target_id"])]
+        if item["decision"] == "retain":
+            target["node"]["suggestion_action"] = "必要"
+            target["node"]["suggestion_reason"] = ""
+            continue
+        target["node"]["suggestion_action"] = "建议删除"
+        target["node"]["suggestion_reason"] = str(item["reason"])
+        if "tender_basis" in item:
+            target["node"]["tender_basis"] = deepcopy(item["tender_basis"])
 
 
 def _apply_changes(

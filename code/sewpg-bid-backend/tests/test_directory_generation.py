@@ -230,20 +230,21 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertIn("s2outline tables", prompt)
         self.assertIn("s2outline review-batch", prompt)
         self.assertIn("s2outline status", prompt)
+        self.assertIn("s2outline decision-next", prompt)
+        self.assertIn("s2outline decision-batch", prompt)
         self.assertIn("s2outline decisions", prompt)
         self.assertIn("s2outline compose", prompt)
         self.assertIn("自主选择", prompt)
-        self.assertIn("完整学习并继承模板一至三级目录", prompt)
+        self.assertIn("完整学习模板一至三级目录", prompt)
         self.assertIn("模板已有第三级目录统一输出", prompt)
         self.assertIn("不得进行粒度收敛", prompt)
         self.assertIn("最终目录最多三级", prompt)
         self.assertIn("第四级及更深层级只作为对应第三级节点的内容参考", prompt)
         self.assertIn("再结合招标文件", prompt)
+        self.assertIn("模板目录与招标目录在同一批输入中", prompt)
         self.assertIn("不作为完成门禁", prompt)
-        self.assertIn("不得直接读取", prompt)
-        self.assertIn("tender_review_chunks.json", prompt)
-        self.assertIn("target_node", prompt)
-        self.assertIn("一个节点", prompt)
+        self.assertIn("不得把未判断节点自动当成必要", prompt)
+        self.assertIn("remaining_count=0", prompt)
         self.assertIn("s2outline finalize", prompt)
         self.assertNotIn("s2toc ", prompt)
         self.assertNotIn("粒度收敛和增删建议必须由 Opencode", prompt)
@@ -348,6 +349,11 @@ class DirectoryGenerationTests(unittest.TestCase):
             {
                 "schema_version": "technical-outline-decisions.v1",
                 "input_fingerprint": structure["input_fingerprint"],
+                "template_decisions": [
+                    {"target_id": item["template_id"], "decision": "retain"}
+                    for item in structure["items"]
+                    if int(item.get("level") or 1) <= 3
+                ],
                 "changes": changes,
             },
         )
@@ -915,27 +921,30 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertIn("s2outline tables", prompt)
         self.assertIn("s2outline review-batch", prompt)
         self.assertIn("s2outline status", prompt)
+        self.assertIn("s2outline decision-next", prompt)
+        self.assertIn("s2outline decision-batch", prompt)
         self.assertIn("s2outline decisions", prompt)
         self.assertIn("s2outline compose", prompt)
         self.assertIn("自主选择", prompt)
-        self.assertIn("完整学习并继承模板一至三级目录", prompt)
+        self.assertIn("完整学习模板一至三级目录", prompt)
         self.assertIn("模板已有第三级目录统一输出", prompt)
         self.assertIn("不得进行粒度收敛", prompt)
         self.assertIn("最终目录最多三级", prompt)
         self.assertIn("第四级及更深层级只作为对应第三级节点的内容参考", prompt)
         self.assertIn("再结合招标文件", prompt)
         self.assertIn("不作为完成门禁", prompt)
-        self.assertIn("不得直接读取", prompt)
-        self.assertIn("tender_review_chunks.json", prompt)
-        self.assertIn("target_node", prompt)
-        self.assertIn("一个节点", prompt)
+        self.assertIn("不得把未判断节点自动当成必要", prompt)
+        self.assertIn("remaining_count=0", prompt)
         self.assertIn("不得自行写入", prompt)
         self.assertIn("s2outline finalize", prompt)
         self.assertIn("technical-outline.v1", prompt)
+        self.assertNotIn("历史投标模板是主骨架", prompt)
+        self.assertNotIn("仅因招标未提及", prompt)
+        self.assertNotIn("没有不适用证据", prompt)
         self.assertNotIn("required_status", prompt)
         self.assertNotIn("粒度收敛和增删建议必须由 Opencode", prompt)
         self.assertNotIn("source_refs", prompt)
-        self.assertLess(len(prompt), 1200)
+        self.assertLess(len(prompt), 1800)
 
     def test_technical_outline_loader_does_not_trust_agent_modified_manifest_gate(self) -> None:
         from app.services.outline_generation import _load_outline_result
@@ -1032,6 +1041,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                 {
                     "schema_version": "technical-outline-decisions.v1",
                     "input_fingerprint": structure["input_fingerprint"],
+                    "template_decisions": [
+                        {"target_id": item["template_id"], "decision": "retain"}
+                        for item in structure["items"]
+                        if int(item.get("level") or 1) <= 3
+                    ],
                     "changes": [],
                 },
             )
