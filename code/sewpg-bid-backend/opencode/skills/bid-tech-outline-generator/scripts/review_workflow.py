@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from copy import deepcopy
@@ -17,7 +18,11 @@ from docx.text.paragraph import Paragraph
 CHUNKS_SCHEMA_VERSION = "tender-review-chunks.v1"
 STATE_SCHEMA_VERSION = "tender-review-state.v1"
 LEDGER_SCHEMA_VERSION = "tender-requirement-ledger.v1"
+HEADINGS_STATE_SCHEMA_VERSION = "tender-headings-state.v1"
 DEFAULT_CHUNK_CHAR_LIMIT = 12_000
+STRUCTURAL_TITLE_PATTERN = re.compile(
+    r"^(?:第\s*[一二三四五六七八九十百千万零〇两0-9]+\s*[章节篇卷]|\d+(?:\.\d+)*[.、]?\s+)\S+"
+)
 ALLOWED_DISPOSITIONS = {
     "map_existing",
     "suggest_add",
@@ -30,6 +35,35 @@ ALLOWED_DISPOSITIONS = {
 
 def clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").replace("\u3000", " ")).strip()
+
+
+def _payload_digest(payload: Any) -> str:
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def tender_input_fingerprint(tender_files: list[dict[str, Any]]) -> str:
+    records: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, source in enumerate(tender_files):
+        if not isinstance(source, dict):
+            raise SystemExit(f"tenderFiles[{index}] must be an object")
+        file_id = clean_text(source.get("id"))
+        path = Path(str(source.get("path") or "")).expanduser()
+        if not file_id or not path.is_file():
+            raise SystemExit(f"tenderFile must be a readable file with id: {path}")
+        if file_id in seen_ids:
+            raise SystemExit(f"duplicate tenderFile id: {file_id}")
+        seen_ids.add(file_id)
+        records.append(
+            {
+                "id": file_id,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    if not records:
+        raise SystemExit("no tender files found in manifest")
+    return _payload_digest(sorted(records, key=lambda item: item["id"]))
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -54,6 +88,20 @@ def _heading_level(paragraph: Paragraph) -> int:
     style_name = str(getattr(paragraph.style, "name", "") or "")
     match = re.search(r"(?:Heading|标题)\s*(\d+)", style_name, re.IGNORECASE)
     return max(1, min(9, int(match.group(1)))) if match else 0
+
+
+def _toc_level(paragraph: Paragraph) -> int:
+    style_name = str(getattr(paragraph.style, "name", "") or "")
+    match = re.search(r"(?:TOC|目录)\s*(\d+)", style_name, re.IGNORECASE)
+    return max(1, min(9, int(match.group(1)))) if match else 0
+
+
+def _structural_title_level(text: str) -> int:
+    value = clean_text(text)
+    if not STRUCTURAL_TITLE_PATTERN.match(value):
+        return 0
+    decimal = re.match(r"^(\d+(?:\.\d+)*)", value)
+    return min(9, decimal.group(1).count(".") + 1) if decimal else 1
 
 
 def _table_rows(table: Table, *, file_id: str, table_id: str) -> list[dict[str, Any]]:
@@ -94,6 +142,8 @@ def _source_blocks(source: dict[str, Any]) -> list[dict[str, Any]]:
                     "type": "paragraph",
                     "text": text,
                     "heading_level": _heading_level(item),
+                    "toc_level": _toc_level(item),
+                    "structural_title_level": _structural_title_level(text),
                 }
             )
             continue
@@ -171,6 +221,7 @@ def build_review_workspace(
     *,
     char_limit: int = DEFAULT_CHUNK_CHAR_LIMIT,
 ) -> dict[str, Any]:
+    input_fingerprint = tender_input_fingerprint(tender_files)
     chunks: list[dict[str, Any]] = []
     source_block_count = 0
     for source in tender_files:
@@ -181,14 +232,27 @@ def build_review_workspace(
     chunks_path = work_dir / "tender_review_chunks.json"
     state_path = work_dir / "tender_review_state.json"
     ledger_path = work_dir / "requirement_ledger.json"
-    write_json(
-        chunks_path,
-        {
-            "schema_version": CHUNKS_SCHEMA_VERSION,
-            "source_block_count": source_block_count,
-            "chunk_count": len(chunks),
-            "chunks": chunks,
-        },
+    headings_state_path = work_dir / "tender_headings_state.json"
+    chunks_payload = {
+        "schema_version": CHUNKS_SCHEMA_VERSION,
+        "input_fingerprint": input_fingerprint,
+        "source_files": [
+            {
+                "file_id": clean_text(source.get("id")),
+                "file_name": clean_text(source.get("name"))
+                or Path(str(source.get("path") or "")).name,
+            }
+            for source in tender_files
+        ],
+        "source_block_count": source_block_count,
+        "chunk_count": len(chunks),
+        "chunks": chunks,
+    }
+    write_json(chunks_path, chunks_payload)
+    heading_files, _ = _collect_heading_files(chunks_payload)
+    headings_catalog_digest = _heading_catalog_digest(
+        heading_files,
+        _appendix_catalog_items(work_dir),
     )
     write_json(
         state_path,
@@ -218,6 +282,21 @@ def build_review_workspace(
             "requirements": [],
         },
     )
+    write_json(
+        headings_state_path,
+        {
+            "schema_version": HEADINGS_STATE_SCHEMA_VERSION,
+            "input_fingerprint": input_fingerprint,
+            "next_cursor": 0,
+            "headings_exhausted": False,
+            "headings_catalog_digest": headings_catalog_digest,
+            "source_heading_count": 0,
+            "appendix_count": 0,
+            "requires_full_review": False,
+            "full_review_file_ids": [],
+            "complete": False,
+        },
+    )
     return {
         "tenderReviewChunksFile": str(chunks_path),
         "tenderReviewStateFile": str(state_path),
@@ -244,6 +323,440 @@ def _review_artifacts(work_dir: Path) -> tuple[dict[str, Any], dict[str, Any], d
     state = _load_payload(work_dir / "tender_review_state.json", STATE_SCHEMA_VERSION)
     ledger = _load_payload(work_dir / "requirement_ledger.json", LEDGER_SCHEMA_VERSION)
     return chunks, state, ledger
+
+
+def _collect_heading_files(
+    chunks: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
+    files_by_id: dict[str, dict[str, Any]] = {
+        clean_text(source.get("file_id")): {
+            "file_id": clean_text(source.get("file_id")),
+            "file_name": clean_text(source.get("file_name")) or clean_text(source.get("file_id")),
+            "toc_items": [],
+            "body_items": [],
+        }
+        for source in chunks.get("source_files") or []
+        if isinstance(source, dict) and clean_text(source.get("file_id"))
+    }
+    paragraph_locations: dict[tuple[str, str], dict[str, Any]] = {}
+    for chunk in chunks.get("chunks") or []:
+        if not isinstance(chunk, dict):
+            continue
+        file_id = clean_text(chunk.get("file_id"))
+        if not file_id:
+            continue
+        file_entry = files_by_id.setdefault(
+            file_id,
+            {
+                "file_id": file_id,
+                "file_name": clean_text(chunk.get("file_name")) or file_id,
+                "toc_items": [],
+                "body_items": [],
+            },
+        )
+        for block in chunk.get("blocks") or []:
+            if not isinstance(block, dict) or block.get("type") != "paragraph":
+                continue
+            paragraph_locations.setdefault(
+                (file_id, clean_text(block.get("text"))),
+                {
+                    "evidence_id": clean_text(block.get("evidence_id")),
+                    "body_index": int(block.get("body_index") or 0),
+                },
+            )
+            toc_level = int(block.get("toc_level") or 0)
+            heading_level = int(block.get("heading_level") or 0)
+            title_level = int(block.get("structural_title_level") or 0)
+            if not toc_level and not heading_level and not title_level:
+                continue
+            item = {
+                "kind": "toc" if toc_level else "heading" if heading_level else "title",
+                "level": toc_level or heading_level or title_level,
+                "text": clean_text(block.get("text")),
+                "evidence_id": clean_text(block.get("evidence_id")),
+                "body_index": int(block.get("body_index") or 0),
+            }
+            destination = "toc_items" if toc_level else "body_items"
+            file_entry[destination].append(item)
+    return files_by_id, paragraph_locations
+
+
+def _appendix_catalog_items(work_dir: Path) -> list[dict[str, Any]]:
+    inventory_path = work_dir / "tender_appendix_inventory.json"
+    if not inventory_path.is_file():
+        return []
+    inventory = _load_payload(inventory_path, "tender-appendix-inventory.v1")
+    return [item for item in inventory.get("items") or [] if isinstance(item, dict)]
+
+
+def _heading_catalog_digest(
+    files_by_id: dict[str, dict[str, Any]],
+    appendices: list[dict[str, Any]],
+) -> str:
+    files = []
+    for file_id in sorted(files_by_id):
+        file_entry = files_by_id[file_id]
+        source = "toc" if file_entry["toc_items"] else "body_headings"
+        selected = file_entry["toc_items"] or file_entry["body_items"]
+        files.append(
+            {
+                "file_id": file_id,
+                "source": source if selected else "none",
+                "items": [
+                    {
+                        "kind": clean_text(item.get("kind")),
+                        "level": int(item.get("level") or 0),
+                        "text": clean_text(item.get("text")),
+                        "evidence_id": clean_text(item.get("evidence_id")),
+                        "body_index": int(item.get("body_index") or 0),
+                    }
+                    for item in selected
+                ],
+            }
+        )
+    appendix_catalog = [
+        {
+            "file_id": clean_text(item.get("file_id")),
+            "number": clean_text(item.get("number")),
+            "title": clean_text(item.get("title")),
+            "raw_text": clean_text(item.get("raw_text")),
+            "following_table_count": int(item.get("following_table_count") or 0),
+        }
+        for item in appendices
+    ]
+    return _payload_digest({"files": files, "appendices": appendix_catalog})
+
+
+def decision_comparison_context(work_dir: Path) -> dict[str, Any]:
+    appendices = decision_appendix_items(work_dir)
+    chunks_path = work_dir / "tender_review_chunks.json"
+    if not chunks_path.is_file():
+        return {
+            "schema_version": "outline-comparison-context.v1",
+            "heading_count": 0,
+            "files": [],
+            "appendices": appendices,
+        }
+    chunks = _load_payload(chunks_path, CHUNKS_SCHEMA_VERSION)
+    files_by_id, _ = _collect_heading_files(chunks)
+    files: list[dict[str, Any]] = []
+    for file_entry in files_by_id.values():
+        source = "toc" if file_entry["toc_items"] else "body_headings"
+        selected = file_entry["toc_items"] or file_entry["body_items"]
+        files.append(
+            {
+                "file_id": file_entry["file_id"],
+                "file_name": file_entry["file_name"],
+                "source": source,
+                "items": [
+                    {
+                        "evidence_id": item["evidence_id"],
+                        "level": item["level"],
+                        "text": item["text"],
+                    }
+                    for item in selected
+                ],
+            }
+        )
+    return {
+        "schema_version": "outline-comparison-context.v1",
+        "heading_count": sum(len(item["items"]) for item in files),
+        "files": files,
+        "appendices": appendices,
+    }
+
+
+def decision_appendix_items(work_dir: Path) -> list[dict[str, Any]]:
+    inventory_path = work_dir / "tender_appendix_inventory.json"
+    if not inventory_path.is_file():
+        return []
+    try:
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"tender appendix inventory is invalid: {inventory_path}: {exc}") from exc
+    if (
+        not isinstance(inventory, dict)
+        or inventory.get("schema_version") != "tender-appendix-inventory.v1"
+    ):
+        raise SystemExit(f"tender appendix inventory schema is invalid: {inventory_path}")
+    result: list[dict[str, Any]] = []
+    for item in inventory.get("items") or []:
+        if not isinstance(item, dict) or int(item.get("following_table_count") or 0) < 1:
+            continue
+        result.append(
+            {
+                "appendix_id": f"APP-{len(result) + 1:04d}",
+                "file_id": clean_text(item.get("file_id")),
+                "number": clean_text(item.get("number")),
+                "title": clean_text(item.get("title")),
+                "following_table_count": int(item.get("following_table_count") or 0),
+            }
+        )
+    return result
+
+
+def tender_headings(
+    work_dir: Path,
+    *,
+    cursor: int = 0,
+    page_size: int = 200,
+) -> dict[str, Any]:
+    if cursor < 0:
+        raise SystemExit("headings cursor must be zero or greater")
+    if page_size < 1 or page_size > 500:
+        raise SystemExit("headings page_size must be between 1 and 500")
+    chunks = _load_payload(work_dir / "tender_review_chunks.json", CHUNKS_SCHEMA_VERSION)
+    files_by_id, paragraph_locations = _collect_heading_files(chunks)
+
+    appendices: list[dict[str, Any]] = []
+    inventory_path = work_dir / "tender_appendix_inventory.json"
+    if inventory_path.is_file():
+        try:
+            inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"tender appendix inventory is invalid: {inventory_path}: {exc}") from exc
+        if not isinstance(inventory, dict) or inventory.get("schema_version") != "tender-appendix-inventory.v1":
+            raise SystemExit(f"tender appendix inventory schema is invalid: {inventory_path}")
+        for item in inventory.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            public_item = deepcopy(item)
+            location = paragraph_locations.get(
+                (clean_text(item.get("file_id")), clean_text(item.get("raw_text")))
+            )
+            if location:
+                public_item.update(location)
+            appendices.append(public_item)
+
+    state_path = work_dir / "tender_headings_state.json"
+    state = _load_payload(state_path, HEADINGS_STATE_SCHEMA_VERSION)
+    chunks_fingerprint = clean_text(chunks.get("input_fingerprint"))
+    if not chunks_fingerprint or clean_text(state.get("input_fingerprint")) != chunks_fingerprint:
+        raise SystemExit("headings state does not match the prepared tender inputs")
+    headings_catalog_digest = _heading_catalog_digest(files_by_id, appendices)
+    if clean_text(state.get("headings_catalog_digest")) != headings_catalog_digest:
+        raise SystemExit("headings catalog does not match the prepared tender inputs")
+    fallback_items: list[tuple[str, dict[str, Any]]] = []
+    toc_files: list[dict[str, Any]] = []
+    body_file_names: dict[str, str] = {}
+    for file_entry in files_by_id.values():
+        if file_entry["toc_items"]:
+            toc_files.append(
+                {
+                    "file_id": file_entry["file_id"],
+                    "file_name": file_entry["file_name"],
+                    "source": "toc",
+                    "items": file_entry["toc_items"],
+                }
+            )
+            continue
+        body_file_names[file_entry["file_id"]] = file_entry["file_name"]
+        fallback_items.extend(
+            (file_entry["file_id"], item) for item in file_entry["body_items"]
+        )
+
+    appendix_file_ids = {
+        clean_text(item.get("file_id"))
+        for item in appendices
+        if clean_text(item.get("file_id"))
+        and int(item.get("following_table_count") or 0) > 0
+        and clean_text(item.get("raw_text") or item.get("number") or item.get("title"))
+    }
+    full_review_file_ids = sorted(
+        file_id
+        for file_id, file_entry in files_by_id.items()
+        if not file_entry["toc_items"]
+        and not file_entry["body_items"]
+        and file_id not in appendix_file_ids
+    )
+    headings_exhausted = bool(state.get("headings_exhausted"))
+    if headings_exhausted:
+        if cursor != 0:
+            raise SystemExit("headings cursor must be 0 after headings are exhausted")
+        page: list[tuple[str, dict[str, Any]]] = []
+        next_cursor_value = 0
+        pagination_complete = True
+    else:
+        expected_cursor = int(state.get("next_cursor") or 0)
+        if fallback_items and cursor != expected_cursor:
+            raise SystemExit(f"headings cursor must be {expected_cursor}")
+        page = fallback_items[cursor : cursor + page_size]
+        next_cursor_value = cursor + len(page)
+        pagination_complete = next_cursor_value >= len(fallback_items)
+
+    full_review_complete, full_review_pending_count, _ = _full_review_progress(
+        work_dir,
+        chunks,
+        full_review_file_ids,
+    )
+    complete = pagination_complete and full_review_complete
+    body_files_by_id: dict[str, dict[str, Any]] = {}
+    for file_id, item in page:
+        body_files_by_id.setdefault(
+            file_id,
+            {
+                "file_id": file_id,
+                "file_name": body_file_names[file_id],
+                "source": "body_headings",
+                "items": [],
+            },
+        )["items"].append(item)
+    full_review_files = [
+        {
+            "file_id": file_id,
+            "file_name": files_by_id[file_id]["file_name"],
+            "source": "full_text_review",
+            "items": [],
+        }
+        for file_id in full_review_file_ids
+    ]
+    files = [*toc_files, *body_files_by_id.values(), *full_review_files]
+    source_heading_count = sum(
+        len(item["toc_items"] or item["body_items"])
+        for item in files_by_id.values()
+    )
+    write_json(
+        state_path,
+        {
+            "schema_version": HEADINGS_STATE_SCHEMA_VERSION,
+            "input_fingerprint": chunks_fingerprint,
+            "next_cursor": next_cursor_value if not pagination_complete else 0,
+            "headings_exhausted": pagination_complete,
+            "headings_catalog_digest": headings_catalog_digest,
+            "source_heading_count": source_heading_count,
+            "appendix_count": len(appendices),
+            "requires_full_review": bool(full_review_file_ids),
+            "full_review_file_ids": full_review_file_ids,
+            "complete": complete,
+        },
+    )
+    return {
+        "schema_version": "tender-headings.v1",
+        "file_count": len(files_by_id),
+        "heading_count": source_heading_count,
+        "returned_heading_count": sum(len(item["items"]) for item in files),
+        "appendix_count": len(appendices),
+        "cursor": str(cursor),
+        "next_cursor": "" if pagination_complete else str(next_cursor_value),
+        "requires_full_review": bool(full_review_file_ids),
+        "full_review_pending_chunk_count": full_review_pending_count,
+        "complete": complete,
+        "files": files,
+        "appendices": appendices,
+    }
+
+
+def headings_complete(work_dir: Path) -> bool:
+    state = _load_payload(
+        work_dir / "tender_headings_state.json",
+        HEADINGS_STATE_SCHEMA_VERSION,
+    )
+    return bool(state.get("complete"))
+
+
+def _full_review_progress(
+    work_dir: Path,
+    chunks: dict[str, Any],
+    file_ids: list[str],
+) -> tuple[bool, int, list[dict[str, Any]]]:
+    if not file_ids:
+        return True, 0, []
+    review_state = _load_payload(work_dir / "tender_review_state.json", STATE_SCHEMA_VERSION)
+    state_by_id = _state_by_chunk_id(review_state)
+    file_id_set = set(file_ids)
+    target_chunks = [
+        chunk
+        for chunk in chunks.get("chunks") or []
+        if isinstance(chunk, dict) and clean_text(chunk.get("file_id")) in file_id_set
+    ]
+    present_file_ids = {clean_text(chunk.get("file_id")) for chunk in target_chunks}
+    missing_file_count = len(file_id_set - present_file_ids)
+    proof_entries: list[dict[str, Any]] = []
+    pending_count = missing_file_count
+    for chunk in target_chunks:
+        chunk_id = clean_text(chunk.get("chunk_id"))
+        entry = state_by_id.get(chunk_id) or {}
+        if entry.get("status") != "reviewed":
+            pending_count += 1
+        proof_entries.append(
+            {
+                "chunk_id": chunk_id,
+                "status": clean_text(entry.get("status")),
+                "review_summary": clean_text(entry.get("review_summary")),
+                "table_read_ranges": entry.get("table_read_ranges") or [],
+                "table_truncated_rows": entry.get("table_truncated_rows") or [],
+            }
+        )
+    return pending_count == 0, pending_count, proof_entries
+
+
+def require_headings_complete(
+    work_dir: Path,
+    tender_files: list[dict[str, Any]],
+) -> dict[str, str]:
+    chunks = _load_payload(work_dir / "tender_review_chunks.json", CHUNKS_SCHEMA_VERSION)
+    state = _load_payload(work_dir / "tender_headings_state.json", HEADINGS_STATE_SCHEMA_VERSION)
+    expected_fingerprint = tender_input_fingerprint(tender_files)
+    if clean_text(chunks.get("input_fingerprint")) != expected_fingerprint:
+        raise SystemExit("tender review workspace does not match the current tender inputs")
+    if clean_text(state.get("input_fingerprint")) != expected_fingerprint:
+        raise SystemExit("headings state does not match the current tender inputs")
+
+    files_by_id, _ = _collect_heading_files(chunks)
+    appendices = _appendix_catalog_items(work_dir)
+    headings_catalog_digest = _heading_catalog_digest(files_by_id, appendices)
+    if clean_text(state.get("headings_catalog_digest")) != headings_catalog_digest:
+        raise SystemExit("headings catalog does not match the prepared tender inputs")
+    appendix_file_ids = {
+        clean_text(item.get("file_id"))
+        for item in appendices
+        if clean_text(item.get("file_id"))
+        and int(item.get("following_table_count") or 0) > 0
+        and clean_text(item.get("raw_text") or item.get("number") or item.get("title"))
+    }
+    source_heading_count = sum(
+        len(item["toc_items"] or item["body_items"])
+        for item in files_by_id.values()
+    )
+    full_review_file_ids = sorted(
+        file_id
+        for file_id, file_entry in files_by_id.items()
+        if not file_entry["toc_items"]
+        and not file_entry["body_items"]
+        and file_id not in appendix_file_ids
+    )
+    if not state.get("headings_exhausted") or int(state.get("next_cursor") or 0) != 0:
+        raise SystemExit("必须先完整读取招标目录或分页 headings")
+    if int(state.get("source_heading_count") or 0) != source_heading_count:
+        raise SystemExit("headings state source heading count is stale")
+    if int(state.get("appendix_count") or 0) != len(appendices):
+        raise SystemExit("headings state appendix count is stale")
+    if list(state.get("full_review_file_ids") or []) != full_review_file_ids:
+        raise SystemExit("headings state full-review scope is stale")
+
+    full_review_complete, _, full_review_entries = _full_review_progress(
+        work_dir,
+        chunks,
+        full_review_file_ids,
+    )
+    if not full_review_complete or not state.get("complete"):
+        raise SystemExit("无可靠目录的招标文件必须先完成受控全文审阅")
+    proof_payload = {
+        "schema_version": HEADINGS_STATE_SCHEMA_VERSION,
+        "input_fingerprint": expected_fingerprint,
+        "headings_catalog_digest": headings_catalog_digest,
+        "source_heading_count": source_heading_count,
+        "appendix_count": len(appendices),
+        "headings_exhausted": True,
+        "requires_full_review": bool(full_review_file_ids),
+        "full_review_file_ids": full_review_file_ids,
+        "full_review_state_digest": _payload_digest(full_review_entries),
+        "complete": True,
+    }
+    return {
+        "tenderInputsDigest": expected_fingerprint,
+        "headingsStateDigest": _payload_digest(proof_payload),
+    }
 
 
 def _state_by_chunk_id(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -885,10 +1398,6 @@ def _evidence_texts(chunks: dict[str, Any]) -> dict[str, str]:
 def validate_review_completion(work_dir: Path, nodes: list[dict[str, Any]]) -> dict[str, Any]:
     chunks, state, ledger = _review_artifacts(work_dir)
     status = review_status(work_dir)
-    if status["pending_chunk_count"]:
-        raise SystemExit(f"仍有未审阅分块: {status['pending_chunk_count']}")
-    if status["unfinished_table_count"]:
-        raise SystemExit(f"仍有未完整读取表格: {status['unfinished_table_count']}")
 
     flat_nodes = _flatten_nodes(nodes)
     evidence_by_id = _evidence_texts(chunks)

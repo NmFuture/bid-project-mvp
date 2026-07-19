@@ -17,10 +17,12 @@ import {
   mergeOptionValues,
   normalizeTurbineModelRows,
 } from '../../shared/projectInfoForm'
+import {
+  buildTechnicalProjectInitialForm,
+  TECHNICAL_BID_TYPE,
+} from '../technicalProjectPrefill'
 
-const TECHNICAL_BID_TYPE = '技术标'
-const TECHNICAL_BID_TYPE_OPTIONS = [TECHNICAL_BID_TYPE]
-const TECHNICAL_PROJECT_WIZARD_DRAFT_VERSION = 1
+const TECHNICAL_PROJECT_WIZARD_DRAFT_VERSION = 2
 const TECHNICAL_PROJECT_WIZARD_DRAFT_PREFIX = 'sewpg.technicalProjectWizardDraft'
 const FORM_REQUIRED_STEP = 0
 
@@ -50,20 +52,6 @@ const normalizeMaterialProjects = (list = []) =>
       bidType: String(item?.bidType || '').trim(),
     }))
     .filter((item) => item.id && item.name)
-
-const buildInitialForm = (project = null, defaultBidType = '') => ({
-  projectCode: String(project?.projectCode || ''),
-  name: String(project?.name || ''),
-  customerName: String(project?.customerName || ''),
-  customerId: String(project?.materialCustomerId || project?.customerId || ''),
-  customerCanonicalName: String(project?.materialCustomerName || project?.customerCanonicalName || project?.customerName || ''),
-  materialProjectName: String(project?.materialProjectName || ''),
-  manager: String(project?.manager || ''),
-  bidType: String(project?.bidType || defaultBidType || ''),
-  turbineModels: normalizeTurbineModelRows(project),
-  startDate: String(project?.startDate || ''),
-  endDate: String(project?.endDate || project?.deadline || ''),
-})
 
 const buildDraftKey = ({ mode = 'create', project = null, defaultBidType = '' }) => [
   TECHNICAL_PROJECT_WIZARD_DRAFT_PREFIX,
@@ -122,11 +110,11 @@ export default function TechnicalProjectWizardModal({
   onCreated,
   mode = 'create',
   project = null,
+  prefill = null,
+  allowParsePrefill = false,
   forceReviewDecision = '',
 }) {
   const defaultBidType = TECHNICAL_BID_TYPE
-  const lockBidType = true
-  const bidTypeOptions = TECHNICAL_BID_TYPE_OPTIONS
   const requiresTurbineModel = true
   const projectsApi = technicalProjectsAPI
   const materialsApi = technicalMaterialsAPI
@@ -134,7 +122,11 @@ export default function TechnicalProjectWizardModal({
   const draftKey = useMemo(() => buildDraftKey({ mode, project, defaultBidType }), [defaultBidType, mode, project])
   const draft = useMemo(() => readDraft(draftKey), [draftKey])
   const hasDraft = Boolean(draft)
-  const [form, setForm] = useState(() => draft?.form || buildInitialForm(project, defaultBidType))
+  const [form, setForm] = useState(() => draft?.form || buildTechnicalProjectInitialForm({
+    project,
+    prefill,
+    allowPrefill: allowParsePrefill || Boolean(project?.isParseDraft),
+  }))
   const [materialProjectMode, setMaterialProjectMode] = useState(
     draft?.materialProjectMode || project?.materialProjectMode || (project?.materialProjectId ? 'library' : 'ordinary'),
   )
@@ -156,10 +148,6 @@ export default function TechnicalProjectWizardModal({
   const [createError, setCreateError] = useState('')
 
   const updateForm = (key, val) => setForm((prev) => ({ ...prev, [key]: val }))
-  const resolvedBidTypeOptions = useMemo(() => {
-    const items = lockBidType ? [form.bidType] : bidTypeOptions
-    return [...new Set((items || []).map((item) => String(item || '').trim()).filter(Boolean))]
-  }, [bidTypeOptions, form.bidType, lockBidType])
   const selectedMaterialProject = materialProjects.find((item) => item.id === selectedMaterialProjectId)
   // 「其他」恒为最后一项，合并 form 现值时要避免把它当成真实候选重复插入。
   const customerOptions = useMemo(() => {
@@ -367,6 +355,8 @@ export default function TechnicalProjectWizardModal({
       const primaryTurbineModel = buildPrimaryTurbineModel(turbineModels)
       const payload = {
         ...form,
+        bidType: TECHNICAL_BID_TYPE,
+        isParseDraft: false,
         turbineModels,
         deadline: form.endDate,
         owner: form.customerName,
@@ -430,29 +420,14 @@ export default function TechnicalProjectWizardModal({
         {/* Form Content */}
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           <div className="flex flex-col gap-4 animate-fade-in">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-              <div>
-                <FieldLabel>标书类型</FieldLabel>
-                <select
-                  className={FIELD_SELECT_CLASS}
-                  value={form.bidType}
-                  onChange={(e) => updateForm('bidType', e.target.value)}
-                  disabled={lockBidType}
-                >
-                  {resolvedBidTypeOptions.length
-                    ? resolvedBidTypeOptions.map((item) => <option key={item}>{item}</option>)
-                    : <option>{form.bidType || '请选择标书类型'}</option>}
-                </select>
-              </div>
-              <div className="md:col-span-2">
-                <FieldLabel required>项目名称</FieldLabel>
-                <input
-                  className={FIELD_INPUT_CLASS}
-                  placeholder="输入项目名称，例如：甘肃华能100MW风电项目"
-                  value={form.name}
-                  onChange={(e) => updateForm('name', e.target.value)}
-                />
-              </div>
+            <div>
+              <FieldLabel required>项目名称</FieldLabel>
+              <input
+                className={FIELD_INPUT_CLASS}
+                placeholder="输入项目名称，例如：甘肃华能100MW风电项目"
+                value={form.name}
+                onChange={(e) => updateForm('name', e.target.value)}
+              />
             </div>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div>
