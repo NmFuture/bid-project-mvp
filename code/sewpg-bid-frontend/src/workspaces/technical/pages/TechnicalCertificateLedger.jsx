@@ -12,12 +12,22 @@ const TECHNICAL_WORKSPACE = 'tech'
 const extOf = (name = '') => String(name || '').split('.').pop()?.toLowerCase() || ''
 const CERTIFICATE_VALIDITY_FILTERS = [
   { value: 'all', label: '全部记录' },
-  { value: 'expired', label: '已过期' },
   { value: 'valid', label: '有效期内' },
-  { value: 'missing-expiry', label: '缺有效期' },
+  { value: 'expired', label: '已过期' },
+  { value: 'missing-expiry', label: '未识别到' },
   { value: 'same-name', label: '同名重复' },
   { value: 'merged-duplicate', label: '合并重复' },
 ]
+const CERTIFICATE_VALIDITY_LABELS = {
+  valid: '有效期内',
+  expired: '已过期',
+  missing: '未识别到',
+}
+const certificateValidityOf = (item, today) => {
+  if (item?.expiryDate && item.expiryDate < today) return 'expired'
+  if ((item?.expiryDate && item.expiryDate >= today) || item?.longTerm) return 'valid'
+  return 'missing'
+}
 const CERTIFICATE_STATUS_LABELS = {
   pending: '待识别',
   extracted: '已识别',
@@ -25,6 +35,24 @@ const CERTIFICATE_STATUS_LABELS = {
   failed: '识别失败',
   unsupported: '不支持',
   manual: '人工维护',
+}
+const STAT_CARD_TONES = {
+  neutral: {
+    icon: 'bg-surface-container-high text-on-surface-variant',
+    active: 'border-primary/50 bg-primary/5',
+  },
+  success: {
+    icon: 'bg-secondary-container text-on-secondary-container',
+    active: 'border-secondary/60 bg-secondary-container/25',
+  },
+  danger: {
+    icon: 'bg-error-container text-error',
+    active: 'border-error/60 bg-error-container/20',
+  },
+  warning: {
+    icon: 'bg-tertiary-container text-on-tertiary-container',
+    active: 'border-tertiary/60 bg-tertiary-container/25',
+  },
 }
 
 const buildFailureReceipt = (item) => {
@@ -55,6 +83,27 @@ const buildFailureReceipt = (item) => {
 const normalizeSearchText = (value) => String(value || '').trim().toLocaleLowerCase()
 const certificateNameKey = (item) => String(item?.name || '').trim().toLocaleLowerCase()
 const normalizeScopePath = (value) => String(value || '').replace(/^\/+|\/+$/g, '')
+const normalizeScopeTreeNodes = (nodes = []) =>
+  (Array.isArray(nodes) ? nodes : [])
+    .map((node) => {
+      const path = normalizeScopePath(node?.path || node?.name || '')
+      return {
+        path,
+        name: String(node?.name || node?.title || path.split('/').pop() || '未命名目录'),
+        fileCount: Number(node?.fileCount || 0),
+        children: normalizeScopeTreeNodes(node?.children || []),
+      }
+    })
+    .filter((node) => node.path)
+const collectDefaultExpandedTreePaths = (nodes = [], depth = 0, result = new Set()) => {
+  nodes.forEach((node) => {
+    if (node.children.length) {
+      if (depth < 2) result.add(node.path)
+      collectDefaultExpandedTreePaths(node.children, depth + 1, result)
+    }
+  })
+  return result
+}
 
 export default function TechnicalCertificateLedger({ showToast = () => {} }) {
   const materialsBasePath = workspaceRoute(TECHNICAL_WORKSPACE, '/materials')
@@ -82,6 +131,12 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
   const [selectedSuggestionPaths, setSelectedSuggestionPaths] = useState(new Set())
   const [selectedConfirmedScopePaths, setSelectedConfirmedScopePaths] = useState(new Set())
   const [receiptItem, setReceiptItem] = useState(null)
+  const [scopeSourceTab, setScopeSourceTab] = useState('suggestions')
+  const [scopeTree, setScopeTree] = useState([])
+  const [scopeTreeLoading, setScopeTreeLoading] = useState(false)
+  const [scopeTreeLoaded, setScopeTreeLoaded] = useState(false)
+  const [expandedTreePaths, setExpandedTreePaths] = useState(() => new Set())
+  const [scopeDropActive, setScopeDropActive] = useState(false)
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -108,7 +163,6 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
   }, [loadData])
 
   const rows = useMemo(() => (Array.isArray(data?.items) ? data.items : []), [data])
-  const summary = data?.summary || {}
   const confirmedScopePaths = useMemo(() => scopes.map((scope) => normalizeScopePath(scope.path)).filter(Boolean), [scopes])
   const selectedScopePaths = useMemo(() => new Set(confirmedScopePaths), [confirmedScopePaths])
   const today = useMemo(() => new Date().toISOString().slice(0, 10), [])
@@ -122,9 +176,10 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
     return counts
   }, [rows])
   const statusOptions = useMemo(() => {
-    const values = Array.from(new Set(rows.map((item) => String(item.status || '').trim()).filter(Boolean)))
-    return values.sort((left, right) => left.localeCompare(right, 'zh-CN'))
-  }, [rows])
+    const values = new Set(rows.map((item) => String(item.status || '').trim()).filter(Boolean))
+    if (filters.status !== 'all') values.add(filters.status)
+    return Array.from(values).sort((left, right) => left.localeCompare(right, 'zh-CN'))
+  }, [filters.status, rows])
   const filteredRows = useMemo(() => {
     const keyword = normalizeSearchText(filters.keyword)
     return rows.filter((item) => {
@@ -139,9 +194,10 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
         if (!haystack.includes(keyword)) return false
       }
       if (filters.status !== 'all' && String(item.status || '') !== filters.status) return false
-      if (filters.validity === 'expired' && !(item.expiryDate && item.expiryDate < today)) return false
-      if (filters.validity === 'valid' && !(item.expiryDate && item.expiryDate >= today)) return false
-      if (filters.validity === 'missing-expiry' && item.expiryDate) return false
+      const validity = certificateValidityOf(item, today)
+      if (filters.validity === 'expired' && validity !== 'expired') return false
+      if (filters.validity === 'valid' && validity !== 'valid') return false
+      if (filters.validity === 'missing-expiry' && validity !== 'missing') return false
       if (filters.validity === 'same-name' && (nameCounts.get(certificateNameKey(item)) || 0) <= 1) return false
       if (filters.validity === 'merged-duplicate' && Number(item.duplicateCount || 0) <= 1) return false
       return true
@@ -157,8 +213,52 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
   )
   const allVisibleSelected = visibleFileIds.length > 0 && selectedVisibleCount === visibleFileIds.length
   const expiredCount = useMemo(() => {
-    return rows.filter((item) => item.expiryDate && item.expiryDate < today).length
+    return rows.filter((item) => certificateValidityOf(item, today) === 'expired').length
   }, [rows, today])
+  const validCount = useMemo(() => {
+    return rows.filter((item) => certificateValidityOf(item, today) === 'valid').length
+  }, [rows, today])
+  const failedCount = useMemo(() => {
+    return rows.filter((item) => String(item.status || '') === 'failed').length
+  }, [rows])
+  const statCards = [
+    {
+      key: 'all',
+      label: '台账记录',
+      value: data?.total || 0,
+      icon: 'database',
+      tone: 'neutral',
+      hint: '显示全部证书记录',
+      active: filters.status === 'all' && filters.validity === 'all',
+    },
+    {
+      key: 'valid',
+      label: '有效期内',
+      value: validCount,
+      icon: 'verified_user',
+      tone: 'success',
+      hint: '点击查看仍在有效期内的证书，再次点击取消筛选',
+      active: filters.validity === 'valid' && filters.status === 'all',
+    },
+    {
+      key: 'expired',
+      label: '已过期',
+      value: expiredCount,
+      icon: 'event_busy',
+      tone: 'danger',
+      hint: '点击查看已超过有效期的证书，再次点击取消筛选',
+      active: filters.validity === 'expired' && filters.status === 'all',
+    },
+    {
+      key: 'failed',
+      label: '识别失败',
+      value: failedCount,
+      icon: 'error',
+      tone: 'warning',
+      hint: '点击查看日期识别失败的证书，再次点击取消筛选',
+      active: filters.status === 'failed' && filters.validity === 'all',
+    },
+  ]
   const visibleSuggestions = useMemo(() => suggestions.slice(0, 40), [suggestions])
   const selectableSuggestionPaths = useMemo(() => {
     const paths = []
@@ -188,6 +288,29 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
 
   const clearFilters = () => {
     setFilters({ keyword: '', status: 'all', validity: 'all' })
+    setSelectedIds(new Set())
+  }
+
+  const applyStatCardFilter = (key) => {
+    setFilters((prev) => {
+      const reset = { ...prev, status: 'all', validity: 'all' }
+      if (key === 'valid') {
+        return prev.validity === 'valid' && prev.status === 'all'
+          ? reset
+          : { ...prev, status: 'all', validity: 'valid' }
+      }
+      if (key === 'expired') {
+        return prev.validity === 'expired' && prev.status === 'all'
+          ? reset
+          : { ...prev, status: 'all', validity: 'expired' }
+      }
+      if (key === 'failed') {
+        return prev.status === 'failed' && prev.validity === 'all'
+          ? reset
+          : { ...prev, status: 'failed', validity: 'all' }
+      }
+      return reset
+    })
     setSelectedIds(new Set())
   }
 
@@ -249,6 +372,56 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
     } finally {
       setSuggestionLoading(false)
     }
+  }
+
+  const loadScopeTree = async () => {
+    setScopeTreeLoading(true)
+    try {
+      const payload = await technicalMaterialsAPI.raw.tree()
+      const nodes = normalizeScopeTreeNodes(payload?.tree || payload?.items || payload?.nodes || [])
+      setScopeTree(nodes)
+      setExpandedTreePaths(collectDefaultExpandedTreePaths(nodes))
+      setScopeTreeLoaded(true)
+    } catch (e) {
+      showToast(safeMessage(e, '素材目录树加载失败'), 'error')
+    } finally {
+      setScopeTreeLoading(false)
+    }
+  }
+
+  const openScopeDialog = () => {
+    setScopeDialogOpen(true)
+    if (!scopeTreeLoaded && !scopeTreeLoading) loadScopeTree()
+    if (!suggestions.length && !suggestionLoading) loadSuggestions()
+  }
+
+  const toggleTreeExpand = (path) => {
+    setExpandedTreePaths((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) {
+        next.delete(path)
+      } else {
+        next.add(path)
+      }
+      return next
+    })
+  }
+
+  const handleScopeDragStart = (event, path) => {
+    event.dataTransfer.setData('text/plain', path)
+    event.dataTransfer.effectAllowed = 'copy'
+  }
+
+  const handleScopeDrop = (event) => {
+    event.preventDefault()
+    setScopeDropActive(false)
+    const path = normalizeScopePath(event.dataTransfer.getData('text/plain'))
+    if (!path) return
+    if (selectedScopePaths.has(path)) {
+      showToast('该目录已在已确认列表中', 'warning')
+      return
+    }
+    addScope({ path, source: 'manual' })
   }
 
   const addScope = (scope) => {
@@ -360,6 +533,47 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
       next.delete(normalizedPath)
       return next
     })
+  }
+
+  const renderScopeTreeNode = (node, depth = 0) => {
+    const added = selectedScopePaths.has(node.path)
+    const hasChildren = node.children.length > 0
+    const expanded = expandedTreePaths.has(node.path)
+    return (
+      <div key={node.path}>
+        <div
+          draggable={!added}
+          onDragStart={(event) => handleScopeDragStart(event, node.path)}
+          className={`flex items-center gap-1.5 rounded-lg py-1 pr-1.5 text-xs hover:bg-surface-container-high/60 ${added ? '' : 'cursor-grab'}`}
+          style={{ paddingLeft: `${depth * 16 + 4}px` }}
+        >
+          {hasChildren ? (
+            <button
+              type="button"
+              onClick={() => toggleTreeExpand(node.path)}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-outline hover:bg-surface-container-high"
+              aria-label={expanded ? `收起 ${node.name}` : `展开 ${node.name}`}
+            >
+              <span className="material-symbols-outlined text-[16px]">{expanded ? 'expand_more' : 'chevron_right'}</span>
+            </button>
+          ) : (
+            <span className="h-5 w-5 shrink-0" aria-hidden="true" />
+          )}
+          <input
+            type="checkbox"
+            checked={added}
+            onChange={() => (added ? removeScope(node.path) : addScope({ path: node.path, name: node.name, source: 'tree' }))}
+            className="h-4 w-4 shrink-0 accent-primary"
+            aria-label={`将目录 ${node.path} 加入识别范围`}
+          />
+          <span className="min-w-0 flex-1 truncate text-on-surface" title={node.path}>{node.name}</span>
+          {node.fileCount > 0 && (
+            <span className="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] tabular-nums text-on-surface-variant">{node.fileCount}</span>
+          )}
+        </div>
+        {hasChildren && expanded ? node.children.map((child) => renderScopeTreeNode(child, depth + 1)) : null}
+      </div>
+    )
   }
 
   const saveScopes = async () => {
@@ -524,14 +738,10 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
             <div className="flex flex-wrap items-center justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setScopeDialogOpen(true)}
-                className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-surface-container-high px-3 text-xs font-semibold text-on-surface hover:bg-surface-dim"
-                aria-label="打开识别范围"
-                title="识别范围"
+                onClick={openScopeDialog}
+                className="h-9 rounded-lg bg-surface-container-high px-3 text-xs font-semibold text-on-surface hover:bg-surface-dim"
               >
-                <span aria-hidden="true" className="material-symbols-outlined text-[16px]">rule_folder</span>
                 识别范围
-                <span className="rounded-full bg-surface-container-highest px-1.5 text-[11px] text-on-surface-variant">{scopes.length}</span>
               </button>
               <button
                 type="button"
@@ -560,18 +770,35 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-          {[
-            ['台账记录', data?.total || 0],
-            ['已识别', summary.extracted || 0],
-            ['有有效期', summary.expiring || 0],
-            ['已过期', expiredCount],
-          ].map(([label, value]) => (
-            <div key={label} className="rounded-lg border border-outline-variant/45 bg-surface-container-lowest px-4 py-3">
-              <div className="text-xs text-outline">{label}</div>
-              <div className="mt-1 text-xl font-semibold text-on-surface">{value}</div>
-            </div>
-          ))}
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4" role="group" aria-label="证书状态概览">
+          {statCards.map((card) => {
+            const tone = STAT_CARD_TONES[card.tone] || STAT_CARD_TONES.neutral
+            return (
+              <button
+                key={card.key}
+                type="button"
+                onClick={() => applyStatCardFilter(card.key)}
+                aria-pressed={card.active}
+                title={card.hint}
+                className={`flex items-center gap-3 rounded-lg border px-4 py-3 text-left transition-colors ${
+                  card.active
+                    ? `${tone.active} shadow-sm`
+                    : 'border-outline-variant/45 bg-surface-container-lowest hover:border-primary/40 hover:bg-surface-container-low'
+                }`}
+              >
+                <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${tone.icon}`}>
+                  <span aria-hidden="true" className="material-symbols-outlined text-[18px]">{card.icon}</span>
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs text-outline">{card.label}</span>
+                  <span className="mt-0.5 block text-xl font-semibold leading-6 tabular-nums text-on-surface">{card.value}</span>
+                </span>
+                {card.active ? (
+                  <span aria-hidden="true" className="material-symbols-outlined shrink-0 text-[16px] text-primary">filter_alt</span>
+                ) : null}
+              </button>
+            )
+          })}
         </div>
 
         <section className="min-h-[520px] overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest">
@@ -614,7 +841,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
               </button>
             </div>
             <div className="flex shrink-0 items-center justify-between gap-2 xl:justify-end">
-              <span className="text-xs text-outline">
+              <span className="whitespace-nowrap text-xs text-outline">
                 已选 {selectedVisibleCount} 项 / 显示 {filteredRows.length} 项
               </span>
               <button
@@ -629,8 +856,8 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
           </div>
           {rows.length ? (
             <div className="overflow-x-auto">
-              <div className="min-w-[980px]">
-                <div className="grid grid-cols-[2rem_minmax(16rem,1.5fr)_8rem_8rem_6rem_minmax(14rem,1fr)_7rem] gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-2 text-xs font-semibold text-on-surface-variant">
+              <div className="min-w-[1060px]">
+                <div className="grid grid-cols-[2rem_minmax(14rem,1.5fr)_7.5rem_7.5rem_5.5rem_6rem_minmax(12rem,1fr)_7rem] items-center gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-2 text-xs font-semibold text-on-surface-variant">
                   <label className="flex items-center" title="选择当前筛选结果">
                     <input
                       type="checkbox"
@@ -644,13 +871,19 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                   <span>文件</span>
                   <span>发证日期</span>
                   <span>有效期至</span>
+                  <span>有效期</span>
                   <span>状态</span>
                   <span>素材目录</span>
                   <span>操作</span>
                 </div>
                 <div className="max-h-[64vh] overflow-y-auto divide-y divide-surface-container-high">
                   {filteredRows.length ? filteredRows.map((item) => (
-                    <div key={item.fileId} className="grid grid-cols-[2rem_minmax(16rem,1.5fr)_8rem_8rem_6rem_minmax(14rem,1fr)_7rem] gap-3 px-4 py-2 text-xs text-on-surface-variant">
+                    <div
+                      key={item.fileId}
+                      className={`grid grid-cols-[2rem_minmax(14rem,1.5fr)_7.5rem_7.5rem_5.5rem_6rem_minmax(12rem,1fr)_7rem] items-center gap-3 px-4 py-2 text-xs text-on-surface-variant transition-colors ${
+                        selectedIds.has(item.fileId) ? 'bg-primary/5' : 'hover:bg-surface-container-low/70'
+                      }`}
+                    >
                       <label className="flex items-center">
                         <input
                           type="checkbox"
@@ -678,8 +911,33 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                           </span>
                         )}
                       </span>
-                      <span className="truncate">{item.issueDate || '-'}</span>
-                      <span className="truncate font-semibold text-on-surface">{item.expiryDate || '-'}</span>
+                      <span className="truncate tabular-nums">{item.issueDate || '-'}</span>
+                      <span className="flex min-w-0 items-center gap-1">
+                        <span className={`truncate font-semibold tabular-nums ${
+                          item.expiryDate && item.expiryDate < today ? 'text-error' : 'text-on-surface'
+                        }`}>
+                          {item.expiryDate || (item.longTerm ? '长期有效' : '-')}
+                        </span>
+                        {(item.warnings || []).length > 0 && (
+                          <span
+                            className="material-symbols-outlined shrink-0 text-[14px] text-error"
+                            title={(item.warnings || []).join('；')}
+                          >
+                            warning
+                          </span>
+                        )}
+                      </span>
+                      <span className="min-w-0 truncate">
+                        <span className={`inline-flex max-w-full items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                          certificateValidityOf(item, today) === 'valid'
+                            ? 'bg-secondary-container text-on-secondary-container'
+                            : certificateValidityOf(item, today) === 'expired'
+                              ? 'bg-error-container/70 text-error'
+                              : 'bg-surface-container-high text-on-surface-variant'
+                        }`}>
+                          <span className="truncate">{CERTIFICATE_VALIDITY_LABELS[certificateValidityOf(item, today)]}</span>
+                        </span>
+                      </span>
                       <span className="min-w-0 truncate" title={item.errorMessage || CERTIFICATE_STATUS_LABELS[item.status] || item.status}>
                         <span className={`inline-flex max-w-full items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
                           item.status === 'extracted' || item.status === 'manual'
@@ -777,12 +1035,187 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
 
             <div className="min-h-0 flex-1 overflow-auto p-5">
               <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                <section className="rounded-lg border border-outline-variant/45 bg-surface-container-low p-4">
+                <section className="flex h-[60vh] flex-col rounded-lg border border-outline-variant/45 bg-surface-container-low p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-0.5 rounded-lg bg-surface-container-high p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setScopeSourceTab('suggestions')}
+                        className={`h-7 rounded-md px-3 text-xs font-semibold transition-colors ${
+                          scopeSourceTab === 'suggestions'
+                            ? 'bg-surface-container-lowest text-on-surface shadow-sm'
+                            : 'text-on-surface-variant hover:text-on-surface'
+                        }`}
+                      >
+                        建议目录
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setScopeSourceTab('tree')}
+                        className={`h-7 rounded-md px-3 text-xs font-semibold transition-colors ${
+                          scopeSourceTab === 'tree'
+                            ? 'bg-surface-container-lowest text-on-surface shadow-sm'
+                            : 'text-on-surface-variant hover:text-on-surface'
+                        }`}
+                      >
+                        目录树
+                      </button>
+                    </div>
+                    {scopeSourceTab === 'suggestions' ? (
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={loadSuggestions}
+                          disabled={suggestionLoading}
+                          className="h-8 rounded-lg bg-surface-container-high px-3 text-xs font-semibold text-on-surface hover:bg-surface-dim disabled:opacity-45"
+                        >
+                          {suggestionLoading ? '生成中...' : '生成建议'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={addAllSuggestions}
+                          disabled={!selectableSuggestionPaths.length}
+                          className="h-8 rounded-lg bg-primary/10 px-3 text-xs font-semibold text-primary hover:bg-primary/15 disabled:opacity-45"
+                        >
+                          全部加入
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={loadScopeTree}
+                        disabled={scopeTreeLoading}
+                        className="h-8 rounded-lg bg-surface-container-high px-3 text-xs font-semibold text-on-surface hover:bg-surface-dim disabled:opacity-45"
+                      >
+                        {scopeTreeLoading ? '加载中...' : '刷新目录树'}
+                      </button>
+                    )}
+                  </div>
+                  <p className="mt-2 text-xs text-outline">
+                    {scopeSourceTab === 'suggestions'
+                      ? `已选 ${selectedSuggestionCount} 项 / 可加入 ${selectableSuggestionPaths.length} 项，可勾选批量加入或拖动到右侧`
+                      : '勾选目录即加入右侧已确认列表，也可直接拖动目录到右侧'}
+                  </p>
+                  {scopeSourceTab === 'suggestions' ? (
+                    <>
+                      {suggestions.length ? (
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-surface-container-high bg-surface-container-lowest px-2 py-2">
+                          <div className="flex items-center gap-2">
+                            <label className="inline-flex items-center gap-1.5 text-xs text-on-surface-variant">
+                              <input
+                                type="checkbox"
+                                checked={allSuggestionsSelected}
+                                onChange={allSuggestionsSelected ? clearSuggestionSelection : selectAllSuggestions}
+                                disabled={!selectableSuggestionPaths.length}
+                                className="h-4 w-4 accent-primary disabled:opacity-45"
+                              />
+                              全选
+                            </label>
+                            <button
+                              type="button"
+                              onClick={clearSuggestionSelection}
+                              disabled={!selectedSuggestionCount}
+                              className="h-7 rounded px-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high disabled:opacity-45"
+                            >
+                              清空
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={addSelectedSuggestions}
+                            disabled={!selectedSuggestionCount}
+                            className="h-7 rounded bg-primary px-2.5 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-45"
+                          >
+                            加入所选
+                          </button>
+                        </div>
+                      ) : null}
+                      <div className="mt-3 min-h-0 flex-1 space-y-0.5 overflow-y-auto rounded-lg border border-surface-container-high bg-surface-container-lowest p-1.5">
+                        {suggestionLoading && !visibleSuggestions.length ? (
+                          <div className="flex h-full items-center justify-center px-3 text-center text-xs text-outline">
+                            正在根据台账与素材目录生成建议...
+                          </div>
+                        ) : visibleSuggestions.length ? visibleSuggestions.map((item) => {
+                          const path = normalizeScopePath(item.path)
+                          const added = selectedScopePaths.has(path)
+                          const checked = selectedSuggestionPaths.has(path)
+                          return (
+                            <div
+                              key={item.path}
+                              draggable={!added}
+                              onDragStart={(event) => handleScopeDragStart(event, path)}
+                              className={`rounded-lg px-1.5 py-1.5 hover:bg-surface-container-high/60 ${added ? '' : 'cursor-grab'}`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleSuggestionSelection(path)}
+                                  disabled={added}
+                                  className="h-4 w-4 shrink-0 accent-primary disabled:opacity-45"
+                                  aria-label={`选择建议目录 ${item.path}`}
+                                />
+                                <span className="min-w-0 flex-1 truncate text-xs font-medium text-on-surface" title={item.path}>{item.path}</span>
+                                <span className="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] text-on-surface-variant">{item.candidateCount || 0}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => addSuggestionScopes([item])}
+                                  disabled={added}
+                                  className="h-6 rounded px-2 text-[11px] font-semibold text-primary hover:bg-primary/10 disabled:text-outline"
+                                >
+                                  {added ? '已加入' : '加入'}
+                                </button>
+                              </div>
+                              {!!item.examples?.length && (
+                                <div className="mt-1 truncate pl-6 text-[11px] text-outline" title={item.examples.join('，')}>
+                                  {item.examples.join('，')}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        }) : (
+                          <div className="flex h-full items-center justify-center px-3 text-center text-xs text-outline">
+                            暂无建议目录，可点击「生成建议」或切换到「目录树」手动挑选
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-surface-container-high bg-surface-container-lowest p-1.5">
+                      {scopeTreeLoading && !scopeTree.length ? (
+                        <div className="flex h-full items-center justify-center px-3 text-center text-xs text-outline">
+                          正在加载素材目录树...
+                        </div>
+                      ) : scopeTree.length ? (
+                        scopeTree.map((node) => renderScopeTreeNode(node, 0))
+                      ) : (
+                        <div className="flex h-full items-center justify-center px-3 text-center text-xs text-outline">
+                          素材目录树为空，请先在原始材料库中建立目录
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </section>
+
+                <section
+                  onDragOver={(event) => {
+                    event.preventDefault()
+                    event.dataTransfer.dropEffect = 'copy'
+                    setScopeDropActive(true)
+                  }}
+                  onDragLeave={() => setScopeDropActive(false)}
+                  onDrop={handleScopeDrop}
+                  className={`flex h-[60vh] flex-col rounded-lg border p-4 transition-colors ${
+                    scopeDropActive
+                      ? 'border-primary/60 bg-primary/5'
+                      : 'border-outline-variant/45 bg-surface-container-low'
+                  }`}
+                >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <h4 className="text-sm font-semibold text-on-surface">已确认目录</h4>
                       <p className="mt-0.5 text-xs text-outline">
-                        已选 {selectedConfirmedScopeCount} 项 / 共 {confirmedScopePaths.length} 项
+                        已选 {selectedConfirmedScopeCount} 项 / 共 {confirmedScopePaths.length} 项，可拖动左侧目录到本区域
                       </p>
                     </div>
                     <button
@@ -841,11 +1274,11 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                       </button>
                     </div>
                   ) : null}
-                  <div className="mt-3 max-h-[46vh] overflow-y-auto space-y-1.5">
+                  <div className="mt-3 min-h-0 flex-1 space-y-0.5 overflow-y-auto rounded-lg border border-surface-container-high bg-surface-container-lowest p-1.5">
                     {scopes.length ? scopes.map((scope) => {
                       const path = normalizeScopePath(scope.path)
                       return (
-                        <div key={scope.path} className="flex items-center gap-2 rounded-lg border border-surface-container-high bg-surface-container-lowest px-2 py-1.5 text-xs">
+                        <div key={scope.path} className="flex items-center gap-2 rounded-lg px-1.5 py-1.5 text-xs hover:bg-surface-container-high/60">
                           <input
                             type="checkbox"
                             checked={selectedConfirmedScopePaths.has(path)}
@@ -866,109 +1299,8 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                         </div>
                       )
                     }) : (
-                      <div className="rounded-lg border border-dashed border-surface-container-high px-3 py-10 text-center text-xs text-outline">
-                        尚未确认识别目录
-                      </div>
-                    )}
-                  </div>
-                </section>
-
-                <section className="rounded-lg border border-outline-variant/45 bg-surface-container-low p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <h4 className="text-sm font-semibold text-on-surface">建议目录</h4>
-                      <p className="mt-0.5 text-xs text-outline">
-                        已选 {selectedSuggestionCount} 项 / 可加入 {selectableSuggestionPaths.length} 项
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={loadSuggestions}
-                        disabled={suggestionLoading}
-                        className="h-8 rounded-lg bg-surface-container-high px-3 text-xs font-semibold text-on-surface hover:bg-surface-dim disabled:opacity-45"
-                      >
-                        {suggestionLoading ? '生成中...' : '生成建议'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={addAllSuggestions}
-                        disabled={!selectableSuggestionPaths.length}
-                        className="h-8 rounded-lg bg-primary/10 px-3 text-xs font-semibold text-primary hover:bg-primary/15 disabled:opacity-45"
-                      >
-                        全部加入
-                      </button>
-                    </div>
-                  </div>
-                  {suggestions.length ? (
-                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-surface-container-high bg-surface-container-lowest px-2 py-2">
-                      <div className="flex items-center gap-2">
-                        <label className="inline-flex items-center gap-1.5 text-xs text-on-surface-variant">
-                          <input
-                            type="checkbox"
-                            checked={allSuggestionsSelected}
-                            onChange={allSuggestionsSelected ? clearSuggestionSelection : selectAllSuggestions}
-                            disabled={!selectableSuggestionPaths.length}
-                            className="h-4 w-4 accent-primary disabled:opacity-45"
-                          />
-                          全选
-                        </label>
-                        <button
-                          type="button"
-                          onClick={clearSuggestionSelection}
-                          disabled={!selectedSuggestionCount}
-                          className="h-7 rounded px-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high disabled:opacity-45"
-                        >
-                          清空
-                        </button>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={addSelectedSuggestions}
-                        disabled={!selectedSuggestionCount}
-                        className="h-7 rounded bg-primary px-2.5 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-45"
-                      >
-                        加入所选
-                      </button>
-                    </div>
-                  ) : null}
-                  <div className="mt-3 max-h-[39vh] overflow-y-auto space-y-1.5">
-                    {visibleSuggestions.length ? visibleSuggestions.map((item) => {
-                      const path = normalizeScopePath(item.path)
-                      const added = selectedScopePaths.has(path)
-                      const checked = selectedSuggestionPaths.has(path)
-                      return (
-                        <div key={item.path} className="rounded-lg border border-surface-container-high bg-surface-container-lowest px-2 py-1.5">
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => toggleSuggestionSelection(path)}
-                              disabled={added}
-                              className="h-4 w-4 shrink-0 accent-primary disabled:opacity-45"
-                              aria-label={`选择建议目录 ${item.path}`}
-                            />
-                            <span className="min-w-0 flex-1 truncate text-xs font-medium text-on-surface" title={item.path}>{item.path}</span>
-                            <span className="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] text-on-surface-variant">{item.candidateCount || 0}</span>
-                            <button
-                              type="button"
-                              onClick={() => addSuggestionScopes([item])}
-                              disabled={added}
-                              className="h-6 rounded px-2 text-[11px] font-semibold text-primary hover:bg-primary/10 disabled:text-outline"
-                            >
-                              {added ? '已加入' : '加入'}
-                            </button>
-                          </div>
-                          {!!item.examples?.length && (
-                            <div className="mt-1 truncate pl-6 text-[11px] text-outline" title={item.examples.join('，')}>
-                              {item.examples.join('，')}
-                            </div>
-                          )}
-                        </div>
-                      )
-                    }) : (
-                      <div className="rounded-lg border border-dashed border-surface-container-high px-3 py-10 text-center text-xs text-outline">
-                        暂无建议目录
+                      <div className="flex h-full items-center justify-center px-3 text-center text-xs text-outline">
+                        尚未确认识别目录，可从左侧勾选、点击加入或拖动目录到此处
                       </div>
                     )}
                   </div>
