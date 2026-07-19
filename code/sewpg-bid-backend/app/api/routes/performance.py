@@ -66,6 +66,37 @@ async def list_performance_categories(
     )
 
 
+@router.get("/api/materials/performance/items")
+async def list_performance_items(
+    keyword: str = "",
+    turbineModel: str = "",
+    timeKeyword: str = "",
+    contractYear: str = "",
+    deliveryYear: str = "",
+    operationYear: str = "",
+    categoryId: str = "",
+    status: str = "enabled",
+    sortBy: str = "updatedAt",
+    sortOrder: str = "desc",
+    page: int = 1,
+    pageSize: int = 20,
+) -> dict[str, Any]:
+    return await performance_package_service.list_items(
+        keyword=keyword,
+        turbine_model=turbineModel,
+        time_keyword=timeKeyword,
+        contract_year=contractYear,
+        delivery_year=deliveryYear,
+        operation_year=operationYear,
+        category_id=categoryId,
+        status=status,
+        sort_by=sortBy,
+        sort_order=sortOrder,
+        page=page,
+        page_size=pageSize,
+    )
+
+
 @router.post("/api/materials/performance/categories/preview")
 async def preview_performance_summary(file: UploadFile = File(...)) -> dict[str, Any]:
     try:
@@ -77,6 +108,7 @@ async def preview_performance_summary(file: UploadFile = File(...)) -> dict[str,
 @router.post("/api/materials/performance/categories/import")
 async def import_performance_summary(
     file: UploadFile = File(...),
+    contractFiles: list[UploadFile] = File(default_factory=list),
     categoryName: str = Form(""),
     scene: str = Form(""),
     powerRating: str = Form(""),
@@ -87,6 +119,7 @@ async def import_performance_summary(
     try:
         return await performance_package_service.import_summary(
             file,
+            contract_uploads=contractFiles,
             category_name=categoryName,
             scene=scene,
             power_rating=powerRating,
@@ -96,6 +129,8 @@ async def import_performance_summary(
         )
     finally:
         await file.close()
+        for contract_file in contractFiles:
+            await contract_file.close()
 
 
 @router.get("/api/materials/performance/categories/{category_id}")
