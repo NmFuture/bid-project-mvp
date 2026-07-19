@@ -33,6 +33,7 @@ def default_parse_progress() -> dict[str, Any]:
         "phasePercent": 0,
         "current": 0,
         "total": 0,
+        "fileNames": [],
         "heartbeatAt": "",
         "staleAfterSeconds": DEFAULT_PARSE_STALE_AFTER_SECONDS,
         "startedAt": "",
@@ -88,7 +89,11 @@ def ensure_parse_progress_state(project: dict[str, Any]) -> dict[str, Any]:
     return copy.deepcopy(progress)
 
 
-def start_parse_progress_state(project: dict[str, Any], message: str = "已开始招标文件解析。") -> dict[str, Any]:
+def start_parse_progress_state(
+    project: dict[str, Any],
+    message: str = "已开始招标文件解析。",
+    file_names: list[str] | None = None,
+) -> dict[str, Any]:
     started_at = now_iso()
     progress = {
         "status": "running",
@@ -99,6 +104,8 @@ def start_parse_progress_state(project: dict[str, Any], message: str = "已开�
         "phasePercent": 0,
         "current": 0,
         "total": 0,
+        # 目标文件名随进度常驻：进度面板/全局提示/冲突提示都据此提醒用户在解析什么。
+        "fileNames": [str(name).strip() for name in (file_names or []) if str(name or "").strip()][:10],
         "heartbeatAt": started_at,
         "staleAfterSeconds": DEFAULT_PARSE_STALE_AFTER_SECONDS,
         "startedAt": started_at,

@@ -52,6 +52,24 @@ def _bool_env(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _int_tuple_env(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    parsed: list[int] = []
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            number = int(item)
+        except ValueError:
+            continue
+        if number >= 0:
+            parsed.append(number)
+    return tuple(parsed) or default
+
+
 def _upload_extensions() -> tuple[str, ...]:
     raw = _csv_env(
         "ALLOWED_UPLOAD_EXTENSIONS",
@@ -130,6 +148,11 @@ class Settings:
     redis_job_queue_lock_ttl_sec: int
     redis_job_result_ttl_sec: int
     redis_worker_poll_timeout_sec: int
+
+    # S1 parse async job
+    s1_parse_job_max_attempts: int
+    s1_parse_job_retry_backoff_sec: tuple[int, ...]
+    parse_progress_persist_interval_sec: float
 
     # Auth bootstrap
     auth_admin_email: str
@@ -218,6 +241,11 @@ settings = Settings(
     redis_job_queue_lock_ttl_sec=_int_env("REDIS_JOB_QUEUE_LOCK_TTL_SEC", 6 * 60 * 60),
     redis_job_result_ttl_sec=_int_env("REDIS_JOB_RESULT_TTL_SEC", 24 * 60 * 60),
     redis_worker_poll_timeout_sec=_int_env("REDIS_WORKER_POLL_TIMEOUT_SEC", 5),
+    s1_parse_job_max_attempts=_int_env("S1_PARSE_JOB_MAX_ATTEMPTS", 3),
+    s1_parse_job_retry_backoff_sec=_int_tuple_env("S1_PARSE_JOB_RETRY_BACKOFF_SEC", (30, 120)),
+    parse_progress_persist_interval_sec=float(
+        os.getenv("PARSE_PROGRESS_PERSIST_INTERVAL_SEC", "2").strip() or "2"
+    ),
     auth_admin_email=os.getenv("AUTH_ADMIN_EMAIL", "admin@sewpg.com").strip() or "admin@sewpg.com",
     auth_admin_password=os.getenv("AUTH_ADMIN_PASSWORD", "123456").strip() or "123456",
     auth_admin_name=os.getenv("AUTH_ADMIN_NAME", "当前用户").strip() or "当前用户",

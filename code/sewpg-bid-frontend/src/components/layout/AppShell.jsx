@@ -13,6 +13,7 @@ import {
   canViewBothWorkspaces,
 } from '../../utils/permissions'
 import RoleChip from '../shared/RoleChip'
+import ParseRunningBanner from './ParseRunningBanner'
 
 // 一级导航：6 项，对所有角色一致；2-5 项的链接随当前 workspace 变化。
 const NAV_DEFINITIONS = [
@@ -296,6 +297,8 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
       {showUserMenu && (
         <div className="fixed inset-0 z-30" onClick={() => setShowUserMenu(false)} />
       )}
+
+      <ParseRunningBanner />
     </div>
   )
 }

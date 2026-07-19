@@ -96,8 +96,9 @@ def test_sync_technical_parse_appendices_uploads_prefixed_files_and_refreshes_in
     rebuild_index.assert_awaited_once_with()
 
 
-@pytest.mark.parametrize("workflow", ["run_without_upload", "upload_and_parse"])
-def test_technical_parse_workflows_do_not_archive_appendices_before_participation(workflow: str) -> None:
+def test_technical_parse_job_does_not_archive_appendices_before_participation() -> None:
+    """解析异步化后，执行链路收敛到 execute_s1_parse_job：未参与投标前只物化附表资产，不归档入库。"""
+
     from app.services.bid_parse_service import BidParseService
 
     project = {
@@ -132,7 +133,7 @@ def test_technical_parse_workflows_do_not_archive_appendices_before_participatio
         },
     }
 
-    with patch.object(service, "parse_inputs", return_value=(tender_files, [])), patch.object(
+    with patch.object(
         service,
         "start_parse_progress",
     ), patch.object(service, "update_parse_progress"), patch.object(
@@ -150,9 +151,9 @@ def test_technical_parse_workflows_do_not_archive_appendices_before_participatio
         service,
         "_promote_completed_parse_if_participating",
         side_effect=lambda _project_id, payload: payload,
-    ), patch.object(service, "finalize_parse_progress"), patch(
-        "app.services.bid_parse_service._parse_tender_documents_async",
-        new=AsyncMock(return_value=({"extractedCount": 1, "appendixCount": 1}, {})),
+    ), patch.object(service, "finalize_parse_progress") as finalize_mock, patch(
+        "app.services.bid_parse_service.parse_tender_documents",
+        return_value=({"extractedCount": 1, "appendixCount": 1}, {}),
     ), patch(
         "app.services.bid_parse_service.materialize_parse_appendix_docx_assets",
         return_value=materialized_result,
@@ -161,12 +162,19 @@ def test_technical_parse_workflows_do_not_archive_appendices_before_participatio
         new=AsyncMock(return_value={"status": "synced", "syncedCount": 1}),
         create=True,
     ) as sync_appendices:
-        if workflow == "run_without_upload":
-            result = asyncio.run(service.run_without_upload(str(project["id"])))
-        else:
-            result = asyncio.run(service.upload_and_parse(str(project["id"])))
+        service.execute_s1_parse_job(
+            str(project["id"]),
+            {
+                "__bidType": "技术标",
+                "origin": "upload",
+                "tenderFiles": tender_files,
+                "templateFiles": [],
+            },
+        )
 
-    assert result["structured"]["appendices"] == materialized_result["structured"]["appendices"]
+    finalize_mock.assert_called_once()
+    finalized_result = finalize_mock.call_args[0][1]
+    assert finalized_result["structured"]["appendices"] == materialized_result["structured"]["appendices"]
     sync_appendices.assert_not_awaited()
 
 
