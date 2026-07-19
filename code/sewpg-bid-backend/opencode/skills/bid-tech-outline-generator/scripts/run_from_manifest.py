@@ -853,7 +853,7 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
         else {"reviewCoverage": 1.0, "requirementCount": 0, "unfinishedTableCount": 0}
     )
     level_three_summary: dict[str, Any] = {}
-    if structure is not None and decisions is not None:
+    if structure is not None:
         try:
             level_three_summary = {
                 "templateLevel3": outline_composer.build_level_three_report(

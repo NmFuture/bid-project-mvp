@@ -137,9 +137,24 @@ def build_composition(
 
 def build_level_three_report(
     structure: dict[str, Any],
-    decisions: dict[str, Any],
+    decisions: dict[str, Any] | None,
     output_nodes: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    if decisions is None:
+        annotated = annotate_template_structure(structure)
+        decisions = {
+            "schema_version": DECISIONS_SCHEMA,
+            "input_fingerprint": annotated["input_fingerprint"],
+            "template_decisions": [
+                {
+                    "target_id": str(item["template_id"]),
+                    "decision": "retain",
+                }
+                for item in annotated["items"]
+                if int(item.get("level") or 1) <= 3
+            ],
+            "changes": [],
+        }
     _, context = build_composition(structure, decisions)
     records = context["records"]
     template_level_three = [
