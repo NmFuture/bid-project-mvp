@@ -330,7 +330,7 @@
   <header>
     <div class="eyebrow">bid-project-mvp · 后端架构示意</div>
     <h1>素材文件清洗链路</h1>
-    <p class="subtitle">上传即触发、Redis 异步执行、由 skill 内置的确定性脚本完成清洗 —— 线上链路没有 AI 参与判断，输出稳定可复现。</p>
+    <p class="subtitle">上传即触发、Redis 异步执行、由 skill 内置的确定性脚本完成清洗 —— 线上链路没有 AI 参与判断，输出稳定可复现。清洗范围已收束：只清洗 <code>.docx</code>，其他格式一律保留原件。</p>
     <div class="tldr">
       <div class="tldr-item">
         <div class="k">触发时机</div>
@@ -345,8 +345,8 @@
         <div class="v">skill 目录里的脚本<br><code>driver.py</code>（subprocess 调用）</div>
       </div>
       <div class="tldr-item">
-        <div class="k">清洗产物</div>
-        <div class="v">标准 <code>.docx</code> 清洗稿<br>+ <code>cleaning_manifest.json</code></div>
+        <div class="k">清洗范围</div>
+        <div class="v">只清洗 <code>.docx</code><br>产物为清洗稿 + <code>cleaning_manifest.json</code></div>
       </div>
     </div>
   </header>
@@ -358,13 +358,14 @@
 
       <div class="step">
         <div class="step-card">
-          <div class="step-title">用户上传素材，按后缀分流 <span class="step-file">material_upload_operations.py · material_taxonomy.py</span></div>
+          <div class="step-title">用户上传素材，先过滤再按后缀分流 <span class="step-file">material_upload_operations.py · material_taxonomy.py</span></div>
           <div class="step-body">
-            <p>文件写入 MinIO <code>raw/</code> 路径并建库记录，同时按后缀给出初始清洗状态：</p>
+            <p>快捷方式与空文件先被过滤、不入库，其余文件写入 MinIO <code>raw/</code> 路径并建库记录，同时按后缀给出初始清洗状态：</p>
             <div class="routes">
-              <div class="route"><span class="ext">.pdf / .xlsx / .xls / .xlsm / .docx</span><span class="arrow">→</span><span><span class="pill acc">pending</span>&nbsp;等待清洗转换为 Word</span></div>
-              <div class="route"><span class="ext">png / jpg / gif / webp / tif …</span><span class="arrow">→</span><span><span class="pill skip">original_only</span>&nbsp;图片原件直接保留，不清洗</span></div>
-              <div class="route"><span class="ext">其他后缀（含 .doc）</span><span class="arrow">→</span><span><span class="pill fail">failed</span>&nbsp;暂不支持自动清洗</span></div>
+              <div class="route"><span class="ext">.lnk / .url / .webloc / .desktop、0 字节文件</span><span class="arrow">→</span><span><span class="pill fail">过滤</span>&nbsp;无实质内容不入库，响应里逐个提示文件名和原因</span></div>
+              <div class="route"><span class="ext">.docx</span><span class="arrow">→</span><span><span class="pill acc">pending</span>&nbsp;等待清洗规范化 Word</span></div>
+              <div class="route"><span class="ext">.pdf / .xls* / .doc / 图片 / .md</span><span class="arrow">→</span><span><span class="pill skip">original_only</span>&nbsp;原件直接保留，不清洗</span></div>
+              <div class="route"><span class="ext">白名单以外后缀</span><span class="arrow">→</span><span><span class="pill warn">拒绝</span>&nbsp;整批报 400（RAW_FILE_TYPE_NOT_ALLOWED）</span></div>
             </div>
           </div>
         </div>
@@ -383,7 +384,7 @@
         <div class="step-card">
           <div class="step-title">后台 worker 消费任务 <span class="step-file">workers/redis_worker.py</span></div>
           <div class="step-body">
-            <p>worker 取出 <code>material_cleaning</code> 任务，执行 <code>clean_material_file_sync</code>，把素材状态置为「cleaning · 正在清洗素材并转换为 Word」。</p>
+            <p>worker 取出 <code>material_cleaning</code> 任务，执行 <code>clean_material_file_sync</code>。非 <code>.docx</code> 任务（含历史遗留 pending）直接改标 <span class="pill skip">original_only</span> 结束；<code>.docx</code> 置为「cleaning · 正在清洗 Word 素材」。</p>
           </div>
         </div>
       </div>
@@ -399,9 +400,9 @@
 
       <div class="step">
         <div class="step-card">
-          <div class="step-title">driver 按类型路由到三个清洗分支 <span class="step-file">driver.py → pdf_to_word / excel_to_word / word 事务</span></div>
+          <div class="step-title">driver 执行 Word 规范化 <span class="step-file">driver.py → word 事务</span></div>
           <div class="step-body">
-            <p>递归扫描源目录，按后缀走 PDF / Excel / Word 分支（详见下节），产物统一为标准 <code>.docx</code>，并写出结构化清单 <code>cleaning_manifest.json</code>。原始文件全程只读，绝不修改。</p>
+            <p>线上只会收到 <code>.docx</code>，driver 走 Word 规范化分支（详见下节），产物为标准 <code>.docx</code> 清洗稿，并写出结构化清单 <code>cleaning_manifest.json</code>。原始文件全程只读，绝不修改。</p>
           </div>
         </div>
       </div>
@@ -419,29 +420,11 @@
   </section>
 
   <section>
-    <h2><span class="sec-no">02</span>三个清洗分支各做什么</h2>
-    <p class="sec-desc">目标一致：剥离封面、目录、前言等无用内容，只保留正文及其标题层级、图片和排版，统一收口为 Word。</p>
+    <h2><span class="sec-no">02</span>清洗只做一件事：Word 规范化</h2>
+    <p class="sec-desc">剥离封面、目录、前言等无用内容，只保留正文及其标题层级、图片和排版。PDF / Excel 转 Word 分支仍保留在 skill 脚本里，但线上链路不再触发。</p>
     <div class="branches">
       <div class="branch">
-        <h3>PDF 转 Word</h3>
-        <div class="b-ext">.pdf</div>
-        <ul>
-          <li>整体转换为 <code>.docx</code>，图片抽取到同名子文件夹</li>
-          <li>插入的标题默认带 <strong>Heading&nbsp;1</strong></li>
-          <li>源目录不留任何图片或中间文件</li>
-        </ul>
-      </div>
-      <div class="branch">
-        <h3>Excel 转 Word</h3>
-        <div class="b-ext">.xlsx / .xls / .xlsm</div>
-        <ul>
-          <li>每个 sheet 生成 <strong>Heading&nbsp;2</strong> + 标准表格</li>
-          <li>保留原始行列结构</li>
-          <li>输出落到镜像目录同名 <code>.docx</code></li>
-        </ul>
-      </div>
-      <div class="branch">
-        <h3>Word 规范化</h3>
+        <h3>Word 规范化（唯一线上分支）</h3>
         <div class="b-ext">.docx</div>
         <ul>
           <li>「单临时副本事务 + 预检快路径」：先探针判断正文起点</li>
@@ -450,12 +433,21 @@
           <li>验证失败最多纠偏一次，仍异常则标 REVIEW，不做无上限试错</li>
         </ul>
       </div>
+      <div class="branch">
+        <h3>其他格式：保留原件</h3>
+        <div class="b-ext">.pdf / .xlsx / .xls / .xlsm / .doc / 图片 / .md</div>
+        <ul>
+          <li>上传即标 <span class="pill skip">original_only</span>，不入清洗队列</li>
+          <li>前端预览 / 下游检索直接使用原件</li>
+          <li>skill 内的 PDF / Excel 转换能力暂时下线，后续需要时可重新接回</li>
+        </ul>
+      </div>
     </div>
   </section>
 
   <section>
     <h2><span class="sec-no">03</span>清洗结果四态</h2>
-    <p class="sec-desc">driver 把每个文件固定归入四种状态之一，状态与详情随 manifest 回写到素材元数据。</p>
+    <p class="sec-desc">进入清洗的 <code>.docx</code> 由 driver 固定归入四种状态之一，状态与详情随 manifest 回写到素材元数据；非 docx 素材不进入四态，停留在 original_only。</p>
     <div class="status-grid">
       <div class="status">
         <div class="st-head"><span class="pill ok">OK</span><span class="st-name">已清洗</span></div>
@@ -484,12 +476,12 @@
         <tr>
           <td>上传分流</td>
           <td><code>app/services/material_upload_operations.py</code></td>
-          <td>上传落库 + 按后缀定初始清洗状态，提交后批量入队</td>
+          <td>过滤快捷方式 / 空文件（skipped 回传原因）+ 上传落库，提交后批量入队</td>
         </tr>
         <tr>
           <td>状态判定</td>
           <td><code>app/services/material_taxonomy.py</code></td>
-          <td><code>clean_status_for_new_file</code>：pending / original_only / failed</td>
+          <td><code>clean_status_for_new_file</code>：pending（.docx）/ original_only（其他）</td>
         </tr>
         <tr>
           <td>入队</td>
@@ -522,7 +514,7 @@
     </div>
   </section>
 
-  <footer>整理自 bid-project-mvp 代码现状（sewpg-bid-backend）· 2026-07-17</footer>
+  <footer>整理自 bid-project-mvp 代码现状（sewpg-bid-backend）· 2026-07-17 初版 · 2026-07-18 更新：清洗收束到仅 .docx，上传新增快捷方式 / 空文件过滤</footer>
 </main>
 </body>
 </html>
