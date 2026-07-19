@@ -25,7 +25,8 @@ from app.services.peripheral import PeripheralError
 logger = logging.getLogger(__name__)
 
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-CLEANABLE_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm", ".docx"}
+# 线上清洗链路已收束到只处理 Word；其他格式一律保留原件（original_only）
+CLEANABLE_SUFFIXES = {".docx"}
 _sync_cleaning_loop: asyncio.AbstractEventLoop | None = None
 
 
@@ -181,7 +182,6 @@ async def set_material_clean_status(
 
 async def clean_material_file(file_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
     numeric_id = _numeric_raw_file_id(file_id)
-    await set_material_clean_status(file_id, "cleaning", "正在清洗素材并转换为 Word。")
 
     async with async_session() as session:
         result = await session.execute(
@@ -194,13 +194,15 @@ async def clean_material_file(file_id: str, data: dict[str, Any] | None = None) 
         source_bucket = str(item.minio_bucket or settings.minio_buckets["materials"])
         source_key = str(item.minio_key or "")
 
+    # 非 Word 素材不再清洗，直接标记保留原件（同时兜底修正历史 pending 任务）
     if not is_cleanable_material(source_name):
         return await set_material_clean_status(
             file_id,
-            "failed",
-            "当前格式暂不支持自动清洗转换。",
-            extra={"cleanError": f"unsupported suffix: {PurePosixPath(source_name).suffix.lower() or 'none'}"},
+            "original_only",
+            "非 Word 素材保留原件，不触发自动清洗。",
         )
+
+    await set_material_clean_status(file_id, "cleaning", "正在清洗 Word 素材。")
 
     driver_path = _skill_driver_path()
     if not driver_path.exists():

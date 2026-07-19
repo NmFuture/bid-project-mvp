@@ -39,6 +39,7 @@ from app.services.material_taxonomy import (
     BUSINESS_CUSTOMIZED_SUBFOLDERS,
     MATERIAL_LIBRARY_ALLOWED_SUFFIXES,
     RAW_MATERIAL_PROTECTED_FOLDER_PATHS,
+    SHORTCUT_MATERIAL_SUFFIXES,
     business_customized_child_tier_for_parent_path,
     business_customized_tier_from_path,
     clean_status_for_new_file,
@@ -135,6 +136,19 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
         self.assertEqual(status, "pending")
         self.assertIn("清洗", message)
 
+    def test_non_docx_documents_keep_original_without_cleaning(self) -> None:
+        for name in ["技术方案.pdf", "报价表.xlsx", "偏差表.xls", "参数表.xlsm", "旧版说明.doc", "说明.md"]:
+            status, message = clean_status_for_new_file(name)
+            self.assertEqual(status, "original_only", name)
+            self.assertIn("原件", message)
+
+    def test_shortcut_suffixes_are_filtered_not_allowed(self) -> None:
+        for suffix in SHORTCUT_MATERIAL_SUFFIXES:
+            self.assertNotIn(suffix, MATERIAL_LIBRARY_ALLOWED_SUFFIXES)
+        upload_source = Path("app/services/material_upload_operations.py").read_text(encoding="utf-8")
+        self.assertIn("SHORTCUT_MATERIAL_SUFFIXES", upload_source)
+        self.assertIn("skipped_items", upload_source)
+
     def test_existing_business_customer_project_paths_are_detected_for_backfill(self) -> None:
         self.assertEqual(
             business_customized_tier_from_path("商务标/客户素材/华能集团"),
@@ -182,8 +196,8 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
         self.assertEqual(ext_of(".DS_Store"), "file")
         self.assertNotIn(".ds_store", MATERIAL_LIBRARY_ALLOWED_SUFFIXES)
         status, message = clean_status_for_new_file(".DS_Store")
-        self.assertEqual(status, "failed")
-        self.assertIn("暂不支持", message)
+        self.assertEqual(status, "original_only")
+        self.assertIn("原件", message)
         upload_source = Path("app/services/material_upload_operations.py").read_text(encoding="utf-8")
         self.assertIn('file_name.lower() == ".ds_store"', upload_source)
 
