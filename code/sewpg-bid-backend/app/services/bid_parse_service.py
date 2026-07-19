@@ -5,6 +5,7 @@ import copy
 import json
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
@@ -16,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from app.core.config import settings
 from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.bid_parse_state import (
+    TERMINAL_PARSE_STATUSES,
     cancel_parse_progress_state,
     complete_parse_state,
     parse_progress_snapshot_state,
@@ -27,6 +29,7 @@ from app.services.bid_parse_state import (
 from app.services.bid_runtime_state import now_iso, read_json_file
 from app.services.bid_project_state import project_parse_input_records
 from app.services.bid_project_service import BidProjectService, business_project_service, technical_project_service
+from app.services.bid_type import require_bid_type
 from app.services.business_parse_assets import (
     BusinessParseAssetError,
     approve_all_business_appendix_assets,
@@ -40,6 +43,8 @@ from app.services.file_utils import format_size_mb
 from app.services.onlyoffice_documents import WORD_MEDIA_TYPE, build_editor_session_key
 from app.services.opencode_client import OpencodeClient
 from app.services.parse_profiles import BUSINESS_PARSE_PROFILE, TECHNICAL_PARSE_PROFILE
+from app.services.job_queue import enqueue_generation_job, find_active_jobs_of_type, is_generation_locked
+from app.services.local_job_executor import submit_local_job
 from app.services.url_utils import absolute_url, onlyoffice_backend_base_url
 from app.services.parsing import (
     IMAGE_SUFFIXES,
@@ -73,6 +78,92 @@ async def _parse_tender_documents_async(
         progress_callback=progress_callback,
         cancel_check=cancel_check,
     )
+
+
+S1_PARSE_JOB_TYPE = "s1_parse"
+S1_PARSE_LOCKED_DETAIL = "当前项目已有解析任务在进行中，请等待完成后再发起。"
+S1_PARSE_QUEUED_MESSAGE = "解析任务已提交，后台运行中，可随时离开本页。"
+
+
+def _parse_file_names(tender_files: list[dict[str, Any]]) -> list[str]:
+    return [str(item.get("name") or "").strip() for item in tender_files if str(item.get("name") or "").strip()]
+
+
+def _parse_files_label(tender_files: list[dict[str, Any]]) -> str:
+    """给用户看的解析目标简述：1 个写文件名，多个写「a」「b」，超过 3 个写「a」等 N 个。"""
+
+    names = _parse_file_names(tender_files)
+    if not names:
+        return f"{len(tender_files)} 个招标文件"
+    if len(names) <= 3:
+        return "、".join(f"「{name}」" for name in names)
+    return f"「{names[0]}」等 {len(names)} 个文件"
+
+
+def _s1_parse_global_busy_detail(project_id: str) -> str:
+    """同一时间只允许一个解析任务（opencode 全局并发=1）。发现其他项目的任务在
+    执行/排队时返回 409 文案（含正在解析的文件名），否则返回空串。"""
+
+    for job in find_active_jobs_of_type(S1_PARSE_JOB_TYPE):
+        if str(job.get("projectId") or "") == str(project_id):
+            continue  # 同项目冲突由项目锁 409 覆盖
+        data = job.get("data") if isinstance(job.get("data"), dict) else {}
+        tender_files = data.get("tenderFiles") if isinstance(data.get("tenderFiles"), list) else []
+        label = _parse_files_label(tender_files) if tender_files else ""
+        if label:
+            return f"当前正在解析{label}，每次只能解析一个任务，请等待完成后再发起。"
+        return "当前已有其他项目的解析任务在进行中，每次只能解析一个任务，请等待完成后再发起。"
+    return ""
+
+# 命中以下特征的异常按瞬时错误处理并自动重试；HTTPException（入参/状态类错误）与取消不重试。
+_RETRYABLE_PARSE_ERROR_MARKERS = (
+    "429",
+    "502",
+    "503",
+    "504",
+    "too many requests",
+    "timeout",
+    "timed out",
+    "connection",
+    "temporarily",
+    "database is locked",
+    "deadlock",
+)
+
+
+def _is_retryable_parse_error(exc: Exception) -> bool:
+    if isinstance(exc, HTTPException):
+        return False
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    text = str(exc).lower()
+    return any(marker in text for marker in _RETRYABLE_PARSE_ERROR_MARKERS)
+
+
+def _schedule_s1_parse_job(project_id: str, data: dict[str, Any]) -> tuple[str, str]:
+    """调度 S1 解析任务：优先 Redis 队列，Redis 不可用时降级本地串行线程（与目录/正文生成一致）。
+
+    返回 (mode, job_id)：queued=已入队；local=本地兜底；locked=同项目已有任务。
+    """
+
+    queue_result = enqueue_generation_job(S1_PARSE_JOB_TYPE, project_id, data)
+    if queue_result.queued:
+        return "queued", queue_result.job_id
+    if queue_result.locked:
+        return "locked", ""
+    submit_local_job(_run_s1_parse_job, project_id, data)
+    return "local", ""
+
+
+def _run_s1_parse_job(project_id: str, data: dict[str, Any]) -> None:
+    """worker/本地线程入口：按任务绑定的标类分发到对应解析服务执行。"""
+
+    bid_type = require_bid_type(
+        data.get("__bidType"),
+        error_message="解析任务必须显式绑定技术标或商务标。",
+    )
+    service = business_parse_service if bid_type == BUSINESS_PARSE_PROFILE.bid_type else technical_parse_service
+    service.execute_s1_parse_job(project_id, data)
 
 
 def _add_callback_token(url: str) -> str:
@@ -1621,6 +1712,9 @@ class BidParseService:
     def __init__(self, project_service: BidProjectService, api_prefix: str) -> None:
         self.project_service = project_service
         self.api_prefix = api_prefix.rstrip("/")
+        # 进度落库节流：project_id -> (上次落库 monotonic 时间, 上次落库 phaseKey)。
+        # 仅进程内存；解析移到 worker 进程后同样生效。
+        self._progress_persist_guard: dict[str, tuple[float, str]] = {}
 
     def ensure_project(self, project_id: str) -> dict[str, Any]:
         return self.project_service.ensure_project(project_id)
@@ -1772,10 +1866,16 @@ class BidParseService:
         if self.is_parse_cancel_requested(project_id):
             raise ParseCancelledError("解析已取消。")
 
-    def start_parse_progress(self, project_id: str, message: str = "已开始招标文件解析。") -> dict[str, Any]:
+    def start_parse_progress(
+        self,
+        project_id: str,
+        message: str = "已开始招标文件解析。",
+        file_names: list[str] | None = None,
+    ) -> dict[str, Any]:
         project = self.require_project_for_update(project_id)
-        progress = start_parse_progress_state(project, message)
+        progress = start_parse_progress_state(project, message, file_names=file_names)
         persist_workspace_project_state(project)
+        self._progress_persist_guard[project_id] = (time.monotonic(), str(progress.get("phaseKey") or ""))
         return progress
 
     def update_parse_progress(
@@ -1813,7 +1913,29 @@ class BidParseService:
             total=total,
             stale_after_seconds=stale_after_seconds,
         )
-        persist_workspace_project_state(project)
+        # 落库节流：终态/跨阶段/告警错误事件必写，其余按时间间隔合并，
+        # 避免每个进度事件都整行 JSONB upsert Postgres。被跳过的更新只影响
+        # 展示层（最多滞后一个间隔），心跳刷新间隔远小于各阶段 stale 阈值。
+        now_monotonic = time.monotonic()
+        last_persist = self._progress_persist_guard.get(project_id)
+        is_terminal = status is not None and status in TERMINAL_PARSE_STATUSES
+        phase_changed = phase_key is not None and (last_persist is None or phase_key != last_persist[1])
+        should_persist = (
+            last_persist is None
+            or is_terminal
+            or phase_changed
+            or event_level in {"warning", "error"}
+            or (now_monotonic - last_persist[0]) >= settings.parse_progress_persist_interval_sec
+        )
+        if should_persist:
+            persist_workspace_project_state(project)
+            if is_terminal:
+                self._progress_persist_guard.pop(project_id, None)
+            else:
+                self._progress_persist_guard[project_id] = (
+                    now_monotonic,
+                    str(progress.get("phaseKey") or ""),
+                )
         return progress
 
     def cancel_parse(self, project_id: str) -> dict[str, Any]:
@@ -1928,17 +2050,89 @@ class BidParseService:
     async def cancel(self, project_id: str) -> dict[str, Any]:
         return self.cancel_parse(project_id)
 
-    async def run_without_upload(self, project_id: str) -> dict[str, Any]:
-        tender_files, template_files = self.parse_inputs(project_id, include_fallback=False)
+    def _mark_parse_queued(self, project_id: str, message: str, file_names: list[str] | None = None) -> dict[str, Any]:
+        """入队前把进度置为排队态：前端轮询立即有反馈；任务迟迟不被消费时由 stale 机制兜底。"""
+
+        self.start_parse_progress(project_id, message, file_names=file_names)
+        return self.update_parse_progress(
+            project_id,
+            status="queued",
+            summary=message,
+            event_step="queue",
+            event_message=message,
+            phase_key="queue",
+            phase_label="排队等待中",
+            phase_percent=0,
+            # worker 繁忙时排队可能较久，放宽 stale 判定，避免误报中断。
+            stale_after_seconds=1800,
+        )
+
+    def _parse_schedule_response(
+        self,
+        project_id: str,
+        *,
+        mode: str,
+        job_id: str,
+        inline_message: str,
+    ) -> dict[str, Any]:
+        """调度后的统一收口。
+
+        调度器被同步执行（测试内联补丁）时按旧契约返回完整解析结果、失败抛 500、
+        取消返回 cancelled；真实异步入队时返回 queued（路由层据此置 HTTP 202）。
+        """
+
+        progress = self.parse_progress(project_id)
+        status = str(progress.get("status") or "")
+        if status == "completed":
+            parse_result = self.parse_result(project_id)
+            return {**parse_result, "message": inline_message}
+        if status == "cancelled":
+            return self._cancelled_parse_response(progress)
+        if status == "failed":
+            raise HTTPException(status_code=500, detail=str(progress.get("summary") or "解析失败"))
+        return {
+            "status": "queued",
+            "mode": mode,
+            "jobId": job_id,
+            "message": S1_PARSE_QUEUED_MESSAGE,
+            "progress": progress,
+        }
+
+    def execute_s1_parse_job(self, project_id: str, data: dict[str, Any]) -> None:
+        """后台执行 S1 解析（Redis worker/本地线程）：瞬时错误按配置退避自动重试，取消走协作式中止。"""
+
+        tender_files = [item for item in (data.get("tenderFiles") or []) if isinstance(item, dict)]
+        template_files = [item for item in (data.get("templateFiles") or []) if isinstance(item, dict)]
         if not tender_files:
-            raise HTTPException(status_code=400, detail="当前项目还没有已上传的招标文件。")
-        self.start_parse_progress(project_id)
+            self.update_parse_progress(
+                project_id,
+                status="failed",
+                percentage=100,
+                summary="解析失败：解析任务缺少招标文件。",
+                event_step="failed",
+                event_level="error",
+                event_message="解析失败：解析任务缺少招标文件。",
+                phase_key="failed",
+                phase_label="解析失败",
+                phase_percent=100,
+            )
+            raise RuntimeError("解析任务缺少招标文件。")
+
+        # 从排队态进入运行态（重置进度与事件流），目标文件名随进度常驻。
+        self.start_parse_progress(project_id, file_names=_parse_file_names(tender_files))
+        # 补发上传阶段事件，保持与旧同步链路一致的进度事件词表。
+        if str(data.get("origin") or "") == "rerun":
+            upload_summary = "正在复用已上传招标文件进行解析。"
+            upload_event = f"复用 {len(tender_files)} 个已上传招标文件。"
+        else:
+            upload_summary = f"正在保存招标文件，已保存 {len(tender_files)} / {len(tender_files)}。"
+            upload_event = f"已保存 {len(tender_files)} 个招标文件。"
         self.update_parse_progress(
             project_id,
             percentage=8,
-            summary="正在复用已上传招标文件进行解析。",
+            summary=upload_summary,
             event_step="upload",
-            event_message=f"复用 {len(tender_files)} 个已上传招标文件。",
+            event_message=upload_event,
             phase_key="upload",
             phase_label="上传文件中",
             phase_percent=100,
@@ -1946,59 +2140,121 @@ class BidParseService:
             total=len(tender_files),
             stale_after_seconds=180,
         )
-        cancel_check = lambda: self.is_parse_cancel_requested(project_id)
-        try:
-            summary, parse_storage = await _parse_tender_documents_async(
+        max_attempts = max(1, int(settings.s1_parse_job_max_attempts or 1))
+        backoffs = tuple(settings.s1_parse_job_retry_backoff_sec) or (30, 120)
+        attempt = 0
+        while True:
+            attempt += 1
+            if attempt > 1:
+                self.update_parse_progress(
+                    project_id,
+                    status="running",
+                    summary=f"正在自动重试解析（第 {attempt - 1} 次重试）。",
+                    event_step="retry",
+                    event_level="warning",
+                    event_message=f"开始第 {attempt - 1} 次自动重试。",
+                    phase_key="retry",
+                    phase_label=f"自动重试 {attempt - 1}/{max_attempts - 1}",
+                )
+            cancel_check = lambda: self.is_parse_cancel_requested(project_id)
+            try:
+                summary, parse_storage = parse_tender_documents(
+                    project_id,
+                    tender_files,
+                    bid_type=self.project_service.bid_type,
+                    progress_callback=_progress_callback(self, project_id),
+                    cancel_check=cancel_check,
+                )
+                self.raise_if_parse_cancel_requested(project_id)
+            except ParseCancelledError:
+                self.cancel_parse(project_id)
+                return
+            except Exception as exc:
+                if self.is_parse_cancel_requested(project_id):
+                    self.cancel_parse(project_id)
+                    return
+                if attempt < max_attempts and _is_retryable_parse_error(exc):
+                    delay = backoffs[min(attempt - 1, len(backoffs) - 1)]
+                    self.update_parse_progress(
+                        project_id,
+                        status="running",
+                        summary=f"解析失败：{exc}。{delay} 秒后自动重试（第 {attempt} 次，共 {max_attempts - 1} 次）。",
+                        event_step="retry_wait",
+                        event_level="warning",
+                        event_message=f"第 {attempt} 次解析失败：{exc}。{delay} 秒后自动重试。",
+                        phase_key="retry_wait",
+                        phase_label="等待自动重试",
+                        stale_after_seconds=int(delay) + 300,
+                    )
+                    # 重试等待会阻塞当前 worker/本地线程；现有执行模型按 opencode 并发=1
+                    # 本来就是全局串行，短暂阻塞可接受。
+                    time.sleep(delay)
+                    continue
+                self.update_parse_progress(
+                    project_id,
+                    status="failed",
+                    percentage=100,
+                    summary=f"解析失败：{exc}",
+                    event_step="failed",
+                    event_level="error",
+                    event_message=f"解析失败：{exc}",
+                    phase_key="failed",
+                    phase_label="解析失败",
+                    phase_percent=100,
+                )
+                raise
+            self.raise_if_parse_cancel_requested(project_id)
+            _progress_callback(self, project_id)(
+                "result_persisting",
+                {"extractedCount": int(summary.get("extractedCount") or 0) if isinstance(summary, dict) else 0},
+            )
+            parse_result = self.complete_parse(
                 project_id,
                 tender_files,
-                bid_type=self.project_service.bid_type,
-                progress_callback=_progress_callback(self, project_id),
-                cancel_check=cancel_check,
+                template_files,
+                summary=summary,
+                parse_storage=parse_storage,
             )
-            self.raise_if_parse_cancel_requested(project_id)
-        except ParseCancelledError:
-            return self._cancelled_parse_response(self.cancel_parse(project_id))
-        except Exception as exc:
-            if self.is_parse_cancel_requested(project_id):
-                return self._cancelled_parse_response(self.cancel_parse(project_id))
-            self.update_parse_progress(
+            _progress_callback(self, project_id)(
+                "result_assets_materializing",
+                {"appendixCount": int(summary.get("appendixCount") or 0) if isinstance(summary, dict) else 0},
+            )
+            parse_result = self._materialize_completed_parse_result(project_id, parse_result)
+            parse_result = materialize_parse_appendix_docx_assets(
                 project_id,
-                status="failed",
-                percentage=100,
-                summary=f"解析失败：{exc}",
-                event_step="failed",
-                event_level="error",
-                event_message=f"解析失败：{exc}",
-                phase_key="failed",
-                phase_label="解析失败",
-                phase_percent=100,
+                parse_result,
+                bid_type=self.project_service.bid_type,
             )
-            raise
-        self.raise_if_parse_cancel_requested(project_id)
-        _progress_callback(self, project_id)(
-            "result_persisting",
-            {"extractedCount": int(summary.get("extractedCount") or 0) if isinstance(summary, dict) else 0},
-        )
-        parse_result = self.complete_parse(
+            parse_result = self._promote_completed_parse_if_participating(project_id, parse_result)
+            self.finalize_parse_progress(project_id, parse_result, summary=summary)
+            return
+
+    async def run_without_upload(self, project_id: str) -> dict[str, Any]:
+        tender_files, template_files = self.parse_inputs(project_id, include_fallback=False)
+        if not tender_files:
+            raise HTTPException(status_code=400, detail="当前项目还没有已上传的招标文件。")
+        if is_generation_locked(S1_PARSE_JOB_TYPE, project_id):
+            raise HTTPException(status_code=409, detail=S1_PARSE_LOCKED_DETAIL)
+        busy_detail = _s1_parse_global_busy_detail(project_id)
+        if busy_detail:
+            raise HTTPException(status_code=409, detail=busy_detail)
+        self._mark_parse_queued(
             project_id,
-            tender_files,
-            template_files,
-            summary=summary,
-            parse_storage=parse_storage,
+            f"解析任务已提交，将复用已上传的{_parse_files_label(tender_files)}重新解析。",
+            file_names=_parse_file_names(tender_files),
         )
-        _progress_callback(self, project_id)(
-            "result_assets_materializing",
-            {"appendixCount": int(summary.get("appendixCount") or 0) if isinstance(summary, dict) else 0},
-        )
-        parse_result = self._materialize_completed_parse_result(project_id, parse_result)
-        parse_result = materialize_parse_appendix_docx_assets(
+        mode, job_id = _schedule_s1_parse_job(
             project_id,
-            parse_result,
-            bid_type=self.project_service.bid_type,
+            {
+                "__bidType": self.project_service.bid_type,
+                "origin": "rerun",
+                "tenderFiles": tender_files,
+                "templateFiles": template_files,
+            },
         )
-        parse_result = self._promote_completed_parse_if_participating(project_id, parse_result)
-        self.finalize_parse_progress(project_id, parse_result, summary=summary)
-        return {**parse_result, "message": "解析完成"}
+        if mode == "locked":
+            raise HTTPException(status_code=409, detail=S1_PARSE_LOCKED_DETAIL)
+        return self._parse_schedule_response(project_id, mode=mode, job_id=job_id, inline_message="解析完成")
 
     async def upload_and_parse(
         self,
@@ -2007,6 +2263,11 @@ class BidParseService:
         tender_files: list[UploadFile] | None = None,
         template_files: list[UploadFile] | None = None,
     ) -> dict[str, Any]:
+        if is_generation_locked(S1_PARSE_JOB_TYPE, project_id):
+            raise HTTPException(status_code=409, detail=S1_PARSE_LOCKED_DETAIL)
+        busy_detail = _s1_parse_global_busy_detail(project_id)
+        if busy_detail:
+            raise HTTPException(status_code=409, detail=busy_detail)
         existing_tender, existing_template = self.parse_inputs(project_id, include_fallback=False)
         uploaded_tender_files = tender_files or []
         uploaded_template_files = template_files or []
@@ -2030,64 +2291,28 @@ class BidParseService:
         else:
             merged_template = existing_template
 
-        self.start_parse_progress(project_id)
-        _progress_callback(self, project_id)("upload_ready", {"fileCount": len(active_tender)})
-        cancel_check = lambda: self.is_parse_cancel_requested(project_id)
-        try:
-            summary, parse_storage = await _parse_tender_documents_async(
-                project_id,
-                active_tender,
-                bid_type=self.project_service.bid_type,
-                progress_callback=_progress_callback(self, project_id),
-                cancel_check=cancel_check,
-            )
-            self.raise_if_parse_cancel_requested(project_id)
-        except ParseCancelledError:
-            return self._cancelled_parse_response(self.cancel_parse(project_id))
-        except Exception as exc:
-            if self.is_parse_cancel_requested(project_id):
-                return self._cancelled_parse_response(self.cancel_parse(project_id))
-            self.update_parse_progress(
-                project_id,
-                status="failed",
-                percentage=100,
-                summary=f"解析失败：{exc}",
-                event_step="failed",
-                event_level="error",
-                event_message=f"解析失败：{exc}",
-                phase_key="failed",
-                phase_label="解析失败",
-                phase_percent=100,
-            )
-            raise
-        self.raise_if_parse_cancel_requested(project_id)
-        _progress_callback(self, project_id)(
-            "result_persisting",
-            {"extractedCount": int(summary.get("extractedCount") or 0) if isinstance(summary, dict) else 0},
-        )
-        parse_result = self.complete_parse(
+        self._mark_parse_queued(
             project_id,
-            active_tender,
-            merged_template,
-            summary=summary,
-            parse_storage=parse_storage,
+            f"解析任务已提交，后台将解析{_parse_files_label(active_tender)}。",
+            file_names=_parse_file_names(active_tender),
         )
-        _progress_callback(self, project_id)(
-            "result_assets_materializing",
-            {"appendixCount": int(summary.get("appendixCount") or 0) if isinstance(summary, dict) else 0},
-        )
-        parse_result = self._materialize_completed_parse_result(project_id, parse_result)
-        parse_result = materialize_parse_appendix_docx_assets(
+        mode, job_id = _schedule_s1_parse_job(
             project_id,
-            parse_result,
-            bid_type=self.project_service.bid_type,
+            {
+                "__bidType": self.project_service.bid_type,
+                "origin": "upload",
+                "tenderFiles": active_tender,
+                "templateFiles": merged_template,
+            },
         )
-        parse_result = self._promote_completed_parse_if_participating(project_id, parse_result)
-        self.finalize_parse_progress(project_id, parse_result, summary=summary)
-        return {
-            **parse_result,
-            "message": "上传成功，已自动完成解析。",
-        }
+        if mode == "locked":
+            raise HTTPException(status_code=409, detail=S1_PARSE_LOCKED_DETAIL)
+        return self._parse_schedule_response(
+            project_id,
+            mode=mode,
+            job_id=job_id,
+            inline_message="上传成功，已自动完成解析。",
+        )
 
     async def upload_template_files(
         self,

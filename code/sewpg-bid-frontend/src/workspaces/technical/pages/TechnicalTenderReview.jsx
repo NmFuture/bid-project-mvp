@@ -18,6 +18,7 @@ import {
   shouldPollParseProgress,
   summarizeParseProgress,
 } from '../technicalParseUploadRecovery'
+import { clearParseRunning, findRunningParseMarker, markParseRunning } from '../../shared/parseRunningMarker'
 import {
   selectTechnicalParseProjectId,
   shouldSyncTechnicalProjectParseResultRoute,
@@ -635,12 +636,26 @@ export default function TechnicalTenderReview({ showToast }) {
         ? [forced, ...reviewItemsBase]
         : reviewItemsBase
       setProjects(items)
+      // 刷新/切页后组件状态会重建：若本地标记显示有后台解析任务，恢复选中该项目，
+      // 保证回到解析页始终能看到进行中的进度变化（刷新、关浏览器再开同样生效）。
+      let runningProjectId = ''
+      const runningMarker = findRunningParseMarker('tech')
+      if (runningMarker) {
+        const markerProgress = await technicalParseAPI.progress(runningMarker.projectId).catch(() => null)
+        if (markerProgress) {
+          runningProjectId = runningMarker.projectId
+          const markerStatus = String(markerProgress?.status || '').toLowerCase()
+          if (['completed', 'failed', 'cancelled'].includes(markerStatus)) {
+            clearParseRunning(runningMarker.projectId, 'tech')
+          }
+        }
+      }
       setSelectedProjectId((current) => {
         return selectTechnicalParseProjectId({
           queryProjectId,
           currentProjectId: current,
           reviewItems,
-        })
+        }) || runningProjectId
       })
     } catch (e) {
       setError(e?.message || '解析列表加载失败')
@@ -782,11 +797,13 @@ export default function TechnicalTenderReview({ showToast }) {
         const progress = snapshot.progress
         setParseProgress((previous) => mergeMonotonicParseProgress(previous, progress))
         if (snapshot.completed) {
+          clearParseRunning(selectedProjectId, 'tech')
           setParseData(snapshot.result)
           navigateToParseResult(selectedProjectId)
           return
         }
         if (snapshot.failed || isParseProgressFailed(progress)) {
+          clearParseRunning(selectedProjectId, 'tech')
           setUploadError(progress?.summary || '上传并解析失败')
         }
       } catch {
@@ -1006,12 +1023,28 @@ export default function TechnicalTenderReview({ showToast }) {
         signal: abortController.signal,
       })
       if (parseStoppedRef.current) return
+      if (response?.status === 'queued') {
+        // 真实异步任务：解析转入后台排队，留在本页由轮询 effect 继续跟踪进度
+        if (response.progress) {
+          setParseProgress((previous) => mergeMonotonicParseProgress(previous, response.progress))
+        }
+        markParseRunning(targetProjectId, 'tech')
+        showToast?.(response?.message || '解析任务已提交，后台运行中，可随时离开本页。')
+        return
+      }
       setParseData(response)
       await syncParsedProject(targetProjectId)
       navigateToParseResult(targetProjectId)
       setTenderFiles([])
       showToast?.(response?.message || `${reviewConfig.bidType}招标文件解析完成。`)
     } catch (e) {
+      if (e?.status === 409) {
+        // 已有解析任务进行中：不算失败，重新拉取进度交给轮询 effect 跟踪
+        setUploadError('')
+        showToast?.(e?.payload?.detail || e?.message || '当前项目已有解析任务在进行中，请等待完成后再发起。')
+        loadCurrentProject()
+        return
+      }
       if (parseStoppedRef.current || e?.code === 'ABORTED') {
         setUploadError(TECHNICAL_STOP_PARSE_MESSAGE)
         setParseProgress((previous) => buildStoppedParseProgress(previous, TECHNICAL_STOP_PARSE_MESSAGE))
@@ -1064,6 +1097,39 @@ export default function TechnicalTenderReview({ showToast }) {
       } else if (parseStoppedRef.current) {
         setUploading(false)
       }
+    }
+  }
+
+  const handleRerunParse = async () => {
+    const targetProjectId = selectedProjectId
+    if (!targetProjectId) return
+    setUploadError('')
+    try {
+      const response = await technicalParseAPI.run(targetProjectId)
+      if (response?.status === 'queued') {
+        // 与上传解析的异步分支一致：转入后台排队，交给轮询 effect 跟踪
+        if (response.progress) {
+          setParseProgress((previous) => mergeMonotonicParseProgress(previous, response.progress))
+        }
+        markParseRunning(targetProjectId, 'tech')
+        showToast?.(response?.message || '重新解析任务已提交，后台运行中，可随时离开本页。')
+        return
+      }
+      // 内联执行（测试环境）直接返回完整解析结果
+      setParseData(response)
+      await syncParsedProject(targetProjectId)
+      navigateToParseResult(targetProjectId)
+      showToast?.(response?.message || '技术标文件重新解析完成。')
+    } catch (e) {
+      if (e?.status === 409) {
+        setUploadError('')
+        showToast?.(e?.payload?.detail || e?.message || '当前项目已有解析任务在进行中，请等待完成后再发起。')
+        loadCurrentProject()
+        return
+      }
+      const message = e?.message || '重新解析失败'
+      setUploadError(message)
+      showToast?.(message, 'error')
     }
   }
 
@@ -1202,6 +1268,29 @@ export default function TechnicalTenderReview({ showToast }) {
       : progressSummary.tone === 'warning'
         ? 'bg-tertiary'
         : 'bg-primary'
+    // 后台解析辅助行：仅展示真实进度字段（已耗时、current/total）与固定提示语
+    const startedMs = Date.parse(progress?.startedAt || '')
+    // eslint-disable-next-line react-hooks/purity -- 已耗时随轮询触发的重渲染每秒刷新，无需额外定时器
+    const nowMs = Date.now()
+    const elapsedSeconds = Number.isFinite(startedMs)
+      ? Math.max(0, Math.floor((nowMs - startedMs) / 1000))
+      : null
+    const backgroundHintParts = []
+    const progressFileNames = Array.isArray(progress?.fileNames) ? progress.fileNames.filter(Boolean) : []
+    if (progressFileNames.length) {
+      const filesLabel = progressFileNames.length > 2
+        ? `${progressFileNames[0]} 等 ${progressFileNames.length} 个文件`
+        : progressFileNames.join('、')
+      backgroundHintParts.push(`解析文件：${filesLabel}`)
+    }
+    if (elapsedSeconds != null) {
+      backgroundHintParts.push(`已耗时 ${Math.floor(elapsedSeconds / 60)} 分 ${elapsedSeconds % 60} 秒`)
+    }
+    if (Number(progress?.current || 0) > 0 && Number(progress?.total || 0) > 0) {
+      backgroundHintParts.push(`进度 ${Number(progress.current)}/${Number(progress.total)}`)
+    }
+    backgroundHintParts.push('解析在后台进行，可随时离开本页')
+    const showBackgroundHint = ['queued', 'running', 'processing'].includes(status)
 
     return (
       <div className="mt-4 rounded-md border border-surface-container-high bg-surface-container-low px-4 py-3">
@@ -1209,6 +1298,9 @@ export default function TechnicalTenderReview({ showToast }) {
           <div className="min-w-0">
             <p className="text-sm font-semibold text-on-surface">{progressSummary.title || '解析进度'}</p>
             <p className="mt-1 text-xs text-outline">{summary}</p>
+            {showBackgroundHint ? (
+              <p className="mt-1 text-xs text-outline">{backgroundHintParts.join(' · ')}</p>
+            ) : null}
             {progressSummary.detail ? (
               <p className="mt-1 text-xs font-medium text-on-surface-variant">{progressSummary.detail}</p>
             ) : null}
@@ -1283,6 +1375,18 @@ export default function TechnicalTenderReview({ showToast }) {
                   icon="stop_circle"
                 >
                   停止解析
+                </Button>
+              )}
+              {['failed', 'stale', 'cancelled'].includes(parseProgressStatus) && (
+                <Button
+                  type="button"
+                  onClick={handleRerunParse}
+                  disabled={uploading || creatingReview || reviewDecision === 'abandon'}
+                  size="stage"
+                  variant="quiet"
+                  icon="refresh"
+                >
+                  重新解析
                 </Button>
               )}
             </div>

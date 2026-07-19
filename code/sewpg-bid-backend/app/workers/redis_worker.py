@@ -87,6 +87,18 @@ def _run_job(job: dict[str, Any]) -> None:
                 "status": "failed" if result.get("cleanStatus") == "failed" else "success",
                 "summary": result.get("cleanMessage") or "",
             }
+        elif job_type == "s1_parse":
+            from app.services.bid_parse_service import _run_s1_parse_job
+
+            _run_s1_parse_job(project_id, data)
+            project_state = _runtime_state(project_id)
+            parse_progress = (
+                project_state.get("parse_progress") if isinstance(project_state.get("parse_progress"), dict) else {}
+            )
+            final_state = {
+                "status": str(parse_progress.get("status") or ""),
+                "summary": str(parse_progress.get("summary") or ""),
+            }
         else:
             raise RuntimeError(f"Unknown job type: {job_type}")
     except Exception as exc:  # pragma: no cover - route job functions handle expected failures
@@ -94,8 +106,11 @@ def _run_job(job: dict[str, Any]) -> None:
         mark_job_status(job, "failed", str(exc))
         raise
     else:
-        if final_state.get("status") == "failed":
+        final_status = str(final_state.get("status") or "")
+        if final_status == "failed":
             mark_job_status(job, "failed", str(final_state.get("summary") or "Job failed"))
+        elif final_status == "cancelled":
+            mark_job_status(job, "cancelled", str(final_state.get("summary") or "任务已取消。"))
         else:
             mark_job_status(job, "succeeded")
     finally:
