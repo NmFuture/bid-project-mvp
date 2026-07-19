@@ -343,6 +343,7 @@ def supplement_automatic_toc_with_body_level_three(
             next_index += 1
         merged.extend(
             merge_level_three_descendants(
+                str(item.get("number") or ""),
                 automatic_toc[index + 1 : next_index],
                 body_level_three.get(index, []),
             )
@@ -352,11 +353,12 @@ def supplement_automatic_toc_with_body_level_three(
 
 
 def merge_level_three_descendants(
+    parent_number: str,
     automatic_descendants: list[dict[str, Any]],
     body_level_three: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     if not body_level_three:
-        return automatic_descendants
+        return number_blank_level_three(parent_number, automatic_descendants)
 
     prefix: list[dict[str, Any]] = []
     automatic_groups: list[list[dict[str, Any]]] = []
@@ -392,7 +394,36 @@ def merge_level_three_descendants(
     for index, group in enumerate(automatic_groups):
         if index not in used_group_indexes:
             merged.extend(group)
-    return merged
+    return number_blank_level_three(parent_number, merged)
+
+
+def number_blank_level_three(
+    parent_number: str,
+    descendants: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    compact_parent = re.sub(r"\s+", "", parent_number)
+    if not re.fullmatch(r"\d+(?:\.\d+)*", compact_parent):
+        return descendants
+
+    child_pattern = re.compile(rf"{re.escape(compact_parent)}\.(\d+)")
+    used_suffixes = {
+        int(match.group(1))
+        for item in descendants
+        if int(item.get("level") or 1) == 3
+        if (match := child_pattern.fullmatch(re.sub(r"\s+", "", str(item.get("number") or ""))))
+    }
+    next_suffix = 1
+    numbered: list[dict[str, Any]] = []
+    for item in descendants:
+        current = dict(item)
+        if int(current.get("level") or 1) == 3 and not str(current.get("number") or "").strip():
+            while next_suffix in used_suffixes:
+                next_suffix += 1
+            current["number"] = f"{compact_parent}.{next_suffix}"
+            used_suffixes.add(next_suffix)
+            next_suffix += 1
+        numbered.append(current)
+    return numbered
 
 
 def match_level_two_anchor(

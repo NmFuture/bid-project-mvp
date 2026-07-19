@@ -728,20 +728,19 @@ class TocSkillScriptTests(unittest.TestCase):
 
         for principle in (
             "历史投标模板目录",
-            "三级以内尽可能细",
             "最多三级",
             "模板存在三级目录时",
             "必须学习到第三级",
-            "尽可能保留三级结构",
+            "完整学习并继承模板一至三级目录",
+            "模板已有第三级目录统一输出",
+            "不得提交 `collapse`",
+            "案例、具体项目、产品或系统说明",
             "第四级及更深层级",
             "只作为对应第三级节点的内容参考",
             "再结合招标文件",
             "自动目录",
             "目录页",
             "正文标题结构",
-            "可独立填报单元",
-            "直接不进入最终目录",
-            "不属于建议删除",
             "仅因招标未提及不能建议删除",
             "建议增加",
             "建议删除",
@@ -795,6 +794,9 @@ class TocSkillScriptTests(unittest.TestCase):
             "s2outline finalize",
         ):
             self.assertIn(principle, content)
+
+        self.assertNotIn('"operation":"collapse"', content)
+        self.assertNotIn("由父节点统一承载", content)
 
         for redundant_contract in (
             "required_status",
@@ -1685,6 +1687,37 @@ class TocSkillScriptTests(unittest.TestCase):
                 ("1.1.1", "关键部件选型", 3),
                 ("1.2", "供货范围", 2),
                 ("1.2.1", "主机供货范围", 3),
+            ],
+        )
+
+    def test_bid_outline_template_structure_numbers_blank_body_level_three_in_document_order(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "template.docx"
+            doc = Document()
+            for style_name in ("TOC 1", "TOC 2"):
+                if style_name not in [style.name for style in doc.styles]:
+                    doc.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
+            doc.add_paragraph("\u7b2c1\u7ae0 Overview ........ 1", style="TOC 1")
+            doc.add_paragraph("5.18 Digital Wind Farm ........ 2", style="TOC 2")
+            doc.add_paragraph("\u7b2c1\u7ae0 Overview", style="Heading 1")
+            doc.add_paragraph("5.18 Digital Wind Farm", style="Heading 2")
+            doc.add_paragraph("SCADA System", style="Heading 3")
+            doc.add_paragraph("Wind Farm Control", style="Heading 3")
+            doc.save(template)
+
+            result = outline_runner.extract_template_structure(template)
+
+        self.assertEqual(
+            [
+                (item["number"], item["title"])
+                for item in result["items"]
+                if item["level"] == 3
+            ],
+            [
+                ("5.18.1", "SCADA System"),
+                ("5.18.2", "Wind Farm Control"),
             ],
         )
 

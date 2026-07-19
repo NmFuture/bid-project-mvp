@@ -1232,6 +1232,108 @@ class OpencodeClientTests(unittest.TestCase):
         abort_session_mock.assert_called_once_with("ses-s2-active")
         self.assertTrue(worker_finished.is_set())
 
+    def test_s2_outline_stopped_session_uses_terminal_validator_for_noncanonical_command(self) -> None:
+        client = OpencodeClient()
+        finalized_payload = {
+            "schema_version": "technical-outline.v1",
+            "outputFile": "/data/documents/PRJ/toc.json",
+            "summary": {"total_nodes": 64, "workflowStage": "finalized"},
+        }
+        commands = [
+            "s2outline finalize /data/documents/PRJ/s2_input.json",
+            "s2outline finalize /data/documents/PRJ/s2_input.json 333>&1",
+        ]
+
+        for command in commands:
+            with self.subTest(command=command):
+                release_worker = threading.Event()
+                stopped_messages = [
+                    {
+                        "info": {"role": "assistant", "id": "msg-final", "finish": "stop"},
+                        "parts": [
+                            {
+                                "type": "tool",
+                                "tool": "bash",
+                                "state": {
+                                    "status": "completed",
+                                    "input": {"command": command},
+                                    "exit": 0,
+                                    "output": json.dumps(finalized_payload),
+                                },
+                            }
+                        ],
+                    }
+                ]
+
+                def blocked_send_prompt(_session_id: str, _prompt: str) -> dict:
+                    release_worker.wait(timeout=5)
+                    return {"parts": []}
+
+                def abort_session(_session_id: str) -> bool:
+                    release_worker.set()
+                    return True
+
+                with (
+                    patch.object(client, "send_prompt", side_effect=blocked_send_prompt),
+                    patch.object(client, "list_session_messages", return_value=stopped_messages),
+                    patch.object(
+                        client,
+                        "_get_session_output_snapshot",
+                        return_value={"signature": ("stopped", ())},
+                    ),
+                    patch.object(client, "abort_session", side_effect=abort_session) as abort_session_mock,
+                    patch("app.services.opencode_client.time.sleep", return_value=None),
+                ):
+                    response = client._send_prompt_with_session_polling(
+                        "ses-s2-stopped",
+                        "prompt",
+                        early_tool_command="s2outline-finalize",
+                        terminal_validator=lambda: finalized_payload,
+                    )
+
+                self.assertTrue(response["_earlyCompletion"])
+                self.assertEqual(response["_completionSource"], "s2outline-terminal-validator")
+                self.assertIn('"workflowStage": "finalized"', response["parts"][0]["text"])
+                abort_session_mock.assert_called_once_with("ses-s2-stopped")
+
+    def test_s2_outline_stopped_session_releases_prompt_when_terminal_validation_fails(self) -> None:
+        client = OpencodeClient()
+        release_worker = threading.Event()
+        stopped_messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-final", "finish": "stop"},
+                "parts": [{"type": "text", "text": "done"}],
+            }
+        ]
+
+        def blocked_send_prompt(_session_id: str, _prompt: str) -> dict:
+            release_worker.wait(timeout=5)
+            return {"parts": []}
+
+        def abort_session(_session_id: str) -> bool:
+            release_worker.set()
+            return True
+
+        with (
+            patch.object(client, "send_prompt", side_effect=blocked_send_prompt),
+            patch.object(client, "list_session_messages", return_value=stopped_messages),
+            patch.object(
+                client,
+                "_get_session_output_snapshot",
+                return_value={"signature": ("stopped", ())},
+            ),
+            patch.object(client, "abort_session", side_effect=abort_session) as abort_session_mock,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "未通过 finalize 校验"):
+                client._send_prompt_with_session_polling(
+                    "ses-s2-invalid",
+                    "prompt",
+                    early_tool_command="s2outline-finalize",
+                    terminal_validator=lambda: (_ for _ in ()).throw(RuntimeError("invalid output")),
+                )
+
+        abort_session_mock.assert_called_once_with("ses-s2-invalid")
+
     def test_btplnav_stalled_running_tool_reports_trace(self) -> None:
         client = OpencodeClient()
         messages = [
