@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -33,6 +35,122 @@ def load_assembler_script(name: str):
 
 
 class TechnicalFinalAssemblyTests(unittest.TestCase):
+    def test_runner_returns_structured_contract_without_markdown_reports(self) -> None:
+        runner = load_assembler_script("run_from_manifest")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_file = root / "toc.json"
+            wiki_dir = root / "wiki"
+            library_dir = root / "library"
+            template_file = root / "template.docx"
+            output_file = root / "output.docx"
+            manifest_file = root / "manifest.json"
+            wiki_dir.mkdir()
+            library_dir.mkdir()
+            toc_file.write_text("{}", encoding="utf-8")
+            Document().save(template_file)
+            manifest_file.write_text(
+                json.dumps(
+                    {
+                        "workDir": str(root),
+                        "tocJsonPath": str(toc_file),
+                        "wikiDir": str(wiki_dir),
+                        "materialLibraryDir": str(library_dir),
+                        "templateFile": str(template_file),
+                        "outputFile": str(output_file),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_run_capture(command: list[str]) -> str:
+                script = Path(command[1]).name
+                if script == "parse_toc.py":
+                    Path(command[command.index("--out") + 1]).write_text("[]", encoding="utf-8")
+                elif script == "init_params.py":
+                    Path(command[command.index("--out") + 1]).write_text("{}", encoding="utf-8")
+                elif script == "build_assembly.py":
+                    Path(command[command.index("--out") + 1]).write_text(
+                        json.dumps([{"status": "STRUCTURAL", "level": 1, "title": "技术方案", "paths": []}]),
+                        encoding="utf-8",
+                    )
+                elif script == "merger.py":
+                    Document().save(Path(command[command.index("--out") + 1]))
+                    Path(command[command.index("--result") + 1]).write_text(
+                        json.dumps({"merged_materials": 0, "warnings": []}), encoding="utf-8"
+                    )
+                elif script == "finalize.py":
+                    Document().save(Path(command[command.index("--out") + 1]))
+                elif script == "verify.py":
+                    self.assertNotIn("--report", command)
+                    self.assertNotIn("--review", command)
+                    Path(command[command.index("--result") + 1]).write_text(
+                        json.dumps(
+                            {
+                                "placeholders": [],
+                                "empty_leaf_headings": [],
+                                "dup_alerts": [],
+                                "ghost_chapters": [],
+                                "invalid_h1": [],
+                                "invalid_prefix": [],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                return ""
+
+            with patch.object(runner, "run_capture", side_effect=fake_run_capture):
+                result = runner.run_from_manifest(manifest_file)
+
+            self.assertTrue(output_file.exists())
+            self.assertTrue(Path(result["planFile"]).exists())
+            self.assertEqual(result["assemblyReport"], "")
+            self.assertEqual(result["needsReview"], "")
+            self.assertIsInstance(result["summary"], dict)
+            self.assertIsInstance(result["warnings"], list)
+            self.assertFalse((root / "assembly_report.md").exists())
+            self.assertFalse((root / "needs_review.md").exists())
+
+    def test_verify_returns_compact_json_without_markdown_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docx_path = root / "assembled.docx"
+            plan_path = root / "assembly_plan.json"
+            params_path = root / "project_params.json"
+            result_path = root / "assembly_verify_result.json"
+
+            doc = Document()
+            doc.add_paragraph("技术方案", style="Heading 1")
+            doc.add_paragraph("脱敏正文。")
+            doc.save(docx_path)
+            plan_path.write_text("[]", encoding="utf-8")
+            params_path.write_text("{}", encoding="utf-8")
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ASSEMBLER_SCRIPTS / "verify.py"),
+                    "--docx",
+                    str(docx_path),
+                    "--plan",
+                    str(plan_path),
+                    "--params",
+                    str(params_path),
+                    "--result",
+                    str(result_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            payload = json.loads(completed.stdout)
+
+            self.assertEqual(payload, json.loads(result_path.read_text(encoding="utf-8")))
+            self.assertIn("heading_counts", payload)
+            self.assertFalse((root / "assembly_report.md").exists())
+            self.assertFalse((root / "needs_review.md").exists())
+
     def test_merger_deduplicates_heading_from_first_usable_material(self) -> None:
         merger = load_assembler_script("merger")
 
@@ -241,6 +359,33 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
             },
         )
         self.assertTrue(all(set(item) == {"code", "message", "count"} for item in warnings))
+
+    def test_runner_ignores_invalid_intermediate_counts(self) -> None:
+        runner = load_assembler_script("run_from_manifest")
+        merger_result = {
+            "merged_materials": "bad",
+            "warnings": [
+                {"code": "BAD_TEXT", "message": "非法文本", "count": "bad"},
+                {"code": "BAD_NONE", "message": "空值", "count": None},
+                {"code": "BAD_BOOL", "message": "布尔值", "count": True},
+                {"code": "BAD_NEGATIVE", "message": "负数", "count": -1},
+                {"code": "VALID", "message": "合法告警", "count": 2},
+            ],
+        }
+        scan = {
+            "placeholders": [],
+            "empty_leaf_headings": [],
+            "dup_alerts": [],
+            "ghost_chapters": [],
+            "invalid_h1": [],
+            "invalid_prefix": [],
+        }
+
+        summary, warnings = runner.build_summary_and_warnings([], merger_result, scan)
+
+        self.assertEqual(summary["assembledCount"], 0)
+        self.assertEqual(summary["warningCount"], 2)
+        self.assertEqual(warnings, [{"code": "VALID", "message": "合法告警", "count": 2}])
 
 
 if __name__ == "__main__":

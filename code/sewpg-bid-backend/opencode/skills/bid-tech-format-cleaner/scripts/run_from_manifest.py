@@ -67,8 +67,6 @@ def run_manifest(manifest_path: str | Path, response: str = "summary") -> dict[s
     outline_path = _resolve_manifest_path(manifest["outlineFile"], path)
     output_path = _resolve_manifest_path(manifest["outputFile"], path)
     style_path = _resolve_style_path(manifest.get("styleSpecPath"), path)
-    report_path = output_path.with_name("tech_format_clean_report.md")
-
     clean_result = clean_docx(
         input_file=input_path,
         outline_file=outline_path,
@@ -79,7 +77,6 @@ def run_manifest(manifest_path: str | Path, response: str = "summary") -> dict[s
     report = verify_cleaned_docx(
         output_file=output_path,
         outline_file=outline_path,
-        report_file=report_path,
         clean_result=clean_result,
     )
 
@@ -102,8 +99,9 @@ def run_manifest(manifest_path: str | Path, response: str = "summary") -> dict[s
         "inputFile": str(input_path),
         "outlineFile": str(outline_path),
         "outputFile": str(output_path),
-        "reportFile": str(report_path),
+        "reportFile": "",
         "summary": summary,
+        "warnings": report["warnings"],
     }
     if response != "summary":
         result["details"] = {
@@ -197,12 +195,10 @@ def verify_cleaned_docx(
     *,
     output_file: str | Path,
     outline_file: str | Path,
-    report_file: str | Path,
     clean_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output_path = Path(output_file)
     outline_path = Path(outline_file)
-    report_path = Path(report_file)
     scan = scan_docx(output_path)
     outline_items = flatten_outline(load_outline(outline_path))
     doc = Document(str(output_path))
@@ -237,8 +233,6 @@ def verify_cleaned_docx(
         "formatRisks": risks,
     }
     report["warnings"] = _build_warnings(report, scan)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(_render_report(report, output_path, outline_path), encoding="utf-8")
     return report
 
 

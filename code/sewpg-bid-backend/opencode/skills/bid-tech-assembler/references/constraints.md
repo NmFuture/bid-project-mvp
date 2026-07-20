@@ -31,8 +31,8 @@
 
 ## 验证守门
 
-- **空章节检测**：`verify.scan_docx` 体级遍历（段落 + 表格 + drawing/pict），叶子 heading 后既无文字又无表格/图片的章节列入 `needs_review.md`「空章节告警」——这是暴露 wiki 归位错 / 素材空框架的关键守门哨。
-- **结构化校验结果**：残留占位符、空章节、相邻重复标题、幽灵章节、非法 H1 和非法标题前缀除写入原 Markdown 报告外，还要写入校验结果 JSON，供 manifest runner 汇总到 `summary.verification` 和 `warnings`。
+- **空章节检测**：`verify.scan_docx` 体级遍历（段落 + 表格 + drawing/pict），叶子 heading 后既无文字又无表格/图片的章节进入紧凑 JSON 校验结果，由 manifest runner 汇总到 `summary.verification` 和 `warnings`；这是暴露 wiki 归位错 / 素材空框架的关键守门哨。
+- **结构化校验结果**：残留占位符、空章节、相邻重复标题、幽灵章节、非法 H1 和非法标题前缀只写入紧凑 JSON 校验结果，供 manifest runner 汇总到 `summary.verification` 和 `warnings`，不生成 Markdown 报告。
 - **warning 稳定结构**：manifest 返回的 `warnings[]` 每项只能包含 `code`、`message`、`count`；`summary.warningCount` 等于所有 `count` 之和。
 
 ## 与 format-cleaner 的共享契约

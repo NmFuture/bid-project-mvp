@@ -124,12 +124,12 @@ def assemble_tech_bid_for_project_with_progress(
         raise RuntimeError(f"S4 生成标书未生成输出文件：{assembled_path}")
 
     plan_path = Path(str(result.get("planFile") or work_dir / "assembly_plan.json"))
-    report_path = Path(str(result.get("assemblyReport") or work_dir / "assembly_report.md"))
-    review_path = Path(str(result.get("needsReview") or work_dir / "needs_review.md"))
     plan = _load_json_list(plan_path)
+    assembly_summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    assembly_warnings = _normalize_warnings(result.get("warnings"))
     coverage = _build_material_coverage(plan, material_cards)
     sections = _sections_from_plan(plan)
-    content = _build_fallback_content(report_path, review_path)
+    content = _build_fallback_content(plan, assembly_summary, assembly_warnings)
 
     if progress_callback:
         progress_callback(
@@ -168,8 +168,10 @@ def assemble_tech_bid_for_project_with_progress(
             "manifestPath": str(manifest_path),
             "outputFile": str(final_output_path),
             "rawOutputFile": str(assembled_path),
-            "assemblyReport": str(report_path),
-            "needsReview": str(review_path),
+            "assemblyReport": "",
+            "needsReview": "",
+            "summary": assembly_summary,
+            "warnings": assembly_warnings,
             "coverage": {
                 "usedMaterialCount": coverage["fullCover"],
                 "unassembledMaterialCount": coverage["noCover"],
@@ -192,8 +194,10 @@ def assemble_tech_bid_for_project_with_progress(
                         "manifestPath": str(manifest_path),
                         "outputFile": str(final_output_path),
                         "rawOutputFile": str(assembled_path),
-                        "assemblyReport": str(report_path),
-                        "needsReview": str(review_path),
+                        "assemblyReport": "",
+                        "needsReview": "",
+                        "summary": assembly_summary,
+                        "warnings": assembly_warnings,
                         "formatClean": format_clean,
                     },
                     ensure_ascii=False,
@@ -230,9 +234,11 @@ def assemble_tech_bid_for_project_with_progress(
             "outputFile": str(final_output_path),
             "rawOutputFile": str(assembled_path),
             "documentPath": str(target_path),
-            "assemblyReport": str(report_path),
-            "needsReview": str(review_path),
+            "assemblyReport": "",
+            "needsReview": "",
             "planFile": str(plan_path),
+            "summary": assembly_summary,
+            "warnings": assembly_warnings,
             "formatClean": format_clean,
         },
     )
@@ -1095,6 +1101,8 @@ def _run_tech_format_cleaner_step(
         formatted_path = Path(str(result.get("outputFile") or output_path)).expanduser()
         if not formatted_path.exists():
             raise RuntimeError(f"技术标格式清洗未生成输出文件：{formatted_path}")
+        clean_summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        clean_warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else clean_summary.get("warnings")
         clean = {
             "status": "completed",
             "skill": TECH_FORMAT_CLEANER_SKILL_NAME,
@@ -1102,8 +1110,9 @@ def _run_tech_format_cleaner_step(
             "inputFile": str(assembled_path),
             "outlineFile": str(outline_path),
             "outputFile": str(formatted_path),
-            "reportFile": str(result.get("reportFile") or formatted_path.with_name("tech_format_clean_report.md")),
-            "summary": result.get("summary") if isinstance(result.get("summary"), dict) else {},
+            "reportFile": "",
+            "summary": clean_summary,
+            "warnings": _normalize_warnings(clean_warnings),
             "opencodeOutput": result.get("opencodeOutput") if isinstance(result.get("opencodeOutput"), dict) else {},
         }
         if progress_callback:
@@ -1120,6 +1129,10 @@ def _run_tech_format_cleaner_step(
             "inputFile": str(assembled_path),
             "outlineFile": str(outline_path),
             "outputFile": str(assembled_path),
+            "reportFile": "",
+            "summary": {},
+            "warnings": [],
+            "opencodeOutput": {},
             "error": str(exc),
         }
         if progress_callback:
@@ -1242,7 +1255,7 @@ Use the {ASSEMBLER_SKILL_NAME} skill.
 
 manifest：{manifest_path}
 
-请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径。命令会把完整正文 docx、assembly_report.md、needs_review.md 和 assembly_plan.json 写入 manifest 指定路径，并只在 stdout 打印小型摘要 JSON：
+请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径。命令会把完整正文 docx 和 assembly_plan.json 写入 manifest 指定路径，并只在 stdout 打印小型摘要 JSON：
 
 {ASSEMBLER_SKILL_COMMAND} {manifest_path}
 
@@ -1251,10 +1264,11 @@ manifest：{manifest_path}
 {{
   "schema_version": "bid-tech-assembly-v1",
   "outputFile": "/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/投标文件-正文.docx",
-  "assemblyReport": "/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/assembly_report.md",
-  "needsReview": "/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/needs_review.md",
+  "assemblyReport": "",
+  "needsReview": "",
   "planFile": "/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/assembly_plan.json",
-  "summary": {{"total": 0, "byStatus": {{}}, "usedPathCount": 0}}
+  "summary": {{"total": 0, "byStatus": {{}}, "usedPathCount": 0, "warningCount": 0}},
+  "warnings": []
 }}
 """.strip()
 
@@ -1263,13 +1277,29 @@ def _load_json_list(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     data = json.loads(path.read_text(encoding="utf-8"))
-    return data if isinstance(data, list) else []
+    return _iter_dicts(data)
+
+
+def _iter_dicts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
 
 
 def _sections_from_plan(plan: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sections: list[dict[str, Any]] = []
-    for item in plan:
-        if int(item.get("level") or 0) != 1 or str(item.get("status") or "") == "OUT_OF_SCOPE":
+    for item in _iter_dicts(plan):
+        if _safe_int(item.get("level")) != 1 or str(item.get("status") or "") == "OUT_OF_SCOPE":
             continue
         status = str(item.get("status") or "")
         if status in {"MATCHED", "ADAPTED", "COVER", "STRUCTURAL"}:
@@ -1298,7 +1328,7 @@ def _build_material_coverage(plan: list[dict[str, Any]], cards: list[dict[str, A
     used_paths: set[str] = set()
     used_path_keys: set[str] = set()
     partial_items: list[dict[str, Any]] = []
-    for item in plan:
+    for item in _iter_dicts(plan):
         status = str(item.get("status") or "")
         if status in {"MATCHED", "ADAPTED", "COVER"}:
             for path in item.get("paths") or []:
@@ -1316,7 +1346,7 @@ def _build_material_coverage(plan: list[dict[str, Any]], cards: list[dict[str, A
                 }
             )
 
-    material_cards = [card for card in cards if card.get("available")]
+    material_cards = [card for card in _iter_dicts(cards) if card.get("available")]
     no_cover_items = [
         {
             "id": str(card.get("id") or card.get("path") or ""),
@@ -1394,16 +1424,54 @@ def _coverage_path_keys(path_text: str) -> set[str]:
     return {key for key in keys if key}
 
 
-def _build_fallback_content(report_path: Path, review_path: Path) -> str:
-    lines = ["# 技术标正文拼装报告", ""]
-    for label, path in (("assembly_report", report_path), ("needs_review", review_path)):
-        lines.append(f"## {label}")
-        if path.exists():
-            text = path.read_text(encoding="utf-8", errors="replace").strip()
-            lines.append(text[:6000] if text else "无内容。")
-        else:
-            lines.append("未生成。")
-        lines.append("")
+def _normalize_warnings(value: Any) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    if not isinstance(value, list):
+        return warnings
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "").strip()
+        message = str(item.get("message") or "").strip()
+        try:
+            count = int(item.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if code and message and count > 0:
+            warnings.append({"code": code, "message": message, "count": count})
+    return warnings
+
+
+def _build_fallback_content(
+    plan: list[dict[str, Any]],
+    summary: dict[str, Any],
+    warnings: list[dict[str, Any]],
+) -> str:
+    clean_plan = _iter_dicts(plan)
+    clean_warnings = _iter_dicts(warnings)
+    lines = ["# 技术标正文拼装摘要", ""]
+    lines.append(
+        f"共处理 {_safe_int(summary.get('total'), len(clean_plan))} 个目录项，"
+        f"结构化告警 {_safe_int(summary.get('warningCount'), sum(_safe_int(item.get('count')) for item in clean_warnings))} 项。"
+    )
+    lines.extend(["", "## 章节结果"])
+    if clean_plan:
+        for item in clean_plan[:200]:
+            number = str(item.get("chapter_no") or "").strip()
+            title = str(item.get("title") or "未命名章节").strip()
+            status = str(item.get("status") or "UNKNOWN").strip()
+            lines.append(f"- {number} {title}：{status}".strip())
+    else:
+        lines.append("- 无可用拼装计划。")
+    lines.extend(["", "## 告警"])
+    if clean_warnings:
+        for item in clean_warnings:
+            lines.append(
+                f"- [{str(item.get('code') or 'UNKNOWN')}] "
+                f"{str(item.get('message') or '未提供告警说明')}（{_safe_int(item.get('count'))}）"
+            )
+    else:
+        lines.append("- 无结构化告警。")
     return "\n".join(lines).strip()
 
 

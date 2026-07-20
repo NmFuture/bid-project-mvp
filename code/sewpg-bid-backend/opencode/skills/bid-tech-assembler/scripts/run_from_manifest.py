@@ -139,7 +139,7 @@ def build_summary_and_warnings(
     for item in merger_result.get("warnings") or []:
         if not isinstance(item, dict):
             continue
-        count = int(item.get("count") or 0)
+        count = _safe_int(item.get("count"))
         if count <= 0:
             continue
         warnings.append(
@@ -184,7 +184,7 @@ def build_summary_and_warnings(
         "total": len(plan),
         "byStatus": dict(counts),
         "usedPathCount": len(used_paths),
-        "assembledCount": int(merger_result.get("merged_materials") or 0),
+        "assembledCount": _safe_int(merger_result.get("merged_materials")),
         "unmatchedCount": unmatched_count,
         "needsReviewCount": counts.get("NEEDS_REVIEW", 0),
         "structuralCount": counts.get("STRUCTURAL", 0),
@@ -197,6 +197,16 @@ def build_summary_and_warnings(
         "warningCount": sum(item["count"] for item in warnings),
     }
     return summary, warnings
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
 
 
 def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
@@ -217,8 +227,6 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
     gap_plan_path = as_path(manifest.get("gapPlanPath"), required=False)
     merged_path = work_dir / "bid_merged.docx"
     merger_result_path = work_dir / "assembly_merge_result.json"
-    report_path = work_dir / "assembly_report.md"
-    review_path = work_dir / "needs_review.md"
     verify_result_path = work_dir / "assembly_verify_result.json"
 
     project_params = manifest.get("projectParams")
@@ -298,10 +306,6 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
             str(plan_path),
             "--params",
             str(params_path),
-            "--report",
-            str(report_path),
-            "--review",
-            str(review_path),
             "--result",
             str(verify_result_path),
         ]
@@ -320,8 +324,8 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
         "projectParamsFile": str(params_path),
         "gapPlanFile": str(gap_plan_path) if gap_plan_path else "",
         "outputFile": str(output_file),
-        "assemblyReport": str(report_path),
-        "needsReview": str(review_path),
+        "assemblyReport": "",
+        "needsReview": "",
         "summary": summary,
         "warnings": warnings,
     }

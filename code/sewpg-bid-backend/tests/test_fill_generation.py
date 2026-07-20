@@ -560,17 +560,21 @@ class FillGenerationTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            report = output_file.parent / "assembly_report.md"
-            review = output_file.parent / "needs_review.md"
-            report.write_text("ok", encoding="utf-8")
-            review.write_text("ok", encoding="utf-8")
             return {
                 "schema_version": "bid-tech-assembly-v1",
                 "outputFile": str(output_file),
                 "planFile": str(plan_file),
-                "assemblyReport": str(report),
-                "needsReview": str(review),
-                "summary": {"total": 1, "byStatus": {"STRUCTURAL": 1}, "usedPathCount": 0},
+                "assemblyReport": "",
+                "needsReview": "",
+                "summary": {
+                    "total": 1,
+                    "byStatus": {"STRUCTURAL": 1},
+                    "usedPathCount": 0,
+                    "warningCount": 1,
+                },
+                "warnings": [
+                    {"code": "FORMAT_RISK", "message": "存在 1 项结构风险", "count": 1}
+                ],
             }
 
         with patch.object(tech_assembly, "_prepare_wiki_dir", side_effect=fake_prepare_wiki_dir), \
@@ -583,9 +587,19 @@ class FillGenerationTests(unittest.TestCase):
         self.assertEqual(len(manifest_payloads), 1)
         self.assertEqual(manifest_payloads[0]["gapPlanPath"], "")
         self.assertEqual(result["assembly"]["gapPlanPath"], "")
+        self.assertEqual(result["assembly"]["assemblyReport"], "")
+        self.assertEqual(result["assembly"]["needsReview"], "")
+        self.assertEqual(result["assembly"]["summary"]["warningCount"], 1)
+        self.assertEqual(result["assembly"]["warnings"][0]["code"], "FORMAT_RISK")
+        self.assertEqual(result["sections"][0]["title"], "技术方案")
+        persisted = store.get_project_runtime_state(project_id)
+        self.assertIn("存在 1 项结构风险", persisted["document_state"]["fallback"]["content"])
+        self.assertFalse((Path(result["assembly"]["workDir"]) / "assembly_report.md").exists())
+        self.assertFalse((Path(result["assembly"]["workDir"]) / "needs_review.md").exists())
         self.assertEqual(result["assembly"]["formatClean"]["status"], "completed")
         self.assertTrue(Path(result["assembly"]["formatClean"]["outputFile"]).exists())
-        self.assertTrue(Path(result["assembly"]["formatClean"]["reportFile"]).exists())
+        self.assertEqual(result["assembly"]["formatClean"]["reportFile"], "")
+        self.assertIsInstance(result["assembly"]["formatClean"]["warnings"], list)
 
     def test_s7_gap_plan_recovers_s3_ai_fill_outputs_without_review_confirmation(self) -> None:
         from app.services import tech_assembly
@@ -845,17 +859,14 @@ class FillGenerationTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            report = output_file.parent / "assembly_report.md"
-            review = output_file.parent / "needs_review.md"
-            report.write_text("ok", encoding="utf-8")
-            review.write_text("ok", encoding="utf-8")
             return {
                 "schema_version": "bid-tech-assembly-v1",
                 "outputFile": str(output_file),
                 "planFile": str(plan_file),
-                "assemblyReport": str(report),
-                "needsReview": str(review),
+                "assemblyReport": "",
+                "needsReview": "",
                 "summary": {"total": 1, "byStatus": {"MATCHED": 1}, "usedPathCount": 1},
+                "warnings": [],
             }
 
         with patch.object(tech_assembly, "_prepare_wiki_dir", side_effect=fake_prepare_wiki_dir), \
