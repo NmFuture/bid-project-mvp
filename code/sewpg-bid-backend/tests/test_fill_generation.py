@@ -601,6 +601,36 @@ class FillGenerationTests(unittest.TestCase):
         self.assertEqual(result["assembly"]["formatClean"]["reportFile"], "")
         self.assertIsInstance(result["assembly"]["formatClean"]["warnings"], list)
 
+        cleaner_error = "format cleaner exited 1"
+        failed_clean = {
+            "status": "failed",
+            "skill": tech_assembly.TECH_FORMAT_CLEANER_SKILL_NAME,
+            "manifestPath": str(Path(result["assembly"]["workDir"]) / "tech_format_clean_input.json"),
+            "inputFile": result["assembly"]["rawOutputFile"],
+            "outlineFile": "",
+            "outputFile": result["assembly"]["rawOutputFile"],
+            "reportFile": "",
+            "summary": {},
+            "warnings": [],
+            "opencodeOutput": {},
+            "error": cleaner_error,
+        }
+        with patch.object(tech_assembly, "_prepare_wiki_dir", side_effect=fake_prepare_wiki_dir), \
+            patch.object(tech_assembly, "_augment_wiki_with_material_cards", return_value=0), \
+            patch.object(tech_assembly, "_export_material_library", side_effect=fake_export_material_library), \
+            patch.object(tech_assembly, "_run_assembler_manifest", side_effect=fake_run_assembler_manifest), \
+            patch.object(tech_assembly, "_run_tech_format_cleaner_step", return_value=failed_clean):
+            fallback_result = tech_assembly.assemble_tech_bid_for_project_with_progress(project_id)
+
+        assembled_path = Path(fallback_result["assembly"]["rawOutputFile"])
+        document_path = settings.documents_dir / f"{project_id}.docx"
+        self.assertEqual(fallback_result["status"], "completed")
+        self.assertEqual(document_path.read_bytes(), assembled_path.read_bytes())
+        self.assertEqual(fallback_result["assembly"]["summary"]["warningCount"], 1)
+        self.assertEqual(fallback_result["assembly"]["warnings"][0]["code"], "FORMAT_RISK")
+        self.assertEqual(fallback_result["assembly"]["formatClean"]["status"], "failed")
+        self.assertEqual(fallback_result["assembly"]["formatClean"]["error"], cleaner_error)
+
     def test_s7_gap_plan_recovers_s3_ai_fill_outputs_without_review_confirmation(self) -> None:
         from app.services import tech_assembly
 
