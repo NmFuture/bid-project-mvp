@@ -347,6 +347,83 @@ def _write_empty_outline(path: Path) -> None:
     path.write_text(json.dumps({"schema_version": "tech_bid_outline.v1", "sections": []}), encoding="utf-8")
 
 
+def _write_sdt_wrapped_toc_docx(path: Path) -> None:
+    doc = Document()
+    doc.add_paragraph("用户正文")
+    body = doc.element.body
+    sdt = OxmlElement("w:sdt")
+    sdt_content = OxmlElement("w:sdtContent")
+    sdt.append(sdt_content)
+
+    field = OxmlElement("w:p")
+    for field_type in ("begin", "separate"):
+        run = OxmlElement("w:r")
+        node = OxmlElement("w:fldChar")
+        node.set(qn("w:fldCharType"), field_type)
+        run.append(node)
+        field.append(run)
+        if field_type == "begin":
+            instruction_run = OxmlElement("w:r")
+            instruction = OxmlElement("w:instrText")
+            instruction.text = ' TOC \\o "1-3" '
+            instruction_run.append(instruction)
+            field.append(instruction_run)
+    sdt_content.append(field)
+
+    for style_id, text, include_end in (
+        ("TOC1", "第一章 ................................ 1", False),
+        ("TOC2", "1.1 节 ................................ 2", True),
+    ):
+        paragraph = OxmlElement("w:p")
+        p_pr = OxmlElement("w:pPr")
+        p_style = OxmlElement("w:pStyle")
+        p_style.set(qn("w:val"), style_id)
+        p_pr.append(p_style)
+        paragraph.append(p_pr)
+        run = OxmlElement("w:r")
+        text_node = OxmlElement("w:t")
+        text_node.text = text
+        run.append(text_node)
+        paragraph.append(run)
+        if include_end:
+            end_run = OxmlElement("w:r")
+            end = OxmlElement("w:fldChar")
+            end.set(qn("w:fldCharType"), "end")
+            end_run.append(end)
+            paragraph.append(end_run)
+        sdt_content.append(paragraph)
+
+    first_body_child = next(child for child in body if child.tag != qn("w:sectPr"))
+    first_body_child.addprevious(sdt)
+    user_break = OxmlElement("w:p")
+    user_run = OxmlElement("w:r")
+    br = OxmlElement("w:br")
+    br.set(qn("w:type"), "page")
+    user_run.append(br)
+    user_break.append(user_run)
+    sdt.addnext(user_break)
+    doc.save(path)
+
+
+def _sdt_following_break_counts(path: Path) -> tuple[int, int]:
+    doc = Document(str(path))
+    sdt = doc.element.body.find(qn("w:sdt"))
+    if sdt is None:
+        raise AssertionError("测试文档中未找到 TOC sdt")
+    marked = 0
+    unmarked = 0
+    sibling = sdt.getnext()
+    while sibling is not None and sibling.tag == qn("w:p") and sibling.findall(".//" + qn("w:br")):
+        is_marked = any(
+            node.get(qn("w:name")) == "_TECH_FORMAT_CLEANER_TOC_BREAK"
+            for node in sibling.iter(qn("w:bookmarkStart"))
+        )
+        marked += int(is_marked)
+        unmarked += int(not is_marked)
+        sibling = sibling.getnext()
+    return marked, unmarked
+
+
 class TechFormatCleanerTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp_dir = Path(tempfile.mkdtemp(prefix="tech-format-cleaner-"))
@@ -680,6 +757,38 @@ class TechFormatCleanerTest(unittest.TestCase):
 
             self.assertEqual(_page_break_count_after_toc_end(output_docx), 1 if enabled else 0)
             self.assertTrue(_user_page_break_is_present(output_docx))
+            current_input = output_docx
+
+    def test_sdt_wrapped_toc_break_is_managed_outside_content_control(self):
+        input_docx = self.tmp_dir / "sdt-toc-input.docx"
+        outline_path = self.tmp_dir / "sdt-toc-outline.json"
+        _write_sdt_wrapped_toc_docx(input_docx)
+        _write_empty_outline(outline_path)
+        current_input = input_docx
+
+        for index, enabled in enumerate((True, False, True), start=1):
+            style_path = self.tmp_dir / f"sdt-toc-style-{index}.json"
+            output_docx = self.tmp_dir / f"sdt-toc-output-{index}.docx"
+            manifest_path = self.tmp_dir / f"sdt-toc-manifest-{index}.json"
+            _write_full_style(
+                style_path,
+                body_size=12,
+                margin=2.54,
+                toc_page_break_after=enabled,
+            )
+            _write_manifest(
+                manifest_path,
+                input_docx=current_input,
+                outline_path=outline_path,
+                output_docx=output_docx,
+                style_path=style_path,
+            )
+
+            _run_manifest(manifest_path)
+
+            self.assertEqual(_sdt_following_break_counts(output_docx), (1 if enabled else 0, 1))
+            output = Document(str(output_docx))
+            self.assertIn("用户正文", [paragraph.text for paragraph in output.paragraphs])
             current_input = output_docx
 
     def test_heading_direct_run_format_is_reapplied_without_rebuilding_xml(self):

@@ -558,14 +558,24 @@ def _apply_toc_page_break(doc: Document, enabled: bool, *, adopt_unmarked: bool 
 
 
 def _toc_result_anchor(doc: Document):
-    toc_paragraph = next(
-        (
-            paragraph._element
-            for paragraph in doc.paragraphs
-            if any("TOC" in (node.text or "").upper() for node in paragraph._element.iter(qn("w:instrText")))
-        ),
+    body = doc.element.body
+    instruction = next(
+        (node for node in body.iter(qn("w:instrText")) if "TOC" in (node.text or "").upper()),
         None,
     )
+    if instruction is None:
+        return None
+    toc_paragraph = None
+    outer_sdt = None
+    current = instruction.getparent()
+    while current is not None and current is not body:
+        if current.tag == qn("w:p") and toc_paragraph is None:
+            toc_paragraph = current
+        if current.tag == qn("w:sdt"):
+            outer_sdt = current
+        current = current.getparent()
+    if outer_sdt is not None:
+        return outer_sdt
     if toc_paragraph is None:
         return None
     anchor = toc_paragraph
